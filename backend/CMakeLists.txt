@@ -9,6 +9,7 @@ add_executable(llmchat-backend
     src/Config.cpp
     src/ConversationManager.cpp
     src/LlmClient.cpp
+    src/TranslateClient.cpp
     src/HttpServer.cpp
 )
 

@@ -73,6 +73,57 @@ void ConfigStore::load()
         {
             config_.port = std::stoi(value);
         }
+        else if (key == "translateProvider")
+        {
+            config_.translateProvider = value;
+        }
+        else if (key == "translateSource")
+        {
+            config_.translateSource = value;
+        }
+        else if (key == "translateTarget")
+        {
+            config_.translateTarget = value;
+        }
+        else if (key == "translateMaxLength")
+        {
+            config_.translateMaxLength = std::stoi(value);
+        }
+        else if (key == "translateAutoChunk")
+        {
+            config_.translateAutoChunk =
+                (value == "1" || value == "true" || value == "True" || value == "yes");
+        }
+        else if (key == "ocrLang")
+        {
+            config_.ocrLang = value;
+        }
+        else if (key == "ocrAutoTranslate")
+        {
+            config_.ocrAutoTranslate =
+                (value == "1" || value == "true" || value == "True" || value == "yes");
+        }
+        else if (key == "ocrTranslateProvider")
+        {
+            config_.ocrTranslateProvider = value;
+        }
+        else if (key == "ocrTranslateSource")
+        {
+            config_.ocrTranslateSource = value;
+        }
+        else if (key == "ocrTranslateTarget")
+        {
+            config_.ocrTranslateTarget = value;
+        }
+        else if (key == "ocrTranslateMaxLength")
+        {
+            config_.ocrTranslateMaxLength = std::stoi(value);
+        }
+        else if (key == "ocrTranslateAutoChunk")
+        {
+            config_.ocrTranslateAutoChunk =
+                (value == "1" || value == "true" || value == "True" || value == "yes");
+        }
     }
 }
 
@@ -90,4 +141,16 @@ void ConfigStore::save() const
     out << "model=" << config_.model << "\n";
     out << "messagePageSize=" << config_.messagePageSize << "\n";
     out << "port=" << config_.port << "\n";
+    out << "translateProvider=" << config_.translateProvider << "\n";
+    out << "translateSource=" << config_.translateSource << "\n";
+    out << "translateTarget=" << config_.translateTarget << "\n";
+    out << "translateMaxLength=" << config_.translateMaxLength << "\n";
+    out << "translateAutoChunk=" << (config_.translateAutoChunk ? "true" : "false") << "\n";
+    out << "ocrLang=" << config_.ocrLang << "\n";
+    out << "ocrAutoTranslate=" << (config_.ocrAutoTranslate ? "true" : "false") << "\n";
+    out << "ocrTranslateProvider=" << config_.ocrTranslateProvider << "\n";
+    out << "ocrTranslateSource=" << config_.ocrTranslateSource << "\n";
+    out << "ocrTranslateTarget=" << config_.ocrTranslateTarget << "\n";
+    out << "ocrTranslateMaxLength=" << config_.ocrTranslateMaxLength << "\n";
+    out << "ocrTranslateAutoChunk=" << (config_.ocrTranslateAutoChunk ? "true" : "false") << "\n";
 }

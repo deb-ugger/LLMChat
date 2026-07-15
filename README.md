@@ -2,6 +2,8 @@
 
 Tauri + React 前端，C++ HTTP 后端。本地前后端分离，已剔除 Qt。
 
+功能：对话聊天、Markdown/LaTeX 渲染、**文献翻译**（PDF 框选 + 免费/大模型翻译 + 词典音标发音）。
+
 ## 目录
 
 - `backend/` — C++20 HTTP 服务（cpp-httplib + nlohmann/json + WinHTTP）

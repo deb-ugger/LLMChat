@@ -20,6 +20,14 @@ body,
   height: 100%;
 }
 
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+
 .nav-rail {
   width: 60px;
   background: #1e1e2e;
@@ -31,10 +39,11 @@ body,
 }
 
 .nav-brand {
-  text-align: center;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   color: #cdd6f4;
-  font-weight: 700;
-  padding: 16px 0;
+  padding: 16px 0 12px;
 }
 
 .nav-item {
@@ -43,8 +52,19 @@ body,
   border-radius: 8px;
   background: transparent;
   color: inherit;
-  height: 44px;
+  min-height: 52px;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 11px;
+  padding: 6px 2px;
+}
+
+.nav-item span {
+  line-height: 1.1;
 }
 
 .nav-item:hover {
@@ -70,6 +90,7 @@ body,
   flex: 1;
   display: flex;
   min-width: 0;
+  min-height: 0;
 }
 
 .sidebar {
@@ -131,6 +152,54 @@ body,
 .conv-item:hover,
 .conv-item.active {
   background: #ececec;
+}
+
+.conv-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #0078d7;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  background: #fff;
+}
+
+.conv-context-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 132px;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 4px;
+}
+
+.conv-context-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #222;
+}
+
+.conv-context-item:hover {
+  background: #f0f4f9;
+}
+
+.conv-context-item.danger {
+  color: #c62828;
+}
+
+.conv-context-item.danger:hover {
+  background: #fdecea;
 }
 
 .chat-panel {
@@ -377,12 +446,10 @@ body,
 
 .settings-page {
   flex: 1;
-  padding: 24px 32px;
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 32px 28px;
   overflow: auto;
-}
-
-.settings-page h1 {
-  margin: 0 0 20px;
 }
 
 .settings-card {
@@ -394,8 +461,49 @@ body,
 }
 
 .settings-card h2 {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 14px;
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.settings-test-btn {
+  border: 1px solid #c8cdd5;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.settings-test-btn:hover:not(:disabled) {
+  background: #eef3f9;
+  border-color: #0078d7;
+  color: #0078d7;
+}
+
+.settings-test-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-test-ok {
+  margin: -4px 0 10px;
+  font-size: 13px;
+  color: #0a7a32;
+}
+
+.settings-test-fail {
+  margin: -4px 0 10px;
+  font-size: 13px;
+  color: #c62828;
 }
 
 .settings-card label {
@@ -406,10 +514,1184 @@ body,
   font-size: 13px;
 }
 
-.settings-card input {
+.settings-card input,
+.settings-card select {
   padding: 8px 12px;
   border: 1px solid #d0d0d0;
   border-radius: 6px;
+  font: inherit;
+}
+
+.literature-host {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.literature-host.is-hidden {
+  /* Keep real size so react-pdf can paint; do not use display:none */
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.literature-host:not(.is-hidden) {
+  position: relative;
+  z-index: 1;
+}
+
+.literature-layout {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: #eceff3;
+  width: 100%;
+}
+
+.pdf-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #d8dde5;
+}
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f7f8fa;
+  border-bottom: 1px solid #d0d5dd;
+  flex-wrap: wrap;
+  overflow: visible;
+  position: relative;
+  z-index: 25;
+}
+
+.pdf-open-menu {
+  position: relative;
+}
+
+.pdf-toolbar-engine {
+  margin-left: auto;
+  font-size: 12px;
+  color: #556;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  padding-left: 8px;
+}
+
+.pdf-tool-btn {
+  border: 1px solid #c8cdd5;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pdf-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pdf-page-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.pdf-page-input {
+  width: 52px;
+  padding: 2px 6px;
+  border: 1px solid #c8cdd5;
+  border-radius: 4px;
+}
+
+.pdf-empty {
+  max-width: 420px;
+  margin: 80px auto;
+  text-align: center;
+  color: #444;
+  line-height: 1.6;
+}
+
+.pdf-tool-btn.active {
+  background: #e8f1fb;
+  border-color: #0078d7;
+  color: #0078d7;
+}
+
+.pdf-search-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px 8px;
+}
+
+.pdf-search-bar input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #c8cdd5;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.pdf-search-count {
+  font-size: 11px;
+  color: #888;
+  padding: 0 8px 6px;
+}
+
+.pdf-search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.pdf-search-page {
+  font-size: 11px;
+  color: #0078d7;
+  font-weight: 600;
+}
+
+.pdf-search-snippet {
+  font-size: 12px;
+  color: #444;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.settings-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.settings-row-half {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.settings-half {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 50%;
+  box-sizing: border-box;
+}
+
+.settings-half-checks {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+.settings-half-check {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+}
+
+.settings-check input {
+  margin: 0;
+}
+
+.settings-field {
+  margin-bottom: 10px;
+}
+
+.settings-field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #444;
+}
+
+.settings-engine-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 0;
+  flex-wrap: nowrap;
+}
+
+.settings-half .lang-combobox {
+  width: 100%;
+}
+
+.settings-half .lang-combobox input,
+.settings-half select,
+.settings-half > input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-engine-select {
+  flex: 0 1 280px;
+  min-width: 200px;
+  width: auto;
+  box-sizing: border-box;
+  align-self: stretch;
+  margin: 0;
+  /* Match side-hint box height */
+  min-height: 44px;
+  padding: 0 10px;
+}
+
+.settings-engine-side-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 !important;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 44px;
+}
+
+.settings-engine-rank-hint {
+  margin: 2px 0 12px !important;
+}
+
+.settings-row-controls {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.settings-row-controls > input {
+  flex: 1 1 160px;
+  min-width: 140px;
+  width: auto;
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 44px;
+  height: auto;
+  padding: 0 10px;
+}
+
+.settings-row-controls > .settings-toggle {
+  flex: 1 1 220px;
+  min-width: 180px;
+  width: auto;
+  min-height: 44px;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+.settings-row-ocr-opts {
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.settings-half-toggle,
+.settings-half-toggles {
+  display: flex;
+  flex-direction: column;
+  justify-content: stretch;
+  gap: 10px;
+  min-height: 0;
+  padding-bottom: 0;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid #d0d5dd;
+  background: #f7f8fa;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: #333;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  box-sizing: border-box;
+}
+
+.settings-toggle:hover {
+  background: #eef3f9;
+  border-color: #b8c2d0;
+}
+
+.settings-toggle.is-on {
+  background: #e8f1fb;
+  border-color: #7eb6e8;
+}
+
+.settings-toggle-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: #c5cad3;
+  transition: background 0.15s ease;
+}
+
+.settings-toggle.is-on .settings-toggle-track {
+  background: #0078d7;
+}
+
+.settings-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease;
+}
+
+.settings-toggle.is-on .settings-toggle-thumb {
+  transform: translateX(18px);
+}
+
+.settings-toggle-label {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.settings-row-grow {
+  flex: 1;
+  min-width: 220px;
+}
+
+.settings-row-check {
+  margin: 0 0 8px;
+  white-space: nowrap;
+  padding-bottom: 6px;
+}
+
+.settings-save-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.settings-saved {
+  color: #0a7a32;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.engine-hint {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  background: #f0f4f9;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #335;
+  line-height: 1.45;
+}
+
+.ocr-layout {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: #eceff3;
+}
+
+.ocr-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ocr-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f7f8fa;
+  border-bottom: 1px solid #d0d5dd;
+  flex-wrap: wrap;
+}
+
+.ocr-toolbar-engine {
+  margin-left: auto;
+  font-size: 12px;
+  color: #556;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  padding-left: 8px;
+}
+
+.ocr-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.ocr-canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.ocr-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  /* Prevent abspos OCR boxes from expanding the scroll canvas */
+  overflow: hidden;
+  line-height: 0;
+  vertical-align: top;
+}
+
+.ocr-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.ocr-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 120, 215, 0.55);
+  background: rgba(255, 255, 220, 0.35);
+  color: #222;
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  padding: 1px 2px;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.ocr-box.active {
+  border: 2px solid #0078d7;
+  background: rgba(0, 120, 215, 0.22);
+  box-shadow: 0 0 0 2px rgba(0, 120, 215, 0.35);
+  z-index: 2;
+}
+
+.ocr-error {
+  margin-top: 8px;
+}
+
+.ocr-side {
+  width: min(420px, 42vw);
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  background: #f7f8fa;
+  border-left: 1px solid #d0d5dd;
+  min-height: 0;
+}
+
+.ocr-dual {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.ocr-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid #e2e5ea;
+}
+
+.ocr-col:last-child {
+  border-right: none;
+}
+
+.ocr-col-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f7f8fa;
+  border-bottom: 1px solid #e2e5ea;
+  padding: 10px 10px 8px;
+  flex-shrink: 0;
+}
+
+.ocr-col-head h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.ocr-col-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #c8cdd5;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ocr-col-body {
+  flex: 1;
+  overflow: auto;
+  padding: 6px;
+  min-height: 0;
+}
+
+.ocr-col-empty {
+  padding: 12px 8px;
+}
+
+.ocr-pair-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  border: 1px solid transparent;
+  background: #fff;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.ocr-pair-row:hover,
+.ocr-pair-row.active {
+  border-color: #0078d7;
+  background: #eef5fc;
+}
+
+.ocr-block-idx {
+  color: #0078d7;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ocr-block-text {
+  flex: 1;
+  min-width: 0;
+  color: #333;
+  line-height: 1.35;
+  word-break: break-word;
+  user-select: text;
+}
+
+.ocr-block-text.is-pending {
+  color: #888;
+  font-style: italic;
+}
+
+.ocr-block-text.is-error {
+  color: #b42318;
+}
+
+.ocr-copy-btn {
+  flex-shrink: 0;
+  border: 1px solid #c8cdd5;
+  background: #f7f8fa;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: #445;
+  cursor: pointer;
+}
+
+.ocr-copy-btn:hover:not(:disabled) {
+  border-color: #0078d7;
+  color: #0078d7;
+}
+
+.ocr-copy-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lang-combobox {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.lang-combobox-label {
+  font-size: 13px;
+  color: #555;
+}
+
+.lang-combobox input {
+  border: 1px solid #c8cdd5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.lang-combobox-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.lang-combobox-option {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.lang-combobox-option:hover,
+.lang-combobox-option.active {
+  background: #f0f4f9;
+}
+
+.lang-code {
+  min-width: 64px;
+  font-weight: 600;
+  color: #0078d7;
+}
+
+.lang-label {
+  color: #444;
+}
+
+.lang-combobox-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: #888;
+}
+
+.pdf-recent-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 30;
+  min-width: 280px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 6px 6px;
+  /* Fill the visual gap so mouse can move from button → list without leave */
+  margin-top: 0;
+  padding-top: 10px;
+}
+
+.pdf-recent-title {
+  font-size: 11px;
+  color: #888;
+  padding: 4px 8px 6px;
+}
+
+.pdf-recent-empty {
+  font-size: 12px;
+  color: #999;
+  padding: 8px;
+}
+
+.pdf-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pdf-recent-item:hover {
+  background: #f0f4f9;
+}
+
+.pdf-recent-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-recent-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #888;
+}
+
+.pdf-recent-browse {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  border: none;
+  border-top: 1px solid #e8ebf0;
+  background: transparent;
+  text-align: left;
+  padding: 10px;
+  border-radius: 0 0 6px 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #0078d7;
+}
+
+.pdf-recent-browse:hover {
+  background: #f0f4f9;
+}
+
+.pdf-scale-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.pdf-scale-input {
+  width: 56px;
+  padding: 2px 4px;
+  border: 1px solid #c8cdd5;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.pdf-view-menu {
+  position: relative;
+  z-index: 30;
+}
+
+.pdf-view-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10000;
+  min-width: 160px;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+}
+
+.mark.pdf-search-mark,
+.pdf-search-mark {
+  background: #ffe566;
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 180, 0, 0.55);
+}
+
+.pdf-view-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pdf-view-option:hover,
+.pdf-view-option.active {
+  background: #f0f4f9;
+}
+
+.pdf-view-check {
+  width: 14px;
+  color: #0078d7;
+  font-weight: 700;
+}
+
+.pdf-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pdf-outline {
+  position: relative;
+  flex-shrink: 0;
+  overflow: auto;
+  background: #f7f8fa;
+  border-right: 1px solid #d5d9e0;
+  padding: 10px 8px;
+  box-sizing: border-box;
+}
+
+.translate-panel {
+  flex-shrink: 0;
+  background: #f5f6f8;
+  border-left: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+}
+
+.col-resizer:hover,
+.col-resizer:active {
+  background: rgba(0, 120, 215, 0.25);
+}
+
+.col-resizer-panel {
+  position: relative;
+  flex-shrink: 0;
+  width: 5px;
+  height: auto;
+  align-self: stretch;
+  cursor: col-resize;
+  background: #d5d9e0;
+  z-index: 5;
+}
+
+.col-resizer-panel:hover,
+.col-resizer-panel:active {
+  background: #0078d7;
+}
+
+body.col-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.col-resizing iframe,
+body.col-resizing canvas,
+body.col-resizing .textLayer {
+  pointer-events: none !important;
+}
+
+.pdf-outline-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 8px;
+  padding: 0 6px;
+}
+
+.pdf-outline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 8px;
+}
+
+.pdf-outline-list .pdf-outline-list {
+  padding-left: 12px;
+}
+
+.pdf-outline-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #333;
+  line-height: 1.4;
+}
+
+.pdf-outline-item:hover:not(:disabled) {
+  background: #e8eef6;
+  color: #0078d7;
+}
+
+.pdf-outline-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pdf-file-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #666;
+}
+
+.pdf-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pdf-scroll.hand-mode {
+  cursor: grab;
+}
+
+.pdf-scroll.hand-mode:active {
+  cursor: grabbing;
+}
+
+.pdf-scroll.hand-mode .textLayer,
+.pdf-scroll.hand-mode .annotationLayer {
+  pointer-events: none;
+}
+
+.pdf-canvas-host {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.pdf-spread {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: nowrap;
+  margin-bottom: 12px;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.pdf-spread.single {
+  width: max-content;
+  min-width: 100%;
+}
+
+.tr-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tr-block-head h3 {
+  margin: 0;
+}
+
+.tr-source-edit {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 120px;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  line-height: 1.5;
+  background: #fff;
+  color: #333;
+}
+
+.pdf-page-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+
+.pdf-page-wrap.is-placeholder {
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+}
+
+.pdf-page-wrap .react-pdf__Page {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+
+/* Do not override canvas CSS width/height — pdf.js sets them to logical size
+   while the bitmap is DPR× larger. Only avoid max-width squeeze + lift contrast. */
+.pdf-page-wrap .react-pdf__Page canvas,
+.pdf-page-wrap .react-pdf__Page__canvas {
+  max-width: none !important;
+  image-rendering: auto;
+  filter: contrast(1.14);
+}
+
+/* Text layer must stay fully transparent — any opacity washes the page gray */
+.pdf-page-wrap .textLayer,
+.pdf-page-wrap .react-pdf__Page__textContent {
+  opacity: 1 !important;
+  mix-blend-mode: normal;
+}
+
+.pdf-page-wrap .textLayer span,
+.pdf-page-wrap .react-pdf__Page__textContent span {
+  color: transparent !important;
+}
+
+.pdf-scroll .annotationLayer a {
+  cursor: pointer;
+}
+
+.translate-panel-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+}
+
+.tr-block {
+  margin-bottom: 16px;
+}
+
+.tr-block h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #555;
+}
+
+.tr-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tr-source {
+  color: #333;
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.dict-entry {
+  font-size: 13px;
+}
+
+.dict-word {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.dict-phonetics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.phonetic-btn {
+  border: 1px solid #cfd5de;
+  background: #fff;
+  border-radius: 16px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.dict-meaning {
+  margin-bottom: 10px;
+}
+
+.dict-pos {
+  color: #0078d7;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.dict-meaning ol {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.dict-example {
+  color: #777;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.dict-syn {
+  margin-top: 8px;
+  color: #444;
+  line-height: 1.5;
+}
+
+.translate-lookup {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid #d5d9e0;
+  background: #fff;
+}
+
+.translate-lookup input {
+  flex: 1;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 8px 10px;
   font: inherit;
 }
 

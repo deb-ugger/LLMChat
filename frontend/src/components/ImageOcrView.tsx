@@ -1,0 +1,791 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createWorker, PSM, type Worker } from "tesseract.js";
+import { api } from "../api";
+import { getEngineInfo } from "../translateEngines";
+
+export type OcrBlock = {
+  id: string;
+  text: string;
+  translation: string;
+  status: "idle" | "pending" | "done" | "error";
+  /** normalized 0–1 relative to image */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type Props = {
+  ocrLang: string;
+  autoTranslate: boolean;
+  translateProvider: string;
+  translateSource: string;
+  translateTarget: string;
+  translateMaxLength: number;
+  translateAutoChunk: boolean;
+  model?: string;
+};
+
+type BBoxLine = {
+  text: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  confidence: number;
+  /** height of the last physical line in this box (for merge threshold) */
+  lineH: number;
+};
+
+function isJunkText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (t.length === 1 && !/[A-Za-z0-9\u4e00-\u9fff]/.test(t)) return true;
+  const letters = t.replace(/[^A-Za-z0-9\u4e00-\u9fff]/g, "");
+  return letters.length === 0 && t.length < 4;
+}
+
+function cleanLineText(ln: BBoxLine): BBoxLine {
+  let t = ln.text.trim().replace(/\s+/g, " ");
+  t = t.replace(/[\s·•|/\-–—_]{2,}$/u, "").trim();
+  const m = t.match(/^(.*[.!?。！？…])\s+(\S{1,4})$/u);
+  if (m && isJunkText(m[2])) {
+    t = m[1].trim();
+  }
+  return { ...ln, text: t };
+}
+
+function loadImageSize(url: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () =>
+      resolve({
+        w: img.naturalWidth || img.width || 1,
+        h: img.naturalHeight || img.height || 1,
+      });
+    img.onerror = () => reject(new Error("无法读取图片尺寸"));
+    img.src = url;
+  });
+}
+
+function mergeWordsToLines(words: BBoxLine[]): BBoxLine[] {
+  const sorted = [...words].sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  const lines: BBoxLine[] = [];
+  for (const w of sorted) {
+    const last = lines[lines.length - 1];
+    const mid = (w.y0 + w.y1) / 2;
+    const sameLine =
+      last &&
+      Math.abs(mid - (last.y0 + last.y1) / 2) <
+        Math.max(10, last.lineH * 0.55);
+    const xNear =
+      last && w.x0 <= last.x1 + Math.max(40, last.lineH * 2.5);
+    if (sameLine && xNear && last) {
+      last.text = `${last.text} ${w.text}`.replace(/\s+/g, " ").trim();
+      last.x0 = Math.min(last.x0, w.x0);
+      last.y0 = Math.min(last.y0, w.y0);
+      last.x1 = Math.max(last.x1, w.x1);
+      last.y1 = Math.max(last.y1, w.y1);
+      last.confidence = Math.min(last.confidence, w.confidence);
+      last.lineH = Math.max(last.lineH, w.y1 - w.y0);
+    } else {
+      lines.push({ ...w, lineH: Math.max(8, w.y1 - w.y0) });
+    }
+  }
+  return lines;
+}
+
+/**
+ * Merge adjacent lines into paragraphs.
+ * IMPORTANT: use last physical line height for gap threshold — never the
+ * accumulated paragraph height (that cascade-merges the whole page).
+ */
+function mergeLinesToParagraphs(lines: BBoxLine[]): BBoxLine[] {
+  if (!lines.length) return [];
+  const sorted = [...lines].sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  const paras: BBoxLine[] = [];
+  for (const ln of sorted) {
+    const lineH = Math.max(8, ln.lineH || ln.y1 - ln.y0);
+    const last = paras[paras.length - 1];
+    if (!last) {
+      paras.push({ ...ln, lineH });
+      continue;
+    }
+    const gap = ln.y0 - last.y1;
+    const refH = Math.max(8, last.lineH);
+    const overlap =
+      Math.min(last.x1, ln.x1) - Math.max(last.x0, ln.x0);
+    const minW = Math.min(last.x1 - last.x0, ln.x1 - ln.x0) || 1;
+    const leftAligned = Math.abs(ln.x0 - last.x0) < Math.max(20, refH * 1.1);
+    const sameColumn = overlap > minW * 0.15 || leftAligned;
+    // Same paragraph: gap smaller than ~1 line; larger gap = new paragraph
+    const closeVertically = gap < refH * 0.85 && gap > -refH * 0.35;
+    if (sameColumn && closeVertically) {
+      last.text = `${last.text} ${ln.text}`.replace(/\s+/g, " ").trim();
+      last.x0 = Math.min(last.x0, ln.x0);
+      last.y0 = Math.min(last.y0, ln.y0);
+      last.x1 = Math.max(last.x1, ln.x1);
+      last.y1 = Math.max(last.y1, ln.y1);
+      last.confidence = Math.min(last.confidence, ln.confidence);
+      last.lineH = lineH;
+    } else {
+      paras.push({ ...ln, lineH });
+    }
+  }
+  return paras.map(cleanLineText);
+}
+
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n));
+}
+
+function formatTranslateError(raw: string): string {
+  const s = raw.trim();
+  const low = s.toLowerCase();
+  if (
+    low.includes("used all available free translations") ||
+    low.includes("mymemory warning") ||
+    (low.includes("429") && low.includes("mymemory"))
+  ) {
+    return "MyMemory 今日免费额度已用尽，请在设置中改用谷歌/Bing/大模型后重试";
+  }
+  if (low.includes("query length limit") || low.includes("max allowed query")) {
+    return "单段过长，请开启自动分段或换用大模型";
+  }
+  // Strip raw JSON dumps
+  const m = s.match(/MYMEMORY WARNING:[^"]+/i);
+  if (m) {
+    return "MyMemory 今日免费额度已用尽，请更换翻译引擎";
+  }
+  if (s.length > 160) return `${s.slice(0, 140)}…`;
+  return s;
+}
+
+async function copyText(text: string) {
+  const t = text.trim();
+  if (!t) return;
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch {
+    const el = document.createElement("textarea");
+    el.value = t;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand("copy");
+    document.body.removeChild(el);
+  }
+}
+
+export function ImageOcrView({
+  ocrLang,
+  autoTranslate,
+  translateProvider,
+  translateSource,
+  translateTarget,
+  translateMaxLength,
+  translateAutoChunk,
+  model = "",
+}: Props) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [blocks, setBlocks] = useState<OcrBlock[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showTranslation, setShowTranslation] = useState(true);
+  const [srcQuery, setSrcQuery] = useState("");
+  const [dstQuery, setDstQuery] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const workerLangRef = useRef<string | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const srcListRef = useRef<HTMLDivElement>(null);
+  const dstListRef = useRef<HTMLDivElement>(null);
+  const translateGenRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+      void workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, [imageUrl]);
+
+  const engineBadge = useMemo(() => {
+    if (translateProvider === "llm") {
+      return model ? `模型：${model}` : "模型：大模型";
+    }
+    const info = getEngineInfo(translateProvider);
+    return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
+  }, [model, translateProvider]);
+
+  const ensureWorker = useCallback(async () => {
+    if (workerRef.current && workerLangRef.current === ocrLang) {
+      return workerRef.current;
+    }
+    if (workerRef.current) {
+      await workerRef.current.terminate();
+      workerRef.current = null;
+    }
+    const worker = await createWorker(ocrLang);
+    await worker.setParameters({
+      tessedit_pageseg_mode: PSM.SINGLE_COLUMN,
+      preserve_interword_spaces: "1",
+    });
+    workerRef.current = worker;
+    workerLangRef.current = ocrLang;
+    return worker;
+  }, [ocrLang]);
+
+  const selectBlock = useCallback((id: string) => {
+    setSelectedId(id);
+    const scrollBoth = () => {
+      const srcItem = srcListRef.current?.querySelector(
+        `[data-row-id="${id}"]`,
+      ) as HTMLElement | null;
+      const dstItem = dstListRef.current?.querySelector(
+        `[data-row-id="${id}"]`,
+      ) as HTMLElement | null;
+      srcItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      dstItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      const box = stageRef.current?.querySelector(
+        `[data-block-id="${id}"]`,
+      ) as HTMLElement | null;
+      box?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+    requestAnimationFrame(() => requestAnimationFrame(scrollBoth));
+  }, []);
+
+  const translateOpts = useMemo(
+    () => ({
+      source: translateSource,
+      target: translateTarget,
+      provider: translateProvider,
+      maxLength: translateMaxLength,
+      autoChunk: translateAutoChunk,
+    }),
+    [
+      translateAutoChunk,
+      translateMaxLength,
+      translateProvider,
+      translateSource,
+      translateTarget,
+    ],
+  );
+
+  const summarizeTranslateStatus = (list: OcrBlock[]) => {
+    const work = list.filter((b) => b.text.trim());
+    const ok = work.filter((b) => b.status === "done").length;
+    const fail = work.filter((b) => b.status === "error").length;
+    if (fail === 0) return `识别 ${list.length} 段 · 翻译完成`;
+    if (ok === 0) return `识别 ${list.length} 段 · 翻译全部失败（${fail}）`;
+    return `识别 ${list.length} 段 · 成功 ${ok} · 失败 ${fail}`;
+  };
+
+  const translateBlocks = useCallback(
+    async (
+      list: OcrBlock[],
+      onProgress?: (done: number, total: number) => void,
+    ) => {
+      const gen = ++translateGenRef.current;
+      const workIdx = list
+        .map((b, i) => (b.text.trim() ? i : -1))
+        .filter((i) => i >= 0);
+      if (!workIdx.length) return list;
+
+      const pending: OcrBlock[] = list.map((b) =>
+        b.text.trim()
+          ? { ...b, status: "pending", translation: "" }
+          : { ...b, status: "done" },
+      );
+      setBlocks(pending);
+
+      // Batch join only for LLM (free engines choke on size / quota)
+      const canBatch =
+        translateProvider === "llm" &&
+        workIdx.reduce((n, i) => n + list[i].text.length, 0) < 6000;
+
+      if (canBatch) {
+        const SEP = "\n¶¶\n";
+        try {
+          onProgress?.(0, workIdx.length);
+          const joined = workIdx.map((i) => list[i].text.trim()).join(SEP);
+          const tr = await api.translate(joined, undefined, translateOpts);
+          if (gen !== translateGenRef.current) return list;
+          const parts = tr.translation
+            .split(/\n?\s*¶¶\s*\n?/)
+            .map((s) => s.trim());
+          if (
+            parts.length === workIdx.length ||
+            Math.abs(parts.length - workIdx.length) <= 1
+          ) {
+            onProgress?.(workIdx.length, workIdx.length);
+            const next = list.map((b) => ({ ...b }));
+            workIdx.forEach((idx, j) => {
+              next[idx] = {
+                ...next[idx],
+                translation: parts[j] || "（无译文）",
+                status: "done",
+              };
+            });
+            return next;
+          }
+        } catch {
+          // fall through to per-block
+        }
+      }
+
+      const next: OcrBlock[] = list.map((b) =>
+        b.text.trim()
+          ? { ...b, status: "pending", translation: "" }
+          : { ...b, status: "done" },
+      );
+      setBlocks([...next]);
+      // Free engines: lower concurrency to avoid rate limits
+      const concurrency = translateProvider === "llm" ? 5 : 2;
+      let done = 0;
+      for (let start = 0; start < workIdx.length; start += concurrency) {
+        if (gen !== translateGenRef.current) return next;
+        const slice = workIdx.slice(start, start + concurrency);
+        await Promise.all(
+          slice.map(async (idx) => {
+            try {
+              const tr = await api.translate(
+                next[idx].text,
+                undefined,
+                translateOpts,
+              );
+              next[idx] = {
+                ...next[idx],
+                translation: tr.translation,
+                status: "done",
+              };
+            } catch (e) {
+              const msg = formatTranslateError(
+                e instanceof Error ? e.message : String(e),
+              );
+              next[idx] = {
+                ...next[idx],
+                translation: `（翻译失败）${msg}`,
+                status: "error",
+              };
+            } finally {
+              done += 1;
+              onProgress?.(done, workIdx.length);
+              if (gen === translateGenRef.current) {
+                setBlocks([...next]);
+              }
+            }
+          }),
+        );
+      }
+      return next;
+    },
+    [translateOpts, translateProvider],
+  );
+
+  const runOcr = useCallback(
+    async (file: File) => {
+      setBusy(true);
+      setError(null);
+      setStatus("正在识别文字…");
+      setBlocks([]);
+      setSelectedId(null);
+      setSrcQuery("");
+      setDstQuery("");
+      try {
+        if (imageUrl) URL.revokeObjectURL(imageUrl);
+        const url = URL.createObjectURL(file);
+        setImageUrl(url);
+
+        const [{ w: iw, h: ih }, worker] = await Promise.all([
+          loadImageSize(url),
+          ensureWorker(),
+        ]);
+
+        const result = await worker.recognize(file);
+        const data = result.data;
+
+        const toBox = (raw: {
+          text: string;
+          confidence?: number;
+          bbox: { x0: number; y0: number; x1: number; y1: number };
+        }): BBoxLine | null => {
+          const text = (raw.text || "").trim().replace(/\s+/g, " ");
+          if (!text || isJunkText(text) || (raw.confidence ?? 0) < 45) {
+            return null;
+          }
+          return {
+            text,
+            x0: raw.bbox.x0,
+            y0: raw.bbox.y0,
+            x1: raw.bbox.x1,
+            y1: raw.bbox.y1,
+            confidence: raw.confidence ?? 0,
+            lineH: Math.max(8, raw.bbox.y1 - raw.bbox.y0),
+          };
+        };
+
+        let lineBoxes: BBoxLine[] = [];
+
+        // Prefer Tesseract paragraph units when they look reasonable
+        const parasRaw = (data.paragraphs ?? [])
+          .map((p) => toBox(p))
+          .filter((x): x is BBoxLine => !!x);
+
+        const linesRaw = (data.lines ?? [])
+          .map((l) => toBox(l))
+          .filter((x): x is BBoxLine => !!x);
+
+        if (parasRaw.length >= 2) {
+          // Soft-split giant paragraphs via their lines if needed
+          lineBoxes = [];
+          for (const p of data.paragraphs ?? []) {
+            const pLines = (p.lines ?? [])
+              .map((l) => toBox(l))
+              .filter((x): x is BBoxLine => !!x);
+            if (pLines.length >= 2 && (p.text?.length ?? 0) > 280) {
+              lineBoxes.push(...mergeLinesToParagraphs(pLines));
+            } else {
+              const one = toBox(p);
+              if (one) lineBoxes.push(one);
+            }
+          }
+        } else if (linesRaw.length) {
+          lineBoxes = mergeLinesToParagraphs(linesRaw);
+        } else {
+          const words = (data.words ?? [])
+            .map((w) => toBox(w))
+            .filter((x): x is BBoxLine => !!x);
+          lineBoxes = mergeLinesToParagraphs(mergeWordsToLines(words));
+        }
+
+        const paras = lineBoxes.filter(
+          (p) => !isJunkText(p.text) && p.text.trim().length >= 2,
+        );
+
+        let list: OcrBlock[] = paras.map((ln, i) => {
+          const x = clamp01(ln.x0 / iw);
+          const y = clamp01(ln.y0 / ih);
+          const w = clamp01((ln.x1 - ln.x0) / iw);
+          const h = clamp01((ln.y1 - ln.y0) / ih);
+          return {
+            id: `b-${i}`,
+            text: ln.text,
+            translation: "",
+            status: "idle" as const,
+            x,
+            y,
+            w: Math.max(w, 0.02),
+            h: Math.max(h, 0.012),
+          };
+        });
+
+        // Drop boxes that escaped image bounds almost entirely
+        list = list.filter((b) => b.x < 0.98 && b.y < 0.98 && b.w > 0 && b.h > 0);
+
+        setBlocks(list);
+        setStatus(`识别到 ${list.length} 段文字`);
+        if (canvasWrapRef.current) {
+          canvasWrapRef.current.scrollTop = 0;
+          canvasWrapRef.current.scrollLeft = 0;
+        }
+        if (autoTranslate && list.length > 0) {
+          setStatus(`正在翻译 0/${list.length}…`);
+          list = await translateBlocks(list, (done, total) => {
+            setStatus(`正在翻译 ${done}/${total}…`);
+          });
+          setBlocks(list);
+          setStatus(summarizeTranslateStatus(list));
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus(null);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [autoTranslate, ensureWorker, imageUrl, translateBlocks],
+  );
+
+  const onRetranslateAll = async () => {
+    if (!blocks.length) return;
+    setBusy(true);
+    setError(null);
+    setStatus(`正在重新翻译 0/${blocks.length}…`);
+    try {
+      const list = await translateBlocks(blocks, (done, total) => {
+        setStatus(`正在重新翻译 ${done}/${total}…`);
+      });
+      setBlocks(list);
+      setStatus(summarizeTranslateStatus(list));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCopy = async (
+    id: string,
+    text: string,
+    e: { stopPropagation: () => void },
+  ) => {
+    e.stopPropagation();
+    await copyText(text);
+    setCopiedId(id);
+    window.setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1200);
+  };
+
+  const srcFiltered = useMemo(() => {
+    const q = srcQuery.trim().toLowerCase();
+    if (!q) return blocks;
+    return blocks.filter((b) => b.text.toLowerCase().includes(q));
+  }, [blocks, srcQuery]);
+
+  const dstFiltered = useMemo(() => {
+    const q = dstQuery.trim().toLowerCase();
+    if (!q) return blocks;
+    return blocks.filter(
+      (b) =>
+        b.translation.toLowerCase().includes(q) ||
+        (b.status === "pending" && "正在翻译".includes(q)),
+    );
+  }, [blocks, dstQuery]);
+
+  const blockIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    blocks.forEach((b, i) => m.set(b.id, i + 1));
+    return m;
+  }, [blocks]);
+
+  return (
+    <div className="ocr-layout">
+      <div className="ocr-main">
+        <div className="ocr-toolbar">
+          <button
+            type="button"
+            className="pdf-tool-btn"
+            onClick={() => inputRef.current?.click()}
+          >
+            打开图片
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void runOcr(f);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="pdf-tool-btn"
+            disabled={busy || !blocks.length}
+            onClick={() => void onRetranslateAll()}
+          >
+            重新翻译全部
+          </button>
+          <label className="ocr-toggle">
+            <input
+              type="checkbox"
+              checked={showTranslation}
+              onChange={(e) => setShowTranslation(e.target.checked)}
+            />
+            显示译文叠字
+          </label>
+          {status && <span className="hint">{status}</span>}
+          <span className="ocr-toolbar-engine" title={engineBadge}>
+            {engineBadge}
+          </span>
+        </div>
+
+        <div className="ocr-canvas-wrap" ref={canvasWrapRef}>
+          {!imageUrl && (
+            <div className="pdf-empty">
+              <p>打开图片后将识别文字，并在对应位置叠字显示译文。</p>
+              <button
+                type="button"
+                className="send-btn"
+                onClick={() => inputRef.current?.click()}
+              >
+                选择图片
+              </button>
+            </div>
+          )}
+          {imageUrl && (
+            <div className="ocr-stage" ref={stageRef}>
+              <img src={imageUrl} alt="OCR" className="ocr-image" draggable={false} />
+              {blocks.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  data-block-id={b.id}
+                  className={
+                    b.id === selectedId ? "ocr-box active" : "ocr-box"
+                  }
+                  style={{
+                    left: `${b.x * 100}%`,
+                    top: `${b.y * 100}%`,
+                    width: `${b.w * 100}%`,
+                    height: `${b.h * 100}%`,
+                  }}
+                  onClick={() => selectBlock(b.id)}
+                  title={b.text}
+                >
+                  {showTranslation &&
+                  b.status === "done" &&
+                  b.translation
+                    ? b.translation
+                    : ""}
+                </button>
+              ))}
+            </div>
+          )}
+          {error && <p className="boot-error ocr-error">{error}</p>}
+        </div>
+      </div>
+
+      <aside className="ocr-side">
+        <div className="ocr-dual">
+          <div className="ocr-col">
+            <div className="ocr-col-head">
+              <h3>原文</h3>
+              <input
+                className="ocr-col-search"
+                placeholder="搜索原文…"
+                value={srcQuery}
+                onChange={(e) => setSrcQuery(e.target.value)}
+              />
+            </div>
+            <div className="ocr-col-body" ref={srcListRef}>
+              {srcFiltered.length === 0 ? (
+                <p className="hint ocr-col-empty">暂无原文</p>
+              ) : (
+                srcFiltered.map((b) => (
+                  <div
+                    key={b.id}
+                    data-row-id={b.id}
+                    className={
+                      b.id === selectedId
+                        ? "ocr-pair-row active"
+                        : "ocr-pair-row"
+                    }
+                    onClick={() => selectBlock(b.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectBlock(b.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <span className="ocr-block-idx">
+                      #{blockIndex.get(b.id) ?? "?"}
+                    </span>
+                    <span className="ocr-block-text">{b.text}</span>
+                    <button
+                      type="button"
+                      className="ocr-copy-btn"
+                      title="复制原文"
+                      onClick={(e) =>
+                        void onCopy(`src-${b.id}`, b.text, e)
+                      }
+                    >
+                      {copiedId === `src-${b.id}` ? "已复制" : "复制"}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="ocr-col">
+            <div className="ocr-col-head">
+              <h3>译文</h3>
+              <input
+                className="ocr-col-search"
+                placeholder="搜索译文…"
+                value={dstQuery}
+                onChange={(e) => setDstQuery(e.target.value)}
+              />
+            </div>
+            <div className="ocr-col-body" ref={dstListRef}>
+              {dstFiltered.length === 0 ? (
+                <p className="hint ocr-col-empty">暂无译文</p>
+              ) : (
+                dstFiltered.map((b) => {
+                  const display =
+                    b.status === "pending"
+                      ? "正在翻译…"
+                      : b.translation || "（尚未翻译）";
+                  const copyable =
+                    b.status !== "pending" && !!b.translation.trim();
+                  return (
+                    <div
+                      key={b.id}
+                      data-row-id={b.id}
+                      className={
+                        b.id === selectedId
+                          ? "ocr-pair-row active"
+                          : "ocr-pair-row"
+                      }
+                      onClick={() => selectBlock(b.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          selectBlock(b.id);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <span className="ocr-block-idx">
+                        #{blockIndex.get(b.id) ?? "?"}
+                      </span>
+                      <span
+                        className={
+                          b.status === "pending"
+                            ? "ocr-block-text is-pending"
+                            : b.status === "error"
+                              ? "ocr-block-text is-error"
+                              : "ocr-block-text"
+                        }
+                      >
+                        {display}
+                      </span>
+                      <button
+                        type="button"
+                        className="ocr-copy-btn"
+                        title="复制译文"
+                        disabled={!copyable}
+                        onClick={(e) =>
+                          void onCopy(`dst-${b.id}`, b.translation, e)
+                        }
+                      >
+                        {copiedId === `dst-${b.id}` ? "已复制" : "复制"}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
