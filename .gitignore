@@ -1,0 +1,26 @@
+# Backend
+backend/build/
+backend/out/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+frontend/src-tauri/target/
+frontend/src-tauri/binaries/*.exe
+frontend/src-tauri/binaries/config.ini
+
+# Dist
+dist-portable/
+
+# Data
+config.ini
+conversations.json
+**/config.ini
+**/conversations.json
+
+# IDE
+.vs/
+.idea/
+*.user
+.DS_Store

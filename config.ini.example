@@ -1,0 +1,6 @@
+[General]
+apiUrl=https://api.deepseek.com/v1/chat/completions
+apiKey=your-api-key-here
+model=deepseek-chat
+messagePageSize=30
+port=17800
