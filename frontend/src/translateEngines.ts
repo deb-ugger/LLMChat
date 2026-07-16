@@ -13,68 +13,68 @@ export type EngineInfo = {
 
 export const TRANSLATE_ENGINES: EngineInfo[] = [
   {
-    id: "google",
-    label: "谷歌翻译（免 Key）",
-    strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it", "ar", "th", "vi"],
-    hint: "擅长：多语种互译，英中日韩欧语覆盖广，长文较稳。",
-    defaultMaxChars: 1200,
-    supportsChunk: true,
-  },
-  {
     id: "bing",
     label: "Bing 翻译（免 Key）",
     strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it"],
-    hint: "擅长：英中欧语，术语偏稳，适合技术文档。",
+    hint: "推荐：英中/多语；国内一般可直连。",
     defaultMaxChars: 3000,
+    supportsChunk: true,
+  },
+  {
+    id: "google",
+    label: "谷歌翻译（免 Key）",
+    strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it", "ar", "th", "vi"],
+    hint: "多语种互译。国内 WinHTTP 直连常超时，请在「网络代理」填 Clash 端口如 127.0.0.1:7890。",
+    defaultMaxChars: 1200,
     supportsChunk: true,
   },
   {
     id: "mymemory",
     label: "MyMemory（免 Key）",
     strongLangs: ["en", "zh", "fr", "de", "es", "it", "pt", "ru"],
-    hint: "擅长：常见欧语与英中，免费额度有单次长度限制。",
+    hint: "有每日免费额度；超额后需换引擎。",
     defaultMaxChars: 450,
-    supportsChunk: true,
-  },
-  {
-    id: "youdao",
-    label: "有道翻译（免 Key）",
-    strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "ru"],
-    hint: "擅长：英中互译、考试/日常用语；日韩可用。",
-    defaultMaxChars: 2000,
-    supportsChunk: true,
-  },
-  {
-    id: "baidu",
-    label: "百度翻译（免 Key）",
-    strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "ru", "pt", "es"],
-    hint: "擅长：中文相关互译、中英口语与一般文档。",
-    defaultMaxChars: 2000,
-    supportsChunk: true,
-  },
-  {
-    id: "sogou",
-    label: "搜狗翻译（免 Key）",
-    strongLangs: ["en", "zh", "ja", "ko"],
-    hint: "擅长：中英互译、网络用语；小语种覆盖一般。",
-    defaultMaxChars: 2000,
-    supportsChunk: true,
-  },
-  {
-    id: "niutrans",
-    label: "小牛翻译（免 Key）",
-    strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "ru", "es"],
-    hint: "擅长：中英/多语机器翻译，偏书面语。",
-    defaultMaxChars: 2000,
     supportsChunk: true,
   },
   {
     id: "llm",
     label: "大模型（使用上方 API）",
     strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it", "ar", "th", "vi", "auto"],
-    hint: "擅长：语境理解与专业术语，依赖所选大模型能力，几乎不限长度。",
+    hint: "依赖所选大模型，适合长文与术语。",
     defaultMaxChars: 0,
     supportsChunk: false,
+  },
+  {
+    id: "youdao",
+    label: "有道翻译（接口已失效）",
+    strongLangs: ["en", "zh"],
+    hint: "免费网页接口已失效，请改用 Bing / 大模型。",
+    defaultMaxChars: 2000,
+    supportsChunk: true,
+  },
+  {
+    id: "baidu",
+    label: "百度翻译（接口已失效）",
+    strongLangs: ["en", "zh"],
+    hint: "免费接口需签名，已不可用，请改用 Bing / 大模型。",
+    defaultMaxChars: 2000,
+    supportsChunk: true,
+  },
+  {
+    id: "sogou",
+    label: "搜狗翻译（接口已失效）",
+    strongLangs: ["en", "zh"],
+    hint: "免费接口已不可用，请改用 Bing / 大模型。",
+    defaultMaxChars: 2000,
+    supportsChunk: true,
+  },
+  {
+    id: "niutrans",
+    label: "小牛翻译（需 Key）",
+    strongLangs: ["en", "zh"],
+    hint: "当前未配置 API Key，请改用 Bing / 大模型。",
+    defaultMaxChars: 2000,
+    supportsChunk: true,
   },
 ];
 
@@ -103,9 +103,15 @@ export function scoreEngine(
       score += 3;
     }
   }
-  // Prefer no-key engines with high coverage slightly when tied
-  if (engine.id === "google") score += 0.5;
-  if (engine.id === "bing") score += 0.4;
+  // Prefer working free engines
+  if (engine.id === "bing") score += 1.0;
+  if (engine.id === "llm") score += 0.5;
+  if (engine.id === "google") score += 0.3;
+  if (engine.id === "mymemory") score += 0.2;
+  // Deprioritize broken free endpoints
+  if (engine.id === "youdao" || engine.id === "baidu" || engine.id === "sogou" || engine.id === "niutrans") {
+    score -= 5;
+  }
   return score;
 }
 

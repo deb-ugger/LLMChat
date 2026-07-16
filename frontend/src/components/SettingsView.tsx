@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Settings, type TranslateProvider } from "../api";
+import { toFriendlyError } from "../friendlyError";
 import { LangCombobox } from "./LangCombobox";
 import {
   loadModelProfiles,
@@ -48,19 +49,21 @@ function normalizeProvider(p: string): TranslateProvider {
   if (p === "llm") return "llm";
   if (p === "free") return "mymemory";
   if (p === "blind") return "bing";
-  return (p || "google") as TranslateProvider;
+  return (p || "bing") as TranslateProvider;
 }
 
 function withDefaults(s: Settings): Settings {
   return {
     ...s,
+    proxyMode: s.proxyMode || "direct",
+    httpProxy: s.httpProxy || "",
     translateProvider: normalizeProvider(s.translateProvider),
     translateMaxLength: s.translateMaxLength ?? 0,
     translateAutoChunk: s.translateAutoChunk ?? true,
     ocrLang: s.ocrLang || "eng",
     ocrAutoTranslate: s.ocrAutoTranslate ?? true,
     ocrTranslateProvider: normalizeProvider(
-      s.ocrTranslateProvider || "google",
+      s.ocrTranslateProvider || "bing",
     ),
     ocrTranslateSource: ocrLangToTranslateSource(s.ocrLang || "eng"),
     ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
@@ -270,12 +273,15 @@ export function SettingsView({ settings, onSave }: Props) {
     setTesting(kind);
     setTestMsg((m) => ({ ...m, [kind]: undefined }));
     const t0 = performance.now();
+    const ac = new AbortController();
+    // 前端总等待上限（后端 WinHTTP 单请求约 8s）
+    const timer = window.setTimeout(() => ac.abort(), 15000);
     try {
       if (kind === "llm") {
         if (!form.apiUrl.trim()) {
           throw new Error("请先填写 API URL");
         }
-        await api.translate("ping", undefined, {
+        await api.translate("ping", { signal: ac.signal }, {
           provider: "llm",
           source: "en",
           target: "zh-CN",
@@ -286,7 +292,7 @@ export function SettingsView({ settings, onSave }: Props) {
           autoChunk: false,
         });
       } else if (kind === "lit") {
-        await api.translate("Hello", undefined, {
+        await api.translate("Hello", { signal: ac.signal }, {
           provider: form.translateProvider,
           source: form.translateSource,
           target: form.translateTarget,
@@ -301,7 +307,7 @@ export function SettingsView({ settings, onSave }: Props) {
             : {}),
         });
       } else {
-        await api.translate("Hello", undefined, {
+        await api.translate("Hello", { signal: ac.signal }, {
           provider: form.ocrTranslateProvider,
           source: ocrLangToTranslateSource(form.ocrLang),
           target: form.ocrTranslateTarget,
@@ -323,20 +329,85 @@ export function SettingsView({ settings, onSave }: Props) {
       }));
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
+      const aborted = ac.signal.aborted;
+      const provider =
+        kind === "llm"
+          ? "llm"
+          : kind === "lit"
+            ? form.translateProvider
+            : form.ocrTranslateProvider;
+      let msg = toFriendlyError(e, "Test failed（测试失败）");
+      if (aborted) {
+        msg =
+          provider === "google"
+            ? "Timed out after 15s（连接超时；谷歌翻译在国内通常需要系统代理，建议改用 Bing/有道）"
+            : "Timed out after 15s（连接超时，请检查网络或稍后重试）";
+      } else if (
+        provider === "google" &&
+        /timeout|proxy|googleapis|无法连接|超时|代理/i.test(msg) &&
+        !/（/.test(msg)
+      ) {
+        msg = toFriendlyError(
+          `${msg} [Google]`,
+          "谷歌翻译不可用，国内常需系统代理",
+        );
+      }
       setTestMsg((m) => ({
         ...m,
         [kind]: {
           ok: false,
-          message: `${e instanceof Error ? e.message : "测试失败"} · ${ms} ms`,
+          message: `${msg} · ${ms} ms`,
         },
       }));
     } finally {
+      window.clearTimeout(timer);
       setTesting(null);
     }
   };
 
   return (
     <div className="settings-page">
+      <section className="settings-card">
+        <h2>网络代理</h2>
+        <p className="hint settings-engine-rank-hint">
+          浏览器能上网不代表本软件走同一通道。若出现「无法解析域名」或国内引擎全挂，请先试「直连」；要用谷歌且 Clash
+          已开启时，选「自定义」并填本地端口（常见 127.0.0.1:7890）。
+        </p>
+        <div className="settings-row settings-row-half">
+          <label className="settings-half">
+            代理模式
+            <select
+              value={form.proxyMode || "direct"}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  proxyMode: e.target.value,
+                })
+              }
+            >
+              <option value="direct">直连（推荐先试）</option>
+              <option value="auto">跟随系统代理 / PAC</option>
+              <option value="custom">自定义代理</option>
+            </select>
+          </label>
+          <label className="settings-half">
+            自定义代理地址
+            <input
+              type="text"
+              placeholder="127.0.0.1:7890"
+              value={form.httpProxy || ""}
+              disabled={(form.proxyMode || "direct") !== "custom"}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  httpProxy: e.target.value,
+                })
+              }
+            />
+          </label>
+        </div>
+      </section>
+
       <section className="settings-card">
         <div className="settings-card-head">
           <h2>对话模型与 API</h2>
@@ -527,7 +598,8 @@ export function SettingsView({ settings, onSave }: Props) {
           </div>
         </div>
         <p className="hint settings-engine-rank-hint">
-          引擎按当前源/目标语言匹配度排序（更擅长的在上方）。切换语言时会自动选中最佳匹配引擎。
+          引擎按当前源/目标语言匹配度排序。谷歌翻译在国内常需系统代理；无代理建议用
+          Bing/有道。本软件会跟随 Windows 系统代理设置。
         </p>
 
         <div className="settings-field">
@@ -642,7 +714,8 @@ export function SettingsView({ settings, onSave }: Props) {
           </div>
         </div>
         <p className="hint settings-engine-rank-hint">
-          引擎按当前识别/目标语言匹配度排序（更擅长的在上方）。切换语言时会自动选中最佳匹配引擎。
+          引擎按识别/目标语言匹配度排序。谷歌翻译在国内常需系统代理；无代理建议用
+          Bing/有道。本软件会跟随 Windows 系统代理设置。
         </p>
 
         <div className="settings-field">

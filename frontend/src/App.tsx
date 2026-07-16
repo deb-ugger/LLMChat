@@ -10,6 +10,7 @@ import { ImageOcrView } from "./components/ImageOcrView";
 import { LiteratureView } from "./components/LiteratureView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
+import { toFriendlyError } from "./friendlyError";
 
 type Page = "chat" | "literature" | "image" | "settings";
 
@@ -18,14 +19,16 @@ const defaultSettings: Settings = {
   apiKey: "",
   model: "gpt-4o",
   messagePageSize: 30,
-  translateProvider: "google",
+  proxyMode: "direct",
+  httpProxy: "",
+  translateProvider: "bing",
   translateSource: "en",
   translateTarget: "zh-CN",
   translateMaxLength: 0,
   translateAutoChunk: true,
   ocrLang: "eng",
   ocrAutoTranslate: true,
-  ocrTranslateProvider: "google",
+  ocrTranslateProvider: "bing",
   ocrTranslateSource: "en",
   ocrTranslateTarget: "zh-CN",
   ocrTranslateMaxLength: 0,
@@ -93,8 +96,10 @@ export default function App() {
           setSettings({
             ...defaultSettings,
             ...s,
+            proxyMode: (s.proxyMode as Settings["proxyMode"]) || "direct",
+            httpProxy: String(s.httpProxy || ""),
             translateProvider: (() => {
-              const p = String(s.translateProvider || "google");
+              const p = String(s.translateProvider || "bing");
               if (p === "llm") return "llm";
               if (p === "free") return "mymemory";
               if (p === "blind") return "bing";
@@ -107,7 +112,7 @@ export default function App() {
             ocrLang: s.ocrLang || "eng",
             ocrAutoTranslate: s.ocrAutoTranslate ?? true,
             ocrTranslateProvider: (() => {
-              const p = String(s.ocrTranslateProvider || "google");
+              const p = String(s.ocrTranslateProvider || "bing");
               if (p === "llm") return "llm";
               if (p === "free") return "mymemory";
               if (p === "blind") return "bing";
@@ -233,7 +238,7 @@ export default function App() {
           ...optimistic.messages,
           {
             role: "assistant",
-            content: `错误: ${err instanceof Error ? err.message : String(err)}`,
+            content: `错误：${toFriendlyError(err)}`,
           },
         ],
       });

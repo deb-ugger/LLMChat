@@ -1,3 +1,5 @@
+import { toFriendlyError } from "./friendlyError";
+
 export const API_BASE =
   import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:17800";
 
@@ -34,6 +36,10 @@ export type Settings = {
   model: string;
   messagePageSize: number;
   port?: number;
+  /** auto | direct | custom */
+  proxyMode: "auto" | "direct" | "custom" | string;
+  /** e.g. 127.0.0.1:7890 */
+  httpProxy: string;
   translateProvider: TranslateProvider;
   translateSource: string;
   translateTarget: string;
@@ -85,23 +91,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
     const err = new Error(
-      "翻译超时或网络异常，请检查网络状况后重试。",
+      toFriendlyError(e, "网络异常或连接超时，请检查网络后重试"),
     ) as Error & { code?: string };
     err.code = "NETWORK_TIMEOUT";
     throw err;
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    let msg = (data as { error?: string }).error ?? `HTTP ${res.status}`;
-    const low = msg.toLowerCase();
-    if (
-      low.includes("used all available free translations") ||
-      low.includes("mymemory warning")
-    ) {
-      msg =
-        "MyMemory 今日免费额度已用尽，请更换翻译引擎（谷歌/Bing/大模型）";
-    }
-    const err = new Error(msg) as Error & { code?: string };
+    const raw =
+      (data as { error?: string }).error ?? `HTTP ${res.status}`;
+    const err = new Error(toFriendlyError(raw)) as Error & {
+      code?: string;
+    };
     err.code = (data as { code?: string }).code;
     throw err;
   }

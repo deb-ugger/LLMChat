@@ -4,9 +4,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createWorker, PSM, type Worker } from "tesseract.js";
 import { api } from "../api";
+import { toFriendlyError } from "../friendlyError";
+import { highlightSearchNodes } from "../highlightText";
+import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { getEngineInfo } from "../translateEngines";
 
 export type OcrBlock = {
@@ -43,12 +47,47 @@ type BBoxLine = {
   lineH: number;
 };
 
+function looksLikeCode(text: string): boolean {
+  return /[{};()<>[\]=]|::|->|#include|\b(auto|void|int|return|if|else|for|while|class|struct)\b/.test(
+    text,
+  );
+}
+
 function isJunkText(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
+  if (looksLikeCode(t)) return false;
   if (t.length === 1 && !/[A-Za-z0-9\u4e00-\u9fff]/.test(t)) return true;
   const letters = t.replace(/[^A-Za-z0-9\u4e00-\u9fff]/g, "");
   return letters.length === 0 && t.length < 4;
+}
+
+function coversPoint(box: BBoxLine, x: number, y: number): boolean {
+  const pad = Math.max(2, box.lineH * 0.15);
+  return (
+    x >= box.x0 - pad &&
+    x <= box.x1 + pad &&
+    y >= box.y0 - pad &&
+    y <= box.y1 + pad
+  );
+}
+
+/** Keep lines that Tesseract put outside paragraph boxes (common for code). */
+function mergeOrphanLines(paras: BBoxLine[], lines: BBoxLine[]): BBoxLine[] {
+  if (!lines.length) return paras;
+  const out = [...paras];
+  for (const ln of lines) {
+    const cx = (ln.x0 + ln.x1) / 2;
+    const cy = (ln.y0 + ln.y1) / 2;
+    if (!out.some((p) => coversPoint(p, cx, cy))) {
+      out.push({ ...ln });
+    }
+  }
+  return out.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+}
+
+function clampRatio(n: number) {
+  return Math.min(0.75, Math.max(0.25, n));
 }
 
 function cleanLineText(ln: BBoxLine): BBoxLine {
@@ -146,28 +185,6 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
-function formatTranslateError(raw: string): string {
-  const s = raw.trim();
-  const low = s.toLowerCase();
-  if (
-    low.includes("used all available free translations") ||
-    low.includes("mymemory warning") ||
-    (low.includes("429") && low.includes("mymemory"))
-  ) {
-    return "MyMemory 今日免费额度已用尽，请在设置中改用谷歌/Bing/大模型后重试";
-  }
-  if (low.includes("query length limit") || low.includes("max allowed query")) {
-    return "单段过长，请开启自动分段或换用大模型";
-  }
-  // Strip raw JSON dumps
-  const m = s.match(/MYMEMORY WARNING:[^"]+/i);
-  if (m) {
-    return "MyMemory 今日免费额度已用尽，请更换翻译引擎";
-  }
-  if (s.length > 160) return `${s.slice(0, 140)}…`;
-  return s;
-}
-
 async function copyText(text: string) {
   const t = text.trim();
   if (!t) return;
@@ -203,14 +220,57 @@ export function ImageOcrView({
   const [srcQuery, setSrcQuery] = useState("");
   const [dstQuery, setDstQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [srcRatio, setSrcRatio] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem("llmchat-ocr-src-ratio"));
+      return Number.isFinite(n) ? clampRatio(n) : 0.5;
+    } catch {
+      return 0.5;
+    }
+  });
+  const { width: sideWidth, beginResize: beginSideResize } = usePersistedWidth(
+    "llmchat-ocr-side-width",
+    420,
+    280,
+    900,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerLangRef = useRef<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const dualRef = useRef<HTMLDivElement>(null);
   const srcListRef = useRef<HTMLDivElement>(null);
   const dstListRef = useRef<HTMLDivElement>(null);
   const translateGenRef = useRef(0);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("llmchat-ocr-src-ratio", String(srcRatio));
+    } catch {
+      // ignore
+    }
+  }, [srcRatio]);
+
+  const beginDualResize = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = dualRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const onMove = (ev: MouseEvent) => {
+      if (rect.width <= 0) return;
+      setSrcRatio(clampRatio((ev.clientX - rect.left) / rect.width));
+    };
+    const onUp = () => {
+      document.body.classList.remove("col-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    document.body.classList.add("col-resizing");
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -237,8 +297,9 @@ export function ImageOcrView({
       workerRef.current = null;
     }
     const worker = await createWorker(ocrLang);
+    // AUTO recovers short code lines that SINGLE_COLUMN often drops
     await worker.setParameters({
-      tessedit_pageseg_mode: PSM.SINGLE_COLUMN,
+      tessedit_pageseg_mode: PSM.AUTO,
       preserve_interword_spaces: "1",
     });
     workerRef.current = worker;
@@ -370,9 +431,7 @@ export function ImageOcrView({
                 status: "done",
               };
             } catch (e) {
-              const msg = formatTranslateError(
-                e instanceof Error ? e.message : String(e),
-              );
+              const msg = toFriendlyError(e);
               next[idx] = {
                 ...next[idx],
                 translation: `（翻译失败）${msg}`,
@@ -421,56 +480,54 @@ export function ImageOcrView({
           bbox: { x0: number; y0: number; x1: number; y1: number };
         }): BBoxLine | null => {
           const text = (raw.text || "").trim().replace(/\s+/g, " ");
-          if (!text || isJunkText(text) || (raw.confidence ?? 0) < 45) {
-            return null;
-          }
+          if (!text || isJunkText(text)) return null;
+          const conf = raw.confidence ?? 0;
+          // Code / short symbols often score low in Tesseract — keep them
+          const minConf = looksLikeCode(text) ? 18 : 30;
+          if (conf < minConf) return null;
           return {
             text,
             x0: raw.bbox.x0,
             y0: raw.bbox.y0,
             x1: raw.bbox.x1,
             y1: raw.bbox.y1,
-            confidence: raw.confidence ?? 0,
+            confidence: conf,
             lineH: Math.max(8, raw.bbox.y1 - raw.bbox.y0),
           };
         };
-
-        let lineBoxes: BBoxLine[] = [];
-
-        // Prefer Tesseract paragraph units when they look reasonable
-        const parasRaw = (data.paragraphs ?? [])
-          .map((p) => toBox(p))
-          .filter((x): x is BBoxLine => !!x);
 
         const linesRaw = (data.lines ?? [])
           .map((l) => toBox(l))
           .filter((x): x is BBoxLine => !!x);
 
-        if (parasRaw.length >= 2) {
-          // Soft-split giant paragraphs via their lines if needed
-          lineBoxes = [];
-          for (const p of data.paragraphs ?? []) {
-            const pLines = (p.lines ?? [])
-              .map((l) => toBox(l))
-              .filter((x): x is BBoxLine => !!x);
-            if (pLines.length >= 2 && (p.text?.length ?? 0) > 280) {
-              lineBoxes.push(...mergeLinesToParagraphs(pLines));
-            } else {
-              const one = toBox(p);
-              if (one) lineBoxes.push(one);
-            }
-          }
-        } else if (linesRaw.length) {
+        let lineBoxes: BBoxLine[] = [];
+
+        // Lines-first: better recall for code / short fragments than paragraphs alone
+        if (linesRaw.length) {
           lineBoxes = mergeLinesToParagraphs(linesRaw);
+          // Soft-split overlong blobs back toward line groups
+          if (lineBoxes.length === 1 && linesRaw.length >= 4) {
+            lineBoxes = mergeLinesToParagraphs(linesRaw);
+          }
         } else {
-          const words = (data.words ?? [])
-            .map((w) => toBox(w))
+          const parasRaw = (data.paragraphs ?? [])
+            .map((p) => toBox(p))
             .filter((x): x is BBoxLine => !!x);
-          lineBoxes = mergeLinesToParagraphs(mergeWordsToLines(words));
+          if (parasRaw.length) {
+            lineBoxes = parasRaw;
+          } else {
+            const words = (data.words ?? [])
+              .map((w) => toBox(w))
+              .filter((x): x is BBoxLine => !!x);
+            lineBoxes = mergeLinesToParagraphs(mergeWordsToLines(words));
+          }
         }
 
+        // Recover lines that fell outside merged paragraph boxes
+        lineBoxes = mergeOrphanLines(lineBoxes, linesRaw);
+
         const paras = lineBoxes.filter(
-          (p) => !isJunkText(p.text) && p.text.trim().length >= 2,
+          (p) => !isJunkText(p.text) && p.text.trim().length >= 1,
         );
 
         let list: OcrBlock[] = paras.map((ln, i) => {
@@ -508,7 +565,7 @@ export function ImageOcrView({
           setStatus(summarizeTranslateStatus(list));
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(toFriendlyError(e, "识别失败，请重试"));
         setStatus(null);
       } finally {
         setBusy(false);
@@ -529,7 +586,7 @@ export function ImageOcrView({
       setBlocks(list);
       setStatus(summarizeTranslateStatus(list));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toFriendlyError(e, "翻译失败，请稍后重试"));
       setStatus(null);
     } finally {
       setBusy(false);
@@ -627,7 +684,12 @@ export function ImageOcrView({
             </div>
           )}
           {imageUrl && (
-            <div className="ocr-stage" ref={stageRef}>
+            <div
+              className={
+                selectedId ? "ocr-stage has-selection" : "ocr-stage"
+              }
+              ref={stageRef}
+            >
               <img src={imageUrl} alt="OCR" className="ocr-image" draggable={false} />
               {blocks.map((b) => (
                 <button
@@ -659,9 +721,17 @@ export function ImageOcrView({
         </div>
       </div>
 
-      <aside className="ocr-side">
-        <div className="ocr-dual">
-          <div className="ocr-col">
+      <div
+        className="col-resizer col-resizer-panel ocr-side-resizer"
+        title="拖动调整原文栏宽度"
+        onMouseDown={(e) => beginSideResize(e, "grow-left")}
+      />
+      <aside className="ocr-side" style={{ width: sideWidth }}>
+        <div className="ocr-dual" ref={dualRef}>
+          <div
+            className="ocr-col"
+            style={{ flex: `0 0 ${srcRatio * 100}%`, maxWidth: "75%" }}
+          >
             <div className="ocr-col-head">
               <h3>原文</h3>
               <input
@@ -697,7 +767,9 @@ export function ImageOcrView({
                     <span className="ocr-block-idx">
                       #{blockIndex.get(b.id) ?? "?"}
                     </span>
-                    <span className="ocr-block-text">{b.text}</span>
+                    <span className="ocr-block-text">
+                      {highlightSearchNodes(b.text, srcQuery)}
+                    </span>
                     <button
                       type="button"
                       className="ocr-copy-btn"
@@ -713,7 +785,12 @@ export function ImageOcrView({
               )}
             </div>
           </div>
-          <div className="ocr-col">
+          <div
+            className="col-resizer-panel ocr-dual-resizer"
+            title="拖动调整原文/译文宽度"
+            onMouseDown={beginDualResize}
+          />
+          <div className="ocr-col" style={{ flex: "1 1 0", minWidth: "25%" }}>
             <div className="ocr-col-head">
               <h3>译文</h3>
               <input
@@ -765,7 +842,9 @@ export function ImageOcrView({
                               : "ocr-block-text"
                         }
                       >
-                        {display}
+                        {b.status === "pending"
+                          ? display
+                          : highlightSearchNodes(display, dstQuery)}
                       </span>
                       <button
                         type="button"

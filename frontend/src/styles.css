@@ -989,7 +989,7 @@ body,
   box-sizing: border-box;
   border: 1px solid rgba(0, 120, 215, 0.55);
   background: rgba(255, 255, 220, 0.35);
-  color: #222;
+  color: rgba(34, 34, 34, 0.75);
   font-size: 10px;
   line-height: 1.2;
   overflow: hidden;
@@ -1000,11 +1000,19 @@ body,
   max-height: 100%;
 }
 
+/* 选中：背景与文字更高不透明度，叠字更清晰 */
 .ocr-box.active {
   border: 2px solid #0078d7;
-  background: rgba(0, 120, 215, 0.22);
-  box-shadow: 0 0 0 2px rgba(0, 120, 215, 0.35);
-  z-index: 2;
+  background: rgba(255, 252, 230, 0.94);
+  color: #111;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px rgba(0, 120, 215, 0.4);
+  z-index: 3;
+}
+
+.ocr-stage.has-selection .ocr-box:not(.active) {
+  background: rgba(255, 255, 220, 0.22);
+  color: rgba(34, 34, 34, 0.45);
 }
 
 .ocr-error {
@@ -1012,13 +1020,19 @@ body,
 }
 
 .ocr-side {
-  width: min(420px, 42vw);
+  flex: 0 0 auto;
   min-width: 280px;
+  max-width: min(900px, 70vw);
   display: flex;
   flex-direction: column;
   background: #f7f8fa;
   border-left: 1px solid #d0d5dd;
   min-height: 0;
+}
+
+.ocr-side-resizer {
+  flex-shrink: 0;
+  z-index: 4;
 }
 
 .ocr-dual {
@@ -1034,11 +1048,20 @@ body,
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid #e2e5ea;
 }
 
-.ocr-col:last-child {
-  border-right: none;
+.ocr-dual-resizer {
+  flex-shrink: 0;
+  width: 5px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: #d5d9e0;
+  z-index: 3;
+}
+
+.ocr-dual-resizer:hover,
+.ocr-dual-resizer:active {
+  background: #0078d7;
 }
 
 .ocr-col-head {
@@ -1329,13 +1352,27 @@ body,
   padding: 4px;
 }
 
-.mark.pdf-search-mark,
-.pdf-search-mark {
-  background: #ffe566;
+/* List / panel search hits */
+.search-hit-mark,
+mark.search-hit-mark {
+  background: rgba(255, 196, 0, 0.45);
   color: inherit;
   padding: 0 1px;
   border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(255, 180, 0, 0.55);
+}
+
+/* PDF page textLayer sits on canvas text — keep mark glyphs transparent
+   (only yellow wash). Visible ink here doubles with canvas → ghosting. */
+.pdf-page-wrap .textLayer mark.pdf-search-mark,
+.pdf-page-wrap .react-pdf__Page__textContent mark.pdf-search-mark,
+.pdf-page-wrap .textLayer mark.search-hit-mark,
+.pdf-page-wrap .react-pdf__Page__textContent mark.search-hit-mark {
+  background: rgba(255, 196, 0, 0.4) !important;
+  color: transparent !important;
+  padding: 0;
+  border-radius: 1px;
+  box-shadow: none;
+  mix-blend-mode: multiply;
 }
 
 .pdf-view-option {

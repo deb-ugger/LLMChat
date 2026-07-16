@@ -64,6 +64,8 @@ int HttpServer::run()
             {"model", c.model},
             {"messagePageSize", c.messagePageSize},
             {"port", c.port},
+            {"proxyMode", c.proxyMode},
+            {"httpProxy", c.httpProxy},
             {"translateProvider", c.translateProvider},
             {"translateSource", c.translateSource},
             {"translateTarget", c.translateTarget},
@@ -100,6 +102,14 @@ int HttpServer::run()
             if (body.contains("messagePageSize"))
             {
                 c.messagePageSize = body["messagePageSize"].get<int>();
+            }
+            if (body.contains("proxyMode"))
+            {
+                c.proxyMode = body["proxyMode"].get<std::string>();
+            }
+            if (body.contains("httpProxy"))
+            {
+                c.httpProxy = body["httpProxy"].get<std::string>();
             }
             if (body.contains("translateProvider"))
             {
@@ -345,12 +355,14 @@ int HttpServer::run()
                 const std::string apiKey = body.value("apiKey", cfg.apiKey);
                 const std::string model = body.value("model", cfg.model);
                 tr = TranslateClient::translateWithLlm(
-                    text, apiUrl, apiKey, model, source, target);
+                    text, apiUrl, apiKey, model, source, target,
+                    cfg.proxyMode, cfg.httpProxy);
             }
             else
             {
                 tr = TranslateClient::translateFree(
-                    text, source, target, provider, maxLength, autoChunk);
+                    text, source, target, provider, maxLength, autoChunk,
+                    cfg.proxyMode, cfg.httpProxy);
             }
 
             if (!tr.ok)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, lookupDictionary, type DictionaryEntry } from "../api";
+import { toFriendlyError } from "../friendlyError";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { PdfPane } from "./PdfPane";
 import { TranslatePanel } from "./TranslatePanel";
@@ -59,17 +60,7 @@ export function LiteratureView({ visible, translateProvider, model }: Props) {
     } catch (err) {
       if (ac.signal.aborted || reqId !== reqIdRef.current) return;
       setTranslation("");
-      const anyErr = err as Error & { code?: string };
-      if (anyErr.code === "LENGTH_LIMIT") {
-        setError(anyErr.message);
-      } else if (
-        anyErr.code === "NETWORK_TIMEOUT" ||
-        /timeout|network|failed to fetch|网络/i.test(anyErr.message)
-      ) {
-        setError("翻译超时或网络异常，请检查网络状况后重试。");
-      } else {
-        setError(anyErr.message || String(err));
-      }
+      setError(toFriendlyError(err, "翻译失败，请稍后重试"));
     } finally {
       if (reqId === reqIdRef.current) {
         setLoading(false);

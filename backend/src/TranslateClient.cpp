@@ -20,6 +20,33 @@ using json = nlohmann::json;
 
 namespace {
 
+#ifdef _WIN32
+thread_local std::string g_proxyMode = "auto";
+thread_local std::string g_httpProxy;
+
+struct ProxyScope {
+    std::string prevMode;
+    std::string prevProxy;
+    ProxyScope(const std::string& mode, const std::string& proxy)
+        : prevMode(g_proxyMode), prevProxy(g_httpProxy)
+    {
+        g_proxyMode = mode.empty() ? "auto" : toLowerCopy(mode);
+        g_httpProxy = proxy;
+    }
+    ~ProxyScope()
+    {
+        g_proxyMode = prevMode;
+        g_httpProxy = prevProxy;
+    }
+    static std::string toLowerCopy(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+};
+#endif
+
 constexpr size_t kMyMemoryMaxQueryChars = 450;
 constexpr size_t kGoogleMaxQueryChars = 1200;
 
@@ -117,6 +144,22 @@ std::vector<std::string> splitChunks(const std::string& text, size_t maxChars)
     return chunks;
 }
 
+std::string withZhHint(const std::string& english, const std::string& zh)
+{
+    if (english.empty()) return zh;
+    if (zh.empty()) return english;
+    // Already annotated
+    if (english.find("（") != std::string::npos && english.find("）") != std::string::npos)
+        return english;
+    return english + "（" + zh + "）";
+}
+
+std::string truncateErr(const std::string& s, size_t maxLen = 220)
+{
+    if (s.size() <= maxLen) return s;
+    return s.substr(0, maxLen) + "...";
+}
+
 bool isMyMemoryLimitError(const std::string& msg)
 {
     const std::string upper = toLower(msg);
@@ -128,16 +171,45 @@ bool isMyMemoryLimitError(const std::string& msg)
 
 std::string friendlyMyMemoryError(const std::string& raw)
 {
+    const std::string clipped = truncateErr(raw);
     if (isMyMemoryLimitError(raw))
     {
         if (toLower(raw).find("used all available") != std::string::npos
             || toLower(raw).find("mymemory warning") != std::string::npos)
         {
-            return "MyMemory 今日免费额度已用尽，请更换翻译引擎（谷歌/Bing/大模型）";
+            return withZhHint(
+                clipped,
+                "今日免费翻译额度已用尽，请换用谷歌/Bing/大模型");
         }
-        return "MyMemory 单次文本过长，请开启自动分段或更换引擎";
+        return withZhHint(clipped, "单次文本过长，请开启自动分段或更换引擎");
     }
-    return raw;
+    const std::string low = toLower(raw);
+    if (low.find("429") != std::string::npos
+        || low.find("too many") != std::string::npos)
+    {
+        return withZhHint(clipped, "请求过于频繁或额度不足，请稍后再试或更换引擎");
+    }
+    if (low.find("http request failed") != std::string::npos
+        || low.find("winhttp") != std::string::npos
+        || low.find("timeout") != std::string::npos)
+    {
+        return withZhHint(clipped, "网络异常或连接超时，请检查网络或代理");
+    }
+    if (low.find("parse") != std::string::npos)
+    {
+        return withZhHint(clipped, "返回内容无法解析，请换引擎或稍后重试");
+    }
+    if (low.find("empty") != std::string::npos)
+    {
+        return withZhHint(clipped, "翻译结果为空，请换引擎或稍后重试");
+    }
+    if (low.find('{') != std::string::npos
+        || low.find("http ") == 0
+        || low.find("mymemory") != std::string::npos)
+    {
+        return withZhHint(clipped, "翻译失败，请稍后重试或更换引擎");
+    }
+    return clipped;
 }
 
 std::string normalizeProvider(std::string p)
@@ -187,6 +259,25 @@ std::wstring toWide(const std::string& s)
     return out;
 }
 
+std::string trimCopy(std::string s)
+{
+    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
+    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
+    return s;
+}
+
+std::wstring normalizeProxyList(std::string proxy)
+{
+    proxy = trimCopy(std::move(proxy));
+    const std::string low = toLower(proxy);
+    if (low.rfind("http://", 0) == 0) proxy = proxy.substr(7);
+    else if (low.rfind("https://", 0) == 0) proxy = proxy.substr(8);
+    const auto slash = proxy.find('/');
+    if (slash != std::string::npos) proxy = proxy.substr(0, slash);
+    return toWide(proxy);
+}
+
 bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_PORT& port, std::wstring& path)
 {
     URL_COMPONENTS uc{};
@@ -214,6 +305,66 @@ struct HttpResult {
     std::string error;
 };
 
+std::string winHttpErrMessage(DWORD err, const std::wstring& host = L"")
+{
+    std::string hostA;
+    if (!host.empty())
+    {
+        const int n = WideCharToMultiByte(
+            CP_UTF8, 0, host.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (n > 1)
+        {
+            hostA.assign(static_cast<size_t>(n - 1), '\0');
+            WideCharToMultiByte(
+                CP_UTF8, 0, host.c_str(), -1, hostA.data(), n, nullptr, nullptr);
+        }
+    }
+    const std::string hostSuffix = hostA.empty() ? "" : (" for " + hostA);
+
+    switch (err)
+    {
+    case 12002: // ERROR_WINHTTP_TIMEOUT
+        return withZhHint(
+            "WinHTTP timeout (12002)" + hostSuffix,
+            "连接超时；可尝试：设置→网络代理改为「直连」或填写 Clash 端口如 127.0.0.1:7890");
+    case 12005: // ERROR_WINHTTP_INVALID_URL
+        return withZhHint("WinHTTP invalid URL (12005)", "接口地址无效");
+    case 12007: // ERROR_WINHTTP_NAME_NOT_RESOLVED
+        return withZhHint(
+            "WinHTTP name not resolved (12007)" + hostSuffix,
+            "无法解析域名；若开了代理请改「直连」或检查代理/DNS");
+    case 12029: // ERROR_WINHTTP_CANNOT_CONNECT
+        return withZhHint(
+            "WinHTTP cannot connect (12029)" + hostSuffix,
+            "无法连接服务器；请检查代理模式（直连/系统/自定义）");
+    case 12030: // ERROR_WINHTTP_CONNECTION_ERROR
+        return withZhHint(
+            "WinHTTP connection error (12030)" + hostSuffix,
+            "网络连接中断，请检查网络或代理");
+    default:
+        if (err == 0)
+            return withZhHint(
+                "HTTP request failed" + hostSuffix,
+                "网络请求失败，请检查网络或代理设置");
+        return withZhHint(
+            "WinHTTP error " + std::to_string(err) + hostSuffix,
+            "网络请求失败；可尝试直连或填写本地代理端口");
+    }
+}
+
+bool looksLikeHtml(const std::string& body)
+{
+    size_t i = 0;
+    while (i < body.size()
+        && (body[i] == ' ' || body[i] == '\n' || body[i] == '\r' || body[i] == '\t'))
+        ++i;
+    if (i >= body.size()) return false;
+    if (body[i] == '<') return true;
+    const std::string head = toLower(body.substr(i, std::min<size_t>(64, body.size() - i)));
+    return head.find("<!doctype") != std::string::npos
+        || head.find("<html") != std::string::npos;
+}
+
 HttpResult winHttpRequest(
     const std::string& method,
     const std::string& url,
@@ -227,27 +378,69 @@ HttpResult winHttpRequest(
     std::wstring path;
     if (!parseUrl(url, https, host, port, path))
     {
-        result.error = "Invalid URL";
+        result.error = withZhHint("Invalid URL", "接口地址无效");
         return result;
     }
 
+    DWORD accessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
+    LPCWSTR proxyName = WINHTTP_NO_PROXY_NAME;
+    std::wstring proxyBuf;
+    const std::string mode = toLower(g_proxyMode.empty() ? "auto" : g_proxyMode);
+    if (mode == "direct" || mode == "none" || mode == "off")
+    {
+        accessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
+    }
+    else if ((mode == "custom" || mode == "manual") && !trimCopy(g_httpProxy).empty())
+    {
+        accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+        proxyBuf = normalizeProxyList(g_httpProxy);
+        proxyName = proxyBuf.c_str();
+    }
+    else
+    {
+        // Follow Windows system proxy / PAC (better than DEFAULT_PROXY for Win10+)
+        accessType = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+    }
+
     HINTERNET session = WinHttpOpen(
-        L"LLMChatBackend/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-        WINHTTP_NO_PROXY_NAME,
+        L"Mozilla/5.0 LLMChatBackend/1.0",
+        accessType,
+        proxyName,
         WINHTTP_NO_PROXY_BYPASS,
         0);
+    // AUTOMATIC_PROXY unsupported on some builds → fall back
+    if (!session && accessType == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)
+    {
+        session = WinHttpOpen(
+            L"Mozilla/5.0 LLMChatBackend/1.0",
+            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS,
+            0);
+    }
     if (!session)
     {
-        result.error = "WinHttpOpen failed";
+        result.error = withZhHint("WinHttpOpen failed", "无法初始化网络组件");
         return result;
     }
+
+    // 解析 / 连接 / 发送 / 接收 超时（毫秒）
+    WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000);
+
+    // Prefer TLS1.2+
+    DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+    protocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+#endif
+    WinHttpSetOption(
+        session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
 
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect)
     {
+        const DWORD err = GetLastError();
         WinHttpCloseHandle(session);
-        result.error = "WinHttpConnect failed";
+        result.error = winHttpErrMessage(err, host);
         return result;
     }
 
@@ -257,13 +450,25 @@ HttpResult winHttpRequest(
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!request)
     {
+        const DWORD err = GetLastError();
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
-        result.error = "WinHttpOpenRequest failed";
+        result.error = winHttpErrMessage(err, host);
         return result;
     }
 
-    std::wstring headers = L"User-Agent: Mozilla/5.0\r\n";
+    // For HTTPS through named proxy, ensure CONNECT works
+    if (https && accessType == WINHTTP_ACCESS_TYPE_NAMED_PROXY)
+    {
+        DWORD opt = WINHTTP_DISABLE_KEEP_ALIVE;
+        // no-op optional; keep defaults
+        (void)opt;
+    }
+
+    std::wstring headers =
+        L"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        L"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+        L"Accept: application/json,text/plain,*/*\r\n";
     if (!extraHeaders.empty()) headers += extraHeaders;
 
     const BOOL sent = WinHttpSendRequest(
@@ -277,7 +482,8 @@ HttpResult winHttpRequest(
 
     if (!sent || !WinHttpReceiveResponse(request, nullptr))
     {
-        result.error = "HTTP request failed";
+        const DWORD err = GetLastError();
+        result.error = winHttpErrMessage(err, host);
         WinHttpCloseHandle(request);
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
@@ -309,7 +515,40 @@ HttpResult winHttpRequest(
 
     result.ok = (status >= 200 && status < 300);
     if (!result.ok)
-        result.error = "HTTP " + std::to_string(status) + ": " + result.body.substr(0, 300);
+    {
+        const std::string en = "HTTP " + std::to_string(status)
+            + (result.body.empty() ? "" : (": " + truncateErr(result.body, 160)));
+        if (status == 429)
+            result.error = withZhHint(en, "请求过于频繁或额度不足，请稍后再试或更换引擎");
+        else if (status == 401 || status == 403)
+            result.error = withZhHint(en, "没有访问权限，请检查 API 配置");
+        else if (status == 404)
+            result.error = withZhHint(en, "接口地址不正确或不存在");
+        else if (status >= 500)
+            result.error = withZhHint(en, "翻译服务暂时不可用，请稍后重试或更换引擎");
+        else
+            result.error = withZhHint(en, "翻译服务请求失败，请稍后重试或更换引擎");
+
+        if (status == 429
+            || toLower(result.body).find("mymemory warning") != std::string::npos
+            || toLower(result.body).find("used all available") != std::string::npos
+            || result.body.find("429001") != std::string::npos
+            || toLower(result.body).find("exceeded request limits") != std::string::npos)
+        {
+            if (result.body.find("429001") != std::string::npos
+                || toLower(result.body).find("exceeded request limits") != std::string::npos)
+            {
+                result.error = withZhHint(
+                    truncateErr(result.body.empty() ? en : result.body),
+                    "Bing 请求过于频繁，请稍后再试");
+            }
+            else
+            {
+                result.error = friendlyMyMemoryError(
+                    result.body.empty() ? en : result.body);
+            }
+        }
+    }
     return result;
 }
 
@@ -320,7 +559,12 @@ bool looksLikeNetworkError(const std::string& err)
         || e.find("winhttp") != std::string::npos
         || e.find("connect failed") != std::string::npos
         || e.find("timed out") != std::string::npos
-        || e.find("timeout") != std::string::npos;
+        || e.find("timeout") != std::string::npos
+        || e.find("连接超时") != std::string::npos
+        || e.find("无法连接") != std::string::npos
+        || e.find("无法解析") != std::string::npos
+        || e.find("网络请求失败") != std::string::npos
+        || e.find("网络连接中断") != std::string::npos;
 }
 
 size_t engineDefaultMax(const std::string& p)
@@ -334,11 +578,29 @@ size_t engineDefaultMax(const std::string& p)
 
 TranslateResult markNetworkIfNeeded(TranslateResult r)
 {
-    if (!r.ok && r.code.empty() && looksLikeNetworkError(r.error))
+    if (!r.ok)
     {
-        r.code = "NETWORK_TIMEOUT";
-        if (r.error.find("网络") == std::string::npos)
-            r.error = "翻译超时或网络异常，请检查网络状况后重试。(" + r.error + ")";
+        // Prefer keeping original English; only annotate if still pure English
+        const bool hasZhParen = r.error.find("（") != std::string::npos;
+        if (!hasZhParen)
+        {
+            if (looksLikeNetworkError(r.error))
+            {
+                r.code = r.code.empty() ? "NETWORK_TIMEOUT" : r.code;
+                r.error = withZhHint(
+                    truncateErr(r.error),
+                    "网络异常或连接超时，请检查网络或代理");
+            }
+            else
+            {
+                r.error = friendlyMyMemoryError(
+                    r.error.empty() ? "translate failed" : r.error);
+            }
+        }
+        else if (r.code.empty() && looksLikeNetworkError(r.error))
+        {
+            r.code = "NETWORK_TIMEOUT";
+        }
     }
     return r;
 }
@@ -411,14 +673,18 @@ TranslateResult translateMyMemoryChunk(const std::string& text, const std::strin
         }
         if (result.translation.empty())
         {
-            result.error = "Empty translation from MyMemory";
+            result.error = withZhHint(
+                "Empty translation from MyMemory",
+                "翻译结果为空，请换引擎或稍后重试");
             return result;
         }
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
-        result.error = std::string("Parse MyMemory failed: ") + ex.what();
+        result.error = withZhHint(
+            std::string("Parse MyMemory failed: ") + ex.what(),
+            "返回内容无法解析，请换引擎或稍后重试");
     }
     return result;
 }
@@ -434,7 +700,19 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
     const HttpResult http = winHttpGet(url);
     if (!http.ok)
     {
-        result.error = http.error.empty() ? "Google translate failed" : http.error;
+        const std::string base = http.error.empty()
+            ? "Google translate request failed"
+            : http.error;
+        result.error = withZhHint(
+            base,
+            "谷歌翻译连接失败，国内常需系统代理，可改用 Bing/有道");
+        return result;
+    }
+    if (looksLikeHtml(http.body) || http.body.empty())
+    {
+        result.error = withZhHint(
+            "Google translate returned HTML/empty body",
+            "谷歌翻译返回异常（可能被墙），请改用 Bing/有道或配置代理");
         return result;
     }
     try
@@ -452,14 +730,18 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
         result.translation = out.str();
         if (result.translation.empty())
         {
-            result.error = "Empty translation from Google";
+            result.error = withZhHint(
+                "Empty translation from Google",
+                "谷歌翻译无有效结果，国内常需代理，可改用 Bing/有道");
             return result;
         }
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
-        result.error = std::string("Parse Google failed: ") + ex.what();
+        result.error = withZhHint(
+            std::string("Parse Google failed: ") + ex.what(),
+            "谷歌翻译返回无法解析，国内常需代理，可改用 Bing/有道");
     }
     return result;
 }
@@ -471,26 +753,54 @@ TranslateResult translateBing(const std::string& text, const std::string& source
     const HttpResult auth = winHttpGet("https://edge.microsoft.com/translate/auth");
     if (!auth.ok || auth.body.empty())
     {
-        result.error = auth.error.empty() ? "Bing auth token failed" : auth.error;
+        result.error = withZhHint(
+            auth.error.empty() ? "Bing auth token failed" : auth.error,
+            "Bing 鉴权失败，请稍后重试或更换引擎");
+        return result;
+    }
+    if (looksLikeHtml(auth.body))
+    {
+        result.error = withZhHint(
+            "Bing auth returned HTML",
+            "Bing 鉴权返回异常，请检查网络后重试");
         return result;
     }
     const std::string token = auth.body;
     const std::string from = mapLangForBing(source.empty() ? "en" : source);
     const std::string to = mapLangForBing(target.empty() ? "zh-CN" : target);
-    std::string url =
-        "https://api.edge.microsofttranslator.com/translate?api-version=3.0&to="
-        + urlEncode(to);
-    if (!from.empty()) url += "&from=" + urlEncode(from);
 
     json body = json::array();
     body.push_back({{"Text", text}});
     const std::wstring headers =
         L"Content-Type: application/json\r\nAuthorization: Bearer "
         + toWide(token) + L"\r\n";
-    const HttpResult http = winHttpPost(url, body.dump(), headers);
-    if (!http.ok)
+
+    // api.edge.microsofttranslator.com often fails DNS in CN;
+    // api.cognitive.microsofttranslator.com works with the Edge auth token.
+    const std::vector<std::string> hosts = {
+        "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=",
+        "https://api-edge.cognitive.microsofttranslator.com/translate?api-version=3.0&to=",
+    };
+
+    HttpResult http;
+    std::string lastErr;
+    for (const auto& base : hosts)
     {
-        result.error = http.error.empty() ? "Bing translate failed" : http.error;
+        std::string url = base + urlEncode(to);
+        if (!from.empty()) url += "&from=" + urlEncode(from);
+        http = winHttpPost(url, body.dump(), headers);
+        if (http.ok && !looksLikeHtml(http.body))
+            break;
+        lastErr = http.error.empty()
+            ? ("HTTP " + std::to_string(http.status) + " from " + base)
+            : http.error;
+    }
+
+    if (!http.ok || looksLikeHtml(http.body))
+    {
+        result.error = withZhHint(
+            lastErr.empty() ? "Bing translate failed" : lastErr,
+            "Bing 翻译请求失败，请稍后重试、检查代理，或换大模型");
         return result;
     }
     try
@@ -505,14 +815,18 @@ TranslateResult translateBing(const std::string& text, const std::string& source
         }
         if (result.translation.empty())
         {
-            result.error = "Empty translation from Bing";
+            result.error = withZhHint(
+                "Empty translation from Bing",
+                "Bing 翻译结果为空，请稍后重试或更换引擎");
             return result;
         }
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
-        result.error = std::string("Parse Bing failed: ") + ex.what();
+        result.error = withZhHint(
+            std::string("Parse Bing failed: ") + ex.what(),
+            "Bing 翻译返回无法解析，请稍后重试或更换引擎");
     }
     return result;
 }
@@ -521,48 +835,13 @@ TranslateResult translateYoudao(const std::string& text, const std::string& sour
 {
     TranslateResult result;
     result.provider = "youdao";
-    std::string type = "AUTO";
-    const std::string src = toLower(source);
-    const std::string dst = toLower(target);
-    if ((src == "en") && (dst == "zh-cn" || dst == "zh")) type = "EN2ZH_CN";
-    else if ((src == "zh-cn" || src == "zh") && dst == "en") type = "ZH_CN2EN";
-
-    const std::string url =
-        "https://fanyi.youdao.com/translate?&doctype=json&type=" + urlEncode(type)
-        + "&i=" + urlEncode(text);
-    const HttpResult http = winHttpGet(url);
-    if (!http.ok)
-    {
-        result.error = http.error.empty() ? "Youdao translate failed" : http.error;
-        return result;
-    }
-    try
-    {
-        const json root = json::parse(http.body);
-        std::ostringstream out;
-        if (root.contains("translateResult") && root["translateResult"].is_array())
-        {
-            for (const auto& line : root["translateResult"])
-            {
-                if (!line.is_array()) continue;
-                for (const auto& item : line)
-                {
-                    if (item.contains("tgt")) out << item.value("tgt", "");
-                }
-            }
-        }
-        result.translation = out.str();
-        if (result.translation.empty())
-        {
-            result.error = "Empty translation from Youdao";
-            return result;
-        }
-        result.ok = true;
-    }
-    catch (const std::exception& ex)
-    {
-        result.error = std::string("Parse Youdao failed: ") + ex.what();
-    }
+    (void)text;
+    (void)source;
+    (void)target;
+    result.error = withZhHint(
+        "Youdao free web endpoint discontinued (returns HTML SPA)",
+        "有道免费网页接口已失效，请改用 Bing / 大模型，或为谷歌配置代理");
+    result.code = "ERROR";
     return result;
 }
 
@@ -570,41 +849,13 @@ TranslateResult translateBaidu(const std::string& text, const std::string& sourc
 {
     TranslateResult result;
     result.provider = "baidu";
-    const std::string from = mapLangSimple(source.empty() ? "en" : source);
-    std::string to = mapLangSimple(target.empty() ? "zh-CN" : target);
-    if (to == "cht") to = "zh"; // simplified fallback
-    const std::string url =
-        "https://fanyi.baidu.com/transapi?source=txt&from=" + urlEncode(from)
-        + "&to=" + urlEncode(to) + "&query=" + urlEncode(text);
-    const HttpResult http = winHttpGet(url);
-    if (!http.ok)
-    {
-        result.error = http.error.empty() ? "Baidu translate failed" : http.error;
-        return result;
-    }
-    try
-    {
-        const json root = json::parse(http.body);
-        if (root.contains("data") && root["data"].is_array())
-        {
-            std::ostringstream out;
-            for (const auto& item : root["data"])
-                out << item.value("dst", "");
-            result.translation = out.str();
-        }
-        if (result.translation.empty())
-            result.translation = root.value("result", "");
-        if (result.translation.empty())
-        {
-            result.error = "Empty translation from Baidu (接口可能需网页签名，请换 Google/Bing)";
-            return result;
-        }
-        result.ok = true;
-    }
-    catch (const std::exception& ex)
-    {
-        result.error = std::string("Parse Baidu failed: ") + ex.what();
-    }
+    (void)text;
+    (void)source;
+    (void)target;
+    result.error = withZhHint(
+        "Baidu free transapi requires signed session (errno 1022)",
+        "百度免费接口已不可用（需密钥/签名），请改用 Bing / 大模型");
+    result.code = "ERROR";
     return result;
 }
 
@@ -612,73 +863,13 @@ TranslateResult translateSogou(const std::string& text, const std::string& sourc
 {
     TranslateResult result;
     result.provider = "sogou";
-    const std::string from = mapLangSimple(source.empty() ? "en" : source) == "auto"
-        ? "auto"
-        : mapLangSimple(source.empty() ? "en" : source);
-    std::string to = mapLangSimple(target.empty() ? "zh-CN" : target);
-    if (to == "cht") to = "zh-CHS";
-    if (to == "zh") to = "zh-CHS";
-
-    // Public free endpoint (may change); form-encoded body
-    const std::string body =
-        "from=" + urlEncode(from) + "&to=" + urlEncode(to) + "&text=" + urlEncode(text);
-    const HttpResult http = winHttpPost(
-        "https://fanyi.sogou.com/textTranslation",
-        body,
-        L"Content-Type: application/x-www-form-urlencoded\r\n");
-    if (!http.ok)
-    {
-        // Fallback: older path
-        const std::string url =
-            "https://fanyi.sogou.com/reventondc/translateV2";
-        const HttpResult http2 = winHttpPost(
-            url,
-            body + "&client=pc&fr=browser_pc&needQc=1",
-            L"Content-Type: application/x-www-form-urlencoded\r\n");
-        if (!http2.ok)
-        {
-            result.error = http.error.empty() ? "Sogou translate failed" : http.error;
-            return result;
-        }
-        try
-        {
-            const json root = json::parse(http2.body);
-            if (root.contains("data"))
-            {
-                if (root["data"].contains("translate") && root["data"]["translate"].contains("dit"))
-                    result.translation = root["data"]["translate"].value("dit", "");
-                else
-                    result.translation = root["data"].value("translation", "");
-            }
-        }
-        catch (const std::exception& ex)
-        {
-            result.error = std::string("Parse Sogou failed: ") + ex.what();
-            return result;
-        }
-    }
-    else
-    {
-        try
-        {
-            const json root = json::parse(http.body);
-            result.translation = root.value("translate", root.value("translation", ""));
-            if (result.translation.empty() && root.contains("data"))
-                result.translation = root["data"].value("translation", "");
-        }
-        catch (const std::exception& ex)
-        {
-            result.error = std::string("Parse Sogou failed: ") + ex.what();
-            return result;
-        }
-    }
-
-    if (result.translation.empty())
-    {
-        result.error = "Empty translation from Sogou (接口可能变更，请换 Google/Bing)";
-        return result;
-    }
-    result.ok = true;
+    (void)text;
+    (void)source;
+    (void)target;
+    result.error = withZhHint(
+        "Sogou free translate endpoint returns HTTP 405",
+        "搜狗免费接口已不可用，请改用 Bing / 大模型");
+    result.code = "ERROR";
     return result;
 }
 
@@ -686,35 +877,13 @@ TranslateResult translateNiutrans(const std::string& text, const std::string& so
 {
     TranslateResult result;
     result.provider = "niutrans";
-    const std::string from = mapLangSimple(source.empty() ? "en" : source);
-    std::string to = mapLangSimple(target.empty() ? "zh-CN" : target);
-    if (to == "cht") to = "zh";
-    const std::string url =
-        "https://free.niutrans.com/NiuTransServer/translation?from="
-        + urlEncode(from == "auto" ? "en" : from)
-        + "&to=" + urlEncode(to)
-        + "&src_text=" + urlEncode(text);
-    const HttpResult http = winHttpGet(url);
-    if (!http.ok)
-    {
-        result.error = http.error.empty() ? "Niutrans translate failed" : http.error;
-        return result;
-    }
-    try
-    {
-        const json root = json::parse(http.body);
-        result.translation = root.value("tgt_text", root.value("translation", ""));
-        if (result.translation.empty())
-        {
-            result.error = "Empty translation from Niutrans";
-            return result;
-        }
-        result.ok = true;
-    }
-    catch (const std::exception& ex)
-    {
-        result.error = std::string("Parse Niutrans failed: ") + ex.what();
-    }
+    (void)text;
+    (void)source;
+    (void)target;
+    result.error = withZhHint(
+        "Niutrans free endpoint requires apikey (error_code 13002)",
+        "小牛翻译需要 API Key，当前未配置，请改用 Bing / 大模型");
+    result.code = "ERROR";
     return result;
 }
 
@@ -728,7 +897,9 @@ TranslateResult TranslateClient::translateFree(
     const std::string& target,
     const std::string& provider,
     int maxLength,
-    bool autoChunk)
+    bool autoChunk,
+    const std::string& proxyMode,
+    const std::string& httpProxy)
 {
     TranslateResult result;
     const std::string p = normalizeProvider(provider);
@@ -736,12 +907,14 @@ TranslateResult TranslateClient::translateFree(
 
     if (text.empty())
     {
-        result.error = "text required";
+        result.error = withZhHint("text required", "请输入要翻译的文本");
         result.code = "ERROR";
         return result;
     }
 
 #ifdef _WIN32
+    ProxyScope proxyScope(proxyMode, httpProxy);
+
     size_t limit = engineDefaultMax(p);
     if (maxLength > 0)
         limit = static_cast<size_t>(maxLength);
@@ -752,10 +925,10 @@ TranslateResult TranslateClient::translateFree(
         if (!autoChunk)
         {
             result.code = "LENGTH_LIMIT";
-            result.error =
-                "文本超过翻译最大长度限制（当前 " + std::to_string(cps)
-                + " 字，限制 " + std::to_string(limit)
-                + " 字）。请在设置中增大「最大长度」或开启「自动拼接」。";
+            result.error = withZhHint(
+                "Text exceeds max length (" + std::to_string(cps)
+                    + " > " + std::to_string(limit) + ")",
+                "文本过长，请增大最大长度或开启自动分段");
             return result;
         }
     }
@@ -806,10 +979,14 @@ TranslateResult TranslateClient::translateFree(
             return translateNiutrans(chunk, source, target);
         }));
 
-    result.error = "Unknown translate provider: " + p;
+    result.error = withZhHint(
+        "Unknown translate provider: " + p,
+        "未知的翻译引擎，请重新选择");
     result.code = "ERROR";
 #else
-    result.error = "Free translate only implemented on Windows";
+    result.error = withZhHint(
+        "Free translate only implemented on Windows",
+        "当前环境不支持该免费翻译引擎");
     result.code = "ERROR";
 #endif
     return result;
@@ -821,16 +998,23 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string& apiKey,
     const std::string& model,
     const std::string& source,
-    const std::string& target)
+    const std::string& target,
+    const std::string& proxyMode,
+    const std::string& httpProxy)
 {
     TranslateResult result;
     result.provider = "llm";
 
     if (text.empty())
     {
-        result.error = "text required";
+        result.error = withZhHint("text required", "请输入要翻译的文本");
         return result;
     }
+
+#ifdef _WIN32
+    ProxyScope proxyScope(proxyMode, httpProxy);
+    (void)proxyScope; // LlmClient may use its own HTTP; kept for future shared stack
+#endif
 
     const std::string src = source.empty() ? "en" : source;
     const std::string dst = target.empty() ? "zh-CN" : target;
@@ -854,7 +1038,19 @@ TranslateResult TranslateClient::translateWithLlm(
     const LlmResponse llm = LlmClient::chat(req);
     if (!llm.ok)
     {
-        result.error = llm.error;
+        const std::string en = truncateErr(
+            llm.error.empty() ? "LLM request failed" : llm.error);
+        const std::string low = toLower(llm.error);
+        if (low.find("401") != std::string::npos || low.find("unauthorized") != std::string::npos)
+            result.error = withZhHint(en, "大模型认证失败，请检查 API Key");
+        else if (low.find("429") != std::string::npos)
+            result.error = withZhHint(en, "大模型额度不足或请求过频");
+        else if (low.find("404") != std::string::npos || low.find("not found") != std::string::npos)
+            result.error = withZhHint(en, "模型或接口不存在，请检查 API URL 与模型名称");
+        else if (looksLikeNetworkError(llm.error))
+            result.error = withZhHint(en, "网络异常或连接超时，请检查网络后重试");
+        else
+            result.error = withZhHint(en, "大模型接口调用失败，请检查 API URL、密钥与模型");
         return result;
     }
 

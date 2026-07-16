@@ -16,6 +16,7 @@ public:
     /**
      * provider: mymemory|google|bing|sogou|baidu|youdao|niutrans|free(=mymemory)
      * maxLength: 0 = use engine default; autoChunk: split+join when over limit
+     * proxyMode: auto|direct|custom ; httpProxy: host:port for custom
      */
     static TranslateResult translateFree(
         const std::string& text,
@@ -23,7 +24,9 @@ public:
         const std::string& target,
         const std::string& provider = "mymemory",
         int maxLength = 0,
-        bool autoChunk = true);
+        bool autoChunk = true,
+        const std::string& proxyMode = "auto",
+        const std::string& httpProxy = "");
 
     static TranslateResult translateWithLlm(
         const std::string& text,
@@ -31,5 +34,7 @@ public:
         const std::string& apiKey,
         const std::string& model,
         const std::string& source,
-        const std::string& target);
+        const std::string& target,
+        const std::string& proxyMode = "auto",
+        const std::string& httpProxy = "");
 };

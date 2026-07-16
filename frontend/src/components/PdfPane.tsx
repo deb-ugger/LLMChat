@@ -24,6 +24,7 @@ import {
 } from "../pdfSession";
 import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import { highlightSearchHtml } from "../highlightText";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -61,36 +62,11 @@ const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
 
 const SCROLL_PAGE_BUFFER = 3;
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function highlightSearchText(str: string, query: string): string {
-  const q = query.trim();
-  if (!q || !str) return escapeHtml(str);
-  const lower = str.toLowerCase();
-  const needle = q.toLowerCase();
-  if (!lower.includes(needle)) return escapeHtml(str);
-
-  let out = "";
-  let i = 0;
-  while (i < str.length) {
-    const idx = lower.indexOf(needle, i);
-    if (idx < 0) {
-      out += escapeHtml(str.slice(i));
-      break;
-    }
-    if (idx > i) out += escapeHtml(str.slice(i, idx));
-    out += `<mark class="pdf-search-mark">${escapeHtml(
-      str.slice(idx, idx + q.length),
-    )}</mark>`;
-    i = idx + q.length;
-  }
-  return out;
+  // Yellow wash only — text stays transparent so canvas glyphs aren't doubled
+  return highlightSearchHtml(str, query).split('class="search-hit-mark"').join(
+    'class="search-hit-mark pdf-search-mark"',
+  );
 }
 
 const MIN_SCALE = 0.4;
@@ -1437,7 +1413,15 @@ export function PdfPane({
                     title={`第 ${hit.page} 页`}
                   >
                     <span className="pdf-search-page">p.{hit.page}</span>
-                    <span className="pdf-search-snippet">{hit.snippet}</span>
+                    <span
+                      className="pdf-search-snippet"
+                      dangerouslySetInnerHTML={{
+                        __html: highlightSearchHtml(
+                          hit.snippet,
+                          searchQuery,
+                        ),
+                      }}
+                    />
                   </button>
                 </li>
               ))}

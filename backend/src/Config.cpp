@@ -73,6 +73,14 @@ void ConfigStore::load()
         {
             config_.port = std::stoi(value);
         }
+        else if (key == "proxyMode")
+        {
+            config_.proxyMode = value;
+        }
+        else if (key == "httpProxy")
+        {
+            config_.httpProxy = value;
+        }
         else if (key == "translateProvider")
         {
             config_.translateProvider = value;
@@ -141,6 +149,8 @@ void ConfigStore::save() const
     out << "model=" << config_.model << "\n";
     out << "messagePageSize=" << config_.messagePageSize << "\n";
     out << "port=" << config_.port << "\n";
+    out << "proxyMode=" << config_.proxyMode << "\n";
+    out << "httpProxy=" << config_.httpProxy << "\n";
     out << "translateProvider=" << config_.translateProvider << "\n";
     out << "translateSource=" << config_.translateSource << "\n";
     out << "translateTarget=" << config_.translateTarget << "\n";
