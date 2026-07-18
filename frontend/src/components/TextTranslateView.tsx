@@ -106,6 +106,55 @@ function downloadBlob(blob: Blob, name: string) {
   URL.revokeObjectURL(url);
 }
 
+async function saveExportWithPathDialog(
+  fileName: string,
+  content: string,
+  ext: string,
+): Promise<string | null> {
+  const mime =
+    ext === "json"
+      ? "application/json"
+      : ext === "srt" || ext === "ass" || ext === "txt"
+        ? "text/plain"
+        : "application/octet-stream";
+  const w = window as Window & {
+    showSaveFilePicker?: (options: {
+      suggestedName?: string;
+      types?: {
+        description: string;
+        accept: Record<string, string[]>;
+      }[];
+    }) => Promise<FileSystemFileHandle>;
+  };
+
+  if (typeof w.showSaveFilePicker === "function") {
+    try {
+      const handle = await w.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: ext.toUpperCase(),
+            accept: { [mime]: [`.${ext.replace(/^\./, "")}`] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([content], { type: `${mime};charset=utf-8` }));
+      await writable.close();
+      return handle.name || fileName;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  // Fallback when File System Access API is unavailable
+  downloadBlob(new Blob([content], { type: `${mime};charset=utf-8` }), fileName);
+  return fileName;
+}
+
 function unsupportedSourceMessage(name: string) {
   return `不支持的源文件「${name}」。新建工程仅支持：${SOURCE_FORMATS_HINT}`;
 }
@@ -861,27 +910,25 @@ export function TextTranslateView({ settings }: Props) {
     const p = pOverride || project;
     if (!p) return null;
     const payload = buildExportPayload(p);
-    const folder = p.folder || projectFolder;
-    if (folder) {
-      const saved = await api.writeTextProjectFile({
-        folder,
-        fileName: payload.fileName,
-        content: payload.content,
-      });
-      setStatusLine(`${payload.kind} 已导出：${saved.path}`);
-      return saved.path;
-    }
-    downloadBlob(
-      new Blob([payload.content], {
-        type:
-          p.format === "json"
-            ? "application/json;charset=utf-8"
-            : "text/plain;charset=utf-8",
-      }),
+    const ext =
+      p.format === "srt"
+        ? "srt"
+        : p.format === "ass"
+          ? "ass"
+          : p.format === "json"
+            ? "json"
+            : "txt";
+    const savedName = await saveExportWithPathDialog(
       payload.fileName,
+      payload.content,
+      ext,
     );
-    setStatusLine(`${payload.kind} 已下载：${payload.fileName}`);
-    return payload.fileName;
+    if (!savedName) {
+      setStatusLine("已取消导出");
+      return null;
+    }
+    setStatusLine(`${payload.kind} 已导出：${savedName}`);
+    return savedName;
   };
 
   const runTranslate = useCallback(async (
@@ -1335,11 +1382,13 @@ export function TextTranslateView({ settings }: Props) {
         try {
           const path = await exportResult(finalProject);
           setStatusLine(
-            `完成 · 成功 ${okCount} · 无失败，已自动导出${path ? `：${path}` : ""} · Token ${tokenAcc.totalTokens} · ${formatDuration(finalElapsed - elapsedBase)}`,
+            path
+              ? `完成 · 成功 ${okCount} · 已导出：${path} · Token ${tokenAcc.totalTokens} · ${formatDuration(finalElapsed - elapsedBase)}`
+              : `完成 · 成功 ${okCount} · 未导出（已取消选择路径） · Token ${tokenAcc.totalTokens} · ${formatDuration(finalElapsed - elapsedBase)}`,
           );
         } catch {
           setStatusLine(
-            `完成 · 成功 ${okCount} · 自动导出失败 · Token ${tokenAcc.totalTokens} · ${formatDuration(finalElapsed - elapsedBase)}`,
+            `完成 · 成功 ${okCount} · 导出失败 · Token ${tokenAcc.totalTokens} · ${formatDuration(finalElapsed - elapsedBase)}`,
           );
         }
       } else {
@@ -1703,13 +1752,6 @@ export function TextTranslateView({ settings }: Props) {
           }}
         >
           导出
-          {project.format === "srt"
-            ? " SRT"
-            : project.format === "ass"
-              ? " ASS"
-              : project.format === "json"
-                ? " JSON"
-                : " TXT"}
         </button>
         <button
           type="button"
@@ -1813,41 +1855,54 @@ export function TextTranslateView({ settings }: Props) {
 
       {pipeline?.visible && <RetimeProgressPanel state={pipeline} />}
 
-      <div className="text-json-opts">
-        <label className="ocr-toggle">
-          <input
-            type="checkbox"
-            checked={onlyUntranslated}
-            disabled={busy}
-            onChange={(e) => setOnlyUntranslated(e.target.checked)}
-          />
-          仅翻译未译条目
-        </label>
-        {(project.format === "srt" || project.format === "ass") && (
+      <div className="text-json-opts text-json-opts-stack">
+        <div className="text-switch-row">
           <label
-            className="ocr-toggle"
-            title="开启后，开始/重新翻译前会合并 ASR 碎片并重切时间码；关闭则保持原时间轴"
+            className={`text-switch-card ${onlyUntranslated ? "is-on" : ""}`}
           >
             <input
               type="checkbox"
-              checked={!!project.subtitleRetiming}
+              className="text-switch"
+              checked={onlyUntranslated}
               disabled={busy}
-              onChange={(e) => {
-                const on = e.target.checked;
-                patchProject((p) => ({
-                  ...p,
-                  subtitleRetiming: on,
-                }));
-              }}
+              onChange={(e) => setOnlyUntranslated(e.target.checked)}
             />
-            重组时间轴（ASR 碎片适用）
-            {project.subtitleRetimed ? " · 已重组" : ""}
+            <span className="text-switch-label">仅翻译未译条目</span>
           </label>
-        )}
+          {(project.format === "srt" || project.format === "ass") && (
+            <label
+              className={`text-switch-card ${project.subtitleRetiming ? "is-on" : ""}`}
+              title="开启后，开始/重新翻译前会合并 ASR 碎片并重切时间码；关闭则保持原时间轴"
+            >
+              <input
+                type="checkbox"
+                className="text-switch"
+                checked={!!project.subtitleRetiming}
+                disabled={busy}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  patchProject((p) => ({
+                    ...p,
+                    subtitleRetiming: on,
+                  }));
+                }}
+              />
+              <span className="text-switch-label">
+                重组时间轴
+                {project.subtitleRetimed ? " · 已重组" : ""}
+              </span>
+            </label>
+          )}
+        </div>
+      </div>
+
+      {error && <p className="boot-error text-error">{error}</p>}
+
+      <div className="text-entries-footer">
         <button
           type="button"
           className="text-tool-btn entries-open-btn"
-          title="打开原文与译文对照编辑"
+          title="从底部展开原文与译文对照"
           onClick={() => setEntriesPanelOpen(true)}
         >
           原文 / 译文
@@ -1855,22 +1910,14 @@ export function TextTranslateView({ settings }: Props) {
         </button>
       </div>
 
-      {error && <p className="boot-error text-error">{error}</p>}
-
-      {!entriesPanelOpen && (
-        <div className="text-entry-empty">
-          <p>点击右上角「原文 / 译文」查看并编辑对照内容。</p>
-        </div>
-      )}
-
       {entriesPanelOpen && (
         <div
-          className="entries-modal-backdrop"
+          className="entries-sheet-backdrop"
           role="presentation"
           onClick={() => setEntriesPanelOpen(false)}
         >
           <div
-            className="entries-modal"
+            className="entries-sheet"
             role="dialog"
             aria-labelledby="entries-modal-title"
             onClick={(e) => e.stopPropagation()}

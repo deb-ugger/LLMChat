@@ -1175,6 +1175,104 @@ textarea {
   flex-shrink: 0;
 }
 
+.text-json-opts-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.text-switch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.text-switch-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #c9daf5;
+  background: #eaf2ff;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.text-switch-card:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.text-switch-card:not(.is-on) {
+  background: #f3f6fb;
+  border-color: #d5dde8;
+}
+
+.text-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 42px;
+  height: 24px;
+  margin: 0;
+  border-radius: 999px;
+  background: #c5ceda;
+  border: none;
+  position: relative;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.text-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20, 28, 40, 0.2);
+  transition: transform 140ms ease;
+}
+
+.text-switch:checked {
+  background: var(--accent);
+}
+
+.text-switch:checked::after {
+  transform: translateX(18px);
+}
+
+.text-switch:disabled {
+  cursor: not-allowed;
+}
+
+.text-switch-label {
+  line-height: 1.2;
+}
+
+.text-entries-footer {
+  margin-top: auto;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.text-entries-footer .entries-open-btn {
+  margin-left: 0;
+  min-width: 160px;
+}
+
 .retime-pipeline {
   padding: 12px 16px 10px;
   border-bottom: 1px solid var(--border);
@@ -1224,6 +1322,51 @@ textarea {
 .retime-pipeline.is-large .retime-pipeline-pct {
   margin-top: 6px;
   font-size: 12px;
+}
+
+.entries-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(20, 28, 40, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: entries-backdrop-in 180ms ease;
+}
+
+.entries-sheet {
+  width: min(1100px, 100%);
+  height: min(92vh, 100%);
+  max-height: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -12px 40px rgba(20, 28, 40, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: entries-sheet-up 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: bottom center;
+}
+
+@keyframes entries-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes entries-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
 }
 
 .entries-modal-backdrop {

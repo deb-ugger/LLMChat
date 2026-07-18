@@ -523,6 +523,40 @@ int HttpServer::run()
         }
     }));
 
+    svr.Post("/api/export-file", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body);
+            if (!body.contains("path") || !body.contains("content"))
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 path / content").dump(), "application/json");
+                return;
+            }
+            const fs::path outPath(body["path"].get<std::string>());
+            if (!outPath.is_absolute())
+            {
+                res.status = 400;
+                res.set_content(errorJson("导出路径必须是绝对路径").dump(), "application/json");
+                return;
+            }
+            if (outPath.has_parent_path())
+            {
+                fs::create_directories(outPath.parent_path());
+            }
+            writeFileUtf8(outPath, body["content"].get<std::string>());
+            res.set_content(json{
+                {"ok", true},
+                {"path", outPath.string()},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Get("/api/conversations", withCors([this](const httplib::Request&, httplib::Response& res) {
         json arr = json::array();
         for (const auto& conv : conversations_.conversations())

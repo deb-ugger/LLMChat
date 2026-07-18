@@ -198,6 +198,11 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  exportFileToPath: (body: { path: string; content: string }) =>
+    request<{ ok: boolean; path: string }>("/api/export-file", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   listConversations: () =>
     request<{ items: ConversationSummary[]; currentId: string }>(
       "/api/conversations",
