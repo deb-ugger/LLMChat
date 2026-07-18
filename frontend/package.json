@@ -13,6 +13,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-shell": "^2.2.1",
+    "echarts": "^6.1.0",
     "katex": "^0.16.21",
     "pdfjs-dist": "^4.8.69",
     "react": "^19.1.0",

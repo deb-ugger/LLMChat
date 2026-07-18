@@ -3,12 +3,18 @@
 #include "TranslateClient.h"
 
 #include <httplib.h>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace {
+
+constexpr const char* kProjectFileName = "project.llmchat-proj.json";
 
 void setCors(httplib::Response& res)
 {
@@ -20,6 +26,73 @@ void setCors(httplib::Response& res)
 json errorJson(const std::string& message)
 {
     return json{{"ok", false}, {"error", message}};
+}
+
+fs::path dataDirectory(const ConfigStore& config)
+{
+    return fs::path(config.path()).parent_path();
+}
+
+fs::path resolveTextProjectsRoot(const ConfigStore& config)
+{
+    const auto& raw = config.get().textProjectsDir;
+    if (raw.empty())
+    {
+        return dataDirectory(config) / "text-projects";
+    }
+    fs::path p(raw);
+    if (p.is_absolute())
+    {
+        return p;
+    }
+    return dataDirectory(config) / p;
+}
+
+std::string sanitizeFolderName(std::string name)
+{
+    for (char& c : name)
+    {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' ||
+            c == '>' || c == '|' || c < 32)
+        {
+            c = '_';
+        }
+    }
+    while (!name.empty() && (name.back() == ' ' || name.back() == '.'))
+    {
+        name.pop_back();
+    }
+    if (name.empty())
+    {
+        name = "untitled";
+    }
+    if (name.size() > 80)
+    {
+        name.resize(80);
+    }
+    return name;
+}
+
+std::string readFileUtf8(const fs::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        throw std::runtime_error("无法读取文件");
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+void writeFileUtf8(const fs::path& path, const std::string& content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        throw std::runtime_error("无法写入文件");
+    }
+    out << content;
 }
 
 } // namespace
@@ -78,6 +151,16 @@ int HttpServer::run()
             {"ocrTranslateTarget", c.ocrTranslateTarget},
             {"ocrTranslateMaxLength", c.ocrTranslateMaxLength},
             {"ocrTranslateAutoChunk", c.ocrTranslateAutoChunk},
+            {"textTranslateSource", c.textTranslateSource},
+            {"textTranslateTarget", c.textTranslateTarget},
+            {"textTranslateProvider", c.textTranslateProvider},
+            {"textTranslatePrompt", c.textTranslatePrompt},
+            {"textGlossary", c.textGlossary},
+            {"textPreReplace", c.textPreReplace},
+            {"textPostReplace", c.textPostReplace},
+            {"textProjectsDir", c.textProjectsDir},
+            {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
+            {"dataDir", dataDirectory(config_).string()},
         };
         res.set_content(body.dump(), "application/json");
     }));
@@ -159,8 +242,279 @@ int HttpServer::run()
             {
                 c.ocrTranslateAutoChunk = body["ocrTranslateAutoChunk"].get<bool>();
             }
+            if (body.contains("textTranslateSource"))
+            {
+                c.textTranslateSource = body["textTranslateSource"].get<std::string>();
+            }
+            if (body.contains("textTranslateTarget"))
+            {
+                c.textTranslateTarget = body["textTranslateTarget"].get<std::string>();
+            }
+            if (body.contains("textTranslateProvider"))
+            {
+                c.textTranslateProvider = body["textTranslateProvider"].get<std::string>();
+            }
+            if (body.contains("textTranslatePrompt"))
+            {
+                c.textTranslatePrompt = body["textTranslatePrompt"].get<std::string>();
+            }
+            if (body.contains("textGlossary"))
+            {
+                c.textGlossary = body["textGlossary"].get<std::string>();
+            }
+            if (body.contains("textPreReplace"))
+            {
+                c.textPreReplace = body["textPreReplace"].get<std::string>();
+            }
+            if (body.contains("textPostReplace"))
+            {
+                c.textPostReplace = body["textPostReplace"].get<std::string>();
+            }
+            if (body.contains("textProjectsDir"))
+            {
+                c.textProjectsDir = body["textProjectsDir"].get<std::string>();
+            }
             config_.save();
-            res.set_content(json{{"ok", true}}.dump(), "application/json");
+            res.set_content(json{
+                {"ok", true},
+                {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
+                {"dataDir", dataDirectory(config_).string()},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Get("/api/text-projects", withCors([this](const httplib::Request&, httplib::Response& res) {
+        try
+        {
+            const fs::path root = resolveTextProjectsRoot(config_);
+            fs::create_directories(root);
+            json items = json::array();
+            for (const auto& entry : fs::directory_iterator(root))
+            {
+                if (!entry.is_directory())
+                {
+                    continue;
+                }
+                const fs::path projectFile = entry.path() / kProjectFileName;
+                if (!fs::exists(projectFile))
+                {
+                    continue;
+                }
+                std::string name = entry.path().filename().string();
+                std::string updatedAt;
+                try
+                {
+                    const auto raw = readFileUtf8(projectFile);
+                    const auto doc = json::parse(raw);
+                    if (doc.contains("name") && doc["name"].is_string())
+                    {
+                        name = doc["name"].get<std::string>();
+                    }
+                    if (doc.contains("updatedAt") && doc["updatedAt"].is_string())
+                    {
+                        updatedAt = doc["updatedAt"].get<std::string>();
+                    }
+                }
+                catch (...)
+                {
+                }
+                items.push_back(json{
+                    {"folder", entry.path().filename().string()},
+                    {"name", name},
+                    {"path", projectFile.string()},
+                    {"folderPath", entry.path().string()},
+                    {"updatedAt", updatedAt},
+                });
+            }
+            res.set_content(json{
+                {"ok", true},
+                {"root", root.string()},
+                {"items", items},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 500;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Get("/api/text-projects/load", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const fs::path root = resolveTextProjectsRoot(config_);
+            fs::path projectFile;
+            if (req.has_param("folder"))
+            {
+                const std::string folder = sanitizeFolderName(req.get_param_value("folder"));
+                projectFile = root / folder / kProjectFileName;
+            }
+            else if (req.has_param("path"))
+            {
+                projectFile = fs::path(req.get_param_value("path"));
+            }
+            else
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 folder 或 path 参数").dump(), "application/json");
+                return;
+            }
+
+            if (!fs::exists(projectFile))
+            {
+                res.status = 404;
+                res.set_content(errorJson("工程文件不存在").dump(), "application/json");
+                return;
+            }
+
+            const auto raw = readFileUtf8(projectFile);
+            const auto doc = json::parse(raw);
+            res.set_content(json{
+                {"ok", true},
+                {"project", doc},
+                {"folder", projectFile.parent_path().filename().string()},
+                {"folderPath", projectFile.parent_path().string()},
+                {"path", projectFile.string()},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/text-projects/save", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body);
+            if (!body.contains("project"))
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 project").dump(), "application/json");
+                return;
+            }
+
+            json project = body["project"];
+            if (!project.is_object())
+            {
+                res.status = 400;
+                res.set_content(errorJson("project 必须是对象").dump(), "application/json");
+                return;
+            }
+
+            std::string folderName;
+            if (body.contains("folder") && body["folder"].is_string())
+            {
+                folderName = sanitizeFolderName(body["folder"].get<std::string>());
+            }
+            else if (project.contains("folder") && project["folder"].is_string())
+            {
+                folderName = sanitizeFolderName(project["folder"].get<std::string>());
+            }
+            else if (project.contains("name") && project["name"].is_string())
+            {
+                folderName = sanitizeFolderName(project["name"].get<std::string>());
+            }
+            else
+            {
+                folderName = "untitled";
+            }
+
+            const fs::path root = resolveTextProjectsRoot(config_);
+            fs::create_directories(root);
+            fs::path folderPath = root / folderName;
+
+            // Avoid clobbering another project when creating fresh without folder hint
+            if (!body.value("overwrite", true) && fs::exists(folderPath / kProjectFileName))
+            {
+                int suffix = 2;
+                while (fs::exists(root / (folderName + "-" + std::to_string(suffix)) / kProjectFileName))
+                {
+                    ++suffix;
+                }
+                folderName = folderName + "-" + std::to_string(suffix);
+                folderPath = root / folderName;
+            }
+
+            fs::create_directories(folderPath);
+            project["folder"] = folderName;
+            const fs::path projectFile = folderPath / kProjectFileName;
+            writeFileUtf8(projectFile, project.dump(2) + "\n");
+
+            if (body.contains("sourceFileName") && body.contains("sourceContent") &&
+                body["sourceFileName"].is_string() && body["sourceContent"].is_string())
+            {
+                const std::string srcName = body["sourceFileName"].get<std::string>();
+                const auto pos = srcName.find_last_of("\\/");
+                const std::string base =
+                    pos == std::string::npos ? srcName : srcName.substr(pos + 1);
+                if (!base.empty() && base.find("..") == std::string::npos)
+                {
+                    writeFileUtf8(folderPath / base, body["sourceContent"].get<std::string>());
+                }
+            }
+
+            res.set_content(json{
+                {"ok", true},
+                {"folder", folderName},
+                {"folderPath", folderPath.string()},
+                {"path", projectFile.string()},
+                {"root", root.string()},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/text-projects/write-file", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body);
+            if (!body.contains("folder") || !body.contains("fileName") || !body.contains("content"))
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 folder / fileName / content").dump(), "application/json");
+                return;
+            }
+            const std::string folder = sanitizeFolderName(body["folder"].get<std::string>());
+            std::string fileName = body["fileName"].get<std::string>();
+            const auto slash = fileName.find_last_of("\\/");
+            if (slash != std::string::npos)
+            {
+                fileName = fileName.substr(slash + 1);
+            }
+            if (fileName.empty() || fileName.find("..") != std::string::npos)
+            {
+                res.status = 400;
+                res.set_content(errorJson("非法文件名").dump(), "application/json");
+                return;
+            }
+            for (char& c : fileName)
+            {
+                if (c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+                {
+                    c = '_';
+                }
+            }
+            const fs::path root = resolveTextProjectsRoot(config_);
+            const fs::path folderPath = root / folder;
+            fs::create_directories(folderPath);
+            const fs::path outPath = folderPath / fileName;
+            writeFileUtf8(outPath, body["content"].get<std::string>());
+            res.set_content(json{
+                {"ok", true},
+                {"path", outPath.string()},
+                {"folderPath", folderPath.string()},
+            }.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -354,9 +708,22 @@ int HttpServer::run()
                 const std::string apiUrl = body.value("apiUrl", cfg.apiUrl);
                 const std::string apiKey = body.value("apiKey", cfg.apiKey);
                 const std::string model = body.value("model", cfg.model);
+                const std::string prompt = body.value("prompt", "");
+                std::string glossary;
+                if (body.contains("glossary"))
+                {
+                    if (body["glossary"].is_string())
+                    {
+                        glossary = body["glossary"].get<std::string>();
+                    }
+                    else if (body["glossary"].is_array())
+                    {
+                        glossary = body["glossary"].dump();
+                    }
+                }
                 tr = TranslateClient::translateWithLlm(
                     text, apiUrl, apiKey, model, source, target,
-                    cfg.proxyMode, cfg.httpProxy);
+                    cfg.proxyMode, cfg.httpProxy, prompt, glossary);
             }
             else
             {
@@ -382,6 +749,9 @@ int HttpServer::run()
                 {"source", text},
                 {"translation", tr.translation},
                 {"provider", tr.provider},
+                {"promptTokens", tr.promptTokens},
+                {"completionTokens", tr.completionTokens},
+                {"totalTokens", tr.totalTokens},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)

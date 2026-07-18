@@ -10,9 +10,11 @@ import { ImageOcrView } from "./components/ImageOcrView";
 import { LiteratureView } from "./components/LiteratureView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
+import { TextTranslateView } from "./components/TextTranslateView";
 import { toFriendlyError } from "./friendlyError";
+import { DEFAULT_TEXT_PROMPT } from "./textTranslate";
 
-type Page = "chat" | "literature" | "image" | "settings";
+type Page = "chat" | "literature" | "image" | "text" | "settings";
 
 const defaultSettings: Settings = {
   apiUrl: "https://api.openai.com/v1/chat/completions",
@@ -33,6 +35,14 @@ const defaultSettings: Settings = {
   ocrTranslateTarget: "zh-CN",
   ocrTranslateMaxLength: 0,
   ocrTranslateAutoChunk: true,
+  textTranslateSource: "en",
+  textTranslateTarget: "zh-CN",
+  textTranslateProvider: "llm",
+  textTranslatePrompt: DEFAULT_TEXT_PROMPT,
+  textGlossary: "[]",
+  textPreReplace: "[]",
+  textPostReplace: "[]",
+  textProjectsDir: "",
 };
 
 export default function App() {
@@ -129,6 +139,25 @@ export default function App() {
             ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
             ocrTranslateMaxLength: s.ocrTranslateMaxLength ?? 0,
             ocrTranslateAutoChunk: s.ocrTranslateAutoChunk ?? true,
+            textTranslateSource: s.textTranslateSource || "en",
+            textTranslateTarget: s.textTranslateTarget || "zh-CN",
+            textTranslateProvider: (() => {
+              const p = String(s.textTranslateProvider || "llm");
+              if (p === "free") return "mymemory";
+              if (p === "blind") return "bing";
+              return p as Settings["textTranslateProvider"];
+            })(),
+            textTranslatePrompt:
+              s.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
+            textGlossary: s.textGlossary || "[]",
+            textPreReplace: s.textPreReplace || "[]",
+            textPostReplace: s.textPostReplace || "[]",
+            textProjectsDir:
+              s.textProjectsDir ||
+              s.textProjectsDirResolved ||
+              (s.dataDir ? `${s.dataDir}\\text-projects` : ""),
+            textProjectsDirResolved: s.textProjectsDirResolved,
+            dataDir: s.dataDir,
           });
           setConversations(list.items);
           const offset = Math.max(
@@ -252,8 +281,17 @@ export default function App() {
   };
 
   const onSaveSettings = async (next: Settings) => {
-    await api.saveSettings(next);
-    setSettings(next);
+    const res = await api.saveSettings(next);
+    const resolved =
+      res.textProjectsDirResolved ||
+      next.textProjectsDirResolved ||
+      next.textProjectsDir;
+    setSettings({
+      ...next,
+      textProjectsDir: next.textProjectsDir.trim() || resolved || "",
+      textProjectsDirResolved: resolved,
+      dataDir: res.dataDir || next.dataDir,
+    });
   };
 
   if (!backendReady) {
@@ -327,6 +365,19 @@ export default function App() {
           <span>图片</span>
         </button>
         <button
+          className={page === "text" ? "nav-item active" : "nav-item"}
+          onClick={() => setPage("text")}
+          title="文本翻译"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M4 5h9v2H4V5zm0 4h16v2H4V9zm0 4h11v2H4v-2zm0 4h16v2H4v-2zm14.5-12.5L20 6l-1.5 1.5L17 6l1.5-1.5zM17 11.5 18.5 13 17 14.5 15.5 13 17 11.5z"
+            />
+          </svg>
+          <span>文本</span>
+        </button>
+        <button
           className={page === "settings" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("settings")}
           title="设置"
@@ -397,6 +448,14 @@ export default function App() {
             translateAutoChunk={settings.ocrTranslateAutoChunk}
             model={settings.model}
           />
+        </div>
+        <div
+          className={
+            page === "text" ? "literature-host" : "literature-host is-hidden"
+          }
+          aria-hidden={page !== "text"}
+        >
+          <TextTranslateView settings={settings} />
         </div>
         {page === "settings" && (
           <SettingsView

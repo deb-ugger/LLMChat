@@ -56,6 +56,21 @@ export type Settings = {
   ocrTranslateTarget: string;
   ocrTranslateMaxLength: number;
   ocrTranslateAutoChunk: boolean;
+  /** Text-translate workbench */
+  textTranslateSource: string;
+  textTranslateTarget: string;
+  textTranslateProvider: TranslateProvider;
+  textTranslatePrompt: string;
+  /** JSON string: [{src,dst,info?}] */
+  textGlossary: string;
+  /** JSON string: [{src,dst}] */
+  textPreReplace: string;
+  textPostReplace: string;
+  /** Empty = <dataDir>/text-projects */
+  textProjectsDir: string;
+  /** Resolved absolute path from backend */
+  textProjectsDirResolved?: string;
+  dataDir?: string;
 };
 
 export type TranslateResponse = {
@@ -64,6 +79,9 @@ export type TranslateResponse = {
   translation: string;
   provider: string;
   code?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 };
 
 export type TranslateOptions = {
@@ -76,6 +94,10 @@ export type TranslateOptions = {
   apiUrl?: string;
   apiKey?: string;
   model?: string;
+  /** Custom system prompt (LLM) */
+  prompt?: string;
+  /** Glossary JSON string or array (LLM) */
+  glossary?: string | { src: string; dst: string; info?: string }[];
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -109,14 +131,73 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+export type TextProjectListItem = {
+  folder: string;
+  name: string;
+  path: string;
+  folderPath: string;
+  updatedAt?: string;
+};
+
+export type TextProjectSaveResult = {
+  ok: boolean;
+  folder: string;
+  folderPath: string;
+  path: string;
+  root: string;
+};
+
 export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
   getSettings: () => request<Settings>("/api/settings"),
   saveSettings: (settings: Settings) =>
-    request<{ ok: boolean }>("/api/settings", {
+    request<{
+      ok: boolean;
+      textProjectsDirResolved?: string;
+      dataDir?: string;
+    }>("/api/settings", {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+  listTextProjects: () =>
+    request<{ ok: boolean; root: string; items: TextProjectListItem[] }>(
+      "/api/text-projects",
+    ),
+  loadTextProject: (opts: { folder?: string; path?: string }) => {
+    const q = opts.folder
+      ? `folder=${encodeURIComponent(opts.folder)}`
+      : `path=${encodeURIComponent(opts.path || "")}`;
+    return request<{
+      ok: boolean;
+      project: unknown;
+      folder: string;
+      folderPath: string;
+      path: string;
+    }>(`/api/text-projects/load?${q}`);
+  },
+  saveTextProject: (body: {
+    project: unknown;
+    folder?: string;
+    overwrite?: boolean;
+    sourceFileName?: string;
+    sourceContent?: string;
+  }) =>
+    request<TextProjectSaveResult>("/api/text-projects/save", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  writeTextProjectFile: (body: {
+    folder: string;
+    fileName: string;
+    content: string;
+  }) =>
+    request<{ ok: boolean; path: string; folderPath: string }>(
+      "/api/text-projects/write-file",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   listConversations: () =>
     request<{ items: ConversationSummary[]; currentId: string }>(
       "/api/conversations",

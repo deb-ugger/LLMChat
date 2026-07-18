@@ -1,9 +1,9 @@
 #include "Config.h"
 
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -13,6 +13,52 @@ std::string trim(std::string s)
     s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
     s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
     return s;
+}
+
+/** Escape multiline / backslash for single-line ini values. */
+std::string escapeIniValue(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s)
+    {
+        if (c == '\\')
+            out += "\\\\";
+        else if (c == '\n')
+            out += "\\n";
+        else if (c == '\r')
+            continue;
+        else
+            out += c;
+    }
+    return out;
+}
+
+std::string unescapeIniValue(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        if (s[i] == '\\' && i + 1 < s.size())
+        {
+            const char n = s[i + 1];
+            if (n == 'n')
+            {
+                out += '\n';
+                ++i;
+                continue;
+            }
+            if (n == '\\')
+            {
+                out += '\\';
+                ++i;
+                continue;
+            }
+        }
+        out += s[i];
+    }
+    return out;
 }
 
 } // namespace
@@ -132,6 +178,38 @@ void ConfigStore::load()
             config_.ocrTranslateAutoChunk =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
         }
+        else if (key == "textTranslateSource")
+        {
+            config_.textTranslateSource = value;
+        }
+        else if (key == "textTranslateTarget")
+        {
+            config_.textTranslateTarget = value;
+        }
+        else if (key == "textTranslateProvider")
+        {
+            config_.textTranslateProvider = value;
+        }
+        else if (key == "textTranslatePrompt")
+        {
+            config_.textTranslatePrompt = unescapeIniValue(value);
+        }
+        else if (key == "textGlossary")
+        {
+            config_.textGlossary = unescapeIniValue(value);
+        }
+        else if (key == "textPreReplace")
+        {
+            config_.textPreReplace = unescapeIniValue(value);
+        }
+        else if (key == "textPostReplace")
+        {
+            config_.textPostReplace = unescapeIniValue(value);
+        }
+        else if (key == "textProjectsDir")
+        {
+            config_.textProjectsDir = value;
+        }
     }
 }
 
@@ -163,4 +241,12 @@ void ConfigStore::save() const
     out << "ocrTranslateTarget=" << config_.ocrTranslateTarget << "\n";
     out << "ocrTranslateMaxLength=" << config_.ocrTranslateMaxLength << "\n";
     out << "ocrTranslateAutoChunk=" << (config_.ocrTranslateAutoChunk ? "true" : "false") << "\n";
+    out << "textTranslateSource=" << config_.textTranslateSource << "\n";
+    out << "textTranslateTarget=" << config_.textTranslateTarget << "\n";
+    out << "textTranslateProvider=" << config_.textTranslateProvider << "\n";
+    out << "textTranslatePrompt=" << escapeIniValue(config_.textTranslatePrompt) << "\n";
+    out << "textGlossary=" << escapeIniValue(config_.textGlossary) << "\n";
+    out << "textPreReplace=" << escapeIniValue(config_.textPreReplace) << "\n";
+    out << "textPostReplace=" << escapeIniValue(config_.textPostReplace) << "\n";
+    out << "textProjectsDir=" << config_.textProjectsDir << "\n";
 }

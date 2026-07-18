@@ -15,6 +15,9 @@ struct LlmResponse {
     std::string content;
     std::string error;
     int statusCode = 0;
+    int promptTokens = 0;
+    int completionTokens = 0;
+    int totalTokens = 0;
 };
 
 class LlmClient {

@@ -1000,7 +1000,9 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string& source,
     const std::string& target,
     const std::string& proxyMode,
-    const std::string& httpProxy)
+    const std::string& httpProxy,
+    const std::string& customPrompt,
+    const std::string& glossaryJson)
 {
     TranslateResult result;
     result.provider = "llm";
@@ -1019,13 +1021,57 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string src = source.empty() ? "en" : source;
     const std::string dst = target.empty() ? "zh-CN" : target;
 
+    std::string systemPrompt = customPrompt;
+    if (systemPrompt.empty())
+    {
+        systemPrompt =
+            "You are a precise bilingual translator. Translate the user text from "
+            + src + " to " + dst
+            + ". Output only the translation text with no quotes, notes, or explanations.";
+    }
+    else
+    {
+        systemPrompt +=
+            "\n\nTranslate from " + src + " to " + dst
+            + ". Output only the translation text with no quotes, notes, or explanations.";
+    }
+
+    if (!glossaryJson.empty() && glossaryJson != "[]")
+    {
+        try
+        {
+            const json gloss = json::parse(glossaryJson);
+            if (gloss.is_array() && !gloss.empty())
+            {
+                std::ostringstream oss;
+                oss << "\n\nGlossary (use these translations consistently):\n";
+                for (const auto& item : gloss)
+                {
+                    if (!item.is_object())
+                        continue;
+                    const std::string gSrc = item.value("src", "");
+                    const std::string gDst = item.value("dst", "");
+                    const std::string info = item.value("info", "");
+                    if (gSrc.empty() || gDst.empty())
+                        continue;
+                    oss << "- " << gSrc << " => " << gDst;
+                    if (!info.empty())
+                        oss << " (" << info << ")";
+                    oss << "\n";
+                }
+                systemPrompt += oss.str();
+            }
+        }
+        catch (...)
+        {
+            // ignore bad glossary JSON
+        }
+    }
+
     json messages = json::array();
     messages.push_back({
         {"role", "system"},
-        {"content",
-            "You are a precise bilingual translator. Translate the user text from "
-            + src + " to " + dst
-            + ". Output only the translation text with no quotes, notes, or explanations."},
+        {"content", systemPrompt},
     });
     messages.push_back({{"role", "user"}, {"content", text}});
 
@@ -1049,12 +1095,19 @@ TranslateResult TranslateClient::translateWithLlm(
             result.error = withZhHint(en, "模型或接口不存在，请检查 API URL 与模型名称");
         else if (looksLikeNetworkError(llm.error))
             result.error = withZhHint(en, "网络异常或连接超时，请检查网络后重试");
+        else if (low.find("parse llm") != std::string::npos
+            || low.find("empty llm http body") != std::string::npos
+            || low.find("parse_error") != std::string::npos)
+            result.error = withZhHint(en, "大模型返回内容为空或无法解析，请检查 API URL 是否为 chat/completions 且模型可用");
         else
             result.error = withZhHint(en, "大模型接口调用失败，请检查 API URL、密钥与模型");
         return result;
     }
 
     result.translation = llm.content;
+    result.promptTokens = llm.promptTokens;
+    result.completionTokens = llm.completionTokens;
+    result.totalTokens = llm.totalTokens;
     result.ok = true;
     return result;
 }

@@ -9,6 +9,9 @@ struct TranslateResult {
     std::string provider;
     /** LENGTH_LIMIT | NETWORK_TIMEOUT | ERROR */
     std::string code;
+    int promptTokens = 0;
+    int completionTokens = 0;
+    int totalTokens = 0;
 };
 
 class TranslateClient {
@@ -36,5 +39,7 @@ public:
         const std::string& source,
         const std::string& target,
         const std::string& proxyMode = "auto",
-        const std::string& httpProxy = "");
+        const std::string& httpProxy = "",
+        const std::string& customPrompt = "",
+        const std::string& glossaryJson = "");
 };

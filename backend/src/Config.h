@@ -24,6 +24,19 @@ struct AppConfig {
     std::string ocrTranslateTarget = "zh-CN";
     int ocrTranslateMaxLength = 0;
     bool ocrTranslateAutoChunk = true;
+    /** Text-translate workbench (LLM) */
+    std::string textTranslateSource = "en";
+    std::string textTranslateTarget = "zh-CN";
+    std::string textTranslateProvider = "llm"; // google|bing|...|llm
+    std::string textTranslatePrompt =
+        "You are a precise bilingual translator. Translate the user text faithfully. "
+        "Output only the translation with no quotes, notes, or explanations.";
+    /** Compact JSON arrays: [{src,dst,info?}] / [{src,dst}] */
+    std::string textGlossary = "[]";
+    std::string textPreReplace = "[]";
+    std::string textPostReplace = "[]";
+    /** Empty = <dataDir>/text-projects; relative paths resolve under dataDir */
+    std::string textProjectsDir;
 };
 
 class ConfigStore {

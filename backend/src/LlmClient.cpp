@@ -194,21 +194,87 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
+    // Trim BOM / whitespace — empty body often yields nlohmann parse_error.101
+    while (!responseBody.empty() &&
+           (unsigned char)responseBody.front() <= 0x20)
+    {
+        responseBody.erase(responseBody.begin());
+    }
+    if (responseBody.size() >= 3
+        && (unsigned char)responseBody[0] == 0xEF
+        && (unsigned char)responseBody[1] == 0xBB
+        && (unsigned char)responseBody[2] == 0xBF)
+    {
+        responseBody.erase(0, 3);
+    }
+    while (!responseBody.empty() &&
+           (unsigned char)responseBody.back() <= 0x20)
+    {
+        responseBody.pop_back();
+    }
+    if (responseBody.empty())
+    {
+        result.error =
+            "Empty LLM HTTP body (HTTP " + std::to_string(status)
+            + "). Check API URL points to chat/completions and the model is reachable.";
+        return result;
+    }
+
     try
     {
         const json root = json::parse(responseBody);
-        const auto& choices = root.at("choices");
-        if (!choices.is_array() || choices.empty())
+        if (!root.contains("choices") || !root["choices"].is_array()
+            || root["choices"].empty())
         {
-            result.error = "Empty choices in LLM response";
+            result.error =
+                "Empty choices in LLM response: "
+                + responseBody.substr(0, 300);
             return result;
         }
-        result.content = choices[0].at("message").value("content", "");
+        const json& message = root["choices"][0].at("message");
+        std::string content;
+        if (message.contains("content"))
+        {
+            const auto& c = message["content"];
+            if (c.is_string())
+            {
+                content = c.get<std::string>();
+            }
+            else if (c.is_array())
+            {
+                for (const auto& part : c)
+                {
+                    if (part.is_string())
+                        content += part.get<std::string>();
+                    else if (part.is_object())
+                        content += part.value("text", "");
+                }
+            }
+        }
+        if (content.empty() && message.contains("reasoning_content")
+            && message["reasoning_content"].is_string())
+        {
+            content = message["reasoning_content"].get<std::string>();
+        }
+        result.content = content;
+        if (root.contains("usage") && root["usage"].is_object())
+        {
+            const auto& usage = root["usage"];
+            result.promptTokens = usage.value("prompt_tokens", 0);
+            result.completionTokens = usage.value("completion_tokens", 0);
+            result.totalTokens = usage.value("total_tokens", 0);
+            if (result.totalTokens <= 0)
+            {
+                result.totalTokens = result.promptTokens + result.completionTokens;
+            }
+        }
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
-        result.error = std::string("Parse LLM response failed: ") + ex.what();
+        const std::string head = responseBody.substr(0, 180);
+        result.error = std::string("Parse LLM response failed: ") + ex.what()
+            + " | body[:180]=" + head;
     }
 
     return result;
