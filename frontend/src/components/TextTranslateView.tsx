@@ -453,7 +453,7 @@ export function TextTranslateView({ settings }: Props) {
   stopRef.current = stop;
   const closingRef = useRef(false);
 
-  /** Close app: save everything; if translating, confirm stop first. */
+  /** Close app: save text project if needed; if translating, confirm stop first. */
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
@@ -474,33 +474,51 @@ export function TextTranslateView({ settings }: Props) {
       try {
         const win = getCurrentWindow();
         const fn = await win.onCloseRequested(async (event) => {
+          // Re-entry while a previous close is still finishing.
+          if (closingRef.current) {
+            event.preventDefault();
+            return;
+          }
+
+          const inWorkbench =
+            phaseRef.current === "workbench" && !!projectRef.current;
+          const translating = !!busyRef.current;
+
+          // No text-project cleanup needed → allow default close.
+          if (!inWorkbench) {
+            return;
+          }
+
+          // Need async confirm / save: block default close, then destroy.
           event.preventDefault();
-          if (closingRef.current) return;
           closingRef.current = true;
           try {
-            if (phaseRef.current === "workbench" && projectRef.current) {
-              if (busyRef.current) {
-                const ok = window.confirm(
-                  "正在翻译，是否停止并退出？\n点击「确定」将中断翻译，进行中的条目恢复为未翻译，并保存后退出。\n点击「取消」则继续翻译，不关闭。",
-                );
-                if (!ok) {
-                  closingRef.current = false;
-                  return;
-                }
-                await withTimeout(
-                  () => stopRef.current({ silent: true }),
-                  5000,
-                );
-              } else {
-                await withTimeout(
-                  () => persistFullSnapshotRef.current(),
-                  5000,
-                );
+            if (translating) {
+              const ok = window.confirm(
+                "正在翻译，是否停止并退出？\n点击「确定」将中断翻译，进行中的条目恢复为未翻译，并保存后退出。\n点击「取消」则继续翻译，不关闭。",
+              );
+              if (!ok) {
+                closingRef.current = false;
+                return;
               }
+              await withTimeout(
+                () => stopRef.current({ silent: true }),
+                5000,
+              );
+            } else {
+              await withTimeout(
+                () => persistFullSnapshotRef.current(),
+                5000,
+              );
             }
             await win.destroy();
           } catch {
             closingRef.current = false;
+            try {
+              await win.destroy();
+            } catch {
+              /* keep open if destroy still fails */
+            }
           }
         });
         if (disposed) fn();

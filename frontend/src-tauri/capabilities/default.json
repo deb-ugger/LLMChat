@@ -25,6 +25,8 @@
       ]
     },
     "shell:allow-kill",
-    "shell:allow-stdin-write"
+    "shell:allow-stdin-write",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
   ]
 }
