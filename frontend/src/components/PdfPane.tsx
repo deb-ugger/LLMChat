@@ -218,6 +218,7 @@ export function PdfPane({
   const [scaleInput, setScaleInput] = useState(
     String(Math.round(DEFAULT_SCALE * 100)),
   );
+  const [pageInput, setPageInput] = useState("1");
   const { width: outlineWidth, beginResize: beginOutlineResize } =
     usePersistedWidth("llmchat-pdf-outline-width", 220, 140, 480);
 
@@ -236,6 +237,9 @@ export function PdfPane({
   const selectingRef = useRef(false);
   const lastEmittedTextRef = useRef("");
   const programmaticScrollRef = useRef(false);
+  const pendingGoPageRef = useRef<number | null>(null);
+  const pageInputFocusedRef = useRef(false);
+  const goPageUnlockTimer = useRef<number | null>(null);
   const pendingViewPageRef = useRef<number | null>(null);
   const pendingScalePageRef = useRef<number | null>(null);
   const prevScaleRef = useRef(scale);
@@ -270,8 +274,9 @@ export function PdfPane({
   const scrollToPageEl = useCallback((page: number, smooth = false) => {
     let tries = 0;
     const run = () => {
+      // Wait for a live page — placeholders are white and must not be scrolled to.
       const el = scrollRef.current?.querySelector(
-        `[data-page="${page}"]`,
+        `[data-page="${page}"]:not(.is-placeholder)`,
       ) as HTMLElement | null;
       if (el) {
         el.scrollIntoView({
@@ -280,33 +285,99 @@ export function PdfPane({
         });
         return;
       }
-      if (tries++ < 60) requestAnimationFrame(run);
+      if (tries++ < 90) requestAnimationFrame(run);
     };
     requestAnimationFrame(run);
   }, []);
 
+  const jumpScrollToPage = useCallback(
+    (page: number, smooth = false) => {
+      const root = scrollRef.current;
+      const ph = pageHeightRef.current;
+      if (
+        root &&
+        ph > 40 &&
+        (viewMode === "single-scroll" || viewMode === "double-scroll")
+      ) {
+        const gap = 12;
+        const top =
+          viewMode === "single-scroll"
+            ? Math.max(0, (page - 1) * (ph + gap))
+            : Math.max(0, Math.floor((page - 1) / 2) * (ph + gap));
+        if (smooth) {
+          root.scrollTo({ top, behavior: "smooth" });
+        } else {
+          root.scrollTop = top;
+        }
+      }
+      scrollToPageEl(page, smooth);
+    },
+    [scrollToPageEl, viewMode],
+  );
+
   const goToPage = useCallback(
-    (page: number) => {
+    (page: number, opts?: { smooth?: boolean }) => {
       const next = clampPage(page);
-      setPageNumber(next);
+      const smooth = opts?.smooth ?? false;
+
       if (viewMode === "single-scroll" || viewMode === "double-scroll") {
+        // Set pending before state so the next render mounts around the target.
+        pendingGoPageRef.current = next;
         programmaticScrollRef.current = true;
-        scrollToPageEl(next, true);
-        window.setTimeout(() => {
+        if (goPageUnlockTimer.current != null) {
+          window.clearTimeout(goPageUnlockTimer.current);
+        }
+        setPageNumber(next);
+        if (!pageInputFocusedRef.current) {
+          setPageInput(String(next));
+        }
+
+        // Defer scroll until after React mounts live pages (avoid white placeholders).
+        requestAnimationFrame(() => {
+          jumpScrollToPage(next, false);
+          window.setTimeout(() => jumpScrollToPage(next, false), 50);
+          window.setTimeout(() => jumpScrollToPage(next, smooth), smooth ? 100 : 200);
+        });
+
+        goPageUnlockTimer.current = window.setTimeout(() => {
           programmaticScrollRef.current = false;
-        }, 500);
+          pendingGoPageRef.current = null;
+          goPageUnlockTimer.current = null;
+        }, smooth ? 1100 : 550);
       } else {
+        pendingGoPageRef.current = null;
+        setPageNumber(next);
+        if (!pageInputFocusedRef.current) {
+          setPageInput(String(next));
+        }
         requestAnimationFrame(() => {
           const root = scrollRef.current;
           if (root) root.scrollTop = 0;
         });
       }
     },
-    [clampPage, scrollToPageEl, viewMode],
+    [clampPage, jumpScrollToPage, viewMode],
   );
+
+  const commitPageInput = useCallback(() => {
+    pageInputFocusedRef.current = false;
+    const raw = pageInput.trim();
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n)) {
+      setPageInput(String(pageNumber));
+      return;
+    }
+    const next = clampPage(Math.round(n));
+    setPageInput(String(next));
+    if (next !== pageNumber) {
+      goToPage(next, { smooth: false });
+    }
+  }, [clampPage, goToPage, pageInput, pageNumber]);
 
   const syncPageFromScroll = useCallback(() => {
     if (programmaticScrollRef.current) return;
+    if (pendingGoPageRef.current != null) return;
+    if (pageInputFocusedRef.current) return;
     if (viewMode !== "single-scroll" && viewMode !== "double-scroll") return;
     const root = scrollRef.current;
     if (!root) return;
@@ -335,6 +406,11 @@ export function PdfPane({
     });
 
     setPageNumber((prev) => (prev === bestPage ? prev : bestPage));
+    setPageInput((prev) =>
+      pageInputFocusedRef.current || prev === String(bestPage)
+        ? prev
+        : String(bestPage),
+    );
   }, [viewMode]);
 
   const fitScaleForDouble = useCallback(
@@ -907,8 +983,17 @@ export function PdfPane({
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       if (metaSaveTimer.current) window.clearTimeout(metaSaveTimer.current);
       if (pageSyncTimer.current) window.clearTimeout(pageSyncTimer.current);
+      if (goPageUnlockTimer.current != null) {
+        window.clearTimeout(goPageUnlockTimer.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!pageInputFocusedRef.current) {
+      setPageInput(String(pageNumber));
+    }
+  }, [pageNumber]);
 
   const pageStep = viewMode.startsWith("double") ? 2 : 1;
 
@@ -936,9 +1021,12 @@ export function PdfPane({
     (p: number) => {
       if (viewMode === "single" || viewMode === "double") return true;
       if (highlightPage === p) return true;
-      const anchor = pendingScalePageRef.current ?? pageNumber;
+      const anchor =
+        pendingGoPageRef.current ??
+        pendingScalePageRef.current ??
+        pageNumber;
       const buf =
-        pendingScalePageRef.current != null
+        pendingGoPageRef.current != null || pendingScalePageRef.current != null
           ? SCROLL_PAGE_BUFFER + 2
           : SCROLL_PAGE_BUFFER;
       if (viewMode === "double-scroll") {
@@ -1035,8 +1123,12 @@ export function PdfPane({
       if (pendingScrollRef.current) {
         restoreScrollSoon();
       }
+      // After a jump target finishes painting, snap once more to the live page.
+      if (pendingGoPageRef.current === p) {
+        jumpScrollToPage(p, false);
+      }
     },
-    [restoreScrollSoon],
+    [jumpScrollToPage, restoreScrollSoon],
   );
 
   const onLoadSuccess = async (pdf: PDFDocumentProxy) => {
@@ -1289,11 +1381,18 @@ export function PdfPane({
 
         <button
           type="button"
-          className="pdf-tool-btn"
+          className="pdf-tool-btn pdf-tool-icon-btn"
           disabled={!file || pageNumber <= 1}
-          onClick={() => goToPage(pageNumber - pageStep)}
+          onClick={() => goToPage(pageNumber - pageStep, { smooth: true })}
+          title="上一页"
+          aria-label="上一页"
         >
-          上一页
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"
+            />
+          </svg>
         </button>
         <span className="pdf-page-label">
           <input
@@ -1301,18 +1400,41 @@ export function PdfPane({
             type="number"
             min={1}
             max={numPages || 1}
-            value={pageNumber}
-            onChange={(e) => goToPage(Number(e.target.value) || 1)}
+            value={pageInput}
+            onFocus={() => {
+              pageInputFocusedRef.current = true;
+            }}
+            onChange={(e) => setPageInput(e.target.value)}
+            onBlur={() => commitPageInput()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                setPageInput(String(pageNumber));
+                pageInputFocusedRef.current = false;
+                e.currentTarget.blur();
+              }
+            }}
+            inputMode="numeric"
+            title="输入页码后按回车或点击别处跳转"
           />
           / {numPages || "—"}
         </span>
         <button
           type="button"
-          className="pdf-tool-btn"
+          className="pdf-tool-btn pdf-tool-icon-btn"
           disabled={!file || !numPages || pageNumber >= numPages}
-          onClick={() => goToPage(pageNumber + pageStep)}
+          onClick={() => goToPage(pageNumber + pageStep, { smooth: true })}
+          title="下一页"
+          aria-label="下一页"
         >
-          下一页
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"
+            />
+          </svg>
         </button>
         <button
           type="button"

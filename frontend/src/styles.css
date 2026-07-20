@@ -1855,6 +1855,19 @@ textarea {
   cursor: not-allowed;
 }
 
+.pdf-tool-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  padding: 5px 8px;
+  line-height: 0;
+}
+
+.pdf-tool-icon-btn svg {
+  display: block;
+}
+
 .pdf-page-label {
   display: inline-flex;
   align-items: center;
@@ -1870,6 +1883,16 @@ textarea {
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
   outline: none;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.pdf-page-input::-webkit-outer-spin-button,
+.pdf-page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .pdf-page-input:focus {
@@ -2624,7 +2647,15 @@ textarea {
   padding: 2px 4px;
   border: 1px solid #c8cdd5;
   border-radius: 4px;
-  text-align: right;
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.pdf-scale-input::-webkit-outer-spin-button,
+.pdf-scale-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .pdf-view-menu {
@@ -2917,8 +2948,32 @@ body.col-resizing .textLayer {
 }
 
 .pdf-page-wrap .textLayer span,
-.pdf-page-wrap .react-pdf__Page__textContent span {
+.pdf-page-wrap .react-pdf__Page__textContent span,
+.pdf-page-wrap .textLayer br,
+.pdf-page-wrap .react-pdf__Page__textContent br {
   color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+}
+
+/* Selection highlight only — keep glyphs invisible to avoid canvas+text double image */
+.pdf-page-wrap .textLayer ::selection,
+.pdf-page-wrap .react-pdf__Page__textContent ::selection,
+.pdf-page-wrap .textLayer *::selection,
+.pdf-page-wrap .react-pdf__Page__textContent *::selection {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  background: rgba(47, 111, 237, 0.28) !important;
+  text-shadow: none !important;
+}
+
+.pdf-page-wrap .textLayer ::-moz-selection,
+.pdf-page-wrap .react-pdf__Page__textContent ::-moz-selection,
+.pdf-page-wrap .textLayer *::-moz-selection,
+.pdf-page-wrap .react-pdf__Page__textContent *::-moz-selection {
+  color: transparent !important;
+  background: rgba(47, 111, 237, 0.28) !important;
+  text-shadow: none !important;
 }
 
 .pdf-scroll .annotationLayer a {
