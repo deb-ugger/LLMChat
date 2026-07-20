@@ -2932,12 +2932,19 @@ body.col-resizing .textLayer {
   background: #fff;
 }
 
-/* Do not override canvas CSS width/height - pdf.js sets logical size. */
+/* HiDPI canvas: keep logical CSS size from pdf.js.
+   Mild contrast restores ink density (thin code fonts look washed without it).
+   Stronger boost when zoomed out — AA gray fringes dominate at small sizes. */
 .pdf-page-wrap .react-pdf__Page canvas,
 .pdf-page-wrap .react-pdf__Page__canvas {
   max-width: none !important;
   image-rendering: auto;
-  filter: contrast(1.14);
+  filter: contrast(1.18);
+}
+
+.pdf-canvas-host.is-zoomed-out .pdf-page-wrap .react-pdf__Page canvas,
+.pdf-canvas-host.is-zoomed-out .pdf-page-wrap .react-pdf__Page__canvas {
+  filter: contrast(1.28);
 }
 
 /* Text layer must stay fully transparent - any opacity washes the page gray */

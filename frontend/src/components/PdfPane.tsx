@@ -31,6 +31,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+/** Keep outside the component — react-pdf remounts Document if options identity changes. */
+const PDF_DOCUMENT_OPTIONS = {
+  cMapUrl: `${import.meta.env.BASE_URL}cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `${import.meta.env.BASE_URL}standard_fonts/`,
+} as const;
+
 export type { ViewMode };
 
 type OutlineItem = {
@@ -88,13 +95,13 @@ function percentToScale(pct: number): number {
 }
 
 /**
- * Canvas pixel density. Thin monospace (code listings) washes out at 1–1.5× DPR
- * like “out of ink”; keep at least ~3× so strokes stay dark and crisp.
+ * Match Mozilla PDF.js viewer OutputScale (vscode-pdfviewer / 官方 Viewer)：
+ * canvas 物理像素跟随屏幕 devicePixelRatio，上限 3，不再强行 3～5× 超采样。
  */
 function pdfDevicePixelRatio(): number {
-  if (typeof window === "undefined") return 3;
+  if (typeof window === "undefined") return 1;
   const dpr = window.devicePixelRatio || 1;
-  return Math.min(4, Math.max(3, dpr * 2));
+  return Math.min(3, Math.max(1, +dpr.toFixed(2)));
 }
 
 function isViewMode(v: unknown): v is ViewMode {
@@ -1604,6 +1611,7 @@ export function PdfPane({
           {file && (
             <Document
               file={file}
+              options={PDF_DOCUMENT_OPTIONS}
               loading={<div className="pdf-empty">正在加载 PDF…</div>}
               onLoadSuccess={(pdf) => void onLoadSuccess(pdf)}
               onLoadError={(err) => setError(err.message)}
@@ -1614,7 +1622,11 @@ export function PdfPane({
               }}
             >
               {error && <div className="pdf-empty boot-error">{error}</div>}
-              <div className={`pdf-canvas-host mode-${viewMode}`}>
+              <div
+                className={`pdf-canvas-host mode-${viewMode}${
+                  scale < SCALE_UI_BASE * 0.95 ? " is-zoomed-out" : ""
+                }`}
+              >
                 {renderedPages.map((pair) => (
                   <div
                     key={pair.join("-")}
