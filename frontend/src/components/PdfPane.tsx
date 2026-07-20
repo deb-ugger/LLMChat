@@ -71,8 +71,21 @@ function highlightSearchText(str: string, query: string): string {
 
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 5;
-/** Closer to desktop literature readers (知云 etc.); thin code fonts need more pixels */
-const DEFAULT_SCALE = 1.75;
+/**
+ * UI 100% maps to this react-pdf scale (former ~140%).
+ * Display percent = round(scale / SCALE_UI_BASE * 100).
+ */
+const SCALE_UI_BASE = 1.4;
+const DEFAULT_SCALE = SCALE_UI_BASE;
+const SCALE_STEP = SCALE_UI_BASE * 0.1;
+
+function scaleToPercent(scale: number): number {
+  return Math.round((scale / SCALE_UI_BASE) * 100);
+}
+
+function percentToScale(pct: number): number {
+  return +((pct / 100) * SCALE_UI_BASE).toFixed(2);
+}
 
 /**
  * Canvas pixel density. Thin monospace (code listings) washes out at 1–1.5× DPR
@@ -216,7 +229,7 @@ export function PdfPane({
   const [recentOpen, setRecentOpen] = useState(false);
   const [recentList, setRecentList] = useState<PdfRecentSummary[]>([]);
   const [scaleInput, setScaleInput] = useState(
-    String(Math.round(DEFAULT_SCALE * 100)),
+    String(scaleToPercent(DEFAULT_SCALE)),
   );
   const [pageInput, setPageInput] = useState("1");
   const { width: outlineWidth, beginResize: beginOutlineResize } =
@@ -543,7 +556,7 @@ export function PdfPane({
   }, [scale, scrollToPageEl, viewMode]);
 
   useEffect(() => {
-    setScaleInput(String(Math.round(scale * 100)));
+    setScaleInput(String(scaleToPercent(scale)));
   }, [scale]);
 
   const changeScale = useCallback(
@@ -563,18 +576,15 @@ export function PdfPane({
   const commitScaleInput = useCallback(() => {
     const pct = Number(scaleInput);
     if (!Number.isFinite(pct)) {
-      setScaleInput(String(Math.round(scale * 100)));
+      setScaleInput(String(scaleToPercent(scale)));
       return;
     }
-    changeScale(pct / 100);
-    setScaleInput(
-      String(
-        Math.round(
-          Math.min(MAX_SCALE, Math.max(MIN_SCALE, +(pct / 100).toFixed(2))) *
-            100,
-        ),
-      ),
+    const next = Math.min(
+      MAX_SCALE,
+      Math.max(MIN_SCALE, percentToScale(pct)),
     );
+    changeScale(next);
+    setScaleInput(String(scaleToPercent(next)));
   }, [changeScale, scale, scaleInput]);
 
   const refreshRecent = useCallback(async () => {
@@ -680,7 +690,10 @@ export function PdfPane({
       setScale(
         Math.min(
           MAX_SCALE,
-          Math.max(MIN_SCALE, savedScale < 1.35 ? DEFAULT_SCALE : savedScale),
+          Math.max(
+            MIN_SCALE,
+            savedScale < SCALE_UI_BASE * 0.85 ? DEFAULT_SCALE : savedScale,
+          ),
         ),
       );
       setOutlineOpen(!!session.outlineOpen);
@@ -1439,7 +1452,7 @@ export function PdfPane({
         <button
           type="button"
           className="pdf-tool-btn"
-          onClick={() => changeScale((s) => s - 0.1)}
+          onClick={() => changeScale((s) => s - SCALE_STEP)}
         >
           −
         </button>
@@ -1447,8 +1460,8 @@ export function PdfPane({
           <input
             className="pdf-scale-input"
             type="number"
-            min={Math.round(MIN_SCALE * 100)}
-            max={Math.round(MAX_SCALE * 100)}
+            min={scaleToPercent(MIN_SCALE)}
+            max={scaleToPercent(MAX_SCALE)}
             step={1}
             value={scaleInput}
             onChange={(e) => setScaleInput(e.target.value)}
@@ -1458,14 +1471,14 @@ export function PdfPane({
                 e.currentTarget.blur();
               }
             }}
-            title="自定义缩放百分比"
+            title="自定义缩放百分比（100% 约为原 140%）"
           />
           %
         </span>
         <button
           type="button"
           className="pdf-tool-btn"
-          onClick={() => changeScale((s) => s + 0.1)}
+          onClick={() => changeScale((s) => s + SCALE_STEP)}
         >
           +
         </button>
