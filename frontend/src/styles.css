@@ -3389,6 +3389,7 @@ body.col-resizing .textLayer {
   position: fixed;
   inset: 0;
   z-index: 80;
+  pointer-events: none;
 }
 
 .pdf-ctx-menu {
@@ -3402,6 +3403,7 @@ body.col-resizing .textLayer {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
   display: flex;
   flex-direction: column;
+  pointer-events: auto;
 }
 
 .pdf-ctx-menu button {
@@ -3430,7 +3432,9 @@ body.col-resizing .textLayer {
 
 .pdf-ctx-check {
   display: inline-block;
+  flex: 0 0 14px;
   width: 14px;
+  text-align: center;
   color: var(--accent);
   font-weight: 700;
 }

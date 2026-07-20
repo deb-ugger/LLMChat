@@ -6,6 +6,12 @@ import App from "./App";
 import "./styles.css";
 import "katex/dist/katex.min.css";
 
+// 桌面端禁用 WebView 自带右键菜单（返回/刷新/另存为等）；
+// 应用内自定义右键（PDF、会话列表等）自行 preventDefault 并弹出菜单。
+document.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+});
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

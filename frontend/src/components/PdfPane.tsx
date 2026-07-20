@@ -81,8 +81,8 @@ const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
 
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 5;
-/** UI 100% maps to this pdf.js scale (former ~140%). */
-const SCALE_UI_BASE = 1.4;
+/** UI 100% maps to this pdf.js scale (former UI 70% under base 1.4). */
+const SCALE_UI_BASE = 0.98;
 const DEFAULT_SCALE = SCALE_UI_BASE;
 const SCALE_STEP = SCALE_UI_BASE * 0.15;
 
@@ -273,6 +273,7 @@ export function PdfPane({
   const viewerDivRef = useRef<HTMLDivElement>(null);
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const openMenuRef = useRef<HTMLDivElement>(null);
+  const imgCtxMenuRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const pageWidthRef = useRef(0);
   const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
@@ -805,13 +806,7 @@ export function PdfPane({
       setPageNumber(keepPage);
       const savedScale = session.scale || DEFAULT_SCALE;
       setScale(
-        Math.min(
-          MAX_SCALE,
-          Math.max(
-            MIN_SCALE,
-            savedScale < SCALE_UI_BASE * 0.85 ? DEFAULT_SCALE : savedScale,
-          ),
-        ),
+        Math.min(MAX_SCALE, Math.max(MIN_SCALE, savedScale)),
       );
       setOutlineOpen(!!session.outlineOpen);
       pendingScrollRef.current = {
@@ -1197,11 +1192,43 @@ export function PdfPane({
   }, []);
 
   const closeImgMenu = useCallback(() => {
-    if (imgMenu?.imageHit?.objectUrl) {
-      URL.revokeObjectURL(imgMenu.imageHit.objectUrl);
-    }
-    setImgMenu(null);
-  }, [imgMenu]);
+    setImgMenu((prev) => {
+      if (prev?.imageHit?.objectUrl) {
+        URL.revokeObjectURL(prev.imageHit.objectUrl);
+      }
+      return null;
+    });
+  }, []);
+
+  // 菜单打开时：左键点外部关闭；右键在 PDF 页上由页面监听器换菜单位置，
+  // 右键在其它区域则关闭。backdrop 不拦截指针，避免挡住再次右键。
+  useEffect(() => {
+    if (!imgMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target as Node | null;
+      if (t && imgCtxMenuRef.current?.contains(t)) return;
+      closeImgMenu();
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && imgCtxMenuRef.current?.contains(t)) {
+        e.preventDefault();
+        return;
+      }
+      const root = scrollRef.current;
+      if (root && t && root.contains(t) && t.closest(".page")) {
+        return;
+      }
+      closeImgMenu();
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.addEventListener("contextmenu", onContextMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.removeEventListener("contextmenu", onContextMenu, true);
+    };
+  }, [imgMenu, closeImgMenu]);
 
   useEffect(() => {
     return () => {
@@ -1472,7 +1499,7 @@ export function PdfPane({
                 e.currentTarget.blur();
               }
             }}
-            title="自定义缩放百分比（100% 约为原 140%）"
+            title="自定义缩放百分比"
           />
           %
         </span>
@@ -1617,13 +1644,14 @@ export function PdfPane({
 
       {imgMenu && (
         <>
-          <div className="pdf-ctx-backdrop" onClick={closeImgMenu} />
+          <div className="pdf-ctx-backdrop" aria-hidden />
           <div
+            ref={imgCtxMenuRef}
             className="pdf-ctx-menu"
             style={{ left: imgMenu.x, top: imgMenu.y }}
             role="menu"
           >
-            {imgMenu.imageHit && (
+            {imgMenu.imageHit ? (
               <>
                 <button
                   type="button"
@@ -1649,74 +1677,57 @@ export function PdfPane({
                 >
                   图片另存为
                 </button>
+              </>
+            ) : (
+              <>
+                {(
+                  [
+                    ["actual", "实际大小"],
+                    ["fitHeight", "适应高度"],
+                    ["fitWidth", "适应宽度"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="menuitem"
+                    className={fitMode === id ? "is-checked" : undefined}
+                    onClick={() => {
+                      applyFitMode(id);
+                      closeImgMenu();
+                    }}
+                  >
+                    <span className="pdf-ctx-check">
+                      {fitMode === id ? "✓" : ""}
+                    </span>
+                    {label}
+                  </button>
+                ))}
                 <div className="pdf-ctx-sep" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    rotatePage(imgMenu.pageNumber, 90);
+                    closeImgMenu();
+                  }}
+                >
+                  <span className="pdf-ctx-check" />
+                  顺时针旋转
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    rotatePage(imgMenu.pageNumber, -90);
+                    closeImgMenu();
+                  }}
+                >
+                  <span className="pdf-ctx-check" />
+                  逆时针旋转
+                </button>
               </>
             )}
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                changeScale((s) => s + SCALE_STEP);
-                closeImgMenu();
-              }}
-            >
-              放大
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                changeScale((s) => s - SCALE_STEP);
-                closeImgMenu();
-              }}
-            >
-              缩小
-            </button>
-            <div className="pdf-ctx-sep" />
-            {(
-              [
-                ["actual", "实际大小"],
-                ["fitHeight", "适应高度"],
-                ["fitWidth", "适应宽度"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                role="menuitem"
-                className={fitMode === id ? "is-checked" : undefined}
-                onClick={() => {
-                  applyFitMode(id);
-                  closeImgMenu();
-                }}
-              >
-                <span className="pdf-ctx-check">
-                  {fitMode === id ? "✓" : ""}
-                </span>
-                {label}
-              </button>
-            ))}
-            <div className="pdf-ctx-sep" />
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                rotatePage(imgMenu.pageNumber, 90);
-                closeImgMenu();
-              }}
-            >
-              顺时针旋转
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                rotatePage(imgMenu.pageNumber, -90);
-                closeImgMenu();
-              }}
-            >
-              逆时针旋转
-            </button>
           </div>
         </>
       )}
