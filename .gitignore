@@ -1,25 +1,47 @@
-# Backend
+# Backend build
 backend/build/
 backend/out/
 
-# Frontend
+# Frontend deps & build
 frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+
+# Tauri / Rust build
 frontend/src-tauri/target/
+frontend/src-tauri/tauri.conf.build.json
 frontend/src-tauri/binaries/*.exe
 frontend/src-tauri/binaries/config.ini
 
-# Dist
+# Portable / release packaging
 dist-portable/
+dist/
+release/
+**/bundle/
 
-# Data
+# Build logs & compiler scratch
+tauri-build.log
+tsc-out.txt
+*.log
+
+# Binaries & installers produced by build
+*.exe
+*.dll
+*.msi
+*.msix
+*.appx
+*.pdb
+*.so
+*.dylib
+
+# Runtime / local data (not source)
 config.ini
 conversations.json
 **/config.ini
 **/conversations.json
 
-# IDE
+# IDE / OS
 .vs/
 .idea/
 *.user
