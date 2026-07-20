@@ -29,6 +29,7 @@ type Props = {
   model: string;
   apiUrl?: string;
   apiKey?: string;
+  onOpenImageOcr?: (file: File) => void;
 };
 
 export function LiteratureView({
@@ -41,6 +42,7 @@ export function LiteratureView({
   model,
   apiUrl = "",
   apiKey = "",
+  onOpenImageOcr,
 }: Props) {
   const [source, setSource] = useState("");
   const [translation, setTranslation] = useState("");
@@ -181,6 +183,7 @@ export function LiteratureView({
         onTextSelected={onTextSelected}
         translateProvider={translateProvider}
         model={model}
+        onOpenImageOcr={onOpenImageOcr}
       />
       <div
         className="col-resizer col-resizer-panel"

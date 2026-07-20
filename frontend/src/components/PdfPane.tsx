@@ -64,6 +64,7 @@ type Props = {
   visible?: boolean;
   translateProvider?: string;
   model?: string;
+  onOpenImageOcr?: (file: File) => void;
 };
 
 type FileMeta = {
@@ -223,6 +224,7 @@ export function PdfPane({
   visible = true,
   translateProvider = "google",
   model = "",
+  onOpenImageOcr,
 }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
@@ -1676,6 +1678,22 @@ export function PdfPane({
                   }}
                 >
                   图片另存为
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const hit = imgMenu.imageHit!;
+                    const file = new File(
+                      [hit.blob],
+                      `pdf-p${hit.pageNumber}-image.png`,
+                      { type: hit.blob.type || "image/png" },
+                    );
+                    closeImgMenu();
+                    onOpenImageOcr?.(file);
+                  }}
+                >
+                  图片识别
                 </button>
               </>
             ) : (

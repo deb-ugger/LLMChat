@@ -34,6 +34,9 @@ type Props = {
   translateMaxLength: number;
   translateAutoChunk: boolean;
   model?: string;
+  /** External image to OCR (e.g. from PDF context menu). */
+  incomingImage?: { file: File; id: number } | null;
+  onIncomingHandled?: () => void;
 };
 
 type BBoxLine = {
@@ -209,6 +212,8 @@ export function ImageOcrView({
   translateMaxLength,
   translateAutoChunk,
   model = "",
+  incomingImage = null,
+  onIncomingHandled,
 }: Props) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<OcrBlock[]>([]);
@@ -573,6 +578,16 @@ export function ImageOcrView({
     },
     [autoTranslate, ensureWorker, imageUrl, translateBlocks],
   );
+
+  const handledIncomingIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!incomingImage) return;
+    if (handledIncomingIdRef.current === incomingImage.id) return;
+    handledIncomingIdRef.current = incomingImage.id;
+    void runOcr(incomingImage.file).finally(() => {
+      onIncomingHandled?.();
+    });
+  }, [incomingImage, onIncomingHandled, runOcr]);
 
   const onRetranslateAll = async () => {
     if (!blocks.length) return;

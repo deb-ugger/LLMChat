@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type Conversation,
@@ -55,6 +55,17 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [sending, setSending] = useState(false);
   const [displayOffset, setDisplayOffset] = useState(0);
+  const [ocrIncoming, setOcrIncoming] = useState<{
+    file: File;
+    id: number;
+  } | null>(null);
+  const ocrIncomingSeq = useRef(0);
+
+  const openImageOcr = useCallback((file: File) => {
+    ocrIncomingSeq.current += 1;
+    setOcrIncoming({ file, id: ocrIncomingSeq.current });
+    setPage("image");
+  }, []);
 
   const refreshList = useCallback(async () => {
     const data = await api.listConversations();
@@ -436,6 +447,7 @@ export default function App() {
             model={settings.model}
             apiUrl={settings.apiUrl}
             apiKey={settings.apiKey}
+            onOpenImageOcr={openImageOcr}
           />
         </div>
         <div
@@ -453,6 +465,8 @@ export default function App() {
             translateMaxLength={settings.ocrTranslateMaxLength}
             translateAutoChunk={settings.ocrTranslateAutoChunk}
             model={settings.model}
+            incomingImage={ocrIncoming}
+            onIncomingHandled={() => setOcrIncoming(null)}
           />
         </div>
         <div
