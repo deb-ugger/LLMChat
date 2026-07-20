@@ -2888,6 +2888,11 @@ body.col-resizing .textLayer {
   background: #fff;
 }
 
+/* Double-page (spread): keep a small gap between facing pages */
+.pdf-scroll .pdfViewer .spread .page {
+  margin: 0 8px 12px;
+}
+
 .pdf-viewer-loading {
   position: absolute;
   inset: 0;
@@ -3378,3 +3383,139 @@ body.col-resizing .textLayer {
 .text-stat.is-fail { color: var(--danger); }
 .text-stat.is-pending { color: var(--accent-ink); }
 .text-stat.is-skip { color: var(--text-muted); }
+
+/* —— PDF image context menu & preview —— */
+.pdf-ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+
+.pdf-ctx-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 168px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-ctx-menu button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 16px 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pdf-ctx-menu button:hover {
+  background: var(--bg-hover);
+}
+
+.pdf-ctx-menu button.is-checked {
+  color: var(--accent-ink);
+}
+
+.pdf-ctx-check {
+  display: inline-block;
+  width: 14px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.pdf-ctx-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.pdf-img-busy {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.pdf-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.pdf-image-viewer-panel {
+  flex: 1;
+  max-width: 1100px;
+  display: flex;
+  flex-direction: column;
+  background: #e8eef5;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  min-height: 0;
+}
+
+.pdf-image-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg-muted) 100%);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pdf-image-viewer-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-image-viewer-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pdf-image-viewer-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background:
+    linear-gradient(45deg, #dbe3ec 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, #dbe3ec 25%, transparent 25%) 0 8px / 16px 16px,
+    #eef3f8;
+}
+
+.pdf-image-viewer-stage img {
+  max-width: none;
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.2);
+  background: #fff;
+  user-select: none;
+}

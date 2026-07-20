@@ -37,6 +37,12 @@ import {
 import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml } from "../highlightText";
+import {
+  copyImageBlob,
+  downloadImageBlob,
+  findImageAtPoint,
+  type PdfImageHit,
+} from "../pdfImages";
 
 const PDF_DOCUMENT_OPTIONS = {
   cMapUrl: `${import.meta.env.BASE_URL}cmaps/`,
@@ -247,6 +253,17 @@ export function PdfPane({
     String(scaleToPercent(DEFAULT_SCALE)),
   );
   const [pageInput, setPageInput] = useState("1");
+  const [imgMenu, setImgMenu] = useState<{
+    x: number;
+    y: number;
+    pageNumber: number;
+    imageHit: PdfImageHit | null;
+  } | null>(null);
+  const [imgBusy, setImgBusy] = useState(false);
+  const [fitMode, setFitMode] = useState<
+    "actual" | "fitHeight" | "fitWidth" | "custom"
+  >("actual");
+  const pageExtraRotationRef = useRef<Map<number, number>>(new Map());
   const { width: outlineWidth, beginResize: beginOutlineResize } =
     usePersistedWidth("llmchat-pdf-outline-width", 220, 140, 480);
 
@@ -349,7 +366,7 @@ export function PdfPane({
       const root = scrollRef.current;
       const pageW = pageWidthRef.current;
       if (!root || !pageW) return preferred ?? scale;
-      const gap = 12;
+      const gap = 16; // matches .spread .page horizontal margins (8px + 8px)
       const padding = 40;
       const available = root.clientWidth - padding;
       const fit = available / (pageW * 2 + gap);
@@ -359,9 +376,26 @@ export function PdfPane({
     [scale],
   );
 
+  const reapplyPageRotations = useCallback(() => {
+    const viewer = pdfViewerRef.current;
+    if (!viewer) return;
+    const scaleNow = viewer.currentScale;
+    for (const [pageNum, rot] of pageExtraRotationRef.current) {
+      const pageView = viewer.getPageView(pageNum - 1) as
+        | { update: (o: { scale?: number; rotation?: number }) => void; rotation?: number }
+        | undefined;
+      if (!pageView) continue;
+      if (pageView.rotation === rot) continue;
+      pageView.update({ scale: scaleNow, rotation: rot });
+    }
+  }, []);
+  const reapplyPageRotationsRef = useRef(reapplyPageRotations);
+  reapplyPageRotationsRef.current = reapplyPageRotations;
+
   const changeScale = useCallback(
     (nextOrFn: number | ((s: number) => number)) => {
       const keepPage = pageNumber;
+      setFitMode("custom");
       setScale((s) => {
         const raw = typeof nextOrFn === "function" ? nextOrFn(s) : nextOrFn;
         const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, +raw.toFixed(2)));
@@ -371,12 +405,72 @@ export function PdfPane({
           viewer.currentScale = next;
           viewer.currentPageNumber = keepPage;
           applyingViewerScaleRef.current = false;
+          window.setTimeout(() => reapplyPageRotations(), 0);
         }
         return next;
       });
       setPageNumber(keepPage);
     },
-    [pageNumber],
+    [pageNumber, reapplyPageRotations],
+  );
+
+  const applyFitMode = useCallback(
+    (mode: "actual" | "fitHeight" | "fitWidth") => {
+      const viewer = pdfViewerRef.current;
+      if (!viewer) return;
+      const keepPage = pageNumber;
+      if (mode === "actual") {
+        setFitMode("actual");
+        applyingViewerScaleRef.current = true;
+        viewer.currentScale = DEFAULT_SCALE;
+        applyingViewerScaleRef.current = false;
+        setScale(DEFAULT_SCALE);
+      } else {
+        setFitMode(mode);
+        applyingViewerScaleRef.current = true;
+        viewer.currentScaleValue =
+          mode === "fitWidth" ? "page-width" : "page-height";
+        applyingViewerScaleRef.current = false;
+        const next = viewer.currentScale;
+        if (Number.isFinite(next)) {
+          setScale(
+            Math.min(MAX_SCALE, Math.max(MIN_SCALE, +next.toFixed(2))),
+          );
+        }
+      }
+      viewer.currentPageNumber = keepPage;
+      setPageNumber(keepPage);
+      window.setTimeout(() => reapplyPageRotations(), 0);
+    },
+    [pageNumber, reapplyPageRotations],
+  );
+
+  const rotatePage = useCallback(
+    (pageNum: number, delta: number) => {
+      const viewer = pdfViewerRef.current;
+      if (!viewer || pageNum < 1) return;
+      const pageView = viewer.getPageView(pageNum - 1) as
+        | {
+            update: (o: { scale?: number; rotation?: number }) => void;
+            rotation?: number;
+            reset?: () => void;
+            draw?: () => Promise<unknown>;
+          }
+        | undefined;
+      if (!pageView) return;
+      const cur = pageExtraRotationRef.current.get(pageNum) ?? pageView.rotation ?? 0;
+      const next = (((cur + delta) % 360) + 360) % 360;
+      pageExtraRotationRef.current.set(pageNum, next);
+      pageView.update({ scale: viewer.currentScale, rotation: next });
+      try {
+        pageView.reset?.();
+      } catch {
+        /* ignore */
+      }
+      void pageView.draw?.();
+      viewer.update();
+    },
+    [],
   );
 
   const commitScaleInput = useCallback(() => {
@@ -555,6 +649,7 @@ export function PdfPane({
       if (applyingViewerScaleRef.current) return;
       const s = evt.scale;
       if (!Number.isFinite(s)) return;
+      setFitMode("custom");
       setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, +s.toFixed(2))));
     };
     const onPagesInit = () => {
@@ -571,6 +666,7 @@ export function PdfPane({
       );
       pdfViewer.currentPageNumber = keep;
       setPageNumber(keep);
+      window.setTimeout(() => reapplyPageRotationsRef.current(), 0);
       const pending = pendingScrollRef.current;
       if (pending) {
         window.setTimeout(() => {
@@ -614,6 +710,7 @@ export function PdfPane({
     let cancelled = false;
     setDocLoading(true);
     setError(null);
+    pageExtraRotationRef.current.clear();
 
     (async () => {
       try {
@@ -1012,8 +1109,64 @@ export function PdfPane({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  // Right-click on PDF page: zoom/fit (whole doc) + rotate (this page); image actions if hit
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !file) return;
+
+    const onContextMenu = (e: MouseEvent) => {
+      const pdf = pdfRef.current;
+      if (!pdf || handMode) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const pageEl = target.closest(".page") as HTMLElement | null;
+      if (!pageEl || !root.contains(pageEl)) return;
+
+      const pageNum = Number(
+        pageEl.dataset.pageNumber || pageEl.getAttribute("data-page-number"),
+      );
+      if (!Number.isFinite(pageNum) || pageNum < 1) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      setImgBusy(true);
+      void (async () => {
+        let imageHit: PdfImageHit | null = null;
+        try {
+          const page = await pdf.getPage(pageNum);
+          imageHit = await findImageAtPoint(
+            page,
+            pageNum,
+            pageEl,
+            clientX,
+            clientY,
+          );
+        } catch {
+          imageHit = null;
+        } finally {
+          setImgBusy(false);
+        }
+        setImgMenu((prev) => {
+          if (prev?.imageHit?.objectUrl) {
+            URL.revokeObjectURL(prev.imageHit.objectUrl);
+          }
+          return {
+            x: clientX,
+            y: clientY,
+            pageNumber: pageNum,
+            imageHit,
+          };
+        });
+      })();
+    };
+
+    root.addEventListener("contextmenu", onContextMenu, true);
+    return () => root.removeEventListener("contextmenu", onContextMenu, true);
+  }, [file, handMode, viewerReady]);
+
   // Ctrl/Meta + wheel → zoom 15%; Shift + wheel → horizontal scroll.
-  // Non-passive so preventDefault can block browser page zoom.
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
@@ -1033,6 +1186,22 @@ export function PdfPane({
     root.addEventListener("wheel", onWheel, { passive: false });
     return () => root.removeEventListener("wheel", onWheel);
   }, [changeScale, file, restoring, viewerReady]);
+
+  useEffect(() => {
+    return () => {
+      if (imgMenu?.imageHit?.objectUrl) {
+        URL.revokeObjectURL(imgMenu.imageHit.objectUrl);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const closeImgMenu = useCallback(() => {
+    if (imgMenu?.imageHit?.objectUrl) {
+      URL.revokeObjectURL(imgMenu.imageHit.objectUrl);
+    }
+    setImgMenu(null);
+  }, [imgMenu]);
 
   useEffect(() => {
     return () => {
@@ -1445,6 +1614,114 @@ export function PdfPane({
           )}
         </div>
       </div>
+
+      {imgMenu && (
+        <>
+          <div className="pdf-ctx-backdrop" onClick={closeImgMenu} />
+          <div
+            className="pdf-ctx-menu"
+            style={{ left: imgMenu.x, top: imgMenu.y }}
+            role="menu"
+          >
+            {imgMenu.imageHit && (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const hit = imgMenu.imageHit!;
+                    void copyImageBlob(hit.blob).finally(closeImgMenu);
+                  }}
+                >
+                  复制图片
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const hit = imgMenu.imageHit!;
+                    downloadImageBlob(
+                      hit.blob,
+                      `pdf-p${hit.pageNumber}-image.png`,
+                    );
+                    closeImgMenu();
+                  }}
+                >
+                  图片另存为
+                </button>
+                <div className="pdf-ctx-sep" />
+              </>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                changeScale((s) => s + SCALE_STEP);
+                closeImgMenu();
+              }}
+            >
+              放大
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                changeScale((s) => s - SCALE_STEP);
+                closeImgMenu();
+              }}
+            >
+              缩小
+            </button>
+            <div className="pdf-ctx-sep" />
+            {(
+              [
+                ["actual", "实际大小"],
+                ["fitHeight", "适应高度"],
+                ["fitWidth", "适应宽度"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="menuitem"
+                className={fitMode === id ? "is-checked" : undefined}
+                onClick={() => {
+                  applyFitMode(id);
+                  closeImgMenu();
+                }}
+              >
+                <span className="pdf-ctx-check">
+                  {fitMode === id ? "✓" : ""}
+                </span>
+                {label}
+              </button>
+            ))}
+            <div className="pdf-ctx-sep" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                rotatePage(imgMenu.pageNumber, 90);
+                closeImgMenu();
+              }}
+            >
+              顺时针旋转
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                rotatePage(imgMenu.pageNumber, -90);
+                closeImgMenu();
+              }}
+            >
+              逆时针旋转
+            </button>
+          </div>
+        </>
+      )}
+
+      {imgBusy && <div className="pdf-img-busy" aria-hidden />}
     </div>
   );
 }
