@@ -429,7 +429,13 @@ export default function App() {
           <LiteratureView
             visible={page === "literature"}
             translateProvider={settings.translateProvider}
+            translateSource={settings.translateSource}
+            translateTarget={settings.translateTarget}
+            translateMaxLength={settings.translateMaxLength}
+            translateAutoChunk={settings.translateAutoChunk}
             model={settings.model}
+            apiUrl={settings.apiUrl}
+            apiKey={settings.apiKey}
           />
         </div>
         <div

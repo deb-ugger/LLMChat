@@ -446,11 +446,14 @@ export function SettingsView({ settings, onSave }: Props) {
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), 15000);
     try {
+      // Persist first so Literature / OCR use the same engine that was tested.
+      await onSave(form);
+
       if (kind === "llm") {
         if (!form.apiUrl.trim()) {
           throw new Error("请先填写 API URL");
         }
-        await api.translate("ping", { signal: ac.signal }, {
+        const res = await api.translate("ping", { signal: ac.signal }, {
           provider: "llm",
           source: "en",
           target: "zh-CN",
@@ -460,8 +463,11 @@ export function SettingsView({ settings, onSave }: Props) {
           maxLength: 32,
           autoChunk: false,
         });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
       } else if (kind === "lit") {
-        await api.translate("Hello", { signal: ac.signal }, {
+        const res = await api.translate("Hello", { signal: ac.signal }, {
           provider: form.translateProvider,
           source: form.translateSource,
           target: form.translateTarget,
@@ -475,12 +481,15 @@ export function SettingsView({ settings, onSave }: Props) {
               }
             : {}),
         });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文，请换引擎或检查网络/代理");
+        }
       } else if (kind === "text") {
         const provider = form.textTranslateProvider || "llm";
         if (provider === "llm" && !form.apiUrl.trim()) {
           throw new Error("请先在「通用」填写 API URL");
         }
-        await api.translate("Hello", { signal: ac.signal }, {
+        const res = await api.translate("Hello", { signal: ac.signal }, {
           provider,
           source: form.textTranslateSource,
           target: form.textTranslateTarget,
@@ -495,8 +504,11 @@ export function SettingsView({ settings, onSave }: Props) {
               }
             : {}),
         });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
       } else {
-        await api.translate("Hello", { signal: ac.signal }, {
+        const res = await api.translate("Hello", { signal: ac.signal }, {
           provider: form.ocrTranslateProvider,
           source: ocrLangToTranslateSource(form.ocrLang),
           target: form.ocrTranslateTarget,
@@ -510,6 +522,9 @@ export function SettingsView({ settings, onSave }: Props) {
               }
             : {}),
         });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
       }
       const ms = Math.round(performance.now() - t0);
       setTestMsg((m) => ({

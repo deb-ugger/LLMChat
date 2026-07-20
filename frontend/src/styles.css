@@ -1772,7 +1772,7 @@ textarea {
 }
 
 .literature-host.is-hidden {
-  /* Keep real size so react-pdf can paint; do not use display:none */
+  /* Keep real size so pdf.js can paint; do not use display:none */
   position: absolute;
   inset: 0;
   visibility: hidden;
@@ -1898,14 +1898,6 @@ textarea {
 .pdf-page-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.pdf-empty {
-  max-width: 420px;
-  margin: 80px auto;
-  text-align: center;
-  color: var(--text-muted);
-  line-height: 1.6;
 }
 
 .pdf-tool-btn.active {
@@ -2685,16 +2677,11 @@ mark.search-hit-mark {
   border-radius: 2px;
 }
 
-/* PDF textLayer: keep mark glyphs transparent (yellow wash only; avoid ghosting). */
-.pdf-page-wrap .textLayer mark.pdf-search-mark,
-.pdf-page-wrap .react-pdf__Page__textContent mark.pdf-search-mark,
-.pdf-page-wrap .textLayer mark.search-hit-mark,
-.pdf-page-wrap .react-pdf__Page__textContent mark.search-hit-mark {
+/* PDF find highlights (official PDFFindController) */
+.pdf-scroll .textLayer .highlight {
   background: rgba(255, 196, 0, 0.4) !important;
   color: transparent !important;
-  padding: 0;
   border-radius: 1px;
-  box-shadow: none;
   mix-blend-mode: multiply;
 }
 
@@ -2728,6 +2715,34 @@ mark.search-hit-mark {
   display: flex;
   min-height: 0;
   min-width: 0;
+}
+
+.pdf-viewer-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.pdf-viewer-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #e2e8f0;
+  box-sizing: border-box;
+}
+
+.pdf-empty {
+  max-width: 420px;
+  margin: 0 auto;
+  text-align: center;
+  color: var(--text-muted);
+  line-height: 1.6;
 }
 
 .pdf-outline {
@@ -2849,9 +2864,35 @@ body.col-resizing .textLayer {
 .pdf-scroll {
   flex: 1;
   overflow: auto;
-  padding: 16px;
+  padding: 0;
   min-width: 0;
   min-height: 0;
+  background: #e2e8f0;
+}
+
+/* Official PDFViewer requires container position:absolute (throws otherwise). */
+.pdf-scroll.pdf-viewer-container {
+  position: absolute;
+  inset: 0;
+  outline: none;
+}
+
+.pdf-scroll .pdfViewer {
+  padding: 16px 0;
+}
+
+.pdf-scroll .pdfViewer .page {
+  margin: 0 auto 12px;
+  border: none;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+
+.pdf-viewer-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .pdf-scroll.hand-mode {
@@ -2865,28 +2906,6 @@ body.col-resizing .textLayer {
 .pdf-scroll.hand-mode .textLayer,
 .pdf-scroll.hand-mode .annotationLayer {
   pointer-events: none;
-}
-
-.pdf-canvas-host {
-  display: inline-block;
-  min-width: 100%;
-}
-
-.pdf-spread {
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 12px;
-  flex-wrap: nowrap;
-  margin-bottom: 12px;
-  width: max-content;
-  min-width: 100%;
-  box-sizing: border-box;
-}
-
-.pdf-spread.single {
-  width: max-content;
-  min-width: 100%;
 }
 
 .tr-block-head {
@@ -2915,69 +2934,24 @@ body.col-resizing .textLayer {
   color: #333;
 }
 
-.pdf-page-wrap {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 12px;
-  box-sizing: border-box;
-}
-
-.pdf-page-wrap.is-placeholder {
-  background: #fff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
-}
-
-.pdf-page-wrap .react-pdf__Page {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
-  background: #fff;
-}
-
-/* HiDPI canvas: keep logical CSS size from pdf.js.
-   Mild contrast restores ink density (thin code fonts look washed without it).
-   Stronger boost when zoomed out — AA gray fringes dominate at small sizes. */
-.pdf-page-wrap .react-pdf__Page canvas,
-.pdf-page-wrap .react-pdf__Page__canvas {
-  max-width: none !important;
-  image-rendering: auto;
-  filter: contrast(1.18);
-}
-
-.pdf-canvas-host.is-zoomed-out .pdf-page-wrap .react-pdf__Page canvas,
-.pdf-canvas-host.is-zoomed-out .pdf-page-wrap .react-pdf__Page__canvas {
-  filter: contrast(1.28);
-}
-
-/* Text layer must stay fully transparent - any opacity washes the page gray */
-.pdf-page-wrap .textLayer,
-.pdf-page-wrap .react-pdf__Page__textContent {
-  opacity: 1 !important;
-  mix-blend-mode: normal;
-}
-
-.pdf-page-wrap .textLayer span,
-.pdf-page-wrap .react-pdf__Page__textContent span,
-.pdf-page-wrap .textLayer br,
-.pdf-page-wrap .react-pdf__Page__textContent br {
+/* Official textLayer: glyphs stay transparent so canvas ink is not doubled */
+.pdf-scroll .textLayer span,
+.pdf-scroll .textLayer br {
   color: transparent !important;
   -webkit-text-fill-color: transparent !important;
   text-shadow: none !important;
 }
 
-/* Selection highlight only — keep glyphs invisible to avoid canvas+text double image */
-.pdf-page-wrap .textLayer ::selection,
-.pdf-page-wrap .react-pdf__Page__textContent ::selection,
-.pdf-page-wrap .textLayer *::selection,
-.pdf-page-wrap .react-pdf__Page__textContent *::selection {
+.pdf-scroll .textLayer ::selection,
+.pdf-scroll .textLayer *::selection {
   color: transparent !important;
   -webkit-text-fill-color: transparent !important;
   background: rgba(47, 111, 237, 0.28) !important;
   text-shadow: none !important;
 }
 
-.pdf-page-wrap .textLayer ::-moz-selection,
-.pdf-page-wrap .react-pdf__Page__textContent ::-moz-selection,
-.pdf-page-wrap .textLayer *::-moz-selection,
-.pdf-page-wrap .react-pdf__Page__textContent *::-moz-selection {
+.pdf-scroll .textLayer ::-moz-selection,
+.pdf-scroll .textLayer *::-moz-selection {
   color: transparent !important;
   background: rgba(47, 111, 237, 0.28) !important;
   text-shadow: none !important;
@@ -3083,14 +3057,17 @@ body.col-resizing .textLayer {
 
 .translate-lookup {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
+  flex-shrink: 0;
 }
 
 .translate-lookup input {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
@@ -3104,6 +3081,14 @@ body.col-resizing .textLayer {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   background: var(--bg-panel);
+}
+
+.translate-lookup-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+  padding: 8px 14px;
+  line-height: 1.2;
 }
 
 .hint {

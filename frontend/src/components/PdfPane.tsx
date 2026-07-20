@@ -6,10 +6,22 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
-import type { PDFDocumentProxy } from "pdfjs-dist";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
+// 必须先于 pdf_viewer：后者启动时读取 globalThis.pdfjsLib
+import {
+  AnnotationMode,
+  getDocument,
+  type PDFDocumentProxy,
+} from "../pdfjsBootstrap";
+import {
+  EventBus,
+  LinkTarget,
+  PDFFindController,
+  PDFLinkService,
+  PDFViewer,
+  ScrollMode,
+  SpreadMode,
+} from "pdfjs-dist/web/pdf_viewer.mjs";
+import "pdfjs-dist/web/pdf_viewer.css";
 import {
   fileToArrayBuffer,
   listRecentPdfs,
@@ -26,12 +38,6 @@ import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml } from "../highlightText";
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
-
-/** Keep outside the component — react-pdf remounts Document if options identity changes. */
 const PDF_DOCUMENT_OPTIONS = {
   cMapUrl: `${import.meta.env.BASE_URL}cmaps/`,
   cMapPacked: true,
@@ -67,24 +73,12 @@ const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
   { id: "double-scroll", label: "双页滚动" },
 ];
 
-const SCROLL_PAGE_BUFFER = 3;
-
-function highlightSearchText(str: string, query: string): string {
-  // Yellow wash only — text stays transparent so canvas glyphs aren't doubled
-  return highlightSearchHtml(str, query).split('class="search-hit-mark"').join(
-    'class="search-hit-mark pdf-search-mark"',
-  );
-}
-
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 5;
-/**
- * UI 100% maps to this react-pdf scale (former ~140%).
- * Display percent = round(scale / SCALE_UI_BASE * 100).
- */
+/** UI 100% maps to this pdf.js scale (former ~140%). */
 const SCALE_UI_BASE = 1.4;
 const DEFAULT_SCALE = SCALE_UI_BASE;
-const SCALE_STEP = SCALE_UI_BASE * 0.1;
+const SCALE_STEP = SCALE_UI_BASE * 0.15;
 
 function scaleToPercent(scale: number): number {
   return Math.round((scale / SCALE_UI_BASE) * 100);
@@ -94,16 +88,6 @@ function percentToScale(pct: number): number {
   return +((pct / 100) * SCALE_UI_BASE).toFixed(2);
 }
 
-/**
- * Match Mozilla PDF.js viewer OutputScale (vscode-pdfviewer / 官方 Viewer)：
- * canvas 物理像素跟随屏幕 devicePixelRatio，上限 3，不再强行 3～5× 超采样。
- */
-function pdfDevicePixelRatio(): number {
-  if (typeof window === "undefined") return 1;
-  const dpr = window.devicePixelRatio || 1;
-  return Math.min(3, Math.max(1, +dpr.toFixed(2)));
-}
-
 function isViewMode(v: unknown): v is ViewMode {
   return (
     v === "single" ||
@@ -111,6 +95,23 @@ function isViewMode(v: unknown): v is ViewMode {
     v === "double" ||
     v === "double-scroll"
   );
+}
+
+function viewModeToScrollSpread(mode: ViewMode): {
+  scroll: number;
+  spread: number;
+} {
+  switch (mode) {
+    case "single":
+      return { scroll: ScrollMode.PAGE, spread: SpreadMode.NONE };
+    case "double":
+      return { scroll: ScrollMode.PAGE, spread: SpreadMode.ODD };
+    case "double-scroll":
+      return { scroll: ScrollMode.VERTICAL, spread: SpreadMode.ODD };
+    case "single-scroll":
+    default:
+      return { scroll: ScrollMode.VERTICAL, spread: SpreadMode.NONE };
+  }
 }
 
 async function resolveDestPage(
@@ -174,7 +175,10 @@ function OutlineTree({
 }: {
   items: OutlineItem[];
   onGo: (page: number) => void;
-  resolvePage: (dest: unknown, fallback: number | null) => Promise<number | null>;
+  resolvePage: (
+    dest: unknown,
+    fallback: number | null,
+  ) => Promise<number | null>;
 }) {
   return (
     <ul className="pdf-outline-list">
@@ -196,7 +200,11 @@ function OutlineTree({
             {it.title}
           </button>
           {it.items.length > 0 && (
-            <OutlineTree items={it.items} onGo={onGo} resolvePage={resolvePage} />
+            <OutlineTree
+              items={it.items}
+              onGo={onGo}
+              resolvePage={resolvePage}
+            />
           )}
         </li>
       ))}
@@ -224,15 +232,15 @@ export function PdfPane({
   const [searchHits, setSearchHits] = useState<
     { page: number; snippet: string; matchIndex: number }[]
   >([]);
-  const [highlightQuery, setHighlightQuery] = useState("");
-  const [highlightPage, setHighlightPage] = useState<number | null>(null);
-  const [viewMenuPos, setViewMenuPos] = useState<{ top: number; left: number } | null>(
-    null,
-  );
+  const [viewMenuPos, setViewMenuPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [handMode, setHandMode] = useState(false);
   const [restoring, setRestoring] = useState(true);
+  const [docLoading, setDocLoading] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
   const [recentList, setRecentList] = useState<PdfRecentSummary[]>([]);
   const [scaleInput, setScaleInput] = useState(
@@ -245,6 +253,7 @@ export function PdfPane({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const viewerDivRef = useRef<HTMLDivElement>(null);
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const openMenuRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
@@ -256,15 +265,10 @@ export function PdfPane({
   const metaSaveTimer = useRef<number | null>(null);
   const selectingRef = useRef(false);
   const lastEmittedTextRef = useRef("");
-  const programmaticScrollRef = useRef(false);
-  const pendingGoPageRef = useRef<number | null>(null);
   const pageInputFocusedRef = useRef(false);
-  const goPageUnlockTimer = useRef<number | null>(null);
-  const pendingViewPageRef = useRef<number | null>(null);
-  const pendingScalePageRef = useRef<number | null>(null);
-  const prevScaleRef = useRef(scale);
-  const pageSyncTimer = useRef<number | null>(null);
-  const pageHeightRef = useRef(0);
+  const applyingViewerScaleRef = useRef(false);
+  const viewModeRef = useRef(viewMode);
+  const scaleRef = useRef(scale);
   const dragRef = useRef<{
     active: boolean;
     startX: number;
@@ -272,6 +276,16 @@ export function PdfPane({
     scrollLeft: number;
     scrollTop: number;
   } | null>(null);
+
+  const eventBusRef = useRef<EventBus | null>(null);
+  const linkServiceRef = useRef<PDFLinkService | null>(null);
+  const findControllerRef = useRef<PDFFindController | null>(null);
+  const pdfViewerRef = useRef<PDFViewer | null>(null);
+  const viewerReadyRef = useRef(false);
+  const [viewerReady, setViewerReady] = useState(false);
+
+  viewModeRef.current = viewMode;
+  scaleRef.current = scale;
 
   const resolveOutlinePage = useCallback(
     async (dest: unknown, fallback: number | null) => {
@@ -291,92 +305,28 @@ export function PdfPane({
     [numPages],
   );
 
-  const scrollToPageEl = useCallback((page: number, smooth = false) => {
-    let tries = 0;
-    const run = () => {
-      // Wait for a live page — placeholders are white and must not be scrolled to.
-      const el = scrollRef.current?.querySelector(
-        `[data-page="${page}"]:not(.is-placeholder)`,
-      ) as HTMLElement | null;
-      if (el) {
-        el.scrollIntoView({
-          behavior: smooth ? "smooth" : "auto",
-          block: "start",
-        });
-        return;
-      }
-      if (tries++ < 90) requestAnimationFrame(run);
-    };
-    requestAnimationFrame(run);
+  const applyScrollSpread = useCallback((mode: ViewMode) => {
+    const viewer = pdfViewerRef.current;
+    if (!viewer) return;
+    const { scroll, spread } = viewModeToScrollSpread(mode);
+    viewer.scrollMode = scroll;
+    viewer.spreadMode = spread;
   }, []);
 
-  const jumpScrollToPage = useCallback(
-    (page: number, smooth = false) => {
-      const root = scrollRef.current;
-      const ph = pageHeightRef.current;
-      if (
-        root &&
-        ph > 40 &&
-        (viewMode === "single-scroll" || viewMode === "double-scroll")
-      ) {
-        const gap = 12;
-        const top =
-          viewMode === "single-scroll"
-            ? Math.max(0, (page - 1) * (ph + gap))
-            : Math.max(0, Math.floor((page - 1) / 2) * (ph + gap));
-        if (smooth) {
-          root.scrollTo({ top, behavior: "smooth" });
-        } else {
-          root.scrollTop = top;
-        }
-      }
-      scrollToPageEl(page, smooth);
-    },
-    [scrollToPageEl, viewMode],
-  );
-
   const goToPage = useCallback(
-    (page: number, opts?: { smooth?: boolean }) => {
+    (page: number, _opts?: { smooth?: boolean }) => {
       const next = clampPage(page);
-      const smooth = opts?.smooth ?? false;
-
-      if (viewMode === "single-scroll" || viewMode === "double-scroll") {
-        // Set pending before state so the next render mounts around the target.
-        pendingGoPageRef.current = next;
-        programmaticScrollRef.current = true;
-        if (goPageUnlockTimer.current != null) {
-          window.clearTimeout(goPageUnlockTimer.current);
-        }
-        setPageNumber(next);
-        if (!pageInputFocusedRef.current) {
-          setPageInput(String(next));
-        }
-
-        // Defer scroll until after React mounts live pages (avoid white placeholders).
-        requestAnimationFrame(() => {
-          jumpScrollToPage(next, false);
-          window.setTimeout(() => jumpScrollToPage(next, false), 50);
-          window.setTimeout(() => jumpScrollToPage(next, smooth), smooth ? 100 : 200);
-        });
-
-        goPageUnlockTimer.current = window.setTimeout(() => {
-          programmaticScrollRef.current = false;
-          pendingGoPageRef.current = null;
-          goPageUnlockTimer.current = null;
-        }, smooth ? 1100 : 550);
-      } else {
-        pendingGoPageRef.current = null;
-        setPageNumber(next);
-        if (!pageInputFocusedRef.current) {
-          setPageInput(String(next));
-        }
-        requestAnimationFrame(() => {
-          const root = scrollRef.current;
-          if (root) root.scrollTop = 0;
-        });
+      setPageNumber(next);
+      if (!pageInputFocusedRef.current) {
+        setPageInput(String(next));
       }
+      const viewer = pdfViewerRef.current;
+      if (viewer) {
+        viewer.currentPageNumber = next;
+      }
+      restoredPageRef.current = next;
     },
-    [clampPage, jumpScrollToPage, viewMode],
+    [clampPage],
   );
 
   const commitPageInput = useCallback(() => {
@@ -390,48 +340,9 @@ export function PdfPane({
     const next = clampPage(Math.round(n));
     setPageInput(String(next));
     if (next !== pageNumber) {
-      goToPage(next, { smooth: false });
+      goToPage(next);
     }
   }, [clampPage, goToPage, pageInput, pageNumber]);
-
-  const syncPageFromScroll = useCallback(() => {
-    if (programmaticScrollRef.current) return;
-    if (pendingGoPageRef.current != null) return;
-    if (pageInputFocusedRef.current) return;
-    if (viewMode !== "single-scroll" && viewMode !== "double-scroll") return;
-    const root = scrollRef.current;
-    if (!root) return;
-
-    const pages = root.querySelectorAll<HTMLElement>("[data-page]");
-    if (!pages.length) return;
-
-    const rootRect = root.getBoundingClientRect();
-    const anchorY = rootRect.top + Math.min(80, rootRect.height * 0.2);
-    let bestPage = 1;
-    let bestDist = Number.POSITIVE_INFINITY;
-
-    pages.forEach((el) => {
-      const page = Number(el.dataset.page);
-      if (!Number.isFinite(page)) return;
-      const rect = el.getBoundingClientRect();
-      // Prefer the page whose top is closest to the viewport top band
-      const dist = Math.abs(rect.top - anchorY);
-      const visible =
-        rect.bottom > rootRect.top + 8 && rect.top < rootRect.bottom - 8;
-      if (!visible) return;
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestPage = page;
-      }
-    });
-
-    setPageNumber((prev) => (prev === bestPage ? prev : bestPage));
-    setPageInput((prev) =>
-      pageInputFocusedRef.current || prev === String(bestPage)
-        ? prev
-        : String(bestPage),
-    );
-  }, [viewMode]);
 
   const fitScaleForDouble = useCallback(
     (preferred?: number) => {
@@ -448,134 +359,22 @@ export function PdfPane({
     [scale],
   );
 
-  const applyViewMode = useCallback(
-    (mode: ViewMode) => {
-      const keepPage = pageNumber;
-      programmaticScrollRef.current = true;
-      pendingViewPageRef.current =
-        mode === "single-scroll" || mode === "double-scroll" ? keepPage : null;
-      if (mode === "double" || mode === "double-scroll") {
-        setScale((s) => fitScaleForDouble(s));
-      }
-      setViewMode(mode);
-      setPageNumber(keepPage);
-      if (mode !== "single-scroll" && mode !== "double-scroll") {
-        requestAnimationFrame(() => {
-          const root = scrollRef.current;
-          if (root) root.scrollTop = 0;
-          programmaticScrollRef.current = false;
-        });
-      }
-    },
-    [fitScaleForDouble, pageNumber],
-  );
-
-  // Restore scroll position after entering a scroll view mode (avoid gray top / page 1)
-  useEffect(() => {
-    const page = pendingViewPageRef.current;
-    if (page == null) return;
-    if (viewMode !== "single-scroll" && viewMode !== "double-scroll") {
-      pendingViewPageRef.current = null;
-      return;
-    }
-
-    const jump = (smooth = false) => {
-      const root = scrollRef.current;
-      const ph = pageHeightRef.current;
-      if (root && ph > 40) {
-        const gap = 12;
-        if (viewMode === "single-scroll") {
-          root.scrollTop = Math.max(0, (page - 1) * (ph + gap));
-        } else {
-          const spreadIndex = Math.floor((page - 1) / 2);
-          root.scrollTop = Math.max(0, spreadIndex * (ph + gap));
-        }
-      }
-      scrollToPageEl(page, smooth);
-    };
-
-    programmaticScrollRef.current = true;
-    setPageNumber(page);
-    jump(false);
-    const t1 = window.setTimeout(() => jump(false), 60);
-    const t2 = window.setTimeout(() => jump(false), 220);
-    const t3 = window.setTimeout(() => {
-      jump(false);
-      pendingViewPageRef.current = null;
-      programmaticScrollRef.current = false;
-    }, 900);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-  }, [viewMode, scrollToPageEl]);
-
-  // Keep current page locked while zooming (avoid white placeholders + page jumps)
-  useEffect(() => {
-    const prev = prevScaleRef.current;
-    if (prev > 0 && pageHeightRef.current > 40 && scale !== prev) {
-      pageHeightRef.current = Math.max(
-        120,
-        pageHeightRef.current * (scale / prev),
-      );
-    }
-    prevScaleRef.current = scale;
-
-    const page = pendingScalePageRef.current;
-    if (page == null) return;
-
-    const jump = () => {
-      setPageNumber(page);
-      const root = scrollRef.current;
-      const ph =
-        pageHeightRef.current > 40
-          ? pageHeightRef.current
-          : Math.max(480, Math.round(1100 * scale));
-      if (root) {
-        const gap = 12;
-        if (viewMode === "single-scroll") {
-          root.scrollTop = Math.max(0, (page - 1) * (ph + gap));
-        } else if (viewMode === "double-scroll") {
-          const spreadIndex = Math.floor((page - 1) / 2);
-          root.scrollTop = Math.max(0, spreadIndex * (ph + gap));
-        } else {
-          root.scrollTop = 0;
-        }
-      }
-      scrollToPageEl(page, false);
-    };
-
-    programmaticScrollRef.current = true;
-    jump();
-    const t1 = window.setTimeout(jump, 50);
-    const t2 = window.setTimeout(jump, 180);
-    const t3 = window.setTimeout(() => {
-      jump();
-      pendingScalePageRef.current = null;
-      programmaticScrollRef.current = false;
-    }, 700);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-  }, [scale, scrollToPageEl, viewMode]);
-
-  useEffect(() => {
-    setScaleInput(String(scaleToPercent(scale)));
-  }, [scale]);
-
   const changeScale = useCallback(
     (nextOrFn: number | ((s: number) => number)) => {
       const keepPage = pageNumber;
-      programmaticScrollRef.current = true;
-      pendingScalePageRef.current = keepPage;
-      setPageNumber(keepPage);
       setScale((s) => {
         const raw = typeof nextOrFn === "function" ? nextOrFn(s) : nextOrFn;
-        return Math.min(MAX_SCALE, Math.max(MIN_SCALE, +raw.toFixed(2)));
+        const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, +raw.toFixed(2)));
+        const viewer = pdfViewerRef.current;
+        if (viewer) {
+          applyingViewerScaleRef.current = true;
+          viewer.currentScale = next;
+          viewer.currentPageNumber = keepPage;
+          applyingViewerScaleRef.current = false;
+        }
+        return next;
       });
+      setPageNumber(keepPage);
     },
     [pageNumber],
   );
@@ -593,6 +392,38 @@ export function PdfPane({
     changeScale(next);
     setScaleInput(String(scaleToPercent(next)));
   }, [changeScale, scale, scaleInput]);
+
+  const applyViewMode = useCallback(
+    (mode: ViewMode) => {
+      const keepPage = pageNumber;
+      let nextScale = scale;
+      if (mode === "double" || mode === "double-scroll") {
+        nextScale = fitScaleForDouble(scale);
+        setScale(nextScale);
+      }
+      setViewMode(mode);
+      setPageNumber(keepPage);
+      const viewer = pdfViewerRef.current;
+      if (viewer) {
+        applyScrollSpread(mode);
+        applyingViewerScaleRef.current = true;
+        viewer.currentScale = nextScale;
+        applyingViewerScaleRef.current = false;
+        viewer.currentPageNumber = keepPage;
+      }
+    },
+    [applyScrollSpread, fitScaleForDouble, pageNumber, scale],
+  );
+
+  useEffect(() => {
+    setScaleInput(String(scaleToPercent(scale)));
+  }, [scale]);
+
+  useEffect(() => {
+    if (!pageInputFocusedRef.current) {
+      setPageInput(String(pageNumber));
+    }
+  }, [pageNumber]);
 
   const refreshRecent = useCallback(async () => {
     setRecentList(await listRecentPdfs());
@@ -634,11 +465,9 @@ export function PdfPane({
     return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
   }, [model, translateProvider]);
 
-  const devicePixelRatio = useMemo(() => pdfDevicePixelRatio(), []);
-
   const persistMeta = useCallback(() => {
     if (!fileMeta) return;
-    if (programmaticScrollRef.current || suppressPersistRef.current) return;
+    if (suppressPersistRef.current) return;
     const root = scrollRef.current;
     const meta: PdfSessionMeta = {
       ...fileMeta,
@@ -657,16 +486,199 @@ export function PdfPane({
 
   const onPdfScroll = useCallback(() => {
     persistMeta();
-    if (pageSyncTimer.current) window.clearTimeout(pageSyncTimer.current);
-    pageSyncTimer.current = window.setTimeout(() => {
-      syncPageFromScroll();
-    }, 80);
-  }, [persistMeta, syncPageFromScroll]);
+  }, [persistMeta]);
 
   useEffect(() => {
     persistMeta();
   }, [persistMeta]);
 
+  // Init official PDFViewer after the real viewer DOM is mounted.
+  // Must not run while `restoring` early-return used to omit the container
+  // (that left viewerReady stuck false and the literature pane blank).
+  useEffect(() => {
+    if (restoring || !visible) return;
+
+    const container = scrollRef.current;
+    const viewerEl = viewerDivRef.current;
+    if (!container || !viewerEl || pdfViewerRef.current) return;
+
+    let pdfViewer: PDFViewer;
+    let eventBus: EventBus;
+    try {
+      eventBus = new EventBus();
+      const linkService = new PDFLinkService({
+        eventBus,
+        externalLinkTarget: LinkTarget.BLANK,
+        externalLinkRel: "noopener noreferrer",
+      });
+      const findController = new PDFFindController({
+        eventBus,
+        linkService,
+      });
+      pdfViewer = new PDFViewer({
+        container,
+        viewer: viewerEl,
+        eventBus,
+        linkService,
+        findController,
+        annotationMode: AnnotationMode.ENABLE,
+        textLayerMode: 1,
+      });
+      linkService.setViewer(pdfViewer);
+      eventBusRef.current = eventBus;
+      linkServiceRef.current = linkService;
+      findControllerRef.current = findController;
+      pdfViewerRef.current = pdfViewer;
+      viewerReadyRef.current = true;
+      setViewerReady(true);
+      setError(null);
+    } catch (err) {
+      viewerReadyRef.current = false;
+      setViewerReady(false);
+      setError(
+        err instanceof Error
+          ? `PDF 阅读器初始化失败：${err.message}`
+          : "PDF 阅读器初始化失败",
+      );
+      return;
+    }
+
+    const onPageChanging = (evt: { pageNumber: number }) => {
+      const p = evt.pageNumber;
+      setPageNumber(p);
+      restoredPageRef.current = p;
+      if (!pageInputFocusedRef.current) {
+        setPageInput(String(p));
+      }
+    };
+    const onScaleChanging = (evt: { scale: number }) => {
+      if (applyingViewerScaleRef.current) return;
+      const s = evt.scale;
+      if (!Number.isFinite(s)) return;
+      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, +s.toFixed(2))));
+    };
+    const onPagesInit = () => {
+      applyScrollSpread(viewModeRef.current);
+      applyingViewerScaleRef.current = true;
+      try {
+        pdfViewer.currentScale = scaleRef.current;
+      } finally {
+        applyingViewerScaleRef.current = false;
+      }
+      const keep = Math.min(
+        Math.max(1, restoredPageRef.current ?? 1),
+        pdfViewer.pagesCount || 1,
+      );
+      pdfViewer.currentPageNumber = keep;
+      setPageNumber(keep);
+      const pending = pendingScrollRef.current;
+      if (pending) {
+        window.setTimeout(() => {
+          container.scrollTop = pending.top;
+          container.scrollLeft = pending.left;
+          pendingScrollRef.current = null;
+          suppressPersistRef.current = false;
+        }, 80);
+      } else {
+        suppressPersistRef.current = false;
+      }
+    };
+
+    eventBus.on("pagechanging", onPageChanging);
+    eventBus.on("scalechanging", onScaleChanging);
+    eventBus.on("pagesinit", onPagesInit);
+
+    return () => {
+      eventBus.off("pagechanging", onPageChanging);
+      eventBus.off("scalechanging", onScaleChanging);
+      eventBus.off("pagesinit", onPagesInit);
+      try {
+        pdfViewer.setDocument(null as never);
+      } catch {
+        /* ignore */
+      }
+      pdfViewerRef.current = null;
+      eventBusRef.current = null;
+      linkServiceRef.current = null;
+      findControllerRef.current = null;
+      viewerReadyRef.current = false;
+      setViewerReady(false);
+    };
+  }, [restoring, visible, applyScrollSpread]);
+
+  // Load document into viewer when file / viewer are ready
+  useEffect(() => {
+    if (restoring || !visible || !file || !viewerReady) return;
+    const pdfViewer = pdfViewerRef.current;
+    if (!pdfViewer) return;
+    let cancelled = false;
+    setDocLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        const data = await file.arrayBuffer();
+        if (cancelled) return;
+        const loadingTask = getDocument({
+          data: data.slice(0),
+          ...PDF_DOCUMENT_OPTIONS,
+        });
+        const pdf = await loadingTask.promise;
+        if (cancelled) {
+          void pdf.destroy();
+          return;
+        }
+        pdfRef.current = pdf;
+        setNumPages(pdf.numPages);
+        try {
+          const page = await pdf.getPage(1);
+          pageWidthRef.current = page.getViewport({ scale: 1 }).width;
+        } catch {
+          pageWidthRef.current = 0;
+        }
+        try {
+          const raw = await pdf.getOutline();
+          setOutline(await buildOutline(pdf, raw));
+        } catch {
+          setOutline([]);
+        }
+        linkServiceRef.current?.setDocument(pdf, null);
+        findControllerRef.current?.setDocument(pdf);
+        pdfViewer.setDocument(pdf);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setNumPages(0);
+        }
+      } finally {
+        if (!cancelled) setDocLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      try {
+        pdfViewerRef.current?.setDocument(null as never);
+      } catch {
+        /* ignore */
+      }
+      try {
+        linkServiceRef.current?.setDocument(null);
+      } catch {
+        /* ignore */
+      }
+      try {
+        findControllerRef.current?.setDocument(null as never);
+      } catch {
+        /* ignore */
+      }
+      const prev = pdfRef.current;
+      pdfRef.current = null;
+      void prev?.destroy();
+    };
+  }, [restoring, visible, file, viewerReady]);
+
+  // Session restore on first mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -688,11 +700,12 @@ export function PdfPane({
         fileSize: session.fileSize,
         lastModified: session.lastModified,
       });
-      setViewMode(isViewMode(session.viewMode) ? session.viewMode : "single-scroll");
+      setViewMode(
+        isViewMode(session.viewMode) ? session.viewMode : "single-scroll",
+      );
       const keepPage = Math.max(1, session.pageNumber || 1);
       restoredPageRef.current = keepPage;
       setPageNumber(keepPage);
-      // Soften old low-zoom sessions that look washed-out on code fonts
       const savedScale = session.scale || DEFAULT_SCALE;
       setScale(
         Math.min(
@@ -716,44 +729,25 @@ export function PdfPane({
     };
   }, [refreshRecent]);
 
-  // Re-lock reading position when literature pane becomes visible
+  // Re-lock when literature pane becomes visible
   useEffect(() => {
     const becameVisible = visible && !wasVisibleRef.current;
     wasVisibleRef.current = visible;
     if (!becameVisible || !file || !numPages) return;
-
     const keep = restoredPageRef.current ?? pageNumber;
-    programmaticScrollRef.current = true;
-    restoredPageRef.current = keep;
+    const viewer = pdfViewerRef.current;
+    if (viewer) {
+      viewer.currentPageNumber = keep;
+      viewer.update();
+    }
     setPageNumber(keep);
-
-    const jump = () => {
-      setPageNumber(keep);
-      scrollToPageEl(keep, false);
-      const root = scrollRef.current;
-      const pending = pendingScrollRef.current;
-      if (root && root.clientHeight >= 40 && pending) {
-        root.scrollTop = pending.top;
-        root.scrollLeft = pending.left;
-      }
-    };
-
-    jump();
-    const t1 = window.setTimeout(jump, 60);
-    const t2 = window.setTimeout(jump, 220);
-    const t3 = window.setTimeout(() => {
-      jump();
-      pendingScrollRef.current = null;
-      programmaticScrollRef.current = false;
-      suppressPersistRef.current = false;
-    }, 800);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-    // Only re-run when pane becomes visible / document ready — not on every pageNumber tick
-  }, [visible, file, numPages, scrollToPageEl]);
+    const pending = pendingScrollRef.current;
+    const root = scrollRef.current;
+    if (root && pending) {
+      root.scrollTop = pending.top;
+      root.scrollLeft = pending.left;
+    }
+  }, [visible, file, numPages, pageNumber]);
 
   const openFile = useCallback(
     async (f: File) => {
@@ -775,7 +769,6 @@ export function PdfPane({
       setRecentOpen(false);
 
       if (sameAsSaved && session) {
-        // Restore reading position only; keep current view / scale
         const keep = Math.max(1, session.pageNumber || 1);
         suppressPersistRef.current = true;
         restoredPageRef.current = keep;
@@ -863,8 +856,6 @@ export function PdfPane({
     }
     setSearchBusy(true);
     setSearchOpen(true);
-    setHighlightQuery("");
-    setHighlightPage(null);
     try {
       const needle = q.toLowerCase();
       const hits: { page: number; snippet: string; matchIndex: number }[] = [];
@@ -896,12 +887,42 @@ export function PdfPane({
         if (hits.length >= 200) break;
       }
       setSearchHits(hits);
+      eventBusRef.current?.dispatch("find", {
+        source: null,
+        type: "",
+        query: q,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false,
+        matchDiacritics: false,
+      });
     } catch {
       setSearchHits([]);
     } finally {
       setSearchBusy(false);
     }
   }, [searchQuery]);
+
+  const jumpToSearchHit = useCallback(
+    (hit: { page: number; snippet: string; matchIndex: number }) => {
+      const q = searchQuery.trim();
+      goToPage(hit.page);
+      if (q) {
+        eventBusRef.current?.dispatch("find", {
+          source: null,
+          type: "",
+          query: q,
+          caseSensitive: false,
+          entireWord: false,
+          highlightAll: true,
+          findPrevious: false,
+          matchDiacritics: false,
+        });
+      }
+    },
+    [goToPage, searchQuery],
+  );
 
   const readPdfSelection = useCallback((): string | null => {
     const sel = window.getSelection();
@@ -924,10 +945,8 @@ export function PdfPane({
   const scheduleSelectionTranslate = useCallback(() => {
     if (handMode) return;
     if (selectingRef.current) return;
-
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      // Only fire after selection action has fully stopped
       if (selectingRef.current) return;
       const text = readPdfSelection();
       if (!text) return;
@@ -950,28 +969,23 @@ export function PdfPane({
         debounceRef.current = null;
       }
     };
-
     const onPointerUp = () => {
       if (!selectingRef.current) return;
       selectingRef.current = false;
       scheduleSelectionTranslate();
     };
-
     const onSelectionChange = () => {
       if (selectingRef.current) {
-        // Still dragging: never translate mid-selection
         if (debounceRef.current) {
           window.clearTimeout(debounceRef.current);
           debounceRef.current = null;
         }
         return;
       }
-      // Selection may settle/change shortly after pointer up (PDF text layer)
       if (readPdfSelection()) {
         scheduleSelectionTranslate();
       }
     };
-
     document.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerUp);
@@ -998,217 +1012,36 @@ export function PdfPane({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  // Ctrl/Meta + wheel → zoom 15%; Shift + wheel → horizontal scroll.
+  // Non-passive so preventDefault can block browser page zoom.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const dir = e.deltaY > 0 ? -1 : 1;
+        changeScale((s) => s + dir * SCALE_STEP);
+        return;
+      }
+      if (e.shiftKey) {
+        root.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, [changeScale, file, restoring, viewerReady]);
+
   useEffect(() => {
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       if (metaSaveTimer.current) window.clearTimeout(metaSaveTimer.current);
-      if (pageSyncTimer.current) window.clearTimeout(pageSyncTimer.current);
-      if (goPageUnlockTimer.current != null) {
-        window.clearTimeout(goPageUnlockTimer.current);
-      }
     };
   }, []);
 
-  useEffect(() => {
-    if (!pageInputFocusedRef.current) {
-      setPageInput(String(pageNumber));
-    }
-  }, [pageNumber]);
-
   const pageStep = viewMode.startsWith("double") ? 2 : 1;
-
-  const renderedPages = useMemo(() => {
-    if (!numPages) return [] as number[][];
-    if (viewMode === "single") {
-      return [[pageNumber]];
-    }
-    if (viewMode === "double") {
-      const left = pageNumber % 2 === 0 ? pageNumber - 1 : pageNumber;
-      const right = left + 1;
-      return [right <= numPages ? [left, right] : [left]];
-    }
-    if (viewMode === "single-scroll") {
-      return Array.from({ length: numPages }, (_, i) => [i + 1]);
-    }
-    const pairs: number[][] = [];
-    for (let p = 1; p <= numPages; p += 2) {
-      pairs.push(p + 1 <= numPages ? [p, p + 1] : [p]);
-    }
-    return pairs;
-  }, [numPages, pageNumber, viewMode]);
-
-  const shouldMountPage = useCallback(
-    (p: number) => {
-      if (viewMode === "single" || viewMode === "double") return true;
-      if (highlightPage === p) return true;
-      const anchor =
-        pendingGoPageRef.current ??
-        pendingScalePageRef.current ??
-        pageNumber;
-      const buf =
-        pendingGoPageRef.current != null || pendingScalePageRef.current != null
-          ? SCROLL_PAGE_BUFFER + 2
-          : SCROLL_PAGE_BUFFER;
-      if (viewMode === "double-scroll") {
-        // Always mount complete spreads to avoid 1-page → 2-page flash
-        const left = p % 2 === 0 ? p - 1 : p;
-        const right = left + 1;
-        const pairBuf = buf + 1;
-        return (
-          Math.abs(left - anchor) <= pairBuf ||
-          Math.abs(right - anchor) <= pairBuf ||
-          (highlightPage != null &&
-            (highlightPage === left || highlightPage === right))
-        );
-      }
-      return Math.abs(p - anchor) <= buf;
-    },
-    [highlightPage, pageNumber, viewMode],
-  );
-
-  const placeholderHeight =
-    pageHeightRef.current > 0
-      ? pageHeightRef.current
-      : Math.max(480, Math.round(1100 * scale));
-
-  const pageSlotWidth =
-    pageWidthRef.current > 0
-      ? Math.round(pageWidthRef.current * scale)
-      : undefined;
-
-  const jumpToSearchHit = useCallback(
-    (hit: { page: number; snippet: string; matchIndex: number }) => {
-      const q = searchQuery.trim();
-      setHighlightQuery(q);
-      setHighlightPage(hit.page);
-      goToPage(hit.page);
-    },
-    [goToPage, searchQuery],
-  );
-
-  useEffect(() => {
-    if (!highlightQuery || highlightPage == null) return;
-    const t = window.setTimeout(() => {
-      const mark = scrollRef.current?.querySelector(
-        ".pdf-search-mark",
-      ) as HTMLElement | null;
-      mark?.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 400);
-    return () => window.clearTimeout(t);
-  }, [highlightPage, highlightQuery, pageNumber, viewMode, scale]);
-
-  const restoreScrollSoon = useCallback(() => {
-    const pending = pendingScrollRef.current;
-    if (!pending) return;
-    let tries = 0;
-    const run = () => {
-      const root = scrollRef.current;
-      if (!root) {
-        if (tries++ < 80) requestAnimationFrame(run);
-        return;
-      }
-      // Not laid out yet (e.g. still becoming visible) — keep pending
-      if (root.clientHeight < 40) {
-        if (tries++ < 120) requestAnimationFrame(run);
-        return;
-      }
-      const targetPage = restoredPageRef.current;
-      if (targetPage != null && targetPage > 1) {
-        scrollToPageEl(targetPage, false);
-      }
-      root.scrollTop = pending.top;
-      root.scrollLeft = pending.left;
-      if (
-        root.scrollHeight <= root.clientHeight + 8 &&
-        pending.top > 40 &&
-        tries < 80
-      ) {
-        tries += 1;
-        requestAnimationFrame(run);
-        return;
-      }
-      pendingScrollRef.current = null;
-    };
-    requestAnimationFrame(run);
-  }, [scrollToPageEl]);
-
-  const onPageRenderSuccess = useCallback(
-    (p: number) => {
-      const el = scrollRef.current?.querySelector(
-        `[data-page="${p}"]`,
-      ) as HTMLElement | null;
-      if (el && el.offsetHeight > 40) {
-        pageHeightRef.current = el.offsetHeight;
-      }
-      if (pendingScrollRef.current) {
-        restoreScrollSoon();
-      }
-      // After a jump target finishes painting, snap once more to the live page.
-      if (pendingGoPageRef.current === p) {
-        jumpScrollToPage(p, false);
-      }
-    },
-    [jumpScrollToPage, restoreScrollSoon],
-  );
-
-  const onLoadSuccess = async (pdf: PDFDocumentProxy) => {
-    pdfRef.current = pdf;
-    setNumPages(pdf.numPages);
-    setError(null);
-    const keep = Math.min(
-      Math.max(1, restoredPageRef.current ?? pageNumber),
-      pdf.numPages,
-    );
-    restoredPageRef.current = keep;
-    setPageNumber(keep);
-    programmaticScrollRef.current = true;
-    try {
-      const page = await pdf.getPage(1);
-      pageWidthRef.current = page.getViewport({ scale: 1 }).width;
-    } catch {
-      pageWidthRef.current = 0;
-    }
-    try {
-      const raw = await pdf.getOutline();
-      setOutline(await buildOutline(pdf, raw));
-    } catch {
-      setOutline([]);
-    }
-    restoreScrollSoon();
-    window.setTimeout(() => {
-      scrollToPageEl(keep, false);
-      if (visible) {
-        programmaticScrollRef.current = false;
-        suppressPersistRef.current = false;
-      }
-    }, 500);
-  };
-
-  const patchLinks = () => {
-    const root = scrollRef.current;
-    if (!root) return;
-    root.querySelectorAll(".annotationLayer a").forEach((a) => {
-      const el = a as HTMLAnchorElement;
-      const href = el.getAttribute("href") || "";
-      const isExternal =
-        /^https?:\/\//i.test(href) ||
-        /^mailto:/i.test(href) ||
-        /^ftp:/i.test(href);
-
-      if (isExternal) {
-        el.setAttribute("target", "_blank");
-        el.setAttribute("rel", "noopener noreferrer");
-        if (!el.dataset.llmchatPatched) {
-          el.dataset.llmchatPatched = "1";
-          el.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            window.open(href, "_blank", "noopener,noreferrer");
-          });
-        }
-      }
-    });
-  };
 
   const onScrollPanStart = (e: ReactMouseEvent<HTMLDivElement>) => {
     const root = scrollRef.current;
@@ -1244,14 +1077,6 @@ export function PdfPane({
       window.removeEventListener("mouseup", onUp);
     };
   }, [persistMeta]);
-
-  if (restoring) {
-    return (
-      <div className="pdf-pane">
-        <div className="pdf-empty">正在恢复上次阅读位置…</div>
-      </div>
-    );
-  }
 
   return (
     <div className="pdf-pane">
@@ -1403,7 +1228,7 @@ export function PdfPane({
           type="button"
           className="pdf-tool-btn pdf-tool-icon-btn"
           disabled={!file || pageNumber <= 1}
-          onClick={() => goToPage(pageNumber - pageStep, { smooth: true })}
+          onClick={() => goToPage(pageNumber - pageStep)}
           title="上一页"
           aria-label="上一页"
         >
@@ -1445,7 +1270,7 @@ export function PdfPane({
           type="button"
           className="pdf-tool-btn pdf-tool-icon-btn"
           disabled={!file || !numPages || pageNumber >= numPages}
-          onClick={() => goToPage(pageNumber + pageStep, { smooth: true })}
+          onClick={() => goToPage(pageNumber + pageStep)}
           title="下一页"
           aria-label="下一页"
         >
@@ -1516,7 +1341,10 @@ export function PdfPane({
         )}
 
         {searchOpen && (
-          <aside className="pdf-outline pdf-search-pane" style={{ width: outlineWidth }}>
+          <aside
+            className="pdf-outline pdf-search-pane"
+            style={{ width: outlineWidth }}
+          >
             <div className="pdf-outline-title">搜索</div>
             <div className="pdf-search-bar">
               <input
@@ -1558,10 +1386,7 @@ export function PdfPane({
                     <span
                       className="pdf-search-snippet"
                       dangerouslySetInnerHTML={{
-                        __html: highlightSearchHtml(
-                          hit.snippet,
-                          searchQuery,
-                        ),
+                        __html: highlightSearchHtml(hit.snippet, searchQuery),
                       }}
                     />
                   </button>
@@ -1576,22 +1401,17 @@ export function PdfPane({
           </aside>
         )}
 
-        <div
-          className={`pdf-scroll${handMode ? " hand-mode" : ""}`}
-          ref={scrollRef}
-          onMouseDown={onScrollPanStart}
-          onScroll={onPdfScroll}
-          onWheel={(e) => {
-            // allow horizontal pan with shift+wheel
-            if (!e.shiftKey) return;
-            const root = scrollRef.current;
-            if (!root) return;
-            root.scrollLeft += e.deltaY;
-            e.preventDefault();
-          }}
-        >
-          {!file && (
-            <div className="pdf-empty">
+        <div className="pdf-viewer-host">
+          <div
+            className={`pdf-scroll pdf-viewer-container${handMode ? " hand-mode" : ""}`}
+            ref={scrollRef}
+            onMouseDown={onScrollPanStart}
+            onScroll={onPdfScroll}
+          >
+            <div className="pdfViewer" ref={viewerDivRef} />
+          </div>
+          {!file && !restoring && (
+            <div className="pdf-empty pdf-viewer-overlay">
               <p>
                 打开带文字层的英文 PDF，在左侧 PDF
                 区域内拖选文本即可翻译（长度不限）。
@@ -1608,78 +1428,20 @@ export function PdfPane({
               </button>
             </div>
           )}
-          {file && (
-            <Document
-              file={file}
-              options={PDF_DOCUMENT_OPTIONS}
-              loading={<div className="pdf-empty">正在加载 PDF…</div>}
-              onLoadSuccess={(pdf) => void onLoadSuccess(pdf)}
-              onLoadError={(err) => setError(err.message)}
-              externalLinkTarget="_blank"
-              externalLinkRel="noopener noreferrer"
-              onItemClick={({ pageNumber: p }) => {
-                if (typeof p === "number" && p >= 1) goToPage(p);
-              }}
-            >
-              {error && <div className="pdf-empty boot-error">{error}</div>}
-              <div
-                className={`pdf-canvas-host mode-${viewMode}${
-                  scale < SCALE_UI_BASE * 0.95 ? " is-zoomed-out" : ""
-                }`}
-              >
-                {renderedPages.map((pair) => (
-                  <div
-                    key={pair.join("-")}
-                    className={
-                      pair.length > 1 ? "pdf-spread" : "pdf-spread single"
-                    }
-                  >
-                    {pair.map((p) => {
-                      const live = shouldMountPage(p);
-                      return (
-                        <div
-                          key={p}
-                          className={`pdf-page-wrap${live ? "" : " is-placeholder"}`}
-                          data-page={p}
-                          style={
-                            live
-                              ? undefined
-                              : {
-                                  width: pageSlotWidth,
-                                  minWidth: pageSlotWidth,
-                                  minHeight: placeholderHeight,
-                                }
-                          }
-                        >
-                          {live ? (
-                            <Page
-                              pageNumber={p}
-                              scale={scale}
-                              devicePixelRatio={devicePixelRatio}
-                              canvasBackground="#ffffff"
-                              renderTextLayer
-                              renderAnnotationLayer={
-                                viewMode === "single" ||
-                                viewMode === "double" ||
-                                Math.abs(p - pageNumber) <= 1
-                              }
-                              customTextRenderer={
-                                highlightQuery && highlightPage === p
-                                  ? ({ str }) =>
-                                      highlightSearchText(str, highlightQuery)
-                                  : undefined
-                              }
-                              onRenderAnnotationLayerSuccess={patchLinks}
-                              onRenderSuccess={() => onPageRenderSuccess(p)}
-                            />
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </Document>
+          {restoring && (
+            <div className="pdf-empty pdf-viewer-overlay">
+              正在恢复上次阅读位置…
+            </div>
+          )}
+          {file && error && (
+            <div className="pdf-empty boot-error pdf-viewer-overlay">
+              {error}
+            </div>
+          )}
+          {file && docLoading && (
+            <div className="pdf-empty pdf-viewer-loading pdf-viewer-overlay">
+              正在加载 PDF…
+            </div>
           )}
         </div>
       </div>

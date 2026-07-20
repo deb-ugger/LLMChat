@@ -22,10 +22,26 @@ function normalizePdfSelectionText(text: string): string {
 type Props = {
   visible: boolean;
   translateProvider: string;
+  translateSource?: string;
+  translateTarget?: string;
+  translateMaxLength?: number;
+  translateAutoChunk?: boolean;
   model: string;
+  apiUrl?: string;
+  apiKey?: string;
 };
 
-export function LiteratureView({ visible, translateProvider, model }: Props) {
+export function LiteratureView({
+  visible,
+  translateProvider,
+  translateSource = "en",
+  translateTarget = "zh-CN",
+  translateMaxLength = 0,
+  translateAutoChunk = true,
+  model,
+  apiUrl = "",
+  apiKey = "",
+}: Props) {
   const [source, setSource] = useState("");
   const [translation, setTranslation] = useState("");
   const [loading, setLoading] = useState(false);
@@ -43,30 +59,64 @@ export function LiteratureView({ visible, translateProvider, model }: Props) {
     };
   }, []);
 
-  const translateOnly = useCallback(async (text: string, reqId: number) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const translateOnly = useCallback(
+    async (text: string, reqId: number) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
 
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
 
-    setLoading(true);
-    setError(null);
-    try {
-      const tr = await api.translate(trimmed, { signal: ac.signal });
-      if (reqId !== reqIdRef.current) return;
-      setTranslation(tr.translation);
-    } catch (err) {
-      if (ac.signal.aborted || reqId !== reqIdRef.current) return;
-      setTranslation("");
-      setError(toFriendlyError(err, "翻译失败，请稍后重试"));
-    } finally {
-      if (reqId === reqIdRef.current) {
-        setLoading(false);
+      setLoading(true);
+      setError(null);
+      try {
+        const provider = translateProvider || "bing";
+        const tr = await api.translate(
+          trimmed,
+          { signal: ac.signal },
+          {
+            provider,
+            source: translateSource || "en",
+            target: translateTarget || "zh-CN",
+            maxLength: translateMaxLength || 0,
+            autoChunk: translateAutoChunk !== false,
+            ...(provider === "llm"
+              ? { apiUrl, apiKey, model }
+              : {}),
+          },
+        );
+        if (reqId !== reqIdRef.current) return;
+        const out = (tr.translation || "").trim();
+        if (!out) {
+          setTranslation("");
+          setError(
+            `译文为空（引擎：${tr.provider || provider}）。请确认设置里已保存引擎，或换 Bing / 大模型后重试`,
+          );
+          return;
+        }
+        setTranslation(out);
+      } catch (err) {
+        if (ac.signal.aborted || reqId !== reqIdRef.current) return;
+        setTranslation("");
+        setError(toFriendlyError(err, "翻译失败，请稍后重试"));
+      } finally {
+        if (reqId === reqIdRef.current) {
+          setLoading(false);
+        }
       }
-    }
-  }, []);
+    },
+    [
+      apiKey,
+      apiUrl,
+      model,
+      translateAutoChunk,
+      translateMaxLength,
+      translateProvider,
+      translateSource,
+      translateTarget,
+    ],
+  );
 
   const fillDict = useCallback(async (trimmed: string, reqId: number) => {
     const isWord = WORD_RE.test(trimmed);
@@ -105,6 +155,13 @@ export function LiteratureView({ visible, translateProvider, model }: Props) {
     [fillDict, translateOnly],
   );
 
+  const onTextSelected = useCallback(
+    (text: string) => {
+      void runLookup(text);
+    },
+    [runLookup],
+  );
+
   const onRetranslate = useCallback(() => {
     void (async () => {
       const trimmed = normalizePdfSelectionText(source);
@@ -121,7 +178,7 @@ export function LiteratureView({ visible, translateProvider, model }: Props) {
     <div className="literature-layout">
       <PdfPane
         visible={visible}
-        onTextSelected={(t) => void runLookup(t)}
+        onTextSelected={onTextSelected}
         translateProvider={translateProvider}
         model={model}
       />

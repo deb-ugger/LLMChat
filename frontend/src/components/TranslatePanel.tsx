@@ -197,26 +197,28 @@ export function TranslatePanel({
         </section>
       </div>
 
-      <div className="translate-lookup">
+      <form
+        className="translate-lookup"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = manual.trim();
+          if (q) onLookup(q);
+        }}
+      >
         <input
           value={manual}
           placeholder="输入单词查词典 / 翻译"
           onChange={(e) => setManual(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && manual.trim()) {
-              onLookup(manual.trim());
-            }
-          }}
+          enterKeyHint="search"
         />
         <button
-          type="button"
-          className="send-btn"
+          type="submit"
+          className="send-btn translate-lookup-btn"
           disabled={!manual.trim()}
-          onClick={() => manual.trim() && onLookup(manual.trim())}
         >
           查询
         </button>
-      </div>
+      </form>
     </aside>
   );
 }
