@@ -1,0 +1,17 @@
+---
+description: Git commit messages use numbered Chinese bullet points
+alwaysApply: true
+---
+
+# Git 提交说明格式
+
+创建提交（用户要求 git 保存/提交）时，commit message 正文用编号分点，格式如下：
+
+1. 第一点……
+2. 第二点……
+3. 第三点……
+
+要求：
+- 标题一行概括；正文用 `1.` `2.` `3.` 列出相对上一提交的具体差异（新功能、修复、行为变化等）
+- 不要用无序列表（`-`）作为正文主结构；需要时可在编号点内写短句
+- 保持中文；写清楚与上次提交的差异，不要只写笼统套话

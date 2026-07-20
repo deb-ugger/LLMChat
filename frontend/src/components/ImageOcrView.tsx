@@ -82,7 +82,17 @@ function mergeOrphanLines(paras: BBoxLine[], lines: BBoxLine[]): BBoxLine[] {
   for (const ln of lines) {
     const cx = (ln.x0 + ln.x1) / 2;
     const cy = (ln.y0 + ln.y1) / 2;
-    if (!out.some((p) => coversPoint(p, cx, cy))) {
+    const host = out.find((p) => coversPoint(p, cx, cy));
+    if (!host) {
+      out.push({ ...ln });
+      continue;
+    }
+    // Short diagram labels (Client/Server) often sit inside a large colored
+    // region whose paragraph text never includes them — keep as own box.
+    const short =
+      ln.text.length <= 16 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(ln.text);
+    const missing = !host.text.toLowerCase().includes(ln.text.toLowerCase());
+    if (short && missing) {
       out.push({ ...ln });
     }
   }
@@ -114,6 +124,48 @@ function loadImageSize(url: string): Promise<{ w: number; h: number }> {
     img.onerror = () => reject(new Error("无法读取图片尺寸"));
     img.src = url;
   });
+}
+
+/** Grayscale / binarize colored fills so black labels on blue/green stay crisp. */
+async function preprocessImageForOcr(file: File): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("无法预处理图片"));
+      el.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, img.naturalWidth || img.width);
+    canvas.height = Math.max(1, img.naturalHeight || img.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i];
+      const g = d[i + 1];
+      const b = d[i + 2];
+      let y = 0.299 * r + 0.587 * g + 0.114 * b;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      if (chroma > 30) {
+        // Saturated fill (blue/green blocks): hard threshold keeps dark glyphs
+        y = y < 155 ? 0 : 255;
+      } else {
+        y = Math.max(0, Math.min(255, (y - 128) * 1.2 + 128));
+      }
+      d[i] = d[i + 1] = d[i + 2] = y;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    return blob ?? file;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function mergeWordsToLines(words: BBoxLine[]): BBoxLine[] {
@@ -188,6 +240,50 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
+/** Insert line breaks after sentences when the box is tall (paragraph region). */
+function formatOverlayText(text: string, boxWpx: number, boxHpx: number): string {
+  const t = text.trim();
+  if (!t) return t;
+  if (boxHpx < boxWpx * 0.4) return t;
+  return t
+    .replace(/\s*([。；;！？!?])\s*/g, "$1\n")
+    .replace(/\n+/g, "\n")
+    .trim();
+}
+
+/** Largest font size that fits wrapped text into the OCR box (multi-line aware). */
+function overlayFontSize(boxWpx: number, boxHpx: number, text: string): number {
+  if (boxWpx <= 0 || boxHpx <= 0) return 10;
+  const lineHeight = 1.2;
+  const charEm = 0.95;
+  const availW = Math.max(8, boxWpx - 4);
+  const availH = Math.max(8, boxHpx - 4);
+  const segments = text
+    .split(/\n/)
+    .map((s) => s.replace(/\s+/g, ""))
+    .filter(Boolean);
+  const parts = segments.length ? segments : [""];
+
+  const fits = (fontPx: number) => {
+    let lines = 0;
+    for (const seg of parts) {
+      const chars = Math.max(1, Array.from(seg).length);
+      const charsPerLine = Math.max(1, Math.floor(availW / (fontPx * charEm)));
+      lines += Math.ceil(chars / charsPerLine);
+    }
+    return lines * fontPx * lineHeight <= availH;
+  };
+
+  let lo = 7;
+  let hi = Math.min(availH * 0.9, 56);
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return Math.max(7, +lo.toFixed(1));
+}
+
 async function copyText(text: string) {
   const t = text.trim();
   if (!t) return;
@@ -222,6 +318,7 @@ export function ImageOcrView({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
   const [srcQuery, setSrcQuery] = useState("");
   const [dstQuery, setDstQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -256,6 +353,34 @@ export function ImageOcrView({
       // ignore
     }
   }, [srcRatio]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || !imageUrl) {
+      setStageSize({ w: 0, h: 0 });
+      return;
+    }
+    const measure = () => {
+      const img = stage.querySelector(".ocr-image") as HTMLImageElement | null;
+      const w = img?.clientWidth || stage.clientWidth;
+      const h = img?.clientHeight || stage.clientHeight;
+      setStageSize((prev) =>
+        prev.w === w && prev.h === h ? prev : { w, h },
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(stage);
+    const img = stage.querySelector(".ocr-image") as HTMLImageElement | null;
+    if (img) {
+      ro.observe(img);
+      if (!img.complete) img.addEventListener("load", measure);
+    }
+    return () => {
+      ro.disconnect();
+      img?.removeEventListener("load", measure);
+    };
+  }, [imageUrl, blocks.length]);
 
   const beginDualResize = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
@@ -301,8 +426,16 @@ export function ImageOcrView({
       await workerRef.current.terminate();
       workerRef.current = null;
     }
-    const worker = await createWorker(ocrLang);
-    // AUTO recovers short code lines that SINGLE_COLUMN often drops
+    // Prefer eng alongside CJK so diagram English labels still OCR
+    const langSpec = /(?:^|\+)eng(?:$|\+)/i.test(ocrLang)
+      ? ocrLang
+      : `${ocrLang}+eng`;
+    let worker: Worker;
+    try {
+      worker = await createWorker(langSpec);
+    } catch {
+      worker = await createWorker(ocrLang);
+    }
     await worker.setParameters({
       tessedit_pageseg_mode: PSM.AUTO,
       preserve_interword_spaces: "1",
@@ -313,7 +446,12 @@ export function ImageOcrView({
   }, [ocrLang]);
 
   const selectBlock = useCallback((id: string) => {
-    setSelectedId(id);
+    setSelectedId((prev) => (prev === id ? null : id));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const id = selectedId;
     const scrollBoth = () => {
       const srcItem = srcListRef.current?.querySelector(
         `[data-row-id="${id}"]`,
@@ -329,7 +467,7 @@ export function ImageOcrView({
       box?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     };
     requestAnimationFrame(() => requestAnimationFrame(scrollBoth));
-  }, []);
+  }, [selectedId]);
 
   const translateOpts = useMemo(
     () => ({
@@ -476,9 +614,6 @@ export function ImageOcrView({
           ensureWorker(),
         ]);
 
-        const result = await worker.recognize(file);
-        const data = result.data;
-
         const toBox = (raw: {
           text: string;
           confidence?: number;
@@ -487,8 +622,10 @@ export function ImageOcrView({
           const text = (raw.text || "").trim().replace(/\s+/g, " ");
           if (!text || isJunkText(text)) return null;
           const conf = raw.confidence ?? 0;
-          // Code / short symbols often score low in Tesseract — keep them
-          const minConf = looksLikeCode(text) ? 18 : 30;
+          const shortLabel =
+            text.length <= 16 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(text);
+          // Accept very low conf for short Latin labels on fills
+          const minConf = looksLikeCode(text) ? 18 : shortLabel ? 0 : 28;
           if (conf < minConf) return null;
           return {
             text,
@@ -501,35 +638,76 @@ export function ImageOcrView({
           };
         };
 
-        const linesRaw = (data.lines ?? [])
-          .map((l) => toBox(l))
-          .filter((x): x is BBoxLine => !!x);
-
-        let lineBoxes: BBoxLine[] = [];
-
-        // Lines-first: better recall for code / short fragments than paragraphs alone
-        if (linesRaw.length) {
-          lineBoxes = mergeLinesToParagraphs(linesRaw);
-          // Soft-split overlong blobs back toward line groups
-          if (lineBoxes.length === 1 && linesRaw.length >= 4) {
-            lineBoxes = mergeLinesToParagraphs(linesRaw);
-          }
-        } else {
-          const parasRaw = (data.paragraphs ?? [])
-            .map((p) => toBox(p))
+        const boxesFromPage = (data: {
+          lines?: Array<{
+            text: string;
+            confidence?: number;
+            bbox: { x0: number; y0: number; x1: number; y1: number };
+          }>;
+          paragraphs?: Array<{
+            text: string;
+            confidence?: number;
+            bbox: { x0: number; y0: number; x1: number; y1: number };
+          }>;
+          words?: Array<{
+            text: string;
+            confidence?: number;
+            bbox: { x0: number; y0: number; x1: number; y1: number };
+          }>;
+        }): BBoxLine[] => {
+          const linesRaw = (data.lines ?? [])
+            .map((l) => toBox(l))
             .filter((x): x is BBoxLine => !!x);
-          if (parasRaw.length) {
-            lineBoxes = parasRaw;
+          const wordsRaw = (data.words ?? [])
+            .map((w) => toBox(w))
+            .filter((x): x is BBoxLine => !!x);
+          let boxes: BBoxLine[] = [];
+          if (linesRaw.length) {
+            boxes = mergeLinesToParagraphs(linesRaw);
           } else {
-            const words = (data.words ?? [])
-              .map((w) => toBox(w))
+            const parasRaw = (data.paragraphs ?? [])
+              .map((p) => toBox(p))
               .filter((x): x is BBoxLine => !!x);
-            lineBoxes = mergeLinesToParagraphs(mergeWordsToLines(words));
+            boxes = parasRaw.length
+              ? parasRaw
+              : mergeLinesToParagraphs(mergeWordsToLines(wordsRaw));
+          }
+          boxes = mergeOrphanLines(boxes, linesRaw);
+          boxes = mergeOrphanLines(boxes, wordsRaw);
+          return boxes;
+        };
+
+        // Pass 1: original image (best for body text)
+        setStatus("正在识别文字…");
+        const result = await worker.recognize(file);
+        let lineBoxes = boxesFromPage(result.data);
+
+        // Pass 2: binarized color fills + sparse layout for Client/Server labels
+        try {
+          const enhanced = await preprocessImageForOcr(file);
+          await worker.setParameters({
+            tessedit_pageseg_mode: PSM.SPARSE_TEXT,
+            preserve_interword_spaces: "1",
+          });
+          const sparse = await worker.recognize(enhanced);
+          lineBoxes = mergeOrphanLines(lineBoxes, boxesFromPage(sparse.data));
+          // Also pull raw words from sparse (do not paragraph-merge away labels)
+          const sparseWords = (sparse.data.words ?? [])
+            .map((w) => toBox(w))
+            .filter((x): x is BBoxLine => !!x);
+          lineBoxes = mergeOrphanLines(lineBoxes, sparseWords);
+        } catch {
+          // ignore supplemental pass
+        } finally {
+          try {
+            await worker.setParameters({
+              tessedit_pageseg_mode: PSM.AUTO,
+              preserve_interword_spaces: "1",
+            });
+          } catch {
+            // ignore
           }
         }
-
-        // Recover lines that fell outside merged paragraph boxes
-        lineBoxes = mergeOrphanLines(lineBoxes, linesRaw);
 
         const paras = lineBoxes.filter(
           (p) => !isJunkText(p.text) && p.text.trim().length >= 1,
@@ -706,30 +884,46 @@ export function ImageOcrView({
               ref={stageRef}
             >
               <img src={imageUrl} alt="OCR" className="ocr-image" draggable={false} />
-              {blocks.map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  data-block-id={b.id}
-                  className={
-                    b.id === selectedId ? "ocr-box active" : "ocr-box"
-                  }
-                  style={{
-                    left: `${b.x * 100}%`,
-                    top: `${b.y * 100}%`,
-                    width: `${b.w * 100}%`,
-                    height: `${b.h * 100}%`,
-                  }}
-                  onClick={() => selectBlock(b.id)}
-                  title={b.text}
-                >
-                  {showTranslation &&
-                  b.status === "done" &&
-                  b.translation
+              {blocks.map((b) => {
+                // Prefer translation; fall back to OCR source so boxes are never blank
+                // while translate is pending or when a label failed to translate.
+                const rawLabel = showTranslation
+                  ? b.status === "done" && b.translation.trim()
                     ? b.translation
-                    : ""}
-                </button>
-              ))}
+                    : b.text
+                  : b.text;
+                const boxW = b.w * stageSize.w;
+                const boxH = b.h * stageSize.h;
+                const label = rawLabel
+                  ? formatOverlayText(rawLabel, boxW, boxH)
+                  : "";
+                const fontSize = label
+                  ? overlayFontSize(boxW, boxH, label)
+                  : Math.max(8, boxH * 0.75);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    data-block-id={b.id}
+                    className={
+                      b.id === selectedId ? "ocr-box active" : "ocr-box"
+                    }
+                    style={{
+                      left: `${b.x * 100}%`,
+                      top: `${b.y * 100}%`,
+                      width: `${b.w * 100}%`,
+                      height: `${b.h * 100}%`,
+                      fontSize: `${fontSize.toFixed(1)}px`,
+                      lineHeight: 1.2,
+                      whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
+                    }}
+                    onClick={() => selectBlock(b.id)}
+                    title={b.text}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           )}
           {error && <p className="boot-error ocr-error">{error}</p>}
