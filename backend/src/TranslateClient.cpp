@@ -9,11 +9,15 @@
 #include <cctype>
 #include <map>
 #include <functional>
+#include <random>
+#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
+#include <wincrypt.h>
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "advapi32.lib")
 #endif
 
 using json = nlohmann::json;
@@ -80,6 +84,109 @@ std::string urlEncode(const std::string& value)
     }
     return escaped.str();
 }
+
+#ifdef _WIN32
+std::string md5Hex(const std::string& data)
+{
+    HCRYPTPROV prov = 0;
+    HCRYPTHASH hash = 0;
+    std::string out;
+    if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+    {
+        return out;
+    }
+    if (!CryptCreateHash(prov, CALG_MD5, 0, 0, &hash))
+    {
+        CryptReleaseContext(prov, 0);
+        return out;
+    }
+    if (!CryptHashData(hash, reinterpret_cast<const BYTE*>(data.data()),
+            static_cast<DWORD>(data.size()), 0))
+    {
+        CryptDestroyHash(hash);
+        CryptReleaseContext(prov, 0);
+        return out;
+    }
+    BYTE digest[16];
+    DWORD len = 16;
+    if (CryptGetHashParam(hash, HP_HASHVAL, digest, &len, 0))
+    {
+        std::ostringstream oss;
+        oss << std::hex << std::setfill('0');
+        for (DWORD i = 0; i < len; ++i)
+            oss << std::setw(2) << static_cast<int>(digest[i]);
+        out = oss.str();
+    }
+    CryptDestroyHash(hash);
+    CryptReleaseContext(prov, 0);
+    return out;
+}
+
+std::string randomSalt()
+{
+    const auto t = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::mt19937 rng(static_cast<unsigned>(t ^ (t >> 32)));
+    return std::to_string(rng());
+}
+
+json parseEngineKeys(const std::string& raw)
+{
+    if (raw.empty()) return json::object();
+    try
+    {
+        auto j = json::parse(raw);
+        if (j.is_object()) return j;
+    }
+    catch (...)
+    {
+    }
+    return json::object();
+}
+
+std::string engineField(const json& keys, const std::string& provider, const std::string& field)
+{
+    if (!keys.contains(provider) || !keys[provider].is_object()) return {};
+    const auto& o = keys[provider];
+    if (o.contains(field) && o[field].is_string())
+        return o[field].get<std::string>();
+    return {};
+}
+
+std::string mapBaiduLang(const std::string& code)
+{
+    const std::string c = toLower(code);
+    if (c.empty() || c == "auto") return "auto";
+    if (c.rfind("zh-tw", 0) == 0 || c == "cht") return "cht";
+    if (c.rfind("zh", 0) == 0) return "zh";
+    if (c.rfind("en", 0) == 0) return "en";
+    if (c.rfind("ja", 0) == 0 || c == "jp") return "jp";
+    if (c.rfind("ko", 0) == 0 || c == "kor") return "kor";
+    return c.size() >= 2 ? c.substr(0, 2) : c;
+}
+
+std::string mapYoudaoLang(const std::string& code)
+{
+    const std::string c = toLower(code);
+    if (c.empty() || c == "auto") return "auto";
+    if (c.rfind("zh-tw", 0) == 0) return "zh-CHT";
+    if (c.rfind("zh", 0) == 0) return "zh-CHS";
+    if (c.rfind("en", 0) == 0) return "en";
+    if (c.rfind("ja", 0) == 0) return "ja";
+    if (c.rfind("ko", 0) == 0) return "ko";
+    return c.size() >= 2 ? c.substr(0, 2) : c;
+}
+
+std::string mapNiuLang(const std::string& code)
+{
+    const std::string c = toLower(code);
+    if (c.empty() || c == "auto") return "auto";
+    if (c.rfind("zh", 0) == 0) return "zh";
+    if (c.rfind("en", 0) == 0) return "en";
+    if (c.rfind("ja", 0) == 0) return "ja";
+    if (c.rfind("ko", 0) == 0) return "ko";
+    return c.size() >= 2 ? c.substr(0, 2) : c;
+}
+#endif
 
 size_t utf8CharLen(unsigned char lead)
 {
@@ -831,59 +938,317 @@ TranslateResult translateBing(const std::string& text, const std::string& source
     return result;
 }
 
-TranslateResult translateYoudao(const std::string& text, const std::string& source, const std::string& target)
+TranslateResult translateYoudao(
+    const std::string& text,
+    const std::string& source,
+    const std::string& target,
+    const std::string& appKey,
+    const std::string& appSecret)
 {
     TranslateResult result;
     result.provider = "youdao";
-    (void)text;
-    (void)source;
-    (void)target;
-    result.error = withZhHint(
-        "Youdao free web endpoint discontinued (returns HTML SPA)",
-        "有道免费网页接口已失效，请改用 Bing / 大模型，或为谷歌配置代理");
-    result.code = "ERROR";
+    if (appKey.empty() || appSecret.empty())
+    {
+        result.error = withZhHint(
+            "Youdao requires appId and secret",
+            "有道翻译需要填写 App Key 与 App Secret（在设置→翻译引擎中配置）");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string salt = randomSalt();
+    const std::string sign = md5Hex(appKey + text + salt + appSecret);
+    if (sign.empty())
+    {
+        result.error = withZhHint("MD5 failed", "无法计算有道签名");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string body =
+        "q=" + urlEncode(text)
+        + "&from=" + urlEncode(mapYoudaoLang(source))
+        + "&to=" + urlEncode(mapYoudaoLang(target))
+        + "&appKey=" + urlEncode(appKey)
+        + "&salt=" + urlEncode(salt)
+        + "&sign=" + urlEncode(sign);
+    const HttpResult http = winHttpPost(
+        "https://openapi.youdao.com/api",
+        body,
+        L"Content-Type: application/x-www-form-urlencoded\r\n");
+    if (!http.ok)
+    {
+        result.error = http.error.empty()
+            ? withZhHint("Youdao HTTP failed", "有道翻译请求失败")
+            : http.error;
+        result.code = "ERROR";
+        return result;
+    }
+    try
+    {
+        const json j = json::parse(http.body);
+        const std::string err = j.value("errorCode", "");
+        if (err != "0")
+        {
+            result.error = withZhHint(
+                "Youdao errorCode=" + err,
+                "有道翻译失败（错误码 " + err + "），请检查 App Key / Secret");
+            result.code = "ERROR";
+            return result;
+        }
+        if (!j.contains("translation") || !j["translation"].is_array() || j["translation"].empty())
+        {
+            result.error = withZhHint("Youdao empty translation", "有道翻译结果为空");
+            result.code = "ERROR";
+            return result;
+        }
+        result.translation = j["translation"][0].get<std::string>();
+        result.ok = !result.translation.empty();
+        if (!result.ok)
+        {
+            result.error = withZhHint("Youdao empty translation", "有道翻译结果为空");
+            result.code = "ERROR";
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        result.error = withZhHint(
+            std::string("Parse Youdao failed: ") + ex.what(),
+            "有道翻译返回无法解析");
+        result.code = "ERROR";
+    }
     return result;
 }
 
-TranslateResult translateBaidu(const std::string& text, const std::string& source, const std::string& target)
+TranslateResult translateBaidu(
+    const std::string& text,
+    const std::string& source,
+    const std::string& target,
+    const std::string& appId,
+    const std::string& secret)
 {
     TranslateResult result;
     result.provider = "baidu";
-    (void)text;
-    (void)source;
-    (void)target;
-    result.error = withZhHint(
-        "Baidu free transapi requires signed session (errno 1022)",
-        "百度免费接口已不可用（需密钥/签名），请改用 Bing / 大模型");
-    result.code = "ERROR";
+    if (appId.empty() || secret.empty())
+    {
+        result.error = withZhHint(
+            "Baidu requires appId and secret",
+            "百度翻译需要填写 App ID 与密钥（在设置→翻译引擎中配置）");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string salt = randomSalt();
+    const std::string sign = md5Hex(appId + text + salt + secret);
+    if (sign.empty())
+    {
+        result.error = withZhHint("MD5 failed", "无法计算百度签名");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string url =
+        "https://fanyi-api.baidu.com/api/trans/vip/translate"
+        "?q=" + urlEncode(text)
+        + "&from=" + urlEncode(mapBaiduLang(source))
+        + "&to=" + urlEncode(mapBaiduLang(target))
+        + "&appid=" + urlEncode(appId)
+        + "&salt=" + urlEncode(salt)
+        + "&sign=" + urlEncode(sign);
+    const HttpResult http = winHttpGet(url);
+    if (!http.ok)
+    {
+        result.error = http.error.empty()
+            ? withZhHint("Baidu HTTP failed", "百度翻译请求失败")
+            : http.error;
+        result.code = "ERROR";
+        return result;
+    }
+    try
+    {
+        const json j = json::parse(http.body);
+        if (j.contains("error_code"))
+        {
+            const std::string code = j["error_code"].is_string()
+                ? j["error_code"].get<std::string>()
+                : std::to_string(j["error_code"].get<int>());
+            result.error = withZhHint(
+                "Baidu error_code=" + code,
+                "百度翻译失败（错误码 " + code + "），请检查 App ID / 密钥");
+            result.code = "ERROR";
+            return result;
+        }
+        if (!j.contains("trans_result") || !j["trans_result"].is_array()
+            || j["trans_result"].empty())
+        {
+            result.error = withZhHint("Baidu empty result", "百度翻译结果为空");
+            result.code = "ERROR";
+            return result;
+        }
+        std::string joined;
+        for (const auto& row : j["trans_result"])
+        {
+            if (!joined.empty()) joined += "\n";
+            joined += row.value("dst", "");
+        }
+        result.translation = joined;
+        result.ok = !result.translation.empty();
+        if (!result.ok)
+        {
+            result.error = withZhHint("Baidu empty result", "百度翻译结果为空");
+            result.code = "ERROR";
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        result.error = withZhHint(
+            std::string("Parse Baidu failed: ") + ex.what(),
+            "百度翻译返回无法解析");
+        result.code = "ERROR";
+    }
     return result;
 }
 
-TranslateResult translateSogou(const std::string& text, const std::string& source, const std::string& target)
+TranslateResult translateSogou(
+    const std::string& text,
+    const std::string& source,
+    const std::string& target,
+    const std::string& pid,
+    const std::string& key)
 {
     TranslateResult result;
     result.provider = "sogou";
-    (void)text;
-    (void)source;
-    (void)target;
-    result.error = withZhHint(
-        "Sogou free translate endpoint returns HTTP 405",
-        "搜狗免费接口已不可用，请改用 Bing / 大模型");
-    result.code = "ERROR";
+    if (pid.empty() || key.empty())
+    {
+        result.error = withZhHint(
+            "Sogou requires pid and key",
+            "搜狗翻译需要填写 PID 与 Key（在设置→翻译引擎中配置）");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string salt = randomSalt();
+    const std::string sign = md5Hex(pid + text + salt + key);
+    if (sign.empty())
+    {
+        result.error = withZhHint("MD5 failed", "无法计算搜狗签名");
+        result.code = "ERROR";
+        return result;
+    }
+    // Sogou open platform text translate (pid/key signature)
+    const std::string body =
+        "from=" + urlEncode(mapBaiduLang(source))
+        + "&to=" + urlEncode(mapBaiduLang(target))
+        + "&pid=" + urlEncode(pid)
+        + "&q=" + urlEncode(text)
+        + "&salt=" + urlEncode(salt)
+        + "&sign=" + urlEncode(sign);
+    const HttpResult http = winHttpPost(
+        "https://fanyi.sogou.com/reventondc/api/sogouTranslate",
+        body,
+        L"Content-Type: application/x-www-form-urlencoded\r\n");
+    if (!http.ok)
+    {
+        result.error = http.error.empty()
+            ? withZhHint("Sogou HTTP failed", "搜狗翻译请求失败")
+            : http.error;
+        result.code = "ERROR";
+        return result;
+    }
+    try
+    {
+        const json j = json::parse(http.body);
+        if (j.contains("errorCode") && j["errorCode"].get<std::string>() != "0")
+        {
+            const std::string code = j["errorCode"].get<std::string>();
+            result.error = withZhHint(
+                "Sogou errorCode=" + code,
+                "搜狗翻译失败（错误码 " + code + "），请检查 PID / Key");
+            result.code = "ERROR";
+            return result;
+        }
+        result.translation = j.value("translation", "");
+        if (result.translation.empty() && j.contains("trans_result"))
+        {
+            if (j["trans_result"].is_object())
+                result.translation = j["trans_result"].value("translation", "");
+        }
+        result.ok = !result.translation.empty();
+        if (!result.ok)
+        {
+            result.error = withZhHint("Sogou empty result", "搜狗翻译结果为空或接口不可用");
+            result.code = "ERROR";
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        result.error = withZhHint(
+            std::string("Parse Sogou failed: ") + ex.what(),
+            "搜狗翻译返回无法解析");
+        result.code = "ERROR";
+    }
     return result;
 }
 
-TranslateResult translateNiutrans(const std::string& text, const std::string& source, const std::string& target)
+TranslateResult translateNiutrans(
+    const std::string& text,
+    const std::string& source,
+    const std::string& target,
+    const std::string& apiKey)
 {
     TranslateResult result;
     result.provider = "niutrans";
-    (void)text;
-    (void)source;
-    (void)target;
-    result.error = withZhHint(
-        "Niutrans free endpoint requires apikey (error_code 13002)",
-        "小牛翻译需要 API Key，当前未配置，请改用 Bing / 大模型");
-    result.code = "ERROR";
+    if (apiKey.empty())
+    {
+        result.error = withZhHint(
+            "Niutrans requires apikey",
+            "小牛翻译需要填写 API Key（在设置→翻译引擎中配置）");
+        result.code = "ERROR";
+        return result;
+    }
+    const std::string url =
+        "https://api.niutrans.com/NiuTransServer/translation"
+        "?from=" + urlEncode(mapNiuLang(source))
+        + "&to=" + urlEncode(mapNiuLang(target))
+        + "&src_text=" + urlEncode(text)
+        + "&apikey=" + urlEncode(apiKey);
+    const HttpResult http = winHttpGet(url);
+    if (!http.ok)
+    {
+        result.error = http.error.empty()
+            ? withZhHint("Niutrans HTTP failed", "小牛翻译请求失败")
+            : http.error;
+        result.code = "ERROR";
+        return result;
+    }
+    try
+    {
+        const json j = json::parse(http.body);
+        if (j.contains("error_code") || j.contains("errorCode"))
+        {
+            const std::string code = j.contains("error_code")
+                ? (j["error_code"].is_string()
+                      ? j["error_code"].get<std::string>()
+                      : std::to_string(j["error_code"].get<int>()))
+                : (j["errorCode"].is_string()
+                      ? j["errorCode"].get<std::string>()
+                      : std::to_string(j["errorCode"].get<int>()));
+            result.error = withZhHint(
+                "Niutrans error=" + code,
+                "小牛翻译失败（错误码 " + code + "），请检查 API Key");
+            result.code = "ERROR";
+            return result;
+        }
+        result.translation = j.value("tgt_text", j.value("translation", ""));
+        result.ok = !result.translation.empty();
+        if (!result.ok)
+        {
+            result.error = withZhHint("Niutrans empty result", "小牛翻译结果为空");
+            result.code = "ERROR";
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        result.error = withZhHint(
+            std::string("Parse Niutrans failed: ") + ex.what(),
+            "小牛翻译返回无法解析");
+        result.code = "ERROR";
+    }
     return result;
 }
 
@@ -899,7 +1264,8 @@ TranslateResult TranslateClient::translateFree(
     int maxLength,
     bool autoChunk,
     const std::string& proxyMode,
-    const std::string& httpProxy)
+    const std::string& httpProxy,
+    const std::string& engineKeysJson)
 {
     TranslateResult result;
     const std::string p = normalizeProvider(provider);
@@ -914,6 +1280,7 @@ TranslateResult TranslateClient::translateFree(
 
 #ifdef _WIN32
     ProxyScope proxyScope(proxyMode, httpProxy);
+    const json engineKeys = parseEngineKeys(engineKeysJson);
 
     size_t limit = engineDefaultMax(p);
     if (maxLength > 0)
@@ -963,27 +1330,43 @@ TranslateResult TranslateClient::translateFree(
         });
     }
     if (p == "youdao")
+    {
+        const std::string appId = engineField(engineKeys, "youdao", "appId");
+        const std::string secret = engineField(engineKeys, "youdao", "secret");
         return markNetworkIfNeeded(runLimited([&](const std::string& chunk) {
-            return translateYoudao(chunk, source, target);
+            return translateYoudao(chunk, source, target, appId, secret);
         }));
+    }
     if (p == "baidu")
+    {
+        const std::string appId = engineField(engineKeys, "baidu", "appId");
+        const std::string secret = engineField(engineKeys, "baidu", "secret");
         return markNetworkIfNeeded(runLimited([&](const std::string& chunk) {
-            return translateBaidu(chunk, source, target);
+            return translateBaidu(chunk, source, target, appId, secret);
         }));
+    }
     if (p == "sogou")
+    {
+        const std::string appId = engineField(engineKeys, "sogou", "appId");
+        const std::string secret = engineField(engineKeys, "sogou", "secret");
         return markNetworkIfNeeded(runLimited([&](const std::string& chunk) {
-            return translateSogou(chunk, source, target);
+            return translateSogou(chunk, source, target, appId, secret);
         }));
+    }
     if (p == "niutrans")
+    {
+        const std::string apiKey = engineField(engineKeys, "niutrans", "apiKey");
         return markNetworkIfNeeded(runLimited([&](const std::string& chunk) {
-            return translateNiutrans(chunk, source, target);
+            return translateNiutrans(chunk, source, target, apiKey);
         }));
+    }
 
     result.error = withZhHint(
         "Unknown translate provider: " + p,
         "未知的翻译引擎，请重新选择");
     result.code = "ERROR";
 #else
+    (void)engineKeysJson;
     result.error = withZhHint(
         "Free translate only implemented on Windows",
         "当前环境不支持该免费翻译引擎");

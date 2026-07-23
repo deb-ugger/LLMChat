@@ -29,7 +29,8 @@ public:
         int maxLength = 0,
         bool autoChunk = true,
         const std::string& proxyMode = "auto",
-        const std::string& httpProxy = "");
+        const std::string& httpProxy = "",
+        const std::string& engineKeysJson = "{}");
 
     static TranslateResult translateWithLlm(
         const std::string& text,

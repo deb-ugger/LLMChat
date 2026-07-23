@@ -37,6 +37,11 @@ struct AppConfig {
     std::string textPostReplace = "[]";
     /** Empty = <dataDir>/text-projects; relative paths resolve under dataDir */
     std::string textProjectsDir;
+    /**
+     * JSON: per-engine credentials, e.g.
+     * {"baidu":{"appId":"...","secret":"..."},"niutrans":{"apiKey":"..."}}
+     */
+    std::string translateEngineKeys = "{}";
 };
 
 class ConfigStore {

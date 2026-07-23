@@ -71,6 +71,11 @@ export type Settings = {
   /** Resolved absolute path from backend */
   textProjectsDirResolved?: string;
   dataDir?: string;
+  /**
+   * JSON: per-engine credentials
+   * {"baidu":{"appId":"...","secret":"..."},"niutrans":{"apiKey":"..."}}
+   */
+  translateEngineKeys: string;
 };
 
 export type TranslateResponse = {

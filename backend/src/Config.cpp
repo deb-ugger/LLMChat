@@ -210,6 +210,10 @@ void ConfigStore::load()
         {
             config_.textProjectsDir = value;
         }
+        else if (key == "translateEngineKeys")
+        {
+            config_.translateEngineKeys = unescapeIniValue(value);
+        }
     }
 }
 
@@ -249,4 +253,5 @@ void ConfigStore::save() const
     out << "textPreReplace=" << escapeIniValue(config_.textPreReplace) << "\n";
     out << "textPostReplace=" << escapeIniValue(config_.textPostReplace) << "\n";
     out << "textProjectsDir=" << config_.textProjectsDir << "\n";
+    out << "translateEngineKeys=" << escapeIniValue(config_.translateEngineKeys) << "\n";
 }

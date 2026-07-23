@@ -43,6 +43,7 @@ const defaultSettings: Settings = {
   textPreReplace: "[]",
   textPostReplace: "[]",
   textProjectsDir: "",
+  translateEngineKeys: "{}",
 };
 
 export default function App() {
@@ -169,6 +170,7 @@ export default function App() {
               (s.dataDir ? `${s.dataDir}\\text-projects` : ""),
             textProjectsDirResolved: s.textProjectsDirResolved,
             dataDir: s.dataDir,
+            translateEngineKeys: s.translateEngineKeys || "{}",
           });
           setConversations(list.items);
           const offset = Math.max(

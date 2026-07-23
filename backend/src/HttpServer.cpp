@@ -161,6 +161,7 @@ int HttpServer::run()
             {"textProjectsDir", c.textProjectsDir},
             {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
             {"dataDir", dataDirectory(config_).string()},
+            {"translateEngineKeys", c.translateEngineKeys},
         };
         res.set_content(body.dump(), "application/json");
     }));
@@ -273,6 +274,10 @@ int HttpServer::run()
             if (body.contains("textProjectsDir"))
             {
                 c.textProjectsDir = body["textProjectsDir"].get<std::string>();
+            }
+            if (body.contains("translateEngineKeys"))
+            {
+                c.translateEngineKeys = body["translateEngineKeys"].get<std::string>();
             }
             config_.save();
             res.set_content(json{
@@ -763,7 +768,7 @@ int HttpServer::run()
             {
                 tr = TranslateClient::translateFree(
                     text, source, target, provider, maxLength, autoChunk,
-                    cfg.proxyMode, cfg.httpProxy);
+                    cfg.proxyMode, cfg.httpProxy, cfg.translateEngineKeys);
             }
 
             if (!tr.ok)

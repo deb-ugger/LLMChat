@@ -11,13 +11,30 @@ import {
 import { PROJECT_FILENAME } from "../transProject";
 import { LangCombobox } from "./LangCombobox";
 import {
+  groupModelPresets,
   loadModelProfiles,
   MODEL_PRESETS,
   resolveModelApi,
   saveModelProfiles,
   type ModelProfile,
 } from "../modelPresets";
-import { getEngineInfo, sortedEngines, TRANSLATE_ENGINES } from "../translateEngines";
+import {
+  getEngineInfo,
+  sortedEngines,
+  sortedClassicEngines,
+  classicEngines,
+  TRANSLATE_ENGINES,
+  parseEngineKeys,
+  stringifyEngineKeys,
+  engineHasCredentials,
+  type EngineKeysMap,
+} from "../translateEngines";
+import {
+  readCardTestResults,
+  readSectionTestResults,
+  writeCardTestResults,
+  writeSectionTestResults,
+} from "../settingsTestSession";
 
 type Props = {
   settings: Settings;
@@ -32,6 +49,49 @@ type TestResult = {
   ok: boolean;
   message: string;
 };
+
+const USAGE_LABELS = [
+  "对话模型",
+  "文献翻译",
+  "图片文字识别",
+  "文本翻译工程",
+] as const;
+
+type UsageLabel = (typeof USAGE_LABELS)[number];
+
+function modelUsageLabels(s: Settings, model: string): UsageLabel[] {
+  const out: UsageLabel[] = [];
+  if (s.model === model) out.push("对话模型");
+  if (s.translateProvider === "llm" && s.model === model) out.push("文献翻译");
+  if (s.ocrTranslateProvider === "llm" && s.model === model) {
+    out.push("图片文字识别");
+  }
+  if (s.textTranslateProvider === "llm" && s.model === model) {
+    out.push("文本翻译工程");
+  }
+  return out;
+}
+
+function engineUsageLabels(s: Settings, engineId: string): UsageLabel[] {
+  const out: UsageLabel[] = [];
+  if (s.translateProvider === engineId) out.push("文献翻译");
+  if (s.ocrTranslateProvider === engineId) out.push("图片文字识别");
+  if (s.textTranslateProvider === engineId) out.push("文本翻译工程");
+  return out;
+}
+
+function UsageBadges({ labels }: { labels: UsageLabel[] }) {
+  if (labels.length === 0) return null;
+  return (
+    <>
+      {labels.map((label) => (
+        <em key={label} className="settings-usage-badge">
+          {label}
+        </em>
+      ))}
+    </>
+  );
+}
 
 function ocrLangToTranslateSource(ocrLang: string): string {
   switch (ocrLang) {
@@ -90,6 +150,7 @@ function withDefaults(s: Settings): Settings {
       (s.dataDir ? `${s.dataDir}\\text-projects` : ""),
     textProjectsDirResolved: s.textProjectsDirResolved,
     dataDir: s.dataDir,
+    translateEngineKeys: s.translateEngineKeys || "{}",
   };
 }
 
@@ -221,32 +282,165 @@ export function SettingsView({ settings, onSave }: Props) {
     loadModelProfiles(),
   );
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(
+    null,
+  );
+  const toastTimerRef = useRef<number | null>(null);
   const [customDraft, setCustomDraft] = useState("");
   const [pickingCustom, setPickingCustom] = useState(false);
-  const [testing, setTesting] = useState<
-    null | "llm" | "lit" | "ocr" | "text"
-  >(null);
-  const [testMsg, setTestMsg] = useState<{
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testingTarget, setTestingTarget] = useState<string | null>(null);
+  const [testMsg, setTestMsgState] = useState<{
     llm?: TestResult;
     lit?: TestResult;
+    litLlm?: TestResult;
     ocr?: TestResult;
     text?: TestResult;
-  }>({});
+  }>(() => readSectionTestResults());
+  const [cardTestMsg, setCardTestMsgState] = useState<
+    Record<string, TestResult>
+  >(() => readCardTestResults());
+  const [batchProgress, setBatchProgress] = useState<string | null>(null);
+  const [generalOpen, setGeneralOpen] = useState({
+    proxy: true,
+    llm: true,
+    engine: true,
+  });
+  const toggleGeneral = (key: keyof typeof generalOpen) => {
+    setGeneralOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const [expandedEngine, setExpandedEngine] = useState<TranslateProvider | null>(
+    null,
+  );
+  const [panelSnap, setPanelSnap] = useState<{
+    kind: "model" | "engine";
+    id: string;
+    apiUrl?: string;
+    apiKey?: string;
+    engineRow?: Partial<
+      Record<"appId" | "secret" | "apiKey" | "note", string>
+    >;
+  } | null>(null);
+  const [litClassicProvider, setLitClassicProvider] = useState<TranslateProvider>(
+    () => {
+      const p = normalizeProvider(settings.translateProvider);
+      return p === "llm" ? "bing" : p;
+    },
+  );
+  const [expandedModel, setExpandedModel] = useState<string | null>(
+    settings.model || null,
+  );
   const prevModelRef = useRef(form.model);
   const customInputRef = useRef<HTMLInputElement>(null);
+
+  const notify = (message: string, ok = true) => {
+    setToast({ message, ok });
+    setSaveMsg(message);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      setSaveMsg(null);
+      toastTimerRef.current = null;
+    }, 2800);
+  };
+
+  const isCardTesting = (key: string) =>
+    testing === key || testingTarget === key;
+
+  const setTestMsg: typeof setTestMsgState = (updater) => {
+    setTestMsgState((prev) => {
+      const next =
+        typeof updater === "function"
+          ? (
+              updater as (
+                p: typeof prev,
+              ) => typeof prev
+            )(prev)
+          : updater;
+      writeSectionTestResults(next);
+      return next;
+    });
+  };
+
+  const setCardTestMsg: typeof setCardTestMsgState = (updater) => {
+    setCardTestMsgState((prev) => {
+      const next =
+        typeof updater === "function"
+          ? (
+              updater as (
+                p: Record<string, TestResult>,
+              ) => Record<string, TestResult>
+            )(prev)
+          : updater;
+      writeCardTestResults(next);
+      return next;
+    });
+  };
+
+  const engineKeys = useMemo(
+    () => parseEngineKeys(form.translateEngineKeys),
+    [form.translateEngineKeys],
+  );
+
+  const setEngineKeyField = (
+    engineId: string,
+    field: "appId" | "secret" | "apiKey" | "note",
+    value: string,
+  ) => {
+    const next: EngineKeysMap = {
+      ...engineKeys,
+      [engineId]: { ...(engineKeys[engineId] || {}), [field]: value },
+    };
+    setForm({ ...form, translateEngineKeys: stringifyEngineKeys(next) });
+  };
+
+  const onEngineCardClick = (id: TranslateProvider) => {
+    setExpandedEngine((cur) => {
+      if (cur === id) {
+        setPanelSnap(null);
+        return null;
+      }
+      const keys = parseEngineKeys(form.translateEngineKeys);
+      setPanelSnap({
+        kind: "engine",
+        id,
+        engineRow: { ...(keys[id] || {}) },
+      });
+      return id;
+    });
+    setExpandedModel(null);
+  };
+
+  const modelConfigured = (model: string) => {
+    if (model === form.model) return !!(form.apiKey || "").trim();
+    return !!(profiles[model]?.apiKey || "").trim();
+  };
+
+  const profilesWithCurrent = () => ({
+    ...profiles,
+    [form.model]: { apiUrl: form.apiUrl, apiKey: form.apiKey },
+  });
+
+  const credsForModel = (model: string) => {
+    if (model === form.model) {
+      return { apiUrl: form.apiUrl, apiKey: form.apiKey };
+    }
+    return resolveModelApi(model, profilesWithCurrent());
+  };
 
   useEffect(() => {
     const next = withDefaults(settings);
     setForm(next);
+    setProfiles(loadModelProfiles());
     prevModelRef.current = settings.model;
-    const presetIds = new Set(MODEL_PRESETS.map((p) => p.model));
-    const knownCustom = Object.keys(loadModelProfiles()).filter(
-      (m) => !presetIds.has(m),
-    );
-    const isKnown =
-      presetIds.has(next.model) || knownCustom.includes(next.model);
-    setPickingCustom(!isKnown);
-    setCustomDraft(isKnown ? "" : next.model);
+    setPickingCustom(false);
+    setCustomDraft("");
+    setExpandedModel(null);
+    const classic =
+      next.translateProvider === "llm" ? "bing" : next.translateProvider;
+    setLitClassicProvider(classic);
   }, [settings]);
 
   const customModels = useMemo(() => {
@@ -261,21 +455,15 @@ export function SettingsView({ settings, onSave }: Props) {
     return [...new Set([...fromProfiles, ...extra])].sort();
   }, [form.model, profiles]);
 
-  const modelSelectValue = useMemo(() => {
-    if (pickingCustom) return CUSTOM_MODEL;
-    if (MODEL_PRESETS.some((p) => p.model === form.model)) return form.model;
-    if (customModels.includes(form.model)) return form.model;
-    return CUSTOM_MODEL;
-  }, [customModels, form.model, pickingCustom]);
-
   const ocrSource = useMemo(
     () => ocrLangToTranslateSource(form.ocrLang),
     [form.ocrLang],
   );
-  const engines = useMemo(
-    () => sortedEngines(form.translateSource, form.translateTarget),
+  const litClassicEngines = useMemo(
+    () => sortedClassicEngines(form.translateSource, form.translateTarget),
     [form.translateSource, form.translateTarget],
   );
+  const catalogEngines = useMemo(() => classicEngines(TRANSLATE_ENGINES), []);
   const textEngines = useMemo(
     () => sortedEngines(form.textTranslateSource, form.textTranslateTarget),
     [form.textTranslateSource, form.textTranslateTarget],
@@ -285,12 +473,17 @@ export function SettingsView({ settings, onSave }: Props) {
     [ocrSource, form.ocrTranslateTarget],
   );
 
-  const selectedEngine = getEngineInfo(form.translateProvider);
+  const selectedEngine = getEngineInfo(
+    form.translateProvider === "llm"
+      ? litClassicProvider
+      : form.translateProvider,
+  );
   const selectedTextEngine = getEngineInfo(form.textTranslateProvider);
   const selectedOcrEngine = getEngineInfo(form.ocrTranslateProvider);
+  const litUsesLlm = form.translateProvider === "llm";
   const showChunkOption =
+    !litUsesLlm &&
     !!selectedEngine &&
-    selectedEngine.id !== "llm" &&
     selectedEngine.supportsChunk;
   const showOcrChunkOption =
     !!selectedOcrEngine &&
@@ -340,6 +533,23 @@ export function SettingsView({ settings, onSave }: Props) {
     return next;
   };
 
+  const onModelCardClick = (model: string) => {
+    if (expandedModel === model) {
+      setExpandedModel(null);
+      setPanelSnap(null);
+      return;
+    }
+    const next = applyModel(model);
+    setExpandedModel(model);
+    setExpandedEngine(null);
+    setPanelSnap({
+      kind: "model",
+      id: model,
+      apiUrl: next.apiUrl,
+      apiKey: next.apiKey,
+    });
+  };
+
   const commitCustomModel = () => {
     const name = customDraft.trim();
     if (!name) return;
@@ -349,7 +559,17 @@ export function SettingsView({ settings, onSave }: Props) {
   const setLitLang = (which: "source" | "target", code: string) => {
     const source = which === "source" ? code : form.translateSource;
     const target = which === "target" ? code : form.translateTarget;
-    const best = sortedEngines(source, target)[0]?.id ?? form.translateProvider;
+    if (form.translateProvider === "llm") {
+      setForm({
+        ...form,
+        translateSource: source,
+        translateTarget: target,
+      });
+      return;
+    }
+    const best =
+      sortedClassicEngines(source, target)[0]?.id ?? form.translateProvider;
+    setLitClassicProvider(best);
     setForm({
       ...form,
       translateSource: source,
@@ -383,7 +603,7 @@ export function SettingsView({ settings, onSave }: Props) {
     });
   };
 
-  const save = async () => {
+  const save = async (successMsg?: string) => {
     let toSave = form;
     if (pickingCustom && customDraft.trim()) {
       toSave = applyModel(customDraft.trim(), form);
@@ -404,7 +624,6 @@ export function SettingsView({ settings, onSave }: Props) {
     };
     setProfiles(nextProfiles);
     saveModelProfiles(nextProfiles);
-    setSaveMsg(null);
     try {
       await onSave(toSave);
       setForm((f) => ({
@@ -415,10 +634,150 @@ export function SettingsView({ settings, onSave }: Props) {
           f.textProjectsDirResolved ||
           f.textProjectsDir,
       }));
-      setSaveMsg("已保存");
-      window.setTimeout(() => setSaveMsg(null), 2500);
+      notify(successMsg || "保存设置成功");
+      return toSave;
     } catch (e) {
-      setSaveMsg(e instanceof Error ? e.message : "保存失败");
+      notify(e instanceof Error ? e.message : "保存失败", false);
+      throw e;
+    }
+  };
+
+  const savePanel = async () => {
+    const snapModel = expandedModel;
+    const snapEngine = expandedEngine;
+    const apiUrl = form.apiUrl;
+    const apiKey = form.apiKey;
+    const engineKeysStr = form.translateEngineKeys;
+    const addingCustom = pickingCustom || snapModel === CUSTOM_MODEL;
+    const customName = customDraft.trim();
+    let successMsg = "保存成功";
+    if (addingCustom && customName) {
+      successMsg = `添加本地模型「${customName}」成功`;
+    } else if (snapModel && snapModel !== CUSTOM_MODEL) {
+      const label =
+        MODEL_PRESETS.find((p) => p.model === snapModel)?.label || snapModel;
+      successMsg = `保存模型「${label}」成功`;
+    } else if (snapEngine) {
+      const label = getEngineInfo(snapEngine)?.label || snapEngine;
+      successMsg = `保存引擎「${label}」成功`;
+    }
+    try {
+      await save(successMsg);
+      if (snapModel && snapModel !== CUSTOM_MODEL) {
+        setPanelSnap({
+          kind: "model",
+          id: snapModel,
+          apiUrl,
+          apiKey,
+        });
+      } else if (addingCustom && customName) {
+        setExpandedModel(customName);
+        setPickingCustom(false);
+        setCustomDraft("");
+        setPanelSnap({
+          kind: "model",
+          id: customName,
+          apiUrl,
+          apiKey,
+        });
+      } else if (snapEngine) {
+        const keys = parseEngineKeys(engineKeysStr);
+        setPanelSnap({
+          kind: "engine",
+          id: snapEngine,
+          engineRow: { ...(keys[snapEngine] || {}) },
+        });
+      }
+    } catch {
+      // notify already shown
+    }
+  };
+
+  const cancelPanel = () => {
+    if (!panelSnap) {
+      setExpandedEngine(null);
+      setExpandedModel(null);
+      setPickingCustom(false);
+      return;
+    }
+    if (panelSnap.kind === "model") {
+      const nextProfiles = {
+        ...profiles,
+        [panelSnap.id]: {
+          apiUrl: panelSnap.apiUrl || "",
+          apiKey: panelSnap.apiKey || "",
+        },
+      };
+      setProfiles(nextProfiles);
+      saveModelProfiles(nextProfiles);
+      if (form.model === panelSnap.id) {
+        setForm({
+          ...form,
+          apiUrl: panelSnap.apiUrl || "",
+          apiKey: panelSnap.apiKey || "",
+        });
+      }
+      setExpandedModel(null);
+    } else {
+      const keys = parseEngineKeys(form.translateEngineKeys);
+      const next: EngineKeysMap = { ...keys };
+      if (panelSnap.engineRow && Object.keys(panelSnap.engineRow).length > 0) {
+        next[panelSnap.id] = { ...panelSnap.engineRow };
+      } else {
+        delete next[panelSnap.id];
+      }
+      setForm({
+        ...form,
+        translateEngineKeys: stringifyEngineKeys(next),
+      });
+      setExpandedEngine(null);
+    }
+    setPanelSnap(null);
+    setPickingCustom(false);
+  };
+
+  const deleteLocalModel = async (model: string) => {
+    const presetIds = new Set(MODEL_PRESETS.map((p) => p.model));
+    if (presetIds.has(model)) return;
+
+    const nextProfiles = { ...profiles };
+    delete nextProfiles[model];
+
+    let nextForm = { ...form };
+    if (form.model === model) {
+      const fallback =
+        MODEL_PRESETS[0]?.model ||
+        Object.keys(nextProfiles).find((m) => !presetIds.has(m)) ||
+        MODEL_PRESETS[0]?.model ||
+        "";
+      const resolved = resolveModelApi(fallback, nextProfiles);
+      nextForm = {
+        ...form,
+        model: fallback,
+        apiUrl: resolved.apiUrl,
+        apiKey: resolved.apiKey,
+      };
+      prevModelRef.current = fallback;
+    }
+
+    setProfiles(nextProfiles);
+    saveModelProfiles(nextProfiles);
+    setForm(nextForm);
+    setExpandedModel(null);
+    setPanelSnap(null);
+    setPickingCustom(false);
+    setCustomDraft("");
+    setCardTestMsg((m) => {
+      const next = { ...m };
+      delete next[`model:${model}`];
+      return next;
+    });
+
+    try {
+      await onSave(nextForm);
+      notify(`删除本地模型「${model}」成功`);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "删除失败", false);
     }
   };
 
@@ -439,15 +798,57 @@ export function SettingsView({ settings, onSave }: Props) {
     });
   };
 
-  const runTest = async (kind: "llm" | "lit" | "ocr" | "text") => {
+  const runTest = async (kind: "llm" | "lit" | "litLlm" | "ocr" | "text") => {
     setTesting(kind);
+    setBatchProgress(null);
     setTestMsg((m) => ({ ...m, [kind]: undefined }));
     const t0 = performance.now();
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), 15000);
     try {
-      // Persist first so Literature / OCR use the same engine that was tested.
-      await onSave(form);
+      let nextForm = form;
+      if (kind === "lit") {
+        const classic =
+          form.translateProvider !== "llm"
+            ? form.translateProvider
+            : litClassicProvider;
+        nextForm = { ...form, translateProvider: classic };
+        setLitClassicProvider(classic);
+        setForm(nextForm);
+        await onSave(nextForm);
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: classic,
+          source: nextForm.translateSource,
+          target: nextForm.translateTarget,
+          maxLength: nextForm.translateMaxLength || 200,
+          autoChunk: nextForm.translateAutoChunk,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文，请换引擎或检查网络/代理");
+        }
+      } else if (kind === "litLlm") {
+        nextForm = { ...form, translateProvider: "llm" };
+        setForm(nextForm);
+        await onSave(nextForm);
+        if (!nextForm.apiUrl.trim()) {
+          throw new Error("请先在「通用」填写 API URL");
+        }
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: "llm",
+          source: nextForm.translateSource,
+          target: nextForm.translateTarget,
+          maxLength: nextForm.translateMaxLength || 200,
+          autoChunk: false,
+          apiUrl: nextForm.apiUrl,
+          apiKey: nextForm.apiKey,
+          model: nextForm.model,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
+      } else {
+        await onSave(form);
+      }
 
       if (kind === "llm") {
         if (!form.apiUrl.trim()) {
@@ -465,24 +866,6 @@ export function SettingsView({ settings, onSave }: Props) {
         });
         if (!(res.translation || "").trim()) {
           throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "lit") {
-        const res = await api.translate("Hello", { signal: ac.signal }, {
-          provider: form.translateProvider,
-          source: form.translateSource,
-          target: form.translateTarget,
-          maxLength: form.translateMaxLength || 200,
-          autoChunk: form.translateAutoChunk,
-          ...(form.translateProvider === "llm"
-            ? {
-                apiUrl: form.apiUrl,
-                apiKey: form.apiKey,
-                model: form.model,
-              }
-            : {}),
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文，请换引擎或检查网络/代理");
         }
       } else if (kind === "text") {
         const provider = form.textTranslateProvider || "llm";
@@ -507,7 +890,7 @@ export function SettingsView({ settings, onSave }: Props) {
         if (!(res.translation || "").trim()) {
           throw new Error("引擎返回空译文");
         }
-      } else {
+      } else if (kind === "ocr") {
         const res = await api.translate("Hello", { signal: ac.signal }, {
           provider: form.ocrTranslateProvider,
           source: ocrLangToTranslateSource(form.ocrLang),
@@ -535,10 +918,12 @@ export function SettingsView({ settings, onSave }: Props) {
       const ms = Math.round(performance.now() - t0);
       const aborted = ac.signal.aborted;
       const provider =
-        kind === "llm"
+        kind === "llm" || kind === "litLlm"
           ? "llm"
           : kind === "lit"
-            ? form.translateProvider
+            ? form.translateProvider !== "llm"
+              ? form.translateProvider
+              : litClassicProvider
             : kind === "text"
               ? form.textTranslateProvider
               : form.ocrTranslateProvider;
@@ -562,8 +947,265 @@ export function SettingsView({ settings, onSave }: Props) {
     } finally {
       window.clearTimeout(timer);
       setTesting(null);
+      setTestingTarget(null);
+      setBatchProgress(null);
     }
   };
+
+  const testOneModel = async (model: string) => {
+    const key = `model:${model}`;
+    setTesting(key);
+    setTestingTarget(key);
+    setCardTestMsg((m) => {
+      const next = { ...m };
+      delete next[key];
+      return next;
+    });
+    const t0 = performance.now();
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), 15000);
+    try {
+      await onSave(form);
+      const creds = credsForModel(model);
+      if (!creds.apiUrl.trim()) {
+        throw new Error("请先填写 API URL");
+      }
+      const res = await api.translate("ping", { signal: ac.signal }, {
+        provider: "llm",
+        source: "en",
+        target: "zh-CN",
+        apiUrl: creds.apiUrl,
+        apiKey: creds.apiKey,
+        model,
+        maxLength: 32,
+        autoChunk: false,
+      });
+      if (!(res.translation || "").trim()) {
+        throw new Error("引擎返回空译文");
+      }
+      const ms = Math.round(performance.now() - t0);
+      setCardTestMsg((m) => ({
+        ...m,
+        [key]: { ok: true, message: `连接正常 · ${ms} ms` },
+      }));
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      const msg = ac.signal.aborted
+        ? "连接超时"
+        : toFriendlyError(e, "测试失败");
+      setCardTestMsg((m) => ({
+        ...m,
+        [key]: { ok: false, message: `${msg} · ${ms} ms` },
+      }));
+    } finally {
+      window.clearTimeout(timer);
+      setTesting(null);
+      setTestingTarget(null);
+    }
+  };
+
+  const testAllModels = async () => {
+    setTesting("llm-all");
+    setTestingTarget(null);
+    setTestMsg((m) => ({ ...m, llm: undefined }));
+    const models = [
+      ...MODEL_PRESETS.map((p) => p.model),
+      ...customModels,
+    ];
+    let ok = 0;
+    let fail = 0;
+    await onSave(form);
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      const key = `model:${model}`;
+      setTestingTarget(key);
+      setBatchProgress(`${i + 1}/${models.length}`);
+      const t0 = performance.now();
+      const ac = new AbortController();
+      const timer = window.setTimeout(() => ac.abort(), 12000);
+      try {
+        const creds = credsForModel(model);
+        if (!creds.apiUrl.trim()) {
+          throw new Error("未填写 API URL");
+        }
+        const res = await api.translate("ping", { signal: ac.signal }, {
+          provider: "llm",
+          source: "en",
+          target: "zh-CN",
+          apiUrl: creds.apiUrl,
+          apiKey: creds.apiKey,
+          model,
+          maxLength: 32,
+          autoChunk: false,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("空译文");
+        }
+        const ms = Math.round(performance.now() - t0);
+        setCardTestMsg((m) => ({
+          ...m,
+          [key]: { ok: true, message: `连接正常 · ${ms} ms` },
+        }));
+        ok += 1;
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        const msg = ac.signal.aborted
+          ? "连接超时"
+          : toFriendlyError(e, "失败");
+        setCardTestMsg((m) => ({
+          ...m,
+          [key]: { ok: false, message: `${msg} · ${ms} ms` },
+        }));
+        fail += 1;
+      } finally {
+        window.clearTimeout(timer);
+      }
+    }
+    setTestMsg((m) => ({
+      ...m,
+      llm: {
+        ok: fail === 0 && ok > 0,
+        message: `全部测试完成：成功 ${ok}，失败 ${fail}`,
+      },
+    }));
+    setTesting(null);
+    setTestingTarget(null);
+    setBatchProgress(null);
+  };
+
+  const testOneEngine = async (engineId: TranslateProvider) => {
+    const key = `engine:${engineId}`;
+    setTesting(key);
+    setTestingTarget(key);
+    setCardTestMsg((m) => {
+      const next = { ...m };
+      delete next[key];
+      return next;
+    });
+    const t0 = performance.now();
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), 15000);
+    try {
+      await onSave(form);
+      const res = await api.translate("Hello", { signal: ac.signal }, {
+        provider: engineId,
+        source: form.translateSource || "en",
+        target: form.translateTarget || "zh-CN",
+        maxLength: 200,
+        autoChunk: true,
+      });
+      if (!(res.translation || "").trim()) {
+        throw new Error("引擎返回空译文");
+      }
+      const ms = Math.round(performance.now() - t0);
+      setCardTestMsg((m) => ({
+        ...m,
+        [key]: { ok: true, message: `连接正常 · ${ms} ms` },
+      }));
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      let msg = ac.signal.aborted
+        ? "连接超时"
+        : toFriendlyError(e, "测试失败");
+      if (
+        engineId === "google" &&
+        /timeout|proxy|googleapis|无法连接|超时|代理/i.test(msg) &&
+        !/（/.test(msg)
+      ) {
+        msg = `${msg}（谷歌翻译在国内通常需要系统代理）`;
+      }
+      setCardTestMsg((m) => ({
+        ...m,
+        [key]: { ok: false, message: `${msg} · ${ms} ms` },
+      }));
+    } finally {
+      window.clearTimeout(timer);
+      setTesting(null);
+      setTestingTarget(null);
+    }
+  };
+
+  const testAllEngines = async () => {
+    setTesting("engine-all");
+    setTestingTarget(null);
+    setTestMsg((m) => ({ ...m, lit: undefined }));
+    const list = catalogEngines;
+    let ok = 0;
+    let fail = 0;
+    await onSave(form);
+    for (let i = 0; i < list.length; i++) {
+      const engineId = list[i].id;
+      const key = `engine:${engineId}`;
+      setTestingTarget(key);
+      setBatchProgress(`${i + 1}/${list.length}`);
+      const t0 = performance.now();
+      const ac = new AbortController();
+      const timer = window.setTimeout(() => ac.abort(), 12000);
+      try {
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: engineId,
+          source: form.translateSource || "en",
+          target: form.translateTarget || "zh-CN",
+          maxLength: 200,
+          autoChunk: true,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("空译文");
+        }
+        const ms = Math.round(performance.now() - t0);
+        setCardTestMsg((m) => ({
+          ...m,
+          [key]: { ok: true, message: `连接正常 · ${ms} ms` },
+        }));
+        ok += 1;
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        let msg = ac.signal.aborted
+          ? "连接超时"
+          : toFriendlyError(e, "失败");
+        if (
+          engineId === "google" &&
+          /timeout|proxy|googleapis|无法连接|超时|代理/i.test(msg) &&
+          !/（/.test(msg)
+        ) {
+          msg = `${msg}（需代理）`;
+        }
+        setCardTestMsg((m) => ({
+          ...m,
+          [key]: { ok: false, message: `${msg} · ${ms} ms` },
+        }));
+        fail += 1;
+      } finally {
+        window.clearTimeout(timer);
+      }
+    }
+    setTestMsg((m) => ({
+      ...m,
+      lit: {
+        ok: fail === 0 && ok > 0,
+        message: `全部测试完成：成功 ${ok}，失败 ${fail}`,
+      },
+    }));
+    setTesting(null);
+    setTestingTarget(null);
+    setBatchProgress(null);
+  };
+
+  const modelGroups = useMemo(() => {
+    const groups = groupModelPresets(MODEL_PRESETS);
+    if (customModels.length > 0) {
+      groups.push({
+        group: "本地模型",
+        models: customModels.map((m) => ({
+          model: m,
+          label: m,
+          apiUrl: resolveModelApi(m, profilesWithCurrent()).apiUrl,
+          group: "本地模型",
+        })),
+      });
+    }
+    return groups;
+  }, [customModels, form.model, form.apiUrl, form.apiKey, profiles]);
 
   const tabs: { id: SettingsTab; label: string; priority?: boolean }[] = [
     { id: "general", label: "通用", priority: true },
@@ -575,6 +1217,16 @@ export function SettingsView({ settings, onSave }: Props) {
 
   return (
     <div className="settings-page">
+      {toast && (
+        <div
+          className={
+            "settings-toast" + (toast.ok ? " is-ok" : " is-fail")
+          }
+          role="status"
+        >
+          {toast.message}
+        </div>
+      )}
       <div className="settings-tabs" role="tablist">
         {tabs.map((t) => (
           <button
@@ -606,8 +1258,27 @@ export function SettingsView({ settings, onSave }: Props) {
                 代理与大模型 API 是全软件共用配置，请优先在此完成连接测试。
               </span>
             </div>
-            <section className="settings-card">
-              <h2>网络代理</h2>
+            <section
+              className={
+                "settings-card settings-fold" +
+                (generalOpen.proxy ? "" : " is-collapsed")
+              }
+            >
+              <div className="settings-card-head settings-fold-head">
+                <button
+                  type="button"
+                  className="settings-fold-toggle"
+                  aria-expanded={generalOpen.proxy}
+                  onClick={() => toggleGeneral("proxy")}
+                >
+                  <span className="settings-fold-chevron" aria-hidden>
+                    {generalOpen.proxy ? "▾" : "▸"}
+                  </span>
+                  <h2>网络代理</h2>
+                </button>
+              </div>
+              {generalOpen.proxy && (
+                <div className="settings-fold-body">
               <p className="hint settings-engine-rank-hint">
                 浏览器能上网不代表本软件走同一通道。若出现「无法解析域名」或国内引擎全挂，请先试「直连」；要用谷歌且
                 Clash 已开启时，选「自定义」并填本地端口（常见
@@ -646,20 +1317,41 @@ export function SettingsView({ settings, onSave }: Props) {
                   />
                 </label>
               </div>
+                </div>
+              )}
             </section>
 
-            <section className="settings-card">
-              <div className="settings-card-head">
-                <h2>大模型 API</h2>
+            <section
+              className={
+                "settings-card settings-fold" +
+                (generalOpen.llm ? "" : " is-collapsed")
+              }
+            >
+              <div className="settings-card-head settings-fold-head">
+                <button
+                  type="button"
+                  className="settings-fold-toggle"
+                  aria-expanded={generalOpen.llm}
+                  onClick={() => toggleGeneral("llm")}
+                >
+                  <span className="settings-fold-chevron" aria-hidden>
+                    {generalOpen.llm ? "▾" : "▸"}
+                  </span>
+                  <h2>大模型 API</h2>
+                </button>
                 <button
                   type="button"
                   className="settings-test-btn"
-                  disabled={testing === "llm"}
-                  onClick={() => void runTest("llm")}
+                  disabled={!!testing}
+                  onClick={() => void testAllModels()}
                 >
-                  {testing === "llm" ? "测试中…" : "测试连接"}
+                  {testing === "llm-all"
+                    ? `测试中${batchProgress ? ` ${batchProgress}` : ""}`
+                    : "测试全部大模型"}
                 </button>
               </div>
+              {generalOpen.llm && (
+                <div className="settings-fold-body">
               {testMsg.llm && (
                 <p
                   className={
@@ -672,112 +1364,300 @@ export function SettingsView({ settings, onSave }: Props) {
                 </p>
               )}
               <p className="hint">
-                在此配置 API；「对话模型」页只选择具体模型。「文本」翻译也使用此处凭证。
+                点击模型卡片可选中并展开填写 API；卡片旁可单独测试。对话、文献大模型翻译与文本翻译共用此处凭证。
               </p>
-              <div className="settings-row settings-row-half">
-                <label className="settings-half">
-                  当前编辑模型
-                  <select
-                    value={modelSelectValue}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === CUSTOM_MODEL) {
-                        setPickingCustom(true);
-                        setCustomDraft("");
-                        window.setTimeout(
-                          () => customInputRef.current?.focus(),
-                          0,
+              <div className="settings-model-groups">
+                {modelGroups.map((g) => (
+                  <div key={g.group} className="settings-model-group">
+                    <div className="settings-model-group-title">{g.group}</div>
+                    <div className="settings-engine-catalog">
+                      {g.models.map((p) => {
+                        const usage = modelUsageLabels(form, p.model);
+                        const selected = usage.length > 0;
+                        const open = expandedModel === p.model;
+                        const configured = modelConfigured(p.model);
+                        const testKey = `model:${p.model}`;
+                        const cardResult = cardTestMsg[testKey];
+                        const busy = isCardTesting(testKey);
+                        const isLocal = g.group === "本地模型";
+                        return (
+                          <div
+                            key={p.model}
+                            className={
+                              "settings-engine-card" +
+                              (selected ? " is-selected" : "") +
+                              (open ? " is-open" : "")
+                            }
+                          >
+                            <div className="settings-engine-card-top">
+                              <button
+                                type="button"
+                                className="settings-engine-card-btn"
+                                onClick={() => onModelCardClick(p.model)}
+                              >
+                                <span className="settings-engine-card-title">
+                                  <em
+                                    className={
+                                      configured
+                                        ? "settings-engine-badge is-ok"
+                                        : "settings-engine-badge is-warn"
+                                    }
+                                  >
+                                    {configured ? "已配置" : "未配置"}
+                                  </em>
+                                  <strong>{p.label}</strong>
+                                  <UsageBadges labels={usage} />
+                                </span>
+                                <span className="settings-engine-card-hint">
+                                  {p.model}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="settings-card-mini-test"
+                                disabled={!!testing}
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  void testOneModel(p.model);
+                                }}
+                              >
+                                {busy ? "测试中" : "测试连接"}
+                              </button>
+                            </div>
+                            {cardResult && (
+                              <p
+                                className={
+                                  cardResult.ok
+                                    ? "settings-card-test-ok"
+                                    : "settings-card-test-fail"
+                                }
+                              >
+                                {cardResult.message}
+                              </p>
+                            )}
+                            {open && (
+                              <div className="settings-engine-panel">
+                                <label className="settings-engine-field">
+                                  API URL
+                                  <input
+                                    value={form.apiUrl}
+                                    onChange={(e) =>
+                                      setForm({
+                                        ...form,
+                                        apiUrl: e.target.value,
+                                      })
+                                    }
+                                    placeholder="该模型对应的接口地址"
+                                    autoComplete="off"
+                                  />
+                                </label>
+                                <label className="settings-engine-field">
+                                  API Key
+                                  <input
+                                    type="password"
+                                    value={form.apiKey}
+                                    onChange={(e) =>
+                                      setForm({
+                                        ...form,
+                                        apiKey: e.target.value,
+                                      })
+                                    }
+                                    placeholder="各模型独立保存"
+                                    autoComplete="off"
+                                  />
+                                </label>
+                                <div className="settings-engine-panel-actions">
+                                  <button
+                                    type="button"
+                                    className="settings-panel-save"
+                                    onClick={() => void savePanel()}
+                                  >
+                                    保存
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="settings-panel-cancel"
+                                    onClick={cancelPanel}
+                                  >
+                                    取消
+                                  </button>
+                                  {isLocal && (
+                                    <button
+                                      type="button"
+                                      className="settings-panel-delete"
+                                      onClick={() =>
+                                        void deleteLocalModel(p.model)
+                                      }
+                                    >
+                                      删除
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         );
-                        return;
+                      })}
+                    </div>
+                  </div>
+                ))}
+                <div className="settings-model-group">
+                  <div className="settings-model-group-title">新增本地模型</div>
+                  <div className="settings-engine-catalog">
+                    <div
+                      className={
+                        "settings-engine-card" +
+                        (pickingCustom || expandedModel === CUSTOM_MODEL
+                          ? " is-selected is-open"
+                          : "")
                       }
-                      setPickingCustom(false);
-                      setCustomDraft("");
-                      applyModel(v);
-                    }}
-                  >
-                    <optgroup label="预设模型">
-                      {MODEL_PRESETS.map((p) => (
-                        <option key={p.model} value={p.model}>
-                          {p.label} ({p.model})
-                        </option>
-                      ))}
-                    </optgroup>
-                    {customModels.length > 0 && (
-                      <optgroup label="自定义模型">
-                        {customModels.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <option value={CUSTOM_MODEL}>新增自定义模型…</option>
-                  </select>
-                </label>
-                <label className="settings-half">
-                  自定义模型名
-                  <input
-                    ref={customInputRef}
-                    value={
-                      pickingCustom || modelSelectValue === CUSTOM_MODEL
-                        ? customDraft
-                        : customModels.includes(form.model)
-                          ? form.model
-                          : ""
-                    }
-                    onChange={(e) => {
-                      setPickingCustom(true);
-                      setCustomDraft(e.target.value);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        commitCustomModel();
-                      }
-                    }}
-                    onBlur={() => {
-                      if (customDraft.trim()) commitCustomModel();
-                    }}
-                    placeholder="输入新模型 ID，回车保存到列表"
-                  />
-                </label>
+                    >
+                      <button
+                        type="button"
+                        className="settings-engine-card-btn"
+                        onClick={() => {
+                          const open =
+                            pickingCustom || expandedModel === CUSTOM_MODEL;
+                          if (open) {
+                            setPickingCustom(false);
+                            setExpandedModel(null);
+                            setPanelSnap(null);
+                            setCustomDraft("");
+                            return;
+                          }
+                          setPickingCustom(true);
+                          setExpandedModel(CUSTOM_MODEL);
+                          setExpandedEngine(null);
+                          setPanelSnap({
+                            kind: "model",
+                            id: form.model,
+                            apiUrl: form.apiUrl,
+                            apiKey: form.apiKey,
+                          });
+                          window.setTimeout(
+                            () => customInputRef.current?.focus(),
+                            0,
+                          );
+                        }}
+                      >
+                        <span className="settings-engine-card-title">
+                          <strong>新增自定义模型</strong>
+                        </span>
+                        <span className="settings-engine-card-hint">
+                          输入模型 ID 并填写 API URL / Key
+                        </span>
+                      </button>
+                      {(pickingCustom || expandedModel === CUSTOM_MODEL) && (
+                        <div className="settings-engine-panel">
+                          <label className="settings-engine-field">
+                            自定义模型名
+                            <input
+                              ref={customInputRef}
+                              value={customDraft}
+                              onChange={(e) => {
+                                setPickingCustom(true);
+                                setCustomDraft(e.target.value);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  commitCustomModel();
+                                  if (customDraft.trim()) {
+                                    setExpandedModel(customDraft.trim());
+                                  }
+                                }
+                              }}
+                              onBlur={() => {
+                                if (customDraft.trim()) {
+                                  commitCustomModel();
+                                  setExpandedModel(customDraft.trim());
+                                }
+                              }}
+                              placeholder="输入新模型 ID，回车保存"
+                              autoComplete="off"
+                            />
+                          </label>
+                          <label className="settings-engine-field">
+                            API URL
+                            <input
+                              value={form.apiUrl}
+                              onChange={(e) =>
+                                setForm({ ...form, apiUrl: e.target.value })
+                              }
+                              placeholder="该模型对应的接口地址"
+                              autoComplete="off"
+                            />
+                          </label>
+                          <label className="settings-engine-field">
+                            API Key
+                            <input
+                              type="password"
+                              value={form.apiKey}
+                              onChange={(e) =>
+                                setForm({ ...form, apiKey: e.target.value })
+                              }
+                              placeholder="各模型独立保存"
+                              autoComplete="off"
+                            />
+                          </label>
+                          <div className="settings-engine-panel-actions">
+                            <button
+                              type="button"
+                              className="settings-panel-save"
+                              onClick={() => void savePanel()}
+                            >
+                              添加
+                            </button>
+                            <button
+                              type="button"
+                              className="settings-panel-cancel"
+                              onClick={cancelPanel}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <label>
-                API URL
-                <input
-                  value={form.apiUrl}
-                  onChange={(e) =>
-                    setForm({ ...form, apiUrl: e.target.value })
-                  }
-                  placeholder="该模型对应的接口地址"
-                />
-              </label>
-              <label>
-                API Key
-                <input
-                  type="password"
-                  value={form.apiKey}
-                  onChange={(e) =>
-                    setForm({ ...form, apiKey: e.target.value })
-                  }
-                  placeholder="各模型独立保存"
-                />
-              </label>
+                </div>
+              )}
             </section>
 
-            <section className="settings-card">
-              <div className="settings-card-head">
-                <h2>翻译引擎</h2>
+            <section
+              className={
+                "settings-card settings-fold" +
+                (generalOpen.engine ? "" : " is-collapsed")
+              }
+            >
+              <div className="settings-card-head settings-fold-head">
+                <button
+                  type="button"
+                  className="settings-fold-toggle"
+                  aria-expanded={generalOpen.engine}
+                  onClick={() => toggleGeneral("engine")}
+                >
+                  <span className="settings-fold-chevron" aria-hidden>
+                    {generalOpen.engine ? "▾" : "▸"}
+                  </span>
+                  <h2>翻译引擎</h2>
+                </button>
                 <button
                   type="button"
                   className="settings-test-btn"
-                  disabled={testing === "lit"}
-                  onClick={() => void runTest("lit")}
+                  disabled={!!testing}
+                  onClick={() => void testAllEngines()}
                 >
-                  {testing === "lit" ? "测试中…" : "测试当前引擎"}
+                  {testing === "engine-all"
+                    ? `测试中${batchProgress ? ` ${batchProgress}` : ""}`
+                    : "测试全部引擎"}
                 </button>
               </div>
-              {testMsg.lit && (
+              {generalOpen.engine && (
+                <div className="settings-fold-body">
+              {testMsg.lit && tab === "general" && (
                 <p
                   className={
                     testMsg.lit.ok
@@ -789,36 +1669,134 @@ export function SettingsView({ settings, onSave }: Props) {
                 </p>
               )}
               <p className="hint">
-                多数引擎免 Key，走上方网络代理。文献/图片页只需选择具体引擎；若选「大模型」则使用本页大模型
-                API。
+                在此配置各在线翻译引擎本身（凭证等）。文献 / 图片 / 文本等模块在各自页选择使用哪个引擎。免
+                Key 引擎走上方网络代理。卡片旁可单独测试。
               </p>
               <div className="settings-engine-catalog">
-                {TRANSLATE_ENGINES.filter((e) => e.id !== "free").map((e) => (
-                  <div key={e.id} className="settings-engine-item">
-                    <strong>{e.label}</strong>
-                    <span>{e.hint}</span>
-                  </div>
-                ))}
+                {catalogEngines.map((e) => {
+                  const usage = engineUsageLabels(form, e.id);
+                  const selected = usage.length > 0;
+                  const open = expandedEngine === e.id;
+                  const configured = engineHasCredentials(engineKeys, e.id);
+                  const testKey = `engine:${e.id}`;
+                  const cardResult = cardTestMsg[testKey];
+                  const busy = isCardTesting(testKey);
+                  const needsKey = e.credentialFields?.some(
+                    (f) => f.key !== "note",
+                  );
+                  return (
+                    <div
+                      key={e.id}
+                      className={
+                        "settings-engine-card" +
+                        (selected ? " is-selected" : "") +
+                        (open ? " is-open" : "")
+                      }
+                    >
+                      <div className="settings-engine-card-top">
+                        <button
+                          type="button"
+                          className="settings-engine-card-btn"
+                          onClick={() => onEngineCardClick(e.id)}
+                        >
+                          <span className="settings-engine-card-title">
+                            {needsKey ? (
+                              <em
+                                className={
+                                  configured
+                                    ? "settings-engine-badge is-ok"
+                                    : "settings-engine-badge is-warn"
+                                }
+                              >
+                                {configured ? "已配置" : "未配置"}
+                              </em>
+                            ) : (
+                              <em className="settings-engine-badge is-free">
+                                无需配置
+                              </em>
+                            )}
+                            <strong>{e.label}</strong>
+                            <UsageBadges labels={usage} />
+                          </span>
+                          <span className="settings-engine-card-hint">
+                            {e.hint}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-card-mini-test"
+                          disabled={!!testing}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void testOneEngine(e.id);
+                          }}
+                        >
+                          {busy ? "测试中" : "测试连接"}
+                        </button>
+                      </div>
+                      {cardResult && (
+                        <p
+                          className={
+                            cardResult.ok
+                              ? "settings-card-test-ok"
+                              : "settings-card-test-fail"
+                          }
+                        >
+                          {cardResult.message}
+                        </p>
+                      )}
+                      {open && (
+                        <div className="settings-engine-panel">
+                          {(e.credentialFields || []).map((field) => (
+                            <label
+                              key={field.key}
+                              className="settings-engine-field"
+                            >
+                              {field.label}
+                              <input
+                                type={field.password ? "password" : "text"}
+                                value={engineKeys[e.id]?.[field.key] || ""}
+                                placeholder={field.placeholder || ""}
+                                onChange={(ev) =>
+                                  setEngineKeyField(
+                                    e.id,
+                                    field.key,
+                                    ev.target.value,
+                                  )
+                                }
+                                autoComplete="off"
+                              />
+                            </label>
+                          ))}
+                          {e.id === "google" && (
+                            <p className="hint">
+                              若直连超时，请到上方「网络代理」填写 Clash 等本地端口。
+                            </p>
+                          )}
+                          <div className="settings-engine-panel-actions">
+                            <button
+                              type="button"
+                              className="settings-panel-save"
+                              onClick={() => void savePanel()}
+                            >
+                              保存
+                            </button>
+                            <button
+                              type="button"
+                              className="settings-panel-cancel"
+                              onClick={cancelPanel}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div className="settings-field" style={{ marginTop: 12 }}>
-                <span className="settings-field-label">测试用引擎（文献默认）</span>
-                <select
-                  className="settings-engine-select"
-                  value={form.translateProvider}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      translateProvider: e.target.value as TranslateProvider,
-                    })
-                  }
-                >
-                  {engines.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                </div>
+              )}
             </section>
           </>
         )}
@@ -881,113 +1859,205 @@ export function SettingsView({ settings, onSave }: Props) {
         )}
 
         {tab === "literature" && (
-          <section className="settings-card">
-            <div className="settings-card-head">
+          <>
+            <section className="settings-card">
               <h2>文献翻译</h2>
+              <p className="hint">
+                在此选择语言与长度；下方分别配置「翻译引擎」或「大模型翻译」。API /
+                代理请在「通用」配置。
+              </p>
+              <div className="settings-row settings-row-half">
+                <div className="settings-half">
+                  <LangCombobox
+                    label="源语言"
+                    value={form.translateSource}
+                    onChange={(code) => setLitLang("source", code)}
+                  />
+                </div>
+                <div className="settings-half">
+                  <LangCombobox
+                    label="目标语言"
+                    value={form.translateTarget}
+                    onChange={(code) => setLitLang("target", code)}
+                  />
+                </div>
+              </div>
+              <div className="settings-field">
+                <span className="settings-field-label">
+                  每次翻译最大长度（字符，0=
+                  {litUsesLlm
+                    ? "不限制"
+                    : selectedEngine?.defaultMaxChars
+                      ? `引擎默认≈${selectedEngine.defaultMaxChars}`
+                      : "引擎默认"}
+                  ）
+                </span>
+                <div className="settings-row settings-row-controls">
+                  <input
+                    type="number"
+                    min={0}
+                    max={50000}
+                    step={50}
+                    value={form.translateMaxLength}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        translateMaxLength: Math.max(
+                          0,
+                          Number(e.target.value) || 0,
+                        ),
+                      })
+                    }
+                  />
+                  {showChunkOption ? (
+                    <SettingToggle
+                      checked={form.translateAutoChunk}
+                      onChange={(v) =>
+                        setForm({ ...form, translateAutoChunk: v })
+                      }
+                      label="超过最大长度时自动分段并拼接"
+                    />
+                  ) : (
+                    <div />
+                  )}
+                </div>
+              </div>
+              <p className="hint" style={{ marginTop: 8 }}>
+                当前文献翻译方式：
+                <strong>
+                  {litUsesLlm
+                    ? `大模型（${form.model || "未选模型"}）`
+                    : selectedEngine?.label || form.translateProvider}
+                </strong>
+              </p>
+            </section>
+
+            <section
+              className={
+                "settings-card" + (!litUsesLlm ? " is-mode-active" : "")
+              }
+            >
+              <div className="settings-card-head">
+                <h2>翻译引擎</h2>
+                <button
+                  type="button"
+                  className="settings-test-btn"
+                  disabled={testing === "lit"}
+                  onClick={() => void runTest("lit")}
+                >
+                  {testing === "lit" ? "测试中" : "测试连接"}
+                </button>
+              </div>
+              {testMsg.lit && (
+                <p
+                  className={
+                    testMsg.lit.ok
+                      ? "settings-test-ok"
+                      : "settings-test-fail"
+                  }
+                >
+                  {testMsg.lit.message}
+                </p>
+              )}
+              <p className="hint">
+                使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
+              </p>
+              <div className="settings-field">
+                <span className="settings-field-label">选择引擎</span>
+                <div className="settings-engine-row">
+                  <select
+                    className="settings-engine-select"
+                    value={
+                      form.translateProvider !== "llm"
+                        ? form.translateProvider
+                        : litClassicProvider
+                    }
+                    onChange={(e) => {
+                      const id = e.target.value as TranslateProvider;
+                      setLitClassicProvider(id);
+                      setForm({
+                        ...form,
+                        translateProvider: id,
+                      });
+                    }}
+                  >
+                    {litClassicEngines.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedEngine && (
+                    <p className="engine-hint settings-engine-side-hint">
+                      {selectedEngine.hint}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section
+              className={
+                "settings-card" + (litUsesLlm ? " is-mode-active" : "")
+              }
+            >
+              <div className="settings-card-head">
+                <h2>大模型翻译</h2>
+                <button
+                  type="button"
+                  className="settings-test-btn"
+                  disabled={testing === "litLlm"}
+                  onClick={() => void runTest("litLlm")}
+                >
+                  {testing === "litLlm" ? "测试中" : "测试连接"}
+                </button>
+              </div>
+              {testMsg.litLlm && (
+                <p
+                  className={
+                    testMsg.litLlm.ok
+                      ? "settings-test-ok"
+                      : "settings-test-fail"
+                  }
+                >
+                  {testMsg.litLlm.message}
+                </p>
+              )}
+              <p className="hint">
+                使用「通用」中配置的大模型 API，适合长文与术语。点「测试连接」将同时设为文献翻译方式。
+              </p>
+              <div className="settings-row settings-row-half">
+                <label className="settings-half">
+                  当前模型
+                  <input
+                    type="text"
+                    value={form.model || ""}
+                    readOnly
+                    disabled
+                  />
+                </label>
+                <label className="settings-half">
+                  API URL
+                  <input
+                    type="text"
+                    value={form.apiUrl || "（未配置）"}
+                    readOnly
+                    disabled
+                  />
+                </label>
+              </div>
               <button
                 type="button"
                 className="settings-test-btn"
-                disabled={testing === "lit"}
-                onClick={() => void runTest("lit")}
-              >
-                {testing === "lit" ? "测试中…" : "测试连接"}
-              </button>
-            </div>
-            {testMsg.lit && (
-              <p
-                className={
-                  testMsg.lit.ok
-                    ? "settings-test-ok"
-                    : "settings-test-fail"
+                style={{ alignSelf: "flex-start" }}
+                onClick={() =>
+                  setForm({ ...form, translateProvider: "llm" })
                 }
               >
-                {testMsg.lit.message}
-              </p>
-            )}
-            <p className="hint">
-              此处选择语言与引擎；API / 代理请在「通用」配置。
-            </p>
-            <div className="settings-row settings-row-half">
-              <div className="settings-half">
-                <LangCombobox
-                  label="源语言"
-                  value={form.translateSource}
-                  onChange={(code) => setLitLang("source", code)}
-                />
-              </div>
-              <div className="settings-half">
-                <LangCombobox
-                  label="目标语言"
-                  value={form.translateTarget}
-                  onChange={(code) => setLitLang("target", code)}
-                />
-              </div>
-            </div>
-            <div className="settings-field">
-              <span className="settings-field-label">翻译引擎</span>
-              <div className="settings-engine-row">
-                <select
-                  className="settings-engine-select"
-                  value={form.translateProvider}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      translateProvider: e.target.value as TranslateProvider,
-                    })
-                  }
-                >
-                  {engines.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-                {selectedEngine && (
-                  <p className="engine-hint settings-engine-side-hint">
-                    {selectedEngine.hint}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="settings-field">
-              <span className="settings-field-label">
-                每次翻译最大长度（字符，0=引擎默认
-                {selectedEngine?.defaultMaxChars
-                  ? `≈${selectedEngine.defaultMaxChars}`
-                  : ""}
-                ）
-              </span>
-              <div className="settings-row settings-row-controls">
-                <input
-                  type="number"
-                  min={0}
-                  max={50000}
-                  step={50}
-                  value={form.translateMaxLength}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      translateMaxLength: Math.max(
-                        0,
-                        Number(e.target.value) || 0,
-                      ),
-                    })
-                  }
-                />
-                {showChunkOption ? (
-                  <SettingToggle
-                    checked={form.translateAutoChunk}
-                    onChange={(v) =>
-                      setForm({ ...form, translateAutoChunk: v })
-                    }
-                    label="超过最大长度时自动分段并拼接"
-                  />
-                ) : (
-                  <div />
-                )}
-              </div>
-            </div>
-          </section>
+                设为文献翻译方式
+              </button>
+            </section>
+          </>
         )}
 
         {tab === "image" && (
@@ -1000,7 +2070,7 @@ export function SettingsView({ settings, onSave }: Props) {
                 disabled={testing === "ocr"}
                 onClick={() => void runTest("ocr")}
               >
-                {testing === "ocr" ? "测试中…" : "测试连接"}
+                {testing === "ocr" ? "测试中" : "测试连接"}
               </button>
             </div>
             {testMsg.ocr && (
@@ -1151,7 +2221,7 @@ export function SettingsView({ settings, onSave }: Props) {
                   disabled={testing === "text"}
                   onClick={() => void runTest("text")}
                 >
-                  {testing === "text" ? "测试中…" : "测试连接"}
+                  {testing === "text" ? "测试中" : "测试连接"}
                 </button>
               </div>
               {testMsg.text && (
