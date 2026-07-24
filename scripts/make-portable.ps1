@@ -7,6 +7,11 @@ if (-not (Test-Path (Join-Path $release "llmchat.exe"))) {
     Write-Error "Build Tauri first: cd frontend; npm run tauri -- build"
 }
 
+# Free locks if the portable app is still running
+Get-Process -Name "llmchat", "llmchat-backend" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 400
+
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 Copy-Item (Join-Path $release "llmchat.exe") $out -Force
 

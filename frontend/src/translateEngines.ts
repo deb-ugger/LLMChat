@@ -226,13 +226,6 @@ export function classicEngines(list: EngineInfo[] = TRANSLATE_ENGINES): EngineIn
   return list.filter((e) => e.id !== "llm" && e.id !== "free");
 }
 
-export function sortedClassicEngines(
-  source: string,
-  target: string,
-): EngineInfo[] {
-  return classicEngines(sortedEngines(source, target));
-}
-
 export function getEngineInfo(id: string): EngineInfo | undefined {
   const p = id === "free" ? "mymemory" : id === "blind" ? "bing" : id;
   return TRANSLATE_ENGINES.find((e) => e.id === p);
@@ -258,6 +251,11 @@ export function stringifyEngineKeys(map: EngineKeysMap): string {
   return JSON.stringify(map ?? {});
 }
 
+/** True when the engine needs App Key / Secret / API Key (note-only = free). */
+export function engineRequiresKey(engine: EngineInfo): boolean {
+  return !!engine.credentialFields?.some((f) => f.key !== "note");
+}
+
 export function engineHasCredentials(
   map: EngineKeysMap,
   id: string,
@@ -268,4 +266,38 @@ export function engineHasCredentials(
   return e.credentialFields
     .filter((f) => f.key !== "note")
     .every((f) => !!(row[f.key] || "").trim());
+}
+
+/** Ready = free/no-key, or key engines with credentials filled. */
+export function engineReady(map: EngineKeysMap, id: string): boolean {
+  const e = getEngineInfo(id);
+  if (!e) return false;
+  if (!engineRequiresKey(e)) return true;
+  return engineHasCredentials(map, id);
+}
+
+export function engineConfigStatusLabel(
+  map: EngineKeysMap,
+  id: string,
+): "无需配置" | "已配置" | "未配置" {
+  const e = getEngineInfo(id);
+  if (!e || !engineRequiresKey(e)) return "无需配置";
+  return engineHasCredentials(map, id) ? "已配置" : "未配置";
+}
+
+/**
+ * Classic engines sorted for pickers: ready (free / configured) first,
+ * then language suitability.
+ */
+export function sortedClassicEngines(
+  source: string,
+  target: string,
+  keys: EngineKeysMap = {},
+): EngineInfo[] {
+  return classicEngines(TRANSLATE_ENGINES).sort((a, b) => {
+    const ra = engineReady(keys, a.id) ? 1 : 0;
+    const rb = engineReady(keys, b.id) ? 1 : 0;
+    if (ra !== rb) return rb - ra;
+    return scoreEngine(b, source, target) - scoreEngine(a, source, target);
+  });
 }

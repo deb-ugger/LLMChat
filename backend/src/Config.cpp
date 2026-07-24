@@ -139,6 +139,10 @@ void ConfigStore::load()
         {
             config_.translateTarget = value;
         }
+        else if (key == "translateModel")
+        {
+            config_.translateModel = value;
+        }
         else if (key == "translateMaxLength")
         {
             config_.translateMaxLength = std::stoi(value);
@@ -169,6 +173,10 @@ void ConfigStore::load()
         {
             config_.ocrTranslateTarget = value;
         }
+        else if (key == "ocrTranslateModel")
+        {
+            config_.ocrTranslateModel = value;
+        }
         else if (key == "ocrTranslateMaxLength")
         {
             config_.ocrTranslateMaxLength = std::stoi(value);
@@ -190,9 +198,25 @@ void ConfigStore::load()
         {
             config_.textTranslateProvider = value;
         }
+        else if (key == "textTranslateModel")
+        {
+            config_.textTranslateModel = value;
+        }
         else if (key == "textTranslatePrompt")
         {
             config_.textTranslatePrompt = unescapeIniValue(value);
+        }
+        else if (key == "textPromptMtool")
+        {
+            config_.textPromptMtool = unescapeIniValue(value);
+        }
+        else if (key == "textPromptSubtitle")
+        {
+            config_.textPromptSubtitle = unescapeIniValue(value);
+        }
+        else if (key == "textPromptSubtitleRetime")
+        {
+            config_.textPromptSubtitleRetime = unescapeIniValue(value);
         }
         else if (key == "textGlossary")
         {
@@ -236,6 +260,7 @@ void ConfigStore::save() const
     out << "translateProvider=" << config_.translateProvider << "\n";
     out << "translateSource=" << config_.translateSource << "\n";
     out << "translateTarget=" << config_.translateTarget << "\n";
+    out << "translateModel=" << config_.translateModel << "\n";
     out << "translateMaxLength=" << config_.translateMaxLength << "\n";
     out << "translateAutoChunk=" << (config_.translateAutoChunk ? "true" : "false") << "\n";
     out << "ocrLang=" << config_.ocrLang << "\n";
@@ -243,12 +268,17 @@ void ConfigStore::save() const
     out << "ocrTranslateProvider=" << config_.ocrTranslateProvider << "\n";
     out << "ocrTranslateSource=" << config_.ocrTranslateSource << "\n";
     out << "ocrTranslateTarget=" << config_.ocrTranslateTarget << "\n";
+    out << "ocrTranslateModel=" << config_.ocrTranslateModel << "\n";
     out << "ocrTranslateMaxLength=" << config_.ocrTranslateMaxLength << "\n";
     out << "ocrTranslateAutoChunk=" << (config_.ocrTranslateAutoChunk ? "true" : "false") << "\n";
     out << "textTranslateSource=" << config_.textTranslateSource << "\n";
     out << "textTranslateTarget=" << config_.textTranslateTarget << "\n";
     out << "textTranslateProvider=" << config_.textTranslateProvider << "\n";
+    out << "textTranslateModel=" << config_.textTranslateModel << "\n";
     out << "textTranslatePrompt=" << escapeIniValue(config_.textTranslatePrompt) << "\n";
+    out << "textPromptMtool=" << escapeIniValue(config_.textPromptMtool) << "\n";
+    out << "textPromptSubtitle=" << escapeIniValue(config_.textPromptSubtitle) << "\n";
+    out << "textPromptSubtitleRetime=" << escapeIniValue(config_.textPromptSubtitleRetime) << "\n";
     out << "textGlossary=" << escapeIniValue(config_.textGlossary) << "\n";
     out << "textPreReplace=" << escapeIniValue(config_.textPreReplace) << "\n";
     out << "textPostReplace=" << escapeIniValue(config_.textPostReplace) << "\n";

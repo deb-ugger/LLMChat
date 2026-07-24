@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FocusEvent, type ReactNode } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Settings, type TranslateProvider } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import {
+  DEFAULT_MTOOL_PROMPT,
+  DEFAULT_SUBTITLE_PROMPT,
+  DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
   DEFAULT_TEXT_PROMPT,
   parseJsonArray,
   stringifyRules,
@@ -16,11 +20,12 @@ import {
   MODEL_PRESETS,
   resolveModelApi,
   saveModelProfiles,
+  resolveFeatureLlm,
   type ModelProfile,
 } from "../modelPresets";
 import {
+  engineConfigStatusLabel,
   getEngineInfo,
-  sortedEngines,
   sortedClassicEngines,
   classicEngines,
   TRANSLATE_ENGINES,
@@ -45,52 +50,128 @@ const CUSTOM_MODEL = "__custom__";
 
 type SettingsTab = "general" | "chat" | "literature" | "image" | "text";
 
+const TAB_LABELS: Record<SettingsTab, string> = {
+  general: "通用",
+  chat: "对话",
+  literature: "文献翻译",
+  image: "图片文字识别",
+  text: "翻译工程",
+};
+
+const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
+  general: [
+    "proxyMode",
+    "httpProxy",
+    "apiUrl",
+    "apiKey",
+    "model",
+    "translateEngineKeys",
+  ],
+  chat: ["model", "apiUrl", "apiKey", "messagePageSize"],
+  literature: [
+    "translateProvider",
+    "translateSource",
+    "translateTarget",
+    "translateModel",
+    "translateMaxLength",
+    "translateAutoChunk",
+  ],
+  image: [
+    "ocrLang",
+    "ocrAutoTranslate",
+    "ocrTranslateProvider",
+    "ocrTranslateSource",
+    "ocrTranslateTarget",
+    "ocrTranslateModel",
+    "ocrTranslateMaxLength",
+    "ocrTranslateAutoChunk",
+  ],
+  text: [
+    "textTranslateSource",
+    "textTranslateTarget",
+    "textTranslateProvider",
+    "textTranslateModel",
+    "textTranslatePrompt",
+    "textPromptMtool",
+    "textPromptSubtitle",
+    "textPromptSubtitleRetime",
+    "textGlossary",
+    "textPreReplace",
+    "textPostReplace",
+    "textProjectsDir",
+  ],
+};
+
 type TestResult = {
   ok: boolean;
   message: string;
 };
 
-const USAGE_LABELS = [
-  "对话模型",
-  "文献翻译",
-  "图片文字识别",
-  "文本翻译工程",
+const USAGE_META = [
+  { id: "chat", label: "对话模型", className: "is-chat" },
+  { id: "lit", label: "文献翻译", className: "is-lit" },
+  { id: "ocr", label: "图片文字识别", className: "is-ocr" },
+  { id: "text", label: "文本翻译工程", className: "is-text" },
 ] as const;
 
-type UsageLabel = (typeof USAGE_LABELS)[number];
+type UsageId = (typeof USAGE_META)[number]["id"];
 
-function modelUsageLabels(s: Settings, model: string): UsageLabel[] {
-  const out: UsageLabel[] = [];
-  if (s.model === model) out.push("对话模型");
-  if (s.translateProvider === "llm" && s.model === model) out.push("文献翻译");
-  if (s.ocrTranslateProvider === "llm" && s.model === model) {
-    out.push("图片文字识别");
+function featureModelId(s: Settings, which: "lit" | "ocr" | "text"): string {
+  if (which === "lit") return (s.translateModel || s.model || "").trim();
+  if (which === "ocr") return (s.ocrTranslateModel || s.model || "").trim();
+  return (s.textTranslateModel || s.model || "").trim();
+}
+
+function modelUsageIds(s: Settings, model: string): UsageId[] {
+  const out: UsageId[] = [];
+  if (s.model === model) out.push("chat");
+  if (s.translateProvider === "llm" && featureModelId(s, "lit") === model) {
+    out.push("lit");
   }
-  if (s.textTranslateProvider === "llm" && s.model === model) {
-    out.push("文本翻译工程");
+  if (s.ocrTranslateProvider === "llm" && featureModelId(s, "ocr") === model) {
+    out.push("ocr");
+  }
+  if (s.textTranslateProvider === "llm" && featureModelId(s, "text") === model) {
+    out.push("text");
   }
   return out;
 }
 
-function engineUsageLabels(s: Settings, engineId: string): UsageLabel[] {
-  const out: UsageLabel[] = [];
-  if (s.translateProvider === engineId) out.push("文献翻译");
-  if (s.ocrTranslateProvider === engineId) out.push("图片文字识别");
-  if (s.textTranslateProvider === engineId) out.push("文本翻译工程");
+function engineUsageIds(s: Settings, engineId: string): UsageId[] {
+  const out: UsageId[] = [];
+  if (s.translateProvider === engineId) out.push("lit");
+  if (s.ocrTranslateProvider === engineId) out.push("ocr");
+  if (s.textTranslateProvider === engineId) out.push("text");
   return out;
 }
 
-function UsageBadges({ labels }: { labels: UsageLabel[] }) {
-  if (labels.length === 0) return null;
+function UsageBadges({ ids }: { ids: UsageId[] }) {
+  if (ids.length === 0) return null;
   return (
-    <>
-      {labels.map((label) => (
-        <em key={label} className="settings-usage-badge">
-          {label}
-        </em>
-      ))}
-    </>
+    <span className="settings-usage-row" aria-label="当前用途">
+      {ids.map((id) => {
+        const meta = USAGE_META.find((m) => m.id === id)!;
+        return (
+          <em
+            key={id}
+            className={`settings-usage-badge ${meta.className}`}
+          >
+            {meta.label}
+          </em>
+        );
+      })}
+    </span>
   );
+}
+
+function renderToastMessage(message: string): ReactNode {
+  const parts = message.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>;
+    }
+    return <span key={i}>{part}</span>;
+  });
 }
 
 function ocrLangToTranslateSource(ocrLang: string): string {
@@ -124,6 +205,7 @@ function withDefaults(s: Settings): Settings {
     proxyMode: s.proxyMode || "direct",
     httpProxy: s.httpProxy || "",
     translateProvider: normalizeProvider(s.translateProvider),
+    translateModel: s.translateModel || s.model || "",
     translateMaxLength: s.translateMaxLength ?? 0,
     translateAutoChunk: s.translateAutoChunk ?? true,
     ocrLang: s.ocrLang || "eng",
@@ -133,6 +215,7 @@ function withDefaults(s: Settings): Settings {
     ),
     ocrTranslateSource: ocrLangToTranslateSource(s.ocrLang || "eng"),
     ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
+    ocrTranslateModel: s.ocrTranslateModel || s.model || "",
     ocrTranslateMaxLength: s.ocrTranslateMaxLength ?? 0,
     ocrTranslateAutoChunk: s.ocrTranslateAutoChunk ?? true,
     textTranslateSource: s.textTranslateSource || "en",
@@ -140,7 +223,12 @@ function withDefaults(s: Settings): Settings {
     textTranslateProvider: normalizeProvider(
       s.textTranslateProvider || "llm",
     ),
+    textTranslateModel: s.textTranslateModel || s.model || "",
     textTranslatePrompt: s.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
+    textPromptMtool: s.textPromptMtool || DEFAULT_MTOOL_PROMPT,
+    textPromptSubtitle: s.textPromptSubtitle || DEFAULT_SUBTITLE_PROMPT,
+    textPromptSubtitleRetime:
+      s.textPromptSubtitleRetime || DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
     textGlossary: s.textGlossary || "[]",
     textPreReplace: s.textPreReplace || "[]",
     textPostReplace: s.textPostReplace || "[]",
@@ -176,6 +264,337 @@ function SettingToggle({
       </span>
       <span className="settings-toggle-label">{label}</span>
     </button>
+  );
+}
+
+/** Allows clearing 0 while editing; empty → 0 and strip leading zeros on blur. */
+function MaxLengthInput({
+  value,
+  onCommit,
+  min = 0,
+  max = 50000,
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  min?: number;
+  max?: number;
+}) {
+  const [draft, setDraft] = useState(() => String(value));
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(String(value));
+  }, [value]);
+
+  const normalize = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return min;
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed)) return min;
+    return Math.min(max, Math.max(min, parsed));
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      spellCheck={false}
+      value={draft}
+      onFocus={() => {
+        focusedRef.current = true;
+      }}
+      onChange={(e) => {
+        const next = e.target.value;
+        if (next === "" || /^\d+$/.test(next)) setDraft(next);
+      }}
+      onBlur={() => {
+        focusedRef.current = false;
+        const n = normalize(draft);
+        setDraft(String(n));
+        onCommit(n);
+      }}
+    />
+  );
+}
+
+function ModeSectionHead({
+  title,
+  enabled,
+  testing,
+  onTest,
+}: {
+  title: string;
+  enabled: boolean;
+  testing: boolean;
+  onTest: () => void;
+}) {
+  return (
+    <div className="settings-card-head settings-mode-head">
+      <div className="settings-mode-title">
+        <h3 className="settings-mode-subhead">{title}</h3>
+        <span
+          className={
+            "settings-mode-badge" + (enabled ? " is-on" : "")
+          }
+        >
+          {enabled ? "已选中" : "点击选用"}
+        </span>
+      </div>
+      <div className="settings-mode-actions">
+        <button
+          type="button"
+          className="settings-test-btn"
+          disabled={testing}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTest();
+          }}
+        >
+          {testing ? "测试中" : "测试连接"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModePanel({
+  enabled,
+  onSelect,
+  children,
+}: {
+  enabled: boolean;
+  onSelect: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={
+        "settings-mode-panel" + (enabled ? " is-active" : " is-idle")
+      }
+      role="button"
+      tabIndex={0}
+      aria-pressed={enabled}
+      onClick={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("select, textarea, input, button, a, label, .status-select"))
+          return;
+        if (!enabled) onSelect();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const t = e.target as HTMLElement;
+        if (t.closest("select, textarea, input, button, a, label, .status-select"))
+          return;
+        if (!enabled) {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function sortByConfigured<T>(
+  items: T[],
+  isConfigured: (item: T) => boolean,
+): T[] {
+  return [...items].sort((a, b) => {
+    const ca = isConfigured(a) ? 1 : 0;
+    const cb = isConfigured(b) ? 1 : 0;
+    return cb - ca;
+  });
+}
+
+type ConfigStatusKind = "ok" | "warn" | "free";
+
+type StatusSelectOption = {
+  value: string;
+  title: string;
+  subtitle?: string;
+  status: ConfigStatusKind;
+  statusText: string;
+};
+
+type StatusSelectGroup = {
+  label: string;
+  options: StatusSelectOption[];
+};
+
+function statusBadgeClass(status: ConfigStatusKind): string {
+  return `settings-engine-badge is-${status}`;
+}
+
+function engineStatusMeta(
+  keys: EngineKeysMap,
+  id: string,
+): { status: ConfigStatusKind; statusText: string } {
+  const statusText = engineConfigStatusLabel(keys, id);
+  if (statusText === "无需配置") return { status: "free", statusText };
+  if (statusText === "已配置") return { status: "ok", statusText };
+  return { status: "warn", statusText };
+}
+
+function StatusSelect({
+  label,
+  value,
+  groups,
+  onChange,
+  className,
+}: {
+  label?: string;
+  value: string;
+  groups: StatusSelectGroup[];
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  const listId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const flat = useMemo(
+    () => groups.flatMap((g) => g.options),
+    [groups],
+  );
+  const selected = flat.find((o) => o.value === value) || flat[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div
+      className={"status-select" + (className ? ` ${className}` : "")}
+      ref={rootRef}
+    >
+      {label ? <span className="status-select-label">{label}</span> : null}
+      <button
+        type="button"
+        className={"status-select-trigger" + (open ? " is-open" : "")}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {selected ? (
+          <>
+            <em className={statusBadgeClass(selected.status)}>
+              {selected.statusText}
+            </em>
+            <span className="status-select-trigger-text">
+              <strong>{selected.title}</strong>
+              {selected.subtitle ? (
+                <span className="status-select-sub">{selected.subtitle}</span>
+              ) : null}
+            </span>
+          </>
+        ) : (
+          <span className="status-select-trigger-text">请选择</span>
+        )}
+        <span className="status-select-caret" aria-hidden />
+      </button>
+      {open && (
+        <div id={listId} className="status-select-menu" role="listbox">
+          {groups.map((g) => (
+            <div key={g.label} className="status-select-group">
+              <div className="status-select-group-label">{g.label}</div>
+              {g.options.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="option"
+                  aria-selected={opt.value === value}
+                  className={
+                    "status-select-option" +
+                    (opt.value === value ? " is-active" : "")
+                  }
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                >
+                  <em className={statusBadgeClass(opt.status)}>
+                    {opt.statusText}
+                  </em>
+                  <span className="status-select-option-text">
+                    <strong>{opt.title}</strong>
+                    {opt.subtitle ? (
+                      <span className="status-select-sub">{opt.subtitle}</span>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FeatureModelSelect({
+  value,
+  customModels,
+  isConfigured,
+  onChange,
+}: {
+  value: string;
+  customModels: string[];
+  isConfigured: (model: string) => boolean;
+  onChange: (model: string) => void;
+}) {
+  const groups = useMemo((): StatusSelectGroup[] => {
+    const presets = sortByConfigured(MODEL_PRESETS, (p) =>
+      isConfigured(p.model),
+    ).map((p) => ({
+      value: p.model,
+      title: p.label,
+      subtitle: p.model,
+      status: (isConfigured(p.model) ? "ok" : "warn") as ConfigStatusKind,
+      statusText: isConfigured(p.model) ? "已配置" : "未配置",
+    }));
+    const locals = sortByConfigured(customModels, (m) => isConfigured(m)).map(
+      (m) => ({
+        value: m,
+        title: m,
+        subtitle: m,
+        status: (isConfigured(m) ? "ok" : "warn") as ConfigStatusKind,
+        statusText: isConfigured(m) ? "已配置" : "未配置",
+      }),
+    );
+    const out: StatusSelectGroup[] = [
+      { label: "预设模型（已配置优先）", options: presets },
+    ];
+    if (locals.length > 0) {
+      out.push({ label: "本地模型（已配置优先）", options: locals });
+    }
+    return out;
+  }, [customModels, isConfigured]);
+
+  const selected =
+    MODEL_PRESETS.some((p) => p.model === value) ||
+    customModels.includes(value)
+      ? value
+      : groups[0]?.options[0]?.value || value;
+
+  return (
+    <StatusSelect
+      label="大模型"
+      value={selected}
+      groups={groups}
+      onChange={onChange}
+    />
   );
 }
 
@@ -281,7 +700,6 @@ export function SettingsView({ settings, onSave }: Props) {
   const [profiles, setProfiles] = useState<Record<string, ModelProfile>>(() =>
     loadModelProfiles(),
   );
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(
     null,
   );
@@ -295,7 +713,9 @@ export function SettingsView({ settings, onSave }: Props) {
     lit?: TestResult;
     litLlm?: TestResult;
     ocr?: TestResult;
+    ocrLlm?: TestResult;
     text?: TestResult;
+    textLlm?: TestResult;
   }>(() => readSectionTestResults());
   const [cardTestMsg, setCardTestMsgState] = useState<
     Record<string, TestResult>
@@ -309,6 +729,12 @@ export function SettingsView({ settings, onSave }: Props) {
   const toggleGeneral = (key: keyof typeof generalOpen) => {
     setGeneralOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   };
+  type PromptTab =
+    | "plain"
+    | "mtool"
+    | "subtitle"
+    | "subtitleRetime";
+  const [promptTab, setPromptTab] = useState<PromptTab>("plain");
   const [expandedEngine, setExpandedEngine] = useState<TranslateProvider | null>(
     null,
   );
@@ -327,21 +753,35 @@ export function SettingsView({ settings, onSave }: Props) {
       return p === "llm" ? "bing" : p;
     },
   );
-  const [expandedModel, setExpandedModel] = useState<string | null>(
-    settings.model || null,
+  const [ocrClassicProvider, setOcrClassicProvider] = useState<TranslateProvider>(
+    () => {
+      const p = normalizeProvider(settings.ocrTranslateProvider || "bing");
+      return p === "llm" ? "bing" : p;
+    },
   );
+  const [textClassicProvider, setTextClassicProvider] =
+    useState<TranslateProvider>(() => {
+      const p = normalizeProvider(settings.textTranslateProvider || "llm");
+      return p === "llm" ? "bing" : p;
+    });
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [modelDraft, setModelDraft] = useState({ apiUrl: "", apiKey: "" });
+  const [saving, setSaving] = useState(false);
   const prevModelRef = useRef(form.model);
   const customInputRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef(form);
+  const persistLockRef = useRef(false);
+  const settingsRef = useRef(settings);
+  formRef.current = form;
+  settingsRef.current = settings;
 
   const notify = (message: string, ok = true) => {
     setToast({ message, ok });
-    setSaveMsg(message);
     if (toastTimerRef.current) {
       window.clearTimeout(toastTimerRef.current);
     }
     toastTimerRef.current = window.setTimeout(() => {
       setToast(null);
-      setSaveMsg(null);
       toastTimerRef.current = null;
     }, 2800);
   };
@@ -431,8 +871,10 @@ export function SettingsView({ settings, onSave }: Props) {
   };
 
   useEffect(() => {
+    if (persistLockRef.current) return;
     const next = withDefaults(settings);
     setForm(next);
+    formRef.current = next;
     setProfiles(loadModelProfiles());
     prevModelRef.current = settings.model;
     setPickingCustom(false);
@@ -441,7 +883,183 @@ export function SettingsView({ settings, onSave }: Props) {
     const classic =
       next.translateProvider === "llm" ? "bing" : next.translateProvider;
     setLitClassicProvider(classic);
+    const ocrClassic =
+      next.ocrTranslateProvider === "llm" ? "bing" : next.ocrTranslateProvider;
+    setOcrClassicProvider(ocrClassic);
+    const textClassic =
+      next.textTranslateProvider === "llm"
+        ? "bing"
+        : next.textTranslateProvider;
+    setTextClassicProvider(textClassic);
   }, [settings]);
+
+  const prepareForm = (base: Settings): Settings => {
+    const syncedSource = ocrLangToTranslateSource(base.ocrLang);
+    const projectsDir =
+      base.textProjectsDir.trim() ||
+      base.textProjectsDirResolved ||
+      (base.dataDir ? `${base.dataDir}\\text-projects` : "");
+    return {
+      ...base,
+      ocrTranslateSource: syncedSource,
+      textProjectsDir: projectsDir,
+    };
+  };
+
+  const mergeTabIntoSettings = (prepared: Settings, which: SettingsTab) => {
+    const merged: Settings = { ...withDefaults(settingsRef.current) };
+    for (const key of TAB_FIELDS[which]) {
+      (merged as Record<string, unknown>)[key] = (
+        prepared as Record<string, unknown>
+      )[key];
+    }
+    if (which === "image") {
+      merged.ocrTranslateSource = prepared.ocrTranslateSource;
+    }
+    if (which === "text") {
+      merged.textProjectsDir = prepared.textProjectsDir;
+      merged.textProjectsDirResolved = prepared.textProjectsDirResolved;
+    }
+    merged.dataDir = prepared.dataDir ?? merged.dataDir;
+    return merged;
+  };
+
+  const tabIsDirty = (which: SettingsTab, snapshot: Settings) => {
+    const base = withDefaults(settingsRef.current);
+    const prepared = prepareForm(snapshot);
+    return TAB_FIELDS[which].some((key) => {
+      const a = (prepared as Record<string, unknown>)[key];
+      const b = (base as Record<string, unknown>)[key];
+      return String(a ?? "") !== String(b ?? "");
+    });
+  };
+
+  const persistTab = async (
+    nextForm: Settings,
+    which: SettingsTab,
+    successMsg?: string | null,
+  ) => {
+    const prepared = prepareForm(nextForm);
+    const toSave = mergeTabIntoSettings(prepared, which);
+    if (which === "general" || which === "chat") {
+      const nextProfiles = {
+        ...profiles,
+        [prepared.model]: { apiUrl: prepared.apiUrl, apiKey: prepared.apiKey },
+      };
+      setProfiles(nextProfiles);
+      saveModelProfiles(nextProfiles);
+    }
+    persistLockRef.current = true;
+    setSaving(true);
+    try {
+      await onSave(toSave);
+      settingsRef.current = toSave;
+      const kept = {
+        ...prepared,
+        textProjectsDir:
+          toSave.textProjectsDir ||
+          prepared.textProjectsDirResolved ||
+          prepared.textProjectsDir,
+        textProjectsDirResolved:
+          toSave.textProjectsDirResolved || prepared.textProjectsDirResolved,
+        dataDir: toSave.dataDir || prepared.dataDir,
+      };
+      // Keep other tabs' local edits; sync saved tab + resolved paths.
+      setForm((prev) => {
+        const next = { ...prev };
+        for (const key of TAB_FIELDS[which]) {
+          (next as Record<string, unknown>)[key] = (
+            kept as Record<string, unknown>
+          )[key];
+        }
+        next.textProjectsDir = kept.textProjectsDir;
+        next.textProjectsDirResolved = kept.textProjectsDirResolved;
+        next.dataDir = kept.dataDir;
+        formRef.current = next;
+        return next;
+      });
+      if (successMsg) notify(successMsg);
+      return toSave;
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "保存失败", false);
+      throw e;
+    } finally {
+      setSaving(false);
+      window.setTimeout(() => {
+        persistLockRef.current = false;
+      }, 0);
+    }
+  };
+
+  const saveCurrentPage = async () => {
+    await persistTab(
+      formRef.current,
+      tab,
+      `已保存「${TAB_LABELS[tab]}」设置`,
+    );
+  };
+
+  const autoSaveTab = (
+    nextForm: Settings,
+    which: SettingsTab = tab,
+    successMsg = "已自动保存",
+  ) => {
+    formRef.current = nextForm;
+    if (persistLockRef.current) return;
+    if (!tabIsDirty(which, nextForm)) return;
+    void persistTab(nextForm, which, successMsg);
+  };
+
+  const commitForm = (
+    next: Settings,
+    autoSave = true,
+    successMsg?: string,
+  ) => {
+    formRef.current = next;
+    setForm(next);
+    if (autoSave) autoSaveTab(next, tab, successMsg ?? "已自动保存");
+  };
+
+  const selectTab = (next: SettingsTab) => {
+    if (next === tab) return;
+    const current = formRef.current;
+    if (tabIsDirty(tab, current)) {
+      void (async () => {
+        try {
+          await persistTab(current, tab, null);
+          setTab(next);
+        } catch {
+          /* keep current tab on failure */
+        }
+      })();
+      return;
+    }
+    setTab(next);
+  };
+
+  const onSettingsAutoSave = (
+    e: ChangeEvent<HTMLElement> | FocusEvent<HTMLElement>,
+  ) => {
+    const el = e.target as HTMLElement;
+    if (el.closest(".settings-engine-panel")) return;
+    if (e.type === "change") {
+      if (el.tagName !== "SELECT") return;
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          autoSaveTab(formRef.current, tab);
+        });
+      });
+      return;
+    }
+    if (e.type === "blur") {
+      if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") return;
+      const input = el as HTMLInputElement;
+      if (input.type === "checkbox" || input.type === "radio") return;
+      window.requestAnimationFrame(() => {
+        autoSaveTab(formRef.current, tab);
+      });
+    }
+  };
 
   const customModels = useMemo(() => {
     const presetIds = new Set(MODEL_PRESETS.map((p) => p.model));
@@ -460,17 +1078,28 @@ export function SettingsView({ settings, onSave }: Props) {
     [form.ocrLang],
   );
   const litClassicEngines = useMemo(
-    () => sortedClassicEngines(form.translateSource, form.translateTarget),
-    [form.translateSource, form.translateTarget],
+    () =>
+      sortedClassicEngines(
+        form.translateSource,
+        form.translateTarget,
+        engineKeys,
+      ),
+    [form.translateSource, form.translateTarget, engineKeys],
   );
   const catalogEngines = useMemo(() => classicEngines(TRANSLATE_ENGINES), []);
-  const textEngines = useMemo(
-    () => sortedEngines(form.textTranslateSource, form.textTranslateTarget),
-    [form.textTranslateSource, form.textTranslateTarget],
+  const textClassicEngines = useMemo(
+    () =>
+      sortedClassicEngines(
+        form.textTranslateSource,
+        form.textTranslateTarget,
+        engineKeys,
+      ),
+    [form.textTranslateSource, form.textTranslateTarget, engineKeys],
   );
-  const ocrEngines = useMemo(
-    () => sortedEngines(ocrSource, form.ocrTranslateTarget),
-    [ocrSource, form.ocrTranslateTarget],
+  const ocrClassicEngines = useMemo(
+    () =>
+      sortedClassicEngines(ocrSource, form.ocrTranslateTarget, engineKeys),
+    [ocrSource, form.ocrTranslateTarget, engineKeys],
   );
 
   const selectedEngine = getEngineInfo(
@@ -478,16 +1107,26 @@ export function SettingsView({ settings, onSave }: Props) {
       ? litClassicProvider
       : form.translateProvider,
   );
-  const selectedTextEngine = getEngineInfo(form.textTranslateProvider);
-  const selectedOcrEngine = getEngineInfo(form.ocrTranslateProvider);
+  const selectedTextEngine = getEngineInfo(
+    form.textTranslateProvider === "llm"
+      ? textClassicProvider
+      : form.textTranslateProvider,
+  );
+  const selectedOcrEngine = getEngineInfo(
+    form.ocrTranslateProvider === "llm"
+      ? ocrClassicProvider
+      : form.ocrTranslateProvider,
+  );
   const litUsesLlm = form.translateProvider === "llm";
+  const ocrUsesLlm = form.ocrTranslateProvider === "llm";
+  const textUsesLlm = form.textTranslateProvider === "llm";
   const showChunkOption =
     !litUsesLlm &&
     !!selectedEngine &&
     selectedEngine.supportsChunk;
   const showOcrChunkOption =
+    !ocrUsesLlm &&
     !!selectedOcrEngine &&
-    selectedOcrEngine.id !== "llm" &&
     selectedOcrEngine.supportsChunk;
 
   const glossaryRows = useMemo(
@@ -529,6 +1168,7 @@ export function SettingsView({ settings, onSave }: Props) {
       apiUrl: resolved.apiUrl,
       apiKey: resolved.apiKey,
     };
+    formRef.current = next;
     setForm(next);
     return next;
   };
@@ -539,28 +1179,51 @@ export function SettingsView({ settings, onSave }: Props) {
       setPanelSnap(null);
       return;
     }
-    const next = applyModel(model);
+    const creds = credsForModel(model);
+    setModelDraft({ apiUrl: creds.apiUrl, apiKey: creds.apiKey });
     setExpandedModel(model);
     setExpandedEngine(null);
+    setPickingCustom(false);
     setPanelSnap({
       kind: "model",
       id: model,
-      apiUrl: next.apiUrl,
-      apiKey: next.apiKey,
+      apiUrl: creds.apiUrl,
+      apiKey: creds.apiKey,
     });
   };
 
   const commitCustomModel = () => {
     const name = customDraft.trim();
     if (!name) return;
-    applyModel(name);
+    const nextProfiles = {
+      ...profiles,
+      [name]: {
+        apiUrl: modelDraft.apiUrl || form.apiUrl,
+        apiKey: modelDraft.apiKey || form.apiKey,
+      },
+    };
+    setProfiles(nextProfiles);
+    saveModelProfiles(nextProfiles);
+    setExpandedModel(name);
+    setPickingCustom(false);
+    setCustomDraft("");
+    setPanelSnap({
+      kind: "model",
+      id: name,
+      apiUrl: nextProfiles[name].apiUrl,
+      apiKey: nextProfiles[name].apiKey,
+    });
+    setModelDraft({
+      apiUrl: nextProfiles[name].apiUrl,
+      apiKey: nextProfiles[name].apiKey,
+    });
   };
 
   const setLitLang = (which: "source" | "target", code: string) => {
     const source = which === "source" ? code : form.translateSource;
     const target = which === "target" ? code : form.translateTarget;
     if (form.translateProvider === "llm") {
-      setForm({
+      commitForm({
         ...form,
         translateSource: source,
         translateTarget: target,
@@ -568,9 +1231,10 @@ export function SettingsView({ settings, onSave }: Props) {
       return;
     }
     const best =
-      sortedClassicEngines(source, target)[0]?.id ?? form.translateProvider;
+      sortedClassicEngines(source, target, engineKeys)[0]?.id ??
+      form.translateProvider;
     setLitClassicProvider(best);
-    setForm({
+    commitForm({
       ...form,
       translateSource: source,
       translateTarget: target,
@@ -580,10 +1244,19 @@ export function SettingsView({ settings, onSave }: Props) {
 
   const setOcrRecognizeLang = (ocrLang: string) => {
     const source = ocrLangToTranslateSource(ocrLang);
+    if (form.ocrTranslateProvider === "llm") {
+      commitForm({
+        ...form,
+        ocrLang,
+        ocrTranslateSource: source,
+      });
+      return;
+    }
     const best =
-      sortedEngines(source, form.ocrTranslateTarget)[0]?.id ??
+      sortedClassicEngines(source, form.ocrTranslateTarget, engineKeys)[0]?.id ??
       form.ocrTranslateProvider;
-    setForm({
+    setOcrClassicProvider(best);
+    commitForm({
       ...form,
       ocrLang,
       ocrTranslateSource: source,
@@ -593,9 +1266,19 @@ export function SettingsView({ settings, onSave }: Props) {
 
   const setOcrTarget = (code: string) => {
     const source = ocrLangToTranslateSource(form.ocrLang);
+    if (form.ocrTranslateProvider === "llm") {
+      commitForm({
+        ...form,
+        ocrTranslateTarget: code,
+        ocrTranslateSource: source,
+      });
+      return;
+    }
     const best =
-      sortedEngines(source, code)[0]?.id ?? form.ocrTranslateProvider;
-    setForm({
+      sortedClassicEngines(source, code, engineKeys)[0]?.id ??
+      form.ocrTranslateProvider;
+    setOcrClassicProvider(best);
+    commitForm({
       ...form,
       ocrTranslateTarget: code,
       ocrTranslateSource: source,
@@ -603,93 +1286,85 @@ export function SettingsView({ settings, onSave }: Props) {
     });
   };
 
-  const save = async (successMsg?: string) => {
-    let toSave = form;
-    if (pickingCustom && customDraft.trim()) {
-      toSave = applyModel(customDraft.trim(), form);
-    }
-    const syncedSource = ocrLangToTranslateSource(toSave.ocrLang);
-    const projectsDir =
-      toSave.textProjectsDir.trim() ||
-      toSave.textProjectsDirResolved ||
-      (toSave.dataDir ? `${toSave.dataDir}\\text-projects` : "");
-    toSave = {
-      ...toSave,
-      ocrTranslateSource: syncedSource,
-      textProjectsDir: projectsDir,
-    };
-    const nextProfiles = {
-      ...profiles,
-      [toSave.model]: { apiUrl: toSave.apiUrl, apiKey: toSave.apiKey },
-    };
-    setProfiles(nextProfiles);
-    saveModelProfiles(nextProfiles);
-    try {
-      await onSave(toSave);
-      setForm((f) => ({
-        ...f,
-        ...toSave,
-        textProjectsDir:
-          toSave.textProjectsDir ||
-          f.textProjectsDirResolved ||
-          f.textProjectsDir,
-      }));
-      notify(successMsg || "保存设置成功");
-      return toSave;
-    } catch (e) {
-      notify(e instanceof Error ? e.message : "保存失败", false);
-      throw e;
-    }
-  };
-
   const savePanel = async () => {
     const snapModel = expandedModel;
     const snapEngine = expandedEngine;
-    const apiUrl = form.apiUrl;
-    const apiKey = form.apiKey;
-    const engineKeysStr = form.translateEngineKeys;
     const addingCustom = pickingCustom || snapModel === CUSTOM_MODEL;
     const customName = customDraft.trim();
     let successMsg = "保存成功";
+    let nextForm = form;
+    let nextProfiles = { ...profiles };
+
     if (addingCustom && customName) {
       successMsg = `添加本地模型「${customName}」成功`;
+      nextProfiles = {
+        ...nextProfiles,
+        [customName]: {
+          apiUrl: modelDraft.apiUrl,
+          apiKey: modelDraft.apiKey,
+        },
+      };
     } else if (snapModel && snapModel !== CUSTOM_MODEL) {
       const label =
         MODEL_PRESETS.find((p) => p.model === snapModel)?.label || snapModel;
       successMsg = `保存模型「${label}」成功`;
+      nextProfiles = {
+        ...nextProfiles,
+        [snapModel]: {
+          apiUrl: modelDraft.apiUrl,
+          apiKey: modelDraft.apiKey,
+        },
+      };
+      if (form.model === snapModel) {
+        nextForm = {
+          ...form,
+          apiUrl: modelDraft.apiUrl,
+          apiKey: modelDraft.apiKey,
+        };
+      }
     } else if (snapEngine) {
       const label = getEngineInfo(snapEngine)?.label || snapEngine;
       successMsg = `保存引擎「${label}」成功`;
     }
+
+    setProfiles(nextProfiles);
+    saveModelProfiles(nextProfiles);
+    setForm(nextForm);
+
     try {
-      await save(successMsg);
-      if (snapModel && snapModel !== CUSTOM_MODEL) {
-        setPanelSnap({
-          kind: "model",
-          id: snapModel,
-          apiUrl,
-          apiKey,
-        });
-      } else if (addingCustom && customName) {
+      const toSave = {
+        ...nextForm,
+        ocrTranslateSource: ocrLangToTranslateSource(nextForm.ocrLang),
+      };
+      await onSave(toSave);
+      notify(successMsg);
+      if (addingCustom && customName) {
         setExpandedModel(customName);
         setPickingCustom(false);
         setCustomDraft("");
         setPanelSnap({
           kind: "model",
           id: customName,
-          apiUrl,
-          apiKey,
+          apiUrl: modelDraft.apiUrl,
+          apiKey: modelDraft.apiKey,
+        });
+      } else if (snapModel && snapModel !== CUSTOM_MODEL) {
+        setPanelSnap({
+          kind: "model",
+          id: snapModel,
+          apiUrl: modelDraft.apiUrl,
+          apiKey: modelDraft.apiKey,
         });
       } else if (snapEngine) {
-        const keys = parseEngineKeys(engineKeysStr);
+        const keys = parseEngineKeys(toSave.translateEngineKeys);
         setPanelSnap({
           kind: "engine",
           id: snapEngine,
           engineRow: { ...(keys[snapEngine] || {}) },
         });
       }
-    } catch {
-      // notify already shown
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "保存失败", false);
     }
   };
 
@@ -717,6 +1392,10 @@ export function SettingsView({ settings, onSave }: Props) {
           apiKey: panelSnap.apiKey || "",
         });
       }
+      setModelDraft({
+        apiUrl: panelSnap.apiUrl || "",
+        apiKey: panelSnap.apiKey || "",
+      });
       setExpandedModel(null);
     } else {
       const keys = parseEngineKeys(form.translateEngineKeys);
@@ -784,21 +1463,29 @@ export function SettingsView({ settings, onSave }: Props) {
   const setTextLang = (field: "source" | "target", code: string) => {
     const source = field === "source" ? code : form.textTranslateSource;
     const target = field === "target" ? code : form.textTranslateTarget;
-    const list = sortedEngines(source, target);
-    const keep = list.some((e) => e.id === form.textTranslateProvider)
-      ? form.textTranslateProvider
-      : ((list.find((e) => e.id === "llm")?.id ||
-          list[0]?.id ||
-          "llm") as TranslateProvider);
-    setForm({
+    if (form.textTranslateProvider === "llm") {
+      commitForm({
+        ...form,
+        textTranslateSource: source,
+        textTranslateTarget: target,
+      });
+      return;
+    }
+    const best =
+      sortedClassicEngines(source, target, engineKeys)[0]?.id ??
+      form.textTranslateProvider;
+    setTextClassicProvider(best);
+    commitForm({
       ...form,
       textTranslateSource: source,
       textTranslateTarget: target,
-      textTranslateProvider: keep,
+      textTranslateProvider: best,
     });
   };
 
-  const runTest = async (kind: "llm" | "lit" | "litLlm" | "ocr" | "text") => {
+  const runTest = async (
+    kind: "llm" | "lit" | "litLlm" | "ocr" | "ocrLlm" | "text" | "textLlm",
+  ) => {
     setTesting(kind);
     setBatchProgress(null);
     setTestMsg((m) => ({ ...m, [kind]: undefined }));
@@ -830,8 +1517,13 @@ export function SettingsView({ settings, onSave }: Props) {
         nextForm = { ...form, translateProvider: "llm" };
         setForm(nextForm);
         await onSave(nextForm);
-        if (!nextForm.apiUrl.trim()) {
-          throw new Error("请先在「通用」填写 API URL");
+        const llm = resolveFeatureLlm(
+          nextForm,
+          nextForm.translateModel,
+          profilesWithCurrent(),
+        );
+        if (!llm.apiUrl.trim()) {
+          throw new Error("请先在「通用」为所选模型填写 API URL");
         }
         const res = await api.translate("Hello", { signal: ac.signal }, {
           provider: "llm",
@@ -839,9 +1531,98 @@ export function SettingsView({ settings, onSave }: Props) {
           target: nextForm.translateTarget,
           maxLength: nextForm.translateMaxLength || 200,
           autoChunk: false,
-          apiUrl: nextForm.apiUrl,
-          apiKey: nextForm.apiKey,
-          model: nextForm.model,
+          apiUrl: llm.apiUrl,
+          apiKey: llm.apiKey,
+          model: llm.model,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
+      } else if (kind === "ocr") {
+        const classic =
+          form.ocrTranslateProvider !== "llm"
+            ? form.ocrTranslateProvider
+            : ocrClassicProvider;
+        nextForm = { ...form, ocrTranslateProvider: classic };
+        setOcrClassicProvider(classic);
+        setForm(nextForm);
+        await onSave(nextForm);
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: classic,
+          source: ocrLangToTranslateSource(nextForm.ocrLang),
+          target: nextForm.ocrTranslateTarget,
+          maxLength: nextForm.ocrTranslateMaxLength || 200,
+          autoChunk: nextForm.ocrTranslateAutoChunk,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
+      } else if (kind === "ocrLlm") {
+        nextForm = { ...form, ocrTranslateProvider: "llm" };
+        setForm(nextForm);
+        await onSave(nextForm);
+        const llm = resolveFeatureLlm(
+          nextForm,
+          nextForm.ocrTranslateModel,
+          profilesWithCurrent(),
+        );
+        if (!llm.apiUrl.trim()) {
+          throw new Error("请先在「通用」为所选模型填写 API URL");
+        }
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: "llm",
+          source: ocrLangToTranslateSource(nextForm.ocrLang),
+          target: nextForm.ocrTranslateTarget,
+          maxLength: nextForm.ocrTranslateMaxLength || 200,
+          autoChunk: false,
+          apiUrl: llm.apiUrl,
+          apiKey: llm.apiKey,
+          model: llm.model,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
+      } else if (kind === "text") {
+        const classic =
+          form.textTranslateProvider !== "llm"
+            ? form.textTranslateProvider
+            : textClassicProvider;
+        nextForm = { ...form, textTranslateProvider: classic };
+        setTextClassicProvider(classic);
+        setForm(nextForm);
+        await onSave(nextForm);
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: classic,
+          source: nextForm.textTranslateSource,
+          target: nextForm.textTranslateTarget,
+          maxLength: 200,
+          autoChunk: true,
+        });
+        if (!(res.translation || "").trim()) {
+          throw new Error("引擎返回空译文");
+        }
+      } else if (kind === "textLlm") {
+        nextForm = { ...form, textTranslateProvider: "llm" };
+        setForm(nextForm);
+        await onSave(nextForm);
+        const llm = resolveFeatureLlm(
+          nextForm,
+          nextForm.textTranslateModel,
+          profilesWithCurrent(),
+        );
+        if (!llm.apiUrl.trim()) {
+          throw new Error("请先在「通用」为所选模型填写 API URL");
+        }
+        const res = await api.translate("Hello", { signal: ac.signal }, {
+          provider: "llm",
+          source: nextForm.textTranslateSource,
+          target: nextForm.textTranslateTarget,
+          maxLength: 200,
+          autoChunk: true,
+          apiUrl: llm.apiUrl,
+          apiKey: llm.apiKey,
+          model: llm.model,
+          prompt: nextForm.textTranslatePrompt,
         });
         if (!(res.translation || "").trim()) {
           throw new Error("引擎返回空译文");
@@ -867,47 +1648,6 @@ export function SettingsView({ settings, onSave }: Props) {
         if (!(res.translation || "").trim()) {
           throw new Error("引擎返回空译文");
         }
-      } else if (kind === "text") {
-        const provider = form.textTranslateProvider || "llm";
-        if (provider === "llm" && !form.apiUrl.trim()) {
-          throw new Error("请先在「通用」填写 API URL");
-        }
-        const res = await api.translate("Hello", { signal: ac.signal }, {
-          provider,
-          source: form.textTranslateSource,
-          target: form.textTranslateTarget,
-          maxLength: 200,
-          autoChunk: true,
-          ...(provider === "llm"
-            ? {
-                apiUrl: form.apiUrl,
-                apiKey: form.apiKey,
-                model: form.model,
-                prompt: form.textTranslatePrompt,
-              }
-            : {}),
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "ocr") {
-        const res = await api.translate("Hello", { signal: ac.signal }, {
-          provider: form.ocrTranslateProvider,
-          source: ocrLangToTranslateSource(form.ocrLang),
-          target: form.ocrTranslateTarget,
-          maxLength: form.ocrTranslateMaxLength || 200,
-          autoChunk: form.ocrTranslateAutoChunk,
-          ...(form.ocrTranslateProvider === "llm"
-            ? {
-                apiUrl: form.apiUrl,
-                apiKey: form.apiKey,
-                model: form.model,
-              }
-            : {}),
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
       }
       const ms = Math.round(performance.now() - t0);
       setTestMsg((m) => ({
@@ -918,15 +1658,24 @@ export function SettingsView({ settings, onSave }: Props) {
       const ms = Math.round(performance.now() - t0);
       const aborted = ac.signal.aborted;
       const provider =
-        kind === "llm" || kind === "litLlm"
+        kind === "llm" ||
+        kind === "litLlm" ||
+        kind === "ocrLlm" ||
+        kind === "textLlm"
           ? "llm"
           : kind === "lit"
             ? form.translateProvider !== "llm"
               ? form.translateProvider
               : litClassicProvider
-            : kind === "text"
-              ? form.textTranslateProvider
-              : form.ocrTranslateProvider;
+            : kind === "ocr"
+              ? form.ocrTranslateProvider !== "llm"
+                ? form.ocrTranslateProvider
+                : ocrClassicProvider
+              : kind === "text"
+                ? form.textTranslateProvider !== "llm"
+                  ? form.textTranslateProvider
+                  : textClassicProvider
+                : form.ocrTranslateProvider;
       let msg = toFriendlyError(e, "Test failed（测试失败）");
       if (aborted) {
         msg =
@@ -1209,10 +1958,10 @@ export function SettingsView({ settings, onSave }: Props) {
 
   const tabs: { id: SettingsTab; label: string; priority?: boolean }[] = [
     { id: "general", label: "通用", priority: true },
-    { id: "chat", label: "对话模型" },
-    { id: "literature", label: "文献" },
-    { id: "image", label: "图片" },
-    { id: "text", label: "文本" },
+    { id: "chat", label: "对话" },
+    { id: "literature", label: "文献翻译" },
+    { id: "image", label: "图片文字识别" },
+    { id: "text", label: "翻译工程" },
   ];
 
   return (
@@ -1224,7 +1973,7 @@ export function SettingsView({ settings, onSave }: Props) {
           }
           role="status"
         >
-          {toast.message}
+          {renderToastMessage(toast.message)}
         </div>
       )}
       <div className="settings-tabs" role="tablist">
@@ -1241,7 +1990,7 @@ export function SettingsView({ settings, onSave }: Props) {
             ]
               .filter(Boolean)
               .join(" ")}
-            onClick={() => setTab(t.id)}
+            onClick={() => selectTab(t.id)}
           >
             {t.label}
             {t.priority ? <span className="settings-tab-badge">重要</span> : null}
@@ -1249,7 +1998,11 @@ export function SettingsView({ settings, onSave }: Props) {
         ))}
       </div>
 
-      <div className="settings-tab-body">
+      <div
+        className="settings-tab-body"
+        onChange={onSettingsAutoSave}
+        onBlur={onSettingsAutoSave}
+      >
         {tab === "general" && (
           <>
             <div className="settings-priority-banner">
@@ -1364,7 +2117,7 @@ export function SettingsView({ settings, onSave }: Props) {
                 </p>
               )}
               <p className="hint">
-                点击模型卡片可选中并展开填写 API；卡片旁可单独测试。对话、文献大模型翻译与文本翻译共用此处凭证。
+                仅用于填写各模型的 API URL / Key。卡片上的彩色标签显示当前被哪些功能选用；对话请到「对话」选择，文献 / 图片 / 文本请在各自页选择。
               </p>
               <div className="settings-model-groups">
                 {modelGroups.map((g) => (
@@ -1372,10 +2125,9 @@ export function SettingsView({ settings, onSave }: Props) {
                     <div className="settings-model-group-title">{g.group}</div>
                     <div className="settings-engine-catalog">
                       {g.models.map((p) => {
-                        const usage = modelUsageLabels(form, p.model);
-                        const selected = usage.length > 0;
                         const open = expandedModel === p.model;
                         const configured = modelConfigured(p.model);
+                        const usage = modelUsageIds(form, p.model);
                         const testKey = `model:${p.model}`;
                         const cardResult = cardTestMsg[testKey];
                         const busy = isCardTesting(testKey);
@@ -1385,8 +2137,8 @@ export function SettingsView({ settings, onSave }: Props) {
                             key={p.model}
                             className={
                               "settings-engine-card" +
-                              (selected ? " is-selected" : "") +
-                              (open ? " is-open" : "")
+                              (open ? " is-open" : "") +
+                              (usage.length > 0 ? " is-in-use" : "")
                             }
                           >
                             <div className="settings-engine-card-top">
@@ -1406,11 +2158,11 @@ export function SettingsView({ settings, onSave }: Props) {
                                     {configured ? "已配置" : "未配置"}
                                   </em>
                                   <strong>{p.label}</strong>
-                                  <UsageBadges labels={usage} />
                                 </span>
                                 <span className="settings-engine-card-hint">
                                   {p.model}
                                 </span>
+                                <UsageBadges ids={usage} />
                               </button>
                               <button
                                 type="button"
@@ -1440,10 +2192,10 @@ export function SettingsView({ settings, onSave }: Props) {
                                 <label className="settings-engine-field">
                                   API URL
                                   <input
-                                    value={form.apiUrl}
+                                    value={modelDraft.apiUrl}
                                     onChange={(e) =>
-                                      setForm({
-                                        ...form,
+                                      setModelDraft({
+                                        ...modelDraft,
                                         apiUrl: e.target.value,
                                       })
                                     }
@@ -1455,10 +2207,10 @@ export function SettingsView({ settings, onSave }: Props) {
                                   API Key
                                   <input
                                     type="password"
-                                    value={form.apiKey}
+                                    value={modelDraft.apiKey}
                                     onChange={(e) =>
-                                      setForm({
-                                        ...form,
+                                      setModelDraft({
+                                        ...modelDraft,
                                         apiKey: e.target.value,
                                       })
                                     }
@@ -1508,7 +2260,7 @@ export function SettingsView({ settings, onSave }: Props) {
                       className={
                         "settings-engine-card" +
                         (pickingCustom || expandedModel === CUSTOM_MODEL
-                          ? " is-selected is-open"
+                          ? " is-open"
                           : "")
                       }
                     >
@@ -1528,9 +2280,13 @@ export function SettingsView({ settings, onSave }: Props) {
                           setPickingCustom(true);
                           setExpandedModel(CUSTOM_MODEL);
                           setExpandedEngine(null);
+                          setModelDraft({
+                            apiUrl: form.apiUrl,
+                            apiKey: form.apiKey,
+                          });
                           setPanelSnap({
                             kind: "model",
-                            id: form.model,
+                            id: CUSTOM_MODEL,
                             apiUrl: form.apiUrl,
                             apiKey: form.apiKey,
                           });
@@ -1580,9 +2336,12 @@ export function SettingsView({ settings, onSave }: Props) {
                           <label className="settings-engine-field">
                             API URL
                             <input
-                              value={form.apiUrl}
+                              value={modelDraft.apiUrl}
                               onChange={(e) =>
-                                setForm({ ...form, apiUrl: e.target.value })
+                                setModelDraft({
+                                  ...modelDraft,
+                                  apiUrl: e.target.value,
+                                })
                               }
                               placeholder="该模型对应的接口地址"
                               autoComplete="off"
@@ -1592,9 +2351,12 @@ export function SettingsView({ settings, onSave }: Props) {
                             API Key
                             <input
                               type="password"
-                              value={form.apiKey}
+                              value={modelDraft.apiKey}
                               onChange={(e) =>
-                                setForm({ ...form, apiKey: e.target.value })
+                                setModelDraft({
+                                  ...modelDraft,
+                                  apiKey: e.target.value,
+                                })
                               }
                               placeholder="各模型独立保存"
                               autoComplete="off"
@@ -1669,15 +2431,14 @@ export function SettingsView({ settings, onSave }: Props) {
                 </p>
               )}
               <p className="hint">
-                在此配置各在线翻译引擎本身（凭证等）。文献 / 图片 / 文本等模块在各自页选择使用哪个引擎。免
-                Key 引擎走上方网络代理。卡片旁可单独测试。
+                仅用于配置各在线翻译引擎凭证。彩色标签显示当前被哪些功能选用；文献 / 图片 / 文本在各自页选择引擎。免
+                Key 引擎走上方网络代理。
               </p>
               <div className="settings-engine-catalog">
                 {catalogEngines.map((e) => {
-                  const usage = engineUsageLabels(form, e.id);
-                  const selected = usage.length > 0;
                   const open = expandedEngine === e.id;
                   const configured = engineHasCredentials(engineKeys, e.id);
+                  const usage = engineUsageIds(form, e.id);
                   const testKey = `engine:${e.id}`;
                   const cardResult = cardTestMsg[testKey];
                   const busy = isCardTesting(testKey);
@@ -1689,8 +2450,8 @@ export function SettingsView({ settings, onSave }: Props) {
                       key={e.id}
                       className={
                         "settings-engine-card" +
-                        (selected ? " is-selected" : "") +
-                        (open ? " is-open" : "")
+                        (open ? " is-open" : "") +
+                        (usage.length > 0 ? " is-in-use" : "")
                       }
                     >
                       <div className="settings-engine-card-top">
@@ -1716,11 +2477,11 @@ export function SettingsView({ settings, onSave }: Props) {
                               </em>
                             )}
                             <strong>{e.label}</strong>
-                            <UsageBadges labels={usage} />
                           </span>
                           <span className="settings-engine-card-hint">
                             {e.hint}
                           </span>
+                          <UsageBadges ids={usage} />
                         </button>
                         <button
                           type="button"
@@ -1803,39 +2564,78 @@ export function SettingsView({ settings, onSave }: Props) {
 
         {tab === "chat" && (
           <section className="settings-card">
-            <h2>对话模型</h2>
+            <div className="settings-card-head">
+              <h2>对话</h2>
+              <button
+                type="button"
+                className="settings-test-btn"
+                disabled={!!testing}
+                onClick={() => void runTest("llm")}
+              >
+                {testing === "llm" ? "测试中" : "测试连接"}
+              </button>
+            </div>
             <p className="hint">
               此处只选择模型；API URL / Key 请在「通用」中配置。
             </p>
-            <label>
-              模型
-              <select
-                value={
-                  MODEL_PRESETS.some((p) => p.model === form.model) ||
-                  customModels.includes(form.model)
-                    ? form.model
-                    : customModels[0] || MODEL_PRESETS[0]?.model || form.model
+            {testMsg.llm && (
+              <p
+                className={
+                  testMsg.llm.ok
+                    ? "settings-test-ok"
+                    : "settings-test-fail"
                 }
-                onChange={(e) => applyModel(e.target.value)}
               >
-                <optgroup label="预设模型">
-                  {MODEL_PRESETS.map((p) => (
-                    <option key={p.model} value={p.model}>
-                      {p.label} ({p.model})
-                    </option>
-                  ))}
-                </optgroup>
-                {customModels.length > 0 && (
-                  <optgroup label="自定义模型">
-                    {customModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </label>
+                {testMsg.llm.message}
+              </p>
+            )}
+            <StatusSelect
+              label="模型"
+              value={
+                MODEL_PRESETS.some((p) => p.model === form.model) ||
+                customModels.includes(form.model)
+                  ? form.model
+                  : customModels[0] || MODEL_PRESETS[0]?.model || form.model
+              }
+              groups={[
+                {
+                  label: "预设模型（已配置优先）",
+                  options: sortByConfigured(MODEL_PRESETS, (p) =>
+                    modelConfigured(p.model),
+                  ).map((p) => ({
+                    value: p.model,
+                    title: p.label,
+                    subtitle: p.model,
+                    status: (modelConfigured(p.model)
+                      ? "ok"
+                      : "warn") as ConfigStatusKind,
+                    statusText: modelConfigured(p.model) ? "已配置" : "未配置",
+                  })),
+                },
+                ...(customModels.length > 0
+                  ? [
+                      {
+                        label: "自定义模型（已配置优先）",
+                        options: sortByConfigured(customModels, (m) =>
+                          modelConfigured(m),
+                        ).map((m) => ({
+                          value: m,
+                          title: m,
+                          subtitle: m,
+                          status: (modelConfigured(m)
+                            ? "ok"
+                            : "warn") as ConfigStatusKind,
+                          statusText: modelConfigured(m) ? "已配置" : "未配置",
+                        })),
+                      },
+                    ]
+                  : []),
+              ]}
+              onChange={(model) => {
+                const next = applyModel(model);
+                autoSaveTab(next);
+              }}
+            />
             <label>
               每次加载消息数
               <input
@@ -1863,7 +2663,7 @@ export function SettingsView({ settings, onSave }: Props) {
             <section className="settings-card">
               <h2>文献翻译</h2>
               <p className="hint">
-                在此选择语言与长度；下方分别配置「翻译引擎」或「大模型翻译」。API /
+                在此选择语言与长度；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
                 代理请在「通用」配置。
               </p>
               <div className="settings-row settings-row-half">
@@ -1893,27 +2693,19 @@ export function SettingsView({ settings, onSave }: Props) {
                   ）
                 </span>
                 <div className="settings-row settings-row-controls">
-                  <input
-                    type="number"
-                    min={0}
-                    max={50000}
-                    step={50}
+                  <MaxLengthInput
                     value={form.translateMaxLength}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        translateMaxLength: Math.max(
-                          0,
-                          Number(e.target.value) || 0,
-                        ),
-                      })
-                    }
+                    onCommit={(n) => {
+                      const next = { ...form, translateMaxLength: n };
+                      formRef.current = next;
+                      setForm(next);
+                    }}
                   />
                   {showChunkOption ? (
                     <SettingToggle
                       checked={form.translateAutoChunk}
                       onChange={(v) =>
-                        setForm({ ...form, translateAutoChunk: v })
+                        commitForm({ ...form, translateAutoChunk: v })
                       }
                       label="超过最大长度时自动分段并拼接"
                     />
@@ -1926,317 +2718,439 @@ export function SettingsView({ settings, onSave }: Props) {
                 当前文献翻译方式：
                 <strong>
                   {litUsesLlm
-                    ? `大模型（${form.model || "未选模型"}）`
+                    ? `大模型（${form.translateModel || form.model || "未选模型"}）`
                     : selectedEngine?.label || form.translateProvider}
                 </strong>
               </p>
             </section>
 
-            <section
-              className={
-                "settings-card" + (!litUsesLlm ? " is-mode-active" : "")
-              }
-            >
-              <div className="settings-card-head">
-                <h2>翻译引擎</h2>
-                <button
-                  type="button"
-                  className="settings-test-btn"
-                  disabled={testing === "lit"}
-                  onClick={() => void runTest("lit")}
-                >
-                  {testing === "lit" ? "测试中" : "测试连接"}
-                </button>
-              </div>
-              {testMsg.lit && (
-                <p
-                  className={
-                    testMsg.lit.ok
-                      ? "settings-test-ok"
-                      : "settings-test-fail"
-                  }
-                >
-                  {testMsg.lit.message}
-                </p>
-              )}
-              <p className="hint">
-                使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
-              </p>
-              <div className="settings-field">
-                <span className="settings-field-label">选择引擎</span>
-                <div className="settings-engine-row">
-                  <select
-                    className="settings-engine-select"
-                    value={
-                      form.translateProvider !== "llm"
-                        ? form.translateProvider
-                        : litClassicProvider
-                    }
-                    onChange={(e) => {
-                      const id = e.target.value as TranslateProvider;
-                      setLitClassicProvider(id);
-                      setForm({
-                        ...form,
-                        translateProvider: id,
-                      });
-                    }}
-                  >
-                    {litClassicEngines.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                  {selectedEngine && (
-                    <p className="engine-hint settings-engine-side-hint">
-                      {selectedEngine.hint}
-                    </p>
-                  )}
+            <section className="settings-card">
+              <div className="settings-mode-choice">
+                <div className="settings-mode-choice-head">
+                  <h2>翻译方式</h2>
+                  <p className="hint">
+                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                  </p>
                 </div>
-              </div>
-            </section>
 
-            <section
-              className={
-                "settings-card" + (litUsesLlm ? " is-mode-active" : "")
-              }
-            >
-              <div className="settings-card-head">
-                <h2>大模型翻译</h2>
-                <button
-                  type="button"
-                  className="settings-test-btn"
-                  disabled={testing === "litLlm"}
-                  onClick={() => void runTest("litLlm")}
-                >
-                  {testing === "litLlm" ? "测试中" : "测试连接"}
-                </button>
-              </div>
-              {testMsg.litLlm && (
-                <p
-                  className={
-                    testMsg.litLlm.ok
-                      ? "settings-test-ok"
-                      : "settings-test-fail"
-                  }
-                >
-                  {testMsg.litLlm.message}
+              <ModePanel
+                enabled={!litUsesLlm}
+                onSelect={() => {
+                  const classic =
+                    form.translateProvider !== "llm"
+                      ? form.translateProvider
+                      : litClassicProvider;
+                  setLitClassicProvider(classic);
+                  commitForm(
+                    { ...form, translateProvider: classic },
+                    true,
+                    "**文献翻译** 翻译方式已切换为 **翻译引擎**",
+                  );
+                }}
+              >
+                <ModeSectionHead
+                  title="翻译引擎"
+                  enabled={!litUsesLlm}
+                  testing={testing === "lit"}
+                  onTest={() => void runTest("lit")}
+                />
+                {testMsg.lit && (
+                  <p
+                    className={
+                      testMsg.lit.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
+                    }
+                  >
+                    {testMsg.lit.message}
+                  </p>
+                )}
+                <p className="hint">
+                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
                 </p>
-              )}
-              <p className="hint">
-                使用「通用」中配置的大模型 API，适合长文与术语。点「测试连接」将同时设为文献翻译方式。
-              </p>
-              <div className="settings-row settings-row-half">
-                <label className="settings-half">
-                  当前模型
-                  <input
-                    type="text"
-                    value={form.model || ""}
-                    readOnly
-                    disabled
-                  />
-                </label>
-                <label className="settings-half">
-                  API URL
-                  <input
-                    type="text"
-                    value={form.apiUrl || "（未配置）"}
-                    readOnly
-                    disabled
-                  />
-                </label>
-              </div>
-              <button
-                type="button"
-                className="settings-test-btn"
-                style={{ alignSelf: "flex-start" }}
-                onClick={() =>
-                  setForm({ ...form, translateProvider: "llm" })
+                <div className="settings-field">
+                  <span className="settings-field-label">选择引擎</span>
+                  <div className="settings-engine-row">
+                    <StatusSelect
+                      className="settings-engine-status-select"
+                      value={
+                        form.translateProvider !== "llm"
+                          ? form.translateProvider
+                          : litClassicProvider
+                      }
+                      groups={[
+                        {
+                          label: "翻译引擎（可用优先）",
+                          options: litClassicEngines.map((p) => {
+                            const meta = engineStatusMeta(engineKeys, p.id);
+                            return {
+                              value: p.id,
+                              title: p.label,
+                              status: meta.status,
+                              statusText: meta.statusText,
+                            };
+                          }),
+                        },
+                      ]}
+                      onChange={(id) => {
+                        const nextId = id as TranslateProvider;
+                        setLitClassicProvider(nextId);
+                        const next = { ...form, translateProvider: nextId };
+                        formRef.current = next;
+                        setForm(next);
+                        autoSaveTab(next);
+                      }}
+                    />
+                    {selectedEngine && (
+                      <p className="engine-hint settings-engine-side-hint">
+                        {selectedEngine.hint}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </ModePanel>
+
+              <ModePanel
+                enabled={litUsesLlm}
+                onSelect={() =>
+                  commitForm(
+                    { ...form, translateProvider: "llm" },
+                    true,
+                    "**文献翻译** 翻译方式已切换为 **大模型**",
+                  )
                 }
               >
-                设为文献翻译方式
-              </button>
+                <ModeSectionHead
+                  title="大模型翻译"
+                  enabled={litUsesLlm}
+                  testing={testing === "litLlm"}
+                  onTest={() => void runTest("litLlm")}
+                />
+                {testMsg.litLlm && (
+                  <p
+                    className={
+                      testMsg.litLlm.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
+                    }
+                  >
+                    {testMsg.litLlm.message}
+                  </p>
+                )}
+                <p className="hint">
+                  使用「通用」中已配置的模型凭证，可单独选择文献翻译所用模型。
+                </p>
+                <FeatureModelSelect
+                  value={form.translateModel || form.model}
+                  customModels={customModels}
+                  isConfigured={modelConfigured}
+                  onChange={(model) => {
+                    const next = {
+                      ...form,
+                      translateModel: model,
+                      translateProvider: "llm" as const,
+                    };
+                    formRef.current = next;
+                    setForm(next);
+                    autoSaveTab(next);
+                  }}
+                />
+              </ModePanel>
+              </div>
             </section>
           </>
         )}
 
         {tab === "image" && (
-          <section className="settings-card">
-            <div className="settings-card-head">
+          <>
+            <section className="settings-card">
               <h2>图片文字识别</h2>
-              <button
-                type="button"
-                className="settings-test-btn"
-                disabled={testing === "ocr"}
-                onClick={() => void runTest("ocr")}
-              >
-                {testing === "ocr" ? "测试中" : "测试连接"}
-              </button>
-            </div>
-            {testMsg.ocr && (
-              <p
-                className={
-                  testMsg.ocr.ok
-                    ? "settings-test-ok"
-                    : "settings-test-fail"
-                }
-              >
-                {testMsg.ocr.message}
+              <p className="hint">
+                在此选择识别语言与长度；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
+                代理请在「通用」配置。
               </p>
-            )}
-            <p className="hint">
-              此处选择识别语言与引擎；API / 代理请在「通用」配置。
-            </p>
-            <div className="settings-row settings-row-half">
-              <label className="settings-half">
-                OCR 识别语言
-                <select
-                  value={form.ocrLang}
-                  onChange={(e) => setOcrRecognizeLang(e.target.value)}
-                >
-                  <option value="eng">英语 (eng)</option>
-                  <option value="chi_sim">简体中文 (chi_sim)</option>
-                  <option value="chi_tra">繁体中文 (chi_tra)</option>
-                  <option value="eng+chi_sim">英语 + 简体中文</option>
-                  <option value="jpn">日语 (jpn)</option>
-                  <option value="kor">韩语 (kor)</option>
-                </select>
-              </label>
-              <div className="settings-half">
-                <LangCombobox
-                  label="目标语言"
-                  value={form.ocrTranslateTarget}
-                  onChange={setOcrTarget}
-                />
+              <div className="settings-row settings-row-half">
+                <label className="settings-half">
+                  OCR 识别语言
+                  <select
+                    value={form.ocrLang}
+                    onChange={(e) => setOcrRecognizeLang(e.target.value)}
+                  >
+                    <option value="eng">英语 (eng)</option>
+                    <option value="chi_sim">简体中文 (chi_sim)</option>
+                    <option value="chi_tra">繁体中文 (chi_tra)</option>
+                    <option value="eng+chi_sim">英语 + 简体中文</option>
+                    <option value="jpn">日语 (jpn)</option>
+                    <option value="kor">韩语 (kor)</option>
+                  </select>
+                </label>
+                <div className="settings-half">
+                  <LangCombobox
+                    label="目标语言"
+                    value={form.ocrTranslateTarget}
+                    onChange={setOcrTarget}
+                  />
+                </div>
               </div>
-            </div>
-            <div className="settings-field">
-              <span className="settings-field-label">翻译引擎</span>
-              <div className="settings-engine-row">
-                <select
-                  className="settings-engine-select"
-                  value={form.ocrTranslateProvider}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      ocrTranslateProvider: e.target
-                        .value as TranslateProvider,
-                    })
-                  }
-                >
-                  {ocrEngines.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-                {selectedOcrEngine && (
-                  <p className="engine-hint settings-engine-side-hint">
-                    {selectedOcrEngine.hint}
+              <div className="settings-field">
+                <span className="settings-field-label">
+                  每次翻译最大长度（字符，0=
+                  {ocrUsesLlm
+                    ? "不限制"
+                    : selectedOcrEngine?.defaultMaxChars
+                      ? `引擎默认≈${selectedOcrEngine.defaultMaxChars}`
+                      : "引擎默认"}
+                  ）
+                </span>
+                <div className="settings-row settings-row-ocr-opts settings-row-controls">
+                  <MaxLengthInput
+                    value={form.ocrTranslateMaxLength}
+                    onCommit={(n) => {
+                      const next = { ...form, ocrTranslateMaxLength: n };
+                      formRef.current = next;
+                      setForm(next);
+                    }}
+                  />
+                  {showOcrChunkOption ? (
+                    <SettingToggle
+                      checked={form.ocrTranslateAutoChunk}
+                      onChange={(v) =>
+                        commitForm({ ...form, ocrTranslateAutoChunk: v })
+                      }
+                      label="超过最大长度时自动分段并拼接"
+                    />
+                  ) : (
+                    <div />
+                  )}
+                  <SettingToggle
+                    checked={form.ocrAutoTranslate}
+                    onChange={(v) =>
+                      commitForm({ ...form, ocrAutoTranslate: v })
+                    }
+                    label="识别后自动翻译并叠字显示"
+                  />
+                </div>
+              </div>
+              <p className="hint" style={{ marginTop: 8 }}>
+                当前图片翻译方式：
+                <strong>
+                  {ocrUsesLlm
+                    ? `大模型（${form.ocrTranslateModel || form.model || "未选模型"}）`
+                    : selectedOcrEngine?.label || form.ocrTranslateProvider}
+                </strong>
+              </p>
+              <p className="hint">
+                识别语言同时作为翻译源语言；与文献翻译的引擎配置相互独立。
+              </p>
+            </section>
+
+            <section className="settings-card">
+              <div className="settings-mode-choice">
+                <div className="settings-mode-choice-head">
+                  <h2>翻译方式</h2>
+                  <p className="hint">
+                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                  </p>
+                </div>
+
+              <ModePanel
+                enabled={!ocrUsesLlm}
+                onSelect={() => {
+                  const classic =
+                    form.ocrTranslateProvider !== "llm"
+                      ? form.ocrTranslateProvider
+                      : ocrClassicProvider;
+                  setOcrClassicProvider(classic);
+                  commitForm(
+                    { ...form, ocrTranslateProvider: classic },
+                    true,
+                    "**图片识别** 翻译方式已切换为 **翻译引擎**",
+                  );
+                }}
+              >
+                <ModeSectionHead
+                  title="翻译引擎"
+                  enabled={!ocrUsesLlm}
+                  testing={testing === "ocr"}
+                  onTest={() => void runTest("ocr")}
+                />
+                {testMsg.ocr && (
+                  <p
+                    className={
+                      testMsg.ocr.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
+                    }
+                  >
+                    {testMsg.ocr.message}
                   </p>
                 )}
-              </div>
-            </div>
-            <div className="settings-field">
-              <span className="settings-field-label">
-                每次翻译最大长度（字符，0=引擎默认
-                {selectedOcrEngine?.defaultMaxChars
-                  ? `≈${selectedOcrEngine.defaultMaxChars}`
-                  : ""}
-                ）
-              </span>
-              <div className="settings-row settings-row-ocr-opts settings-row-controls">
-                <input
-                  type="number"
-                  min={0}
-                  max={50000}
-                  step={50}
-                  value={form.ocrTranslateMaxLength}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      ocrTranslateMaxLength: Math.max(
-                        0,
-                        Number(e.target.value) || 0,
-                      ),
-                    })
-                  }
+                <p className="hint">
+                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
+                </p>
+                <div className="settings-field">
+                  <span className="settings-field-label">选择引擎</span>
+                  <div className="settings-engine-row">
+                    <StatusSelect
+                      className="settings-engine-status-select"
+                      value={
+                        form.ocrTranslateProvider !== "llm"
+                          ? form.ocrTranslateProvider
+                          : ocrClassicProvider
+                      }
+                      groups={[
+                        {
+                          label: "翻译引擎（可用优先）",
+                          options: ocrClassicEngines.map((p) => {
+                            const meta = engineStatusMeta(engineKeys, p.id);
+                            return {
+                              value: p.id,
+                              title: p.label,
+                              status: meta.status,
+                              statusText: meta.statusText,
+                            };
+                          }),
+                        },
+                      ]}
+                      onChange={(id) => {
+                        const nextId = id as TranslateProvider;
+                        setOcrClassicProvider(nextId);
+                        const next = { ...form, ocrTranslateProvider: nextId };
+                        formRef.current = next;
+                        setForm(next);
+                        autoSaveTab(next);
+                      }}
+                    />
+                    {selectedOcrEngine && (
+                      <p className="engine-hint settings-engine-side-hint">
+                        {selectedOcrEngine.hint}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </ModePanel>
+
+              <ModePanel
+                enabled={ocrUsesLlm}
+                onSelect={() =>
+                  commitForm(
+                    { ...form, ocrTranslateProvider: "llm" },
+                    true,
+                    "**图片识别** 翻译方式已切换为 **大模型**",
+                  )
+                }
+              >
+                <ModeSectionHead
+                  title="大模型翻译"
+                  enabled={ocrUsesLlm}
+                  testing={testing === "ocrLlm"}
+                  onTest={() => void runTest("ocrLlm")}
                 />
-                {showOcrChunkOption && (
-                  <SettingToggle
-                    checked={form.ocrTranslateAutoChunk}
-                    onChange={(v) =>
-                      setForm({ ...form, ocrTranslateAutoChunk: v })
+                {testMsg.ocrLlm && (
+                  <p
+                    className={
+                      testMsg.ocrLlm.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
                     }
-                    label="超过最大长度时自动分段并拼接"
-                  />
+                  >
+                    {testMsg.ocrLlm.message}
+                  </p>
                 )}
-                <SettingToggle
-                  checked={form.ocrAutoTranslate}
-                  onChange={(v) =>
-                    setForm({ ...form, ocrAutoTranslate: v })
-                  }
-                  label="识别后自动翻译并叠字显示"
+                <p className="hint">
+                  使用「通用」中已配置的模型凭证，可单独选择图片翻译所用模型。
+                </p>
+                <FeatureModelSelect
+                  value={form.ocrTranslateModel || form.model}
+                  customModels={customModels}
+                  isConfigured={modelConfigured}
+                  onChange={(model) => {
+                    const next = {
+                      ...form,
+                      ocrTranslateModel: model,
+                      ocrTranslateProvider: "llm" as const,
+                    };
+                    formRef.current = next;
+                    setForm(next);
+                    autoSaveTab(next);
+                  }}
                 />
+              </ModePanel>
               </div>
-            </div>
-            <p className="hint">
-              识别语言同时作为翻译源语言；与文献翻译的引擎配置相互独立。
-            </p>
-          </section>
+            </section>
+          </>
         )}
 
         {tab === "text" && (
           <>
             <section className="settings-card">
-              <h2>工程保存目录</h2>
+              <h2>保存路径</h2>
               <p className="hint">
-                新建/保存工程会写入此目录；每个工程一个子文件夹，内含{" "}
+                新建/保存工程会写入此目录；「打开工程列表」也扫描此目录。每个工程一个子文件夹，内含{" "}
                 <code>{PROJECT_FILENAME}</code>。
               </p>
               <label>
                 工程根目录（绝对路径）
-                <input
-                  type="text"
-                  value={
-                    form.textProjectsDir ||
-                    form.textProjectsDirResolved ||
-                    (form.dataDir
-                      ? `${form.dataDir}\\text-projects`
-                      : "")
-                  }
-                  onChange={(e) =>
-                    setForm({ ...form, textProjectsDir: e.target.value })
-                  }
-                />
+                <div className="settings-path-row">
+                  <input
+                    type="text"
+                    value={
+                      form.textProjectsDir ||
+                      form.textProjectsDirResolved ||
+                      (form.dataDir
+                        ? `${form.dataDir}\\text-projects`
+                        : "")
+                    }
+                    onChange={(e) =>
+                      setForm({ ...form, textProjectsDir: e.target.value })
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="settings-path-browse"
+                    onClick={() => {
+                      void (async () => {
+                        const current =
+                          formRef.current.textProjectsDir.trim() ||
+                          formRef.current.textProjectsDirResolved ||
+                          (formRef.current.dataDir
+                            ? `${formRef.current.dataDir}\\text-projects`
+                            : undefined);
+                        try {
+                          const selected = await openDialog({
+                            directory: true,
+                            multiple: false,
+                            title: "选择工程保存路径",
+                            defaultPath: current || undefined,
+                          });
+                          if (typeof selected !== "string" || !selected) return;
+                          commitForm(
+                            {
+                              ...formRef.current,
+                              textProjectsDir: selected,
+                            },
+                            true,
+                            "保存路径已更新",
+                          );
+                        } catch (e) {
+                          window.alert(
+                            toFriendlyError(e, "无法打开目录选择对话框"),
+                          );
+                        }
+                      })();
+                    }}
+                  >
+                    浏览…
+                  </button>
+                </div>
               </label>
             </section>
 
             <section className="settings-card">
-              <div className="settings-card-head">
-                <h2>文本翻译</h2>
-                <button
-                  type="button"
-                  className="settings-test-btn"
-                  disabled={testing === "text"}
-                  onClick={() => void runTest("text")}
-                >
-                  {testing === "text" ? "测试中" : "测试连接"}
-                </button>
-              </div>
-              {testMsg.text && (
-                <p
-                  className={
-                    testMsg.text.ok
-                      ? "settings-test-ok"
-                      : "settings-test-fail"
-                  }
-                >
-                  {testMsg.text.message}
-                </p>
-              )}
+              <h2>文本翻译</h2>
               <p className="hint">
-                可选用大模型或在线翻译引擎。API / 代理请在「通用」配置；选大模型时在下方选择具体模型。
+                在此选择语言；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
+                代理请在「通用」配置。
               </p>
               <div className="settings-row settings-row-half">
                 <div className="settings-half">
@@ -2254,97 +3168,242 @@ export function SettingsView({ settings, onSave }: Props) {
                   />
                 </div>
               </div>
-              <div className="settings-field">
-                <span className="settings-field-label">翻译引擎</span>
-                <div className="settings-engine-row">
-                  <select
-                    className="settings-engine-select"
-                    value={form.textTranslateProvider}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        textTranslateProvider: e.target
-                          .value as TranslateProvider,
-                      })
-                    }
-                  >
-                    {textEngines.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                  {selectedTextEngine && (
-                    <p className="engine-hint settings-engine-side-hint">
-                      {selectedTextEngine.hint}
-                    </p>
-                  )}
+              <p className="hint" style={{ marginTop: 8 }}>
+                当前文本翻译方式：
+                <strong>
+                  {textUsesLlm
+                    ? `大模型（${form.textTranslateModel || form.model || "未选模型"}）`
+                    : selectedTextEngine?.label || form.textTranslateProvider}
+                </strong>
+              </p>
+            </section>
+
+            <section className="settings-card">
+              <div className="settings-mode-choice">
+                <div className="settings-mode-choice-head">
+                  <h2>翻译方式</h2>
+                  <p className="hint">
+                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                  </p>
                 </div>
-              </div>
-              {form.textTranslateProvider === "llm" && (
-                <label>
-                  大模型
-                  <select
-                    value={
-                      MODEL_PRESETS.some((p) => p.model === form.model) ||
-                      customModels.includes(form.model)
-                        ? form.model
-                        : customModels[0] ||
-                          MODEL_PRESETS[0]?.model ||
-                          form.model
-                    }
-                    onChange={(e) => applyModel(e.target.value)}
-                  >
-                    <optgroup label="预设模型">
-                      {MODEL_PRESETS.map((p) => (
-                        <option key={p.model} value={p.model}>
-                          {p.label} ({p.model})
-                        </option>
-                      ))}
-                    </optgroup>
-                    {customModels.length > 0 && (
-                      <optgroup label="自定义模型">
-                        {customModels.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </select>
-                </label>
-              )}
-              <label>
-                自定义提示词
-                <textarea
-                  className="settings-prompt"
-                  rows={5}
-                  value={form.textTranslatePrompt}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      textTranslatePrompt: e.target.value,
-                    })
-                  }
-                  disabled={form.textTranslateProvider !== "llm"}
+
+              <ModePanel
+                enabled={!textUsesLlm}
+                onSelect={() => {
+                  const classic =
+                    form.textTranslateProvider !== "llm"
+                      ? form.textTranslateProvider
+                      : textClassicProvider;
+                  setTextClassicProvider(classic);
+                  commitForm(
+                    { ...form, textTranslateProvider: classic },
+                    true,
+                    "**文本翻译** 翻译方式已切换为 **翻译引擎**",
+                  );
+                }}
+              >
+                <ModeSectionHead
+                  title="翻译引擎"
+                  enabled={!textUsesLlm}
+                  testing={testing === "text"}
+                  onTest={() => void runTest("text")}
                 />
-              </label>
-              <button
-                type="button"
-                className="settings-test-btn"
-                disabled={form.textTranslateProvider !== "llm"}
-                onClick={() =>
-                  setForm({
-                    ...form,
-                    textTranslatePrompt: DEFAULT_TEXT_PROMPT,
-                  })
+                {testMsg.text && (
+                  <p
+                    className={
+                      testMsg.text.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
+                    }
+                  >
+                    {testMsg.text.message}
+                  </p>
+                )}
+                <p className="hint">
+                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
+                </p>
+                <div className="settings-field">
+                  <span className="settings-field-label">选择引擎</span>
+                  <div className="settings-engine-row">
+                    <StatusSelect
+                      className="settings-engine-status-select"
+                      value={
+                        form.textTranslateProvider !== "llm"
+                          ? form.textTranslateProvider
+                          : textClassicProvider
+                      }
+                      groups={[
+                        {
+                          label: "翻译引擎（可用优先）",
+                          options: textClassicEngines.map((p) => {
+                            const meta = engineStatusMeta(engineKeys, p.id);
+                            return {
+                              value: p.id,
+                              title: p.label,
+                              status: meta.status,
+                              statusText: meta.statusText,
+                            };
+                          }),
+                        },
+                      ]}
+                      onChange={(id) => {
+                        const nextId = id as TranslateProvider;
+                        setTextClassicProvider(nextId);
+                        const next = { ...form, textTranslateProvider: nextId };
+                        formRef.current = next;
+                        setForm(next);
+                        autoSaveTab(next);
+                      }}
+                    />
+                    {selectedTextEngine && (
+                      <p className="engine-hint settings-engine-side-hint">
+                        {selectedTextEngine.hint}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </ModePanel>
+
+              <ModePanel
+                enabled={textUsesLlm}
+                onSelect={() =>
+                  commitForm(
+                    { ...form, textTranslateProvider: "llm" },
+                    true,
+                    "**文本翻译** 翻译方式已切换为 **大模型**",
+                  )
                 }
               >
-                恢复默认提示词
-              </button>
-              {form.textTranslateProvider !== "llm" && (
-                <p className="hint">提示词仅在引擎为「大模型」时生效。</p>
-              )}
+                <ModeSectionHead
+                  title="大模型翻译"
+                  enabled={textUsesLlm}
+                  testing={testing === "textLlm"}
+                  onTest={() => void runTest("textLlm")}
+                />
+                {testMsg.textLlm && (
+                  <p
+                    className={
+                      testMsg.textLlm.ok
+                        ? "settings-test-ok"
+                        : "settings-test-fail"
+                    }
+                  >
+                    {testMsg.textLlm.message}
+                  </p>
+                )}
+                <p className="hint">
+                  使用「通用」中已配置的模型凭证，可单独选择文本翻译所用模型。各场景提示词请在下方「翻译提示词」中配置。
+                </p>
+                <FeatureModelSelect
+                  value={form.textTranslateModel || form.model}
+                  customModels={customModels}
+                  isConfigured={modelConfigured}
+                  onChange={(model) => {
+                    const next = {
+                      ...form,
+                      textTranslateModel: model,
+                      textTranslateProvider: "llm" as const,
+                    };
+                    formRef.current = next;
+                    setForm(next);
+                    autoSaveTab(next);
+                  }}
+                />
+              </ModePanel>
+              </div>
+            </section>
+
+            <section className="settings-card">
+              <h2>翻译提示词</h2>
+              <p className="hint">
+                按导入场景分别配置系统提示词。新建工程时会写入对应场景；字幕开启「重组时间轴」后使用重组专用提示词。
+              </p>
+              {(() => {
+                const promptItems = [
+                  {
+                    id: "plain" as const,
+                    key: "textTranslatePrompt" as const,
+                    title: "纯文本",
+                    hint: "用于 .txt 等普通文本分段翻译。",
+                    fallback: DEFAULT_TEXT_PROMPT,
+                  },
+                  {
+                    id: "mtool" as const,
+                    key: "textPromptMtool" as const,
+                    title: "MTool",
+                    hint: "用于 JSON 字串表；请强调占位符与转义符原样保留。",
+                    fallback: DEFAULT_MTOOL_PROMPT,
+                  },
+                  {
+                    id: "subtitle" as const,
+                    key: "textPromptSubtitle" as const,
+                    title: "字幕（不重组）",
+                    hint: "用于 SRT/ASS 按原时间轴翻译（可能含 ASR 碎句/多行并译）。",
+                    fallback: DEFAULT_SUBTITLE_PROMPT,
+                  },
+                  {
+                    id: "subtitleRetime" as const,
+                    key: "textPromptSubtitleRetime" as const,
+                    title: "字幕（重组后）",
+                    hint: "用于已完成时间轴重组、每行已是完整句子后的字幕翻译。",
+                    fallback: DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
+                  },
+                ];
+                const active =
+                  promptItems.find((item) => item.id === promptTab) ||
+                  promptItems[0];
+                return (
+                  <>
+                    <div className="settings-subtabs" role="tablist">
+                      {promptItems.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={promptTab === item.id}
+                          className={
+                            "settings-subtab" +
+                            (promptTab === item.id ? " active" : "")
+                          }
+                          onClick={() => setPromptTab(item.id)}
+                        >
+                          {item.title}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="settings-subtab-panel" role="tabpanel">
+                      <div className="settings-subtab-panel-head">
+                        <p className="hint">{active.hint}</p>
+                        <button
+                          type="button"
+                          className="settings-test-btn"
+                          onClick={() =>
+                            commitForm({
+                              ...form,
+                              [active.key]: active.fallback,
+                            })
+                          }
+                        >
+                          恢复默认
+                        </button>
+                      </div>
+                      <textarea
+                        className="settings-prompt"
+                        rows={7}
+                        value={form[active.key]}
+                        onChange={(e) => {
+                          const next = {
+                            ...form,
+                            [active.key]: e.target.value,
+                          };
+                          formRef.current = next;
+                          setForm(next);
+                        }}
+                      />
+                    </div>
+                  </>
+                );
+              })()}
             </section>
 
             <ReplaceTable
@@ -2352,50 +3411,69 @@ export function SettingsView({ settings, onSave }: Props) {
               hint="翻译时注入大模型提示，保证专有名词一致。"
               showInfo
               rows={glossaryRows}
-              onChange={(rows) =>
-                setForm({
+              onChange={(rows) => {
+                const next = {
                   ...form,
                   textGlossary: stringifyRules(
                     rows.filter((r) => r.src.trim() || r.dst.trim()),
                   ),
-                })
-              }
+                };
+                formRef.current = next;
+                setForm(next);
+                if (rows.length !== glossaryRows.length) autoSaveTab(next);
+              }}
             />
             <ReplaceTable
               title="译前替换"
               hint="翻译前对原文做精确替换（按词长优先）。"
               rows={preRows}
-              onChange={(rows) =>
-                setForm({
+              onChange={(rows) => {
+                const next = {
                   ...form,
                   textPreReplace: stringifyRules(
                     rows.filter((r) => r.src.trim() || r.dst.trim()),
                   ),
-                })
-              }
+                };
+                formRef.current = next;
+                setForm(next);
+                if (rows.length !== preRows.length) autoSaveTab(next);
+              }}
             />
             <ReplaceTable
               title="译后替换"
               hint="翻译完成后对译文做精确替换。"
               rows={postRows}
-              onChange={(rows) =>
-                setForm({
+              onChange={(rows) => {
+                const next = {
                   ...form,
                   textPostReplace: stringifyRules(
                     rows.filter((r) => r.src.trim() || r.dst.trim()),
                   ),
-                })
-              }
+                };
+                formRef.current = next;
+                setForm(next);
+                if (rows.length !== postRows.length) autoSaveTab(next);
+              }}
             />
           </>
         )}
       </div>
 
-      <div className="settings-save-row">
-        <button className="save-btn" onClick={() => void save()}>
-          保存
+      <div className="settings-save-bar">
+        <div className="settings-save-bar-text">
+          <strong>保存当前页</strong>
+          <span>
+            仅保存「{TAB_LABELS[tab]}」；下拉即时保存，输入框失焦后自动保存。
+          </span>
+        </div>
+        <button
+          type="button"
+          className="settings-save-current"
+          disabled={saving}
+          onClick={() => void saveCurrentPage()}
+        >
+          {saving ? "保存中…" : `保存「${TAB_LABELS[tab]}」设置`}
         </button>
-        {saveMsg && <span className="settings-saved">{saveMsg}</span>}
       </div>
     </div>
   );

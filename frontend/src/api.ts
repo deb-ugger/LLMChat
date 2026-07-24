@@ -43,6 +43,8 @@ export type Settings = {
   translateProvider: TranslateProvider;
   translateSource: string;
   translateTarget: string;
+  /** LLM model for literature when provider=llm; empty falls back to model */
+  translateModel: string;
   /** Max chars per translate request; 0 = use engine default */
   translateMaxLength: number;
   /** When over limit: auto split+join (only for length-limited engines) */
@@ -54,13 +56,24 @@ export type Settings = {
   ocrTranslateProvider: TranslateProvider;
   ocrTranslateSource: string;
   ocrTranslateTarget: string;
+  /** LLM model for OCR when provider=llm; empty falls back to model */
+  ocrTranslateModel: string;
   ocrTranslateMaxLength: number;
   ocrTranslateAutoChunk: boolean;
   /** Text-translate workbench */
   textTranslateSource: string;
   textTranslateTarget: string;
   textTranslateProvider: TranslateProvider;
+  /** LLM model for text when provider=llm; empty falls back to model */
+  textTranslateModel: string;
+  /** Plain-text scenario system prompt */
   textTranslatePrompt: string;
+  /** MTool / JSON string-table prompt */
+  textPromptMtool: string;
+  /** Subtitle translate without timeline retime */
+  textPromptSubtitle: string;
+  /** Subtitle translate after (or with) timeline retime */
+  textPromptSubtitleRetime: string;
   /** JSON string: [{src,dst,info?}] */
   textGlossary: string;
   /** JSON string: [{src,dst}] */
@@ -203,6 +216,11 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  revealPath: (path: string) =>
+    request<{ ok: boolean }>("/api/reveal-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   exportFileToPath: (body: { path: string; content: string }) =>
     request<{ ok: boolean; path: string }>("/api/export-file", {
       method: "POST",

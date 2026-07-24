@@ -137,3 +137,29 @@ export function resolveModelApi(
     apiKey: "",
   };
 }
+
+/** Resolve LLM credentials for a feature model (falls back to chat model). */
+export function resolveFeatureLlm(
+  settings: {
+    model: string;
+    apiUrl: string;
+    apiKey: string;
+  },
+  featureModel: string | undefined,
+  profiles?: Record<string, ModelProfile>,
+): { model: string; apiUrl: string; apiKey: string } {
+  const model = (featureModel || "").trim() || settings.model;
+  if (model === settings.model) {
+    return {
+      model,
+      apiUrl: settings.apiUrl,
+      apiKey: settings.apiKey,
+    };
+  }
+  const map = {
+    ...(profiles || loadModelProfiles()),
+    [settings.model]: { apiUrl: settings.apiUrl, apiKey: settings.apiKey },
+  };
+  const resolved = resolveModelApi(model, map);
+  return { model, apiUrl: resolved.apiUrl, apiKey: resolved.apiKey };
+}

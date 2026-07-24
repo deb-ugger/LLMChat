@@ -12,7 +12,13 @@ import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TextTranslateView } from "./components/TextTranslateView";
 import { toFriendlyError } from "./friendlyError";
-import { DEFAULT_TEXT_PROMPT } from "./textTranslate";
+import {
+  DEFAULT_MTOOL_PROMPT,
+  DEFAULT_SUBTITLE_PROMPT,
+  DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
+  DEFAULT_TEXT_PROMPT,
+} from "./textTranslate";
+import { resolveFeatureLlm } from "./modelPresets";
 
 type Page = "chat" | "literature" | "image" | "text" | "settings";
 
@@ -26,6 +32,7 @@ const defaultSettings: Settings = {
   translateProvider: "bing",
   translateSource: "en",
   translateTarget: "zh-CN",
+  translateModel: "",
   translateMaxLength: 0,
   translateAutoChunk: true,
   ocrLang: "eng",
@@ -33,12 +40,17 @@ const defaultSettings: Settings = {
   ocrTranslateProvider: "bing",
   ocrTranslateSource: "en",
   ocrTranslateTarget: "zh-CN",
+  ocrTranslateModel: "",
   ocrTranslateMaxLength: 0,
   ocrTranslateAutoChunk: true,
   textTranslateSource: "en",
   textTranslateTarget: "zh-CN",
   textTranslateProvider: "llm",
+  textTranslateModel: "",
   textTranslatePrompt: DEFAULT_TEXT_PROMPT,
+  textPromptMtool: DEFAULT_MTOOL_PROMPT,
+  textPromptSubtitle: DEFAULT_SUBTITLE_PROMPT,
+  textPromptSubtitleRetime: DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
   textGlossary: "[]",
   textPreReplace: "[]",
   textPostReplace: "[]",
@@ -129,6 +141,7 @@ export default function App() {
             })(),
             translateSource: s.translateSource || "en",
             translateTarget: s.translateTarget || "zh-CN",
+            translateModel: String(s.translateModel || s.model || ""),
             translateMaxLength: s.translateMaxLength ?? 0,
             translateAutoChunk: s.translateAutoChunk ?? true,
             ocrLang: s.ocrLang || "eng",
@@ -149,6 +162,7 @@ export default function App() {
               return "en";
             })(),
             ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
+            ocrTranslateModel: String(s.ocrTranslateModel || s.model || ""),
             ocrTranslateMaxLength: s.ocrTranslateMaxLength ?? 0,
             ocrTranslateAutoChunk: s.ocrTranslateAutoChunk ?? true,
             textTranslateSource: s.textTranslateSource || "en",
@@ -159,8 +173,15 @@ export default function App() {
               if (p === "blind") return "bing";
               return p as Settings["textTranslateProvider"];
             })(),
+            textTranslateModel: String(s.textTranslateModel || s.model || ""),
             textTranslatePrompt:
               s.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
+            textPromptMtool: s.textPromptMtool || DEFAULT_MTOOL_PROMPT,
+            textPromptSubtitle:
+              s.textPromptSubtitle || DEFAULT_SUBTITLE_PROMPT,
+            textPromptSubtitleRetime:
+              s.textPromptSubtitleRetime ||
+              DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
             textGlossary: s.textGlossary || "[]",
             textPreReplace: s.textPreReplace || "[]",
             textPostReplace: s.textPostReplace || "[]",
@@ -198,6 +219,15 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  const litLlm = useMemo(
+    () => resolveFeatureLlm(settings, settings.translateModel),
+    [settings],
+  );
+  const ocrLlm = useMemo(
+    () => resolveFeatureLlm(settings, settings.ocrTranslateModel),
+    [settings],
+  );
 
   const visibleMessages = useMemo(() => {
     if (!current) return [];
@@ -362,7 +392,7 @@ export default function App() {
               d="M6 3h9a3 3 0 0 1 3 3v14.5a.5.5 0 0 1-.8.4L14 18.2l-3.2 2.7a.5.5 0 0 1-.8-.4V6a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v12H3V6a3 3 0 0 1 3-3zm10 2h-1v12.6l1.5-1.2a1 1 0 0 1 1.2 0l1.3 1V6a1 1 0 0 0-1-1z"
             />
           </svg>
-          <span>文献</span>
+          <span>文献翻译</span>
         </button>
         <button
           className={page === "image" ? "nav-item active" : "nav-item"}
@@ -375,12 +405,12 @@ export default function App() {
               d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v8.5l3.5-3.5 2.5 2.5 4-4L19 14V6H5zm3.5 2.5A1.5 1.5 0 1 1 8.5 11a1.5 1.5 0 0 1 0-3z"
             />
           </svg>
-          <span>图片</span>
+          <span>图片文字识别</span>
         </button>
         <button
           className={page === "text" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("text")}
-          title="文本翻译"
+          title="文本翻译工程"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
             <path
@@ -388,7 +418,7 @@ export default function App() {
               d="M4 5h9v2H4V5zm0 4h16v2H4V9zm0 4h11v2H4v-2zm0 4h16v2H4v-2zm14.5-12.5L20 6l-1.5 1.5L17 6l1.5-1.5zM17 11.5 18.5 13 17 14.5 15.5 13 17 11.5z"
             />
           </svg>
-          <span>文本</span>
+          <span>文本翻译工程</span>
         </button>
         <button
           className={page === "settings" ? "nav-item active" : "nav-item"}
@@ -446,9 +476,9 @@ export default function App() {
             translateTarget={settings.translateTarget}
             translateMaxLength={settings.translateMaxLength}
             translateAutoChunk={settings.translateAutoChunk}
-            model={settings.model}
-            apiUrl={settings.apiUrl}
-            apiKey={settings.apiKey}
+            model={litLlm.model}
+            apiUrl={litLlm.apiUrl}
+            apiKey={litLlm.apiKey}
             onOpenImageOcr={openImageOcr}
           />
         </div>
@@ -466,7 +496,9 @@ export default function App() {
             translateTarget={settings.ocrTranslateTarget}
             translateMaxLength={settings.ocrTranslateMaxLength}
             translateAutoChunk={settings.ocrTranslateAutoChunk}
-            model={settings.model}
+            model={ocrLlm.model}
+            apiUrl={ocrLlm.apiUrl}
+            apiKey={ocrLlm.apiKey}
             incomingImage={ocrIncoming}
             onIncomingHandled={() => setOcrIncoming(null)}
           />

@@ -34,6 +34,8 @@ type Props = {
   translateMaxLength: number;
   translateAutoChunk: boolean;
   model?: string;
+  apiUrl?: string;
+  apiKey?: string;
   /** External image to OCR (e.g. from PDF context menu). */
   incomingImage?: { file: File; id: number } | null;
   onIncomingHandled?: () => void;
@@ -308,6 +310,8 @@ export function ImageOcrView({
   translateMaxLength,
   translateAutoChunk,
   model = "",
+  apiUrl = "",
+  apiKey = "",
   incomingImage = null,
   onIncomingHandled,
 }: Props) {
@@ -476,8 +480,14 @@ export function ImageOcrView({
       provider: translateProvider,
       maxLength: translateMaxLength,
       autoChunk: translateAutoChunk,
+      ...(translateProvider === "llm"
+        ? { apiUrl, apiKey, model }
+        : {}),
     }),
     [
+      apiKey,
+      apiUrl,
+      model,
       translateAutoChunk,
       translateMaxLength,
       translateProvider,

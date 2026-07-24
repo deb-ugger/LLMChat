@@ -57,6 +57,7 @@ fn stop_backend(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(BackendChild(Mutex::new(None)))
         .setup(|app| {
             if let Err(err) = start_backend(app.handle()) {

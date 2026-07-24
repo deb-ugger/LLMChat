@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, type Settings } from "../api";
+import { api, type Settings, type TextProjectListItem } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import {
   assTextLooksEmpty,
@@ -16,27 +16,31 @@ import {
   type SubtitleCueGroup,
 } from "../subtitleGroups";
 import { retimeProjectSubtitles, type RetimeStepEvent } from "../subtitleRetime";
+import { resolveFeatureLlm } from "../modelPresets";
 import {
   addTokens,
   createProject,
+  defaultProjectName,
   emptyTokenStats,
   isProjectFileName,
   isSupportedSourceFileName,
   parseProject,
   PROJECT_EXT,
   serializeProject,
+  stripProjectExt,
   type TextProject,
 } from "../transProject";
 import {
   applyReplaceRules,
   classifyEntryStatus,
-  DEFAULT_SUBTITLE_PROMPT,
   DEFAULT_TEXT_PROMPT,
   entriesToManualTransJson,
   formatDuration,
   isNoNeedTranslate,
   parseJsonArray,
   parseManualTransFile,
+  promptForScenario,
+  resolveTextPromptScenario,
   shouldSkipEntry,
   splitTextChunks,
   type GlossaryEntry,
@@ -56,6 +60,7 @@ type Phase = "home" | "workbench";
 type RecentItem = {
   name: string;
   folder: string;
+  folderPath?: string;
   openedAt: number;
 };
 
@@ -85,10 +90,25 @@ function loadRecent(): RecentItem[] {
 }
 
 function pushRecent(item: RecentItem) {
+  const prev = loadRecent();
+  const existing = prev.find((r) => r.folder === item.folder);
   const next = [
-    item,
-    ...loadRecent().filter((r) => r.folder !== item.folder),
+    {
+      ...item,
+      folderPath: item.folderPath || existing?.folderPath,
+    },
+    ...prev.filter((r) => r.folder !== item.folder),
   ].slice(0, 12);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+function removeRecent(folder: string) {
+  const next = loadRecent().filter((r) => r.folder !== folder);
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(next));
   } catch {
@@ -205,10 +225,6 @@ function exportFileName(
   return `${stem}.${langFileTag(p.targetLang)}.${ext}`;
 }
 
-function baseName(name: string) {
-  return name.replace(/\.[^.]+$/i, "");
-}
-
 const STATUS_COLORS = {
   成功: "#91cc75",
   失败: "#ee6666",
@@ -217,6 +233,10 @@ const STATUS_COLORS = {
 } as const;
 
 export function TextTranslateView({ settings }: Props) {
+  const textLlm = useMemo(
+    () => resolveFeatureLlm(settings, settings.textTranslateModel),
+    [settings],
+  );
   const [phase, setPhase] = useState<Phase>("home");
   const [project, setProject] = useState<TextProject | null>(null);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
@@ -239,6 +259,17 @@ export function TextTranslateView({ settings }: Props) {
   const [dragOver, setDragOver] = useState<"new" | "open" | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [entriesPanelOpen, setEntriesPanelOpen] = useState(false);
+  const [recentMenu, setRecentMenu] = useState<{
+    item: RecentItem;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [projectListOpen, setProjectListOpen] = useState(false);
+  const [projectListRoot, setProjectListRoot] = useState("");
+  const [projectListItems, setProjectListItems] = useState<
+    TextProjectListItem[]
+  >([]);
+  const [projectListBusy, setProjectListBusy] = useState(false);
   const pipelineActiveRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const genRef = useRef(0);
@@ -390,7 +421,7 @@ export function TextTranslateView({ settings }: Props) {
       const next: TextProject = {
         ...base,
         prompt: promptDraftRef.current,
-        model: settings.model || base.model,
+        model: textLlm.model || base.model,
         elapsedMs: nextElapsed,
         entries,
         folder: base.folder || projectFolderRef.current || undefined,
@@ -415,7 +446,7 @@ export function TextTranslateView({ settings }: Props) {
         return next;
       }
     },
-    [settings.model],
+    [textLlm.model],
   );
 
   const stop = useCallback(
@@ -582,13 +613,14 @@ export function TextTranslateView({ settings }: Props) {
         (meta?.folderPath ? ` · ${meta.folderPath}` : ""),
     );
     if (folder) {
-      setRecent(
-        pushRecent({
-          name: p.name,
-          folder,
-          openedAt: Date.now(),
-        }),
-      );
+    setRecent(
+      pushRecent({
+        name: p.name,
+        folder,
+        folderPath: meta?.folderPath,
+        openedAt: Date.now(),
+      }),
+    );
     }
   };
 
@@ -623,6 +655,7 @@ export function TextTranslateView({ settings }: Props) {
       pushRecent({
         name: p.name,
         folder: saved.folder,
+        folderPath: saved.folderPath,
         openedAt: Date.now(),
       }),
     );
@@ -632,6 +665,7 @@ export function TextTranslateView({ settings }: Props) {
   const openRecentProject = async (item: RecentItem) => {
     try {
       setError(null);
+      setRecentMenu(null);
       const data = await api.loadTextProject({ folder: item.folder });
       const p = parseProject(JSON.stringify(data.project));
       openWorkbench(p, {
@@ -640,13 +674,63 @@ export function TextTranslateView({ settings }: Props) {
       });
     } catch (e) {
       setError(toFriendlyError(e, "打开最近工程失败（可能已删除）"));
-      const next = loadRecent().filter((r) => r.folder !== item.folder);
-      setRecent(next);
-      try {
-        localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
+      setRecent(removeRecent(item.folder));
+    }
+  };
+
+  const revealRecentFolder = async (item: RecentItem) => {
+    setRecentMenu(null);
+    try {
+      let path = item.folderPath;
+      if (!path) {
+        const data = await api.loadTextProject({ folder: item.folder });
+        path = data.folderPath;
+        setRecent(
+          pushRecent({
+            name: item.name,
+            folder: item.folder,
+            folderPath: data.folderPath,
+            openedAt: item.openedAt,
+          }),
+        );
       }
+      await api.revealPath(path);
+    } catch (e) {
+      setError(toFriendlyError(e, "无法打开工程文件夹"));
+    }
+  };
+
+  const openProjectList = async () => {
+    setProjectListBusy(true);
+    setError(null);
+    try {
+      const data = await api.listTextProjects();
+      setProjectListRoot(data.root || "");
+      setProjectListItems(
+        [...(data.items || [])].sort((a, b) =>
+          (b.updatedAt || "").localeCompare(a.updatedAt || ""),
+        ),
+      );
+      setProjectListOpen(true);
+    } catch (e) {
+      setError(toFriendlyError(e, "加载工程列表失败"));
+    } finally {
+      setProjectListBusy(false);
+    }
+  };
+
+  const openListedProject = async (item: TextProjectListItem) => {
+    try {
+      setError(null);
+      const data = await api.loadTextProject({ folder: item.folder });
+      const p = parseProject(JSON.stringify(data.project));
+      setProjectListOpen(false);
+      openWorkbench(p, {
+        folder: data.folder,
+        folderPath: data.folderPath,
+      });
+    } catch (e) {
+      setError(toFriendlyError(e, "打开工程失败"));
     }
   };
 
@@ -692,17 +776,16 @@ export function TextTranslateView({ settings }: Props) {
     const lower = file.name.toLowerCase();
     const sourceLang = settings.textTranslateSource || "ja";
     const targetLang = settings.textTranslateTarget || "zh-CN";
-    const model = settings.model || "";
-    const name = baseName(
-      isProjectFileName(file.name)
-        ? file.name.replace(/\.llmchat-proj\.json$/i, "")
-        : file.name,
-    );
+    const model = textLlm.model || "";
+    const projectName = defaultProjectName();
+    const name = isProjectFileName(file.name)
+      ? stripProjectExt(file.name) || projectName
+      : projectName;
 
     if (side === "open" || isProjectFileName(file.name)) {
       const p = parseProject(text);
       const saved = await persistProject(p, {
-        folder: p.folder || name,
+        folder: p.folder || stripProjectExt(file.name) || name,
         overwrite: true,
       });
       openWorkbench(
@@ -730,7 +813,7 @@ export function TextTranslateView({ settings }: Props) {
         sourceLang,
         targetLang,
         model,
-        prompt: settings.textTranslatePrompt || DEFAULT_SUBTITLE_PROMPT,
+        prompt: promptForScenario(settings, "subtitle"),
         glossary: glossaryFromSettings,
         preReplace: preFromSettings,
         postReplace: postFromSettings,
@@ -757,7 +840,7 @@ export function TextTranslateView({ settings }: Props) {
         sourceLang,
         targetLang,
         model,
-        prompt: settings.textTranslatePrompt || DEFAULT_SUBTITLE_PROMPT,
+        prompt: promptForScenario(settings, "subtitle"),
         glossary: glossaryFromSettings,
         preReplace: preFromSettings,
         postReplace: postFromSettings,
@@ -773,7 +856,7 @@ export function TextTranslateView({ settings }: Props) {
         sourceLang,
         targetLang,
         model,
-        prompt: settings.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
+        prompt: promptForScenario(settings, "mtool"),
         glossary: glossaryFromSettings,
         preReplace: preFromSettings,
         postReplace: postFromSettings,
@@ -804,7 +887,7 @@ export function TextTranslateView({ settings }: Props) {
         sourceLang,
         targetLang,
         model,
-        prompt: settings.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
+        prompt: promptForScenario(settings, "plain"),
         glossary: glossaryFromSettings,
         preReplace: preFromSettings,
         postReplace: postFromSettings,
@@ -842,7 +925,7 @@ export function TextTranslateView({ settings }: Props) {
         const next = {
           ...project,
           prompt: promptDraft,
-          model: settings.model || project.model,
+          model: textLlm.model || project.model,
           elapsedMs,
         };
         const saved = await persistProject(next, {
@@ -1273,9 +1356,9 @@ export function TextTranslateView({ settings }: Props) {
             target: active.targetLang,
             ...(provider === "llm"
               ? {
-                  apiUrl: settings.apiUrl,
-                  apiKey: settings.apiKey,
-                  model: settings.model || active.model,
+                  apiUrl: textLlm.apiUrl,
+                  apiKey: textLlm.apiKey,
+                  model: textLlm.model || active.model,
                   prompt: callPrompt,
                   glossary: JSON.stringify(glossary),
                 }
@@ -1495,10 +1578,24 @@ export function TextTranslateView({ settings }: Props) {
       input.accept =
         side === "new"
           ? ".json,.txt,.md,.srt,.ass,.ssa,text/plain,application/json"
-          : `.llmchat-proj.json,${PROJECT_EXT}`;
+          : PROJECT_EXT;
       input.click();
     }
   };
+
+  useEffect(() => {
+    if (!recentMenu) return;
+    const close = () => setRecentMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [recentMenu]);
 
   if (phase === "home") {
     return (
@@ -1529,7 +1626,7 @@ export function TextTranslateView({ settings }: Props) {
               <div>
                 <h2>新建工程</h2>
                 <p>
-                  从源文件创建工程，自动保存到设置中的工程目录（每个工程一个文件夹）
+                  从源文件创建工程；默认工程名为「project - 日期 - 时间」，自动保存到设置中的工程文件夹
                 </p>
               </div>
             </header>
@@ -1628,7 +1725,16 @@ export function TextTranslateView({ settings }: Props) {
                     type="button"
                     className="text-recent-item"
                     onClick={() => void openRecentProject(r)}
-                    title={r.folder}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setRecentMenu({
+                        item: r,
+                        x: e.clientX,
+                        y: e.clientY,
+                      });
+                    }}
+                    title={r.folderPath || r.folder}
                   >
                     <span className="text-recent-name">{r.name}</span>
                     <span className="text-recent-meta">
@@ -1641,6 +1747,14 @@ export function TextTranslateView({ settings }: Props) {
             <div className="text-home-actions">
               <button
                 type="button"
+                className="settings-test-btn"
+                disabled={projectListBusy}
+                onClick={() => void openProjectList()}
+              >
+                {projectListBusy ? "加载中…" : "打开工程列表"}
+              </button>
+              <button
+                type="button"
                 className="send-btn"
                 disabled={!pendingFile || pendingSide !== "open"}
                 onClick={() => void onConfirmFile()}
@@ -1650,6 +1764,84 @@ export function TextTranslateView({ settings }: Props) {
             </div>
           </section>
         </div>
+        {recentMenu && (
+          <div
+            className="conv-context-menu"
+            style={{ left: recentMenu.x, top: recentMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="conv-context-item"
+              onClick={() => void revealRecentFolder(recentMenu.item)}
+            >
+              从文件夹打开
+            </button>
+            <button
+              type="button"
+              className="conv-context-item danger"
+              onClick={() => {
+                setRecent(removeRecent(recentMenu.item.folder));
+                setRecentMenu(null);
+              }}
+            >
+              从列表中移除
+            </button>
+          </div>
+        )}
+        {projectListOpen && (
+          <div
+            className="text-project-list-overlay"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setProjectListOpen(false)}
+          >
+            <div
+              className="text-project-list-panel"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="text-project-list-head">
+                <div>
+                  <h3>工程列表</h3>
+                  <p className="hint">
+                    工程文件夹：{projectListRoot || "（未配置）"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="settings-test-btn"
+                  onClick={() => setProjectListOpen(false)}
+                >
+                  关闭
+                </button>
+              </header>
+              <ul className="text-project-list">
+                {projectListItems.length === 0 ? (
+                  <li className="text-recent-empty">该目录下暂无工程</li>
+                ) : (
+                  projectListItems.map((item) => (
+                    <li key={item.folder}>
+                      <button
+                        type="button"
+                        className="text-recent-item"
+                        onClick={() => void openListedProject(item)}
+                        title={item.folderPath}
+                      >
+                        <span className="text-recent-name">{item.name}</span>
+                        <span className="text-recent-meta">
+                          {item.folder}
+                          {item.updatedAt
+                            ? ` · ${new Date(item.updatedAt).toLocaleString()}`
+                            : ""}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1782,7 +1974,7 @@ export function TextTranslateView({ settings }: Props) {
           {project.format.toUpperCase()} · {project.sourceLang} →{" "}
           {project.targetLang} ·{" "}
           {settings.textTranslateProvider === "llm"
-            ? settings.model || project.model
+            ? textLlm.model || project.model
             : settings.textTranslateProvider}
           {projectFolderPath
             ? ` · ${projectFolderPath}`
@@ -1800,13 +1992,13 @@ export function TextTranslateView({ settings }: Props) {
             <button
               type="button"
               className="settings-test-btn"
-              onClick={() =>
-                setPromptDraft(
-                  project.format === "srt" || project.format === "ass"
-                    ? DEFAULT_SUBTITLE_PROMPT
-                    : DEFAULT_TEXT_PROMPT,
-                )
-              }
+              onClick={() => {
+                const scenario = resolveTextPromptScenario(project.format, {
+                  subtitleRetiming: project.subtitleRetiming,
+                  subtitleRetimed: project.subtitleRetimed,
+                });
+                setPromptDraft(promptForScenario(settings, scenario));
+              }}
             >
               恢复默认
             </button>
@@ -1899,10 +2091,16 @@ export function TextTranslateView({ settings }: Props) {
                 disabled={busy}
                 onChange={(e) => {
                   const on = e.target.checked;
+                  const nextPrompt = promptForScenario(
+                    settings,
+                    on ? "subtitleRetime" : "subtitle",
+                  );
                   patchProject((p) => ({
                     ...p,
                     subtitleRetiming: on,
+                    prompt: nextPrompt,
                   }));
+                  setPromptDraft(nextPrompt);
                 }}
               />
               <span className="text-switch-label">

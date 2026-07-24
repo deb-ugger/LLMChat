@@ -8,6 +8,7 @@ import {
 import type { TextProject } from "./transProject";
 import { emptyTokenStats } from "./transProject";
 import { api, type Settings } from "./api";
+import { resolveFeatureLlm } from "./modelPresets";
 
 const GAP_MERGE_MS = 800;
 const MAX_CUES_PER_WINDOW = 12;
@@ -259,13 +260,14 @@ async function llmSplitSentences(
   }
   const lang =
     opts.sourceLang || opts.settings.textTranslateSource || "en";
+  const llm = resolveFeatureLlm(opts.settings, opts.settings.textTranslateModel);
   const res = await api.translate(joined, { signal: opts.signal }, {
     provider: "llm",
     source: lang,
     target: lang,
-    apiUrl: opts.settings.apiUrl,
-    apiKey: opts.settings.apiKey,
-    model: opts.settings.model,
+    apiUrl: llm.apiUrl,
+    apiKey: llm.apiKey,
+    model: llm.model,
     prompt: SUBTITLE_RETIME_PROMPT,
     glossary: "[]",
   });

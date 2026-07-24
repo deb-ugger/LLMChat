@@ -11,7 +11,9 @@ let sectionResults: {
   lit?: SessionTestResult;
   litLlm?: SessionTestResult;
   ocr?: SessionTestResult;
+  ocrLlm?: SessionTestResult;
   text?: SessionTestResult;
+  textLlm?: SessionTestResult;
 } = {};
 
 export function readCardTestResults(): Record<string, SessionTestResult> {

@@ -15,6 +15,9 @@ struct AppConfig {
     std::string translateProvider = "bing"; // google|bing|mymemory|...|llm
     std::string translateSource = "en";
     std::string translateTarget = "zh-CN";
+    /** LLM model id for literature translate when provider=llm; empty = use model */
+    std::string translateModel;
+    /** Max chars per translate request; 0 = use engine default */
     int translateMaxLength = 0;      // 0 = engine default
     bool translateAutoChunk = true;  // split long text when limited
     std::string ocrLang = "eng";
@@ -22,15 +25,42 @@ struct AppConfig {
     std::string ocrTranslateProvider = "bing";
     std::string ocrTranslateSource = "en";
     std::string ocrTranslateTarget = "zh-CN";
+    /** LLM model id for OCR translate when provider=llm; empty = use model */
+    std::string ocrTranslateModel;
     int ocrTranslateMaxLength = 0;
     bool ocrTranslateAutoChunk = true;
     /** Text-translate workbench (LLM) */
     std::string textTranslateSource = "en";
     std::string textTranslateTarget = "zh-CN";
     std::string textTranslateProvider = "llm"; // google|bing|...|llm
+    /** LLM model id for text translate when provider=llm; empty = use model */
+    std::string textTranslateModel;
     std::string textTranslatePrompt =
-        "You are a precise bilingual translator. Translate the user text faithfully. "
-        "Output only the translation with no quotes, notes, or explanations.";
+        "You are a precise bilingual translator for general prose. "
+        "Translate the user text faithfully into the target language. "
+        "Preserve meaning, tone, paragraph breaks, and markdown/code fences when present. "
+        "Do not add explanations, notes, or quotation marks around the whole result. "
+        "Output only the translation.";
+    std::string textPromptMtool =
+        "You are a game and UI localization translator for MTool-style JSON string tables. "
+        "Each user message is ONE source string (may be UI label, item name, or short dialogue). "
+        "Translate into the target language naturally and concisely. "
+        "STRICTLY preserve placeholders and control tokens exactly as written, including: "
+        "{0}/{1}/..., %s/%d/%f, %%, \\n, \\t, tags, and similar markup. "
+        "Do not invent extra lines or merge multiple entries. "
+        "Output only the translated string.";
+    std::string textPromptSubtitle =
+        "You are a professional subtitle translator for on-screen captions. "
+        "The input may be one cue or several consecutive cues of the same utterance. "
+        "Translate dialogue into the target language for reading on screen: natural, concise, and timed-friendly. "
+        "Keep line breaks if present. Do not add speaker names, timestamps, or notes. "
+        "Preserve meaningful punctuation. Output only the translated subtitle text.";
+    std::string textPromptSubtitleRetime =
+        "You are a professional subtitle translator. "
+        "Each input line is already a complete spoken utterance after timeline repair. "
+        "Translate into the target language for on-screen captions: fluent, natural, and similar in length when possible. "
+        "Do not add speaker names, timestamps, or commentary. "
+        "Keep one translated line for one input line. Output only the translation.";
     /** Compact JSON arrays: [{src,dst,info?}] / [{src,dst}] */
     std::string textGlossary = "[]";
     std::string textPreReplace = "[]";

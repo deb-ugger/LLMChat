@@ -3,7 +3,7 @@ import type { AssDocument, SrtCue } from "./subtitle";
 
 export const PROJECT_KIND = "llmchat-text-project";
 export const PROJECT_VERSION = 1;
-export const PROJECT_EXT = ".llmchat-proj.json";
+export const PROJECT_EXT = ".lcproj";
 export const PROJECT_FILENAME = `project${PROJECT_EXT}`;
 
 export type ProjectFormat = "plain" | "json" | "srt" | "ass";
@@ -55,6 +55,19 @@ export type TextProject = {
 
 export function isProjectFileName(name: string): boolean {
   return name.toLowerCase().endsWith(PROJECT_EXT);
+}
+
+export function stripProjectExt(name: string): string {
+  return name.replace(/\.lcproj$/i, "");
+}
+
+/** Default folder/display name: project - YYYY-MM-DD - HH-mm-ss */
+export function defaultProjectName(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `project - ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    ` - ${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`
+  );
 }
 
 export function isSupportedSourceFileName(name: string): boolean {

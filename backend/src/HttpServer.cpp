@@ -9,12 +9,49 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kProjectFileName = "project.llmchat-proj.json";
+constexpr const char* kProjectFileName = "project.lcproj";
+constexpr const char* kProjectFileNameLegacy = "project.llmchat-proj.json";
+
+/** Prefer modern name; rename leftover legacy files in place. */
+fs::path findProjectFile(const fs::path& folder)
+{
+    const fs::path modern = folder / kProjectFileName;
+    const fs::path legacy = folder / kProjectFileNameLegacy;
+    if (fs::exists(modern))
+    {
+        if (fs::exists(legacy))
+        {
+            std::error_code ec;
+            fs::remove(legacy, ec);
+        }
+        return modern;
+    }
+    if (fs::exists(legacy))
+    {
+        std::error_code ec;
+        fs::rename(legacy, modern, ec);
+        if (!ec && fs::exists(modern))
+        {
+            return modern;
+        }
+        // Rename failed (e.g. cross-device); fall back to reading legacy once
+        return legacy;
+    }
+    return {};
+}
 
 void setCors(httplib::Response& res)
 {
@@ -142,6 +179,7 @@ int HttpServer::run()
             {"translateProvider", c.translateProvider},
             {"translateSource", c.translateSource},
             {"translateTarget", c.translateTarget},
+            {"translateModel", c.translateModel},
             {"translateMaxLength", c.translateMaxLength},
             {"translateAutoChunk", c.translateAutoChunk},
             {"ocrLang", c.ocrLang},
@@ -149,12 +187,17 @@ int HttpServer::run()
             {"ocrTranslateProvider", c.ocrTranslateProvider},
             {"ocrTranslateSource", c.ocrTranslateSource},
             {"ocrTranslateTarget", c.ocrTranslateTarget},
+            {"ocrTranslateModel", c.ocrTranslateModel},
             {"ocrTranslateMaxLength", c.ocrTranslateMaxLength},
             {"ocrTranslateAutoChunk", c.ocrTranslateAutoChunk},
             {"textTranslateSource", c.textTranslateSource},
             {"textTranslateTarget", c.textTranslateTarget},
             {"textTranslateProvider", c.textTranslateProvider},
+            {"textTranslateModel", c.textTranslateModel},
             {"textTranslatePrompt", c.textTranslatePrompt},
+            {"textPromptMtool", c.textPromptMtool},
+            {"textPromptSubtitle", c.textPromptSubtitle},
+            {"textPromptSubtitleRetime", c.textPromptSubtitleRetime},
             {"textGlossary", c.textGlossary},
             {"textPreReplace", c.textPreReplace},
             {"textPostReplace", c.textPostReplace},
@@ -207,6 +250,10 @@ int HttpServer::run()
             {
                 c.translateTarget = body["translateTarget"].get<std::string>();
             }
+            if (body.contains("translateModel"))
+            {
+                c.translateModel = body["translateModel"].get<std::string>();
+            }
             if (body.contains("translateMaxLength"))
             {
                 c.translateMaxLength = body["translateMaxLength"].get<int>();
@@ -235,6 +282,10 @@ int HttpServer::run()
             {
                 c.ocrTranslateTarget = body["ocrTranslateTarget"].get<std::string>();
             }
+            if (body.contains("ocrTranslateModel"))
+            {
+                c.ocrTranslateModel = body["ocrTranslateModel"].get<std::string>();
+            }
             if (body.contains("ocrTranslateMaxLength"))
             {
                 c.ocrTranslateMaxLength = body["ocrTranslateMaxLength"].get<int>();
@@ -255,9 +306,25 @@ int HttpServer::run()
             {
                 c.textTranslateProvider = body["textTranslateProvider"].get<std::string>();
             }
+            if (body.contains("textTranslateModel"))
+            {
+                c.textTranslateModel = body["textTranslateModel"].get<std::string>();
+            }
             if (body.contains("textTranslatePrompt"))
             {
                 c.textTranslatePrompt = body["textTranslatePrompt"].get<std::string>();
+            }
+            if (body.contains("textPromptMtool"))
+            {
+                c.textPromptMtool = body["textPromptMtool"].get<std::string>();
+            }
+            if (body.contains("textPromptSubtitle"))
+            {
+                c.textPromptSubtitle = body["textPromptSubtitle"].get<std::string>();
+            }
+            if (body.contains("textPromptSubtitleRetime"))
+            {
+                c.textPromptSubtitleRetime = body["textPromptSubtitleRetime"].get<std::string>();
             }
             if (body.contains("textGlossary"))
             {
@@ -305,8 +372,8 @@ int HttpServer::run()
                 {
                     continue;
                 }
-                const fs::path projectFile = entry.path() / kProjectFileName;
-                if (!fs::exists(projectFile))
+                const fs::path projectFile = findProjectFile(entry.path());
+                if (projectFile.empty())
                 {
                     continue;
                 }
@@ -357,11 +424,31 @@ int HttpServer::run()
             if (req.has_param("folder"))
             {
                 const std::string folder = sanitizeFolderName(req.get_param_value("folder"));
-                projectFile = root / folder / kProjectFileName;
+                projectFile = findProjectFile(root / folder);
             }
             else if (req.has_param("path"))
             {
                 projectFile = fs::path(req.get_param_value("path"));
+                // Migrate legacy filename if a path still points at it
+                if (projectFile.filename() == kProjectFileNameLegacy)
+                {
+                    const fs::path modern = projectFile.parent_path() / kProjectFileName;
+                    if (!fs::exists(modern) && fs::exists(projectFile))
+                    {
+                        std::error_code ec;
+                        fs::rename(projectFile, modern, ec);
+                        if (!ec)
+                        {
+                            projectFile = modern;
+                        }
+                    }
+                    else if (fs::exists(modern))
+                    {
+                        std::error_code ec;
+                        fs::remove(projectFile, ec);
+                        projectFile = modern;
+                    }
+                }
             }
             else
             {
@@ -370,7 +457,7 @@ int HttpServer::run()
                 return;
             }
 
-            if (!fs::exists(projectFile))
+            if (projectFile.empty() || !fs::exists(projectFile))
             {
                 res.status = 404;
                 res.set_content(errorJson("工程文件不存在").dump(), "application/json");
@@ -435,16 +522,14 @@ int HttpServer::run()
             fs::create_directories(root);
             fs::path folderPath = root / folderName;
 
-            // Avoid clobbering another project when creating fresh without folder hint
-            if (!body.value("overwrite", true) && fs::exists(folderPath / kProjectFileName))
+            // Reject duplicate folder when creating fresh without overwrite
+            if (!body.value("overwrite", true) && !findProjectFile(folderPath).empty())
             {
-                int suffix = 2;
-                while (fs::exists(root / (folderName + "-" + std::to_string(suffix)) / kProjectFileName))
-                {
-                    ++suffix;
-                }
-                folderName = folderName + "-" + std::to_string(suffix);
-                folderPath = root / folderName;
+                res.status = 409;
+                res.set_content(
+                    errorJson("工程名称已存在，不能重复，请更换名称后再试").dump(),
+                    "application/json");
+                return;
             }
 
             fs::create_directories(folderPath);
@@ -472,6 +557,54 @@ int HttpServer::run()
                 {"path", projectFile.string()},
                 {"root", root.string()},
             }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/reveal-path", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body);
+            if (!body.contains("path") || !body["path"].is_string())
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 path").dump(), "application/json");
+                return;
+            }
+            const fs::path target(body["path"].get<std::string>());
+            if (!fs::exists(target))
+            {
+                res.status = 404;
+                res.set_content(errorJson("路径不存在").dump(), "application/json");
+                return;
+            }
+            const fs::path openPath = fs::is_directory(target) ? target : target.parent_path();
+#ifdef _WIN32
+            const std::wstring wide = openPath.wstring();
+            const HINSTANCE hi = ShellExecuteW(
+                nullptr,
+                L"explore",
+                wide.c_str(),
+                nullptr,
+                nullptr,
+                SW_SHOWNORMAL);
+            if (reinterpret_cast<intptr_t>(hi) <= 32)
+            {
+                res.status = 500;
+                res.set_content(errorJson("无法打开文件夹").dump(), "application/json");
+                return;
+            }
+#else
+            (void)openPath;
+            res.status = 501;
+            res.set_content(errorJson("当前平台不支持打开文件夹").dump(), "application/json");
+            return;
+#endif
+            res.set_content(json{{"ok", true}}.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {

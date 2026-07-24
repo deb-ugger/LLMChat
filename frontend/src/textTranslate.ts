@@ -18,15 +18,98 @@ export type TransEntry = {
   metaIndex?: number;
 };
 
+/** Plain text / paragraph files */
 export const DEFAULT_TEXT_PROMPT =
-  "You are a precise bilingual translator. Translate the user text faithfully. " +
-  "Keep meaning, tone, and line breaks when present. " +
-  "Output only the translation with no quotes, notes, or explanations.";
+  "You are a precise bilingual translator for general prose. " +
+  "Translate the user text faithfully into the target language. " +
+  "Preserve meaning, tone, paragraph breaks, and markdown/code fences when present. " +
+  "Do not add explanations, notes, or quotation marks around the whole result. " +
+  "Output only the translation.";
 
+/** MTool / JSON string-table localization */
+export const DEFAULT_MTOOL_PROMPT =
+  "You are a game and UI localization translator for MTool-style JSON string tables. " +
+  "Each user message is ONE source string (may be UI label, item name, or short dialogue). " +
+  "Translate into the target language naturally and concisely. " +
+  "STRICTLY preserve placeholders and control tokens exactly as written, including: " +
+  "{0}/{1}/..., %s/%d/%f, %%, \\n, \\t, &lt;tags&gt;, [color]...[/color], and similar markup. " +
+  "Do not invent extra lines or merge multiple entries. " +
+  "Output only the translated string.";
+
+/** Subtitle translate without timeline retime (ASR fragments / cue groups) */
 export const DEFAULT_SUBTITLE_PROMPT =
-  "You are a precise subtitle translator. Translate dialogue for on-screen captions. " +
-  "Keep line breaks. Do not add speaker names or timing. " +
-  "Output only the translated subtitle text.";
+  "You are a professional subtitle translator for on-screen captions. " +
+  "The input may be one cue or several consecutive cues of the same utterance. " +
+  "Translate dialogue into the target language for reading on screen: natural, concise, and timed-friendly. " +
+  "Keep line breaks if present. Do not add speaker names, timestamps, or notes. " +
+  "Preserve meaningful punctuation. Output only the translated subtitle text.";
+
+/**
+ * Subtitle translate after timeline retime:
+ * each line is already a complete utterance.
+ */
+export const DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT =
+  "You are a professional subtitle translator. " +
+  "Each input line is already a complete spoken utterance after timeline repair. " +
+  "Translate into the target language for on-screen captions: fluent, natural, and similar in length when possible. " +
+  "Do not add speaker names, timestamps, or commentary. " +
+  "Keep one translated line for one input line. Output only the translation.";
+
+export type TextPromptScenario =
+  | "plain"
+  | "mtool"
+  | "subtitle"
+  | "subtitleRetime";
+
+export function resolveTextPromptScenario(
+  format: string,
+  opts?: { subtitleRetiming?: boolean; subtitleRetimed?: boolean },
+): TextPromptScenario {
+  if (format === "srt" || format === "ass") {
+    return opts?.subtitleRetiming || opts?.subtitleRetimed
+      ? "subtitleRetime"
+      : "subtitle";
+  }
+  if (format === "json") return "mtool";
+  return "plain";
+}
+
+export function defaultPromptForScenario(scenario: TextPromptScenario): string {
+  switch (scenario) {
+    case "mtool":
+      return DEFAULT_MTOOL_PROMPT;
+    case "subtitle":
+      return DEFAULT_SUBTITLE_PROMPT;
+    case "subtitleRetime":
+      return DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT;
+    default:
+      return DEFAULT_TEXT_PROMPT;
+  }
+}
+
+export function promptForScenario(
+  settings: {
+    textTranslatePrompt?: string;
+    textPromptMtool?: string;
+    textPromptSubtitle?: string;
+    textPromptSubtitleRetime?: string;
+  },
+  scenario: TextPromptScenario,
+): string {
+  switch (scenario) {
+    case "mtool":
+      return (settings.textPromptMtool || "").trim() || DEFAULT_MTOOL_PROMPT;
+    case "subtitle":
+      return (settings.textPromptSubtitle || "").trim() || DEFAULT_SUBTITLE_PROMPT;
+    case "subtitleRetime":
+      return (
+        (settings.textPromptSubtitleRetime || "").trim() ||
+        DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT
+      );
+    default:
+      return (settings.textTranslatePrompt || "").trim() || DEFAULT_TEXT_PROMPT;
+  }
+}
 
 /** True when text needs no LLM translation (empty / numbers / punctuation only). */
 export function isNoNeedTranslate(text: string): boolean {
