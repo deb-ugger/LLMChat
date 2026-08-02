@@ -4,8 +4,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { createWorker, PSM, type Worker } from "tesseract.js";
 import { api } from "../api";
 import { toFriendlyError } from "../friendlyError";
@@ -39,6 +42,8 @@ type Props = {
   /** External image to OCR (e.g. from PDF context menu). */
   incomingImage?: { file: File; id: number } | null;
   onIncomingHandled?: () => void;
+  /** When false, ignore Ctrl+V / paste (view stays mounted while hidden). */
+  active?: boolean;
 };
 
 type BBoxLine = {
@@ -113,6 +118,147 @@ function cleanLineText(ln: BBoxLine): BBoxLine {
     t = m[1].trim();
   }
   return { ...ln, text: t };
+}
+
+function imageExtFromMime(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  if (m.includes("bmp")) return "bmp";
+  if (m.includes("png")) return "png";
+  return "png";
+}
+
+function looksLikeImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|tiff?|ico)$/i.test(file.name || "");
+}
+
+function fileFromClipboardData(data: DataTransfer | null | undefined): File | null {
+  if (!data) return null;
+  if (data.items?.length) {
+    for (const item of Array.from(data.items)) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file && looksLikeImageFile(file)) return file;
+    }
+  }
+  if (data.files?.length) {
+    for (const file of Array.from(data.files)) {
+      if (looksLikeImageFile(file)) return file;
+    }
+  }
+  return null;
+}
+
+async function rgbaToPngFile(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+): Promise<File | null> {
+  if (width <= 0 || height <= 0 || rgba.byteLength < width * height * 4) {
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const copy = new Uint8ClampedArray(rgba.byteLength);
+  copy.set(rgba);
+  ctx.putImageData(new ImageData(copy, width, height), 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!blob) return null;
+  return new File([blob], "clipboard.png", { type: "image/png" });
+}
+
+type ClipboardPick = { file: File | null; error?: string };
+
+async function fileFromNativeClipboardCommand(): Promise<ClipboardPick> {
+  try {
+    const bytes = await invoke<number[] | Uint8Array>("clipboard_read_image_png");
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (!u8.byteLength) return { file: null, error: "剪贴板图片为空" };
+    const isJpeg = u8.length >= 3 && u8[0] === 0xff && u8[1] === 0xd8;
+    const mime = isJpeg ? "image/jpeg" : "image/png";
+    const ext = isJpeg ? "jpg" : "png";
+    return { file: new File([u8], `clipboard.${ext}`, { type: mime }) };
+  } catch (e) {
+    return { file: null, error: toFriendlyError(e, "读取系统剪贴板失败") };
+  }
+}
+
+async function fileFromTauriClipboardPlugin(): Promise<ClipboardPick> {
+  try {
+    const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
+    const image = await readImage();
+    try {
+      const [{ width, height }, rgba] = await Promise.all([
+        image.size(),
+        image.rgba(),
+      ]);
+      const file = await rgbaToPngFile(rgba, width, height);
+      return file
+        ? { file }
+        : { file: null, error: "无法将剪贴板图像转换为 PNG" };
+    } finally {
+      await image.close().catch(() => undefined);
+    }
+  } catch (e) {
+    return { file: null, error: toFriendlyError(e, "剪贴板插件读取失败") };
+  }
+}
+
+async function fileFromBrowserClipboard(): Promise<ClipboardPick> {
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.read !== "function") {
+    return { file: null };
+  }
+  try {
+    const items = await clipboard.read();
+    for (const item of items) {
+      const type = item.types.find((t) => t.startsWith("image/"));
+      if (!type) continue;
+      const blob = await item.getType(type);
+      return {
+        file: new File([blob], `clipboard.${imageExtFromMime(type)}`, {
+          type,
+        }),
+      };
+    }
+  } catch (e) {
+    return { file: null, error: toFriendlyError(e, "浏览器剪贴板读取失败") };
+  }
+  return { file: null };
+}
+
+async function fileFromAnyClipboard(): Promise<ClipboardPick> {
+  const native = await fileFromNativeClipboardCommand();
+  if (native.file) return native;
+  const plugin = await fileFromTauriClipboardPlugin();
+  if (plugin.file) return plugin;
+  const browser = await fileFromBrowserClipboard();
+  if (browser.file) return browser;
+  return {
+    file: null,
+    error:
+      native.error ||
+      plugin.error ||
+      browser.error ||
+      "剪贴板中没有图片。请先用 Win+Shift+S 截图，或复制图片后再粘贴。",
+  };
+}
+
+function isEditablePasteTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  if (el.closest("input, textarea, select, [contenteditable='true']")) {
+    return true;
+  }
+  return false;
 }
 
 function loadImageSize(url: string): Promise<{ w: number; h: number }> {
@@ -314,6 +460,7 @@ export function ImageOcrView({
   apiKey = "",
   incomingImage = null,
   onIncomingHandled,
+  active = true,
 }: Props) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<OcrBlock[]>([]);
@@ -321,11 +468,18 @@ export function ImageOcrView({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(
+    null,
+  );
+  const toastTimerRef = useRef<number | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
   const [srcQuery, setSrcQuery] = useState("");
   const [dstQuery, setDstQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const [srcRatio, setSrcRatio] = useState(() => {
     try {
       const n = Number(localStorage.getItem("llmchat-ocr-src-ratio"));
@@ -349,6 +503,8 @@ export function ImageOcrView({
   const srcListRef = useRef<HTMLDivElement>(null);
   const dstListRef = useRef<HTMLDivElement>(null);
   const translateGenRef = useRef(0);
+  const ocrGenRef = useRef(0);
+  const pasteLockRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -607,6 +763,7 @@ export function ImageOcrView({
 
   const runOcr = useCallback(
     async (file: File) => {
+      const gen = ++ocrGenRef.current;
       setBusy(true);
       setError(null);
       setStatus("正在识别文字…");
@@ -623,6 +780,10 @@ export function ImageOcrView({
           loadImageSize(url),
           ensureWorker(),
         ]);
+        if (gen !== ocrGenRef.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
 
         const toBox = (raw: {
           text: string;
@@ -690,16 +851,19 @@ export function ImageOcrView({
         // Pass 1: original image (best for body text)
         setStatus("正在识别文字…");
         const result = await worker.recognize(file);
+        if (gen !== ocrGenRef.current) return;
         let lineBoxes = boxesFromPage(result.data);
 
         // Pass 2: binarized color fills + sparse layout for Client/Server labels
         try {
           const enhanced = await preprocessImageForOcr(file);
+          if (gen !== ocrGenRef.current) return;
           await worker.setParameters({
             tessedit_pageseg_mode: PSM.SPARSE_TEXT,
             preserve_interword_spaces: "1",
           });
           const sparse = await worker.recognize(enhanced);
+          if (gen !== ocrGenRef.current) return;
           lineBoxes = mergeOrphanLines(lineBoxes, boxesFromPage(sparse.data));
           // Also pull raw words from sparse (do not paragraph-merge away labels)
           const sparseWords = (sparse.data.words ?? [])
@@ -718,6 +882,8 @@ export function ImageOcrView({
             // ignore
           }
         }
+
+        if (gen !== ocrGenRef.current) return;
 
         const paras = lineBoxes.filter(
           (p) => !isJunkText(p.text) && p.text.trim().length >= 1,
@@ -754,14 +920,16 @@ export function ImageOcrView({
           list = await translateBlocks(list, (done, total) => {
             setStatus(`正在翻译 ${done}/${total}…`);
           });
+          if (gen !== ocrGenRef.current) return;
           setBlocks(list);
           setStatus(summarizeTranslateStatus(list));
         }
       } catch (e) {
+        if (gen !== ocrGenRef.current) return;
         setError(toFriendlyError(e, "识别失败，请重试"));
         setStatus(null);
       } finally {
-        setBusy(false);
+        if (gen === ocrGenRef.current) setBusy(false);
       }
     },
     [autoTranslate, ensureWorker, imageUrl, translateBlocks],
@@ -776,6 +944,142 @@ export function ImageOcrView({
       onIncomingHandled?.();
     });
   }, [incomingImage, onIncomingHandled, runOcr]);
+
+  const showToast = useCallback((message: string, ok = false) => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast({ message, ok });
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  const pasteImageFile = useCallback(
+    async (file: File | null, emptyMsg = "剪贴板中没有图片") => {
+      if (!file) {
+        setError(emptyMsg);
+        showToast(emptyMsg, false);
+        return false;
+      }
+      const now = Date.now();
+      if (now - pasteLockRef.current < 600) return true;
+      pasteLockRef.current = now;
+      setCtxMenu(null);
+      setError(null);
+      await runOcr(file);
+      return true;
+    },
+    [runOcr, showToast],
+  );
+
+  const pasteFromClipboard = useCallback(async () => {
+    if (busy) {
+      const msg = "正在识别中，请稍后再粘贴";
+      setError(msg);
+      showToast(msg, false);
+      return;
+    }
+    setStatus("正在读取剪贴板图片…");
+    const picked = await fileFromAnyClipboard();
+    const emptyMsg =
+      picked.error ||
+      "剪贴板中没有图片。请先用 Win+Shift+S 截图，或复制图片后再粘贴。";
+    const ok = await pasteImageFile(picked.file, emptyMsg);
+    if (!ok) setStatus(null);
+  }, [busy, pasteImageFile, showToast]);
+
+  const handleCanvasPaste = useCallback(
+    (e: ClipboardEvent | ReactClipboardEvent) => {
+      if (!active || busy) return;
+      if (isEditablePasteTarget(e.target)) return;
+      const fromEvent = fileFromClipboardData(
+        "clipboardData" in e ? e.clipboardData : null,
+      );
+      e.preventDefault();
+      e.stopPropagation();
+      if (fromEvent) {
+        void pasteImageFile(fromEvent);
+        return;
+      }
+      void pasteFromClipboard();
+    },
+    [active, busy, pasteFromClipboard, pasteImageFile],
+  );
+
+  // Capture-phase right-click on the gray canvas: system menu is globally
+  // disabled in main.tsx, so we must show our own menu here.
+  useEffect(() => {
+    if (!active) return;
+    const onContextMenu = (e: MouseEvent) => {
+      const wrap = canvasWrapRef.current;
+      const t = e.target as Node | null;
+      if (!wrap || !t || !wrap.contains(t)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCtxMenu({ x: e.clientX, y: e.clientY });
+    };
+    document.addEventListener("contextmenu", onContextMenu, true);
+    return () => {
+      document.removeEventListener("contextmenu", onContextMenu, true);
+    };
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onPaste = (e: ClipboardEvent) => handleCanvasPaste(e);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (busy) return;
+      const isPaste =
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        (e.key.toLowerCase() === "v" || e.code === "KeyV");
+      if (!isPaste) return;
+      if (isEditablePasteTarget(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void pasteFromClipboard();
+    };
+    window.addEventListener("paste", onPaste, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("paste", onPaste, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [active, busy, handleCanvasPaste, pasteFromClipboard]);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onMouseDown = (e: MouseEvent) => {
+      // Ignore the right-click that opened the menu; only left-click dismisses.
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(".pdf-ctx-menu")) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    // Defer attach so the opening click cannot instantly dismiss the menu.
+    const timer = window.setTimeout(() => {
+      window.addEventListener("mousedown", onMouseDown, true);
+      window.addEventListener("keydown", onKey, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [ctxMenu]);
 
   const onRetranslateAll = async () => {
     if (!blocks.length) return;
@@ -795,6 +1099,58 @@ export function ImageOcrView({
       setBusy(false);
     }
   };
+
+  const clearAll = useCallback(() => {
+    const hasContent =
+      !!imageUrl ||
+      blocks.length > 0 ||
+      !!error ||
+      !!status ||
+      busy ||
+      !!srcQuery ||
+      !!dstQuery;
+    if (!hasContent) return;
+    if (
+      !window.confirm(
+        "清除当前图片、识别结果与译文？此操作不可撤销。",
+      )
+    ) {
+      return;
+    }
+    // Invalidate in-flight OCR / translate work
+    ocrGenRef.current += 1;
+    translateGenRef.current += 1;
+    pasteLockRef.current = 0;
+    void workerRef.current?.terminate();
+    workerRef.current = null;
+    workerLangRef.current = null;
+    if (inputRef.current) inputRef.current.value = "";
+    setImageUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setBlocks([]);
+    setSelectedId(null);
+    setBusy(false);
+    setStatus(null);
+    setError(null);
+    setSrcQuery("");
+    setDstQuery("");
+    setCopiedId(null);
+    setCtxMenu(null);
+    setToast(null);
+    setStageSize({ w: 0, h: 0 });
+    onIncomingHandled?.();
+  }, [
+    blocks.length,
+    busy,
+    dstQuery,
+    error,
+    imageUrl,
+    onIncomingHandled,
+    srcQuery,
+    status,
+  ]);
 
   const onCopy = async (
     id: string,
@@ -831,6 +1187,16 @@ export function ImageOcrView({
 
   return (
     <div className="ocr-layout">
+      {toast && (
+        <div
+          className={
+            "settings-toast ocr-toast" + (toast.ok ? " is-ok" : " is-fail")
+          }
+          role="status"
+        >
+          {toast.message}
+        </div>
+      )}
       <div className="ocr-main">
         <div className="ocr-toolbar">
           <button
@@ -859,6 +1225,23 @@ export function ImageOcrView({
           >
             重新翻译全部
           </button>
+          <button
+            type="button"
+            className="pdf-tool-btn"
+            disabled={
+              !imageUrl &&
+              !blocks.length &&
+              !error &&
+              !status &&
+              !busy &&
+              !srcQuery &&
+              !dstQuery
+            }
+            title="清除当前图片与识别/翻译结果"
+            onClick={() => clearAll()}
+          >
+            清除
+          </button>
           <label className="ocr-toggle">
             <input
               type="checkbox"
@@ -873,17 +1256,40 @@ export function ImageOcrView({
           </span>
         </div>
 
-        <div className="ocr-canvas-wrap" ref={canvasWrapRef}>
+        <div
+          className="ocr-canvas-wrap"
+          ref={canvasWrapRef}
+          tabIndex={0}
+          onMouseDown={() => {
+            canvasWrapRef.current?.focus();
+          }}
+          onPaste={handleCanvasPaste}
+        >
           {!imageUrl && (
-            <div className="pdf-empty">
-              <p>打开图片后将识别文字，并在对应位置叠字显示译文。</p>
-              <button
-                type="button"
-                className="send-btn"
-                onClick={() => inputRef.current?.click()}
-              >
-                选择图片
-              </button>
+            <div className="pdf-empty ocr-empty">
+              <p>
+                打开图片后将识别文字，并在灰色区域叠字显示译文。
+              </p>
+              <p className="hint">
+                可在此灰色背景处按 Ctrl+V，或右键选择「从剪贴板粘贴图片」。
+              </p>
+              <div className="ocr-empty-actions">
+                <button
+                  type="button"
+                  className="send-btn"
+                  onClick={() => inputRef.current?.click()}
+                >
+                  选择图片
+                </button>
+                <button
+                  type="button"
+                  className="send-btn ocr-paste-btn"
+                  disabled={busy}
+                  onClick={() => void pasteFromClipboard()}
+                >
+                  从剪贴板粘贴图片
+                </button>
+              </div>
             </div>
           )}
           {imageUrl && (
@@ -1084,6 +1490,58 @@ export function ImageOcrView({
           </div>
         </div>
       </aside>
+
+      {ctxMenu &&
+        createPortal(
+          <div
+            className="pdf-ctx-menu ocr-ctx-menu"
+            style={{ left: ctxMenu.x, top: ctxMenu.y }}
+            role="menu"
+            onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => {
+                setCtxMenu(null);
+                void pasteFromClipboard();
+              }}
+            >
+              从剪贴板粘贴图片
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => {
+                setCtxMenu(null);
+                inputRef.current?.click();
+              }}
+            >
+              打开图片
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={
+                !imageUrl &&
+                !blocks.length &&
+                !error &&
+                !status &&
+                !busy
+              }
+              onClick={() => {
+                setCtxMenu(null);
+                clearAll();
+              }}
+            >
+              清除全部
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

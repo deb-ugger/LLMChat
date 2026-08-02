@@ -1,0 +1,28 @@
+---
+description: Parallel agents on LLMChat — prefer owned files, avoid stomping shared hubs
+alwaysApply: true
+---
+
+# Parallel agent coordination (LLMChat)
+
+Multiple agents may edit this repo at the same time. Reduce conflicts:
+
+## Ownership (prefer)
+
+- **Unity 在线翻译**: `backend/src/UnityAutoTranslator.*`, `frontend/src/components/UnityTranslateView.tsx`, Unity-related CSS under `.unity-*`
+- **OCR / 粘贴**: `frontend/src/components/ImageOcrView.tsx` (unless another agent owns the current OCR task)
+- **Do not casually rewrite**: `frontend/src/modelPresets.ts`, unrelated settings tabs, PDF/literature unless that is your task
+
+## Shared hubs (touch carefully)
+
+When you must edit shared files (`App.tsx`, `api.ts`, `styles.css`, `HttpServer.cpp`, `Config.*`):
+
+1. Re-read the file immediately before editing
+2. Make the smallest possible hunk (add route / import / nav item only)
+3. Do not reformat unrelated regions
+4. After edit, re-check `git diff` for accidental overwrites
+
+## Packaging
+
+- Portable packaging uses `CARGO_TARGET_DIR` via `scripts/make-portable.ps1` — do not revert that
+- Prefer not to kill/rebuild over another agent’s in-progress verify unless the user asks

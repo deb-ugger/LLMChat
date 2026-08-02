@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-clipboard-read-image-png"
+description = "Allow reading a PNG image from the system clipboard"
+commands.allow = ["clipboard_read_image_png"]

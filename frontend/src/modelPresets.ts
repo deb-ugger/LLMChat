@@ -76,6 +76,24 @@ export const MODEL_PRESETS: ModelPreset[] = [
       "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     group: "通义千问",
   },
+  {
+    model: "composer-2.5",
+    label: "Composer 2.5",
+    apiUrl: "https://api.cursor.com/v1/chat/completions",
+    group: "Cursor",
+  },
+  {
+    model: "composer-2",
+    label: "Composer 2",
+    apiUrl: "https://api.cursor.com/v1/chat/completions",
+    group: "Cursor",
+  },
+  {
+    model: "auto",
+    label: "Auto",
+    apiUrl: "https://api.cursor.com/v1/chat/completions",
+    group: "Cursor",
+  },
 ];
 
 export function groupModelPresets(

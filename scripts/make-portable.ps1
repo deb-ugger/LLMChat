@@ -1,11 +1,19 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$release = Join-Path $root "frontend\src-tauri\target\release"
-$out = Join-Path $root "dist-portable"
-
-if (-not (Test-Path (Join-Path $release "llmchat.exe"))) {
-    Write-Error "Build Tauri first: cd frontend; npm run tauri -- build"
+# Prefer CARGO_TARGET_DIR when set (Cursor sandbox may redirect builds).
+$targetRoot = if ($env:CARGO_TARGET_DIR -and (Test-Path $env:CARGO_TARGET_DIR)) {
+    $env:CARGO_TARGET_DIR
+} else {
+    Join-Path $root "frontend\src-tauri\target"
 }
+$release = Join-Path $targetRoot "release"
+$out = Join-Path $root "dist-portable"
+$exe = Join-Path $release "llmchat.exe"
+
+if (-not (Test-Path $exe)) {
+    Write-Error "Build Tauri first: cd frontend; npm run tauri -- build (missing $exe)"
+}
+Write-Output "Using release binary: $exe ($(Get-Item $exe | Select-Object -ExpandProperty LastWriteTime))"
 
 # Free locks if the portable app is still running
 Get-Process -Name "llmchat", "llmchat-backend" -ErrorAction SilentlyContinue |
@@ -13,7 +21,7 @@ Get-Process -Name "llmchat", "llmchat-backend" -ErrorAction SilentlyContinue |
 Start-Sleep -Milliseconds 400
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-Copy-Item (Join-Path $release "llmchat.exe") $out -Force
+Copy-Item $exe $out -Force
 
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
@@ -25,6 +33,16 @@ if (Test-Path $sidecarNamed) {
     Copy-Item $sidecarNamed $out -Force
 } elseif (Test-Path $sidecarRelease) {
     Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe") -Force
+}
+
+# Also sync the fresh exe into the project-local target so future tooling sees it.
+$localRelease = Join-Path $root "frontend\src-tauri\target\release"
+if ($release -ne $localRelease) {
+    New-Item -ItemType Directory -Force -Path $localRelease | Out-Null
+    Copy-Item $exe (Join-Path $localRelease "llmchat.exe") -Force
+    if (Test-Path $sidecarRelease) {
+        Copy-Item $sidecarRelease (Join-Path $localRelease "llmchat-backend.exe") -Force
+    }
 }
 
 $configDst = Join-Path $out "config.ini"

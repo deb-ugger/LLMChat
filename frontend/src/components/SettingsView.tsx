@@ -3140,7 +3140,7 @@ export function SettingsView({ settings, onSave }: Props) {
                       })();
                     }}
                   >
-                    浏览…
+                    浏览
                   </button>
                 </div>
               </label>

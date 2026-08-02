@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "clipboard-manager:allow-read-image",
+    "clipboard-manager:allow-read-text",
+    "allow-clipboard-read-image-png",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

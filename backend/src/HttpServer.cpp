@@ -1,6 +1,7 @@
 #include "HttpServer.h"
 #include "LlmClient.h"
 #include "TranslateClient.h"
+#include "UnityAutoTranslator.h"
 
 #include <httplib.h>
 #include <filesystem>
@@ -924,6 +925,75 @@ int HttpServer::run()
                 {"promptTokens", tr.promptTokens},
                 {"completionTokens", tr.completionTokens},
                 {"totalTokens", tr.totalTokens},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Get("/api/unity/endpoints", withCors([](const httplib::Request&, httplib::Response& res) {
+        json list = json::array();
+        for (const auto& e : UnityAutoTranslator::endpoints())
+        {
+            list.push_back({
+                {"id", e.id},
+                {"label", e.label},
+                {"needsKey", e.needsKey},
+            });
+        }
+        res.set_content(json{{"ok", true}, {"endpoints", list}}.dump(), "application/json");
+    }));
+
+    svr.Post("/api/unity/detect", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            const auto info = UnityAutoTranslator::detect(path);
+            res.set_content(json{
+                {"ok", info.ok && info.isUnity},
+                {"error", info.error},
+                {"isUnity", info.isUnity},
+                {"isIl2Cpp", info.isIl2Cpp},
+                {"hasAutoTranslator", info.hasAutoTranslator},
+                {"hasBepInEx", info.hasBepInEx},
+                {"gameDir", info.gameDir},
+                {"gameExe", info.gameExe},
+                {"runtime", info.runtime},
+                {"installMethod", info.installMethod},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/install", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            UnityInstallRequest ir;
+            ir.gamePath = body.value("path", "");
+            ir.language = body.value("language", "zh-CN");
+            ir.fromLanguage = body.value("fromLanguage", "ja");
+            ir.endpoint = body.value("endpoint", "GoogleTranslate");
+            ir.fallbackEndpoint = body.value("fallbackEndpoint", "");
+            ir.runSetup = body.value("runSetup", true);
+            const auto result = UnityAutoTranslator::install(ir);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"package", result.package},
+                {"version", result.version},
+                {"configPath", result.configPath},
+                {"installMethod", result.installMethod},
+                {"steps", result.steps},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)

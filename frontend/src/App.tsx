@@ -11,6 +11,7 @@ import { LiteratureView } from "./components/LiteratureView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TextTranslateView } from "./components/TextTranslateView";
+import { UnityTranslateView } from "./components/UnityTranslateView";
 import { toFriendlyError } from "./friendlyError";
 import {
   DEFAULT_MTOOL_PROMPT,
@@ -20,7 +21,7 @@ import {
 } from "./textTranslate";
 import { resolveFeatureLlm } from "./modelPresets";
 
-type Page = "chat" | "literature" | "image" | "text" | "settings";
+type Page = "chat" | "literature" | "image" | "text" | "unity" | "settings";
 
 const defaultSettings: Settings = {
   apiUrl: "https://api.openai.com/v1/chat/completions",
@@ -421,6 +422,19 @@ export default function App() {
           <span>文本翻译工程</span>
         </button>
         <button
+          className={page === "unity" ? "nav-item active" : "nav-item"}
+          onClick={() => setPage("unity")}
+          title="在线翻译"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.5 9h-3.1a13.7 13.7 0 0 0-1.2-4.6A8 8 0 0 1 18.5 11zM12 4a12 12 0 0 1 1.7 5H10.3A12 12 0 0 1 12 4zM5.6 6.4A13.7 13.7 0 0 0 4.4 11H1.5a8 8 0 0 1 4.1-4.6zM4.4 13a13.7 13.7 0 0 0 1.2 4.6A8 8 0 0 1 1.5 13zm5.9 0h3.4A12 12 0 0 1 12 20a12 12 0 0 1-1.7-7zm5.1 4.6A13.7 13.7 0 0 0 16.6 13h3a8 8 0 0 1-4.2 4.6z"
+            />
+          </svg>
+          <span>在线翻译</span>
+        </button>
+        <button
           className={page === "settings" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("settings")}
           title="设置"
@@ -489,6 +503,7 @@ export default function App() {
           aria-hidden={page !== "image"}
         >
           <ImageOcrView
+            active={page === "image"}
             ocrLang={settings.ocrLang}
             autoTranslate={settings.ocrAutoTranslate}
             translateProvider={settings.ocrTranslateProvider}
@@ -511,6 +526,7 @@ export default function App() {
         >
           <TextTranslateView settings={settings} />
         </div>
+        {page === "unity" && <UnityTranslateView />}
         {page === "settings" && (
           <SettingsView
             settings={settings}

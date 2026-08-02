@@ -259,6 +259,48 @@ export const api = {
       body: JSON.stringify({ text, ...opts }),
       ...init,
     }),
+  unityEndpoints: () =>
+    request<{
+      ok: boolean;
+      endpoints: { id: string; label: string; needsKey: boolean }[];
+    }>("/api/unity/endpoints"),
+  unityDetect: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      isUnity: boolean;
+      isIl2Cpp: boolean;
+      hasAutoTranslator: boolean;
+      hasBepInEx: boolean;
+      gameDir: string;
+      gameExe: string;
+      runtime: string;
+      installMethod: string;
+    }>("/api/unity/detect", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  unityInstall: (body: {
+    path: string;
+    language?: string;
+    fromLanguage?: string;
+    endpoint?: string;
+    fallbackEndpoint?: string;
+    runSetup?: boolean;
+  }) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      package: string;
+      version: string;
+      configPath: string;
+      installMethod: string;
+      steps: string[];
+    }>("/api/unity/install", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type DictionaryPhonetic = {
