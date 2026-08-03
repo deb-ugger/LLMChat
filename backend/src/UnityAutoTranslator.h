@@ -181,7 +181,8 @@ public:
         const std::vector<UnityIniSection>& sections);
     /**
      * Native picker that accepts a folder or a .exe (auto-detected later by detect()).
+     * When defaultPath is set, the dialog opens in that folder (or its parent if a file).
      * Returns empty string if cancelled / unsupported.
      */
-    static std::string pickPath();
+    static std::string pickPath(const std::string& defaultPath = {});
 };

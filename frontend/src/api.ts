@@ -317,13 +317,16 @@ export const api = {
       ok: boolean;
       endpoints: { id: string; label: string; needsKey: boolean }[];
     }>("/api/unity/endpoints"),
-  unityPickPath: () =>
+  unityPickPath: (defaultPath?: string) =>
     request<{
       ok: boolean;
       path?: string;
       cancelled?: boolean;
       error?: string;
-    }>("/api/unity/pick-path", { method: "POST", body: "{}" }),
+    }>("/api/unity/pick-path", {
+      method: "POST",
+      body: JSON.stringify({ defaultPath: defaultPath ?? "" }),
+    }),
   unityDetect: (path: string) =>
     request<{
       ok: boolean;

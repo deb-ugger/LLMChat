@@ -2749,9 +2749,10 @@ void UnityAutoTranslator::detectStream(
          + "\",\"count\":" + std::to_string(count) + "}\n");
 }
 
-std::string UnityAutoTranslator::pickPath()
+std::string UnityAutoTranslator::pickPath(const std::string& defaultPath)
 {
 #ifndef _WIN32
+    (void)defaultPath;
     return {};
 #else
     // Prefer IFileOpenDialog: pick folder OR .exe in one modern dialog via
@@ -2760,12 +2761,34 @@ std::string UnityAutoTranslator::pickPath()
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool needUninit = (hr == S_OK);
 
+    std::wstring startWide;
+    if (!defaultPath.empty())
+    {
+        fs::path start = pathFromUtf8(defaultPath);
+        std::error_code ec;
+        if (fs::is_regular_file(start, ec))
+            start = start.parent_path();
+        while (!start.empty() && !fs::is_directory(start, ec))
+            start = start.parent_path();
+        if (!start.empty())
+            startWide = start.wstring();
+    }
+
     wchar_t display[MAX_PATH]{};
     BROWSEINFOW bi{};
     bi.hwndOwner = GetForegroundWindow();
     bi.pszDisplayName = display;
     bi.lpszTitle = L"选择游戏目录或主程序（.exe）";
     bi.ulFlags = BIF_NEWDIALOGSTYLE | BIF_USENEWUI | BIF_BROWSEINCLUDEFILES;
+    if (!startWide.empty())
+    {
+        bi.lpfn = [](HWND hwnd, UINT uMsg, LPARAM /*lParam*/, LPARAM lpData) -> int {
+            if (uMsg == BFFM_INITIALIZED && lpData)
+                SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, lpData);
+            return 0;
+        };
+        bi.lParam = reinterpret_cast<LPARAM>(startWide.c_str());
+    }
 
     PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
     std::string result;

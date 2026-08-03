@@ -1131,10 +1131,14 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/pick-path", withCors([](const httplib::Request&, httplib::Response& res) {
+    svr.Post("/api/unity/pick-path", withCors([](const httplib::Request& req, httplib::Response& res) {
         try
         {
-            const std::string path = UnityAutoTranslator::pickPath();
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            std::string defaultPath;
+            if (body.contains("defaultPath") && body["defaultPath"].is_string())
+                defaultPath = body["defaultPath"].get<std::string>();
+            const std::string path = UnityAutoTranslator::pickPath(defaultPath);
             res.set_content(json{
                 {"ok", !path.empty()},
                 {"path", path},

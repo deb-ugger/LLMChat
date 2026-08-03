@@ -14,6 +14,36 @@ import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { fieldMeta, sectionMeta } from "../unityConfigMeta";
 
 const OUTPUT_UI_MAX = 200;
+const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
+
+/** Directory to open in the native picker (parent if path is a .exe). */
+function browseDirFromPath(path: string): string {
+  const raw = path.trim().replace(/\//g, "\\").replace(/\\+$/, "");
+  if (!raw) return "";
+  if (/\.exe$/i.test(raw)) {
+    const idx = raw.lastIndexOf("\\");
+    return idx > 0 ? raw.slice(0, idx) : "";
+  }
+  return raw;
+}
+
+function rememberLastPickDir(path: string) {
+  const dir = browseDirFromPath(path);
+  if (!dir) return;
+  try {
+    localStorage.setItem(LAST_PICK_DIR_KEY, dir);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function lastPickDir(): string {
+  try {
+    return localStorage.getItem(LAST_PICK_DIR_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
 
 type OutputLevel = "step" | "ok" | "error" | "info";
 
@@ -539,6 +569,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
 
   const resetPath = useCallback((path: string) => {
     setPathInput(path);
+    rememberLastPickDir(path);
     setScanState(null);
     setSelectedGameDir(null);
     setViewMode("list");
@@ -668,7 +699,9 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
 
   const browsePath = async () => {
     try {
-      const res = await api.unityPickPath();
+      const defaultPath =
+        browseDirFromPath(pathInput) || lastPickDir();
+      const res = await api.unityPickPath(defaultPath || undefined);
       if (res.cancelled || !res.path) return;
       resetPath(res.path);
       await runDetect(res.path);
@@ -1688,19 +1721,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                       {scanning ? (
                         <p>正在扫描目录，发现游戏后会立即显示</p>
                       ) : (
-                        <>
-                          <strong>未找到 Unity 游戏</strong>
-                          <p>
-                            {scanState?.error?.trim()
-                              ? scanState.error
-                              : "当前路径下没有可识别的 Unity 游戏。可换一个目录，或拖入游戏主程序（.exe）再试。"}
-                          </p>
-                          {pathInput.trim() ? (
-                            <code className="unity-game-empty-path">
-                              {pathInput.trim()}
-                            </code>
-                          ) : null}
-                        </>
+                        <strong>未找到 Unity 游戏</strong>
                       )}
                     </div>
                   ) : filteredGames.length === 0 ? (
