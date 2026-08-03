@@ -67,10 +67,21 @@ function classifyChineseHint(s: string): string | null {
     low.includes("winhttp") ||
     low.includes("cannot connect") ||
     low.includes("connection") ||
-    low.includes("network")
+    low.includes("network") ||
+    low.includes("econnrefused") ||
+    low.includes("err_connection_refused")
   ) {
     if (low.includes("google") || low.includes("googleapis")) {
       return "谷歌翻译连接失败，国内常需系统代理，可改用 Bing/有道";
+    }
+    // Local backend (127.0.0.1) down looks like "Failed to fetch" — not a real WAN outage.
+    if (
+      low.includes("failed to fetch") ||
+      low.includes("econnrefused") ||
+      low.includes("err_connection_refused") ||
+      low.includes("networkerror")
+    ) {
+      return "本地后端未连接：请完全退出并重新打开 LLMChat";
     }
     return "网络异常或连接超时，请检查网络或代理";
   }

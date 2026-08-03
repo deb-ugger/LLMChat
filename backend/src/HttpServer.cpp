@@ -2,6 +2,7 @@
 #include "LlmClient.h"
 #include "TranslateClient.h"
 #include "UnityAutoTranslator.h"
+#include "Utf8Path.h"
 
 #include <httplib.h>
 #include <filesystem>
@@ -576,23 +577,39 @@ int HttpServer::run()
                 res.set_content(errorJson("缺少 path").dump(), "application/json");
                 return;
             }
-            const fs::path target(body["path"].get<std::string>());
-            if (!fs::exists(target))
+            // JSON paths are UTF-8. fs::path(std::string) on Windows uses ACP/GBK and
+            // breaks 中文/日文/(括号) folders — falsely returning "路径不存在".
+            const fs::path target = utf8path::pathFromUtf8(body["path"].get<std::string>());
+#ifdef _WIN32
+            const std::wstring wideTarget = target.wstring();
+            const DWORD attrs = GetFileAttributesW(wideTarget.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES)
             {
                 res.status = 404;
                 res.set_content(errorJson("路径不存在").dump(), "application/json");
                 return;
             }
-            const fs::path openPath = fs::is_directory(target) ? target : target.parent_path();
-#ifdef _WIN32
+            const fs::path openPath =
+                (attrs & FILE_ATTRIBUTE_DIRECTORY) ? target : target.parent_path();
             const std::wstring wide = openPath.wstring();
-            const HINSTANCE hi = ShellExecuteW(
+            const std::wstring params = L"\"" + wide + L"\"";
+            HINSTANCE hi = ShellExecuteW(
                 nullptr,
-                L"explore",
-                wide.c_str(),
-                nullptr,
+                L"open",
+                L"explorer.exe",
+                params.c_str(),
                 nullptr,
                 SW_SHOWNORMAL);
+            if (reinterpret_cast<intptr_t>(hi) <= 32)
+            {
+                hi = ShellExecuteW(
+                    nullptr,
+                    L"open",
+                    wide.c_str(),
+                    nullptr,
+                    nullptr,
+                    SW_SHOWNORMAL);
+            }
             if (reinterpret_cast<intptr_t>(hi) <= 32)
             {
                 res.status = 500;
@@ -600,6 +617,14 @@ int HttpServer::run()
                 return;
             }
 #else
+            std::error_code ec;
+            if (!fs::exists(target, ec))
+            {
+                res.status = 404;
+                res.set_content(errorJson("路径不存在").dump(), "application/json");
+                return;
+            }
+            const fs::path openPath = fs::is_directory(target, ec) ? target : target.parent_path();
             (void)openPath;
             res.status = 501;
             res.set_content(errorJson("当前平台不支持打开文件夹").dump(), "application/json");
@@ -953,8 +978,24 @@ int HttpServer::run()
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             const std::string path = body.value("path", "");
             const auto info = UnityAutoTranslator::detect(path);
+            json games = json::array();
+            for (const auto& g : info.games)
+            {
+                games.push_back({
+                    {"isUnity", g.isUnity},
+                    {"isIl2Cpp", g.isIl2Cpp},
+                    {"hasAutoTranslator", g.hasAutoTranslator},
+                    {"hasBepInEx", g.hasBepInEx},
+                    {"gameDir", g.gameDir},
+                    {"gameExe", g.gameExe},
+                    {"runtime", g.runtime},
+                    {"installMethod", g.installMethod},
+                    {"arch", g.arch},
+                    {"plugins", g.plugins},
+                });
+            }
             res.set_content(json{
-                {"ok", info.ok && info.isUnity},
+                {"ok", info.ok},
                 {"error", info.error},
                 {"isUnity", info.isUnity},
                 {"isIl2Cpp", info.isIl2Cpp},
@@ -964,6 +1005,116 @@ int HttpServer::run()
                 {"gameExe", info.gameExe},
                 {"runtime", info.runtime},
                 {"installMethod", info.installMethod},
+                {"scanRoot", info.scanRoot},
+                {"count", info.count},
+                {"games", games},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/detect-stream", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            res.set_chunked_content_provider(
+                "application/x-ndjson",
+                [path](size_t offset, httplib::DataSink& sink) {
+                    if (offset > 0)
+                    {
+                        sink.done();
+                        return true;
+                    }
+                    UnityAutoTranslator::detectStream(path, [&](const std::string& line) {
+                        sink.write(line.data(), line.size());
+                    });
+                    sink.done();
+                    return true;
+                });
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/launch", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            const auto result = UnityAutoTranslator::launch(path);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"gameExe", result.gameExe},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/launch-patch", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            const auto result = UnityAutoTranslator::launchPatchAndRun(path);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"gameExe", result.gameExe},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/self-check", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            const auto result = UnityAutoTranslator::selfCheck(path);
+            json checks = json::array();
+            for (const auto& c : result.checks)
+            {
+                checks.push_back({
+                    {"id", c.id},
+                    {"level", c.level},
+                    {"title", c.title},
+                    {"detail", c.detail},
+                });
+            }
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"verdict", result.verdict},
+                {"verdictLabel", result.verdictLabel},
+                {"summary", result.summary},
+                {"gameArch", result.gameArch},
+                {"loaderArch", result.loaderArch},
+                {"runtime", result.runtime},
+                {"checks", checks},
+                {"suggestions", result.suggestions},
+                {"hasLog", result.hasLog},
+                {"logPath", result.logPath},
+                {"logSnippet", result.logSnippet},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -994,6 +1145,76 @@ int HttpServer::run()
                 {"configPath", result.configPath},
                 {"installMethod", result.installMethod},
                 {"steps", result.steps},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/uninstall", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            UnityUninstallRequest ur;
+            ur.gamePath = body.value("path", "");
+            const auto result = UnityAutoTranslator::uninstall(ur);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"installMethod", result.installMethod},
+                {"steps", result.steps},
+                {"removed", result.removed},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/install-loader", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            UnityLoaderRequest lr;
+            lr.gamePath = body.value("path", "");
+            const auto result = UnityAutoTranslator::installLoader(lr);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"package", result.package},
+                {"version", result.version},
+                {"installMethod", result.installMethod},
+                {"steps", result.steps},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/uninstall-loader", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            UnityLoaderRequest lr;
+            lr.gamePath = body.value("path", "");
+            const auto result = UnityAutoTranslator::uninstallLoader(lr);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"installMethod", result.installMethod},
+                {"steps", result.steps},
+                {"removed", result.removed},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)

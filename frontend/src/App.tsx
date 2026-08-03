@@ -526,7 +526,14 @@ export default function App() {
         >
           <TextTranslateView settings={settings} />
         </div>
-        {page === "unity" && <UnityTranslateView />}
+        <div
+          className={
+            page === "unity" ? "literature-host" : "literature-host is-hidden"
+          }
+          aria-hidden={page !== "unity"}
+        >
+          <UnityTranslateView active={page === "unity"} />
+        </div>
         {page === "settings" && (
           <SettingsView
             settings={settings}

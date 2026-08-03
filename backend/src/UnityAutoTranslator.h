@@ -1,7 +1,22 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
+
+struct UnityGameItem
+{
+    bool isUnity = false;
+    bool isIl2Cpp = false;
+    bool hasAutoTranslator = false;
+    bool hasBepInEx = false;
+    std::string gameDir;
+    std::string gameExe;
+    std::string runtime;       // mono | il2cpp | unknown
+    std::string installMethod; // ReiPatcher | BepInEx | BepInEx-IL2CPP | none
+    std::string arch;          // x64 | x86 | arm64 | unknown
+    std::vector<std::string> plugins;
+};
 
 struct UnityDetectInfo
 {
@@ -13,8 +28,11 @@ struct UnityDetectInfo
     bool hasBepInEx = false;
     std::string gameDir;
     std::string gameExe;
-    std::string runtime;   // mono | il2cpp | unknown
-    std::string installMethod; // ReiPatcher | BepInEx | BepInEx-IL2CPP | none
+    std::string runtime;
+    std::string installMethod;
+    std::string scanRoot;
+    int count = 0;
+    std::vector<UnityGameItem> games;
 };
 
 struct UnityInstallRequest
@@ -39,6 +57,61 @@ struct UnityInstallResult
     std::vector<std::string> steps;
 };
 
+struct UnityUninstallRequest
+{
+    std::string gamePath;
+};
+
+struct UnityUninstallResult
+{
+    bool ok = false;
+    std::string error;
+    std::string gameDir;
+    std::string installMethod;
+    std::vector<std::string> steps;
+    std::vector<std::string> removed;
+};
+
+struct UnityLoaderRequest
+{
+    std::string gamePath;
+};
+
+struct UnityLaunchResult
+{
+    bool ok = false;
+    std::string error;
+    std::string gameDir;
+    std::string gameExe;
+};
+
+struct UnitySelfCheckItem
+{
+    std::string id;
+    std::string level; // ok | warn | error
+    std::string title;
+    std::string detail;
+};
+
+struct UnitySelfCheckResult
+{
+    bool ok = false;
+    std::string error;
+    std::string gameDir;
+    /** ok | arch_mismatch | log_suggests_outdated | missing_loader | not_unity */
+    std::string verdict;
+    std::string verdictLabel;
+    std::string summary;
+    std::string gameArch;
+    std::string loaderArch;
+    std::string runtime;
+    std::vector<UnitySelfCheckItem> checks;
+    std::vector<std::string> suggestions;
+    bool hasLog = false;
+    std::string logPath;
+    std::string logSnippet;
+};
+
 struct UnityEndpointInfo
 {
     std::string id;
@@ -50,6 +123,18 @@ class UnityAutoTranslator
 {
 public:
     static UnityDetectInfo detect(const std::string& gamePath);
+    /** Emit NDJSON lines: start / game / done (one line each). */
+    static void detectStream(const std::string& gamePath, const std::function<void(const std::string&)>& emitLine);
+    static UnityLaunchResult launch(const std::string& gamePath);
+    /**
+     * Launch via ReiPatcher "Patch and Run" shortcut (requires translator installed).
+     * Finds "{Game} (Patch and Run).lnk", or falls back to ReiPatcher.exe + game .ini.
+     */
+    static UnityLaunchResult launchPatchAndRun(const std::string& gamePath);
+    static UnitySelfCheckResult selfCheck(const std::string& gamePath);
     static UnityInstallResult install(const UnityInstallRequest& req);
+    static UnityUninstallResult uninstall(const UnityUninstallRequest& req);
+    static UnityInstallResult installLoader(const UnityLoaderRequest& req);
+    static UnityUninstallResult uninstallLoader(const UnityLoaderRequest& req);
     static std::vector<UnityEndpointInfo> endpoints();
 };

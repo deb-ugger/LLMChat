@@ -165,6 +165,45 @@ export type TextProjectSaveResult = {
   root: string;
 };
 
+export type UnityGameInfo = {
+  isUnity: boolean;
+  isIl2Cpp: boolean;
+  hasAutoTranslator: boolean;
+  hasBepInEx: boolean;
+  gameDir: string;
+  gameExe: string;
+  runtime: string;
+  installMethod: string;
+  arch?: string;
+  plugins?: string[];
+};
+
+export type UnitySelfCheckCheck = {
+  id: string;
+  level: string;
+  title: string;
+  detail: string;
+};
+
+export type UnitySelfCheckResult = {
+  ok: boolean;
+  error?: string;
+  verdict?: string;
+  verdictLabel?: string;
+  summary?: string;
+  gameArch?: string;
+  loaderArch?: string;
+  runtime?: string;
+  checks?: UnitySelfCheckCheck[];
+  suggestions?: string[];
+  hasLog?: boolean;
+  logPath?: string;
+  logSnippet?: string;
+  /** Legacy backend shape (issues/notes) when rich fields absent */
+  issues?: string[];
+  notes?: string[];
+};
+
 export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
   getSettings: () => request<Settings>("/api/settings"),
@@ -276,7 +315,100 @@ export const api = {
       gameExe: string;
       runtime: string;
       installMethod: string;
+      arch?: string;
+      scanRoot?: string;
+      count?: number;
+      games?: UnityGameInfo[];
     }>("/api/unity/detect", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  unityDetectStream: async (
+    path: string,
+    handlers: {
+      onStart?: (path: string) => void;
+      onGame?: (game: UnityGameInfo) => void;
+      onDone?: (info: {
+        ok: boolean;
+        error?: string;
+        scanRoot?: string;
+        count?: number;
+      }) => void;
+    },
+    init?: RequestInit | AbortSignal,
+  ) => {
+    const fetchInit: RequestInit =
+      init instanceof AbortSignal ? { signal: init } : (init ?? {});
+    const res = await fetch(`${API_BASE}/api/unity/detect-stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(fetchInit.headers ?? {}),
+      },
+      body: JSON.stringify({ path }),
+      ...fetchInit,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error("无流式响应体");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let obj: {
+          type?: string;
+          path?: string;
+          game?: UnityGameInfo;
+          ok?: boolean;
+          error?: string;
+          scanRoot?: string;
+          count?: number;
+        };
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (obj.type === "start") handlers.onStart?.(obj.path || path);
+        else if (obj.type === "game" && obj.game) handlers.onGame?.(obj.game);
+        else if (obj.type === "done")
+          handlers.onDone?.({
+            ok: !!obj.ok,
+            error: obj.error,
+            scanRoot: obj.scanRoot,
+            count: obj.count,
+          });
+      }
+    }
+  },
+  unityLaunch: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      gameExe: string;
+    }>("/api/unity/launch", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  /** ReiPatcher Patch and Run (requires translator plugin installed). */
+  unityLaunchPatch: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      gameExe: string;
+    }>("/api/unity/launch-patch", {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
@@ -300,6 +432,48 @@ export const api = {
     }>("/api/unity/install", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  unityUninstall: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      installMethod: string;
+      steps: string[];
+      removed: string[];
+    }>("/api/unity/uninstall", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  unityInstallLoader: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      package: string;
+      version: string;
+      installMethod: string;
+      steps: string[];
+    }>("/api/unity/install-loader", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  unityUninstallLoader: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      installMethod: string;
+      steps: string[];
+      removed: string[];
+    }>("/api/unity/uninstall-loader", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  unitySelfCheck: (path: string) =>
+    request<UnitySelfCheckResult>("/api/unity/self-check", {
+      method: "POST",
+      body: JSON.stringify({ path }),
     }),
 };
 
