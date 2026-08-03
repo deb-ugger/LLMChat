@@ -713,6 +713,82 @@ int HttpServer::run()
         }
     }));
 
+    svr.Post("/api/open-path", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body);
+            if (!body.contains("path") || !body["path"].is_string())
+            {
+                res.status = 400;
+                res.set_content(errorJson("缺少 path").dump(), "application/json");
+                return;
+            }
+            const std::string pathUtf8 = body["path"].get<std::string>();
+            // http(s) links (e.g. GitHub README) — do not treat as filesystem paths.
+            if (pathUtf8.rfind("http://", 0) == 0 || pathUtf8.rfind("https://", 0) == 0)
+            {
+#ifdef _WIN32
+                const std::wstring wideUrl = utf8path::toWide(pathUtf8);
+                const HINSTANCE hi = ShellExecuteW(
+                    nullptr,
+                    L"open",
+                    wideUrl.c_str(),
+                    nullptr,
+                    nullptr,
+                    SW_SHOWNORMAL);
+                if (reinterpret_cast<intptr_t>(hi) <= 32)
+                {
+                    res.status = 500;
+                    res.set_content(errorJson("无法打开链接").dump(), "application/json");
+                    return;
+                }
+                res.set_content(json{{"ok", true}}.dump(), "application/json");
+#else
+                res.status = 501;
+                res.set_content(errorJson("当前平台不支持打开链接").dump(), "application/json");
+#endif
+                return;
+            }
+            // Same UTF-8 rule as /api/reveal-path: never construct fs::path from ACP string.
+            const fs::path target = utf8path::pathFromUtf8(pathUtf8);
+#ifdef _WIN32
+            const std::wstring wideTarget = target.wstring();
+            const DWORD attrs = GetFileAttributesW(wideTarget.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES)
+            {
+                res.status = 404;
+                res.set_content(
+                    errorJson("文件不存在（可能尚未安装翻译插件或未保存配置）").dump(),
+                    "application/json");
+                return;
+            }
+            const HINSTANCE hi = ShellExecuteW(
+                nullptr,
+                L"open",
+                wideTarget.c_str(),
+                nullptr,
+                nullptr,
+                SW_SHOWNORMAL);
+            if (reinterpret_cast<intptr_t>(hi) <= 32)
+            {
+                res.status = 500;
+                res.set_content(errorJson("无法打开文件").dump(), "application/json");
+                return;
+            }
+            res.set_content(json{{"ok", true}}.dump(), "application/json");
+#else
+            (void)target;
+            res.status = 501;
+            res.set_content(errorJson("当前平台不支持打开文件").dump(), "application/json");
+#endif
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Post("/api/text-projects/write-file", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {

@@ -11,7 +11,15 @@ import { api, type UnityGameInfo, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { usePersistedHeight } from "../hooks/usePersistedHeight";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
-import { fieldMeta, sectionMeta } from "../unityConfigMeta";
+import {
+  CONFIG_HELP_CATALOG,
+  CONFIG_README_URL,
+  engineConfigSections,
+  essentialConfigSections,
+  fieldMeta,
+  sectionMeta,
+  visibleConfigSections,
+} from "../unityConfigMeta";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -43,6 +51,36 @@ function lastPickDir(): string {
   } catch {
     return "";
   }
+}
+
+/** Match backend pathContainsChinese — CJK in path breaks Doorstop/BepInEx. */
+function pathContainsChinese(path: string): boolean {
+  for (const ch of path) {
+    const u = ch.codePointAt(0) ?? 0;
+    if (
+      (u >= 0x4e00 && u <= 0x9fff) || // CJK Unified Ideographs
+      (u >= 0x3400 && u <= 0x4dbf) || // Extension A
+      (u >= 0xf900 && u <= 0xfaff) || // Compatibility Ideographs
+      (u >= 0x3000 && u <= 0x303f) // CJK Symbols and Punctuation
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Mono → ReiPatcher；IL2CPP → BepInEx */
+function expectedFrameworkName(isIl2Cpp: boolean): string {
+  return isIl2Cpp ? "BepInEx" : "ReiPatcher";
+}
+
+function hasPluginFramework(g: {
+  isIl2Cpp: boolean;
+  hasBepInEx: boolean;
+  loaderName?: string;
+}): boolean {
+  if (g.isIl2Cpp) return !!g.hasBepInEx;
+  return g.loaderName === "ReiPatcher";
 }
 
 type OutputLevel = "step" | "ok" | "error" | "info";
@@ -107,6 +145,8 @@ type SelfCheck = {
   hasLog: boolean;
   logPath: string;
   logSnippet: string;
+  checkedAt: string;
+  gameExePath: string;
 };
 
 type SelfCheckTab = {
@@ -115,7 +155,14 @@ type SelfCheckTab = {
   result: SelfCheck;
 };
 
-type HelpDialog = "wont-launch" | "startup-flow" | null;
+type HelpDialog = "wont-launch" | "startup-flow" | "config-keys" | null;
+
+type UninstallConfirm = {
+  kind: "plugin" | "framework";
+  gameDir: string;
+  frameworkName: string;
+  isIl2Cpp: boolean;
+};
 
 function serializeIniSections(sections: UnityIniSection[]): string {
   const parts: string[] = [];
@@ -169,6 +216,15 @@ function isBoolIniValue(v: string) {
 
 function formatClock(d = new Date()) {
   return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function joinGameExePath(gameDir: string, gameExe?: string | null): string {
+  const dir = gameDir.trim().replace(/[\\/]+$/, "");
+  const exe = (gameExe || "").trim();
+  if (!dir) return exe;
+  if (!exe) return dir;
+  const sep = dir.includes("/") && !dir.includes("\\") ? "/" : "\\";
+  return `${dir}${sep}${exe}`;
 }
 
 function parseLogLine(raw: string, id: string): OutputLine {
@@ -244,22 +300,36 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
   const [selectedGameDir, setSelectedGameDir] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
   const [searchQuery, setSearchQuery] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const busy = busyAction !== null;
+  const actionLabel = (id: string, idle: string) =>
+    busyAction === id ? "处理中" : idle;
   const [scanning, setScanning] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outputLines, setOutputLines] = useState<OutputLine[]>([]);
   const [outputLogPath, setOutputLogPath] = useState("");
-  const [selfCheckTab, setSelfCheckTab] = useState<SelfCheckTab | null>(null);
-  const [activeBottomTab, setActiveBottomTab] = useState<"output" | "selfcheck">(
-    "output",
-  );
+  const [selfCheckTabs, setSelfCheckTabs] = useState<SelfCheckTab[]>([]);
+  const [activeBottomTab, setActiveBottomTab] = useState<string>("output");
+  const [selfCheckTabMenu, setSelfCheckTabMenu] = useState<{
+    x: number;
+    y: number;
+    tabId: string;
+  } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpMenuPos, setHelpMenuPos] = useState<{
     top: number;
     right: number;
   } | null>(null);
   const [helpDialog, setHelpDialog] = useState<HelpDialog>(null);
+  const [uninstallConfirm, setUninstallConfirm] =
+    useState<UninstallConfirm | null>(null);
+  const [engineConfigOpen, setEngineConfigOpen] = useState(false);
+  const [configToast, setConfigToast] = useState<{
+    message: string;
+    ok: boolean;
+  } | null>(null);
+  const configToastTimerRef = useRef<number | null>(null);
   const detectAbortRef = useRef<AbortController | null>(null);
   const helpBtnRef = useRef<HTMLButtonElement>(null);
   const dropzoneRef = useRef<HTMLDivElement | null>(null);
@@ -274,24 +344,24 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     collapseBelow: 72,
   });
   const {
-    width: sideWidth,
-    setWidth: setSideWidth,
-  } = usePersistedWidth("llmchat-unity-side-width", 400, 300, 720);
+    width: detailWidth,
+    setWidth: setDetailWidth,
+  } = usePersistedWidth("llmchat-unity-detail-width", 340, 280, 480);
 
-  const beginSideResize = useCallback(
+  const beginDetailResize = useCallback(
     (e: React.MouseEvent) => {
       const workspaceW = workspaceRef.current?.clientWidth ?? 1200;
-      const max = Math.max(320, workspaceW - 300);
+      const max = Math.min(480, Math.max(280, workspaceW - 360));
       const startX = e.clientX;
-      const startW = Math.min(sideWidth, max);
+      const startW = Math.min(detailWidth, max);
       e.preventDefault();
       e.stopPropagation();
       const onMove = (ev: MouseEvent) => {
         const next = Math.min(
           max,
-          Math.max(300, startW - (ev.clientX - startX)),
+          Math.max(280, startW + (ev.clientX - startX)),
         );
-        setSideWidth(next);
+        setDetailWidth(next);
       };
       const onUp = () => {
         document.body.classList.remove("col-resizing");
@@ -302,7 +372,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
-    [setSideWidth, sideWidth],
+    [detailWidth, setDetailWidth],
   );
 
   useEffect(() => {
@@ -385,6 +455,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     const r = tab.result;
     const lines = [
       `=== ${tab.title} ===`,
+      `时间：${r.checkedAt}`,
+      `游戏路径：${r.gameExePath}`,
       `${r.verdictLabel} — ${r.summary}`,
       `游戏 ${archLabel(r.gameArch)} · 加载器 ${archLabel(r.loaderArch)} · ${runtimeLabel(r.runtime)}`,
     ];
@@ -404,17 +476,40 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     setActiveBottomTab("output");
   }, []);
 
-  const closeSelfCheckTab = useCallback(() => {
-    setSelfCheckTab((prev) => {
-      if (prev) {
-        for (const line of formatSelfCheckForLog(prev)) {
-          appendLogOnly(line, "info");
-        }
+  const archiveSelfCheckTab = useCallback(
+    (tab: SelfCheckTab) => {
+      for (const line of formatSelfCheckForLog(tab)) {
+        appendLogOnly(line, "info");
       }
-      return null;
+    },
+    [appendLogOnly, formatSelfCheckForLog],
+  );
+
+  const closeSelfCheckTab = useCallback(
+    (tabId: string) => {
+      setSelfCheckTabs((prev) => {
+        const closing = prev.find((t) => t.id === tabId);
+        if (closing) archiveSelfCheckTab(closing);
+        const next = prev.filter((t) => t.id !== tabId);
+        setActiveBottomTab((cur) => {
+          if (cur !== tabId) return cur;
+          return next.length > 0 ? next[next.length - 1].id : "output";
+        });
+        return next;
+      });
+      setSelfCheckTabMenu(null);
+    },
+    [archiveSelfCheckTab],
+  );
+
+  const closeAllSelfCheckTabs = useCallback(() => {
+    setSelfCheckTabs((prev) => {
+      for (const tab of prev) archiveSelfCheckTab(tab);
+      return [];
     });
     setActiveBottomTab("output");
-  }, [appendLogOnly, formatSelfCheckForLog]);
+    setSelfCheckTabMenu(null);
+  }, [archiveSelfCheckTab]);
 
   const reportError = useCallback(
     (message: string) => {
@@ -476,6 +571,25 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     [focusOutputTab, pushOutput],
   );
 
+  const showConfigToast = useCallback((message: string, ok: boolean) => {
+    setConfigToast({ message, ok });
+    if (configToastTimerRef.current) {
+      window.clearTimeout(configToastTimerRef.current);
+    }
+    configToastTimerRef.current = window.setTimeout(() => {
+      setConfigToast(null);
+      configToastTimerRef.current = null;
+    }, 2600);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (configToastTimerRef.current) {
+        window.clearTimeout(configToastTimerRef.current);
+      }
+    };
+  }, []);
+
   const reportSteps = useCallback(
     (steps: string[]) => {
       for (const step of steps) pushOutput(step, "step");
@@ -500,6 +614,24 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [helpOpen]);
+
+  useEffect(() => {
+    if (!selfCheckTabMenu) return;
+    const onMouseDown = (ev: MouseEvent) => {
+      const target = ev.target as Element | null;
+      if (target?.closest?.(".unity-tab-context-menu")) return;
+      setSelfCheckTabMenu(null);
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setSelfCheckTabMenu(null);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [selfCheckTabMenu]);
 
   const games = scanState?.games ?? [];
 
@@ -546,7 +678,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       reportError("请先选择一个游戏");
       return;
     }
-    setBusy(true);
+    setBusyAction("save-config");
     setError(null);
     try {
       const res = await api.unitySaveConfig({
@@ -559,11 +691,13 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       }
       setConfigPath(res.path || configPath);
       setConfigExists(true);
-      reportSuccess(`配置已保存：${res.path || configPath}`);
+      const savedPath = res.path || configPath;
+      reportSuccess(`配置已保存：${savedPath}`);
+      showConfigToast("配置已保存", true);
     } catch (e) {
       reportError(toFriendlyError(e, "保存配置失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -581,7 +715,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     detectAbortRef.current?.abort();
     detectAbortRef.current = null;
     detectGamesAccRef.current = [];
-    setBusy(false);
+    setBusyAction(null);
     setScanning(false);
     setPathInput("");
     setScanState(null);
@@ -590,6 +724,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     setSearchQuery("");
     setError(null);
     setActiveBottomTab("output");
+    setSelfCheckTabs([]);
+    setSelfCheckTabMenu(null);
   }, []);
 
   const refreshGame = useCallback(async (gameDir: string) => {
@@ -616,7 +752,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     detectAbortRef.current?.abort();
     const ac = new AbortController();
     detectAbortRef.current = ac;
-    setBusy(true);
+    setBusyAction("detect");
     setScanning(true);
     setError(null);
     setViewMode("list");
@@ -685,7 +821,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     } finally {
       if (detectAbortRef.current === ac) {
         detectAbortRef.current = null;
-        setBusy(false);
+        setBusyAction(null);
         setScanning(false);
       }
     }
@@ -813,6 +949,12 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       reportError("该游戏已安装翻译插件，无需重复安装");
       return;
     }
+    if (selected && !hasPluginFramework(selected)) {
+      reportError(
+        `请先安装插件框架（${expectedFrameworkName(selected.isIl2Cpp)}）`,
+      );
+      return;
+    }
     if (
       !window.confirm(
         `将安装 XUnity.AutoTranslator 到：\n${gameDir}\n\n仅下载一次 GitHub 安装包到本地，不会调用翻译引擎 API。是否继续？`,
@@ -820,7 +962,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     ) {
       return;
     }
-    setBusy(true);
+    setBusyAction("install-plugin");
     setError(null);
     // Keep Service/General in sync with quick fields before install
     let sections = configSections;
@@ -859,30 +1001,32 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     } catch (e) {
       reportError(toFriendlyError(e, "安装失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
-  const onUninstall = async () => {
+  const onUninstall = () => {
     const gameDir = selected?.gameDir;
-    if (!gameDir) {
+    if (!gameDir || !selected) {
       reportError(
         games.length > 1 ? "请先在列表中点选一个游戏" : "请先检测并选择游戏",
       );
       return;
     }
-    if (!selected?.hasAutoTranslator) {
+    if (!selected.hasAutoTranslator) {
       reportError("该游戏未检测到已安装的翻译插件");
       return;
     }
-    if (
-      !window.confirm(
-        `将从以下目录卸载翻译插件：\n${gameDir}\n\n会删除本模块安装的翻译插件，以及插件生成的缓存/配置文件。是否继续？`,
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
+    setUninstallConfirm({
+      kind: "plugin",
+      gameDir,
+      frameworkName: expectedFrameworkName(selected.isIl2Cpp),
+      isIl2Cpp: selected.isIl2Cpp,
+    });
+  };
+
+  const doUninstallPlugin = async (gameDir: string) => {
+    setBusyAction("uninstall-plugin");
     setError(null);
     reportSteps(["准备卸载"]);
     try {
@@ -899,97 +1043,109 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     } catch (e) {
       reportError(toFriendlyError(e, "卸载失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
   const onInstallLoader = async () => {
     const gameDir = selected?.gameDir;
-    if (!gameDir) {
+    if (!gameDir || !selected) {
       reportError(
         games.length > 1 ? "请先在列表中点选一个游戏" : "请先检测并选择游戏",
       );
       return;
     }
-    if (!selected?.isIl2Cpp) {
-      reportError("仅 IL2CPP 游戏需要安装加载器");
-      return;
-    }
-    if (selected.hasBepInEx) {
-      reportError("该游戏已安装 BepInEx 加载器");
+    const fw = expectedFrameworkName(selected.isIl2Cpp);
+    if (hasPluginFramework(selected)) {
+      reportError(`该游戏已安装插件框架（${fw}），无需重复安装`);
       return;
     }
     if (
       !window.confirm(
-        `将为 IL2CPP 游戏安装 BepInEx 6 加载器到：\n${gameDir}\n\n若本地 resources/bepinex 已有缓存则直接使用；否则会下载一次并保存，供下次复用。是否继续？`,
+        selected.isIl2Cpp
+          ? `将为 IL2CPP 游戏安装插件框架 BepInEx 到：\n${gameDir}\n\n若本地 resources/bepinex 已有缓存则直接使用；否则会下载一次并保存。是否继续？`
+          : `将为 Mono 游戏安装插件框架 ReiPatcher 到：\n${gameDir}\n\n仅安装框架；官方 Setup 顺带装上的翻译插件会自动剥离。是否继续？`,
       )
     ) {
       return;
     }
-    setBusy(true);
+    setBusyAction("install-framework");
     setError(null);
-    reportSteps(["准备安装加载器"]);
+    reportSteps(["准备安装插件框架"]);
     try {
       const res = await api.unityInstallLoader(gameDir);
       reportSteps(res.steps || []);
       if (!res.ok) {
-        reportError(res.error || "安装加载器失败");
+        reportError(res.error || "安装插件框架失败");
         return;
       }
       reportSuccess(
-        `加载器安装完成（BepInEx ${res.version}）。建议先启动一次游戏完成初始化，再安装翻译插件。`,
+        selected.isIl2Cpp
+          ? `插件框架安装完成（BepInEx ${res.version}）。建议先启动一次游戏完成初始化，再安装翻译插件。`
+          : `插件框架安装完成（ReiPatcher）。请再点「安装翻译插件」。`,
       );
       await refreshGame(gameDir);
       setSelectedGameDir(gameDir);
     } catch (e) {
-      reportError(toFriendlyError(e, "安装加载器失败"));
+      reportError(toFriendlyError(e, "安装插件框架失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
-  const onUninstallLoader = async () => {
+  const onUninstallLoader = () => {
     const gameDir = selected?.gameDir;
-    if (!gameDir) {
+    if (!gameDir || !selected) {
       reportError(
         games.length > 1 ? "请先在列表中点选一个游戏" : "请先检测并选择游戏",
       );
       return;
     }
-    if (!selected?.isIl2Cpp) {
-      reportError("仅 IL2CPP 游戏使用加载器卸载");
+    const fw = expectedFrameworkName(selected.isIl2Cpp);
+    if (!hasPluginFramework(selected)) {
+      reportError(`该游戏未检测到插件框架（${fw}）`);
       return;
     }
-    if (!selected.hasBepInEx) {
-      reportError("未检测到 BepInEx 加载器");
+    if (selected.hasAutoTranslator) {
+      reportError("请先卸载翻译插件，再卸载插件框架");
       return;
     }
-    if (
-      !window.confirm(
-        `将卸载 BepInEx 加载器：\n${gameDir}\n\n会删除整个 BepInEx 目录及其下全部内容（包括已装的翻译插件与缓存），以及注入文件。是否继续？`,
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
+    setUninstallConfirm({
+      kind: "framework",
+      gameDir,
+      frameworkName: fw,
+      isIl2Cpp: selected.isIl2Cpp,
+    });
+  };
+
+  const doUninstallFramework = async (gameDir: string) => {
+    setBusyAction("uninstall-framework");
     setError(null);
-    reportSteps(["准备卸载加载器"]);
+    reportSteps(["准备卸载插件框架"]);
     try {
       const res = await api.unityUninstallLoader(gameDir);
       reportSteps(res.steps || []);
       if (!res.ok) {
-        reportError(res.error || "卸载加载器失败");
+        reportError(res.error || "卸载插件框架失败");
         return;
       }
       const n = res.removed?.length ?? 0;
-      reportSuccess(`加载器卸载完成，已移除 ${n} 项。`);
+      reportSuccess(`插件框架卸载完成，已移除 ${n} 项。`);
       await refreshGame(gameDir);
       setSelectedGameDir(gameDir);
     } catch (e) {
-      reportError(toFriendlyError(e, "卸载加载器失败"));
+      reportError(toFriendlyError(e, "卸载插件框架失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
+  };
+
+  const confirmUninstall = async () => {
+    if (!uninstallConfirm) return;
+    const { kind, gameDir } = uninstallConfirm;
+    setUninstallConfirm(null);
+    if (kind === "plugin") await doUninstallPlugin(gameDir);
+    else await doUninstallFramework(gameDir);
   };
 
   const openCurrentDir = async () => {
@@ -1003,13 +1159,56 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     }
   };
 
+  const openConfigFile = async () => {
+    if (!configPath.trim() && !selected?.gameDir) return;
+    try {
+      let pathToOpen = configPath.trim();
+      // getConfig 在未安装插件时也会返回「预计路径」，但文件尚不存在。
+      // 先按当前编辑内容写入，再走与「打开游戏目录」相同的 UTF-8 路径打开逻辑。
+      if (!configExists) {
+        const gameDir = selected?.gameDir;
+        if (!gameDir) {
+          reportError("请先选择一个游戏");
+          return;
+        }
+        const res = await api.unitySaveConfig({
+          path: gameDir,
+          sections: configSections,
+        });
+        if (!res.ok) {
+          reportError(res.error || "无法创建配置文件");
+          return;
+        }
+        pathToOpen = (res.path || pathToOpen).trim();
+        setConfigPath(pathToOpen);
+        setConfigExists(true);
+        reportSuccess(`已写入配置：${pathToOpen}`);
+      }
+      if (!pathToOpen) {
+        reportError("无法确定配置文件路径");
+        return;
+      }
+      await api.openPath(pathToOpen);
+    } catch (e) {
+      reportError(toFriendlyError(e, "无法打开配置文件"));
+    }
+  };
+
+  const openConfigReadme = async () => {
+    try {
+      await api.openPath(CONFIG_README_URL);
+    } catch (e) {
+      reportError(toFriendlyError(e, "无法打开官方说明"));
+    }
+  };
+
   const onLaunch = async () => {
     const gameDir = selected?.gameDir;
     if (!gameDir) {
       reportError("请先选择一个游戏");
       return;
     }
-    setBusy(true);
+    setBusyAction("launch");
     setError(null);
     focusOutputTab();
     try {
@@ -1022,7 +1221,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     } catch (e) {
       reportError(toFriendlyError(e, "启动失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -1033,25 +1232,25 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       return;
     }
     if (!selected?.hasAutoTranslator) {
-      reportError("请先安装翻译插件后再使用 Patch and Run");
+      reportError("请先安装翻译插件后再使用「补丁并启动」");
       return;
     }
-    setBusy(true);
+    setBusyAction("launch-patch");
     setError(null);
     focusOutputTab();
     try {
       const res = await api.unityLaunchPatch(gameDir);
       if (!res.ok) {
-        reportError(res.error || "Patch and Run 启动失败");
+        reportError(res.error || "补丁并启动失败");
         return;
       }
       reportSuccess(
-        "已通过 Patch and Run 启动（首次会注入补丁；进游戏后 Alt+0 可打开翻译面板）。",
+        "已通过「补丁并启动」启动（首次会注入补丁；进游戏后 Alt+0 可打开翻译面板）。",
       );
     } catch (e) {
-      reportError(toFriendlyError(e, "Patch and Run 启动失败"));
+      reportError(toFriendlyError(e, "补丁并启动失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -1072,7 +1271,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
       );
       return;
     }
-    setBusy(true);
+    setBusyAction("self-check");
     setError(null);
     try {
       const res = await api.unitySelfCheck(gameDir);
@@ -1080,6 +1279,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
         reportError(res.error || "自检失败");
         return;
       }
+      const checkedAt = formatClock();
+      const gameExePath = joinGameExePath(gameDir, selected?.gameExe);
       const result: SelfCheck = {
         verdict: res.verdict || "looks_ok",
         verdictLabel: res.verdictLabel || "自检完成",
@@ -1092,35 +1293,31 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
         hasLog: !!res.hasLog,
         logPath: res.logPath || "",
         logSnippet: res.logSnippet || "",
+        checkedAt,
+        gameExePath,
       };
+      const tabId = `selfcheck-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const tab: SelfCheckTab = {
-        id: "selfcheck",
-        title: "自检结果",
+        id: tabId,
+        title: `自检 ${checkedAt}`,
         result,
       };
-      // Previous result leaves the UI → archive to log only (not 输出 tab)
-      if (selfCheckTab) {
-        for (const line of formatSelfCheckForLog(selfCheckTab)) {
-          appendLogOnly(line, "info");
-        }
-      }
-      setSelfCheckTab(tab);
-      setActiveBottomTab("selfcheck");
+      setSelfCheckTabs((prev) => [...prev, tab]);
+      setActiveBottomTab(tabId);
     } catch (e) {
       reportError(toFriendlyError(e, "自检失败"));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
   const showDetail = viewMode === "detail" && !!selected;
   const awaitingPath = !showDetail && !pathInput.trim();
 
-  const installBtnLabel = busy
-    ? "处理中"
-    : selected?.hasAutoTranslator
-      ? "已安装插件"
-      : "安装翻译插件";
+  const installBtnLabel = actionLabel(
+    "install-plugin",
+    selected?.hasAutoTranslator ? "已安装插件" : "安装翻译插件",
+  );
 
   const helpButton = (
     <div className="unity-help-wrap">
@@ -1150,6 +1347,10 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     >
       <p className="unity-selfcheck-verdict">{check.verdictLabel}</p>
       <p className="unity-selfcheck-summary">{check.summary}</p>
+      <p className="unity-selfcheck-meta">
+        时间 {check.checkedAt} · 游戏路径{" "}
+        <code className="unity-selfcheck-path">{check.gameExePath}</code>
+      </p>
       <p className="unity-selfcheck-meta">
         游戏 {archLabel(check.gameArch)} · 加载器 {archLabel(check.loaderArch)}{" "}
         · {runtimeLabel(check.runtime)}
@@ -1183,8 +1384,223 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     </section>
   );
 
+  const engineSections = useMemo(
+    () => engineConfigSections(configSections),
+    [configSections],
+  );
+
+  const essentialSections = useMemo(
+    () => essentialConfigSections(configSections),
+    [configSections],
+  );
+
+  const renderIniKeyControl = (
+    secName: string,
+    row: { key: string; value: string },
+  ) => {
+    const boolish = isBoolIniValue(row.value);
+    const isEndpoint =
+      secName === "Service" &&
+      (row.key === "Endpoint" || row.key === "FallbackEndpoint");
+    const isLang =
+      secName === "General" &&
+      (row.key === "Language" || row.key === "FromLanguage");
+    if (boolish) {
+      return (
+        <label className="unity-ini-switch">
+          <input
+            type="checkbox"
+            checked={row.value.trim().toLowerCase() === "true"}
+            onChange={(ev) =>
+              updateConfigKey(
+                secName,
+                row.key,
+                ev.target.checked ? "True" : "False",
+              )
+            }
+          />
+          <span>
+            {row.value.trim().toLowerCase() === "true" ? "开" : "关"}
+          </span>
+        </label>
+      );
+    }
+    if (isEndpoint) {
+      return (
+        <select
+          value={row.value}
+          onChange={(ev) =>
+            updateConfigKey(secName, row.key, ev.target.value)
+          }
+        >
+          {row.key === "FallbackEndpoint" ? (
+            <option value="">无</option>
+          ) : null}
+          {endpoints.map((o) => (
+            <option key={o.id || "__empty"} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      );
+    }
+    if (isLang) {
+      return (
+        <select
+          value={row.value}
+          onChange={(ev) =>
+            updateConfigKey(secName, row.key, ev.target.value)
+          }
+        >
+          {(row.key === "FromLanguage"
+            ? FROM_LANG_OPTIONS
+            : TARGET_LANG_OPTIONS
+          ).map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+          {!TARGET_LANG_OPTIONS.some((o) => o.id === row.value) &&
+          !FROM_LANG_OPTIONS.some((o) => o.id === row.value) ? (
+            <option value={row.value}>{row.value}</option>
+          ) : null}
+        </select>
+      );
+    }
+    return (
+      <input
+        type="text"
+        value={row.value}
+        spellCheck={false}
+        onChange={(ev) =>
+          updateConfigKey(secName, row.key, ev.target.value)
+        }
+      />
+    );
+  };
+
+  const renderIniSection = (
+    sec: UnityIniSection,
+    opts?: { mode?: "default" | "essential" },
+  ) => {
+    const mode = opts?.mode ?? "default";
+    const essential = mode === "essential";
+    const open = essential || configOpenSections[sec.name] === true;
+    const secInfo = sectionMeta(sec.name);
+    const pairKeys =
+      sec.name === "Service"
+        ? (["Endpoint", "FallbackEndpoint"] as const)
+        : sec.name === "General"
+          ? (["Language", "FromLanguage"] as const)
+          : null;
+    const pairRows = pairKeys
+      ? pairKeys
+          .map((key) => sec.keys.find((k) => k.key === key))
+          .filter((k): k is NonNullable<typeof k> => k != null)
+      : [];
+    const pairKeySet = new Set(pairRows.map((k) => k.key));
+    const otherKeys = sec.keys.filter((k) => !pairKeySet.has(k.key));
+
+    const headInner = (
+      <span className="unity-ini-section-titles">
+        <span className="unity-ini-section-label">{secInfo.label}</span>
+        <span className="unity-ini-section-key">[{sec.name}]</span>
+        <span className="unity-ini-section-help">{secInfo.help}</span>
+      </span>
+    );
+
+    const keysBody = open ? (
+      <div className="unity-ini-keys">
+        {pairRows.length > 0 ? (
+          <div className="unity-ini-pair">
+            {pairRows.map((row) => {
+              const meta = fieldMeta(row.key);
+              return (
+                <div
+                  key={`${sec.name}.${row.key}`}
+                  className="unity-ini-pair-item"
+                >
+                  <div className="unity-ini-key-title">
+                    <span className="unity-ini-key-label">{meta.label}</span>
+                    <code className="unity-ini-key-code">{row.key}</code>
+                  </div>
+                  <div className="unity-ini-key-control">
+                    {renderIniKeyControl(sec.name, row)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {otherKeys.map((row) => {
+          const id = `${sec.name}.${row.key}`;
+          const meta = fieldMeta(row.key);
+          return (
+            <div key={id} className="unity-ini-key">
+              <div className="unity-ini-key-meta">
+                <div className="unity-ini-key-title">
+                  <span className="unity-ini-key-label">{meta.label}</span>
+                  <code className="unity-ini-key-code">{row.key}</code>
+                </div>
+                <p className="unity-ini-key-help">{meta.help}</p>
+              </div>
+              <div className="unity-ini-key-control">
+                {renderIniKeyControl(sec.name, row)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    ) : null;
+
+    return (
+      <div
+        key={sec.name}
+        className={
+          "unity-ini-section" +
+          (essential ? " is-essential-part" : open ? " is-open" : "")
+        }
+      >
+        {essential ? (
+          <div className="unity-ini-section-head is-static">{headInner}</div>
+        ) : (
+          <button
+            type="button"
+            className="unity-ini-section-head"
+            onClick={() =>
+              setConfigOpenSections((prev) => ({
+                ...prev,
+                [sec.name]: !open,
+              }))
+            }
+          >
+            {headInner}
+            <span className="unity-ini-section-chevron" aria-hidden="true">
+              {open ? "▾" : "▸"}
+            </span>
+          </button>
+        )}
+        {keysBody}
+      </div>
+    );
+  };
+
   return (
     <div className="unity-shell" aria-hidden={!active}>
+      {configToast
+        ? createPortal(
+            <div
+              className={
+                "unity-config-toast" + (configToast.ok ? " is-ok" : " is-fail")
+              }
+              role="status"
+              aria-live="polite"
+            >
+              {configToast.message}
+            </div>,
+            document.body,
+          )
+        : null}
       {showDetail ? (
         <header className="unity-top unity-top-detail">
           <div className="unity-top-brand">
@@ -1233,9 +1649,139 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
             >
               游戏打不开
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                closeHelpMenu();
+                setHelpDialog("config-keys");
+              }}
+            >
+              配置文件全部条目含义
+            </button>
           </div>,
           document.body,
         )}
+
+      {uninstallConfirm && (
+        <div
+          className="unity-help-backdrop"
+          onClick={() => setUninstallConfirm(null)}
+          role="presentation"
+        >
+          <div
+            className="unity-help-dialog unity-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unity-uninstall-confirm-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <header className="unity-help-dialog-head">
+              <h2 id="unity-uninstall-confirm-title">
+                {uninstallConfirm.kind === "plugin"
+                  ? "确认卸载翻译插件"
+                  : "确认卸载插件框架"}
+              </h2>
+              <button
+                type="button"
+                className="unity-btn"
+                onClick={() => setUninstallConfirm(null)}
+              >
+                关闭
+              </button>
+            </header>
+            <div className="unity-help-dialog-body">
+              {uninstallConfirm.kind === "plugin" ? (
+                <>
+                  <p>
+                    将卸载 <strong>XUnity.AutoTranslator</strong>
+                    ，并删除插件生成的缓存/配置文件。插件框架（
+                    {uninstallConfirm.frameworkName}）会保留。
+                  </p>
+                  <p className="unity-confirm-path">
+                    <code>{uninstallConfirm.gameDir}</code>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    将卸载插件框架{" "}
+                    <strong>{uninstallConfirm.frameworkName}</strong>
+                    {uninstallConfirm.isIl2Cpp
+                      ? "（会删除整个 BepInEx 目录及其注入文件）。"
+                      : "（会删除 ReiPatcher 目录及相关注入）。"}
+                  </p>
+                  <p className="unity-confirm-path">
+                    <code>{uninstallConfirm.gameDir}</code>
+                  </p>
+                </>
+              )}
+              <div className="unity-confirm-actions">
+                <button
+                  type="button"
+                  className="unity-btn"
+                  onClick={() => setUninstallConfirm(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="unity-btn unity-btn-danger"
+                  onClick={() => void confirmUninstall()}
+                >
+                  确认卸载
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {engineConfigOpen && (
+        <div
+          className="unity-help-backdrop"
+          onClick={() => setEngineConfigOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="unity-help-dialog unity-help-dialog-wide unity-engine-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unity-engine-config-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <header className="unity-help-dialog-head">
+              <h2 id="unity-engine-config-title">翻译引擎参数</h2>
+              <div className="unity-help-dialog-actions">
+                <button
+                  type="button"
+                  className="unity-btn unity-btn-primary"
+                  disabled={busy || !selected}
+                  onClick={() => void onSaveConfig()}
+                  title="将当前表单写入游戏目录 Config.ini"
+                >
+                  {actionLabel("save-config", "保存")}
+                </button>
+                <button
+                  type="button"
+                  className="unity-btn"
+                  onClick={() => setEngineConfigOpen(false)}
+                >
+                  关闭
+                </button>
+              </div>
+            </header>
+            <div className="unity-help-dialog-body">
+              <p className="unity-engine-dialog-hint">
+                在「翻译服务」里选好引擎后，若该引擎需要 Key 或自定义地址，在此填写对应分区。修改后点右上角「保存」。
+              </p>
+              <div className="unity-ini-sections">
+                {engineSections.map((sec) => renderIniSection(sec))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {helpDialog === "startup-flow" && (
         <div
@@ -1269,8 +1815,9 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
               <h3>Mono 游戏</h3>
               <ol>
                 <li>检测游戏（选目录或拖入文件夹 / .exe）</li>
-                <li>直接安装翻译插件</li>
-                <li>启动游戏</li>
+                <li>先安装插件框架（ReiPatcher）</li>
+                <li>再安装翻译插件</li>
+                <li>启动游戏（可用「补丁并启动」）</li>
                 <li>
                   游戏内按 <strong>Alt+0</strong> 打开翻译面板
                 </li>
@@ -1278,7 +1825,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
               <h3>IL2CPP 游戏</h3>
               <ol>
                 <li>检测游戏（选目录或拖入文件夹 / .exe）</li>
-                <li>先安装 BepInEx 加载器</li>
+                <li>先安装插件框架（BepInEx）</li>
                 <li>启动一次游戏（完成 BepInEx 初始化）</li>
                 <li>再安装翻译插件</li>
                 <li>启动游戏</li>
@@ -1288,9 +1835,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
               </ol>
               <p>
                 <strong>说明：</strong>
-                本模块只负责安装翻译插件与（IL2CPP 所需的）BepInEx
-                加载器；游戏内翻译请求由 XUnity 自行发起，不经本软件翻译接口。若本地已有
-                GitHub 缓存则不会重复下载。
+                必须先装插件框架再装翻译插件；卸载时相反——先卸翻译插件，再卸插件框架。游戏内翻译请求由
+                XUnity 自行发起，不经本软件翻译接口。
               </p>
             </div>
           </div>
@@ -1417,6 +1963,82 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
         </div>
       )}
 
+      {helpDialog === "config-keys" && (
+        <div
+          className="unity-help-backdrop"
+          onClick={() => setHelpDialog(null)}
+          role="presentation"
+        >
+          <div
+            className="unity-help-dialog unity-help-dialog-wide"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unity-help-config-keys-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <header className="unity-help-dialog-head">
+              <h2 id="unity-help-config-keys-title">
+                配置文件全部条目含义
+              </h2>
+              <button
+                type="button"
+                className="unity-btn"
+                onClick={() => setHelpDialog(null)}
+              >
+                关闭
+              </button>
+            </header>
+            <div className="unity-help-dialog-body">
+              <p>
+                下列说明依据{" "}
+                <strong>XUnity.AutoTranslator</strong> 官方 README 的
+                Configuration 章节整理，对应游戏内{" "}
+                <code>Config.ini</code> /{" "}
+                <code>AutoTranslatorConfig.ini</code> 各分区与键。
+              </p>
+              <div className="unity-help-actions">
+                <button
+                  type="button"
+                  className="unity-btn unity-btn-primary"
+                  onClick={() => void openConfigReadme()}
+                >
+                  打开官方 README
+                </button>
+              </div>
+              {CONFIG_HELP_CATALOG.map((group) => {
+                const sec = sectionMeta(group.section);
+                return (
+                  <section
+                    key={group.section}
+                    className="unity-config-help-section"
+                  >
+                    <h3>
+                      {sec.label}{" "}
+                      <code>[{group.section}]</code>
+                    </h3>
+                    <p className="unity-config-help-sec-help">{sec.help}</p>
+                    <dl className="unity-config-help-list">
+                      {group.keys.map((key) => {
+                        const meta = fieldMeta(key);
+                        return (
+                          <div key={key} className="unity-config-help-item">
+                            <dt>
+                              <span>{meta.label}</span>
+                              <code>{key}</code>
+                            </dt>
+                            <dd>{meta.help}</dd>
+                          </div>
+                        );
+                      })}
+                    </dl>
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div
         ref={workspaceRef}
         className={
@@ -1429,15 +2051,17 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
           className="unity-col-main"
           style={
             showDetail
-              ? { flex: "1 1 0%", minWidth: 280, width: "auto" }
+              ? {
+                  flex: `0 0 ${detailWidth}px`,
+                  width: detailWidth,
+                  minWidth: 280,
+                  maxWidth: 480,
+                }
               : undefined
           }
         >
           {showDetail && selected ? (
             <section className="unity-games">
-              <div className="unity-section-head">
-                <h2>详细信息</h2>
-              </div>
               <div className="unity-games-body">
                 <div className="unity-game-detail">
                   <h3 className="unity-game-detail-title">
@@ -1445,22 +2069,25 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   </h3>
                     {(() => {
                       const exe = selected.gameExe || "未知";
+                      const frameworkInstalled = hasPluginFramework(selected);
+                      const fwName = expectedFrameworkName(selected.isIl2Cpp);
                       const pluginLabel = selected.hasAutoTranslator
                         ? `XUnity.AutoTranslator${
                             selected.autoTranslatorVersion
                               ? ` ${selected.autoTranslatorVersion}`
                               : ""
                           }`
-                        : "未安装";
-                      const loaderLabel = selected.loaderName
-                        ? `${selected.loaderName}${
+                        : "需要安装 XUnity.AutoTranslator";
+                      const loaderLabel = frameworkInstalled
+                        ? `${fwName}${
                             selected.loaderVersion
                               ? ` ${selected.loaderVersion}`
                               : ""
                           }`
-                        : selected.hasBepInEx
-                          ? "BepInEx"
-                          : "未安装";
+                        : `需要安装 ${fwName}`;
+                      const pathHasChinese = pathContainsChinese(
+                        selected.gameDir,
+                      );
                       return (
                         <dl className="unity-fact-list">
                           <div className="unity-fact">
@@ -1481,23 +2108,29 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                             </dd>
                           </div>
                           <div className="unity-fact">
-                            <dt>推荐安装方式</dt>
+                            <dt>插件框架</dt>
                             <dd>
-                              <strong>
-                                {selected.installMethod || "未知"}
+                              <strong
+                                className={
+                                  frameworkInstalled ? undefined : "is-missing"
+                                }
+                              >
+                                {loaderLabel}
                               </strong>
                             </dd>
                           </div>
                           <div className="unity-fact">
                             <dt>翻译插件</dt>
                             <dd>
-                              <strong>{pluginLabel}</strong>
-                            </dd>
-                          </div>
-                          <div className="unity-fact">
-                            <dt>插件框架</dt>
-                            <dd>
-                              <strong>{loaderLabel}</strong>
+                              <strong
+                                className={
+                                  selected.hasAutoTranslator
+                                    ? undefined
+                                    : "is-missing"
+                                }
+                              >
+                                {pluginLabel}
+                              </strong>
                             </dd>
                           </div>
                           <div className="unity-fact">
@@ -1509,9 +2142,22 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                           <div className="unity-fact">
                             <dt>游戏目录</dt>
                             <dd>
-                              <strong className="unity-fact-path">
+                              <strong
+                                className={
+                                  "unity-fact-path" +
+                                  (pathHasChinese ? " is-warn" : "")
+                                }
+                              >
                                 {selected.gameDir}
                               </strong>
+                              {pathHasChinese ? (
+                                <p className="unity-fact-path-warn">
+                                  路径包含中文（或 CJK）字符。BepInEx / Doorstop /
+                                  ReiPatcher
+                                  在含中文路径下常见闪退、无法注入或打不开；建议把游戏移到纯英文路径（例如
+                                  D:\Games\GameName）。
+                                </p>
+                              ) : null}
                             </dd>
                           </div>
                         </dl>
@@ -1524,7 +2170,7 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                         disabled={busy}
                         onClick={() => void onLaunch()}
                       >
-                        {busy ? "处理中" : "启动游戏"}
+                        {actionLabel("launch", "启动游戏")}
                       </button>
                       <button
                         type="button"
@@ -1532,12 +2178,12 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                         disabled={busy || !selected.hasAutoTranslator}
                         title={
                           selected.hasAutoTranslator
-                            ? "通过 ReiPatcher 补丁并启动（推荐首次使用）"
+                            ? "通过 ReiPatcher 注入补丁并启动（推荐首次使用）"
                             : "请先安装翻译插件"
                         }
                         onClick={() => void onLaunchPatch()}
                       >
-                        {busy ? "处理中" : "Patch and Run"}
+                        {actionLabel("launch-patch", "补丁并启动")}
                       </button>
                       <button
                         type="button"
@@ -1752,8 +2398,19 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                                 <span title="Unity 脚本后端">
                                   {runtimeLabel(g.runtime, g.isIl2Cpp)}
                                 </span>
-                                <span title="推荐安装方式">
-                                  {g.installMethod}
+                                <span
+                                  title={
+                                    hasPluginFramework(g)
+                                      ? `插件框架：${expectedFrameworkName(g.isIl2Cpp)}`
+                                      : `未装插件框架（${expectedFrameworkName(g.isIl2Cpp)}）`
+                                  }
+                                  className={
+                                    hasPluginFramework(g) ? undefined : "is-missing"
+                                  }
+                                >
+                                  {hasPluginFramework(g)
+                                    ? expectedFrameworkName(g.isIl2Cpp)
+                                    : "无框架"}
                                 </span>
                                 <span
                                   title={
@@ -1762,6 +2419,9 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                                       : g.hasAutoTranslator
                                         ? "已装翻译插件"
                                         : "未装翻译插件"
+                                  }
+                                  className={
+                                    g.hasAutoTranslator ? undefined : "is-missing"
                                   }
                                 >
                                   {g.plugins && g.plugins.length > 0
@@ -1794,14 +2454,15 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
             <button
               type="button"
               className="unity-col-resizer"
-              aria-label="调整配置栏宽度"
-              onMouseDown={beginSideResize}
+              aria-label="调整详细信息栏宽度"
+              onMouseDown={beginDetailResize}
             />
             <aside
               className="unity-col-side"
               style={{
-                flex: `0 0 ${sideWidth}px`,
-                width: sideWidth,
+                flex: "1 1 0%",
+                width: "auto",
+                minWidth: 320,
                 maxWidth: "none",
               }}
             >
@@ -1812,201 +2473,97 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
             </div>
             <div className="unity-config-body">
               <p className="unity-config-hint">
-                下列选项对应游戏内 Config.ini / AutoTranslatorConfig.ini。常见只需改「翻译服务」与「语言」；其余保持默认即可。说明依据
-                XUnity.AutoTranslator 官方文档。
+                下列选项对应游戏内 Config.ini /
+                AutoTranslatorConfig.ini。常见只需改「翻译服务」与「语言」；其余保持默认即可。
               </p>
               {configPath ? (
-                <p className="unity-target">
-                  配置文件：<code>{configPath}</code>
-                </p>
+                <button
+                  type="button"
+                  className="unity-config-path-link"
+                  onClick={() => void openConfigFile()}
+                  title={
+                    configExists
+                      ? "点击打开配置文件"
+                      : "尚未生成，点击将写入并打开"
+                  }
+                >
+                  <span className="unity-config-path-link-label">磁盘路径</span>
+                  <code className="unity-config-path-link-value">
+                    {configPath}
+                  </code>
+                </button>
               ) : (
                 <p className="unity-warn">
                   未检测到配置文件时使用完整默认项；安装或保存后写入游戏目录。
                 </p>
               )}
               <div className="unity-ini-sections">
-                {configSections.map((sec) => {
-                  const open = configOpenSections[sec.name] === true;
-                  const secInfo = sectionMeta(sec.name);
-                  return (
-                    <div
-                      key={sec.name}
-                      className={
-                        "unity-ini-section" + (open ? " is-open" : "")
-                      }
-                    >
-                      <button
-                        type="button"
-                        className="unity-ini-section-head"
-                        onClick={() =>
-                          setConfigOpenSections((prev) => ({
-                            ...prev,
-                            [sec.name]: !open,
-                          }))
-                        }
-                      >
-                        <span className="unity-ini-section-titles">
-                          <span className="unity-ini-section-label">
-                            {secInfo.label}
-                          </span>
-                          <span className="unity-ini-section-key">
-                            [{sec.name}]
-                          </span>
-                          <span className="unity-ini-section-help">
-                            {secInfo.help}
-                          </span>
-                        </span>
-                        <span className="unity-ini-section-chevron" aria-hidden="true">
-                          {open ? "▾" : "▸"}
-                        </span>
-                      </button>
-                      {open ? (
-                        <div className="unity-ini-keys">
-                          {sec.keys.map((row) => {
-                            const id = `${sec.name}.${row.key}`;
-                            const meta = fieldMeta(row.key);
-                            const boolish = isBoolIniValue(row.value);
-                            const isEndpoint =
-                              sec.name === "Service" &&
-                              (row.key === "Endpoint" ||
-                                row.key === "FallbackEndpoint");
-                            const isLang =
-                              sec.name === "General" &&
-                              (row.key === "Language" ||
-                                row.key === "FromLanguage");
-                            return (
-                              <div key={id} className="unity-ini-key">
-                                <div className="unity-ini-key-meta">
-                                  <div className="unity-ini-key-title">
-                                    <span className="unity-ini-key-label">
-                                      {meta.label}
-                                    </span>
-                                    <code className="unity-ini-key-code">
-                                      {row.key}
-                                    </code>
-                                  </div>
-                                  <p className="unity-ini-key-help">
-                                    {meta.help}
-                                  </p>
-                                </div>
-                                <div className="unity-ini-key-control">
-                                  {boolish ? (
-                                    <label className="unity-ini-switch">
-                                      <input
-                                        type="checkbox"
-                                        checked={
-                                          row.value.trim().toLowerCase() ===
-                                          "true"
-                                        }
-                                        onChange={(ev) =>
-                                          updateConfigKey(
-                                            sec.name,
-                                            row.key,
-                                            ev.target.checked
-                                              ? "True"
-                                              : "False",
-                                          )
-                                        }
-                                      />
-                                      <span>
-                                        {row.value.trim().toLowerCase() ===
-                                        "true"
-                                          ? "开"
-                                          : "关"}
-                                      </span>
-                                    </label>
-                                  ) : isEndpoint ? (
-                                    <select
-                                      value={row.value}
-                                      onChange={(ev) =>
-                                        updateConfigKey(
-                                          sec.name,
-                                          row.key,
-                                          ev.target.value,
-                                        )
-                                      }
-                                    >
-                                      {row.key === "FallbackEndpoint" ? (
-                                        <option value="">无</option>
-                                      ) : null}
-                                      {endpoints.map((o) => (
-                                        <option
-                                          key={o.id || "__empty"}
-                                          value={o.id}
-                                        >
-                                          {o.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  ) : isLang ? (
-                                    <select
-                                      value={row.value}
-                                      onChange={(ev) =>
-                                        updateConfigKey(
-                                          sec.name,
-                                          row.key,
-                                          ev.target.value,
-                                        )
-                                      }
-                                    >
-                                      {(row.key === "FromLanguage"
-                                        ? FROM_LANG_OPTIONS
-                                        : TARGET_LANG_OPTIONS
-                                      ).map((o) => (
-                                        <option key={o.id} value={o.id}>
-                                          {o.label}
-                                        </option>
-                                      ))}
-                                      {!TARGET_LANG_OPTIONS.some(
-                                        (o) => o.id === row.value,
-                                      ) &&
-                                      !FROM_LANG_OPTIONS.some(
-                                        (o) => o.id === row.value,
-                                      ) ? (
-                                        <option value={row.value}>
-                                          {row.value}
-                                        </option>
-                                      ) : null}
-                                    </select>
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      value={row.value}
-                                      spellCheck={false}
-                                      onChange={(ev) =>
-                                        updateConfigKey(
-                                          sec.name,
-                                          row.key,
-                                          ev.target.value,
-                                        )
-                                      }
-                                    />
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : null}
+                {essentialSections.length > 0 ? (
+                  <div className="unity-config-essential">
+                    <div className="unity-config-essential-head">
+                      <strong>必需配置</strong>
+                      <span>翻译服务与语言，安装后通常只需改这里</span>
                     </div>
-                  );
-                })}
+                    <div className="unity-config-essential-body">
+                      {essentialSections.map((sec) =>
+                        renderIniSection(sec, { mode: "essential" }),
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+                {visibleConfigSections(configSections).map((sec) =>
+                  renderIniSection(sec),
+                )}
+                {engineSections.length > 0 ? (
+                  <div className="unity-ini-section unity-engine-entry">
+                    <button
+                      type="button"
+                      className="unity-ini-section-head"
+                      onClick={() => {
+                        setEngineConfigOpen(true);
+                        setConfigOpenSections((prev) => {
+                          const next = { ...prev };
+                          const first = engineSections[0]?.name;
+                          if (first && next[first] == null) next[first] = true;
+                          return next;
+                        });
+                      }}
+                    >
+                      <span className="unity-ini-section-titles">
+                        <span className="unity-ini-section-label">
+                          翻译引擎参数
+                        </span>
+                        <span className="unity-ini-section-key">
+                          {engineSections.length} 个引擎分区
+                        </span>
+                        <span className="unity-ini-section-help">
+                          Google / DeepL / 百度等引擎的 Key、地址与间隔；点击打开详细配置。
+                        </span>
+                      </span>
+                      <span
+                        className="unity-ini-section-chevron"
+                        aria-hidden="true"
+                      >
+                        ▸
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              {selected?.isIl2Cpp && !selected.hasBepInEx ? (
+              {selected && !hasPluginFramework(selected) ? (
                 <p className="unity-warn">
-                  该游戏为 IL2CPP，请先安装加载器（BepInEx 6），再安装翻译插件。
+                  请先安装插件框架（
+                  {expectedFrameworkName(selected.isIl2Cpp)}
+                  ），再安装翻译插件。
                 </p>
               ) : null}
-              {selected?.isIl2Cpp && selected.hasBepInEx ? (
+              {selected &&
+              hasPluginFramework(selected) &&
+              !selected.hasAutoTranslator ? (
                 <p className="unity-ok">
-                  已检测到 BepInEx 加载器，可直接安装翻译插件。
-                </p>
-              ) : null}
-              {selected ? (
-                <p className="unity-target">
-                  目标（{archLabel(selected.arch)} ·{" "}
-                  {runtimeLabel(selected.runtime, selected.isIl2Cpp)}）：
-                  <code>{selected.gameDir}</code>
+                  已检测到插件框架（
+                  {expectedFrameworkName(selected.isIl2Cpp)}
+                  ），可安装翻译插件。
                 </p>
               ) : null}
             </div>
@@ -2018,47 +2575,59 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                 onClick={() => void onSaveConfig()}
                 title="将当前表单写入游戏目录 Config.ini"
               >
-                {busy ? "处理中" : "保存配置"}
+                {actionLabel("save-config", "保存配置")}
               </button>
               <button
                 type="button"
                 className="unity-btn unity-btn-wide"
                 disabled={busy || !selected}
                 onClick={() => void runSelfCheck()}
-                title="装完打不开时：核对位数与 BepInEx 日志（本地，不出网）"
+                title="装完打不开时：核对位数与日志（本地，不出网）"
               >
-                {busy ? "处理中" : "打不开？自检"}
+                {actionLabel("self-check", "打不开？自检")}
               </button>
-              {selected?.isIl2Cpp ? (
-                <>
-                  <button
-                    type="button"
-                    className="unity-btn unity-btn-primary unity-btn-wide"
-                    disabled={busy || !selected || selected.hasBepInEx}
-                    onClick={() => void onInstallLoader()}
-                    title={
-                      selected.hasBepInEx
-                        ? "已安装 BepInEx"
-                        : "为 IL2CPP 游戏安装 BepInEx 6"
-                    }
-                  >
-                    {busy ? "处理中" : "安装加载器"}
-                  </button>
-                  <button
-                    type="button"
-                    className="unity-btn unity-btn-danger unity-btn-wide"
-                    disabled={busy || !selected.hasBepInEx}
-                    onClick={() => void onUninstallLoader()}
-                    title={
-                      selected.hasBepInEx
-                        ? "卸载 BepInEx 及其下全部内容"
-                        : "未安装加载器"
-                    }
-                  >
-                    {busy ? "处理中" : "卸载加载器"}
-                  </button>
-                </>
-              ) : null}
+              <button
+                type="button"
+                className="unity-btn unity-btn-primary unity-btn-wide"
+                disabled={
+                  busy || !selected || hasPluginFramework(selected)
+                }
+                onClick={() => void onInstallLoader()}
+                title={
+                  selected && hasPluginFramework(selected)
+                    ? `已安装 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                    : selected
+                      ? `安装 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                      : undefined
+                }
+              >
+                {actionLabel(
+                  "install-framework",
+                  selected && hasPluginFramework(selected)
+                    ? "已安装框架"
+                    : "安装插件框架",
+                )}
+              </button>
+              <button
+                type="button"
+                className="unity-btn unity-btn-danger unity-btn-wide"
+                disabled={
+                  busy ||
+                  !selected ||
+                  !hasPluginFramework(selected) ||
+                  !!selected.hasAutoTranslator
+                }
+                onClick={() => onUninstallLoader()}
+                title={
+                  selected?.hasAutoTranslator
+                    ? "请先卸载翻译插件"
+                    : selected && hasPluginFramework(selected)
+                      ? `卸载 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                      : "未安装插件框架"
+                }
+              >
+                {actionLabel("uninstall-framework", "卸载插件框架")}
+              </button>
               <button
                 type="button"
                 className="unity-btn unity-btn-primary unity-btn-wide"
@@ -2066,14 +2635,14 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   busy ||
                   !selected ||
                   selected.hasAutoTranslator ||
-                  (selected.isIl2Cpp && !selected.hasBepInEx)
+                  !hasPluginFramework(selected)
                 }
                 onClick={() => void onInstall()}
                 title={
                   selected?.hasAutoTranslator
                     ? "已安装翻译插件"
-                    : selected?.isIl2Cpp && !selected.hasBepInEx
-                      ? "请先安装加载器"
+                    : selected && !hasPluginFramework(selected)
+                      ? `请先安装插件框架（${expectedFrameworkName(selected.isIl2Cpp)}）`
                       : undefined
                 }
               >
@@ -2083,41 +2652,16 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                 type="button"
                 className="unity-btn unity-btn-danger unity-btn-wide"
                 disabled={busy || !selected?.hasAutoTranslator}
-                onClick={() => void onUninstall()}
+                onClick={() => onUninstall()}
                 title={
                   selected?.hasAutoTranslator
-                    ? "卸载所选游戏中的翻译插件"
+                    ? "卸载所选游戏中的翻译插件（保留插件框架）"
                     : "所选游戏未安装插件"
                 }
               >
-                {busy ? "处理中" : "卸载翻译插件"}
+                {actionLabel("uninstall-plugin", "卸载翻译插件")}
               </button>
             </div>
-          </section>
-
-          <section className="unity-footnote">
-            <h3>流量说明</h3>
-            <ul>
-              <li>
-                <strong>检测 / 自检</strong>：只扫本地，不出网。
-              </li>
-              <li>
-                <strong>打不开？自检</strong>
-                ：对比游戏与加载器位数，并查看 BepInEx
-                日志迹象，区分「装错 x86/x64」与「可能需要更新的 BepInEx BE」。
-              </li>
-              <li>
-                <strong>安装加载器</strong>
-                ：优先用本地 resources/bepinex 缓存；没有则下载一次并保存。
-              </li>
-              <li>
-                <strong>安装插件</strong>：从 GitHub 下载一次翻译插件包。
-              </li>
-              <li>
-                <strong>游戏内翻译</strong>
-                ：由 XUnity 自行请求，不经本软件翻译接口。
-              </li>
-            </ul>
           </section>
             </aside>
           </>
@@ -2169,39 +2713,52 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   输出
                 </button>
               </div>
-              {selfCheckTab ? (
-                <div
-                  className={
-                    "unity-bottom-tab-wrap" +
-                    (activeBottomTab === "selfcheck" ? " is-active" : "")
-                  }
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeBottomTab === "selfcheck"}
+              {selfCheckTabs.map((tab) => {
+                const isActive = activeBottomTab === tab.id;
+                return (
+                  <div
+                    key={tab.id}
                     className={
-                      "unity-bottom-tab" +
-                      (activeBottomTab === "selfcheck" ? " is-active" : "")
+                      "unity-bottom-tab-wrap" + (isActive ? " is-active" : "")
                     }
-                    title={selfCheckTab.title}
-                    onClick={() => setActiveBottomTab("selfcheck")}
-                  >
-                    {selfCheckTab.title}
-                  </button>
-                  <button
-                    type="button"
-                    className="unity-bottom-tab-close"
-                    aria-label={`关闭 ${selfCheckTab.title}`}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      closeSelfCheckTab();
+                    onContextMenu={(ev) => {
+                      ev.preventDefault();
+                      setSelfCheckTabMenu({
+                        x: ev.clientX,
+                        y: ev.clientY,
+                        tabId: tab.id,
+                      });
                     }}
                   >
-                    ×
-                  </button>
-                </div>
-              ) : null}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      className={
+                        "unity-bottom-tab" + (isActive ? " is-active" : "")
+                      }
+                      title={tab.title}
+                      onClick={() => {
+                        setActiveBottomTab(tab.id);
+                        setSelfCheckTabMenu(null);
+                      }}
+                    >
+                      {tab.title}
+                    </button>
+                    <button
+                      type="button"
+                      className="unity-bottom-tab-close"
+                      aria-label={`关闭 ${tab.title}`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        closeSelfCheckTab(tab.id);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
             </div>
 
             {activeBottomTab === "output" ? (
@@ -2236,11 +2793,44 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   </p>
                 ) : null}
               </section>
-            ) : selfCheckTab ? (
-              renderSelfCheckPanel(selfCheckTab.result)
-            ) : null}
+            ) : (
+              (() => {
+                const tab = selfCheckTabs.find((t) => t.id === activeBottomTab);
+                return tab ? renderSelfCheckPanel(tab.result) : null;
+              })()
+            )}
           </div>
       </div>
+
+      {selfCheckTabMenu &&
+        createPortal(
+          <div
+            className="unity-tab-context-menu"
+            role="menu"
+            style={{
+              position: "fixed",
+              top: selfCheckTabMenu.y,
+              left: selfCheckTabMenu.x,
+              zIndex: 10000,
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => closeSelfCheckTab(selfCheckTabMenu.tabId)}
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => closeAllSelfCheckTabs()}
+            >
+              全部关闭
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

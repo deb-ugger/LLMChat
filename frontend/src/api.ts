@@ -274,6 +274,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+  openPath: (path: string) =>
+    request<{ ok: boolean }>("/api/open-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   exportFileToPath: (body: { path: string; content: string }) =>
     request<{ ok: boolean; path: string }>("/api/export-file", {
       method: "POST",

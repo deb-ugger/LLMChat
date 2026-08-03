@@ -402,9 +402,9 @@ bool nameLooksLikeXUnityConfig(const std::string& fileName)
 bool detectAutoTranslator(const fs::path& gameDir)
 {
     std::error_code ec;
+    // Actual plugin / cache markers only — ReiPatcher.exe alone is the framework.
     if (fs::exists(gameDir / "AutoTranslator", ec))
         return true;
-    // Setup.exe alone only means zip was extracted; require real plugin/ReiPatcher markers.
     if (fs::exists(gameDir / "Translation", ec))
         return true;
     if (fs::exists(gameDir / "BepInEx" / "plugins" / "XUnity.AutoTranslator", ec))
@@ -423,9 +423,27 @@ bool detectAutoTranslator(const fs::path& gameDir)
             gameDir / "ReiPatcher" / "Patches" / "XUnity.AutoTranslator.Patcher.dll",
             ec))
         return true;
-    if (fs::exists(gameDir / "ReiPatcher" / "ReiPatcher.exe", ec)
-        && fs::exists(gameDir / "ReiPatcher" / "Patches", ec))
-        return true;
+
+    // Any other XUnity*.dll under ReiPatcher/Patches
+    {
+        const fs::path patches = gameDir / "ReiPatcher" / "Patches";
+        if (fs::is_directory(patches, ec))
+        {
+            for (fs::directory_iterator it(patches, ec), end; !ec && it != end;
+                 it.increment(ec))
+            {
+                if (ec || !it->is_regular_file(ec))
+                    continue;
+                const std::string name = pathUtf8(it->path().filename());
+                std::string lower = name;
+                for (char& c : lower)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                if (lower.find("xunity") != std::string::npos
+                    && lower.ends_with(".dll"))
+                    return true;
+            }
+        }
+    }
 
     // ReiPatcher Setup copies plugin DLLs into *_Data/Managed
     for (fs::directory_iterator it(gameDir, ec), end; !ec && it != end; it.increment(ec))
@@ -439,7 +457,15 @@ bool detectAutoTranslator(const fs::path& gameDir)
                 it->path() / "Managed" / "XUnity.AutoTranslator.Plugin.Core.dll",
                 ec))
             return true;
-        if (fs::exists(it->path() / "Managed" / "ReiPatcher.exe", ec))
+        if (fs::exists(
+                it->path() / "Managed" / "XUnity.Common.dll",
+                ec))
+            return true;
+        if (fs::exists(
+                it->path() / "Managed" / "XUnity.ResourceRedirector.dll",
+                ec))
+            return true;
+        if (fs::is_directory(it->path() / "Managed" / "Translators", ec))
             return true;
     }
 
@@ -462,6 +488,13 @@ bool detectBepInEx(const fs::path& gameDir)
     std::error_code ec;
     return fs::exists(gameDir / "BepInEx" / "core", ec)
            || fs::exists(gameDir / "BepInEx" / "plugins", ec);
+}
+
+bool detectReiPatcher(const fs::path& gameDir)
+{
+    std::error_code ec;
+    return fs::exists(gameDir / "ReiPatcher" / "ReiPatcher.exe", ec)
+           || fs::exists(gameDir / "ReiPatcher" / "Patches", ec);
 }
 
 std::vector<std::string> listBepInExPlugins(const fs::path& gameDir)
@@ -490,12 +523,11 @@ std::vector<std::string> listBepInExPlugins(const fs::path& gameDir)
     return plugins;
 }
 
-std::string chooseMethod(bool isUnity, bool isIl2Cpp, bool hasBepInEx)
+std::string chooseMethod(bool isUnity, bool isIl2Cpp, bool /*hasBepInEx*/)
 {
     if (!isUnity)
         return "none";
-    if (hasBepInEx)
-        return isIl2Cpp ? "BepInEx-IL2CPP" : "BepInEx";
+    // Policy: Mono always ReiPatcher; IL2CPP always BepInEx.
     if (isIl2Cpp)
         return "BepInEx-IL2CPP";
     return "ReiPatcher";
@@ -542,11 +574,24 @@ UnityGameItem inspectGameDir(const fs::path& input)
 
     item.plugins = listBepInExPlugins(gameDir);
 
-    // Plugin framework
-    const bool hasRei =
-        fs::exists(gameDir / "ReiPatcher" / "ReiPatcher.exe", ec)
-        || fs::exists(gameDir / "ReiPatcher" / "Patches", ec);
-    if (item.hasBepInEx)
+    // Plugin framework: Mono → ReiPatcher, IL2CPP → BepInEx (report what matches policy first)
+    const bool hasRei = detectReiPatcher(gameDir);
+    if (item.isIl2Cpp && item.hasBepInEx)
+    {
+        item.loaderName = "BepInEx";
+        fs::path core = gameDir / "BepInEx" / "core" / "BepInEx.Core.dll";
+        if (!fs::is_regular_file(core, ec))
+            core = findNamedFileUnder(gameDir / "BepInEx" / "core", "BepInEx.Core.dll", 2);
+        if (!fs::is_regular_file(core, ec))
+            core = findNamedFileUnder(gameDir / "BepInEx" / "core", "BepInEx.dll", 2);
+        item.loaderVersion = readFileVersion(core);
+    }
+    else if (!item.isIl2Cpp && hasRei)
+    {
+        item.loaderName = "ReiPatcher";
+        item.loaderVersion = readFileVersion(gameDir / "ReiPatcher" / "ReiPatcher.exe");
+    }
+    else if (item.hasBepInEx)
     {
         item.loaderName = "BepInEx";
         fs::path core = gameDir / "BepInEx" / "core" / "BepInEx.Core.dll";
@@ -658,8 +703,8 @@ bool resolveGameTarget(
  * Uninstall targets = translation plugin this module installs
  * + files the plugin generates at runtime (caches / configs)
  * + Patch and Run shortcuts + TMP/CJK font assets we copied into the game root
- * + ReiPatcher / XUnity files injected into *_Data/Managed.
- * Does not remove BepInEx loader itself.
+ * + XUnity files injected into *_Data/Managed.
+ * Keeps the plugin framework itself (ReiPatcher / BepInEx loader).
  */
 std::vector<fs::path> listXUnityUninstallTargets(const fs::path& gameDir)
 {
@@ -672,7 +717,26 @@ std::vector<fs::path> listXUnityUninstallTargets(const fs::path& gameDir)
 
     add(gameDir / "AutoTranslator");
     add(gameDir / "SetupReiPatcherAndAutoTranslator.exe");
-    add(gameDir / "ReiPatcher");
+    // Keep ReiPatcher/ framework; remove XUnity patch DLLs under Patches/
+    {
+        std::error_code ec;
+        const fs::path patches = gameDir / "ReiPatcher" / "Patches";
+        if (fs::is_directory(patches, ec))
+        {
+            for (fs::directory_iterator it(patches, ec), end; !ec && it != end;
+                 it.increment(ec))
+            {
+                if (ec || !it->is_regular_file(ec))
+                    continue;
+                const std::string name = pathUtf8(it->path().filename());
+                std::string lower = name;
+                for (char& c : lower)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                if (lower.find("xunity") != std::string::npos)
+                    out.push_back(it->path());
+            }
+        }
+    }
     add(gameDir / "BepInEx" / "plugins" / "XUnity.AutoTranslator");
     add(gameDir / "BepInEx" / "plugins" / "XUnity.ResourceRedirector");
     add(gameDir / "BepInEx" / "core" / "XUnity.Common.dll");
@@ -732,8 +796,8 @@ std::vector<fs::path> listXUnityUninstallTargets(const fs::path& gameDir)
     }
 
     // ReiPatcher Setup injects XUnity + helpers into *_Data/Managed (not only ReiPatcher/)
+    // Keep ReiPatcher.exe in Managed — that belongs to the framework.
     static const char* kManagedInjected[] = {
-        "ReiPatcher.exe",
         "XUnity.AutoTranslator.Plugin.Core.dll",
         "XUnity.AutoTranslator.Plugin.ExtProtocol.dll",
         "XUnity.Common.dll",
@@ -794,6 +858,80 @@ std::vector<fs::path> listXUnityUninstallTargets(const fs::path& gameDir)
             unique.push_back(p);
     }
     return unique;
+}
+
+/** Plugin files only — keeps ReiPatcher framework and its .bak backups intact. */
+std::vector<fs::path> listAutoTranslatorPluginOnlyTargets(const fs::path& gameDir)
+{
+    std::vector<fs::path> out;
+    for (const auto& p : listXUnityUninstallTargets(gameDir))
+    {
+        const std::string name = pathUtf8(p.filename());
+        std::string lower = name;
+        for (char& c : lower)
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        // Keep ReiPatcher DLL backups so the framework injection stays valid.
+        if (lower.ends_with(".bak"))
+            continue;
+        out.push_back(p);
+    }
+    return out;
+}
+
+void removePathsQuiet(
+    const std::vector<fs::path>& paths,
+    const fs::path& gameDir,
+    std::vector<std::string>& steps)
+{
+    auto sorted = paths;
+    std::sort(sorted.begin(), sorted.end(), [](const fs::path& a, const fs::path& b) {
+        return pathUtf8(a).size() > pathUtf8(b).size();
+    });
+    for (const auto& p : sorted)
+    {
+        std::error_code ec;
+        if (!fs::exists(p, ec))
+            continue;
+        const std::string label = pathUtf8(p.lexically_relative(gameDir));
+        const std::string shown =
+            label.empty() || label == "." ? pathUtf8(p.filename()) : label;
+        const bool isDir = fs::is_directory(p, ec);
+        if (isDir)
+            fs::remove_all(p, ec);
+        else
+            fs::remove(p, ec);
+        if (ec)
+        {
+            steps.push_back("清理失败：" + shown + "（" + ec.message() + "）");
+            continue;
+        }
+        steps.push_back(std::string("已移除顺带安装的 ") + (isDir ? shown + "/" : shown));
+    }
+}
+
+std::vector<fs::path> listReiPatcherLoaderTargets(const fs::path& gameDir)
+{
+    std::vector<fs::path> out;
+    auto add = [&](const fs::path& p) {
+        std::error_code ec;
+        if (fs::exists(p, ec))
+            out.push_back(p);
+    };
+    add(gameDir / "ReiPatcher");
+    add(gameDir / "SetupReiPatcherAndAutoTranslator.exe");
+    {
+        std::error_code ec;
+        for (fs::directory_iterator it(gameDir, ec), end; !ec && it != end; it.increment(ec))
+        {
+            if (ec || !it->is_directory(ec))
+                continue;
+            const std::string folder = pathUtf8(it->path().filename());
+            if (folder.size() <= 5 || !folder.ends_with("_Data"))
+                continue;
+            add(it->path() / "Managed" / "ReiPatcher.exe");
+        }
+    }
+    return out;
 }
 
 /** Restore ReiPatcher backups like UnityEngine.CoreModule.dll.2026-08-03_04-36-36.bak */
@@ -3321,8 +3459,16 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
 
         if (item.isIl2Cpp && !item.hasBepInEx)
         {
-            result.error = "检测到 IL2CPP 游戏，请先点击「安装加载器」安装 BepInEx 6，再安装翻译插件。";
+            result.error =
+                "检测到 IL2CPP 游戏，请先安装插件框架（BepInEx），再安装翻译插件。";
             result.steps.push_back("IL2CPP 缺少 BepInEx，已中止");
+            return result;
+        }
+        if (!item.isIl2Cpp && !detectReiPatcher(pathFromUtf8(targetDir)))
+        {
+            result.error =
+                "检测到 Mono 游戏，请先安装插件框架（ReiPatcher），再安装翻译插件。";
+            result.steps.push_back("Mono 缺少 ReiPatcher，已中止");
             return result;
         }
 
@@ -3645,20 +3791,33 @@ UnityUninstallResult UnityAutoTranslator::uninstall(const UnityUninstallRequest&
 
         if (result.removed.empty())
         {
-            result.error = "未找到可删除的插件或缓存文件（可能已被手动移除）";
+            if (detectAutoTranslator(gameDir))
+            {
+                result.error =
+                    "仍检测到翻译插件残留，但未能删除（文件可能被占用或权限不足）。"
+                    "请先关闭游戏后重试，或手动删除 AutoTranslator 目录以及 "
+                    "*_Data/Managed 下的 XUnity*.dll";
+                result.steps.push_back("卸载目标为空或删除失败，但仍有残留标记");
+            }
+            else
+            {
+                result.error = "未找到可删除的插件或缓存文件（可能已被手动移除）";
+            }
             return result;
         }
 
         if (detectAutoTranslator(gameDir))
         {
-            result.error = "部分文件已删除，但仍检测到残留，请手动检查游戏目录";
+            result.error =
+                "部分文件已删除，但仍检测到翻译插件残留。请关闭游戏后再次卸载；"
+                "若仍失败，请手动检查 AutoTranslator 与 *_Data/Managed 下的 XUnity 文件";
             result.steps.push_back("卸载未完全干净");
             return result;
         }
 
         result.ok = true;
         result.steps.push_back(
-            "完成。已删除翻译插件、Managed 注入文件、中文字体、Patch and Run 快捷方式，并尝试恢复 ReiPatcher 备份的 DLL。");
+            "完成。已删除翻译插件及相关缓存；插件框架（ReiPatcher / BepInEx）仍保留。");
         return result;
     }
     catch (const std::exception& ex)
@@ -3702,17 +3861,118 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
         }
 
         result.gameDir = targetDir;
+        const fs::path targetPath = pathFromUtf8(targetDir);
+
+        if (!item.isUnity)
+        {
+            result.error = "不是有效的 Unity 游戏";
+            return result;
+        }
+
+        // —— Mono：只安装 ReiPatcher 框架（Setup 会顺带装插件，装完后剥离）——
+        if (!item.isIl2Cpp)
+        {
+            result.installMethod = "ReiPatcher";
+            result.version = kReleaseVersion;
+
+            if (detectReiPatcher(targetPath))
+            {
+                result.error = "该游戏已安装 ReiPatcher 插件框架，无需重复安装";
+                result.steps.push_back("已检测到 ReiPatcher");
+                return result;
+            }
+
+            const std::string pkg = packageFileName("ReiPatcher");
+            result.package = pkg;
+            const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
+            const fs::path tempDir = fs::temp_directory_path() / "llmchat-xunity";
+            fs::create_directories(tempDir);
+            const fs::path zipPath = tempDir / pathFromUtf8(pkg);
+
+            result.steps.push_back("下载 " + pkg);
+            std::string err;
+            if (!downloadFile(url, zipPath, err))
+            {
+                result.error = err;
+                return result;
+            }
+
+            result.steps.push_back("解压到游戏目录");
+            if (!extractZip(zipPath, targetPath, err))
+            {
+                result.error = err;
+                return result;
+            }
+
+            const fs::path setup = targetPath / "SetupReiPatcherAndAutoTranslator.exe";
+            std::error_code ec;
+            if (fs::exists(setup, ec))
+            {
+                result.steps.push_back("运行 Setup（注入 ReiPatcher 框架）");
+                std::string setupErr;
+                DWORD setupCode = 0;
+                const bool setupOk = runProcess(setup, targetPath, setupErr, &setupCode);
+                (void)setupCode;
+                if (!setupOk)
+                {
+                    if (detectReiPatcher(targetPath) || detectAutoTranslator(targetPath))
+                    {
+                        result.steps.push_back(
+                            "Setup 退出异常（" + setupErr
+                            + "），但已检测到框架文件，继续剥离翻译插件");
+                    }
+                    else
+                    {
+                        result.error = setupErr + "（文件已解压，可手动运行 Setup）";
+                        return result;
+                    }
+                }
+            }
+            else
+            {
+                result.steps.push_back("未找到 Setup 程序，已跳过自动注入");
+            }
+
+            // Official Setup always installs AutoTranslator too — strip plugin, keep framework.
+            if (detectAutoTranslator(targetPath)
+                || fs::exists(targetPath / "AutoTranslator", ec)
+                || fs::exists(targetPath / "SetupReiPatcherAndAutoTranslator.exe", ec))
+            {
+                result.steps.push_back("剥离官方 Setup 顺带安装的翻译插件，仅保留 ReiPatcher 框架");
+                removePathsQuiet(
+                    listAutoTranslatorPluginOnlyTargets(targetPath),
+                    targetPath,
+                    result.steps);
+            }
+
+            if (!detectReiPatcher(targetPath))
+            {
+                result.error = "安装完成但仍未检测到 ReiPatcher，请检查目录权限或手动安装";
+                return result;
+            }
+            if (detectAutoTranslator(targetPath))
+            {
+                result.error =
+                    "框架已装上，但未能完全移除顺带安装的翻译插件；可再点「卸载翻译插件」清理后重试";
+                result.steps.push_back("仍检测到翻译插件残留");
+                // Still treat as soft-ok for framework presence
+                result.ok = true;
+                return result;
+            }
+
+            result.ok = true;
+            result.steps.push_back(
+                "插件框架（ReiPatcher）安装完成。请再点击「安装翻译插件」。");
+            return result;
+        }
+
+        // —— IL2CPP：安装 BepInEx ——
         result.installMethod = "BepInEx-IL2CPP";
         result.version = kBepInExVersion;
 
-        if (!item.isIl2Cpp)
-        {
-            result.error = "仅 IL2CPP 游戏需要安装 BepInEx 加载器；Mono 游戏可直接安装翻译插件";
-            return result;
-        }
         if (item.hasBepInEx)
         {
-            result.error = "该游戏已安装 BepInEx，无需重复安装";
+            result.error = "该游戏已安装 BepInEx 插件框架，无需重复安装";
             result.steps.push_back("已检测到 BepInEx");
             return result;
         }
@@ -3752,8 +4012,7 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             }
         }
 
-        const fs::path targetPath = pathFromUtf8(targetDir);
-        result.steps.push_back("解压加载器到游戏目录");
+        result.steps.push_back("解压插件框架到游戏目录");
         if (!extractZip(zipPath, targetPath, err))
         {
             result.error = err;
@@ -3768,19 +4027,19 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
 
         result.ok = true;
         result.steps.push_back(
-            "加载器安装完成。请先启动一次游戏以完成 BepInEx 初始化，再安装翻译插件。");
+            "插件框架（BepInEx）安装完成。请先启动一次游戏完成初始化，再安装翻译插件。");
         return result;
     }
     catch (const std::exception& ex)
     {
         result.ok = false;
-        result.error = std::string("安装加载器异常: ") + ex.what();
+        result.error = std::string("安装插件框架异常: ") + ex.what();
         return result;
     }
     catch (...)
     {
         result.ok = false;
-        result.error = "安装加载器异常：无法访问该目录";
+        result.error = "安装插件框架异常：无法访问该目录";
         return result;
     }
 #endif
@@ -3809,17 +4068,12 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
         }
 
         result.gameDir = targetDir;
-        result.installMethod = "BepInEx-IL2CPP";
         const fs::path gameDir = pathFromUtf8(targetDir);
 
-        if (!item.isIl2Cpp)
+        if (detectAutoTranslator(gameDir) || item.hasAutoTranslator)
         {
-            result.error = "仅 IL2CPP 游戏使用此加载器卸载";
-            return result;
-        }
-        if (!detectBepInEx(gameDir) && listBepInExLoaderTargets(gameDir).empty())
-        {
-            result.error = "未检测到 BepInEx 加载器，无需卸载";
+            result.error = "请先卸载翻译插件，再卸载插件框架";
+            result.steps.push_back("仍检测到翻译插件，已中止");
             return result;
         }
 
@@ -3844,7 +4098,48 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
             result.steps.push_back(std::string("已删除 ") + (isDir ? shown + "/" : shown));
         };
 
-        result.steps.push_back("删除 BepInEx 加载器及其下全部文件（含插件与缓存）");
+        if (!item.isIl2Cpp)
+        {
+            result.installMethod = "ReiPatcher";
+            if (!detectReiPatcher(gameDir) && listReiPatcherLoaderTargets(gameDir).empty())
+            {
+                result.error = "未检测到 ReiPatcher 插件框架，无需卸载";
+                return result;
+            }
+
+            result.steps.push_back("删除 ReiPatcher 插件框架");
+            restoreReiPatcherDllBackups(gameDir, result.steps, result.removed);
+            auto targets = listReiPatcherLoaderTargets(gameDir);
+            std::sort(targets.begin(), targets.end(), [](const fs::path& a, const fs::path& b) {
+                return pathUtf8(a).size() > pathUtf8(b).size();
+            });
+            for (const auto& p : targets)
+                tryRemove(p);
+
+            if (result.removed.empty())
+            {
+                result.error = "未找到可删除的插件框架文件";
+                return result;
+            }
+            if (detectReiPatcher(gameDir))
+            {
+                result.error = "部分文件已删除，但仍检测到 ReiPatcher 残留";
+                return result;
+            }
+
+            result.ok = true;
+            result.steps.push_back("完成。已卸载 ReiPatcher 插件框架。");
+            return result;
+        }
+
+        result.installMethod = "BepInEx-IL2CPP";
+        if (!detectBepInEx(gameDir) && listBepInExLoaderTargets(gameDir).empty())
+        {
+            result.error = "未检测到 BepInEx 插件框架，无需卸载";
+            return result;
+        }
+
+        result.steps.push_back("删除 BepInEx 插件框架及其下全部文件");
         auto targets = listBepInExLoaderTargets(gameDir);
         std::sort(targets.begin(), targets.end(), [](const fs::path& a, const fs::path& b) {
             return pathUtf8(a).size() > pathUtf8(b).size();
@@ -3854,7 +4149,7 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
 
         if (result.removed.empty())
         {
-            result.error = "未找到可删除的加载器文件";
+            result.error = "未找到可删除的插件框架文件";
             return result;
         }
         if (detectBepInEx(gameDir))
@@ -3864,19 +4159,19 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
         }
 
         result.ok = true;
-        result.steps.push_back("完成。已卸载加载器及其下全部内容。");
+        result.steps.push_back("完成。已卸载 BepInEx 插件框架。");
         return result;
     }
     catch (const std::exception& ex)
     {
         result.ok = false;
-        result.error = std::string("卸载加载器异常: ") + ex.what();
+        result.error = std::string("卸载插件框架异常: ") + ex.what();
         return result;
     }
     catch (...)
     {
         result.ok = false;
-        result.error = "卸载加载器异常：无法访问该目录";
+        result.error = "卸载插件框架异常：无法访问该目录";
         return result;
     }
 }

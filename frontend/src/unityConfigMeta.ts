@@ -48,7 +48,7 @@ export const CONFIG_SECTION_META: Record<string, ConfigSectionMeta> = {
     help: "游戏内多引擎对比窗口（Alt 等热键打开）的尺寸与启用列表。",
   },
   Google: {
-    label: "Google（可选）",
+    label: "Google 翻译（免 Key）",
     help: "自定义 Google 翻译请求地址，可用于绕过地区限制。",
   },
   GoogleLegitimate: {
@@ -72,7 +72,7 @@ export const CONFIG_SECTION_META: Record<string, ConfigSectionMeta> = {
     help: "使用 Watson Language Translator 时填写。",
   },
   DeepL: {
-    label: "DeepL（免 Key 节流）",
+    label: "DeepL（免 Key）",
     help: "免 Key DeepL 的请求间隔，避免被限流。",
   },
   DeepLLegitimate: {
@@ -80,15 +80,15 @@ export const CONFIG_SECTION_META: Record<string, ConfigSectionMeta> = {
     help: "使用官方 DeepL API 时填写。",
   },
   Custom: {
-    label: "自定义接口",
+    label: "自定义接口（免 Key / 自建）",
     help: "使用 CustomTranslate 时填写服务地址。",
   },
   LecPowerTranslator15: {
-    label: "LEC Power Translator",
+    label: "LEC Power Translator（本地）",
     help: "本地 LEC 翻译软件安装路径。",
   },
   LingoCloud: {
-    label: "彩云小译",
+    label: "彩云小译（可选 Token）",
     help: "使用彩云小译时可选填写 Token。",
   },
   Debug: {
@@ -542,6 +542,68 @@ export function sectionMeta(name: string): ConfigSectionMeta {
   );
 }
 
+/** Always-visible essential settings (one highlighted group in the UI). */
+export const CONFIG_ESSENTIAL_SECTION_ORDER: readonly string[] = [
+  "Service",
+  "General",
+];
+
+/** Sections shown in the config sidebar; others stay in memory for save. */
+export const CONFIG_UI_SECTION_ORDER: readonly string[] = [
+  "Files",
+  "TextFrameworks",
+  "Behaviour",
+  "Texture",
+  "TranslationAggregator",
+];
+
+/** Per-engine credential / endpoint sections (opened via a single entry). */
+export const CONFIG_ENGINE_SECTION_ORDER: readonly string[] = [
+  // free / local first, then key-required
+  "Google",
+  "DeepL",
+  "LingoCloud",
+  "Custom",
+  "LecPowerTranslator15",
+  "GoogleLegitimate",
+  "BingLegitimate",
+  "DeepLLegitimate",
+  "Baidu",
+  "Yandex",
+  "Watson",
+];
+
+export function isEngineConfigSection(name: string): boolean {
+  return CONFIG_ENGINE_SECTION_ORDER.includes(name);
+}
+
+export function essentialConfigSections<T extends { name: string }>(
+  sections: T[],
+): T[] {
+  const byName = new Map(sections.map((s) => [s.name, s]));
+  return CONFIG_ESSENTIAL_SECTION_ORDER.map((name) => byName.get(name)).filter(
+    (s): s is T => s != null,
+  );
+}
+
+export function visibleConfigSections<T extends { name: string }>(
+  sections: T[],
+): T[] {
+  const byName = new Map(sections.map((s) => [s.name, s]));
+  return CONFIG_UI_SECTION_ORDER.map((name) => byName.get(name)).filter(
+    (s): s is T => s != null,
+  );
+}
+
+export function engineConfigSections<T extends { name: string }>(
+  sections: T[],
+): T[] {
+  const byName = new Map(sections.map((s) => [s.name, s]));
+  return CONFIG_ENGINE_SECTION_ORDER.map((name) => byName.get(name)).filter(
+    (s): s is T => s != null,
+  );
+}
+
 export function fieldMeta(key: string): ConfigFieldMeta {
   return (
     CONFIG_FIELD_META[key] || {
@@ -550,3 +612,140 @@ export function fieldMeta(key: string): ConfigFieldMeta {
     }
   );
 }
+
+/** Official plugin README (Configuration section). */
+export const CONFIG_README_URL =
+  "https://github.com/bbepis/XUnity.AutoTranslator#configuration";
+
+/**
+ * Full Config.ini catalog from upstream README default template
+ * (+ a few keys present in current plugin defaults).
+ */
+export const CONFIG_HELP_CATALOG: ReadonlyArray<{
+  section: string;
+  keys: readonly string[];
+}> = [
+  { section: "Service", keys: ["Endpoint", "FallbackEndpoint"] },
+  { section: "General", keys: ["Language", "FromLanguage"] },
+  {
+    section: "Files",
+    keys: [
+      "Directory",
+      "OutputFile",
+      "SubstitutionFile",
+      "PreprocessorsFile",
+      "PostprocessorsFile",
+    ],
+  },
+  {
+    section: "TextFrameworks",
+    keys: [
+      "EnableUGUI",
+      "EnableUIElements",
+      "EnableNGUI",
+      "EnableTextMeshPro",
+      "EnableTextMesh",
+      "EnableIMGUI",
+      "EnableFairyGUI",
+    ],
+  },
+  {
+    section: "Behaviour",
+    keys: [
+      "MaxCharactersPerTranslation",
+      "IgnoreWhitespaceInDialogue",
+      "IgnoreWhitespaceInNGUI",
+      "MinDialogueChars",
+      "ForceSplitTextAfterCharacters",
+      "CopyToClipboard",
+      "MaxClipboardCopyCharacters",
+      "ClipboardDebounceTime",
+      "EnableUIResizing",
+      "EnableBatching",
+      "UseStaticTranslations",
+      "OverrideFont",
+      "OverrideFontSize",
+      "OverrideFontTextMeshPro",
+      "FallbackFontTextMeshPro",
+      "ResizeUILineSpacingScale",
+      "ForceUIResizing",
+      "IgnoreTextStartingWith",
+      "TextGetterCompatibilityMode",
+      "GameLogTextPaths",
+      "RomajiPostProcessing",
+      "TranslationPostProcessing",
+      "RegexPostProcessing",
+      "CacheRegexLookups",
+      "CacheWhitespaceDifferences",
+      "CacheRegexPatternResults",
+      "CacheParsedTranslations",
+      "GenerateStaticSubstitutionTranslations",
+      "GeneratePartialTranslations",
+      "EnableTranslationScoping",
+      "EnableSilentMode",
+      "BlacklistedIMGUIPlugins",
+      "OutputUntranslatableText",
+      "IgnoreVirtualTextSetterCallingRules",
+      "MaxTextParserRecursion",
+      "HtmlEntityPreprocessing",
+      "HandleRichText",
+      "PersistRichTextMode",
+      "EnableTranslationHelper",
+      "ForceMonoModHooks",
+      "InitializeHarmonyDetourBridge",
+      "RedirectedResourceDetectionStrategy",
+      "OutputTooLongText",
+      "ReloadTranslationsOnFileChange",
+      "EnableTextPathLogging",
+      "TemplateAllNumberAway",
+    ],
+  },
+  {
+    section: "Texture",
+    keys: [
+      "TextureDirectory",
+      "EnableTextureTranslation",
+      "EnableTextureDumping",
+      "EnableTextureToggling",
+      "EnableTextureScanOnSceneLoad",
+      "EnableSpriteRendererHooking",
+      "LoadUnmodifiedTextures",
+      "TextureHashGenerationStrategy",
+      "DuplicateTextureNames",
+      "DetectDuplicateTextureNames",
+      "EnableLegacyTextureLoading",
+      "CacheTexturesInMemory",
+    ],
+  },
+  {
+    section: "ResourceRedirector",
+    keys: [
+      "PreferredStoragePath",
+      "EnableTextAssetRedirector",
+      "LogAllLoadedResources",
+      "EnableDumping",
+      "CacheMetadataForAllFiles",
+    ],
+  },
+  {
+    section: "Http",
+    keys: ["UserAgent", "DisableCertificateValidation"],
+  },
+  {
+    section: "TranslationAggregator",
+    keys: ["Width", "Height", "EnabledTranslators"],
+  },
+  { section: "Google", keys: ["ServiceUrl"] },
+  { section: "GoogleLegitimate", keys: ["GoogleAPIKey"] },
+  { section: "BingLegitimate", keys: ["OcpApimSubscriptionKey"] },
+  { section: "Baidu", keys: ["BaiduAppId", "BaiduAppSecret"] },
+  { section: "Yandex", keys: ["YandexAPIKey"] },
+  { section: "Watson", keys: ["Url", "Key"] },
+  { section: "DeepL", keys: ["MinDelay", "MaxDelay"] },
+  { section: "DeepLLegitimate", keys: ["ApiKey", "Free"] },
+  { section: "Custom", keys: ["Url"] },
+  { section: "LecPowerTranslator15", keys: ["InstallationPath"] },
+  { section: "LingoCloud", keys: ["LingoCloudToken"] },
+  { section: "Debug", keys: ["EnableConsole", "EnableLog"] },
+  { section: "Migrations", keys: ["Enable", "Tag"] },
+];
