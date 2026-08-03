@@ -35,8 +35,10 @@ if (Test-Path $sidecarNamed) {
     Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe") -Force
 }
 
-# Optional BepInEx download cache (created on first loader install if missing)
+# Also sync font/tool caches dirs (created on first fix-font download)
 New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\bepinex") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\fonts") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\tools") | Out-Null
 
 # Also sync the fresh exe into the project-local target so future tooling sees it.
 $localRelease = Join-Path $root "frontend\src-tauri\target\release"

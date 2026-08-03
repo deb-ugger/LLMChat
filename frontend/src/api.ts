@@ -176,6 +176,20 @@ export type UnityGameInfo = {
   installMethod: string;
   arch?: string;
   plugins?: string[];
+  autoTranslatorVersion?: string;
+  loaderName?: string;
+  loaderVersion?: string;
+};
+
+export type UnityIniKey = {
+  key: string;
+  value: string;
+  comment?: string;
+};
+
+export type UnityIniSection = {
+  name: string;
+  keys: UnityIniKey[];
 };
 
 export type UnitySelfCheckCheck = {
@@ -303,6 +317,13 @@ export const api = {
       ok: boolean;
       endpoints: { id: string; label: string; needsKey: boolean }[];
     }>("/api/unity/endpoints"),
+  unityPickPath: () =>
+    request<{
+      ok: boolean;
+      path?: string;
+      cancelled?: boolean;
+      error?: string;
+    }>("/api/unity/pick-path", { method: "POST", body: "{}" }),
   unityDetect: (path: string) =>
     request<{
       ok: boolean;
@@ -419,6 +440,7 @@ export const api = {
     endpoint?: string;
     fallbackEndpoint?: string;
     runSetup?: boolean;
+    configIni?: string;
   }) =>
     request<{
       ok: boolean;
@@ -430,6 +452,40 @@ export const api = {
       installMethod: string;
       steps: string[];
     }>("/api/unity/install", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  unityGetConfig: (path: string) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      exists?: boolean;
+      path?: string;
+      installMethod?: string;
+      sections?: UnityIniSection[];
+    }>(`/api/unity/config?path=${encodeURIComponent(path)}`),
+  unitySaveConfig: (body: { path: string; sections: UnityIniSection[] }) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      exists?: boolean;
+      path?: string;
+      installMethod?: string;
+    }>("/api/unity/config", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  unityFixFont: (body: { path: string; language?: string }) =>
+    request<{
+      ok: boolean;
+      error?: string;
+      gameDir: string;
+      package: string;
+      version: string;
+      configPath: string;
+      installMethod: string;
+      steps: string[];
+    }>("/api/unity/fix-font", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -475,6 +531,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+  unityAppendOutputLog: (text: string) =>
+    request<{ ok: boolean; logPath?: string; error?: string }>(
+      "/api/unity/output-log",
+      {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      },
+    ),
+  unityReadOutputLog: (lines = 200) =>
+    request<{
+      ok: boolean;
+      logPath?: string;
+      exists?: boolean;
+      text?: string;
+      error?: string;
+    }>(`/api/unity/output-log?lines=${encodeURIComponent(String(lines))}`),
 };
 
 export type DictionaryPhonetic = {

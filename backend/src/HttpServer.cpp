@@ -10,6 +10,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -132,6 +133,79 @@ void writeFileUtf8(const fs::path& path, const std::string& content)
         throw std::runtime_error("无法写入文件");
     }
     out << content;
+}
+
+void appendFileUtf8(const fs::path& path, const std::string& content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out)
+    {
+        throw std::runtime_error("无法写入日志文件");
+    }
+    out << content;
+}
+
+/** Return last `maxLines` of a text file (UTF-8), best-effort for large logs. */
+std::string readFileTailLines(const fs::path& path, int maxLines)
+{
+    if (maxLines < 1)
+        maxLines = 1;
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return {};
+    in.seekg(0, std::ios::end);
+    const auto endPos = in.tellg();
+    if (endPos <= 0)
+        return {};
+
+    const std::streamoff cap = 512 * 1024; // read at most last 512KB
+    const std::streamoff start =
+        endPos > cap ? static_cast<std::streamoff>(endPos) - cap : 0;
+    in.seekg(start);
+    std::string buf(
+        (std::istreambuf_iterator<char>(in)),
+        std::istreambuf_iterator<char>());
+    if (start > 0)
+    {
+        const auto nl = buf.find('\n');
+        if (nl != std::string::npos)
+            buf.erase(0, nl + 1);
+    }
+
+    std::vector<std::string> lines;
+    std::string cur;
+    for (char c : buf)
+    {
+        if (c == '\n')
+        {
+            if (!cur.empty() && cur.back() == '\r')
+                cur.pop_back();
+            lines.push_back(std::move(cur));
+            cur.clear();
+        }
+        else
+        {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty())
+    {
+        if (cur.back() == '\r')
+            cur.pop_back();
+        lines.push_back(std::move(cur));
+    }
+
+    if (static_cast<int>(lines.size()) > maxLines)
+        lines.erase(lines.begin(), lines.end() - maxLines);
+
+    std::ostringstream oss;
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        if (i)
+            oss << '\n';
+        oss << lines[i];
+    }
+    return oss.str();
 }
 
 } // namespace
@@ -972,6 +1046,108 @@ int HttpServer::run()
         res.set_content(json{{"ok", true}, {"endpoints", list}}.dump(), "application/json");
     }));
 
+    svr.Get("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const std::string path = req.has_param("path") ? req.get_param_value("path") : "";
+            const auto result = UnityAutoTranslator::getConfig(path);
+            json sections = json::array();
+            for (const auto& sec : result.sections)
+            {
+                json keys = json::array();
+                for (const auto& k : sec.keys)
+                {
+                    keys.push_back({
+                        {"key", k.key},
+                        {"value", k.value},
+                        {"comment", k.comment},
+                    });
+                }
+                sections.push_back({{"name", sec.name}, {"keys", keys}});
+            }
+            res.set_content(
+                json{
+                    {"ok", result.ok},
+                    {"error", result.error},
+                    {"exists", result.exists},
+                    {"path", result.path},
+                    {"installMethod", result.installMethod},
+                    {"sections", sections},
+                }
+                    .dump(),
+                "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string path = body.value("path", "");
+            std::vector<UnityIniSection> sections;
+            if (body.contains("sections") && body["sections"].is_array())
+            {
+                for (const auto& secJ : body["sections"])
+                {
+                    UnityIniSection sec;
+                    sec.name = secJ.value("name", "");
+                    if (secJ.contains("keys") && secJ["keys"].is_array())
+                    {
+                        for (const auto& kJ : secJ["keys"])
+                        {
+                            UnityIniKey k;
+                            k.key = kJ.value("key", "");
+                            k.value = kJ.value("value", "");
+                            k.comment = kJ.value("comment", "");
+                            if (!k.key.empty())
+                                sec.keys.push_back(std::move(k));
+                        }
+                    }
+                    if (!sec.name.empty())
+                        sections.push_back(std::move(sec));
+                }
+            }
+            const auto result = UnityAutoTranslator::saveConfig(path, sections);
+            res.set_content(
+                json{
+                    {"ok", result.ok},
+                    {"error", result.error},
+                    {"exists", result.exists},
+                    {"path", result.path},
+                    {"installMethod", result.installMethod},
+                }
+                    .dump(),
+                "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/pick-path", withCors([](const httplib::Request&, httplib::Response& res) {
+        try
+        {
+            const std::string path = UnityAutoTranslator::pickPath();
+            res.set_content(json{
+                {"ok", !path.empty()},
+                {"path", path},
+                {"cancelled", path.empty()},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Post("/api/unity/detect", withCors([](const httplib::Request& req, httplib::Response& res) {
         try
         {
@@ -992,6 +1168,9 @@ int HttpServer::run()
                     {"installMethod", g.installMethod},
                     {"arch", g.arch},
                     {"plugins", g.plugins},
+                    {"autoTranslatorVersion", g.autoTranslatorVersion},
+                    {"loaderName", g.loaderName},
+                    {"loaderVersion", g.loaderVersion},
                 });
             }
             res.set_content(json{
@@ -1124,6 +1303,72 @@ int HttpServer::run()
         }
     }));
 
+    svr.Post("/api/unity/output-log", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string text = body.value("text", "");
+            if (text.empty())
+            {
+                res.status = 400;
+                res.set_content(errorJson("text 不能为空").dump(), "application/json");
+                return;
+            }
+            const fs::path logPath = dataDirectory(config_) / "unity-output.log";
+            appendFileUtf8(logPath, text);
+            if (!text.empty() && text.back() != '\n')
+                appendFileUtf8(logPath, "\n");
+            res.set_content(
+                json{{"ok", true}, {"logPath", logPath.string()}}.dump(),
+                "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Get("/api/unity/output-log", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            int lines = 200;
+            if (req.has_param("lines"))
+            {
+                try
+                {
+                    lines = std::stoi(req.get_param_value("lines"));
+                }
+                catch (...)
+                {
+                    lines = 200;
+                }
+            }
+            if (lines < 1)
+                lines = 1;
+            if (lines > 2000)
+                lines = 2000;
+            const fs::path logPath = dataDirectory(config_) / "unity-output.log";
+            std::error_code ec;
+            const bool exists = fs::exists(logPath, ec);
+            const std::string text = exists ? readFileTailLines(logPath, lines) : "";
+            res.set_content(
+                json{
+                    {"ok", true},
+                    {"logPath", logPath.string()},
+                    {"exists", exists},
+                    {"text", text},
+                }
+                    .dump(),
+                "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Post("/api/unity/install", withCors([](const httplib::Request& req, httplib::Response& res) {
         try
         {
@@ -1135,7 +1380,34 @@ int HttpServer::run()
             ir.endpoint = body.value("endpoint", "GoogleTranslate");
             ir.fallbackEndpoint = body.value("fallbackEndpoint", "");
             ir.runSetup = body.value("runSetup", true);
+            ir.configIni = body.value("configIni", "");
             const auto result = UnityAutoTranslator::install(ir);
+            res.set_content(json{
+                {"ok", result.ok},
+                {"error", result.error},
+                {"gameDir", result.gameDir},
+                {"package", result.package},
+                {"version", result.version},
+                {"configPath", result.configPath},
+                {"installMethod", result.installMethod},
+                {"steps", result.steps},
+            }.dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Post("/api/unity/fix-font", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            UnityFixFontRequest fr;
+            fr.gamePath = body.value("path", "");
+            fr.language = body.value("language", "zh-CN");
+            const auto result = UnityAutoTranslator::fixFont(fr);
             res.set_content(json{
                 {"ok", result.ok},
                 {"error", result.error},

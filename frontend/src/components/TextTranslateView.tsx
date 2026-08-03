@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, type Settings, type TextProjectListItem } from "../api";
 import { toFriendlyError } from "../friendlyError";
@@ -274,6 +275,8 @@ export function TextTranslateView({ settings }: Props) {
   const abortRef = useRef<AbortController | null>(null);
   const genRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const newDropRef = useRef<HTMLDivElement | null>(null);
+  const openDropRef = useRef<HTMLDivElement | null>(null);
   const tickRef = useRef<number | null>(null);
   const elapsedBaseRef = useRef(0);
   const runStartedAtRef = useRef<number | null>(null);
@@ -754,6 +757,91 @@ export function TextTranslateView({ settings }: Props) {
     setPendingSide(side);
     setPendingFile(file);
   };
+
+  const fileFromDroppedPath = useCallback(async (path: string) => {
+    const name = path.replace(/^.*[/\\]/, "") || "file";
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) throw new Error("无法读取拖入的文件");
+    const blob = await res.blob();
+    return new File([blob], name, {
+      type: blob.type || "application/octet-stream",
+    });
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "home") {
+      setDragOver(null);
+      return;
+    }
+    const unsubs: Array<() => void> = [];
+    let cancelled = false;
+    const hitSide = (
+      physical: { x: number; y: number },
+      scale: number,
+    ): "new" | "open" | null => {
+      const x = physical.x / scale;
+      const y = physical.y / scale;
+      const inEl = (el: HTMLElement | null) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      };
+      if (inEl(newDropRef.current)) return "new";
+      if (inEl(openDropRef.current)) return "open";
+      return null;
+    };
+    void (async () => {
+      try {
+        const win = getCurrentWindow();
+        let scale = await win.scaleFactor();
+        const u1 = await win.onScaleChanged(({ payload }) => {
+          scale = payload.scaleFactor;
+        });
+        if (cancelled) {
+          u1();
+          return;
+        }
+        unsubs.push(u1);
+        const u2 = await win.onDragDropEvent((event) => {
+          if (cancelled || phaseRef.current !== "home") return;
+          const payload = event.payload;
+          if (payload.type === "leave") {
+            setDragOver(null);
+            return;
+          }
+          const side =
+            "position" in payload ? hitSide(payload.position, scale) : null;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDragOver(side);
+            return;
+          }
+          if (payload.type === "drop") {
+            setDragOver(null);
+            if (!side) return;
+            const p = payload.paths?.[0];
+            if (!p) return;
+            void fileFromDroppedPath(p)
+              .then((f) => acceptPendingFile(f, side))
+              .catch((e) =>
+                setError(toFriendlyError(e, "无法读取拖入的文件")),
+              );
+          }
+        });
+        if (cancelled) {
+          u2();
+          return;
+        }
+        unsubs.push(u2);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setDragOver(null);
+      for (const u of unsubs) u();
+    };
+  }, [fileFromDroppedPath, phase]);
 
   const buildFromSourceFile = async (
     file: File,
@@ -1631,6 +1719,7 @@ export function TextTranslateView({ settings }: Props) {
               </div>
             </header>
             <div
+              ref={newDropRef}
               role="button"
               tabIndex={0}
               className={`text-dropzone${dragOver === "new" ? " is-over" : ""}`}
@@ -1691,6 +1780,7 @@ export function TextTranslateView({ settings }: Props) {
               </div>
             </header>
             <div
+              ref={openDropRef}
               role="button"
               tabIndex={0}
               className={`text-dropzone${dragOver === "open" ? " is-over" : ""}`}
