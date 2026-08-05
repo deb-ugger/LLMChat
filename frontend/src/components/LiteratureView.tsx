@@ -172,7 +172,7 @@ export function LiteratureView({
     [translateSource, translateTarget],
   );
 
-  /** PDF selection / retranslate: update 原文 + 译文, and dictionary if one word. */
+  /** Phrase/sentence selection: update 原文 + 译文 (not for single words). */
   const runLookup = useCallback(
     async (text: string) => {
       const trimmed = normalizePdfSelectionText(text);
@@ -180,14 +180,12 @@ export function LiteratureView({
 
       const reqId = ++reqIdRef.current;
       setSource(trimmed);
-      // Dictionary in parallel so a slow translate cannot block word lookup.
-      void fillDict(trimmed);
       await translateOnly(trimmed, reqId);
     },
-    [fillDict, translateOnly],
+    [translateOnly],
   );
 
-  /** Bottom search box: dictionary only — do not overwrite 原文 / 译文. */
+  /** Bottom search / single-word PDF selection: dictionary only. */
   const runDictOnly = useCallback(
     (text: string) => {
       void fillDict(text);
@@ -197,9 +195,16 @@ export function LiteratureView({
 
   const onTextSelected = useCallback(
     (text: string) => {
-      void runLookup(text);
+      const trimmed = normalizePdfSelectionText(text);
+      if (!trimmed) return;
+      // Single English word → dictionary only; keep 原文 / 译文 unchanged.
+      if (extractEnglishWord(trimmed)) {
+        void fillDict(trimmed);
+        return;
+      }
+      void runLookup(trimmed);
     },
-    [runLookup],
+    [fillDict, runLookup],
   );
 
   const onRetranslate = useCallback(() => {
@@ -208,10 +213,9 @@ export function LiteratureView({
       if (!trimmed) return;
       if (trimmed !== source) setSource(trimmed);
       const reqId = ++reqIdRef.current;
-      void fillDict(trimmed);
       await translateOnly(trimmed, reqId);
     })();
-  }, [fillDict, source, translateOnly]);
+  }, [source, translateOnly]);
 
   return (
     <div className="literature-layout">

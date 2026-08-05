@@ -36,7 +36,7 @@ import {
 } from "../pdfSession";
 import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
-import { highlightSearchHtml } from "../highlightText";
+import { highlightSearchHtml, highlightSearchNodes } from "../highlightText";
 import {
   copyImageBlob,
   downloadImageBlob,
@@ -175,10 +175,101 @@ async function buildOutline(
   return result;
 }
 
-function OutlineTree({
+function collectOutlineBranchKeys(
+  items: OutlineItem[],
+  prefix = "",
+): string[] {
+  const keys: string[] = [];
+  items.forEach((it, i) => {
+    const key = prefix ? `${prefix}.${i}` : `${i}`;
+    if (it.items.length > 0) {
+      keys.push(key);
+      keys.push(...collectOutlineBranchKeys(it.items, key));
+    }
+  });
+  return keys;
+}
+
+function defaultCollapsedKeys(items: OutlineItem[]): Set<string> {
+  const initial = new Set<string>();
+  for (const key of collectOutlineBranchKeys(items)) {
+    if (key.includes(".")) initial.add(key);
+  }
+  return initial;
+}
+
+function outlineAncestorKeys(key: string): string[] {
+  const parts = key.split(".");
+  const out: string[] = [];
+  for (let i = 1; i < parts.length; i++) {
+    out.push(parts.slice(0, i).join("."));
+  }
+  return out;
+}
+
+/**
+ * 当前页对应的最细目录项：文档序中最后一个 page <= currentPage 的条目
+ *（同页时子级在父级之后，故自然取最细分）
+ */
+function findActiveOutlineKey(
+  items: OutlineItem[],
+  currentPage: number,
+): string | null {
+  if (!Number.isFinite(currentPage) || currentPage < 1) return null;
+  let best: string | null = null;
+  const walk = (list: OutlineItem[], prefix: string) => {
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      const key = prefix ? `${prefix}.${i}` : `${i}`;
+      if (it.pageNumber != null && it.pageNumber <= currentPage) {
+        best = key;
+      }
+      if (it.items.length > 0) walk(it.items, key);
+    }
+  };
+  walk(items, "");
+  return best;
+}
+
+/** 收集标题匹配节点及其祖先，便于过滤显示 */
+function collectOutlineTitleMatches(
+  items: OutlineItem[],
+  query: string,
+  prefix = "",
+  matches = new Set<string>(),
+  visible = new Set<string>(),
+): { matches: Set<string>; visible: Set<string> } {
+  const q = query.trim().toLowerCase();
+  if (!q) return { matches, visible };
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const key = prefix ? `${prefix}.${i}` : `${i}`;
+    const selfHit = it.title.toLowerCase().includes(q);
+    collectOutlineTitleMatches(it.items, query, key, matches, visible);
+    let hasVisibleChild = false;
+    for (let j = 0; j < it.items.length; j++) {
+      if (visible.has(`${key}.${j}`)) {
+        hasVisibleChild = true;
+        break;
+      }
+    }
+    if (selfHit) matches.add(key);
+    if (selfHit || hasVisibleChild) visible.add(key);
+  }
+  return { matches, visible };
+}
+
+function OutlineBranch({
   items,
   onGo,
   resolvePage,
+  depth,
+  path,
+  collapsed,
+  onToggle,
+  titleQuery,
+  visibleKeys,
+  activeKey,
 }: {
   items: OutlineItem[];
   onGo: (page: number) => void;
@@ -186,36 +277,226 @@ function OutlineTree({
     dest: unknown,
     fallback: number | null,
   ) => Promise<number | null>;
+  depth: number;
+  path: string;
+  collapsed: Set<string>;
+  onToggle: (key: string) => void;
+  titleQuery: string;
+  visibleKeys: Set<string> | null;
+  activeKey: string | null;
 }) {
+  const level = Math.min(Math.max(depth, 0), 4);
+  const q = titleQuery.trim();
   return (
-    <ul className="pdf-outline-list">
-      {items.map((it, i) => (
-        <li key={`${it.title}-${i}`}>
-          <button
-            type="button"
-            className="pdf-outline-item"
-            onClick={() => {
-              void (async () => {
-                const page = await resolvePage(it.dest, it.pageNumber);
-                if (page != null) onGo(page);
-              })();
-            }}
-            title={
-              it.pageNumber != null ? `第 ${it.pageNumber} 页` : "点击跳转"
-            }
-          >
-            {it.title}
-          </button>
-          {it.items.length > 0 && (
-            <OutlineTree
-              items={it.items}
-              onGo={onGo}
-              resolvePage={resolvePage}
-            />
-          )}
-        </li>
-      ))}
+    <ul className={`pdf-outline-list is-depth-${level}`}>
+      {items.map((it, i) => {
+        const key = path ? `${path}.${i}` : `${i}`;
+        if (visibleKeys && !visibleKeys.has(key)) return null;
+        const hasKids =
+          it.items.length > 0 &&
+          (!visibleKeys ||
+            it.items.some((_, j) => visibleKeys.has(`${key}.${j}`)));
+        const isCollapsed = hasKids && collapsed.has(key);
+        const isActive = activeKey === key;
+        return (
+          <li key={key} className={isCollapsed ? "is-collapsed" : undefined}>
+            <div
+              className={`pdf-outline-row is-l${level}${isActive ? " is-active" : ""}`}
+              data-outline-key={key}
+            >
+              {hasKids ? (
+                <button
+                  type="button"
+                  className={`pdf-outline-twist${isCollapsed ? " is-collapsed" : ""}`}
+                  aria-expanded={!isCollapsed}
+                  aria-label={isCollapsed ? "展开" : "折叠"}
+                  title={isCollapsed ? "展开" : "折叠"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggle(key);
+                  }}
+                >
+                  <span className="pdf-outline-twist-icon" aria-hidden />
+                </button>
+              ) : (
+                <span className="pdf-outline-twist is-leaf" aria-hidden />
+              )}
+              <button
+                type="button"
+                className={`pdf-outline-item is-l${level}${isActive ? " is-active" : ""}`}
+                onClick={() => {
+                  void (async () => {
+                    const page = await resolvePage(it.dest, it.pageNumber);
+                    if (page != null) onGo(page);
+                  })();
+                }}
+                title={
+                  it.pageNumber != null ? `第 ${it.pageNumber} 页` : "点击跳转"
+                }
+              >
+                {q ? highlightSearchNodes(it.title, q) : it.title}
+              </button>
+            </div>
+            {hasKids && !isCollapsed && (
+              <OutlineBranch
+                items={it.items}
+                onGo={onGo}
+                resolvePage={resolvePage}
+                depth={depth + 1}
+                path={key}
+                collapsed={collapsed}
+                onToggle={onToggle}
+                titleQuery={titleQuery}
+                visibleKeys={visibleKeys}
+                activeKey={activeKey}
+              />
+            )}
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+function OutlineTree({
+  items,
+  onGo,
+  resolvePage,
+  currentPage,
+}: {
+  items: OutlineItem[];
+  onGo: (page: number) => void;
+  resolvePage: (
+    dest: unknown,
+    fallback: number | null,
+  ) => Promise<number | null>;
+  currentPage: number;
+}) {
+  const treeRef = useRef<HTMLDivElement>(null);
+  const [titleQuery, setTitleQuery] = useState("");
+  const branchKeys = useMemo(
+    () => collectOutlineBranchKeys(items),
+    [items],
+  );
+  const { matches, visible } = useMemo(
+    () => collectOutlineTitleMatches(items, titleQuery),
+    [items, titleQuery],
+  );
+  const filtering = titleQuery.trim().length > 0;
+  const visibleKeys = filtering ? visible : null;
+
+  const activeKey = useMemo(
+    () => findActiveOutlineKey(items, currentPage),
+    [items, currentPage],
+  );
+
+  /** 默认折叠二级及以下；搜索时展开全部以便看到匹配项 */
+  const [collapsed, setCollapsed] = useState<Set<string>>(() =>
+    defaultCollapsedKeys(items),
+  );
+
+  useEffect(() => {
+    if (filtering) setCollapsed(new Set());
+    else setCollapsed(defaultCollapsedKeys(items));
+  }, [items, filtering]);
+
+  const onToggle = useCallback((key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const expandAll = useCallback(() => {
+    setCollapsed(new Set());
+  }, []);
+
+  const collapseAll = useCallback(() => {
+    setCollapsed(new Set(branchKeys));
+  }, [branchKeys]);
+
+  const revealActive = useCallback(() => {
+    if (!activeKey) return;
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      for (const a of outlineAncestorKeys(activeKey)) next.delete(a);
+      return next;
+    });
+    // 等展开渲染后再滚动
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = treeRef.current?.querySelector(
+          `[data-outline-key="${activeKey}"]`,
+        );
+        el?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    });
+  }, [activeKey]);
+
+  return (
+    <div className="pdf-outline-tree" ref={treeRef}>
+      <div className="pdf-outline-filter">
+        <input
+          type="search"
+          value={titleQuery}
+          placeholder="搜索标题…"
+          onChange={(e) => setTitleQuery(e.target.value)}
+          aria-label="搜索目录标题"
+        />
+        {filtering && (
+          <span className="pdf-outline-filter-count">
+            {matches.size > 0 ? `${matches.size} 条` : "无匹配"}
+          </span>
+        )}
+      </div>
+      <div className="pdf-outline-actions">
+        <button
+          type="button"
+          className="pdf-outline-action"
+          onClick={revealActive}
+          disabled={!activeKey}
+          title="展开并滚动到当前页对应的目录项"
+        >
+          定位当前
+        </button>
+        {branchKeys.length > 0 && (
+          <>
+            <button
+              type="button"
+              className="pdf-outline-action"
+              onClick={expandAll}
+            >
+              全部展开
+            </button>
+            <button
+              type="button"
+              className="pdf-outline-action"
+              onClick={collapseAll}
+            >
+              全部折叠
+            </button>
+          </>
+        )}
+      </div>
+      {filtering && matches.size === 0 ? (
+        <p className="hint pdf-outline-filter-empty">未找到匹配的标题</p>
+      ) : (
+        <OutlineBranch
+          items={items}
+          onGo={onGo}
+          resolvePage={resolvePage}
+          depth={0}
+          path=""
+          collapsed={collapsed}
+          onToggle={onToggle}
+          titleQuery={titleQuery}
+          visibleKeys={visibleKeys}
+          activeKey={activeKey}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1587,18 +1868,21 @@ export function PdfPane({
       <div className="pdf-main">
         {outlineOpen && (
           <aside className="pdf-outline" style={{ width: outlineWidth }}>
-            <div className="pdf-outline-title">目录</div>
-            {outline.length === 0 ? (
-              <p className="hint">当前 PDF 无目录大纲</p>
-            ) : (
-              <OutlineTree
-                items={outline}
-                onGo={goToPage}
-                resolvePage={resolveOutlinePage}
-              />
-            )}
+            <div className="pdf-outline-body">
+              <div className="pdf-outline-title">目录</div>
+              {outline.length === 0 ? (
+                <p className="hint">当前 PDF 无目录大纲</p>
+              ) : (
+                <OutlineTree
+                  items={outline}
+                  onGo={goToPage}
+                  resolvePage={resolveOutlinePage}
+                  currentPage={pageNumber}
+                />
+              )}
+            </div>
             <div
-              className="col-resizer"
+              className="col-resizer pdf-outline-resizer"
               title="拖动调整目录宽度"
               onMouseDown={(e) => beginOutlineResize(e, "grow-right")}
             />
@@ -1610,56 +1894,58 @@ export function PdfPane({
             className="pdf-outline pdf-search-pane"
             style={{ width: outlineWidth }}
           >
-            <div className="pdf-outline-title">搜索</div>
-            <div className="pdf-search-bar">
-              <input
-                value={searchQuery}
-                placeholder="输入关键词…"
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void runPdfSearch();
-                }}
-              />
-              <button
-                type="button"
-                className="pdf-tool-btn"
-                disabled={searchBusy || !searchQuery.trim()}
-                onClick={() => void runPdfSearch()}
-              >
-                {searchBusy ? "…" : "查找"}
-              </button>
+            <div className="pdf-outline-body">
+              <div className="pdf-outline-title">搜索</div>
+              <div className="pdf-search-bar">
+                <input
+                  value={searchQuery}
+                  placeholder="输入关键词…"
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void runPdfSearch();
+                  }}
+                />
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  disabled={searchBusy || !searchQuery.trim()}
+                  onClick={() => void runPdfSearch()}
+                >
+                  {searchBusy ? "…" : "查找"}
+                </button>
+              </div>
+              <div className="pdf-search-count">
+                {searchBusy
+                  ? "搜索中…"
+                  : searchHits.length > 0
+                    ? `${searchHits.length} 条结果`
+                    : searchQuery.trim()
+                      ? "无匹配"
+                      : ""}
+              </div>
+              <ul className="pdf-outline-list">
+                {searchHits.map((hit) => (
+                  <li key={`${hit.page}-${hit.matchIndex}`}>
+                    <button
+                      type="button"
+                      className="pdf-outline-item pdf-search-hit"
+                      onClick={() => jumpToSearchHit(hit)}
+                      title={`第 ${hit.page} 页`}
+                    >
+                      <span className="pdf-search-page">p.{hit.page}</span>
+                      <span
+                        className="pdf-search-snippet"
+                        dangerouslySetInnerHTML={{
+                          __html: highlightSearchHtml(hit.snippet, searchQuery),
+                        }}
+                      />
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
-            <div className="pdf-search-count">
-              {searchBusy
-                ? "搜索中…"
-                : searchHits.length > 0
-                  ? `${searchHits.length} 条结果`
-                  : searchQuery.trim()
-                    ? "无匹配"
-                    : ""}
-            </div>
-            <ul className="pdf-outline-list">
-              {searchHits.map((hit) => (
-                <li key={`${hit.page}-${hit.matchIndex}`}>
-                  <button
-                    type="button"
-                    className="pdf-outline-item pdf-search-hit"
-                    onClick={() => jumpToSearchHit(hit)}
-                    title={`第 ${hit.page} 页`}
-                  >
-                    <span className="pdf-search-page">p.{hit.page}</span>
-                    <span
-                      className="pdf-search-snippet"
-                      dangerouslySetInnerHTML={{
-                        __html: highlightSearchHtml(hit.snippet, searchQuery),
-                      }}
-                    />
-                  </button>
-                </li>
-              ))}
-            </ul>
             <div
-              className="col-resizer"
+              className="col-resizer pdf-outline-resizer"
               title="拖动调整面板宽度"
               onMouseDown={(e) => beginOutlineResize(e, "grow-right")}
             />

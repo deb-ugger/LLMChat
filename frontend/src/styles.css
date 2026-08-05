@@ -5839,11 +5839,87 @@ mark.search-hit-mark {
 .pdf-outline {
   position: relative;
   flex-shrink: 0;
-  overflow: auto;
-  background: var(--bg-muted);
-  border-right: 1px solid var(--border);
-  padding: 10px 8px;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  overflow: hidden;
+  /* 略偏暖黄，贴近主题灰蓝底 */
+  background: #f6f4ee;
+  border-right: 1px solid color-mix(in srgb, var(--border) 82%, #d4cbb8);
+  padding: 0;
   box-sizing: border-box;
+  min-height: 0;
+  --outline-twist-w: 16px;
+}
+
+.pdf-outline-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 8px 10px 10px;
+  box-sizing: border-box;
+  /* 滚动条在右侧（拖动条左侧） */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 28%, transparent)
+    transparent;
+}
+
+.pdf-outline-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.pdf-outline-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pdf-outline-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 26%, transparent);
+  border-radius: 3px;
+}
+
+.pdf-outline-body::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 42%, transparent);
+}
+
+.pdf-outline-resizer {
+  position: relative;
+  flex: 0 0 6px;
+  width: 6px;
+  height: auto;
+  top: auto;
+  right: auto;
+  align-self: stretch;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.pdf-outline-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+
+.pdf-outline-resizer:hover,
+.pdf-outline-resizer:active,
+body.col-resizing .pdf-outline-resizer {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.pdf-outline-resizer:hover::before,
+.pdf-outline-resizer:active::before,
+body.col-resizing .pdf-outline-resizer::before {
+  width: 3px;
+  background: var(--accent);
 }
 
 .translate-panel {
@@ -5916,34 +5992,226 @@ body.row-resizing .textLayer {
   padding: 0 6px;
 }
 
+.pdf-outline-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 6px 8px;
+}
+
+.pdf-outline-filter input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, #d4cbb8);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  background: color-mix(in srgb, #fffdf8 80%, var(--bg-panel));
+  color: var(--text);
+  outline: none;
+}
+
+.pdf-outline-filter input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pdf-outline-filter-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pdf-outline-filter-empty {
+  padding: 4px 8px;
+  margin: 0;
+}
+
+.pdf-outline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 6px 8px;
+}
+
+.pdf-outline-action {
+  border: 1px solid color-mix(in srgb, var(--border) 75%, #d4cbb8);
+  background: color-mix(in srgb, #fffdf8 70%, var(--bg-panel));
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition);
+}
+
+.pdf-outline-action:hover {
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
+}
+
 .pdf-outline-list {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 8px;
+  padding: 0;
 }
 
+/* 竖线对齐父级三角中心，再向下延伸 */
 .pdf-outline-list .pdf-outline-list {
-  padding-left: 12px;
+  margin-top: 1px;
+  margin-left: calc(var(--outline-twist-w) / 2 - 0.5px);
+  padding-left: calc(var(--outline-twist-w) / 2 + 6px);
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, #c9c0ae);
+}
+
+.pdf-outline-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+
+.pdf-outline-row.is-l0 {
+  margin-top: 6px;
+}
+
+.pdf-outline-list > li:first-child > .pdf-outline-row.is-l0 {
+  margin-top: 0;
+}
+
+.pdf-outline-twist {
+  flex: 0 0 var(--outline-twist-w);
+  width: var(--outline-twist-w);
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 78%, var(--text-muted));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  line-height: 1;
+}
+
+.pdf-outline-twist.is-leaf {
+  cursor: default;
+  pointer-events: none;
+  color: transparent;
+}
+
+.pdf-outline-twist:hover:not(.is-leaf) {
+  color: var(--accent-ink);
+  background: transparent;
+}
+
+/* 线框折角箭头：展开朝下，折叠朝右 */
+.pdf-outline-twist-icon {
+  display: block;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border: none;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  background: transparent;
+  transform: rotate(45deg);
+  transform-origin: 50% 50%;
+  transition: transform 0.15s ease;
+  opacity: 0.9;
+}
+
+.pdf-outline-twist.is-collapsed .pdf-outline-twist-icon {
+  transform: rotate(-45deg);
 }
 
 .pdf-outline-item {
+  flex: 1 1 auto;
+  min-width: 0;
   display: block;
   width: 100%;
   text-align: left;
   border: none;
   background: transparent;
-  padding: 5px 6px;
-  border-radius: var(--radius-sm);
+  padding: 5px 6px 5px 2px;
+  border-radius: 0;
   cursor: pointer;
   font-size: 12px;
   color: var(--text);
   line-height: 1.4;
-  transition: background var(--transition), color var(--transition);
+  transition: color var(--transition);
 }
 
-.pdf-outline-item:hover:not(:disabled) {
-  background: var(--accent-soft);
+.pdf-outline-item.is-l0 {
+  padding-top: 7px;
+  padding-bottom: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.pdf-outline-item.is-l1 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 92%, var(--accent));
+}
+
+.pdf-outline-item.is-l2 {
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text) 78%, var(--text-muted));
+}
+
+.pdf-outline-item.is-l3,
+.pdf-outline-item.is-l4 {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* 悬停 / 选中：整行高亮（含左侧箭头区），尺寸一致；选中后再悬停不加深 */
+.pdf-outline-row:hover:not(.is-active) {
+  background: color-mix(in srgb, var(--accent-soft) 85%, #f0ebe0);
+}
+
+.pdf-outline-row.is-active {
+  background: color-mix(in srgb, var(--accent-soft) 85%, #f0ebe0);
+}
+
+.pdf-outline-row:hover:not(.is-active) .pdf-outline-item,
+.pdf-outline-row:hover:not(.is-active) .pdf-outline-twist:not(.is-leaf) {
   color: var(--accent-ink);
+  background: transparent;
+}
+
+.pdf-outline-item.is-active,
+.pdf-outline-item.is-active.is-l0,
+.pdf-outline-item.is-active.is-l1,
+.pdf-outline-item.is-active.is-l2,
+.pdf-outline-item.is-active.is-l3,
+.pdf-outline-item.is-active.is-l4,
+.pdf-outline-row.is-active .pdf-outline-twist {
+  color: var(--accent-ink);
+  background: transparent;
+}
+
+.pdf-outline-item.is-active,
+.pdf-outline-item.is-active.is-l0,
+.pdf-outline-item.is-active.is-l1,
+.pdf-outline-item.is-active.is-l2,
+.pdf-outline-item.is-active.is-l3,
+.pdf-outline-item.is-active.is-l4 {
+  font-weight: 700;
 }
 
 .pdf-outline-item:disabled {

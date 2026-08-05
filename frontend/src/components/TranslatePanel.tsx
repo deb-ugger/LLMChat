@@ -139,7 +139,9 @@ export function TranslatePanel({
           {dictLoading && <p className="hint">词典查询中…</p>}
           {dictHint && <p className="hint">{dictHint}</p>}
           {!dict && !dictHint && !dictLoading && (
-            <p className="hint">选中或输入单个英文单词可查词典</p>
+            <p className="hint">
+              选中单词只查词典；选中句子才会更新原文并翻译
+            </p>
           )}
           {dict && (
             <div className="dict-entry">
