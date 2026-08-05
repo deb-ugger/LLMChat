@@ -18,6 +18,7 @@ import { getEngineInfo } from "../translateEngines";
 
 export type OcrBlock = {
   id: string;
+  pageId: string;
   text: string;
   translation: string;
   status: "idle" | "pending" | "done" | "error";
@@ -26,6 +27,18 @@ export type OcrBlock = {
   y: number;
   w: number;
   h: number;
+};
+
+type OcrPage = {
+  id: string;
+  imageUrl: string;
+  label: string;
+  /** Kept so a stuck "queued" page can be re-enqueued after a race. */
+  file: File;
+  blocks: OcrBlock[];
+  statusText: string | null;
+  error: string | null;
+  busy: boolean;
 };
 
 type Props = {
@@ -152,6 +165,29 @@ function fileFromClipboardData(data: DataTransfer | null | undefined): File | nu
   return null;
 }
 
+function filesFromDataTransfer(data: DataTransfer | null | undefined): File[] {
+  if (!data) return [];
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const push = (file: File | null) => {
+    if (!file || !looksLikeImageFile(file)) return;
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(file);
+  };
+  if (data.files?.length) {
+    for (const file of Array.from(data.files)) push(file);
+  }
+  if (!out.length && data.items?.length) {
+    for (const item of Array.from(data.items)) {
+      if (item.kind !== "file") continue;
+      push(item.getAsFile());
+    }
+  }
+  return out;
+}
+
 async function rgbaToPngFile(
   rgba: Uint8Array,
   width: number,
@@ -259,6 +295,28 @@ function isEditablePasteTarget(target: EventTarget | null): boolean {
     return true;
   }
   return false;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(message));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 function loadImageSize(url: string): Promise<{ w: number; h: number }> {
@@ -447,76 +505,35 @@ async function copyText(text: string) {
   }
 }
 
-export function ImageOcrView({
-  ocrLang,
-  autoTranslate,
-  translateProvider,
-  translateSource,
-  translateTarget,
-  translateMaxLength,
-  translateAutoChunk,
-  model = "",
-  apiUrl = "",
-  apiKey = "",
-  incomingImage = null,
-  onIncomingHandled,
-  active = true,
-}: Props) {
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [blocks, setBlocks] = useState<OcrBlock[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(
-    null,
-  );
-  const toastTimerRef = useRef<number | null>(null);
-  const [showTranslation, setShowTranslation] = useState(true);
-  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
-  const [srcQuery, setSrcQuery] = useState("");
-  const [dstQuery, setDstQuery] = useState("");
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(
-    null,
-  );
-  const [srcRatio, setSrcRatio] = useState(() => {
-    try {
-      const n = Number(localStorage.getItem("llmchat-ocr-src-ratio"));
-      return Number.isFinite(n) ? clampRatio(n) : 0.5;
-    } catch {
-      return 0.5;
-    }
-  });
-  const { width: sideWidth, beginResize: beginSideResize } = usePersistedWidth(
-    "llmchat-ocr-side-width",
-    420,
-    280,
-    900,
-  );
-  const inputRef = useRef<HTMLInputElement>(null);
-  const workerRef = useRef<Worker | null>(null);
-  const workerLangRef = useRef<string | null>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const canvasWrapRef = useRef<HTMLDivElement>(null);
-  const dualRef = useRef<HTMLDivElement>(null);
-  const srcListRef = useRef<HTMLDivElement>(null);
-  const dstListRef = useRef<HTMLDivElement>(null);
-  const translateGenRef = useRef(0);
-  const ocrGenRef = useRef(0);
-  const pasteLockRef = useRef(0);
+function newPageId() {
+  return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-  useEffect(() => {
-    try {
-      localStorage.setItem("llmchat-ocr-src-ratio", String(srcRatio));
-    } catch {
-      // ignore
-    }
-  }, [srcRatio]);
+function OcrPageCard({
+  page,
+  index,
+  selected,
+  selectedBlockId,
+  showTranslation,
+  onSelectPage,
+  onSelectBlock,
+  onContextMenu,
+}: {
+  page: OcrPage;
+  index: number;
+  selected: boolean;
+  selectedBlockId: string | null;
+  showTranslation: boolean;
+  onSelectPage: () => void;
+  onSelectBlock: (id: string) => void;
+  onContextMenu: (e: ReactMouseEvent, pageId: string) => void;
+}) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage || !imageUrl) {
+    if (!stage) {
       setStageSize({ w: 0, h: 0 });
       return;
     }
@@ -540,7 +557,186 @@ export function ImageOcrView({
       ro.disconnect();
       img?.removeEventListener("load", measure);
     };
-  }, [imageUrl, blocks.length]);
+  }, [page.imageUrl, page.blocks.length]);
+
+  return (
+    <article
+      className={
+        "ocr-page" +
+        (selected ? " is-selected" : "") +
+        (page.busy ? " is-busy" : "")
+      }
+      data-page-id={page.id}
+      onClick={onSelectPage}
+      onContextMenu={(e) => onContextMenu(e, page.id)}
+    >
+      <header className="ocr-page-head">
+        <span className="ocr-page-title">
+          图 {index + 1}
+          {page.label ? ` · ${page.label}` : ""}
+        </span>
+        <span className="ocr-page-meta">
+          {page.busy
+            ? page.statusText || "处理中…"
+            : page.error
+              ? page.error
+              : page.statusText ||
+                (page.blocks.length
+                  ? `${page.blocks.length} 段`
+                  : "等待识别")}
+        </span>
+      </header>
+      <div
+        className={
+          selectedBlockId && page.blocks.some((b) => b.id === selectedBlockId)
+            ? "ocr-stage has-selection"
+            : "ocr-stage"
+        }
+        ref={stageRef}
+      >
+        <img
+          src={page.imageUrl}
+          alt={page.label || `OCR ${index + 1}`}
+          className="ocr-image"
+          draggable={false}
+        />
+        {page.blocks.map((b) => {
+          const rawLabel = showTranslation
+            ? b.status === "done" && b.translation.trim()
+              ? b.translation
+              : b.text
+            : b.text;
+          const boxW = b.w * stageSize.w;
+          const boxH = b.h * stageSize.h;
+          const label = rawLabel
+            ? formatOverlayText(rawLabel, boxW, boxH)
+            : "";
+          const fontSize = label
+            ? overlayFontSize(boxW, boxH, label)
+            : Math.max(8, boxH * 0.75);
+          return (
+            <button
+              key={b.id}
+              type="button"
+              data-block-id={b.id}
+              className={
+                b.id === selectedBlockId ? "ocr-box active" : "ocr-box"
+              }
+              style={{
+                left: `${b.x * 100}%`,
+                top: `${b.y * 100}%`,
+                width: `${b.w * 100}%`,
+                height: `${b.h * 100}%`,
+                fontSize: `${fontSize.toFixed(1)}px`,
+                lineHeight: 1.2,
+                whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectBlock(b.id);
+              }}
+              title={b.text}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {page.error && <p className="boot-error ocr-error">{page.error}</p>}
+    </article>
+  );
+}
+
+export function ImageOcrView({
+  ocrLang,
+  autoTranslate,
+  translateProvider,
+  translateSource,
+  translateTarget,
+  translateMaxLength,
+  translateAutoChunk,
+  model = "",
+  apiUrl = "",
+  apiKey = "",
+  incomingImage = null,
+  onIncomingHandled,
+  active = true,
+}: Props) {
+  const [pages, setPages] = useState<OcrPage[]>([]);
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(
+    null,
+  );
+  const toastTimerRef = useRef<number | null>(null);
+  const [showTranslation, setShowTranslation] = useState(true);
+  const [srcQuery, setSrcQuery] = useState("");
+  const [dstQuery, setDstQuery] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    pageId: string | null;
+  } | null>(null);
+  const [srcRatio, setSrcRatio] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem("llmchat-ocr-src-ratio"));
+      return Number.isFinite(n) ? clampRatio(n) : 0.5;
+    } catch {
+      return 0.5;
+    }
+  });
+  const { width: sideWidth, beginResize: beginSideResize } = usePersistedWidth(
+    "llmchat-ocr-side-width",
+    420,
+    280,
+    900,
+  );
+  const inputRef = useRef<HTMLInputElement>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const workerLangRef = useRef<string | null>(null);
+  const workerCreateGenRef = useRef(0);
+  const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const dualRef = useRef<HTMLDivElement>(null);
+  const srcListRef = useRef<HTMLDivElement>(null);
+  const dstListRef = useRef<HTMLDivElement>(null);
+  const translateGenRef = useRef(0);
+  const sessionGenRef = useRef(0);
+  const pasteLockRef = useRef(0);
+  const pagesRef = useRef<OcrPage[]>([]);
+  const queueRef = useRef<{ pageId: string; file: File }[]>([]);
+  const drainingRef = useRef(false);
+  const autoTranslateRef = useRef(autoTranslate);
+
+  useEffect(() => {
+    pagesRef.current = pages;
+  }, [pages]);
+
+  useEffect(() => {
+    autoTranslateRef.current = autoTranslate;
+  }, [autoTranslate]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("llmchat-ocr-src-ratio", String(srcRatio));
+    } catch {
+      // ignore
+    }
+  }, [srcRatio]);
+
+  useEffect(() => {
+    return () => {
+      for (const p of pagesRef.current) {
+        URL.revokeObjectURL(p.imageUrl);
+      }
+      void workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
   const beginDualResize = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
@@ -562,14 +758,6 @@ export function ImageOcrView({
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      void workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, [imageUrl]);
-
   const engineBadge = useMemo(() => {
     if (translateProvider === "llm") {
       return model ? `模型：${model}` : "模型：大模型";
@@ -578,23 +766,81 @@ export function ImageOcrView({
     return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
   }, [model, translateProvider]);
 
+  const ocrLangLabel = useMemo(() => {
+    const map: Record<string, string> = {
+      eng: "英语",
+      chi_sim: "简体中文",
+      chi_tra: "繁体中文",
+      "eng+chi_sim": "英语+简体中文",
+      jpn: "日语",
+      kor: "韩语",
+    };
+    return map[ocrLang] || ocrLang;
+  }, [ocrLang]);
+
+  const translateLangLabel = useCallback((code: string) => {
+    const map: Record<string, string> = {
+      en: "英语",
+      "zh-CN": "简体中文",
+      "zh-TW": "繁体中文",
+      ja: "日语",
+      ko: "韩语",
+      auto: "自动",
+    };
+    return map[code] || code;
+  }, []);
+
+  const langBadge = useMemo(
+    () =>
+      `识别：${ocrLangLabel} · 翻译：${translateLangLabel(translateSource)} → ${translateLangLabel(translateTarget)}`,
+    [ocrLangLabel, translateLangLabel, translateSource, translateTarget],
+  );
+
+  const allBlocks = useMemo(
+    () => pages.flatMap((p) => p.blocks),
+    [pages],
+  );
+
+  const patchPage = useCallback(
+    (pageId: string, patch: Partial<OcrPage> | ((p: OcrPage) => OcrPage)) => {
+      setPages((prev) => {
+        const next = prev.map((p) => {
+          if (p.id !== pageId) return p;
+          return typeof patch === "function" ? patch(p) : { ...p, ...patch };
+        });
+        pagesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
   const ensureWorker = useCallback(async () => {
     if (workerRef.current && workerLangRef.current === ocrLang) {
       return workerRef.current;
     }
+    const createId = ++workerCreateGenRef.current;
     if (workerRef.current) {
-      await workerRef.current.terminate();
+      try {
+        await workerRef.current.terminate();
+      } catch {
+        /* ignore */
+      }
       workerRef.current = null;
+      workerLangRef.current = null;
     }
-    // Prefer eng alongside CJK so diagram English labels still OCR
-    const langSpec = /(?:^|\+)eng(?:$|\+)/i.test(ocrLang)
-      ? ocrLang
-      : `${ocrLang}+eng`;
-    let worker: Worker;
-    try {
-      worker = await createWorker(langSpec);
-    } catch {
-      worker = await createWorker(ocrLang);
+    const worker = await withTimeout(
+      createWorker(ocrLang),
+      120_000,
+      `加载「${ocrLang}」识别模型超时（首次需联网下载）。请检查网络后重试，或到设置改回英语再试。`,
+    );
+    if (createId !== workerCreateGenRef.current) {
+      try {
+        await worker.terminate();
+      } catch {
+        /* ignore */
+      }
+      throw new Error("识别已取消");
     }
     await worker.setParameters({
       tessedit_pageseg_mode: PSM.AUTO,
@@ -605,29 +851,71 @@ export function ImageOcrView({
     return worker;
   }, [ocrLang]);
 
-  const selectBlock = useCallback((id: string) => {
-    setSelectedId((prev) => (prev === id ? null : id));
+  useEffect(() => {
+    if (workerRef.current && workerLangRef.current !== ocrLang) {
+      workerCreateGenRef.current += 1;
+      void workerRef.current.terminate();
+      workerRef.current = null;
+      workerLangRef.current = null;
+    }
+  }, [ocrLang]);
+
+  const selectBlock = useCallback(
+    (id: string) => {
+      const page = pagesRef.current.find((p) =>
+        p.blocks.some((b) => b.id === id),
+      );
+      setSelectedBlockId((prev) => (prev === id ? null : id));
+      if (page) setSelectedPageId(page.id);
+    },
+    [],
+  );
+
+  const selectPage = useCallback((pageId: string) => {
+    setSelectedPageId(pageId);
+    setSelectedBlockId(null);
   }, []);
 
   useEffect(() => {
-    if (!selectedId) return;
-    const id = selectedId;
+    if (!selectedPageId && !selectedBlockId) return;
     const scrollBoth = () => {
-      const srcItem = srcListRef.current?.querySelector(
-        `[data-row-id="${id}"]`,
-      ) as HTMLElement | null;
-      const dstItem = dstListRef.current?.querySelector(
-        `[data-row-id="${id}"]`,
-      ) as HTMLElement | null;
-      srcItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      dstItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      const box = stageRef.current?.querySelector(
-        `[data-block-id="${id}"]`,
-      ) as HTMLElement | null;
-      box?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      if (selectedBlockId) {
+        const id = selectedBlockId;
+        const srcItem = srcListRef.current?.querySelector(
+          `[data-row-id="${id}"]`,
+        ) as HTMLElement | null;
+        const dstItem = dstListRef.current?.querySelector(
+          `[data-row-id="${id}"]`,
+        ) as HTMLElement | null;
+        srcItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        dstItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        const box = canvasWrapRef.current?.querySelector(
+          `[data-block-id="${id}"]`,
+        ) as HTMLElement | null;
+        box?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      if (selectedPageId) {
+        const first = pagesRef.current.find((p) => p.id === selectedPageId)
+          ?.blocks[0];
+        if (first) {
+          const srcItem = srcListRef.current?.querySelector(
+            `[data-row-id="${first.id}"]`,
+          ) as HTMLElement | null;
+          const dstItem = dstListRef.current?.querySelector(
+            `[data-row-id="${first.id}"]`,
+          ) as HTMLElement | null;
+          srcItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          dstItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+        const card = canvasWrapRef.current?.querySelector(
+          `[data-page-id="${selectedPageId}"]`,
+        ) as HTMLElement | null;
+        card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
     };
     requestAnimationFrame(() => requestAnimationFrame(scrollBoth));
-  }, [selectedId]);
+  }, [selectedBlockId, selectedPageId]);
 
   const translateOpts = useMemo(
     () => ({
@@ -636,9 +924,7 @@ export function ImageOcrView({
       provider: translateProvider,
       maxLength: translateMaxLength,
       autoChunk: translateAutoChunk,
-      ...(translateProvider === "llm"
-        ? { apiUrl, apiKey, model }
-        : {}),
+      ...(translateProvider === "llm" ? { apiUrl, apiKey, model } : {}),
     }),
     [
       apiKey,
@@ -663,6 +949,7 @@ export function ImageOcrView({
 
   const translateBlocks = useCallback(
     async (
+      pageId: string,
       list: OcrBlock[],
       onProgress?: (done: number, total: number) => void,
     ) => {
@@ -677,9 +964,8 @@ export function ImageOcrView({
           ? { ...b, status: "pending", translation: "" }
           : { ...b, status: "done" },
       );
-      setBlocks(pending);
+      patchPage(pageId, { blocks: pending });
 
-      // Batch join only for LLM (free engines choke on size / quota)
       const canBatch =
         translateProvider === "llm" &&
         workIdx.reduce((n, i) => n + list[i].text.length, 0) < 6000;
@@ -691,6 +977,7 @@ export function ImageOcrView({
           const joined = workIdx.map((i) => list[i].text.trim()).join(SEP);
           const tr = await api.translate(joined, undefined, translateOpts);
           if (gen !== translateGenRef.current) return list;
+          if (!pagesRef.current.some((p) => p.id === pageId)) return list;
           const parts = tr.translation
             .split(/\n?\s*¶¶\s*\n?/)
             .map((s) => s.trim());
@@ -719,12 +1006,12 @@ export function ImageOcrView({
           ? { ...b, status: "pending", translation: "" }
           : { ...b, status: "done" },
       );
-      setBlocks([...next]);
-      // Free engines: lower concurrency to avoid rate limits
+      patchPage(pageId, { blocks: [...next] });
       const concurrency = translateProvider === "llm" ? 5 : 2;
       let done = 0;
       for (let start = 0; start < workIdx.length; start += concurrency) {
         if (gen !== translateGenRef.current) return next;
+        if (!pagesRef.current.some((p) => p.id === pageId)) return next;
         const slice = workIdx.slice(start, start + concurrency);
         await Promise.all(
           slice.map(async (idx) => {
@@ -749,8 +1036,11 @@ export function ImageOcrView({
             } finally {
               done += 1;
               onProgress?.(done, workIdx.length);
-              if (gen === translateGenRef.current) {
-                setBlocks([...next]);
+              if (
+                gen === translateGenRef.current &&
+                pagesRef.current.some((p) => p.id === pageId)
+              ) {
+                patchPage(pageId, { blocks: [...next] });
               }
             }
           }),
@@ -758,32 +1048,27 @@ export function ImageOcrView({
       }
       return next;
     },
-    [translateOpts, translateProvider],
+    [patchPage, translateOpts, translateProvider],
   );
 
-  const runOcr = useCallback(
-    async (file: File) => {
-      const gen = ++ocrGenRef.current;
-      setBusy(true);
+  const runOcrForPage = useCallback(
+    async (pageId: string, file: File) => {
+      if (!pagesRef.current.some((p) => p.id === pageId)) return;
+      patchPage(pageId, {
+        busy: true,
+        error: null,
+        statusText: `正在加载${ocrLangLabel}识别模型…`,
+      });
+      setStatus(`正在加载${ocrLangLabel}识别模型…`);
       setError(null);
-      setStatus("正在识别文字…");
-      setBlocks([]);
-      setSelectedId(null);
-      setSrcQuery("");
-      setDstQuery("");
       try {
-        if (imageUrl) URL.revokeObjectURL(imageUrl);
-        const url = URL.createObjectURL(file);
-        setImageUrl(url);
-
+        const page = pagesRef.current.find((p) => p.id === pageId);
+        if (!page) return;
         const [{ w: iw, h: ih }, worker] = await Promise.all([
-          loadImageSize(url),
+          loadImageSize(page.imageUrl),
           ensureWorker(),
         ]);
-        if (gen !== ocrGenRef.current) {
-          URL.revokeObjectURL(url);
-          return;
-        }
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
         const toBox = (raw: {
           text: string;
@@ -795,7 +1080,6 @@ export function ImageOcrView({
           const conf = raw.confidence ?? 0;
           const shortLabel =
             text.length <= 16 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(text);
-          // Accept very low conf for short Latin labels on fills
           const minConf = looksLikeCode(text) ? 18 : shortLabel ? 0 : 28;
           if (conf < minConf) return null;
           return {
@@ -848,42 +1132,55 @@ export function ImageOcrView({
           return boxes;
         };
 
-        // Pass 1: original image (best for body text)
-        setStatus("正在识别文字…");
-        const result = await worker.recognize(file);
-        if (gen !== ocrGenRef.current) return;
+        patchPage(pageId, {
+          statusText: `正在识别文字（${ocrLangLabel}）…`,
+        });
+        setStatus(`正在识别文字（${ocrLangLabel}）…`);
+        const result = await withTimeout(
+          worker.recognize(file),
+          180_000,
+          `识别超时（${ocrLangLabel}）。可删除该图后重试，或改用更小图片。`,
+        );
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
         let lineBoxes = boxesFromPage(result.data);
 
-        // Pass 2: binarized color fills + sparse layout for Client/Server labels
-        try {
-          const enhanced = await preprocessImageForOcr(file);
-          if (gen !== ocrGenRef.current) return;
-          await worker.setParameters({
-            tessedit_pageseg_mode: PSM.SPARSE_TEXT,
-            preserve_interword_spaces: "1",
-          });
-          const sparse = await worker.recognize(enhanced);
-          if (gen !== ocrGenRef.current) return;
-          lineBoxes = mergeOrphanLines(lineBoxes, boxesFromPage(sparse.data));
-          // Also pull raw words from sparse (do not paragraph-merge away labels)
-          const sparseWords = (sparse.data.words ?? [])
-            .map((w) => toBox(w))
-            .filter((x): x is BBoxLine => !!x);
-          lineBoxes = mergeOrphanLines(lineBoxes, sparseWords);
-        } catch {
-          // ignore supplemental pass
-        } finally {
+        const skipSparse =
+          /^(jpn|kor|chi_sim|chi_tra)$/i.test(ocrLang) ||
+          ocrLang.toLowerCase().includes("chi_");
+        if (!skipSparse) {
           try {
+            const enhanced = await preprocessImageForOcr(file);
+            if (!pagesRef.current.some((p) => p.id === pageId)) return;
             await worker.setParameters({
-              tessedit_pageseg_mode: PSM.AUTO,
+              tessedit_pageseg_mode: PSM.SPARSE_TEXT,
               preserve_interword_spaces: "1",
             });
+            const sparse = await withTimeout(
+              worker.recognize(enhanced),
+              120_000,
+              "补充识别超时",
+            );
+            if (!pagesRef.current.some((p) => p.id === pageId)) return;
+            lineBoxes = mergeOrphanLines(lineBoxes, boxesFromPage(sparse.data));
+            const sparseWords = (sparse.data.words ?? [])
+              .map((w) => toBox(w))
+              .filter((x): x is BBoxLine => !!x);
+            lineBoxes = mergeOrphanLines(lineBoxes, sparseWords);
           } catch {
-            // ignore
+            // ignore supplemental pass
+          } finally {
+            try {
+              await worker.setParameters({
+                tessedit_pageseg_mode: PSM.AUTO,
+                preserve_interword_spaces: "1",
+              });
+            } catch {
+              // ignore
+            }
           }
         }
 
-        if (gen !== ocrGenRef.current) return;
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
         const paras = lineBoxes.filter(
           (p) => !isJunkText(p.text) && p.text.trim().length >= 1,
@@ -895,7 +1192,8 @@ export function ImageOcrView({
           const w = clamp01((ln.x1 - ln.x0) / iw);
           const h = clamp01((ln.y1 - ln.y0) / ih);
           return {
-            id: `b-${i}`,
+            id: `${pageId}-b${i}`,
+            pageId,
             text: ln.text,
             translation: "",
             status: "idle" as const,
@@ -906,44 +1204,168 @@ export function ImageOcrView({
           };
         });
 
-        // Drop boxes that escaped image bounds almost entirely
         list = list.filter((b) => b.x < 0.98 && b.y < 0.98 && b.w > 0 && b.h > 0);
 
-        setBlocks(list);
+        patchPage(pageId, {
+          blocks: list,
+          statusText: `识别到 ${list.length} 段文字`,
+          error: null,
+        });
         setStatus(`识别到 ${list.length} 段文字`);
-        if (canvasWrapRef.current) {
-          canvasWrapRef.current.scrollTop = 0;
-          canvasWrapRef.current.scrollLeft = 0;
-        }
-        if (autoTranslate && list.length > 0) {
-          setStatus(`正在翻译 0/${list.length}…`);
-          list = await translateBlocks(list, (done, total) => {
-            setStatus(`正在翻译 ${done}/${total}…`);
+
+        if (autoTranslateRef.current && list.length > 0) {
+          patchPage(pageId, {
+            statusText: `正在翻译 0/${list.length}…`,
           });
-          if (gen !== ocrGenRef.current) return;
-          setBlocks(list);
-          setStatus(summarizeTranslateStatus(list));
+          setStatus(`正在翻译 0/${list.length}…`);
+          list = await translateBlocks(pageId, list, (done, total) => {
+            const msg = `正在翻译 ${done}/${total}…`;
+            patchPage(pageId, { statusText: msg });
+            setStatus(msg);
+          });
+          if (!pagesRef.current.some((p) => p.id === pageId)) return;
+          const doneMsg = summarizeTranslateStatus(list);
+          patchPage(pageId, {
+            blocks: list,
+            statusText: doneMsg,
+            busy: false,
+          });
+          setStatus(doneMsg);
+        } else {
+          patchPage(pageId, { busy: false });
         }
       } catch (e) {
-        if (gen !== ocrGenRef.current) return;
-        setError(toFriendlyError(e, "识别失败，请重试"));
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
+        const msg = toFriendlyError(e, "识别失败，请重试");
+        if (!/识别已取消/.test(msg)) {
+          patchPage(pageId, {
+            error: msg,
+            statusText: null,
+            busy: false,
+          });
+          setError(msg);
+          workerCreateGenRef.current += 1;
+          try {
+            await workerRef.current?.terminate();
+          } catch {
+            /* ignore */
+          }
+          workerRef.current = null;
+          workerLangRef.current = null;
+        } else {
+          patchPage(pageId, { busy: false, statusText: null });
+        }
         setStatus(null);
-      } finally {
-        if (gen === ocrGenRef.current) setBusy(false);
       }
     },
-    [autoTranslate, ensureWorker, imageUrl, translateBlocks],
+    [ensureWorker, ocrLang, ocrLangLabel, patchPage, translateBlocks],
   );
+
+  const drainQueue = useCallback(async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    setBusy(true);
+    try {
+      while (queueRef.current.length) {
+        const job = queueRef.current.shift();
+        if (!job) break;
+        // Prefer pagesRef, but also accept jobs whose page was just enqueued
+        // (pagesRef is synced in addImageFiles / patchPage / removePage).
+        if (!pagesRef.current.some((p) => p.id === job.pageId)) {
+          // Page was deleted while queued — drop.
+          continue;
+        }
+        await runOcrForPage(job.pageId, job.file);
+      }
+    } catch (e) {
+      setError(toFriendlyError(e, "识别队列异常，请重试"));
+      setStatus(null);
+    } finally {
+      drainingRef.current = false;
+      const remaining = queueRef.current.length > 0;
+      if (remaining) {
+        // New jobs arrived while we were finishing — keep draining.
+        void drainQueue();
+        return;
+      }
+      setBusy(pagesRef.current.some((p) => p.busy));
+    }
+  }, [runOcrForPage]);
+
+  const addImageFiles = useCallback(
+    (files: File[]) => {
+      const images = files.filter(looksLikeImageFile);
+      if (!images.length) {
+        setError("未找到可识别的图片文件");
+        return;
+      }
+      setError(null);
+      const created: OcrPage[] = [];
+      for (const file of images) {
+        const id = newPageId();
+        const url = URL.createObjectURL(file);
+        const label =
+          file.name && !/^clipboard\./i.test(file.name)
+            ? file.name
+            : "剪贴板图片";
+        created.push({
+          id,
+          imageUrl: url,
+          label,
+          file,
+          blocks: [],
+          statusText: "排队等待识别…",
+          error: null,
+          busy: true,
+        });
+        queueRef.current.push({ pageId: id, file });
+      }
+      // Sync pagesRef immediately so drainQueue does not skip brand-new jobs
+      // before React commits setPages / the useEffect mirror.
+      setPages((prev) => {
+        const next = [...prev, ...created];
+        pagesRef.current = next;
+        return next;
+      });
+      const last = created[created.length - 1];
+      if (last) {
+        setSelectedPageId(last.id);
+        setSelectedBlockId(null);
+      }
+      window.setTimeout(() => {
+        const el = canvasWrapRef.current?.querySelector(
+          `[data-page-id="${last?.id}"]`,
+        ) as HTMLElement | null;
+        el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }, 50);
+      void drainQueue();
+    },
+    [drainQueue],
+  );
+
+  // Recover pages stuck on "排队等待识别…" (e.g. older race emptied the queue).
+  useEffect(() => {
+    let requeued = false;
+    for (const p of pages) {
+      if (!p.busy) continue;
+      if (p.statusText !== "排队等待识别…") continue;
+      if (queueRef.current.some((j) => j.pageId === p.id)) continue;
+      queueRef.current.push({ pageId: p.id, file: p.file });
+      requeued = true;
+    }
+    if (requeued || (queueRef.current.length > 0 && !drainingRef.current)) {
+      void drainQueue();
+    }
+  }, [pages, drainQueue]);
 
   const handledIncomingIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!incomingImage) return;
     if (handledIncomingIdRef.current === incomingImage.id) return;
     handledIncomingIdRef.current = incomingImage.id;
-    void runOcr(incomingImage.file).finally(() => {
-      onIncomingHandled?.();
-    });
-  }, [incomingImage, onIncomingHandled, runOcr]);
+    addImageFiles([incomingImage.file]);
+    onIncomingHandled?.();
+  }, [addImageFiles, incomingImage, onIncomingHandled]);
 
   const showToast = useCallback((message: string, ok = false) => {
     if (toastTimerRef.current) {
@@ -975,31 +1397,34 @@ export function ImageOcrView({
       pasteLockRef.current = now;
       setCtxMenu(null);
       setError(null);
-      await runOcr(file);
+      addImageFiles([file]);
       return true;
     },
-    [runOcr, showToast],
+    [addImageFiles, showToast],
   );
 
   const pasteFromClipboard = useCallback(async () => {
-    if (busy) {
-      const msg = "正在识别中，请稍后再粘贴";
-      setError(msg);
-      showToast(msg, false);
-      return;
-    }
     setStatus("正在读取剪贴板图片…");
-    const picked = await fileFromAnyClipboard();
-    const emptyMsg =
-      picked.error ||
-      "剪贴板中没有图片。请先用 Win+Shift+S 截图，或复制图片后再粘贴。";
-    const ok = await pasteImageFile(picked.file, emptyMsg);
-    if (!ok) setStatus(null);
-  }, [busy, pasteImageFile, showToast]);
+    try {
+      const picked = await fileFromAnyClipboard();
+      const emptyMsg =
+        picked.error ||
+        "剪贴板中没有图片。请先用 Win+Shift+S 截图，或复制图片后再粘贴。";
+      const ok = await pasteImageFile(picked.file, emptyMsg);
+      // OCR queue will set its own status; clear the "reading clipboard" hint.
+      if (!ok) setStatus(null);
+      else setStatus((prev) =>
+        prev === "正在读取剪贴板图片…" ? null : prev,
+      );
+    } catch (e) {
+      setError(toFriendlyError(e, "读取剪贴板失败"));
+      setStatus(null);
+    }
+  }, [pasteImageFile]);
 
   const handleCanvasPaste = useCallback(
     (e: ClipboardEvent | ReactClipboardEvent) => {
-      if (!active || busy) return;
+      if (!active) return;
       if (isEditablePasteTarget(e.target)) return;
       const fromEvent = fileFromClipboardData(
         "clipboardData" in e ? e.clipboardData : null,
@@ -1012,20 +1437,30 @@ export function ImageOcrView({
       }
       void pasteFromClipboard();
     },
-    [active, busy, pasteFromClipboard, pasteImageFile],
+    [active, pasteFromClipboard, pasteImageFile],
   );
 
-  // Capture-phase right-click on the gray canvas: system menu is globally
-  // disabled in main.tsx, so we must show our own menu here.
+  const onPageContextMenu = useCallback(
+    (e: ReactMouseEvent, pageId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setCtxMenu({ x: e.clientX, y: e.clientY, pageId });
+      setSelectedPageId(pageId);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!active) return;
     const onContextMenu = (e: MouseEvent) => {
       const wrap = canvasWrapRef.current;
       const t = e.target as Node | null;
       if (!wrap || !t || !wrap.contains(t)) return;
+      const el = t as HTMLElement;
+      if (el.closest(".ocr-page")) return;
       e.preventDefault();
       e.stopPropagation();
-      setCtxMenu({ x: e.clientX, y: e.clientY });
+      setCtxMenu({ x: e.clientX, y: e.clientY, pageId: null });
     };
     document.addEventListener("contextmenu", onContextMenu, true);
     return () => {
@@ -1037,7 +1472,6 @@ export function ImageOcrView({
     if (!active) return;
     const onPaste = (e: ClipboardEvent) => handleCanvasPaste(e);
     const onKeyDown = (e: KeyboardEvent) => {
-      if (busy) return;
       const isPaste =
         (e.ctrlKey || e.metaKey) &&
         !e.altKey &&
@@ -1054,13 +1488,12 @@ export function ImageOcrView({
       window.removeEventListener("paste", onPaste, true);
       window.removeEventListener("keydown", onKeyDown, true);
     };
-  }, [active, busy, handleCanvasPaste, pasteFromClipboard]);
+  }, [active, handleCanvasPaste, pasteFromClipboard]);
 
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
     const onMouseDown = (e: MouseEvent) => {
-      // Ignore the right-click that opened the menu; only left-click dismisses.
       if (e.button !== 0) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest(".pdf-ctx-menu")) return;
@@ -1069,7 +1502,6 @@ export function ImageOcrView({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
-    // Defer attach so the opening click cannot instantly dismiss the menu.
     const timer = window.setTimeout(() => {
       window.addEventListener("mousedown", onMouseDown, true);
       window.addEventListener("keydown", onKey, true);
@@ -1081,17 +1513,55 @@ export function ImageOcrView({
     };
   }, [ctxMenu]);
 
+  const removePage = useCallback((pageId: string) => {
+    queueRef.current = queueRef.current.filter((j) => j.pageId !== pageId);
+    setPages((prev) => {
+      const target = prev.find((p) => p.id === pageId);
+      if (target) URL.revokeObjectURL(target.imageUrl);
+      const next = prev.filter((p) => p.id !== pageId);
+      pagesRef.current = next;
+      return next;
+    });
+    setSelectedPageId((cur) => (cur === pageId ? null : cur));
+    setSelectedBlockId((cur) => {
+      if (!cur) return cur;
+      return cur.startsWith(`${pageId}-`) ? null : cur;
+    });
+    setCtxMenu(null);
+  }, []);
+
   const onRetranslateAll = async () => {
-    if (!blocks.length) return;
+    const targets = pages.filter((p) => p.blocks.length > 0);
+    if (!targets.length) return;
     setBusy(true);
     setError(null);
-    setStatus(`正在重新翻译 0/${blocks.length}…`);
+    let donePages = 0;
     try {
-      const list = await translateBlocks(blocks, (done, total) => {
-        setStatus(`正在重新翻译 ${done}/${total}…`);
-      });
-      setBlocks(list);
-      setStatus(summarizeTranslateStatus(list));
+      for (const page of targets) {
+        setStatus(
+          `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1}（${donePages + 1}/${targets.length}）…`,
+        );
+        patchPage(page.id, { busy: true });
+        const list = await translateBlocks(
+          page.id,
+          page.blocks,
+          (done, total) => {
+            setStatus(
+              `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1} ${done}/${total}…`,
+            );
+            patchPage(page.id, {
+              statusText: `正在翻译 ${done}/${total}…`,
+            });
+          },
+        );
+        patchPage(page.id, {
+          blocks: list,
+          statusText: summarizeTranslateStatus(list),
+          busy: false,
+        });
+        donePages += 1;
+      }
+      setStatus(`已重新翻译 ${targets.length} 张图片`);
     } catch (e) {
       setError(toFriendlyError(e, "翻译失败，请稍后重试"));
       setStatus(null);
@@ -1102,8 +1572,7 @@ export function ImageOcrView({
 
   const clearAll = useCallback(() => {
     const hasContent =
-      !!imageUrl ||
-      blocks.length > 0 ||
+      pages.length > 0 ||
       !!error ||
       !!status ||
       busy ||
@@ -1111,26 +1580,27 @@ export function ImageOcrView({
       !!dstQuery;
     if (!hasContent) return;
     if (
-      !window.confirm(
-        "清除当前图片、识别结果与译文？此操作不可撤销。",
-      )
+      !window.confirm("清除全部图片、识别结果与译文？此操作不可撤销。")
     ) {
       return;
     }
-    // Invalidate in-flight OCR / translate work
-    ocrGenRef.current += 1;
+    sessionGenRef.current += 1;
     translateGenRef.current += 1;
+    workerCreateGenRef.current += 1;
     pasteLockRef.current = 0;
+    queueRef.current = [];
+    drainingRef.current = false;
     void workerRef.current?.terminate();
     workerRef.current = null;
     workerLangRef.current = null;
     if (inputRef.current) inputRef.current.value = "";
-    setImageUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
-    setBlocks([]);
-    setSelectedId(null);
+    for (const p of pagesRef.current) {
+      URL.revokeObjectURL(p.imageUrl);
+    }
+    pagesRef.current = [];
+    setPages([]);
+    setSelectedPageId(null);
+    setSelectedBlockId(null);
     setBusy(false);
     setStatus(null);
     setError(null);
@@ -1139,18 +1609,8 @@ export function ImageOcrView({
     setCopiedId(null);
     setCtxMenu(null);
     setToast(null);
-    setStageSize({ w: 0, h: 0 });
     onIncomingHandled?.();
-  }, [
-    blocks.length,
-    busy,
-    dstQuery,
-    error,
-    imageUrl,
-    onIncomingHandled,
-    srcQuery,
-    status,
-  ]);
+  }, [busy, dstQuery, error, onIncomingHandled, pages.length, srcQuery, status]);
 
   const onCopy = async (
     id: string,
@@ -1165,25 +1625,39 @@ export function ImageOcrView({
 
   const srcFiltered = useMemo(() => {
     const q = srcQuery.trim().toLowerCase();
-    if (!q) return blocks;
-    return blocks.filter((b) => b.text.toLowerCase().includes(q));
-  }, [blocks, srcQuery]);
+    if (!q) return allBlocks;
+    return allBlocks.filter((b) => b.text.toLowerCase().includes(q));
+  }, [allBlocks, srcQuery]);
 
   const dstFiltered = useMemo(() => {
     const q = dstQuery.trim().toLowerCase();
-    if (!q) return blocks;
-    return blocks.filter(
+    if (!q) return allBlocks;
+    return allBlocks.filter(
       (b) =>
         b.translation.toLowerCase().includes(q) ||
         (b.status === "pending" && "正在翻译".includes(q)),
     );
-  }, [blocks, dstQuery]);
+  }, [allBlocks, dstQuery]);
 
   const blockIndex = useMemo(() => {
     const m = new Map<string, number>();
-    blocks.forEach((b, i) => m.set(b.id, i + 1));
+    allBlocks.forEach((b, i) => m.set(b.id, i + 1));
     return m;
-  }, [blocks]);
+  }, [allBlocks]);
+
+  const pageIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    pages.forEach((p, i) => m.set(p.id, i + 1));
+    return m;
+  }, [pages]);
+
+  const rowClass = (b: OcrBlock) => {
+    const isBlock = b.id === selectedBlockId;
+    const isPage = !!selectedPageId && b.pageId === selectedPageId;
+    if (isBlock) return "ocr-pair-row active";
+    if (isPage) return "ocr-pair-row page-active";
+    return "ocr-pair-row";
+  };
 
   return (
     <div className="ocr-layout">
@@ -1210,17 +1684,18 @@ export function ImageOcrView({
             ref={inputRef}
             type="file"
             accept="image/*"
+            multiple
             hidden
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void runOcr(f);
+              const list = e.target.files ? Array.from(e.target.files) : [];
+              if (list.length) addImageFiles(list);
               e.target.value = "";
             }}
           />
           <button
             type="button"
             className="pdf-tool-btn"
-            disabled={busy || !blocks.length}
+            disabled={busy || !allBlocks.length}
             onClick={() => void onRetranslateAll()}
           >
             重新翻译全部
@@ -1229,18 +1704,17 @@ export function ImageOcrView({
             type="button"
             className="pdf-tool-btn"
             disabled={
-              !imageUrl &&
-              !blocks.length &&
+              !pages.length &&
               !error &&
               !status &&
               !busy &&
               !srcQuery &&
               !dstQuery
             }
-            title="清除当前图片与识别/翻译结果"
+            title="清除全部图片与识别/翻译结果"
             onClick={() => clearAll()}
           >
-            清除
+            清除全部
           </button>
           <label className="ocr-toggle">
             <input
@@ -1250,6 +1724,12 @@ export function ImageOcrView({
             />
             显示译文叠字
           </label>
+          <span
+            className="ocr-toolbar-langs"
+            title="在「设置 → 图片文字识别」中修改识别语言与目标语言"
+          >
+            {langBadge}
+          </span>
           {status && <span className="hint">{status}</span>}
           <span className="ocr-toolbar-engine" title={engineBadge}>
             {engineBadge}
@@ -1257,21 +1737,48 @@ export function ImageOcrView({
         </div>
 
         <div
-          className="ocr-canvas-wrap"
+          className={
+            "ocr-canvas-wrap" + (dragOver ? " is-dragover" : "")
+          }
           ref={canvasWrapRef}
           tabIndex={0}
           onMouseDown={() => {
             canvasWrapRef.current?.focus();
           }}
           onPaste={handleCanvasPaste}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOver(true);
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            if (e.currentTarget === e.target) setDragOver(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOver(false);
+            const files = filesFromDataTransfer(e.dataTransfer);
+            if (files.length) addImageFiles(files);
+            else {
+              setError("拖入的内容不是图片");
+              showToast("拖入的内容不是图片", false);
+            }
+          }}
         >
-          {!imageUrl && (
+          {pages.length === 0 ? (
             <div className="pdf-empty ocr-empty">
               <p>
-                打开图片后将识别文字，并在灰色区域叠字显示译文。
+                打开、粘贴或拖入图片后将追加到下方列表并识别，叠字显示译文。
               </p>
               <p className="hint">
-                可在此灰色背景处按 Ctrl+V，或右键选择「从剪贴板粘贴图片」。
+                可在此灰色背景处按 Ctrl+V，拖拽图片，或右键选择「从剪贴板粘贴图片」。
               </p>
               <div className="ocr-empty-actions">
                 <button
@@ -1284,62 +1791,27 @@ export function ImageOcrView({
                 <button
                   type="button"
                   className="send-btn ocr-paste-btn"
-                  disabled={busy}
                   onClick={() => void pasteFromClipboard()}
                 >
                   从剪贴板粘贴图片
                 </button>
               </div>
             </div>
-          )}
-          {imageUrl && (
-            <div
-              className={
-                selectedId ? "ocr-stage has-selection" : "ocr-stage"
-              }
-              ref={stageRef}
-            >
-              <img src={imageUrl} alt="OCR" className="ocr-image" draggable={false} />
-              {blocks.map((b) => {
-                // Prefer translation; fall back to OCR source so boxes are never blank
-                // while translate is pending or when a label failed to translate.
-                const rawLabel = showTranslation
-                  ? b.status === "done" && b.translation.trim()
-                    ? b.translation
-                    : b.text
-                  : b.text;
-                const boxW = b.w * stageSize.w;
-                const boxH = b.h * stageSize.h;
-                const label = rawLabel
-                  ? formatOverlayText(rawLabel, boxW, boxH)
-                  : "";
-                const fontSize = label
-                  ? overlayFontSize(boxW, boxH, label)
-                  : Math.max(8, boxH * 0.75);
-                return (
-                  <button
-                    key={b.id}
-                    type="button"
-                    data-block-id={b.id}
-                    className={
-                      b.id === selectedId ? "ocr-box active" : "ocr-box"
-                    }
-                    style={{
-                      left: `${b.x * 100}%`,
-                      top: `${b.y * 100}%`,
-                      width: `${b.w * 100}%`,
-                      height: `${b.h * 100}%`,
-                      fontSize: `${fontSize.toFixed(1)}px`,
-                      lineHeight: 1.2,
-                      whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
-                    }}
-                    onClick={() => selectBlock(b.id)}
-                    title={b.text}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
+          ) : (
+            <div className="ocr-pages">
+              {pages.map((page, index) => (
+                <OcrPageCard
+                  key={page.id}
+                  page={page}
+                  index={index}
+                  selected={selectedPageId === page.id}
+                  selectedBlockId={selectedBlockId}
+                  showTranslation={showTranslation}
+                  onSelectPage={() => selectPage(page.id)}
+                  onSelectBlock={selectBlock}
+                  onContextMenu={onPageContextMenu}
+                />
+              ))}
             </div>
           )}
           {error && <p className="boot-error ocr-error">{error}</p>}
@@ -1374,11 +1846,7 @@ export function ImageOcrView({
                   <div
                     key={b.id}
                     data-row-id={b.id}
-                    className={
-                      b.id === selectedId
-                        ? "ocr-pair-row active"
-                        : "ocr-pair-row"
-                    }
+                    className={rowClass(b)}
                     onClick={() => selectBlock(b.id)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
@@ -1390,7 +1858,7 @@ export function ImageOcrView({
                     tabIndex={0}
                   >
                     <span className="ocr-block-idx">
-                      #{blockIndex.get(b.id) ?? "?"}
+                      图{pageIndex.get(b.pageId) ?? "?"} #{blockIndex.get(b.id) ?? "?"}
                     </span>
                     <span className="ocr-block-text">
                       {highlightSearchNodes(b.text, srcQuery)}
@@ -1440,11 +1908,7 @@ export function ImageOcrView({
                     <div
                       key={b.id}
                       data-row-id={b.id}
-                      className={
-                        b.id === selectedId
-                          ? "ocr-pair-row active"
-                          : "ocr-pair-row"
-                      }
+                      className={rowClass(b)}
                       onClick={() => selectBlock(b.id)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -1456,7 +1920,7 @@ export function ImageOcrView({
                       tabIndex={0}
                     >
                       <span className="ocr-block-idx">
-                        #{blockIndex.get(b.id) ?? "?"}
+                        图{pageIndex.get(b.pageId) ?? "?"} #{blockIndex.get(b.id) ?? "?"}
                       </span>
                       <span
                         className={
@@ -1500,10 +1964,22 @@ export function ImageOcrView({
             onMouseDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >
+            {ctxMenu.pageId && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  const id = ctxMenu.pageId;
+                  setCtxMenu(null);
+                  if (id) removePage(id);
+                }}
+              >
+                删除当前图片
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"
-              disabled={busy}
               onClick={() => {
                 setCtxMenu(null);
                 void pasteFromClipboard();
@@ -1514,7 +1990,6 @@ export function ImageOcrView({
             <button
               type="button"
               role="menuitem"
-              disabled={busy}
               onClick={() => {
                 setCtxMenu(null);
                 inputRef.current?.click();
@@ -1525,13 +2000,7 @@ export function ImageOcrView({
             <button
               type="button"
               role="menuitem"
-              disabled={
-                !imageUrl &&
-                !blocks.length &&
-                !error &&
-                !status &&
-                !busy
-              }
+              disabled={!pages.length && !error && !status && !busy}
               onClick={() => {
                 setCtxMenu(null);
                 clearAll();

@@ -26,12 +26,12 @@ Copy-Item $exe $out -Force
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
 
-if (Test-Path $sidecarRelease) {
-    Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend.exe") -Force
-}
 if (Test-Path $sidecarNamed) {
     Copy-Item $sidecarNamed $out -Force
+    # Prefer the freshly built named sidecar as llmchat-backend.exe too
+    Copy-Item $sidecarNamed (Join-Path $out "llmchat-backend.exe") -Force
 } elseif (Test-Path $sidecarRelease) {
+    Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend.exe") -Force
     Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe") -Force
 }
 

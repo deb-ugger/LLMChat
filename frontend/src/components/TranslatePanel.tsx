@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { DictionaryEntry } from "../api";
 
 type Props = {
@@ -9,9 +9,11 @@ type Props = {
   error: string | null;
   dict: DictionaryEntry | null;
   dictHint: string | null;
+  dictLoading?: boolean;
   onSourceChange: (text: string) => void;
   onRetranslate: () => void;
-  onLookup: (word: string) => void;
+  /** Bottom box: dictionary only (must not rewrite 原文). */
+  onDictLookup: (word: string) => void;
 };
 
 function pickPhonetics(entry: DictionaryEntry | null) {
@@ -30,19 +32,27 @@ function pickPhonetics(entry: DictionaryEntry | null) {
   for (const p of entry.phonetics) {
     const audio = p.audio || "";
     const text = p.text || "";
-    if (audio.includes("-us") || audio.includes("_us")) {
+    if (
+      audio.includes("-us") ||
+      audio.includes("_us") ||
+      audio.includes("type=2")
+    ) {
       us = text || us;
       usAudio = audio || usAudio;
     } else if (
       audio.includes("-uk") ||
       audio.includes("_uk") ||
-      audio.includes("-gb")
+      audio.includes("-gb") ||
+      audio.includes("type=1")
     ) {
       uk = text || uk;
       ukAudio = audio || ukAudio;
     } else if (text && !us) {
       us = text;
       if (audio) usAudio = audio;
+    } else if (text && !uk) {
+      uk = text;
+      if (audio) ukAudio = audio;
     }
   }
   if (!us && entry.phonetics[0]?.text) us = entry.phonetics[0].text;
@@ -61,19 +71,14 @@ export function TranslatePanel({
   error,
   dict,
   dictHint,
+  dictLoading = false,
   onSourceChange,
   onRetranslate,
-  onLookup,
+  onDictLookup,
 }: Props) {
   const [manual, setManual] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const phonetics = pickPhonetics(dict);
-
-  useEffect(() => {
-    setManual(
-      source && /^[A-Za-z'-]+$/.test(source.trim()) ? source.trim() : "",
-    );
-  }, [source]);
 
   const play = (url: string | null) => {
     if (!url) return;
@@ -131,8 +136,9 @@ export function TranslatePanel({
 
         <section className="tr-block">
           <h3>【词典】</h3>
+          {dictLoading && <p className="hint">词典查询中…</p>}
           {dictHint && <p className="hint">{dictHint}</p>}
-          {!dict && !dictHint && (
+          {!dict && !dictHint && !dictLoading && (
             <p className="hint">选中或输入单个英文单词可查词典</p>
           )}
           {dict && (
@@ -175,7 +181,7 @@ export function TranslatePanel({
                 <div key={`${m.partOfSpeech}-${i}`} className="dict-meaning">
                   <div className="dict-pos">{m.partOfSpeech}</div>
                   <ol>
-                    {m.definitions.slice(0, 3).map((d, j) => (
+                    {m.definitions.slice(0, 8).map((d, j) => (
                       <li key={j}>
                         {d.definition}
                         {d.example && (
@@ -186,6 +192,24 @@ export function TranslatePanel({
                   </ol>
                 </div>
               ))}
+              {(dict.examples?.length ?? 0) > 0 && (
+                <div className="dict-examples">
+                  <strong>双语例句：</strong>
+                  <ul>
+                    {dict.examples!.slice(0, 5).map((ex, i) => (
+                      <li key={i}>
+                        <div className="dict-example-en">{ex.en}</div>
+                        {ex.zh ? (
+                          <div className="dict-example-zh">{ex.zh}</div>
+                        ) : null}
+                        {ex.source ? (
+                          <div className="dict-example-src">{ex.source}</div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {synonyms.length > 0 && (
                 <div className="dict-syn">
                   <strong>同近义词：</strong>
@@ -202,19 +226,19 @@ export function TranslatePanel({
         onSubmit={(e) => {
           e.preventDefault();
           const q = manual.trim();
-          if (q) onLookup(q);
+          if (q) onDictLookup(q);
         }}
       >
         <input
           value={manual}
-          placeholder="输入单词查词典 / 翻译"
+          placeholder="输入单词查词典（不改动上方原文）"
           onChange={(e) => setManual(e.target.value)}
           enterKeyHint="search"
         />
         <button
           type="submit"
           className="send-btn translate-lookup-btn"
-          disabled={!manual.trim()}
+          disabled={!manual.trim() || dictLoading}
         >
           查询
         </button>

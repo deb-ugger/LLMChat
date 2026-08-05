@@ -81,7 +81,7 @@ export const CONFIG_SECTION_META: Record<string, ConfigSectionMeta> = {
   },
   Custom: {
     label: "自定义接口（免 Key / 自建）",
-    help: "使用 CustomTranslate 时填写服务地址。",
+    help: "使用 CustomTranslate 时填写服务地址。LLMChat 一键配置会写成本地桥接 /api/unity/llm-translate。",
   },
   LecPowerTranslator15: {
     label: "LEC Power Translator（本地）",
@@ -105,7 +105,7 @@ export const CONFIG_FIELD_META: Record<string, ConfigFieldMeta> = {
   // Service
   Endpoint: {
     label: "翻译引擎",
-    help: "主翻译服务。常用：GoogleTranslate / GoogleTranslateV2 / BingTranslate / DeepLTranslate 等。",
+    help: "主翻译服务。可用插件自带引擎，或选 CustomTranslate /「LLMChat 大模型」经本软件本地桥接（需保持 LLMChat 运行）。",
   },
   FallbackEndpoint: {
     label: "备用引擎",
@@ -483,7 +483,7 @@ export const CONFIG_FIELD_META: Record<string, ConfigFieldMeta> = {
   },
   Url: {
     label: "服务 URL",
-    help: "该引擎所需的服务地址。",
+    help: "CustomTranslate 等引擎的请求地址。LLMChat 桥接示例：http://127.0.0.1:17800/api/unity/llm-translate",
   },
   Key: {
     label: "密钥",
@@ -577,6 +577,49 @@ export function isEngineConfigSection(name: string): boolean {
   return CONFIG_ENGINE_SECTION_ORDER.includes(name);
 }
 
+/** Engines that typically need a Key / Url / install path in AT Config.ini. */
+export const CONFIG_ENGINE_NEEDS_CREDS: ReadonlySet<string> = new Set([
+  "Custom",
+  "LecPowerTranslator15",
+  "GoogleLegitimate",
+  "BingLegitimate",
+  "DeepLLegitimate",
+  "Baidu",
+  "Yandex",
+  "Watson",
+  "LingoCloud",
+]);
+
+export function engineSectionConfigured(sec: {
+  name: string;
+  keys: { key: string; value: string }[];
+}): boolean {
+  const important = new Set([
+    "url",
+    "apikey",
+    "key",
+    "appid",
+    "appsecret",
+    "secret",
+    "installationpath",
+    "lingocloudtoken",
+    "serviceurl",
+  ]);
+  return sec.keys.some(
+    (k) =>
+      important.has(k.key.toLowerCase()) && k.value.trim() !== "",
+  );
+}
+
+export function advancedUnityConfigSections<T extends { name: string }>(
+  sections: T[],
+): T[] {
+  const byName = new Map(sections.map((s) => [s.name, s]));
+  return CONFIG_UI_SECTION_ORDER.map((name) => byName.get(name)).filter(
+    (s): s is T => s != null,
+  );
+}
+
 export function essentialConfigSections<T extends { name: string }>(
   sections: T[],
 ): T[] {
@@ -600,6 +643,21 @@ export function engineConfigSections<T extends { name: string }>(
 ): T[] {
   const byName = new Map(sections.map((s) => [s.name, s]));
   return CONFIG_ENGINE_SECTION_ORDER.map((name) => byName.get(name)).filter(
+    (s): s is T => s != null,
+  );
+}
+
+/** Settings → Unity: advanced AT sections + per-engine credentials. */
+export const CONFIG_SETTINGS_UNITY_SECTION_ORDER: readonly string[] = [
+  ...CONFIG_ENGINE_SECTION_ORDER,
+  ...CONFIG_UI_SECTION_ORDER,
+];
+
+export function settingsUnityConfigSections<T extends { name: string }>(
+  sections: T[],
+): T[] {
+  const byName = new Map(sections.map((s) => [s.name, s]));
+  return CONFIG_SETTINGS_UNITY_SECTION_ORDER.map((name) => byName.get(name)).filter(
     (s): s is T => s != null,
   );
 }

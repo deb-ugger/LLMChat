@@ -61,6 +61,9 @@ const defaultSettings: Settings = {
 
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "unity" | undefined
+  >(undefined);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -160,6 +163,7 @@ export default function App() {
               if (lang === "chi_tra") return "zh-TW";
               if (lang === "jpn") return "ja";
               if (lang === "kor") return "ko";
+              if (lang === "eng+chi_sim") return "en";
               return "en";
             })(),
             ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
@@ -436,7 +440,10 @@ export default function App() {
         </button>
         <button
           className={page === "settings" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("settings")}
+          onClick={() => {
+            setSettingsInitialTab(undefined);
+            setPage("settings");
+          }}
           title="设置"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
@@ -532,12 +539,20 @@ export default function App() {
           }
           aria-hidden={page !== "unity"}
         >
-          <UnityTranslateView active={page === "unity"} />
+          <UnityTranslateView
+            active={page === "unity"}
+            onOpenUnitySettings={() => {
+              setSettingsInitialTab("unity");
+              setPage("settings");
+            }}
+          />
         </div>
         {page === "settings" && (
           <SettingsView
             settings={settings}
             onSave={(s) => void onSaveSettings(s)}
+            initialTab={settingsInitialTab}
+            onNavigate={(p) => setPage(p)}
           />
         )}
       </div>

@@ -5,6 +5,7 @@
 #include "Utf8Path.h"
 
 #include <httplib.h>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1031,6 +1032,30 @@ int HttpServer::run()
         }
     }));
 
+    svr.Get("/api/dictionary", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const auto& cfg = config_.get();
+            const std::string q = req.has_param("q") ? req.get_param_value("q") : "";
+            const std::string source = req.has_param("source")
+                ? req.get_param_value("source")
+                : cfg.translateSource;
+            const std::string target = req.has_param("target")
+                ? req.get_param_value("target")
+                : cfg.translateTarget;
+            const std::string body = TranslateClient::lookupDictionaryJson(
+                q, source, target, cfg.proxyMode, cfg.httpProxy);
+            const json parsed = json::parse(body);
+            res.status = parsed.value("ok", false) ? 200 : 502;
+            res.set_content(body, "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 500;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Post("/api/translate", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
@@ -1120,6 +1145,87 @@ int HttpServer::run()
             });
         }
         res.set_content(json{{"ok", true}, {"endpoints", list}}.dump(), "application/json");
+    }));
+
+    // AutoTranslator CustomTranslate: GET Url?text=… → plain UTF-8 translation
+    svr.Get("/api/unity/llm-translate", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        static std::atomic<int> inFlight{0};
+        constexpr int kMaxInFlight = 4;
+
+        const std::string text = req.has_param("text") ? req.get_param_value("text") : "";
+        if (text.empty())
+        {
+            res.status = 400;
+            res.set_content("text required", "text/plain; charset=utf-8");
+            return;
+        }
+
+        const int cur = inFlight.fetch_add(1);
+        if (cur >= kMaxInFlight)
+        {
+            inFlight.fetch_sub(1);
+            res.status = 429;
+            res.set_content("too many concurrent translations", "text/plain; charset=utf-8");
+            return;
+        }
+
+        struct Guard {
+            std::atomic<int>& counter;
+            ~Guard() { counter.fetch_sub(1); }
+        } guard{inFlight};
+
+        try
+        {
+            const auto& cfg = config_.get();
+            if (cfg.apiUrl.empty() || cfg.model.empty())
+            {
+                res.status = 503;
+                res.set_content(
+                    "LLM not configured: set apiUrl and model in LLMChat settings",
+                    "text/plain; charset=utf-8");
+                return;
+            }
+
+            // Game UI text is usually ja→zh-CN; optional ?from=&to= override.
+            const std::string source =
+                req.has_param("from") && !req.get_param_value("from").empty()
+                    ? req.get_param_value("from")
+                    : "ja";
+            const std::string target =
+                req.has_param("to") && !req.get_param_value("to").empty()
+                    ? req.get_param_value("to")
+                    : "zh-CN";
+
+            const TranslateResult tr = TranslateClient::translateWithLlm(
+                text,
+                cfg.apiUrl,
+                cfg.apiKey,
+                cfg.model,
+                source,
+                target,
+                cfg.proxyMode,
+                cfg.httpProxy,
+                "You are a precise game UI / dialogue translator. "
+                "Translate faithfully and concisely for on-screen text. "
+                "Preserve placeholders like {0}, %s, \\n, and markup tags. "
+                "Output only the translation.");
+
+            if (!tr.ok)
+            {
+                res.status = 502;
+                res.set_content(
+                    tr.error.empty() ? "translation failed" : tr.error,
+                    "text/plain; charset=utf-8");
+                return;
+            }
+
+            res.set_content(tr.translation, "text/plain; charset=utf-8");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 500;
+            res.set_content(ex.what(), "text/plain; charset=utf-8");
+        }
     }));
 
     svr.Get("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {

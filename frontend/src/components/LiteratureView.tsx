@@ -19,6 +19,22 @@ function normalizePdfSelectionText(text: string): string {
     .trim();
 }
 
+/** Pull a single English word from selection / query (strip punctuation). */
+function extractEnglishWord(text: string): string | null {
+  const cleaned = normalizePdfSelectionText(text);
+  if (!cleaned) return null;
+  const stripped = cleaned
+    .replace(/^[“”"'‘’(（\[【<«]+/, "")
+    .replace(/[”"'‘’)）\]】>»,.!?;:…]+$/u, "")
+    .trim();
+  if (WORD_RE.test(stripped)) return stripped;
+  const tokens = cleaned.match(/[A-Za-z][A-Za-z'-]*/g);
+  if (tokens && tokens.length === 1 && WORD_RE.test(tokens[0])) {
+    return tokens[0];
+  }
+  return null;
+}
+
 type Props = {
   visible: boolean;
   translateProvider: string;
@@ -50,7 +66,9 @@ export function LiteratureView({
   const [error, setError] = useState<string | null>(null);
   const [dict, setDict] = useState<DictionaryEntry | null>(null);
   const [dictHint, setDictHint] = useState<string | null>(null);
+  const [dictLoading, setDictLoading] = useState(false);
   const reqIdRef = useRef(0);
+  const dictReqIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const { width: panelWidth, beginResize: beginPanelResize } =
     usePersistedWidth("llmchat-translate-panel-width", 320, 220, 640);
@@ -83,9 +101,7 @@ export function LiteratureView({
             target: translateTarget || "zh-CN",
             maxLength: translateMaxLength || 0,
             autoChunk: translateAutoChunk !== false,
-            ...(provider === "llm"
-              ? { apiUrl, apiKey, model }
-              : {}),
+            ...(provider === "llm" ? { apiUrl, apiKey, model } : {}),
           },
         );
         if (reqId !== reqIdRef.current) return;
@@ -120,29 +136,43 @@ export function LiteratureView({
     ],
   );
 
-  const fillDict = useCallback(async (trimmed: string, reqId: number) => {
-    const isWord = WORD_RE.test(trimmed);
-    if (reqId !== reqIdRef.current) return;
-    setDict(null);
-    if (isWord) {
-      try {
-        const entry = await lookupDictionary(trimmed);
-        if (reqId !== reqIdRef.current) return;
-        if (entry) {
-          setDict(entry);
-          setDictHint(null);
-        } else {
-          setDictHint("未找到词典义项");
-        }
-      } catch {
-        if (reqId !== reqIdRef.current) return;
-        setDictHint("词典服务暂时不可用");
+  const fillDict = useCallback(
+    async (raw: string) => {
+      const reqId = ++dictReqIdRef.current;
+      const word = extractEnglishWord(raw);
+      setDict(null);
+      if (!word) {
+        setDictHint("多词/句子仅提供译文；可在底部输入单个单词查词典");
+        setDictLoading(false);
+        return;
       }
-    } else {
-      setDictHint("多词/句子仅提供译文；可输入单个单词查词典");
-    }
-  }, []);
+      setDictLoading(true);
+      setDictHint(`正在查询「${word}」…`);
+      try {
+        const entry = await lookupDictionary(word, {
+          source: translateSource || "en",
+          target: translateTarget || "zh-CN",
+        });
+        if (reqId !== dictReqIdRef.current) return;
+        setDict(entry);
+        setDictHint(null);
+      } catch (e) {
+        if (reqId !== dictReqIdRef.current) return;
+        setDict(null);
+        setDictHint(
+          toFriendlyError(
+            e,
+            "词典服务暂时不可用，请检查网络或后端是否运行",
+          ),
+        );
+      } finally {
+        if (reqId === dictReqIdRef.current) setDictLoading(false);
+      }
+    },
+    [translateSource, translateTarget],
+  );
 
+  /** PDF selection / retranslate: update 原文 + 译文, and dictionary if one word. */
   const runLookup = useCallback(
     async (text: string) => {
       const trimmed = normalizePdfSelectionText(text);
@@ -150,11 +180,19 @@ export function LiteratureView({
 
       const reqId = ++reqIdRef.current;
       setSource(trimmed);
+      // Dictionary in parallel so a slow translate cannot block word lookup.
+      void fillDict(trimmed);
       await translateOnly(trimmed, reqId);
-      if (reqId !== reqIdRef.current) return;
-      await fillDict(trimmed, reqId);
     },
     [fillDict, translateOnly],
+  );
+
+  /** Bottom search box: dictionary only — do not overwrite 原文 / 译文. */
+  const runDictOnly = useCallback(
+    (text: string) => {
+      void fillDict(text);
+    },
+    [fillDict],
   );
 
   const onTextSelected = useCallback(
@@ -170,9 +208,8 @@ export function LiteratureView({
       if (!trimmed) return;
       if (trimmed !== source) setSource(trimmed);
       const reqId = ++reqIdRef.current;
+      void fillDict(trimmed);
       await translateOnly(trimmed, reqId);
-      if (reqId !== reqIdRef.current) return;
-      await fillDict(trimmed, reqId);
     })();
   }, [fillDict, source, translateOnly]);
 
@@ -198,9 +235,10 @@ export function LiteratureView({
         error={error}
         dict={dict}
         dictHint={dictHint}
+        dictLoading={dictLoading}
         onSourceChange={setSource}
         onRetranslate={onRetranslate}
-        onLookup={(w) => void runLookup(w)}
+        onDictLookup={runDictOnly}
       />
     </div>
   );

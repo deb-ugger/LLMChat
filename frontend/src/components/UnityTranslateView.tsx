@@ -7,19 +7,25 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, type UnityGameInfo, type UnityIniSection } from "../api";
+import { api, API_BASE, type UnityGameInfo, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { usePersistedHeight } from "../hooks/usePersistedHeight";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import {
   CONFIG_HELP_CATALOG,
   CONFIG_README_URL,
-  engineConfigSections,
   essentialConfigSections,
   fieldMeta,
   sectionMeta,
-  visibleConfigSections,
 } from "../unityConfigMeta";
+import {
+  lastUnityGameDir,
+  loadRecentUnityGames,
+  rememberLastUnityGameDir,
+  rememberRecentUnityGame,
+  removeRecentUnityGame,
+  type RecentUnityGame,
+} from "../unityLastGame";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -215,7 +221,11 @@ function isBoolIniValue(v: string) {
 }
 
 function formatClock(d = new Date()) {
-  return d.toLocaleTimeString("zh-CN", { hour12: false });
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
 }
 
 function joinGameExePath(gameDir: string, gameExe?: string | null): string {
@@ -283,7 +293,13 @@ function runtimeLabel(n: string, e?: boolean) {
   return n === "il2cpp" || e ? "IL2CPP" : n === "mono" ? "Mono" : "运行时未知";
 }
 
-export function UnityTranslateView({ active = true }: { active?: boolean }) {
+export function UnityTranslateView({
+  active = true,
+  onOpenUnitySettings,
+}: {
+  active?: boolean;
+  onOpenUnitySettings?: () => void;
+}) {
   const [pathInput, setPathInput] = useState("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [endpoint, setEndpoint] = useState("GoogleTranslate");
@@ -293,12 +309,21 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
   const [configSections, setConfigSections] = useState<UnityIniSection[]>([]);
   const [configPath, setConfigPath] = useState("");
   const [configExists, setConfigExists] = useState(false);
-  const [configOpenSections, setConfigOpenSections] = useState<
-    Record<string, boolean>
-  >({ Service: true, General: true });
   const [scanState, setScanState] = useState<ScanState | null>(null);
   const [selectedGameDir, setSelectedGameDir] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
+
+  useEffect(() => {
+    if (selectedGameDir) rememberLastUnityGameDir(selectedGameDir);
+  }, [selectedGameDir]);
+
+  const [recentGames, setRecentGames] = useState<RecentUnityGame[]>(() => {
+    const list = loadRecentUnityGames();
+    if (list.length > 0) return list;
+    const dir = lastUnityGameDir();
+    return dir ? rememberRecentUnityGame({ gameDir: dir }) : [];
+  });
+
   const [searchQuery, setSearchQuery] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const busy = busyAction !== null;
@@ -324,7 +349,6 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
   const [helpDialog, setHelpDialog] = useState<HelpDialog>(null);
   const [uninstallConfirm, setUninstallConfirm] =
     useState<UninstallConfirm | null>(null);
-  const [engineConfigOpen, setEngineConfigOpen] = useState(false);
   const [configToast, setConfigToast] = useState<{
     message: string;
     ok: boolean;
@@ -1254,9 +1278,52 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     }
   };
 
-  const openGameDetail = (gameDir: string) => {
+  const openGameDetail = (gameDir: string, displayName?: string) => {
     setSelectedGameDir(gameDir);
     setViewMode("detail");
+    setRecentGames(
+      rememberRecentUnityGame({
+        gameDir,
+        name: displayName,
+      }),
+    );
+  };
+
+  const openRecentGame = async (entry: RecentUnityGame) => {
+    const gameDir = entry.gameDir;
+    setPathInput(gameDir);
+    rememberLastPickDir(gameDir);
+    setBusyAction("detect");
+    setError(null);
+    try {
+      const res = await api.unityDetect(gameDir);
+      const list = res.games || [];
+      const game = list[0];
+      if (!res.ok || !game) {
+        reportError(res.error || "未找到该游戏，可从列表移除后重新选择");
+        return;
+      }
+      setScanState({
+        ...emptyScanState(res.scanRoot || gameDir),
+        ok: true,
+        error: "",
+        isUnity: true,
+        games: list,
+        gameDir: game.gameDir,
+        gameExe: game.gameExe || "",
+        arch: game.arch || "",
+        runtime: game.runtime || "",
+        installMethod: game.installMethod || "",
+        hasAutoTranslator: !!game.hasAutoTranslator,
+        hasBepInEx: !!game.hasBepInEx,
+        isIl2Cpp: !!game.isIl2Cpp,
+      });
+      openGameDetail(game.gameDir, gameTitle(game));
+    } catch (e) {
+      reportError(toFriendlyError(e, "打开最近游戏失败"));
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const backToList = () => {
@@ -1384,15 +1451,97 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     </section>
   );
 
-  const engineSections = useMemo(
-    () => engineConfigSections(configSections),
-    [configSections],
-  );
-
   const essentialSections = useMemo(
     () => essentialConfigSections(configSections),
     [configSections],
   );
+
+  const [llmBridgeUrl, setLlmBridgeUrl] = useState(
+    () => `${API_BASE.replace(/\/$/, "")}/api/unity/llm-translate`,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await api.getSettings();
+        const port = typeof s.port === "number" && s.port > 0 ? s.port : 17800;
+        const url = `http://127.0.0.1:${port}/api/unity/llm-translate`;
+        if (!cancelled) setLlmBridgeUrl(url);
+      } catch {
+        /* keep API_BASE fallback */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  const applyLlmEndpoint = async () => {
+    const gameDir = selected?.gameDir;
+    if (!gameDir) {
+      reportError("请先选择一个游戏");
+      return;
+    }
+    setBusyAction("apply-llm");
+    try {
+      let bridgeUrl = llmBridgeUrl;
+      try {
+        const s = await api.getSettings();
+        const port = typeof s.port === "number" && s.port > 0 ? s.port : 17800;
+        bridgeUrl = `http://127.0.0.1:${port}/api/unity/llm-translate`;
+        setLlmBridgeUrl(bridgeUrl);
+      } catch {
+        /* use cached llmBridgeUrl */
+      }
+      let sections = setIniValue(
+        configSections,
+        "Service",
+        "Endpoint",
+        "CustomTranslate",
+      );
+      sections = setIniValue(sections, "Custom", "Url", bridgeUrl);
+      applyConfigSections(sections);
+      const res = await api.unitySaveConfig({ path: gameDir, sections });
+      if (!res.ok) {
+        reportError(res.error || "写入大模型端点失败");
+        return;
+      }
+      setConfigPath(res.path || configPath);
+      setConfigExists(true);
+      showConfigToast("已切换为 LLMChat 大模型翻译（需保持本软件运行）", true);
+      reportSuccess(
+        `已设置 Endpoint=CustomTranslate，Url=${bridgeUrl}；模型请在「设置」页配置`,
+      );
+    } catch (e) {
+      reportError(toFriendlyError(e, "写入大模型端点失败"));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const testLlmTranslate = async () => {
+    setBusyAction("test-llm");
+    try {
+      const from =
+        getIniValue(configSections, "General", "FromLanguage") || fromLang;
+      const to =
+        getIniValue(configSections, "General", "Language") || targetLang;
+      const res = await api.unityLlmTranslate({
+        text: "こんにちは",
+        from,
+        to,
+      });
+      showConfigToast(`测试译文：${res.translation}`, true);
+      reportSuccess(`大模型桥接测试成功：${res.translation}`);
+    } catch (e) {
+      const msg = toFriendlyError(e, "大模型桥接测试失败");
+      showConfigToast(msg, false);
+      reportError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   const renderIniKeyControl = (
     secName: string,
@@ -1479,13 +1628,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     );
   };
 
-  const renderIniSection = (
-    sec: UnityIniSection,
-    opts?: { mode?: "default" | "essential" },
-  ) => {
-    const mode = opts?.mode ?? "default";
-    const essential = mode === "essential";
-    const open = essential || configOpenSections[sec.name] === true;
+  const renderIniSection = (sec: UnityIniSection) => {
+    const open = true;
     const secInfo = sectionMeta(sec.name);
     const pairKeys =
       sec.name === "Service"
@@ -1554,32 +1698,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
     ) : null;
 
     return (
-      <div
-        key={sec.name}
-        className={
-          "unity-ini-section" +
-          (essential ? " is-essential-part" : open ? " is-open" : "")
-        }
-      >
-        {essential ? (
-          <div className="unity-ini-section-head is-static">{headInner}</div>
-        ) : (
-          <button
-            type="button"
-            className="unity-ini-section-head"
-            onClick={() =>
-              setConfigOpenSections((prev) => ({
-                ...prev,
-                [sec.name]: !open,
-              }))
-            }
-          >
-            {headInner}
-            <span className="unity-ini-section-chevron" aria-hidden="true">
-              {open ? "▾" : "▸"}
-            </span>
-          </button>
-        )}
+      <div key={sec.name} className="unity-ini-section is-open is-plain">
+        <div className="unity-ini-section-head is-static">{headInner}</div>
         {keysBody}
       </div>
     );
@@ -1613,6 +1733,18 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
             </button>
             {helpButton}
           </div>
+          {onOpenUnitySettings ? (
+            <div className="unity-top-actions">
+              <button
+                type="button"
+                className="unity-btn"
+                onClick={onOpenUnitySettings}
+                title="打开设置中的 Unity 版块（引擎 Key 与低频选项）"
+              >
+                Unity 设置
+              </button>
+            </div>
+          ) : null}
         </header>
       ) : null}
 
@@ -1731,52 +1863,6 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                 >
                   确认卸载
                 </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {engineConfigOpen && (
-        <div
-          className="unity-help-backdrop"
-          onClick={() => setEngineConfigOpen(false)}
-          role="presentation"
-        >
-          <div
-            className="unity-help-dialog unity-help-dialog-wide unity-engine-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="unity-engine-config-title"
-            onClick={(ev) => ev.stopPropagation()}
-          >
-            <header className="unity-help-dialog-head">
-              <h2 id="unity-engine-config-title">翻译引擎参数</h2>
-              <div className="unity-help-dialog-actions">
-                <button
-                  type="button"
-                  className="unity-btn unity-btn-primary"
-                  disabled={busy || !selected}
-                  onClick={() => void onSaveConfig()}
-                  title="将当前表单写入游戏目录 Config.ini"
-                >
-                  {actionLabel("save-config", "保存")}
-                </button>
-                <button
-                  type="button"
-                  className="unity-btn"
-                  onClick={() => setEngineConfigOpen(false)}
-                >
-                  关闭
-                </button>
-              </div>
-            </header>
-            <div className="unity-help-dialog-body">
-              <p className="unity-engine-dialog-hint">
-                在「翻译服务」里选好引擎后，若该引擎需要 Key 或自定义地址，在此填写对应分区。修改后点右上角「保存」。
-              </p>
-              <div className="unity-ini-sections">
-                {engineSections.map((sec) => renderIniSection(sec))}
               </div>
             </div>
           </div>
@@ -2309,6 +2395,51 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   </strong>
                 </div>
               ) : null}
+
+              {recentGames.length > 0 ? (
+                <section
+                  className="unity-recent-games"
+                  aria-label="最近打开的游戏"
+                >
+                  <div className="unity-recent-games-head">
+                    <strong>最近打开</strong>
+                    <span>点击直接进入详情</span>
+                  </div>
+                  <ul className="unity-recent-games-list">
+                    {recentGames.map((r) => (
+                      <li key={r.gameDir}>
+                        <button
+                          type="button"
+                          className="unity-recent-game-btn"
+                          disabled={busy}
+                          onClick={() => void openRecentGame(r)}
+                          title={r.gameDir}
+                        >
+                          <span className="unity-recent-game-name">
+                            {r.name}
+                          </span>
+                          <span className="unity-recent-game-path">
+                            {r.gameDir}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="unity-recent-game-remove"
+                          title="从最近列表移除"
+                          aria-label={`移除 ${r.name}`}
+                          disabled={busy}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setRecentGames(removeRecentUnityGame(r.gameDir));
+                          }}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
               </div>
 
               {!awaitingPath ? (
@@ -2386,7 +2517,9 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                                 "unity-game-card" +
                                 (isActive ? " is-active" : "")
                               }
-                              onClick={() => openGameDetail(g.gameDir)}
+                              onClick={() =>
+                                openGameDetail(g.gameDir, gameTitle(g))
+                              }
                             >
                               <div className="unity-game-title">
                                 {gameTitle(g)}
@@ -2473,8 +2606,8 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
             </div>
             <div className="unity-config-body">
               <p className="unity-config-hint">
-                下列选项对应游戏内 Config.ini /
-                AutoTranslatorConfig.ini。常见只需改「翻译服务」与「语言」；其余保持默认即可。
+                翻译服务与语言对应游戏内 Config.ini。引擎 Key、文件路径等低频项请到「设置 →
+                Unity」编辑。
               </p>
               {configPath ? (
                 <button
@@ -2497,58 +2630,42 @@ export function UnityTranslateView({ active = true }: { active?: boolean }) {
                   未检测到配置文件时使用完整默认项；安装或保存后写入游戏目录。
                 </p>
               )}
-              <div className="unity-ini-sections">
-                {essentialSections.length > 0 ? (
-                  <div className="unity-config-essential">
-                    <div className="unity-config-essential-head">
-                      <strong>必需配置</strong>
-                      <span>翻译服务与语言，安装后通常只需改这里</span>
-                    </div>
-                    <div className="unity-config-essential-body">
-                      {essentialSections.map((sec) =>
-                        renderIniSection(sec, { mode: "essential" }),
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-                {visibleConfigSections(configSections).map((sec) =>
-                  renderIniSection(sec),
-                )}
-                {engineSections.length > 0 ? (
-                  <div className="unity-ini-section unity-engine-entry">
+              <div className="unity-ini-sections unity-ini-sections-plain">
+                {essentialSections.map((sec) => renderIniSection(sec))}
+              </div>
+              <div className="unity-llm-bridge">
+                <p className="unity-llm-bridge-hint">
+                  需保持 LLMChat 运行；大模型在「设置」页配置。一键写入后 Endpoint 为
+                  CustomTranslate，Url 为：
+                  <code>{llmBridgeUrl}</code>
+                </p>
+                <div className="unity-llm-bridge-actions">
+                  <button
+                    type="button"
+                    className="unity-btn unity-btn-primary"
+                    disabled={busy || !selected}
+                    onClick={() => void applyLlmEndpoint()}
+                  >
+                    {actionLabel("apply-llm", "使用 LLMChat 大模型翻译")}
+                  </button>
+                  <button
+                    type="button"
+                    className="unity-btn"
+                    disabled={busy}
+                    onClick={() => void testLlmTranslate()}
+                  >
+                    {actionLabel("test-llm", "测试一条")}
+                  </button>
+                  {onOpenUnitySettings ? (
                     <button
                       type="button"
-                      className="unity-ini-section-head"
-                      onClick={() => {
-                        setEngineConfigOpen(true);
-                        setConfigOpenSections((prev) => {
-                          const next = { ...prev };
-                          const first = engineSections[0]?.name;
-                          if (first && next[first] == null) next[first] = true;
-                          return next;
-                        });
-                      }}
+                      className="unity-btn"
+                      onClick={onOpenUnitySettings}
                     >
-                      <span className="unity-ini-section-titles">
-                        <span className="unity-ini-section-label">
-                          翻译引擎参数
-                        </span>
-                        <span className="unity-ini-section-key">
-                          {engineSections.length} 个引擎分区
-                        </span>
-                        <span className="unity-ini-section-help">
-                          Google / DeepL / 百度等引擎的 Key、地址与间隔；点击打开详细配置。
-                        </span>
-                      </span>
-                      <span
-                        className="unity-ini-section-chevron"
-                        aria-hidden="true"
-                      >
-                        ▸
-                      </span>
+                      更多设置…
                     </button>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
               {selected && !hasPluginFramework(selected) ? (
                 <p className="unity-warn">

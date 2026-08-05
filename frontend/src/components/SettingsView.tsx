@@ -15,6 +15,11 @@ import {
 import { PROJECT_FILENAME } from "../transProject";
 import { LangCombobox } from "./LangCombobox";
 import {
+  UnitySettingsPanel,
+  type UnitySettingsPanelHandle,
+  type UnitySettingsTarget,
+} from "./UnitySettingsPanel";
+import {
   groupModelPresets,
   loadModelProfiles,
   MODEL_PRESETS,
@@ -41,14 +46,24 @@ import {
   writeSectionTestResults,
 } from "../settingsTestSession";
 
+type FeaturePage = "chat" | "literature" | "image" | "text" | "unity";
+
+type SettingsTab =
+  | "general"
+  | "chat"
+  | "literature"
+  | "image"
+  | "text"
+  | "unity";
+
 type Props = {
   settings: Settings;
   onSave: (settings: Settings) => void | Promise<void>;
+  onNavigate?: (page: FeaturePage) => void;
+  initialTab?: SettingsTab;
 };
 
 const CUSTOM_MODEL = "__custom__";
-
-type SettingsTab = "general" | "chat" | "literature" | "image" | "text";
 
 const TAB_LABELS: Record<SettingsTab, string> = {
   general: "通用",
@@ -56,6 +71,17 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   literature: "文献翻译",
   image: "图片文字识别",
   text: "翻译工程",
+  unity: "Unity",
+};
+
+const TAB_NAV: Partial<
+  Record<SettingsTab, { page: FeaturePage; label: string }>
+> = {
+  chat: { page: "chat", label: "前往对话" },
+  literature: { page: "literature", label: "前往文献翻译" },
+  image: { page: "image", label: "前往图片识别" },
+  text: { page: "text", label: "前往翻译工程" },
+  unity: { page: "unity", label: "前往 Unity 翻译" },
 };
 
 const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
@@ -100,6 +126,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
     "textPostReplace",
     "textProjectsDir",
   ],
+  unity: [],
 };
 
 type TestResult = {
@@ -694,8 +721,18 @@ function ReplaceTable({
   );
 }
 
-export function SettingsView({ settings, onSave }: Props) {
-  const [tab, setTab] = useState<SettingsTab>("general");
+export function SettingsView({
+  settings,
+  onSave,
+  onNavigate,
+  initialTab,
+}: Props) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
+  const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
+  const [unityTarget, setUnityTarget] = useState<UnitySettingsTarget>({
+    hasGame: false,
+    gameDir: "",
+  });
   const [form, setForm] = useState<Settings>(() => withDefaults(settings));
   const [profiles, setProfiles] = useState<Record<string, ModelProfile>>(() =>
     loadModelProfiles(),
@@ -925,6 +962,7 @@ export function SettingsView({ settings, onSave }: Props) {
   };
 
   const tabIsDirty = (which: SettingsTab, snapshot: Settings) => {
+    if (which === "unity") return false;
     const base = withDefaults(settingsRef.current);
     const prepared = prepareForm(snapshot);
     return TAB_FIELDS[which].some((key) => {
@@ -992,6 +1030,15 @@ export function SettingsView({ settings, onSave }: Props) {
   };
 
   const saveCurrentPage = async () => {
+    if (tab === "unity") {
+      setSaving(true);
+      try {
+        await unityPanelRef.current?.save();
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     await persistTab(
       formRef.current,
       tab,
@@ -1962,7 +2009,16 @@ export function SettingsView({ settings, onSave }: Props) {
     { id: "literature", label: "文献翻译" },
     { id: "image", label: "图片文字识别" },
     { id: "text", label: "翻译工程" },
+    { id: "unity", label: "Unity" },
   ];
+
+  useEffect(() => {
+    if (initialTab && initialTab !== tab) {
+      setTab(initialTab);
+    }
+    // Only react to external open requests
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTab]);
 
   return (
     <div className="settings-page">
@@ -3457,23 +3513,52 @@ export function SettingsView({ settings, onSave }: Props) {
             />
           </>
         )}
+        {tab === "unity" && (
+          <UnitySettingsPanel
+            ref={unityPanelRef}
+            active={tab === "unity"}
+            notify={notify}
+            onTargetChange={setUnityTarget}
+          />
+        )}
       </div>
 
       <div className="settings-save-bar">
         <div className="settings-save-bar-text">
           <strong>保存当前页</strong>
           <span>
-            仅保存「{TAB_LABELS[tab]}」；下拉即时保存，输入框失焦后自动保存。
+            {tab === "unity"
+              ? unityTarget.hasGame
+                ? "写入当前游戏 Config.ini，并同步更新通用模板。"
+                : "当前无选中游戏：保存为通用 AutoTranslator 模板（各游戏格式相同）。"
+              : `仅保存「${TAB_LABELS[tab]}」；下拉即时保存，输入框失焦后自动保存。`}
           </span>
         </div>
-        <button
-          type="button"
-          className="settings-save-current"
-          disabled={saving}
-          onClick={() => void saveCurrentPage()}
-        >
-          {saving ? "保存中…" : `保存「${TAB_LABELS[tab]}」设置`}
-        </button>
+        <div className="settings-save-bar-actions">
+          {TAB_NAV[tab] && onNavigate ? (
+            <button
+              type="button"
+              className="settings-goto-page"
+              onClick={() => onNavigate(TAB_NAV[tab]!.page)}
+            >
+              {TAB_NAV[tab]!.label}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="settings-save-current"
+            disabled={saving}
+            onClick={() => void saveCurrentPage()}
+          >
+            {saving
+              ? "保存中…"
+              : tab === "unity"
+                ? unityTarget.hasGame
+                  ? "保存到当前游戏"
+                  : "保存通用模板"
+                : `保存「${TAB_LABELS[tab]}」设置`}
+          </button>
+        </div>
       </div>
     </div>
   );

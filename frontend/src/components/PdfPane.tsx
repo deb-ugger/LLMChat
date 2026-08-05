@@ -1026,12 +1026,79 @@ export function PdfPane({
     const root = scrollRef.current;
     if (!root || !anchor || !focus) return null;
     if (!root.contains(anchor) || !root.contains(focus)) return null;
-    const text = sel
-      .toString()
+
+    /** Skip PDF footer/header printed page numbers in the text layer. */
+    const isPrintedPageNumber = (textNode: Node): boolean => {
+      const el =
+        textNode.nodeType === Node.ELEMENT_NODE
+          ? (textNode as HTMLElement)
+          : textNode.parentElement;
+      if (!el) return false;
+      const span = el.closest(".textLayer span") as HTMLElement | null;
+      if (!span) return false;
+      const raw = (span.textContent || "").replace(/\s+/g, "");
+      if (!/^\d{1,4}$/.test(raw)) return false;
+      const page = span.closest(".page") as HTMLElement | null;
+      if (!page) return false;
+      const pageNum = Number(
+        page.dataset.pageNumber || page.getAttribute("data-page-number"),
+      );
+      const n = Number(raw);
+      const pageRect = page.getBoundingClientRect();
+      const spanRect = span.getBoundingClientRect();
+      if (pageRect.height <= 1) {
+        return Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1;
+      }
+      const relY =
+        (spanRect.top + spanRect.height / 2 - pageRect.top) / pageRect.height;
+      const nearEdge = relY < 0.1 || relY > 0.88;
+      if (!nearEdge) return false;
+      if (Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1) return true;
+      // Lone short number sitting in the margin/footer.
+      return raw.length <= 3;
+    };
+
+    const chunks: string[] = [];
+    try {
+      for (let ri = 0; ri < sel.rangeCount; ri++) {
+        const range = sel.getRangeAt(ri);
+        const ancestor = range.commonAncestorContainer;
+        const scope: Node =
+          ancestor.nodeType === Node.ELEMENT_NODE
+            ? ancestor
+            : ancestor.parentElement || ancestor;
+        const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node) {
+          if (!range.intersectsNode(node)) {
+            node = walker.nextNode();
+            continue;
+          }
+          if (isPrintedPageNumber(node)) {
+            node = walker.nextNode();
+            continue;
+          }
+          const full = node.textContent || "";
+          let start = 0;
+          let end = full.length;
+          if (node === range.startContainer) start = range.startOffset;
+          if (node === range.endContainer) end = range.endOffset;
+          if (end > start) chunks.push(full.slice(start, end));
+          node = walker.nextNode();
+        }
+      }
+    } catch {
+      chunks.length = 0;
+    }
+
+    const raw = chunks.length > 0 ? chunks.join("") : sel.toString();
+    const text = raw
       .replace(/\u00a0/g, " ")
       .replace(/-\s*[\r\n]+/g, "")
       .replace(/[\r\n]+/g, " ")
       .replace(/[ \t\f\v]+/g, " ")
+      // Cross-page leftovers: "…word 12 Next…" where 12 is a page number.
+      .replace(/(\p{L})\s+\d{1,4}\s+(?=\p{L})/gu, "$1 ")
       .trim();
     return text || null;
   }, []);

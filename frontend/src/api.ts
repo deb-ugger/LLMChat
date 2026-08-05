@@ -483,6 +483,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** AutoTranslator CustomTranslate bridge — returns plain text. */
+  unityLlmTranslate: async (opts: {
+    text: string;
+    from?: string;
+    to?: string;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("text", opts.text);
+    if (opts.from) q.set("from", opts.from);
+    if (opts.to) q.set("to", opts.to);
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_BASE}/api/unity/llm-translate?${q.toString()}`,
+      );
+    } catch (e) {
+      throw new Error(toFriendlyError(e, "大模型翻译桥接失败"));
+    }
+    const body = await res.text();
+    if (!res.ok) {
+      throw new Error(body.trim() || `HTTP ${res.status}`);
+    }
+    return { ok: true as const, translation: body };
+  },
   unityFixFont: (body: { path: string; language?: string }) =>
     request<{
       ok: boolean;
@@ -572,17 +596,69 @@ export type DictionaryEntry = {
   word: string;
   phonetics: DictionaryPhonetic[];
   meanings: DictionaryMeaning[];
+  /** Bilingual example sentences (e.g. from Youdao). */
+  examples?: { en: string; zh?: string; source?: string }[];
 };
 
 export async function lookupDictionary(
   word: string,
-): Promise<DictionaryEntry | null> {
+  opts?: { source?: string; target?: string },
+): Promise<DictionaryEntry> {
   const q = word.trim().toLowerCase();
-  if (!q) return null;
-  const res = await fetch(
-    `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(q)}`,
-  );
-  if (!res.ok) return null;
-  const data = (await res.json()) as DictionaryEntry[];
-  return data[0] ?? null;
+  if (!q) {
+    throw new Error("请输入要查询的单词");
+  }
+
+  // Prefer backend dictionary (Youdao first, Bing gloss fallback).
+  try {
+    const params = new URLSearchParams({
+      q,
+      source: opts?.source || "en",
+      target: opts?.target || "zh-CN",
+    });
+    const res = await fetch(`${API_BASE}/api/dictionary?${params.toString()}`);
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      entry?: DictionaryEntry;
+      error?: string;
+      provider?: string;
+    };
+    if (data.ok && data.entry) return data.entry;
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    throw new Error(
+      `词典查询失败（HTTP ${res.status}）。后端必应词典无有效结果`,
+    );
+  } catch (e) {
+    if (e instanceof Error && !/Failed to fetch|NetworkError|fetch/i.test(e.message)) {
+      // Keep detailed backend / logic errors
+      throw e;
+    }
+    // Fall through to public Free Dictionary API
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(q)}`,
+    );
+    if (res.status === 404) {
+      throw new Error(`未找到单词「${q}」的英英释义（dictionaryapi.dev）`);
+    }
+    if (!res.ok) {
+      throw new Error(
+        `英英词典不可用（HTTP ${res.status}${
+          res.status === 403 ? "，国内网络常被拦截" : ""
+        }）。必应词典也未能返回结果，请检查后端是否运行、网络或代理设置`,
+      );
+    }
+    const data = (await res.json()) as DictionaryEntry[];
+    if (!data?.[0]) {
+      throw new Error(`未找到单词「${q}」的词典义项`);
+    }
+    return data[0];
+  } catch (e) {
+    if (e instanceof Error) throw e;
+    throw new Error(toFriendlyError(e, "词典服务暂时不可用"));
+  }
 }

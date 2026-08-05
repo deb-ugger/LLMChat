@@ -2112,18 +2112,40 @@ bool downloadFile(const std::string& url, const fs::path& dest, std::string& err
     return fs::exists(dest, ec) && fs::file_size(dest, ec) > 0;
 }
 
-bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& error)
+bool looksLikeZip(const fs::path& zipPath, std::string& error)
 {
-    fs::create_directories(destDir);
-    const std::wstring cmd =
-        L"tar -xf \"" + zipPath.wstring() + L"\" -C \"" + destDir.wstring() + L"\"";
+    std::error_code ec;
+    if (!fs::is_regular_file(zipPath, ec))
+    {
+        error = "安装包不存在: " + pathUtf8(zipPath);
+        return false;
+    }
+    const auto sz = fs::file_size(zipPath, ec);
+    if (ec || sz < 64)
+    {
+        error = "安装包过小或损坏（" + std::to_string(static_cast<unsigned long long>(sz))
+            + " 字节），请检查网络后重试";
+        return false;
+    }
+    std::ifstream in(zipPath, std::ios::binary);
+    char mag[2]{};
+    in.read(mag, 2);
+    if (!in || mag[0] != 'P' || mag[1] != 'K')
+    {
+        error = "安装包不是有效的 ZIP（可能下载失败或被截断）";
+        return false;
+    }
+    return true;
+}
+
+bool runHiddenProcess(std::wstring cmdLine, DWORD timeoutMs, DWORD& outCode, std::string& error)
+{
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::wstring mutableCmd = cmd;
     if (!CreateProcessW(
             nullptr,
-            mutableCmd.data(),
+            cmdLine.data(),
             nullptr,
             nullptr,
             FALSE,
@@ -2133,19 +2155,165 @@ bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& e
             &si,
             &pi))
     {
-        error = "无法解压安装包（需要系统 tar）";
+        error = "无法启动解压进程（错误 " + std::to_string(GetLastError()) + "）";
+        outCode = 1;
         return false;
     }
-    WaitForSingleObject(pi.hProcess, 120000);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
+    const DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
+    if (wait == WAIT_TIMEOUT)
+    {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        error = "解压超时";
+        outCode = 1;
+        return false;
+    }
+    outCode = 1;
+    GetExitCodeProcess(pi.hProcess, &outCode);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    if (code != 0)
+    return outCode == 0;
+}
+
+bool copyExtractedContents(const fs::path& from, const fs::path& to, std::string& error)
+{
+    std::error_code ec;
+    fs::create_directories(to, ec);
+    if (ec)
     {
-        error = "解压安装包失败";
+        error = "无法创建目标目录: " + pathUtf8(to) + "（" + ec.message() + "）";
         return false;
     }
+    std::size_t copied = 0;
+    for (const auto& entry : fs::directory_iterator(from, ec))
+    {
+        if (ec)
+            break;
+        const fs::path dest = to / entry.path().filename();
+        std::error_code copyEc;
+        fs::copy(
+            entry.path(),
+            dest,
+            fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+            copyEc);
+        if (copyEc)
+        {
+            error = "复制到游戏目录失败: " + pathUtf8(dest) + "（" + copyEc.message()
+                + "）。若目录在网盘同步盘，请暂停同步或移到本地磁盘后重试";
+            return false;
+        }
+        ++copied;
+    }
+    if (copied == 0)
+    {
+        error = "解压结果为空";
+        return false;
+    }
+    return true;
+}
+
+std::size_t countFilesRecursive(const fs::path& dir)
+{
+    std::size_t n = 0;
+    std::error_code ec;
+    for (const auto& entry : fs::recursive_directory_iterator(dir, ec))
+    {
+        if (ec)
+            break;
+        if (entry.is_regular_file(ec))
+            ++n;
+    }
+    return n;
+}
+
+bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& error)
+{
+    if (!looksLikeZip(zipPath, error))
+        return false;
+
+    // Extract to a short ASCII temp path first. Windows tar often fails on
+    // sync folders (BaiduNetdisk) or non-ASCII game paths; copy afterward.
+    const fs::path stagingRoot =
+        fs::temp_directory_path() / "llmchat-xunity-extract"
+        / (std::to_wstring(GetCurrentProcessId()) + L"-"
+           + std::to_wstring(GetTickCount64()));
+    std::error_code ec;
+    fs::create_directories(stagingRoot, ec);
+    if (ec)
+    {
+        error = "无法创建临时解压目录";
+        return false;
+    }
+    struct StagingGuard {
+        fs::path path;
+        ~StagingGuard()
+        {
+            std::error_code ignore;
+            fs::remove_all(path, ignore);
+        }
+    } guard{stagingRoot};
+
+    const fs::path tarExe = fs::path(L"C:\\Windows\\System32\\tar.exe");
+    const bool hasTar = fs::is_regular_file(tarExe, ec);
+    DWORD tarCode = 1;
+    DWORD psCode = 1;
+    std::string tarErr;
+    std::string psErr;
+    bool extracted = false;
+
+    if (hasTar)
+    {
+        std::wstring cmd = L"\"" + tarExe.wstring() + L"\" -xf \"" + zipPath.wstring()
+            + L"\" -C \"" + stagingRoot.wstring() + L"\"";
+        if (runHiddenProcess(std::move(cmd), 180000, tarCode, tarErr)
+            && countFilesRecursive(stagingRoot) > 0)
+        {
+            extracted = true;
+        }
+        else if (tarErr.empty())
+        {
+            tarErr = "退出码 " + std::to_string(tarCode);
+        }
+    }
+    else
+    {
+        tarErr = "未找到 C:\\Windows\\System32\\tar.exe";
+    }
+
+    if (!extracted)
+    {
+        // Fallback: PowerShell Expand-Archive (handles more zip edge cases)
+        auto psLiteral = [](const fs::path& p) {
+            std::wstring s = p.wstring();
+            std::wstring out;
+            out.reserve(s.size() + 8);
+            for (wchar_t c : s)
+            {
+                if (c == L'\'')
+                    out += L"''";
+                else
+                    out += c;
+            }
+            return out;
+        };
+        std::wstring cmd =
+            L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
+            L"\"Expand-Archive -LiteralPath '"
+            + psLiteral(zipPath) + L"' -DestinationPath '" + psLiteral(stagingRoot)
+            + L"' -Force\"";
+        if (!runHiddenProcess(std::move(cmd), 180000, psCode, psErr)
+            || countFilesRecursive(stagingRoot) == 0)
+        {
+            if (psErr.empty())
+                psErr = "退出码 " + std::to_string(psCode);
+            error = "解压安装包失败（tar: " + tarErr + "；PowerShell: " + psErr + "）";
+            return false;
+        }
+    }
+
+    if (!copyExtractedContents(stagingRoot, destDir, error))
+        return false;
     return true;
 }
 
@@ -3487,6 +3655,11 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
             result.error = err;
             return result;
         }
+        if (!looksLikeZip(zipPath, err))
+        {
+            result.error = err;
+            return result;
+        }
 
         const fs::path gameDirPath = pathFromUtf8(targetDir);
         result.steps.push_back("解压到游戏目录");
@@ -3896,6 +4069,11 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
                 result.error = err;
                 return result;
             }
+            if (!looksLikeZip(zipPath, err))
+            {
+                result.error = err;
+                return result;
+            }
 
             result.steps.push_back("解压到游戏目录");
             if (!extractZip(zipPath, targetPath, err))
@@ -4010,6 +4188,12 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
                 fs::remove(zipPath, ec);
                 return result;
             }
+        }
+
+        if (!looksLikeZip(zipPath, err))
+        {
+            result.error = err;
+            return result;
         }
 
         result.steps.push_back("解压插件框架到游戏目录");
@@ -4190,6 +4374,7 @@ std::vector<UnityEndpointInfo> UnityAutoTranslator::endpoints()
         {"BingTranslateLegitimate", "Azure 翻译（需 Key）", true},
         {"GoogleTranslateLegitimate", "Google Cloud（需 Key）", true},
         {"LingoCloudTranslate", "彩云小译（可选 Token）", false},
+        {"CustomTranslate", "LLMChat 大模型（需本软件运行）", false},
         {"", "禁用自动翻译", false},
     };
 }

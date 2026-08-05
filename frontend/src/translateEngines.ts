@@ -25,7 +25,7 @@ export const TRANSLATE_ENGINES: EngineInfo[] = [
     id: "bing",
     label: "Bing 翻译（免 Key）",
     strongLangs: ["en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it"],
-    hint: "推荐：英中/多语；国内一般可直连。",
+    hint: "推荐：英中/多语；走必应网页接口，国内一般可直连。",
     defaultMaxChars: 3000,
     supportsChunk: true,
     credentialFields: [

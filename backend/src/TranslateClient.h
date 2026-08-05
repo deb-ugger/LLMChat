@@ -43,4 +43,12 @@ public:
         const std::string& httpProxy = "",
         const std::string& customPrompt = "",
         const std::string& glossaryJson = "");
+
+    /** JSON: {ok, entry?, error?, provider?} — Bing webpage dictionary. */
+    static std::string lookupDictionaryJson(
+        const std::string& word,
+        const std::string& source,
+        const std::string& target,
+        const std::string& proxyMode = "auto",
+        const std::string& httpProxy = "");
 };

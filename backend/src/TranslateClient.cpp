@@ -11,6 +11,8 @@
 #include <functional>
 #include <random>
 #include <chrono>
+#include <mutex>
+#include <regex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -366,6 +368,80 @@ std::wstring toWide(const std::string& s)
     return out;
 }
 
+std::string fromWide(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(
+        CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+    std::string out(static_cast<size_t>(n - 1), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+void mergeCookiePair(std::string& jar, const std::string& pair)
+{
+    const auto eq = pair.find('=');
+    if (eq == std::string::npos || eq == 0) return;
+    const std::string name = pair.substr(0, eq);
+    std::string next;
+    std::size_t i = 0;
+    while (i < jar.size())
+    {
+        while (i < jar.size() && (jar[i] == ' ' || jar[i] == ';')) ++i;
+        const auto start = i;
+        while (i < jar.size() && jar[i] != ';') ++i;
+        const std::string item = jar.substr(start, i - start);
+        if (item.rfind(name + "=", 0) != 0)
+        {
+            if (!next.empty()) next += "; ";
+            next += item;
+        }
+    }
+    if (!next.empty()) next += "; ";
+    next += pair;
+    jar = std::move(next);
+}
+
+void collectSetCookies(HINTERNET request, std::string& jar)
+{
+    DWORD size = 0;
+    WinHttpQueryHeaders(
+        request,
+        WINHTTP_QUERY_RAW_HEADERS_CRLF,
+        WINHTTP_HEADER_NAME_BY_INDEX,
+        WINHTTP_NO_OUTPUT_BUFFER,
+        &size,
+        WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) return;
+    std::wstring raw(size / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(
+            request,
+            WINHTTP_QUERY_RAW_HEADERS_CRLF,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            raw.data(),
+            &size,
+            WINHTTP_NO_HEADER_INDEX))
+    {
+        return;
+    }
+    std::wstringstream ss(raw);
+    std::wstring line;
+    while (std::getline(ss, line))
+    {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.size() < 12) continue;
+        if (_wcsnicmp(line.c_str(), L"Set-Cookie:", 11) != 0) continue;
+        std::wstring v = line.substr(11);
+        while (!v.empty() && iswspace(v.front())) v.erase(v.begin());
+        const auto semi = v.find(L';');
+        const std::wstring pairW =
+            semi == std::wstring::npos ? v : v.substr(0, semi);
+        mergeCookiePair(jar, fromWide(pairW));
+    }
+}
+
 std::string trimCopy(std::string s)
 {
     auto notSpace = [](unsigned char c) { return !std::isspace(c); };
@@ -410,6 +486,8 @@ struct HttpResult {
     int status = 0;
     std::string body;
     std::string error;
+    /** Cookie request header value collected from Set-Cookie (name=value; …). */
+    std::string cookies;
 };
 
 std::string winHttpErrMessage(DWORD err, const std::wstring& host = L"")
@@ -615,6 +693,8 @@ HttpResult winHttpRequest(
         if (!WinHttpReadData(request, buffer.data(), available, &read)) break;
         result.body.append(buffer.data(), read);
     }
+
+    collectSetCookies(request, result.cookies);
 
     WinHttpCloseHandle(request);
     WinHttpCloseHandle(connect);
@@ -857,68 +937,185 @@ TranslateResult translateBing(const std::string& text, const std::string& source
 {
     TranslateResult result;
     result.provider = "bing";
-    const HttpResult auth = winHttpGet("https://edge.microsoft.com/translate/auth");
-    if (!auth.ok || auth.body.empty())
-    {
-        result.error = withZhHint(
-            auth.error.empty() ? "Bing auth token failed" : auth.error,
-            "Bing 鉴权失败，请稍后重试或更换引擎");
-        return result;
-    }
-    if (looksLikeHtml(auth.body))
-    {
-        result.error = withZhHint(
-            "Bing auth returned HTML",
-            "Bing 鉴权返回异常，请检查网络后重试");
-        return result;
-    }
-    const std::string token = auth.body;
-    const std::string from = mapLangForBing(source.empty() ? "en" : source);
-    const std::string to = mapLangForBing(target.empty() ? "zh-CN" : target);
 
-    json body = json::array();
-    body.push_back({{"Text", text}});
-    const std::wstring headers =
-        L"Content-Type: application/json\r\nAuthorization: Bearer "
-        + toWide(token) + L"\r\n";
+    struct BingCred {
+        std::string host;
+        std::string ig;
+        std::string key;
+        std::string token;
+        std::string cookies;
+        std::chrono::steady_clock::time_point expires{};
+    };
+    static std::mutex mu;
+    static BingCred cache;
 
-    // api.edge.microsofttranslator.com often fails DNS in CN;
-    // api.cognitive.microsofttranslator.com works with the Edge auth token.
-    const std::vector<std::string> hosts = {
-        "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=",
-        "https://api-edge.cognitive.microsofttranslator.com/translate?api-version=3.0&to=",
+    auto parseCreds = [](const std::string& html, BingCred& out) -> bool {
+        std::smatch m;
+        if (!std::regex_search(html, m, std::regex(R"regex(IG:"([^"]+)")regex")))
+            return false;
+        out.ig = m[1].str();
+        if (!std::regex_search(
+                html,
+                m,
+                std::regex(
+                    R"regex(params_AbusePreventionHelper\s*=\s*\[\s*(\d+)\s*,\s*"([^"]+)")regex")))
+        {
+            return false;
+        }
+        out.key = m[1].str();
+        out.token = m[2].str();
+        return !out.ig.empty() && !out.key.empty() && !out.token.empty();
     };
 
-    HttpResult http;
-    std::string lastErr;
-    for (const auto& base : hosts)
+    auto ensureCreds = [&](BingCred& cred) -> std::string {
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            if (!cache.host.empty()
+                && !cache.ig.empty()
+                && !cache.token.empty()
+                && now < cache.expires)
+            {
+                cred = cache;
+                return {};
+            }
+        }
+
+        const std::vector<std::string> hosts = {
+            "https://cn.bing.com",
+            "https://www.bing.com",
+        };
+        std::string lastErr;
+        for (const auto& host : hosts)
+        {
+            const HttpResult page = winHttpGet(host + "/translator");
+            if (!page.ok || page.body.empty())
+            {
+                lastErr = page.error.empty()
+                    ? ("HTTP " + std::to_string(page.status) + " from " + host + "/translator")
+                    : page.error;
+                continue;
+            }
+            BingCred next;
+            next.host = host;
+            next.cookies = page.cookies;
+            if (!parseCreds(page.body, next))
+            {
+                lastErr = "Cannot parse Bing translator tokens from " + host;
+                continue;
+            }
+            next.expires = now + std::chrono::minutes(25);
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                cache = next;
+            }
+            cred = std::move(next);
+            return {};
+        }
+        return lastErr.empty()
+            ? "Bing translator page unavailable"
+            : lastErr;
+    };
+
+    BingCred cred;
+    const std::string credErr = ensureCreds(cred);
+    if (!credErr.empty())
     {
-        std::string url = base + urlEncode(to);
-        if (!from.empty()) url += "&from=" + urlEncode(from);
-        http = winHttpPost(url, body.dump(), headers);
-        if (http.ok && !looksLikeHtml(http.body))
-            break;
-        lastErr = http.error.empty()
-            ? ("HTTP " + std::to_string(http.status) + " from " + base)
-            : http.error;
+        result.error = withZhHint(
+            credErr,
+            "Bing 鉴权失败（旧 Edge 接口已失效）。请检查网络后重试，或换有道/大模型");
+        return result;
+    }
+
+    const std::string from = mapLangForBing(source.empty() ? "en" : source);
+    const std::string to = mapLangForBing(target.empty() ? "zh-CN" : target);
+    const std::string fromLang = from.empty() ? "auto-detect" : from;
+
+    const std::string form =
+        "fromLang=" + urlEncode(fromLang)
+        + "&to=" + urlEncode(to)
+        + "&text=" + urlEncode(text)
+        + "&token=" + urlEncode(cred.token)
+        + "&key=" + urlEncode(cred.key)
+        + "&tryFetchingGenderDebiasedTranslations=true";
+
+    const std::string url =
+        cred.host + "/ttranslatev3?isVertical=1&IG=" + urlEncode(cred.ig)
+        + "&IID=translator.5026";
+
+    std::wstring headers =
+        L"Content-Type: application/x-www-form-urlencoded\r\n"
+        L"Origin: " + toWide(cred.host) + L"\r\n"
+        L"Referer: " + toWide(cred.host + "/translator") + L"\r\n";
+    if (!cred.cookies.empty())
+        headers += L"Cookie: " + toWide(cred.cookies) + L"\r\n";
+
+    HttpResult http = winHttpPost(url, form, headers);
+    // Token expired / challenge → refresh once
+    if ((!http.ok || http.body.empty() || looksLikeHtml(http.body))
+        && (http.status == 401 || http.status == 403 || http.status == 404
+            || http.body.find("\"statusCode\":") != std::string::npos))
+    {
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            cache = {};
+        }
+        const std::string retryErr = ensureCreds(cred);
+        if (retryErr.empty())
+        {
+            const std::string form2 =
+                "fromLang=" + urlEncode(fromLang)
+                + "&to=" + urlEncode(to)
+                + "&text=" + urlEncode(text)
+                + "&token=" + urlEncode(cred.token)
+                + "&key=" + urlEncode(cred.key)
+                + "&tryFetchingGenderDebiasedTranslations=true";
+            const std::string url2 =
+                cred.host + "/ttranslatev3?isVertical=1&IG=" + urlEncode(cred.ig)
+                + "&IID=translator.5026";
+            std::wstring headers2 =
+                L"Content-Type: application/x-www-form-urlencoded\r\n"
+                L"Origin: " + toWide(cred.host) + L"\r\n"
+                L"Referer: " + toWide(cred.host + "/translator") + L"\r\n";
+            if (!cred.cookies.empty())
+                headers2 += L"Cookie: " + toWide(cred.cookies) + L"\r\n";
+            http = winHttpPost(url2, form2, headers2);
+        }
     }
 
     if (!http.ok || looksLikeHtml(http.body))
     {
+        const std::string raw = http.error.empty()
+            ? ("HTTP " + std::to_string(http.status) + " from Bing webpage API")
+            : http.error;
         result.error = withZhHint(
-            lastErr.empty() ? "Bing translate failed" : lastErr,
-            "Bing 翻译请求失败，请稍后重试、检查代理，或换大模型");
+            raw,
+            "Bing 翻译请求失败，请稍后重试、检查代理，或换有道/大模型");
         return result;
     }
+
     try
     {
         const json root = json::parse(http.body);
-        if (root.is_array() && !root.empty()
-            && root[0].contains("translations")
-            && root[0]["translations"].is_array()
-            && !root[0]["translations"].empty())
+        // Webpage API: [{ translations: [{ text }] }]
+        // or { statusCode, … }
+        if (root.is_object() && root.contains("statusCode"))
         {
-            result.translation = root[0]["translations"][0].value("text", "");
+            result.error = withZhHint(
+                "Bing status " + root.value("statusCode", json(0)).dump(),
+                "Bing 拒绝了请求（可能触发风控），请稍后再试");
+            return result;
+        }
+        if (root.is_array() && !root.empty())
+        {
+            const json& first = root[0];
+            if (first.contains("translations")
+                && first["translations"].is_array()
+                && !first["translations"].empty())
+            {
+                result.translation =
+                    first["translations"][0].value("text", "");
+            }
         }
         if (result.translation.empty())
         {
@@ -936,6 +1133,522 @@ TranslateResult translateBing(const std::string& text, const std::string& source
             "Bing 翻译返回无法解析，请稍后重试或更换引擎");
     }
     return result;
+}
+
+/** Prefer Youdao (rich CN gloss + phonetics + examples); fall back to Bing. */
+json lookupYoudaoDictionaryJson(const std::string& word)
+{
+    json out = json::object();
+    out["ok"] = false;
+    const std::string url =
+        "https://dict.youdao.com/jsonapi?q=" + urlEncode(word);
+    const HttpResult http = winHttpGet(url);
+    if (!http.ok || http.body.empty())
+    {
+        out["error"] = withZhHint(
+            http.error.empty()
+                ? ("HTTP " + std::to_string(http.status) + " from Youdao")
+                : http.error,
+            "有道词典请求失败");
+        return out;
+    }
+
+    auto stripHtml = [](std::string s) {
+        std::string r;
+        r.reserve(s.size());
+        bool inTag = false;
+        for (char c : s)
+        {
+            if (c == '<')
+            {
+                inTag = true;
+                continue;
+            }
+            if (c == '>')
+            {
+                inTag = false;
+                continue;
+            }
+            if (!inTag) r.push_back(c);
+        }
+        return r;
+    };
+
+    auto mapPos = [](std::string tag) {
+        for (char& c : tag)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        while (!tag.empty() && (tag.back() == '.' || tag.back() == ' '))
+            tag.pop_back();
+        if (tag == "n" || tag == "noun") return std::string("noun");
+        if (tag == "v" || tag == "verb" || tag == "vi" || tag == "vt")
+            return std::string("verb");
+        if (tag == "adj" || tag == "a" || tag == "adjective")
+            return std::string("adjective");
+        if (tag == "adv" || tag == "ad" || tag == "adverb")
+            return std::string("adverb");
+        if (tag == "prep" || tag == "preposition") return std::string("preposition");
+        if (tag == "conj" || tag == "conjunction") return std::string("conjunction");
+        if (tag == "pron" || tag == "pronoun") return std::string("pronoun");
+        if (tag == "int" || tag == "interjection") return std::string("interjection");
+        if (tag == "num" || tag == "number") return std::string("number");
+        if (tag == "art" || tag == "article") return std::string("article");
+        return tag.empty() ? std::string("unknown") : tag;
+    };
+
+    auto splitZhDefs = [](std::string line) {
+        // Drop leading "n. " / "v. " etc.
+        static const std::regex posRe(
+            R"regex(^\s*([a-zA-Z]+\.?)\s+)regex");
+        std::smatch m;
+        if (std::regex_search(line, m, posRe))
+            line = line.substr(m[0].length());
+        std::vector<std::string> parts;
+        std::string cur;
+        for (size_t i = 0; i < line.size(); ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(line[i]);
+            const unsigned char c2 =
+                i + 1 < line.size() ? static_cast<unsigned char>(line[i + 1]) : 0;
+            // UTF-8 fullwidth semicolon U+FF1B = EF BC 9B
+            if (c == 0xEF && c2 == 0xBC
+                && i + 2 < line.size()
+                && static_cast<unsigned char>(line[i + 2]) == 0x9B)
+            {
+                const auto t = trimCopy(cur);
+                if (!t.empty()) parts.push_back(t);
+                cur.clear();
+                i += 2;
+                continue;
+            }
+            if (c == ';')
+            {
+                const auto t = trimCopy(cur);
+                if (!t.empty()) parts.push_back(t);
+                cur.clear();
+                continue;
+            }
+            cur.push_back(line[i]);
+        }
+        const auto t = trimCopy(cur);
+        if (!t.empty()) parts.push_back(t);
+        if (parts.empty() && !line.empty()) parts.push_back(trimCopy(line));
+        return parts;
+    };
+
+    try
+    {
+        const json root = json::parse(http.body);
+        json entry;
+        entry["word"] = word;
+        entry["phonetics"] = json::array();
+        entry["meanings"] = json::array();
+        entry["examples"] = json::array();
+
+        const json* ecWord = nullptr;
+        if (root.contains("ec") && root["ec"].contains("word")
+            && root["ec"]["word"].is_array() && !root["ec"]["word"].empty())
+        {
+            ecWord = &root["ec"]["word"][0];
+        }
+        if (ecWord && ecWord->is_object())
+        {
+            const auto& w = *ecWord;
+            if (w.contains("return-phrase"))
+            {
+                if (w["return-phrase"].is_string())
+                    entry["word"] = w["return-phrase"].get<std::string>();
+                else if (w["return-phrase"].is_object()
+                    && w["return-phrase"].contains("l")
+                    && w["return-phrase"]["l"].contains("i"))
+                {
+                    entry["word"] = w["return-phrase"]["l"]["i"].get<std::string>();
+                }
+            }
+            const std::string usphone = w.value("usphone", "");
+            const std::string ukphone = w.value("ukphone", "");
+            const std::string usspeech = w.value("usspeech", "");
+            const std::string ukspeech = w.value("ukspeech", "");
+            if (!usphone.empty() || !usspeech.empty())
+            {
+                json p;
+                if (!usphone.empty()) p["text"] = usphone;
+                if (!usspeech.empty())
+                    p["audio"] =
+                        "https://dict.youdao.com/dictvoice?audio=" + usspeech;
+                entry["phonetics"].push_back(p);
+            }
+            if (!ukphone.empty() || !ukspeech.empty())
+            {
+                json p;
+                if (!ukphone.empty()) p["text"] = ukphone;
+                if (!ukspeech.empty())
+                    p["audio"] =
+                        "https://dict.youdao.com/dictvoice?audio=" + ukspeech;
+                entry["phonetics"].push_back(p);
+            }
+
+            std::map<std::string, json> byPos;
+            if (w.contains("trs") && w["trs"].is_array())
+            {
+                for (const auto& block : w["trs"])
+                {
+                    if (!block.contains("tr") || !block["tr"].is_array()) continue;
+                    for (const auto& tr : block["tr"])
+                    {
+                        if (!tr.contains("l") || !tr["l"].contains("i")) continue;
+                        const auto& ii = tr["l"]["i"];
+                        std::vector<std::string> lines;
+                        if (ii.is_array())
+                        {
+                            for (const auto& x : ii)
+                                if (x.is_string()) lines.push_back(x.get<std::string>());
+                        }
+                        else if (ii.is_string())
+                        {
+                            lines.push_back(ii.get<std::string>());
+                        }
+                        for (const auto& line0 : lines)
+                        {
+                            std::string line = trimCopy(line0);
+                            if (line.empty()) continue;
+                            std::string posTag = "unknown";
+                            static const std::regex posRe(
+                                R"regex(^\s*([a-zA-Z]+\.?)\s+)regex");
+                            std::smatch m;
+                            if (std::regex_search(line, m, posRe))
+                                posTag = mapPos(m[1].str());
+                            const auto defs = splitZhDefs(line);
+                            if (!byPos.count(posTag))
+                            {
+                                byPos[posTag] = {
+                                    {"partOfSpeech", posTag},
+                                    {"definitions", json::array()},
+                                    {"synonyms", json::array()},
+                                };
+                            }
+                            for (const auto& def : defs)
+                            {
+                                if (byPos[posTag]["definitions"].size() >= 8) break;
+                                byPos[posTag]["definitions"].push_back(
+                                    {{"definition", def}});
+                            }
+                        }
+                    }
+                }
+            }
+            for (auto& kv : byPos)
+            {
+                if (!kv.second["definitions"].empty())
+                    entry["meanings"].push_back(kv.second);
+            }
+        }
+
+        // English definitions + inline examples
+        if (root.contains("ee") && root["ee"].contains("word"))
+        {
+            const json& eeWord = root["ee"]["word"];
+            const json* eeTrs = nullptr;
+            if (eeWord.is_object() && eeWord.contains("trs"))
+                eeTrs = &eeWord["trs"];
+            else if (eeWord.is_array() && !eeWord.empty()
+                && eeWord[0].contains("trs"))
+                eeTrs = &eeWord[0]["trs"];
+            if (eeTrs && eeTrs->is_array())
+            {
+                for (const auto& block : *eeTrs)
+                {
+                    const std::string pos = mapPos(block.value("pos", ""));
+                    json meaning = {
+                        {"partOfSpeech", pos.empty() ? "english" : pos},
+                        {"definitions", json::array()},
+                        {"synonyms", json::array()},
+                    };
+                    if (!block.contains("tr") || !block["tr"].is_array()) continue;
+                    for (const auto& tr : block["tr"])
+                    {
+                        std::string def;
+                        if (tr.contains("l") && tr["l"].contains("i"))
+                        {
+                            if (tr["l"]["i"].is_string())
+                                def = tr["l"]["i"].get<std::string>();
+                            else if (tr["l"]["i"].is_array() && !tr["l"]["i"].empty())
+                                def = tr["l"]["i"][0].get<std::string>();
+                        }
+                        std::string exam;
+                        try
+                        {
+                            exam = tr.at("exam").at("i").at("f").at("l")[0].at("i")
+                                       .get<std::string>();
+                        }
+                        catch (...)
+                        {
+                        }
+                        if (def.empty()) continue;
+                        json item = {{"definition", "[英] " + def}};
+                        if (!exam.empty()) item["example"] = exam;
+                        meaning["definitions"].push_back(item);
+                        if (meaning["definitions"].size() >= 6) break;
+                    }
+                    if (!meaning["definitions"].empty())
+                        entry["meanings"].push_back(meaning);
+                }
+            }
+        }
+
+        // Bilingual example sentences
+        if (root.contains("blng_sents_part")
+            && root["blng_sents_part"].contains("sentence-pair")
+            && root["blng_sents_part"]["sentence-pair"].is_array())
+        {
+            int n = 0;
+            for (const auto& sp : root["blng_sents_part"]["sentence-pair"])
+            {
+                if (n >= 5) break;
+                std::string en = sp.value("sentence", "");
+                if (en.empty())
+                    en = stripHtml(sp.value("sentence-eng", ""));
+                else
+                    en = stripHtml(en);
+                const std::string zh =
+                    stripHtml(sp.value("sentence-translation", ""));
+                if (en.empty()) continue;
+                json ex = {{"en", en}};
+                if (!zh.empty()) ex["zh"] = zh;
+                const std::string src = sp.value("source", "");
+                if (!src.empty()) ex["source"] = src;
+                entry["examples"].push_back(ex);
+                ++n;
+            }
+        }
+
+        // Synonyms from phrs / syno if present
+        if (root.contains("syno") && root["syno"].contains("synos")
+            && root["syno"]["synos"].is_array() && !entry["meanings"].empty())
+        {
+            json syns = json::array();
+            for (const auto& s : root["syno"]["synos"])
+            {
+                if (!s.contains("syno") || !s["syno"].is_array()) continue;
+                for (const auto& item : s["syno"])
+                {
+                    std::string w;
+                    if (item.is_string()) w = item.get<std::string>();
+                    else if (item.is_object())
+                        w = item.value("word", item.value("name", ""));
+                    if (w.empty()) continue;
+                    syns.push_back(w);
+                    if (syns.size() >= 12) break;
+                }
+                if (syns.size() >= 12) break;
+            }
+            if (!syns.empty())
+                entry["meanings"][0]["synonyms"] = syns;
+        }
+
+        if (entry["meanings"].empty() && entry["examples"].empty())
+        {
+            out["error"] = withZhHint(
+                "Youdao returned no meanings",
+                "有道未返回该词义项");
+            return out;
+        }
+        out["ok"] = true;
+        out["entry"] = entry;
+        out["provider"] = "youdao";
+    }
+    catch (const std::exception& ex)
+    {
+        out["error"] = withZhHint(
+            std::string("Parse Youdao failed: ") + ex.what(),
+            "有道词典返回无法解析");
+    }
+    return out;
+}
+
+json lookupBingDictionaryJson(
+    const std::string& word,
+    const std::string& source,
+    const std::string& target)
+{
+    json out = json::object();
+    out["ok"] = false;
+
+    // Reuse translateBing credential fetch by duplicating the light path
+    struct BingCred {
+        std::string host;
+        std::string ig;
+        std::string key;
+        std::string token;
+        std::string cookies;
+    };
+
+    auto parseCreds = [](const std::string& html, BingCred& outCred) -> bool {
+        std::smatch m;
+        if (!std::regex_search(html, m, std::regex(R"regex(IG:"([^"]+)")regex")))
+            return false;
+        outCred.ig = m[1].str();
+        if (!std::regex_search(
+                html,
+                m,
+                std::regex(
+                    R"regex(params_AbusePreventionHelper\s*=\s*\[\s*(\d+)\s*,\s*"([^"]+)")regex")))
+        {
+            return false;
+        }
+        outCred.key = m[1].str();
+        outCred.token = m[2].str();
+        return true;
+    };
+
+    BingCred cred;
+    std::string lastErr;
+    for (const auto& host : {std::string("https://cn.bing.com"), std::string("https://www.bing.com")})
+    {
+        const HttpResult page = winHttpGet(host + "/translator");
+        if (!page.ok)
+        {
+            lastErr = page.error.empty()
+                ? ("HTTP " + std::to_string(page.status))
+                : page.error;
+            continue;
+        }
+        cred.host = host;
+        cred.cookies = page.cookies;
+        if (parseCreds(page.body, cred)) break;
+        lastErr = "Cannot parse Bing tokens";
+        cred = {};
+    }
+    if (cred.host.empty())
+    {
+        out["error"] = withZhHint(
+            lastErr.empty() ? "Bing dictionary auth failed" : lastErr,
+            "无法打开必应翻译页获取词典凭证，请检查网络后重试");
+        return out;
+    }
+
+    const std::string from = mapLangForBing(source.empty() ? "en" : source);
+    const std::string to = mapLangForBing(target.empty() ? "zh-CN" : target);
+    const std::string form =
+        "text=" + urlEncode(word)
+        + "&from=" + urlEncode(from.empty() ? "en" : from)
+        + "&to=" + urlEncode(to.empty() ? "zh-Hans" : to)
+        + "&token=" + urlEncode(cred.token)
+        + "&key=" + urlEncode(cred.key);
+    const std::string url =
+        cred.host + "/tlookupv3?isVertical=1&IG=" + urlEncode(cred.ig)
+        + "&IID=translator.5026";
+    std::wstring headers =
+        L"Content-Type: application/x-www-form-urlencoded\r\n"
+        L"Origin: " + toWide(cred.host) + L"\r\n"
+        L"Referer: " + toWide(cred.host + "/translator") + L"\r\n";
+    if (!cred.cookies.empty())
+        headers += L"Cookie: " + toWide(cred.cookies) + L"\r\n";
+
+    const HttpResult http = winHttpPost(url, form, headers);
+    if (!http.ok)
+    {
+        out["error"] = withZhHint(
+            http.error.empty()
+                ? ("HTTP " + std::to_string(http.status) + " from Bing dictionary")
+                : http.error,
+            "必应词典请求失败，请稍后重试");
+        return out;
+    }
+
+    try
+    {
+        const json root = json::parse(http.body);
+        if (!root.is_array() || root.empty())
+        {
+            out["error"] = withZhHint(
+                "Empty Bing dictionary response",
+                "未找到该词的词典义项");
+            return out;
+        }
+        const json& row = root[0];
+        json entry;
+        entry["word"] = row.value("displaySource", row.value("normalizedSource", word));
+        entry["phonetics"] = json::array();
+        entry["meanings"] = json::array();
+
+        auto mapPos = [](std::string tag) {
+            for (char& c : tag) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (tag == "adj") return std::string("adjective");
+            if (tag == "adv") return std::string("adverb");
+            if (tag == "noun" || tag == "verb" || tag == "pronoun"
+                || tag == "preposition" || tag == "conjunction"
+                || tag == "interjection" || tag == "article")
+                return tag;
+            return tag.empty() ? std::string("unknown") : tag;
+        };
+
+        std::map<std::string, json> byPos;
+        if (row.contains("translations") && row["translations"].is_array())
+        {
+            for (const auto& tr : row["translations"])
+            {
+                const std::string pos = mapPos(tr.value("posTag", ""));
+                if (!byPos.count(pos))
+                {
+                    byPos[pos] = {
+                        {"partOfSpeech", pos},
+                        {"definitions", json::array()},
+                        {"synonyms", json::array()},
+                    };
+                }
+                const std::string def = tr.value(
+                    "displayTarget",
+                    tr.value("normalizedTarget", ""));
+                if (!def.empty())
+                {
+                    byPos[pos]["definitions"].push_back({{"definition", def}});
+                }
+                if (tr.contains("backTranslations") && tr["backTranslations"].is_array())
+                {
+                    for (const auto& bt : tr["backTranslations"])
+                    {
+                        const std::string syn = bt.value(
+                            "displayText",
+                            bt.value("normalizedText", ""));
+                        if (syn.empty()) continue;
+                        auto& arr = byPos[pos]["synonyms"];
+                        bool exists = false;
+                        for (const auto& x : arr)
+                        {
+                            if (x.get<std::string>() == syn)
+                            {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists && arr.size() < 12) arr.push_back(syn);
+                    }
+                }
+            }
+        }
+        for (auto& kv : byPos)
+        {
+            if (!kv.second["definitions"].empty())
+                entry["meanings"].push_back(kv.second);
+        }
+        if (entry["meanings"].empty())
+        {
+            out["error"] = withZhHint(
+                "No meanings in Bing dictionary",
+                "未找到该词的词典义项");
+            return out;
+        }
+        out["ok"] = true;
+        out["entry"] = entry;
+        out["provider"] = "bing";
+    }
+    catch (const std::exception& ex)
+    {
+        out["error"] = withZhHint(
+            std::string("Parse Bing dictionary failed: ") + ex.what(),
+            "词典返回无法解析，请稍后重试");
+    }
+    return out;
 }
 
 TranslateResult translateYoudao(
@@ -1255,6 +1968,53 @@ TranslateResult translateNiutrans(
 #endif
 
 } // namespace
+
+std::string TranslateClient::lookupDictionaryJson(
+    const std::string& word,
+    const std::string& source,
+    const std::string& target,
+    const std::string& proxyMode,
+    const std::string& httpProxy)
+{
+#ifdef _WIN32
+    ProxyScope scope(proxyMode, httpProxy);
+    std::string q = word;
+    while (!q.empty() && std::isspace(static_cast<unsigned char>(q.front())))
+        q.erase(q.begin());
+    while (!q.empty() && std::isspace(static_cast<unsigned char>(q.back())))
+        q.pop_back();
+    if (q.empty())
+    {
+        json err = {{"ok", false}, {"error", "请输入要查询的单词"}};
+        return err.dump();
+    }
+    // Prefer Youdao (phonetics / bilingual examples / EN defs). Bing gloss is fallback.
+    json youdao = lookupYoudaoDictionaryJson(q);
+    if (youdao.value("ok", false)) return youdao.dump();
+    json bing = lookupBingDictionaryJson(q, source, target);
+    if (bing.value("ok", false)) return bing.dump();
+    json err = {
+        {"ok", false},
+        {"error",
+         youdao.value(
+             "error",
+             bing.value(
+                 "error",
+                 std::string("词典查询失败，请检查网络后重试")))},
+    };
+    return err.dump();
+#else
+    (void)source;
+    (void)target;
+    (void)proxyMode;
+    (void)httpProxy;
+    json err = {
+        {"ok", false},
+        {"error", "当前环境不支持词典查询"},
+    };
+    return err.dump();
+#endif
+}
 
 TranslateResult TranslateClient::translateFree(
     const std::string& text,
