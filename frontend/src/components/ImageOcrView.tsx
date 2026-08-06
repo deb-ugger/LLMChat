@@ -924,6 +924,7 @@ export function ImageOcrView({
       provider: translateProvider,
       maxLength: translateMaxLength,
       autoChunk: translateAutoChunk,
+      feature: "ocr" as const,
       ...(translateProvider === "llm" ? { apiUrl, apiKey, model } : {}),
     }),
     [

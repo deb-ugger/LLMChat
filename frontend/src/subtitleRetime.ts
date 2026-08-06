@@ -270,6 +270,7 @@ async function llmSplitSentences(
     model: llm.model,
     prompt: SUBTITLE_RETIME_PROMPT,
     glossary: "[]",
+    feature: "text",
   });
   return parseSentenceJson(res.translation || "", joined);
 }

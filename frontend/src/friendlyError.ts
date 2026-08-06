@@ -1,19 +1,23 @@
 /**
  * Keep the original (usually English) error, then append a short Chinese hint.
  * Format: `Original English error（中文说明）`
+ * Upstream dumps (HTML/JSON) are kept in full — never truncated.
  */
 export function toFriendlyError(
   raw: unknown,
   fallback = "Operation failed（操作失败，请稍后重试）",
 ): string {
-  let original = (raw instanceof Error ? raw.message : String(raw ?? ""))
-    .trim()
-    .replace(/\s+/g, " ");
+  let original = (raw instanceof Error ? raw.message : String(raw ?? "")).trim();
   if (!original) return fallback;
 
-  // Truncate huge JSON dumps but keep the head for diagnosis
-  if (original.length > 220) {
-    original = `${original.slice(0, 200)}…`;
+  const isHtml =
+    /<!doctype\s*html/i.test(original) ||
+    /<\s*html[\s>]/i.test(original) ||
+    (/<\s*head[\s>]/i.test(original) && /<\s*body[\s>]/i.test(original));
+
+  // Keep HTML / multi-line dumps intact for diagnosis; only collapse plain one-liners
+  if (!isHtml) {
+    original = original.replace(/\s+/g, " ");
   }
 
   // Already bilingual (contains Chinese paren hint) — don't double-wrap
@@ -59,6 +63,18 @@ function classifyChineseHint(s: string): string | null {
   }
   if (low.includes("aborted") || low.includes("abort")) {
     return "连接超时；谷歌翻译在国内常需系统代理，可改用 Bing/有道";
+  }
+  if (
+    low.includes("google_captcha") ||
+    low.includes("recaptcha") ||
+    low.includes("unusual traffic") ||
+    low.includes("captcha-form") ||
+    /<!doctype\s*html/i.test(s) ||
+    /<\s*html[\s>]/i.test(s) ||
+    (low.includes("google") &&
+      (low.includes("html") || low.includes("blocked") || low.includes("captcha")))
+  ) {
+    return "谷歌翻译触发人机验证（请求过频或 IP 被风控），已尝试/请改用 Bing；或稍后再试";
   }
   if (
     low.includes("timeout") ||

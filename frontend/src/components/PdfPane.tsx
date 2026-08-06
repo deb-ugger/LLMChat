@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 // 必须先于 pdf_viewer：后者启动时读取 globalThis.pdfjsLib
 import {
@@ -65,6 +66,8 @@ type Props = {
   translateProvider?: string;
   model?: string;
   onOpenImageOcr?: (file: File) => void;
+  /** Extra controls rendered at the end of the PDF toolbar. */
+  toolbarExtra?: ReactNode;
 };
 
 type FileMeta = {
@@ -391,13 +394,28 @@ function OutlineTree({
   );
 
   /** 默认折叠二级及以下；搜索时展开全部以便看到匹配项 */
-  const [collapsed, setCollapsed] = useState<Set<string>>(() =>
-    defaultCollapsedKeys(items),
-  );
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const next = defaultCollapsedKeys(items);
+    const key = findActiveOutlineKey(items, currentPage);
+    if (key) {
+      for (const a of outlineAncestorKeys(key)) next.delete(a);
+    }
+    return next;
+  });
 
   useEffect(() => {
-    if (filtering) setCollapsed(new Set());
-    else setCollapsed(defaultCollapsedKeys(items));
+    if (filtering) {
+      setCollapsed(new Set());
+      return;
+    }
+    const next = defaultCollapsedKeys(items);
+    const key = findActiveOutlineKey(items, currentPage);
+    if (key) {
+      for (const a of outlineAncestorKeys(key)) next.delete(a);
+    }
+    setCollapsed(next);
+    // 仅在目录数据/搜索状态变化时重置折叠；翻页不打断用户手动展开
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, filtering]);
 
   const onToggle = useCallback((key: string) => {
@@ -425,15 +443,22 @@ function OutlineTree({
       return next;
     });
     // 等展开渲染后再滚动
-    requestAnimationFrame(() => {
+    window.setTimeout(() => {
       requestAnimationFrame(() => {
         const el = treeRef.current?.querySelector(
           `[data-outline-key="${activeKey}"]`,
         );
         el?.scrollIntoView({ block: "center", behavior: "smooth" });
       });
-    });
+    }, 50);
   }, [activeKey]);
+
+  /** 每次打开目录（组件挂载）自动定位到当前页章节 */
+  useEffect(() => {
+    revealActive();
+    // OutlineTree 仅在目录打开时挂载，故只在打开时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="pdf-outline-tree" ref={treeRef}>
@@ -506,6 +531,7 @@ export function PdfPane({
   translateProvider = "google",
   model = "",
   onOpenImageOcr,
+  toolbarExtra,
 }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
@@ -1863,6 +1889,7 @@ export function PdfPane({
         <span className="pdf-toolbar-engine" title={engineBadge}>
           {engineBadge}
         </span>
+        {toolbarExtra}
       </div>
 
       <div className="pdf-main">

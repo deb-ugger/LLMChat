@@ -17,7 +17,7 @@ import {
   type SubtitleCueGroup,
 } from "../subtitleGroups";
 import { retimeProjectSubtitles, type RetimeStepEvent } from "../subtitleRetime";
-import { resolveFeatureLlm } from "../modelPresets";
+import { resolveFeatureLlm, setVendorModelsOverrideCache } from "../modelPresets";
 import {
   addTokens,
   createProject,
@@ -238,6 +238,16 @@ export function TextTranslateView({ settings }: Props) {
     () => resolveFeatureLlm(settings, settings.textTranslateModel),
     [settings],
   );
+
+  useEffect(() => {
+    void api
+      .getVendorModels()
+      .then((res) => setVendorModelsOverrideCache(res.vendors || {}))
+      .catch(() => {
+        /* keep built-ins */
+      });
+  }, []);
+
   const [phase, setPhase] = useState<Phase>("home");
   const [project, setProject] = useState<TextProject | null>(null);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
@@ -1442,6 +1452,7 @@ export function TextTranslateView({ settings }: Props) {
             provider,
             source: active.sourceLang,
             target: active.targetLang,
+            feature: "text",
             ...(provider === "llm"
               ? {
                   apiUrl: textLlm.apiUrl,

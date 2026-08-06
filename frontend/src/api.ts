@@ -45,6 +45,14 @@ export type Settings = {
   translateTarget: string;
   /** LLM model for literature when provider=llm; empty falls back to model */
   translateModel: string;
+  /** Active literature prompt catalog entry id */
+  translatePromptId: string;
+  /** JSON: [{id,tag,prompt}] */
+  translatePromptCatalog: string;
+  /** Legacy prompt kind (migrated to translatePromptId) */
+  translatePromptKind: string;
+  /** Active literature LLM system prompt when provider=llm */
+  translatePrompt: string;
   /** Max chars per translate request; 0 = use engine default */
   translateMaxLength: number;
   /** When over limit: auto split+join (only for length-limited engines) */
@@ -100,6 +108,46 @@ export type TranslateResponse = {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+};
+
+export type UsageEvent = {
+  id: string;
+  ts: string;
+  date: string;
+  year: number;
+  time: string;
+  feature: string;
+  ok: boolean;
+  errorCode?: string;
+  channel: string;
+  engineId?: string;
+  engineKind?: string;
+  vendor?: string;
+  model?: string;
+  apiHost?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  sourceChars?: number;
+  endpoint?: string;
+  errorMessage?: string;
+};
+
+export type UsageSummaryItem = {
+  key: string;
+  requests: number;
+  ok: number;
+  fail: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  sourceChars: number;
 };
 
 export type TranslateOptions = {
@@ -112,10 +160,22 @@ export type TranslateOptions = {
   apiUrl?: string;
   apiKey?: string;
   model?: string;
+  /** Vendor hint for usage stats */
+  vendor?: string;
   /** Custom system prompt (LLM) */
   prompt?: string;
   /** Glossary JSON string or array (LLM) */
   glossary?: string | { src: string; dst: string; info?: string }[];
+  /** Usage stats feature tag */
+  feature?:
+    | "chat"
+    | "literature"
+    | "ocr"
+    | "text"
+    | "unity"
+    | "settings_test"
+    | "vendor_models"
+    | string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -230,6 +290,49 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  getVendorModels: () =>
+    request<{
+      ok: boolean;
+      vendors: Record<string, { model: string; label: string }[]>;
+    }>("/api/llm/vendor-models"),
+
+  putVendorModels: (
+    vendor: string,
+    models: { model: string; label: string; source?: "api" | "manual" }[],
+  ) =>
+    request<{
+      ok: boolean;
+      vendor: string;
+      models: { model: string; label: string; source?: "api" | "manual" }[];
+      count: number;
+    }>(`/api/llm/vendor-models/${encodeURIComponent(vendor)}`, {
+      method: "PUT",
+      body: JSON.stringify({ models }),
+    }),
+
+  refreshVendorModels: (
+    vendor: string,
+    body: {
+      apiUrl: string;
+      apiKey: string;
+      proxyMode?: string;
+      httpProxy?: string;
+    },
+  ) =>
+    request<{
+      ok: boolean;
+      vendor: string;
+      models: { model: string; label: string; source?: "api" | "manual" }[];
+      count: number;
+      modelsUrl?: string;
+      error?: string;
+      hint?: string;
+    }>(`/api/llm/vendor-models/${encodeURIComponent(vendor)}/refresh`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   listTextProjects: () =>
     request<{ ok: boolean; root: string; items: TextProjectListItem[] }>(
       "/api/text-projects",
@@ -317,6 +420,46 @@ export const api = {
       body: JSON.stringify({ text, ...opts }),
       ...init,
     }),
+  usageEvents: (params?: {
+    from?: string;
+    to?: string;
+    feature?: string;
+    ok?: "ok" | "fail" | "";
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.from) q.set("from", params.from);
+    if (params?.to) q.set("to", params.to);
+    if (params?.feature) q.set("feature", params.feature);
+    if (params?.ok) q.set("ok", params.ok);
+    const qs = q.toString();
+    return request<{
+      ok: boolean;
+      items: UsageEvent[];
+    }>(`/api/usage/events${qs ? `?${qs}` : ""}`);
+  },
+  usageSummary: (params?: {
+    from?: string;
+    to?: string;
+    feature?: string;
+    groupBy?: "feature" | "engine" | "llm" | "day";
+    ok?: "ok" | "fail" | "";
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.from) q.set("from", params.from);
+    if (params?.to) q.set("to", params.to);
+    if (params?.feature) q.set("feature", params.feature);
+    if (params?.groupBy) q.set("groupBy", params.groupBy);
+    if (params?.ok) q.set("ok", params.ok);
+    const qs = q.toString();
+    return request<{
+      ok: boolean;
+      groupBy: string;
+      totalEvents: number;
+      items: UsageSummaryItem[];
+    }>(`/api/usage/summary${qs ? `?${qs}` : ""}`);
+  },
+  clearUsage: () =>
+    request<{ ok: boolean }>("/api/usage", { method: "DELETE" }),
   unityEndpoints: () =>
     request<{
       ok: boolean;

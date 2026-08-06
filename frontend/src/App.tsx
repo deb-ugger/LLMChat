@@ -10,6 +10,7 @@ import { ImageOcrView } from "./components/ImageOcrView";
 import { LiteratureView } from "./components/LiteratureView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
+import { StatsView } from "./components/StatsView";
 import { TextTranslateView } from "./components/TextTranslateView";
 import { UnityTranslateView } from "./components/UnityTranslateView";
 import { toFriendlyError } from "./friendlyError";
@@ -19,9 +20,21 @@ import {
   DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
   DEFAULT_TEXT_PROMPT,
 } from "./textTranslate";
-import { resolveFeatureLlm } from "./modelPresets";
+import {
+  DEFAULT_LIT_PROMPT_GENERAL,
+  resolveLiteraturePromptState,
+  stringifyLiteraturePromptCatalog,
+} from "./literaturePrompt";
+import { resolveFeatureLlm, setVendorModelsOverrideCache } from "./modelPresets";
 
-type Page = "chat" | "literature" | "image" | "text" | "unity" | "settings";
+type Page =
+  | "chat"
+  | "literature"
+  | "image"
+  | "text"
+  | "unity"
+  | "stats"
+  | "settings";
 
 const defaultSettings: Settings = {
   apiUrl: "https://api.openai.com/v1/chat/completions",
@@ -34,6 +47,10 @@ const defaultSettings: Settings = {
   translateSource: "en",
   translateTarget: "zh-CN",
   translateModel: "",
+  translatePromptId: "general",
+  translatePromptCatalog: "[]",
+  translatePromptKind: "general",
+  translatePrompt: DEFAULT_LIT_PROMPT_GENERAL,
   translateMaxLength: 0,
   translateAutoChunk: true,
   ocrLang: "eng",
@@ -146,6 +163,22 @@ export default function App() {
             translateSource: s.translateSource || "en",
             translateTarget: s.translateTarget || "zh-CN",
             translateModel: String(s.translateModel || s.model || ""),
+            ...(() => {
+              const lit = resolveLiteraturePromptState({
+                catalogRaw: s.translatePromptCatalog,
+                activeIdRaw: s.translatePromptId,
+                legacyKind: s.translatePromptKind,
+                legacyPrompt: s.translatePrompt,
+              });
+              return {
+                translatePromptId: lit.activeId,
+                translatePromptCatalog: stringifyLiteraturePromptCatalog(
+                  lit.catalog,
+                ),
+                translatePromptKind: lit.activeId,
+                translatePrompt: lit.prompt,
+              };
+            })(),
             translateMaxLength: s.translateMaxLength ?? 0,
             translateAutoChunk: s.translateAutoChunk ?? true,
             ocrLang: s.ocrLang || "eng",
@@ -233,6 +266,15 @@ export default function App() {
     () => resolveFeatureLlm(settings, settings.ocrTranslateModel),
     [settings],
   );
+
+  useEffect(() => {
+    void api
+      .getVendorModels()
+      .then((res) => setVendorModelsOverrideCache(res.vendors || {}))
+      .catch(() => {
+        /* keep built-ins */
+      });
+  }, []);
 
   const visibleMessages = useMemo(() => {
     if (!current) return [];
@@ -439,6 +481,19 @@ export default function App() {
           <span>在线翻译</span>
         </button>
         <button
+          className={page === "stats" ? "nav-item active" : "nav-item"}
+          onClick={() => setPage("stats")}
+          title="统计"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M5 19V9h3v10H5zm5.5 0V5h3v14h-3zM16 19v-6h3v6h-3z"
+            />
+          </svg>
+          <span>统计</span>
+        </button>
+        <button
           className={page === "settings" ? "nav-item active" : "nav-item"}
           onClick={() => {
             setSettingsInitialTab(undefined);
@@ -497,10 +552,24 @@ export default function App() {
             translateTarget={settings.translateTarget}
             translateMaxLength={settings.translateMaxLength}
             translateAutoChunk={settings.translateAutoChunk}
+            translatePromptCatalog={settings.translatePromptCatalog}
+            translatePromptId={settings.translatePromptId}
+            translatePromptKind={settings.translatePromptKind}
+            translatePrompt={settings.translatePrompt}
             model={litLlm.model}
             apiUrl={litLlm.apiUrl}
             apiKey={litLlm.apiKey}
             onOpenImageOcr={openImageOcr}
+            onPromptCatalogChange={async ({ catalog, activeId, prompt }) => {
+              await onSaveSettings({
+                ...settings,
+                translatePromptCatalog:
+                  stringifyLiteraturePromptCatalog(catalog),
+                translatePromptId: activeId,
+                translatePromptKind: activeId,
+                translatePrompt: prompt,
+              });
+            }}
           />
         </div>
         <div
@@ -547,6 +616,7 @@ export default function App() {
             }}
           />
         </div>
+        {page === "stats" && <StatsView />}
         {page === "settings" && (
           <SettingsView
             settings={settings}

@@ -2,6 +2,7 @@
 #include "LlmClient.h"
 #include "TranslateClient.h"
 #include "UnityAutoTranslator.h"
+#include "UsageStore.h"
 #include "Utf8Path.h"
 
 #include <httplib.h>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -214,6 +216,8 @@ std::string readFileTailLines(const fs::path& path, int maxLines)
 HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
     : config_(config)
     , conversations_(conversations)
+    , usage_(std::make_unique<UsageStore>(
+          (fs::path(config.path()).parent_path() / "usage-events.jsonl").string()))
 {
 }
 
@@ -239,6 +243,46 @@ int HttpServer::run()
         };
     };
 
+    svr.Get("/api/usage/events", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
+        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+        const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
+        const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        json items = json::array();
+        if (usage_)
+        {
+            for (auto& row : usage_->events(from, to, feature, okFilter))
+                items.push_back(std::move(row));
+        }
+        res.set_content(json{{"ok", true}, {"items", items}}.dump(), "application/json");
+    }));
+
+    svr.Get("/api/usage/summary", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
+        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+        const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
+        const std::string groupBy =
+            req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
+        const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        if (!usage_)
+        {
+            res.set_content(
+                json{{"ok", true}, {"groupBy", groupBy}, {"items", json::array()}, {"totalEvents", 0}}
+                    .dump(),
+                "application/json");
+            return;
+        }
+        res.set_content(
+            usage_->summary(from, to, feature, groupBy, okFilter).dump(),
+            "application/json");
+    }));
+
+    svr.Delete("/api/usage", withCors([this](const httplib::Request&, httplib::Response& res) {
+        if (usage_)
+            usage_->clear();
+        res.set_content(json{{"ok", true}}.dump(), "application/json");
+    }));
+
     svr.Get("/api/health", withCors([](const httplib::Request&, httplib::Response& res) {
         res.set_content(json{{"ok", true}, {"service", "llmchat-backend"}}.dump(), "application/json; charset=utf-8");
     }));
@@ -257,6 +301,10 @@ int HttpServer::run()
             {"translateSource", c.translateSource},
             {"translateTarget", c.translateTarget},
             {"translateModel", c.translateModel},
+            {"translatePromptId", c.translatePromptId},
+            {"translatePromptCatalog", c.translatePromptCatalog},
+            {"translatePromptKind", c.translatePromptKind},
+            {"translatePrompt", c.translatePrompt},
             {"translateMaxLength", c.translateMaxLength},
             {"translateAutoChunk", c.translateAutoChunk},
             {"ocrLang", c.ocrLang},
@@ -330,6 +378,22 @@ int HttpServer::run()
             if (body.contains("translateModel"))
             {
                 c.translateModel = body["translateModel"].get<std::string>();
+            }
+            if (body.contains("translatePromptId"))
+            {
+                c.translatePromptId = body["translatePromptId"].get<std::string>();
+            }
+            if (body.contains("translatePromptCatalog"))
+            {
+                c.translatePromptCatalog = body["translatePromptCatalog"].get<std::string>();
+            }
+            if (body.contains("translatePromptKind"))
+            {
+                c.translatePromptKind = body["translatePromptKind"].get<std::string>();
+            }
+            if (body.contains("translatePrompt"))
+            {
+                c.translatePrompt = body["translatePrompt"].get<std::string>();
             }
             if (body.contains("translateMaxLength"))
             {
@@ -1009,6 +1073,26 @@ int HttpServer::run()
             llmReq.messages = conv.messages;
 
             const LlmResponse llmRes = LlmClient::chat(llmReq);
+            {
+                UsageEvent ev = UsageStore::makeEventSkeleton();
+                ev.feature = "chat";
+                ev.ok = llmRes.ok;
+                ev.errorCode = llmRes.ok ? "" : "LLM_ERROR";
+                ev.errorMessage = llmRes.ok ? "" : llmRes.error;
+                ev.channel = "llm";
+                ev.model = cfg.model;
+                ev.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
+                ev.vendor = UsageStore::vendorFromHostOrModel(ev.apiHost, cfg.model, "");
+                ev.promptTokens = llmRes.promptTokens;
+                ev.completionTokens = llmRes.completionTokens;
+                ev.totalTokens = llmRes.totalTokens;
+                ev.cacheReadTokens = llmRes.cacheReadTokens;
+                ev.cacheWriteTokens = llmRes.cacheWriteTokens;
+                ev.sourceChars = static_cast<int>(content.size());
+                ev.endpoint = "chat";
+                if (usage_ && (llmRes.ok || llmRes.externalCall))
+                    usage_->append(std::move(ev));
+            }
             if (!llmRes.ok)
             {
                 res.status = 502;
@@ -1056,6 +1140,307 @@ int HttpServer::run()
         }
     }));
 
+    const auto vendorModelsPath = [this]() -> fs::path {
+        return dataDirectory(config_) / "vendor-models.json";
+    };
+
+    const auto loadVendorModelsFile = [&]() -> json {
+        const fs::path path = vendorModelsPath();
+        if (!fs::exists(path))
+            return json::object();
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return json::object();
+        try
+        {
+            json root;
+            in >> root;
+            if (!root.is_object())
+                return json::object();
+            return root;
+        }
+        catch (...)
+        {
+            return json::object();
+        }
+    };
+
+    const auto saveVendorModelsFile = [&](const json& root) -> bool {
+        const fs::path path = vendorModelsPath();
+        std::error_code ec;
+        fs::create_directories(path.parent_path(), ec);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return false;
+        out << root.dump(2);
+        return static_cast<bool>(out);
+    };
+
+    const auto decodeVendorSegment = [](std::string s) -> std::string {
+        // cpp-httplib usually already decodes; still handle leftover %XX
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            if (s[i] == '%' && i + 2 < s.size())
+            {
+                auto hex = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                    return -1;
+                };
+                const int hi = hex(s[i + 1]);
+                const int lo = hex(s[i + 2]);
+                if (hi >= 0 && lo >= 0)
+                {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            else if (s[i] == '+')
+            {
+                out.push_back(' ');
+                continue;
+            }
+            out.push_back(s[i]);
+        }
+        return out;
+    };
+
+    const auto normalizeModelsArray = [](const json& modelsIn) -> json {
+        json arr = json::array();
+        if (!modelsIn.is_array())
+            return arr;
+        for (const auto& item : modelsIn)
+        {
+            if (item.is_string())
+            {
+                const std::string id = item.get<std::string>();
+                if (id.empty())
+                    continue;
+                arr.push_back({
+                    {"model", id},
+                    {"label", id},
+                    {"source", "manual"},
+                });
+                continue;
+            }
+            if (!item.is_object())
+                continue;
+            std::string id = item.value("model", "");
+            if (id.empty())
+                id = item.value("id", "");
+            if (id.empty())
+                continue;
+            std::string label = item.value("label", "");
+            if (label.empty())
+                label = id;
+            std::string source = item.value("source", "");
+            if (source != "api" && source != "manual")
+                source = "manual";
+            arr.push_back({
+                {"model", id},
+                {"label", label},
+                {"source", source},
+            });
+        }
+        return arr;
+    };
+
+    svr.Get("/api/llm/vendor-models", withCors([=](const httplib::Request&, httplib::Response& res) {
+        try
+        {
+            const json root = loadVendorModelsFile();
+            res.set_content(
+                json{{"ok", true}, {"vendors", root}}.dump(),
+                "application/json; charset=utf-8");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 500;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Put(
+        R"(/api/llm/vendor-models/([^/]+))",
+        withCors([=](const httplib::Request& req, httplib::Response& res) {
+            try
+            {
+                const std::string vendor = decodeVendorSegment(req.matches[1].str());
+                if (vendor.empty())
+                {
+                    res.status = 400;
+                    res.set_content(errorJson("vendor required").dump(), "application/json");
+                    return;
+                }
+                const json body = json::parse(req.body.empty() ? "{}" : req.body);
+                const json models = normalizeModelsArray(
+                    body.contains("models") ? body["models"] : json::array());
+                json root = loadVendorModelsFile();
+                root[vendor] = models;
+                if (!saveVendorModelsFile(root))
+                {
+                    res.status = 500;
+                    res.set_content(
+                        errorJson("failed to write vendor-models.json").dump(),
+                        "application/json");
+                    return;
+                }
+                res.set_content(
+                    json{
+                        {"ok", true},
+                        {"vendor", vendor},
+                        {"models", models},
+                        {"count", models.size()},
+                    }
+                        .dump(),
+                    "application/json; charset=utf-8");
+            }
+            catch (const std::exception& ex)
+            {
+                res.status = 400;
+                res.set_content(errorJson(ex.what()).dump(), "application/json");
+            }
+        }));
+
+    svr.Post(
+        R"(/api/llm/vendor-models/([^/]+)/refresh)",
+        withCors([=](const httplib::Request& req, httplib::Response& res) {
+            try
+            {
+                const std::string vendor = decodeVendorSegment(req.matches[1].str());
+                if (vendor.empty())
+                {
+                    res.status = 400;
+                    res.set_content(errorJson("vendor required").dump(), "application/json");
+                    return;
+                }
+                const json body = json::parse(req.body.empty() ? "{}" : req.body);
+                const auto& cfg = config_.get();
+                LlmListModelsRequest lm;
+                lm.apiUrl = body.value("apiUrl", cfg.apiUrl);
+                lm.apiKey = body.value("apiKey", cfg.apiKey);
+                lm.proxyMode = body.value("proxyMode", cfg.proxyMode);
+                lm.httpProxy = body.value("httpProxy", cfg.httpProxy);
+                if (lm.apiUrl.empty())
+                {
+                    res.status = 400;
+                    res.set_content(
+                        errorJson("请先填写 API URL").dump(),
+                        "application/json");
+                    return;
+                }
+                if (lm.apiKey.empty())
+                {
+                    res.status = 400;
+                    res.set_content(
+                        errorJson("请先填写 API Key").dump(),
+                        "application/json");
+                    return;
+                }
+
+                const LlmListModelsResponse listed = LlmClient::listModels(lm);
+                {
+                    UsageEvent ev = UsageStore::makeEventSkeleton();
+                    ev.feature = "vendor_models";
+                    ev.ok = listed.ok;
+                    ev.errorCode = listed.ok ? "" : "LIST_MODELS_ERROR";
+                    ev.errorMessage = listed.ok ? "" : listed.error;
+                    ev.channel = "llm";
+                    ev.apiHost = UsageStore::hostFromApiUrl(lm.apiUrl);
+                    ev.vendor = UsageStore::vendorFromHostOrModel(
+                        ev.apiHost, "", vendor);
+                    ev.endpoint = "list_models";
+                    if (usage_ && (listed.ok || listed.externalCall))
+                        usage_->append(std::move(ev));
+                }
+                if (!listed.ok)
+                {
+                    res.status = listed.statusCode >= 400 ? listed.statusCode : 502;
+                    res.set_content(
+                        json{
+                            {"ok", false},
+                            {"error", listed.error},
+                            {"hint", "官方拉取失败时可在设置里手动添加模型"},
+                        }
+                            .dump(),
+                        "application/json; charset=utf-8");
+                    return;
+                }
+
+                json apiModels = json::array();
+                for (const auto& id : listed.modelIds)
+                {
+                    apiModels.push_back({
+                        {"model", id},
+                        {"label", id},
+                        {"source", "api"},
+                    });
+                }
+
+                json root = loadVendorModelsFile();
+                json merged = json::array();
+                std::set<std::string> seen;
+                for (const auto& item : apiModels)
+                {
+                    const std::string id = item.value("model", "");
+                    if (id.empty() || seen.count(id))
+                        continue;
+                    seen.insert(id);
+                    merged.push_back(item);
+                }
+                // Keep previously manual-added models that are not in the API list
+                if (root.contains(vendor) && root[vendor].is_array())
+                {
+                    for (const auto& item : root[vendor])
+                    {
+                        if (!item.is_object())
+                            continue;
+                        const std::string id = item.value("model", "");
+                        if (id.empty() || seen.count(id))
+                            continue;
+                        const std::string source = item.value("source", "");
+                        if (source != "manual")
+                            continue;
+                        seen.insert(id);
+                        json keep = item;
+                        keep["source"] = "manual";
+                        if (!keep.contains("label") || keep["label"].get<std::string>().empty())
+                            keep["label"] = id;
+                        merged.push_back(keep);
+                    }
+                }
+                root[vendor] = merged;
+                if (!saveVendorModelsFile(root))
+                {
+                    res.status = 500;
+                    res.set_content(
+                        errorJson("failed to write vendor-models.json").dump(),
+                        "application/json");
+                    return;
+                }
+
+                res.set_content(
+                    json{
+                        {"ok", true},
+                        {"vendor", vendor},
+                        {"models", merged},
+                        {"count", merged.size()},
+                        {"modelsUrl", LlmClient::modelsUrlFromChatUrl(lm.apiUrl)},
+                    }
+                        .dump(),
+                    "application/json; charset=utf-8");
+            }
+            catch (const std::exception& ex)
+            {
+                res.status = 400;
+                res.set_content(errorJson(ex.what()).dump(), "application/json");
+            }
+        }));
+
     svr.Post("/api/translate", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
@@ -1076,11 +1461,15 @@ int HttpServer::run()
             const bool autoChunk = body.value("autoChunk", cfg.translateAutoChunk);
 
             TranslateResult tr;
+            std::string apiUrl;
+            std::string model;
+            std::string vendorHint;
             if (provider == "llm")
             {
-                const std::string apiUrl = body.value("apiUrl", cfg.apiUrl);
+                apiUrl = body.value("apiUrl", cfg.apiUrl);
                 const std::string apiKey = body.value("apiKey", cfg.apiKey);
-                const std::string model = body.value("model", cfg.model);
+                model = body.value("model", cfg.model);
+                vendorHint = body.value("vendor", "");
                 const std::string prompt = body.value("prompt", "");
                 std::string glossary;
                 if (body.contains("glossary"))
@@ -1105,9 +1494,43 @@ int HttpServer::run()
                     cfg.proxyMode, cfg.httpProxy, cfg.translateEngineKeys);
             }
 
+            {
+                UsageEvent ev = UsageStore::makeEventSkeleton();
+                ev.feature = body.value("feature", "unknown");
+                if (ev.feature.empty())
+                    ev.feature = "unknown";
+                ev.ok = tr.ok;
+                ev.errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
+                ev.errorMessage = tr.ok ? "" : tr.error;
+                ev.sourceChars = static_cast<int>(text.size());
+                ev.endpoint = "translate";
+                if (provider == "llm")
+                {
+                    ev.channel = "llm";
+                    ev.model = model;
+                    ev.apiHost = UsageStore::hostFromApiUrl(apiUrl);
+                    ev.vendor = UsageStore::vendorFromHostOrModel(
+                        ev.apiHost, model, vendorHint);
+                    ev.promptTokens = tr.promptTokens;
+                    ev.completionTokens = tr.completionTokens;
+                    ev.totalTokens = tr.totalTokens;
+                    ev.cacheReadTokens = tr.cacheReadTokens;
+                    ev.cacheWriteTokens = tr.cacheWriteTokens;
+                }
+                else
+                {
+                    ev.channel = "engine";
+                    ev.engineId = tr.provider.empty() ? provider : tr.provider;
+                    ev.engineKind = UsageStore::engineKindForProvider(ev.engineId);
+                }
+                if (usage_ && (tr.ok || tr.externalCall))
+                    usage_->append(std::move(ev));
+            }
+
             if (!tr.ok)
             {
-                res.status = tr.code == "LENGTH_LIMIT" ? 400 : 502;
+                res.status = tr.code == "LENGTH_LIMIT" ? 400
+                    : (tr.code == "CONFIG_ERROR" ? 400 : 502);
                 res.set_content(json{
                     {"ok", false},
                     {"error", tr.error},
@@ -1125,6 +1548,8 @@ int HttpServer::run()
                 {"promptTokens", tr.promptTokens},
                 {"completionTokens", tr.completionTokens},
                 {"totalTokens", tr.totalTokens},
+                {"cacheReadTokens", tr.cacheReadTokens},
+                {"cacheWriteTokens", tr.cacheWriteTokens},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -1209,6 +1634,27 @@ int HttpServer::run()
                 "Translate faithfully and concisely for on-screen text. "
                 "Preserve placeholders like {0}, %s, \\n, and markup tags. "
                 "Output only the translation.");
+
+            {
+                UsageEvent ev = UsageStore::makeEventSkeleton();
+                ev.feature = "unity";
+                ev.ok = tr.ok;
+                ev.errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
+                ev.errorMessage = tr.ok ? "" : tr.error;
+                ev.channel = "llm";
+                ev.model = cfg.model;
+                ev.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
+                ev.vendor = UsageStore::vendorFromHostOrModel(ev.apiHost, cfg.model, "");
+                ev.promptTokens = tr.promptTokens;
+                ev.completionTokens = tr.completionTokens;
+                ev.totalTokens = tr.totalTokens;
+                ev.cacheReadTokens = tr.cacheReadTokens;
+                ev.cacheWriteTokens = tr.cacheWriteTokens;
+                ev.sourceChars = static_cast<int>(text.size());
+                ev.endpoint = "unity_llm";
+                if (usage_ && (tr.ok || tr.externalCall))
+                    usage_->append(std::move(ev));
+            }
 
             if (!tr.ok)
             {

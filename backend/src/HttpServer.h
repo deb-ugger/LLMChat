@@ -2,6 +2,9 @@
 
 #include "Config.h"
 #include "ConversationManager.h"
+#include "UsageStore.h"
+
+#include <memory>
 
 class HttpServer {
 public:
@@ -11,4 +14,5 @@ public:
 private:
     ConfigStore& config_;
     ConversationManager& conversations_;
+    std::unique_ptr<UsageStore> usage_;
 };

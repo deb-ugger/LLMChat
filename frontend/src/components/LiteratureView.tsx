@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, lookupDictionary, type DictionaryEntry } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import {
+  DEFAULT_LIT_PROMPT_GENERAL,
+  GENERAL_PROMPT_ID,
+  resolveLiteraturePromptState,
+  type LiteraturePromptEntry,
+} from "../literaturePrompt";
+import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
 import { PdfPane } from "./PdfPane";
 import { TranslatePanel } from "./TranslatePanel";
 
@@ -11,9 +18,7 @@ const WORD_RE = /^[A-Za-z][A-Za-z'-]*$/;
 function normalizePdfSelectionText(text: string): string {
   return text
     .replace(/\u00a0/g, " ")
-    // join hyphenated line-wrap: "exam-\nple" → "example"
     .replace(/-\s*[\r\n]+/g, "")
-    // other newlines → space
     .replace(/[\r\n]+/g, " ")
     .replace(/[ \t\f\v]+/g, " ")
     .trim();
@@ -42,10 +47,19 @@ type Props = {
   translateTarget?: string;
   translateMaxLength?: number;
   translateAutoChunk?: boolean;
+  translatePromptCatalog?: string;
+  translatePromptId?: string;
+  translatePromptKind?: string;
+  translatePrompt?: string;
   model: string;
   apiUrl?: string;
   apiKey?: string;
   onOpenImageOcr?: (file: File) => void;
+  onPromptCatalogChange?: (next: {
+    catalog: LiteraturePromptEntry[];
+    activeId: string;
+    prompt: string;
+  }) => void | Promise<void>;
 };
 
 export function LiteratureView({
@@ -55,10 +69,15 @@ export function LiteratureView({
   translateTarget = "zh-CN",
   translateMaxLength = 0,
   translateAutoChunk = true,
+  translatePromptCatalog = "",
+  translatePromptId = "",
+  translatePromptKind = "general",
+  translatePrompt = "",
   model,
   apiUrl = "",
   apiKey = "",
   onOpenImageOcr,
+  onPromptCatalogChange,
 }: Props) {
   const [source, setSource] = useState("");
   const [translation, setTranslation] = useState("");
@@ -67,17 +86,102 @@ export function LiteratureView({
   const [dict, setDict] = useState<DictionaryEntry | null>(null);
   const [dictHint, setDictHint] = useState<string | null>(null);
   const [dictLoading, setDictLoading] = useState(false);
+  const [promptMenuOpen, setPromptMenuOpen] = useState(false);
+  const promptMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const resolved = useMemo(
+    () =>
+      resolveLiteraturePromptState({
+        catalogRaw: translatePromptCatalog,
+        activeIdRaw: translatePromptId,
+        legacyKind: translatePromptKind,
+        legacyPrompt: translatePrompt,
+      }),
+    [
+      translatePromptCatalog,
+      translatePromptId,
+      translatePromptKind,
+      translatePrompt,
+    ],
+  );
+
+  const [catalog, setCatalog] = useState(resolved.catalog);
+  const [activeId, setActiveId] = useState(resolved.activeId);
+  const activeIdRef = useRef(resolved.activeId);
+  const activePromptRef = useRef(
+    resolved.activeId === GENERAL_PROMPT_ID ? "" : resolved.prompt,
+  );
+
+  useEffect(() => {
+    setCatalog(resolved.catalog);
+    setActiveId(resolved.activeId);
+    activeIdRef.current = resolved.activeId;
+    activePromptRef.current =
+      resolved.activeId === GENERAL_PROMPT_ID ? "" : resolved.prompt;
+  }, [resolved]);
+
   const reqIdRef = useRef(0);
   const dictReqIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const { width: panelWidth, beginResize: beginPanelResize } =
     usePersistedWidth("llmchat-translate-panel-width", 320, 220, 640);
 
+  const usesLlm = translateProvider === "llm";
+  const activeTag =
+    catalog.find((c) => c.id === activeId)?.tag || "通用";
+
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!promptMenuOpen) return;
+    const onDoc = (ev: MouseEvent) => {
+      const el = promptMenuRef.current;
+      if (el && !el.contains(ev.target as Node)) {
+        setPromptMenuOpen(false);
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setPromptMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [promptMenuOpen]);
+
+  const commitPromptCatalog = useCallback(
+    async (next: {
+      catalog: LiteraturePromptEntry[];
+      activeId: string;
+    }) => {
+      const entry =
+        next.catalog.find((c) => c.id === next.activeId) ||
+        next.catalog.find((c) => c.id === GENERAL_PROMPT_ID);
+      const prompt =
+        next.activeId === GENERAL_PROMPT_ID
+          ? ""
+          : entry?.prompt || "";
+      setCatalog(next.catalog);
+      setActiveId(next.activeId);
+      activeIdRef.current = next.activeId;
+      activePromptRef.current = prompt;
+      await onPromptCatalogChange?.({
+        catalog: next.catalog,
+        activeId: next.activeId,
+        prompt:
+          next.activeId === GENERAL_PROMPT_ID
+            ? DEFAULT_LIT_PROMPT_GENERAL
+            : prompt || DEFAULT_LIT_PROMPT_GENERAL,
+      });
+    },
+    [onPromptCatalogChange],
+  );
 
   const translateOnly = useCallback(
     async (text: string, reqId: number) => {
@@ -92,6 +196,10 @@ export function LiteratureView({
       setError(null);
       try {
         const provider = translateProvider || "bing";
+        // 通用：不传 prompt，走后端内置英文默认以节省 token
+        const useCustomPrompt =
+          activeIdRef.current !== GENERAL_PROMPT_ID &&
+          !!(activePromptRef.current || "").trim();
         const tr = await api.translate(
           trimmed,
           { signal: ac.signal },
@@ -101,15 +209,31 @@ export function LiteratureView({
             target: translateTarget || "zh-CN",
             maxLength: translateMaxLength || 0,
             autoChunk: translateAutoChunk !== false,
-            ...(provider === "llm" ? { apiUrl, apiKey, model } : {}),
+            ...(provider === "llm"
+              ? {
+                  apiUrl,
+                  apiKey,
+                  model,
+                  ...(useCustomPrompt
+                    ? { prompt: activePromptRef.current }
+                    : {}),
+                  feature: "literature",
+                }
+              : { feature: "literature" }),
           },
         );
         if (reqId !== reqIdRef.current) return;
         const out = (tr.translation || "").trim();
-        if (!out) {
+        if (
+          !out ||
+          /<!doctype\s*html/i.test(out) ||
+          /<\s*html[\s>]/i.test(out)
+        ) {
           setTranslation("");
           setError(
-            `译文为空（引擎：${tr.provider || provider}）。请确认设置里已保存引擎，或换 Bing / 大模型后重试`,
+            !out
+              ? `译文为空（引擎：${tr.provider || provider}）。请确认设置里已保存引擎，或换 Bing / 大模型后重试`
+              : out,
           );
           return;
         }
@@ -172,7 +296,6 @@ export function LiteratureView({
     [translateSource, translateTarget],
   );
 
-  /** Phrase/sentence selection: update 原文 + 译文 (not for single words). */
   const runLookup = useCallback(
     async (text: string) => {
       const trimmed = normalizePdfSelectionText(text);
@@ -185,7 +308,6 @@ export function LiteratureView({
     [translateOnly],
   );
 
-  /** Bottom search / single-word PDF selection: dictionary only. */
   const runDictOnly = useCallback(
     (text: string) => {
       void fillDict(text);
@@ -197,7 +319,6 @@ export function LiteratureView({
     (text: string) => {
       const trimmed = normalizePdfSelectionText(text);
       if (!trimmed) return;
-      // Single English word → dictionary only; keep 原文 / 译文 unchanged.
       if (extractEnglishWord(trimmed)) {
         void fillDict(trimmed);
         return;
@@ -225,6 +346,44 @@ export function LiteratureView({
         translateProvider={translateProvider}
         model={model}
         onOpenImageOcr={onOpenImageOcr}
+        toolbarExtra={
+          <div className="pdf-prompt-menu" ref={promptMenuRef}>
+            <button
+              type="button"
+              className={
+                "pdf-tool-btn" + (promptMenuOpen ? " is-active" : "")
+              }
+              disabled={!usesLlm}
+              title={
+                usesLlm
+                  ? `提示词：${activeTag}`
+                  : "切换为「大模型翻译」后可使用提示词"
+              }
+              onClick={() => setPromptMenuOpen((v) => !v)}
+            >
+              提示词 · {activeTag}
+            </button>
+            {promptMenuOpen && usesLlm ? (
+              <div className="pdf-prompt-dropdown">
+                <div className="pdf-prompt-dropdown-head">
+                  <strong>文献翻译提示词</strong>
+                  <button
+                    type="button"
+                    className="pdf-tool-btn"
+                    onClick={() => setPromptMenuOpen(false)}
+                  >
+                    关闭
+                  </button>
+                </div>
+                <LiteraturePromptPanel
+                  catalog={catalog}
+                  activeId={activeId}
+                  onCommit={commitPromptCatalog}
+                />
+              </div>
+            ) : null}
+          </div>
+        }
       />
       <div
         className="col-resizer col-resizer-panel"

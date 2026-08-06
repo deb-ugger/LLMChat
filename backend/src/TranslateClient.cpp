@@ -87,6 +87,56 @@ std::string urlEncode(const std::string& value)
     return escaped.str();
 }
 
+void replaceAllInPlace(std::string& str, const std::string& from, const std::string& to)
+{
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = str.find(from, pos)) != std::string::npos)
+    {
+        str.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+/**
+ * MT engines (esp. Google) often drop "+" in "C++" / "#" in "C#".
+ * Protect with stable ASCII placeholders, then restore after translate.
+ * Encoding itself is fine ( '+' → "%2B" ); this is an engine quirk.
+ */
+std::string protectCodeTokens(std::string s)
+{
+    // Longer tokens first
+    replaceAllInPlace(s, "C++", "@@CPP@@");
+    replaceAllInPlace(s, "c++", "@@cpp@@");
+    replaceAllInPlace(s, "C#", "@@CSHARP@@");
+    replaceAllInPlace(s, "c#", "@@csharp@@");
+    replaceAllInPlace(s, "F#", "@@FSHARP@@");
+    replaceAllInPlace(s, "f#", "@@fsharp@@");
+    return s;
+}
+
+std::string restoreCodeTokens(std::string s)
+{
+    replaceAllInPlace(s, "@@CPP@@", "C++");
+    replaceAllInPlace(s, "@@cpp@@", "c++");
+    replaceAllInPlace(s, "@@CSHARP@@", "C#");
+    replaceAllInPlace(s, "@@csharp@@", "c#");
+    replaceAllInPlace(s, "@@FSHARP@@", "F#");
+    replaceAllInPlace(s, "@@fsharp@@", "f#");
+    // Engines sometimes insert spaces inside placeholders
+    replaceAllInPlace(s, "@@ CPP @@", "C++");
+    replaceAllInPlace(s, "@@ cpp @@", "c++");
+    replaceAllInPlace(s, "@@ CSHARP @@", "C#");
+    replaceAllInPlace(s, "@@ csharp @@", "c#");
+    return s;
+}
+
+TranslateResult restoreCodeTokensResult(TranslateResult r)
+{
+    if (r.ok) r.translation = restoreCodeTokens(std::move(r.translation));
+    return r;
+}
+
 #ifdef _WIN32
 std::string md5Hex(const std::string& data)
 {
@@ -253,6 +303,8 @@ std::vector<std::string> splitChunks(const std::string& text, size_t maxChars)
     return chunks;
 }
 
+bool looksLikeHtml(const std::string& body);
+
 std::string withZhHint(const std::string& english, const std::string& zh)
 {
     if (english.empty()) return zh;
@@ -269,6 +321,12 @@ std::string truncateErr(const std::string& s, size_t maxLen = 220)
     return s.substr(0, maxLen) + "...";
 }
 
+/** Full upstream body for diagnostics — never truncate or strip HTML. */
+std::string safeErrDetail(const std::string& body, size_t /*maxLen*/ = 160)
+{
+    return body;
+}
+
 bool isMyMemoryLimitError(const std::string& msg)
 {
     const std::string upper = toLower(msg);
@@ -280,45 +338,46 @@ bool isMyMemoryLimitError(const std::string& msg)
 
 std::string friendlyMyMemoryError(const std::string& raw)
 {
-    const std::string clipped = truncateErr(raw);
+    // Keep full upstream body for diagnosis (no truncation / no HTML stripping)
+    const std::string full = raw.empty() ? "translate failed" : raw;
     if (isMyMemoryLimitError(raw))
     {
         if (toLower(raw).find("used all available") != std::string::npos
             || toLower(raw).find("mymemory warning") != std::string::npos)
         {
             return withZhHint(
-                clipped,
+                full,
                 "今日免费翻译额度已用尽，请换用谷歌/Bing/大模型");
         }
-        return withZhHint(clipped, "单次文本过长，请开启自动分段或更换引擎");
+        return withZhHint(full, "单次文本过长，请开启自动分段或更换引擎");
     }
     const std::string low = toLower(raw);
     if (low.find("429") != std::string::npos
         || low.find("too many") != std::string::npos)
     {
-        return withZhHint(clipped, "请求过于频繁或额度不足，请稍后再试或更换引擎");
+        return withZhHint(full, "请求过于频繁或额度不足，请稍后再试或更换引擎");
     }
     if (low.find("http request failed") != std::string::npos
         || low.find("winhttp") != std::string::npos
         || low.find("timeout") != std::string::npos)
     {
-        return withZhHint(clipped, "网络异常或连接超时，请检查网络或代理");
+        return withZhHint(full, "网络异常或连接超时，请检查网络或代理");
     }
     if (low.find("parse") != std::string::npos)
     {
-        return withZhHint(clipped, "返回内容无法解析，请换引擎或稍后重试");
+        return withZhHint(full, "返回内容无法解析，请换引擎或稍后重试");
     }
     if (low.find("empty") != std::string::npos)
     {
-        return withZhHint(clipped, "翻译结果为空，请换引擎或稍后重试");
+        return withZhHint(full, "翻译结果为空，请换引擎或稍后重试");
     }
     if (low.find('{') != std::string::npos
         || low.find("http ") == 0
         || low.find("mymemory") != std::string::npos)
     {
-        return withZhHint(clipped, "翻译失败，请稍后重试或更换引擎");
+        return withZhHint(full, "翻译失败，请稍后重试或更换引擎");
     }
-    return clipped;
+    return full;
 }
 
 std::string normalizeProvider(std::string p)
@@ -550,6 +609,22 @@ bool looksLikeHtml(const std::string& body)
         || head.find("<html") != std::string::npos;
 }
 
+/** Google free endpoint blocked by CAPTCHA / unusual-traffic page. */
+bool isGoogleCaptchaOrBlockPage(const std::string& body)
+{
+    if (body.empty()) return false;
+    const size_t n = std::min(body.size(), size_t(8000));
+    const std::string low = toLower(body.substr(0, n));
+    return low.find("recaptcha") != std::string::npos
+        || low.find("captcha-form") != std::string::npos
+        || low.find("unusual traffic") != std::string::npos
+        || low.find("detected unusual traffic") != std::string::npos
+        || low.find("g-recaptcha") != std::string::npos
+        || (looksLikeHtml(body)
+            && low.find("translate.googleapis.com") != std::string::npos
+            && low.find("continue") != std::string::npos);
+}
+
 HttpResult winHttpRequest(
     const std::string& method,
     const std::string& url,
@@ -703,8 +778,9 @@ HttpResult winHttpRequest(
     result.ok = (status >= 200 && status < 300);
     if (!result.ok)
     {
+        const std::string detail = safeErrDetail(result.body, 160);
         const std::string en = "HTTP " + std::to_string(status)
-            + (result.body.empty() ? "" : (": " + truncateErr(result.body, 160)));
+            + (detail.empty() ? "" : (": " + detail));
         if (status == 429)
             result.error = withZhHint(en, "请求过于频繁或额度不足，请稍后再试或更换引擎");
         else if (status == 401 || status == 403)
@@ -725,8 +801,9 @@ HttpResult winHttpRequest(
             if (result.body.find("429001") != std::string::npos
                 || toLower(result.body).find("exceeded request limits") != std::string::npos)
             {
+                const std::string bingDetail = safeErrDetail(result.body);
                 result.error = withZhHint(
-                    truncateErr(result.body.empty() ? en : result.body),
+                    bingDetail.empty() ? en : bingDetail,
                     "Bing 请求过于频繁，请稍后再试");
             }
             else
@@ -775,7 +852,7 @@ TranslateResult markNetworkIfNeeded(TranslateResult r)
             {
                 r.code = r.code.empty() ? "NETWORK_TIMEOUT" : r.code;
                 r.error = withZhHint(
-                    truncateErr(r.error),
+                    r.error,
                     "网络异常或连接超时，请检查网络或代理");
             }
             else
@@ -811,7 +888,10 @@ TranslateResult joinChunkTranslations(
     for (size_t i = 0; i < chunks.size(); ++i)
     {
         const TranslateResult part = fn(chunks[i]);
-        if (!part.ok) return part;
+        if (part.externalCall)
+            result.externalCall = true;
+        if (!part.ok)
+            return part;
         if (i > 0
             && !chunks[i - 1].empty() && !chunks[i].empty()
             && !std::isspace(static_cast<unsigned char>(chunks[i - 1].back()))
@@ -835,6 +915,7 @@ TranslateResult translateMyMemoryChunk(const std::string& text, const std::strin
     const std::string url =
         "https://api.mymemory.translated.net/get?q=" + urlEncode(text)
         + "&langpair=" + urlEncode(pair);
+    result.externalCall = true;
     const HttpResult http = winHttpGet(url);
     if (!http.ok)
     {
@@ -884,9 +965,26 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
     const std::string url =
         "https://translate.googleapis.com/translate_a/single?client=gtx&sl="
         + urlEncode(sl) + "&tl=" + urlEncode(dst) + "&dt=t&q=" + urlEncode(text);
+    result.externalCall = true;
     const HttpResult http = winHttpGet(url);
+
+    auto markCaptcha = [&](const std::string& /*raw*/) {
+        result.ok = false;
+        result.translation.clear();
+        result.code = "GOOGLE_CAPTCHA";
+        // CAPTCHA HTML 本身无助于排障，给出明确说明即可
+        result.error = withZhHint(
+            "Google CAPTCHA / unusual traffic from your network",
+            "谷歌翻译触发人机验证（请求过频或 IP 被风控），请稍后再试，或改用 Bing/有道");
+    };
+
     if (!http.ok)
     {
+        if (isGoogleCaptchaOrBlockPage(http.body) || isGoogleCaptchaOrBlockPage(http.error))
+        {
+            markCaptcha(http.body.empty() ? http.error : http.body);
+            return result;
+        }
         const std::string base = http.error.empty()
             ? "Google translate request failed"
             : http.error;
@@ -895,11 +993,16 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
             "谷歌翻译连接失败，国内常需系统代理，可改用 Bing/有道");
         return result;
     }
-    if (looksLikeHtml(http.body) || http.body.empty())
+    if (http.body.empty())
     {
         result.error = withZhHint(
-            "Google translate returned HTML/empty body",
-            "谷歌翻译返回异常（可能被墙），请改用 Bing/有道或配置代理");
+            "Google translate empty body",
+            "谷歌翻译返回为空，请改用 Bing/有道或配置代理");
+        return result;
+    }
+    if (isGoogleCaptchaOrBlockPage(http.body) || looksLikeHtml(http.body))
+    {
+        markCaptcha(http.body);
         return result;
     }
     try
@@ -922,10 +1025,20 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
                 "谷歌翻译无有效结果，国内常需代理，可改用 Bing/有道");
             return result;
         }
+        if (looksLikeHtml(result.translation) || isGoogleCaptchaOrBlockPage(result.translation))
+        {
+            markCaptcha(result.translation);
+            return result;
+        }
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
+        if (isGoogleCaptchaOrBlockPage(http.body))
+        {
+            markCaptcha(http.body);
+            return result;
+        }
         result.error = withZhHint(
             std::string("Parse Google failed: ") + ex.what(),
             "谷歌翻译返回无法解析，国内常需代理，可改用 Bing/有道");
@@ -1018,6 +1131,8 @@ TranslateResult translateBing(const std::string& text, const std::string& source
     };
 
     BingCred cred;
+    // Credential bootstrap hits Bing over the network.
+    result.externalCall = true;
     const std::string credErr = ensureCreds(cred);
     if (!credErr.empty())
     {
@@ -1122,6 +1237,14 @@ TranslateResult translateBing(const std::string& text, const std::string& source
             result.error = withZhHint(
                 "Empty translation from Bing",
                 "Bing 翻译结果为空，请稍后重试或更换引擎");
+            return result;
+        }
+        if (looksLikeHtml(result.translation))
+        {
+            result.translation.clear();
+            result.error = withZhHint(
+                "Bing translation looked like HTML",
+                "Bing 翻译返回异常，请稍后重试或更换引擎");
             return result;
         }
         result.ok = true;
@@ -1665,7 +1788,7 @@ TranslateResult translateYoudao(
         result.error = withZhHint(
             "Youdao requires appId and secret",
             "有道翻译需要填写 App Key 与 App Secret（在设置→翻译引擎中配置）");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string salt = randomSalt();
@@ -1673,7 +1796,7 @@ TranslateResult translateYoudao(
     if (sign.empty())
     {
         result.error = withZhHint("MD5 failed", "无法计算有道签名");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string body =
@@ -1683,6 +1806,7 @@ TranslateResult translateYoudao(
         + "&appKey=" + urlEncode(appKey)
         + "&salt=" + urlEncode(salt)
         + "&sign=" + urlEncode(sign);
+    result.externalCall = true;
     const HttpResult http = winHttpPost(
         "https://openapi.youdao.com/api",
         body,
@@ -1745,7 +1869,7 @@ TranslateResult translateBaidu(
         result.error = withZhHint(
             "Baidu requires appId and secret",
             "百度翻译需要填写 App ID 与密钥（在设置→翻译引擎中配置）");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string salt = randomSalt();
@@ -1753,7 +1877,7 @@ TranslateResult translateBaidu(
     if (sign.empty())
     {
         result.error = withZhHint("MD5 failed", "无法计算百度签名");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string url =
@@ -1764,6 +1888,7 @@ TranslateResult translateBaidu(
         + "&appid=" + urlEncode(appId)
         + "&salt=" + urlEncode(salt)
         + "&sign=" + urlEncode(sign);
+    result.externalCall = true;
     const HttpResult http = winHttpGet(url);
     if (!http.ok)
     {
@@ -1832,7 +1957,7 @@ TranslateResult translateSogou(
         result.error = withZhHint(
             "Sogou requires pid and key",
             "搜狗翻译需要填写 PID 与 Key（在设置→翻译引擎中配置）");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string salt = randomSalt();
@@ -1840,7 +1965,7 @@ TranslateResult translateSogou(
     if (sign.empty())
     {
         result.error = withZhHint("MD5 failed", "无法计算搜狗签名");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     // Sogou open platform text translate (pid/key signature)
@@ -1851,6 +1976,7 @@ TranslateResult translateSogou(
         + "&q=" + urlEncode(text)
         + "&salt=" + urlEncode(salt)
         + "&sign=" + urlEncode(sign);
+    result.externalCall = true;
     const HttpResult http = winHttpPost(
         "https://fanyi.sogou.com/reventondc/api/sogouTranslate",
         body,
@@ -1911,7 +2037,7 @@ TranslateResult translateNiutrans(
         result.error = withZhHint(
             "Niutrans requires apikey",
             "小牛翻译需要填写 API Key（在设置→翻译引擎中配置）");
-        result.code = "ERROR";
+        result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string url =
@@ -1920,6 +2046,7 @@ TranslateResult translateNiutrans(
         + "&to=" + urlEncode(mapNiuLang(target))
         + "&src_text=" + urlEncode(text)
         + "&apikey=" + urlEncode(apiKey);
+    result.externalCall = true;
     const HttpResult http = winHttpGet(url);
     if (!http.ok)
     {
@@ -2062,10 +2189,14 @@ TranslateResult TranslateClient::translateFree(
 
     const size_t chunkSize = limit > 0 ? limit : cps;
 
+    // Protect C++/C#/F# tokens: Google (and some others) drop "+" / "#" in output.
     auto runLimited = [&](auto&& fn) -> TranslateResult {
+        auto wrapped = [&](const std::string& chunk) {
+            return restoreCodeTokensResult(fn(protectCodeTokens(chunk)));
+        };
         if (limit > 0 && autoChunk && cps > limit)
-            return markNetworkIfNeeded(joinChunkTranslations(splitChunks(text, chunkSize), fn));
-        return markNetworkIfNeeded(fn(text));
+            return markNetworkIfNeeded(joinChunkTranslations(splitChunks(text, chunkSize), wrapped));
+        return markNetworkIfNeeded(wrapped(text));
     };
 
     if (p == "mymemory")
@@ -2079,9 +2210,33 @@ TranslateResult TranslateClient::translateFree(
     {
         const std::string src = source.empty() ? "en" : source;
         const std::string dst = target.empty() ? "zh-CN" : target;
-        return runLimited([&](const std::string& chunk) {
+        TranslateResult google = runLimited([&](const std::string& chunk) {
             return translateGoogleChunk(chunk, src, dst);
         });
+        if (google.ok) return google;
+
+        // Free Google endpoint often hits CAPTCHA; fall back to Bing automatically.
+        const bool captcha = google.code == "GOOGLE_CAPTCHA"
+            || isGoogleCaptchaOrBlockPage(google.error);
+        if (captcha || looksLikeHtml(google.error))
+        {
+            TranslateResult bing = runLimited([&](const std::string& chunk) {
+                return translateBing(chunk, source, target);
+            });
+            if (bing.ok)
+            {
+                bing.provider = "bing";
+                return bing;
+            }
+            google.error = withZhHint(
+                "Google CAPTCHA and Bing fallback failed. Google: "
+                    + (google.error.empty() ? "captcha" : google.error)
+                    + " | Bing: "
+                    + (bing.error.empty() ? "failed" : bing.error),
+                "谷歌翻译已触发人机验证，且 Bing 备用也失败。请稍后再试、换网络/代理，或改用有道/大模型");
+            google.code = "GOOGLE_CAPTCHA";
+        }
+        return google;
     }
     if (p == "bing")
     {
@@ -2153,6 +2308,13 @@ TranslateResult TranslateClient::translateWithLlm(
     if (text.empty())
     {
         result.error = withZhHint("text required", "请输入要翻译的文本");
+        result.code = "CONFIG_ERROR";
+        return result;
+    }
+    if (apiUrl.empty())
+    {
+        result.error = withZhHint("apiUrl required", "请先填写 API URL");
+        result.code = "CONFIG_ERROR";
         return result;
     }
 
@@ -2225,10 +2387,11 @@ TranslateResult TranslateClient::translateWithLlm(
     req.messages = messages;
 
     const LlmResponse llm = LlmClient::chat(req);
+    result.externalCall = llm.externalCall;
     if (!llm.ok)
     {
-        const std::string en = truncateErr(
-            llm.error.empty() ? "LLM request failed" : llm.error);
+        const std::string en =
+            llm.error.empty() ? "LLM request failed" : llm.error;
         const std::string low = toLower(llm.error);
         if (low.find("401") != std::string::npos || low.find("unauthorized") != std::string::npos)
             result.error = withZhHint(en, "大模型认证失败，请检查 API Key");
@@ -2242,8 +2405,11 @@ TranslateResult TranslateClient::translateWithLlm(
             || low.find("empty llm http body") != std::string::npos
             || low.find("parse_error") != std::string::npos)
             result.error = withZhHint(en, "大模型返回内容为空或无法解析，请检查 API URL 是否为 chat/completions 且模型可用");
+        else if (!llm.externalCall)
+            result.error = en;
         else
             result.error = withZhHint(en, "大模型接口调用失败，请检查 API URL、密钥与模型");
+        result.code = llm.externalCall ? "ERROR" : "CONFIG_ERROR";
         return result;
     }
 
@@ -2251,6 +2417,8 @@ TranslateResult TranslateClient::translateWithLlm(
     result.promptTokens = llm.promptTokens;
     result.completionTokens = llm.completionTokens;
     result.totalTokens = llm.totalTokens;
+    result.cacheReadTokens = llm.cacheReadTokens;
+    result.cacheWriteTokens = llm.cacheWriteTokens;
     result.ok = true;
     return result;
 }

@@ -17,6 +17,18 @@ struct AppConfig {
     std::string translateTarget = "zh-CN";
     /** LLM model id for literature translate when provider=llm; empty = use model */
     std::string translateModel;
+    /** Literature LLM prompt kind: general|academic|technical|custom (legacy / mirrors active id) */
+    std::string translatePromptKind = "general";
+    /** Active literature prompt id */
+    std::string translatePromptId = "general";
+    /** JSON array: [{id,tag,prompt}, ...] */
+    std::string translatePromptCatalog = "[]";
+    /** Literature LLM system prompt (used when provider=llm); synced from active catalog entry */
+    std::string translatePrompt =
+        "你是一名严谨的双语翻译。请将用户文本忠实翻译为目标语言，"
+        "保留原意、语气与段落结构。"
+        "不要添加解释、注释，也不要给整段译文加引号。"
+        "只输出译文。";
     /** Max chars per translate request; 0 = use engine default */
     int translateMaxLength = 0;      // 0 = engine default
     bool translateAutoChunk = true;  // split long text when limited

@@ -143,6 +143,22 @@ void ConfigStore::load()
         {
             config_.translateModel = value;
         }
+        else if (key == "translatePromptKind")
+        {
+            config_.translatePromptKind = value;
+        }
+        else if (key == "translatePromptId")
+        {
+            config_.translatePromptId = value;
+        }
+        else if (key == "translatePromptCatalog")
+        {
+            config_.translatePromptCatalog = unescapeIniValue(value);
+        }
+        else if (key == "translatePrompt")
+        {
+            config_.translatePrompt = unescapeIniValue(value);
+        }
         else if (key == "translateMaxLength")
         {
             config_.translateMaxLength = std::stoi(value);
@@ -261,6 +277,10 @@ void ConfigStore::save() const
     out << "translateSource=" << config_.translateSource << "\n";
     out << "translateTarget=" << config_.translateTarget << "\n";
     out << "translateModel=" << config_.translateModel << "\n";
+    out << "translatePromptId=" << config_.translatePromptId << "\n";
+    out << "translatePromptCatalog=" << escapeIniValue(config_.translatePromptCatalog) << "\n";
+    out << "translatePromptKind=" << config_.translatePromptKind << "\n";
+    out << "translatePrompt=" << escapeIniValue(config_.translatePrompt) << "\n";
     out << "translateMaxLength=" << config_.translateMaxLength << "\n";
     out << "translateAutoChunk=" << (config_.translateAutoChunk ? "true" : "false") << "\n";
     out << "ocrLang=" << config_.ocrLang << "\n";

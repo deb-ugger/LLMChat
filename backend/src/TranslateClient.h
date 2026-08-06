@@ -7,11 +7,15 @@ struct TranslateResult {
     std::string translation;
     std::string error;
     std::string provider;
-    /** LENGTH_LIMIT | NETWORK_TIMEOUT | ERROR */
+    /** LENGTH_LIMIT | NETWORK_TIMEOUT | CONFIG_ERROR | ERROR */
     std::string code;
     int promptTokens = 0;
     int completionTokens = 0;
     int totalTokens = 0;
+    int cacheReadTokens = 0;
+    int cacheWriteTokens = 0;
+    /** True only after an outbound HTTP attempt to the vendor API. */
+    bool externalCall = false;
 };
 
 class TranslateClient {

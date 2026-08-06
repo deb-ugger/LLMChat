@@ -104,7 +104,7 @@ export function TranslatePanel({
           {loading ? (
             <p className="hint">翻译中…</p>
           ) : error ? (
-            <p className="boot-error">{error}</p>
+            <pre className="boot-error boot-error-full">{error}</pre>
           ) : (
             <p className="tr-text">
               {translation || "在左侧 PDF 中拖选英文后显示译文"}

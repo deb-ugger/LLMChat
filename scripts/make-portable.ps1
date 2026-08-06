@@ -21,6 +21,24 @@ Get-Process -Name "llmchat", "llmchat-backend" -ErrorAction SilentlyContinue |
 Start-Sleep -Milliseconds 400
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+# Only refresh binaries/resources. Never wipe user data next to the portable app:
+# usage-events.jsonl, conversations.json, config.ini, vendor-models.json, text-projects/, etc.
+$preserveHint = @(
+    "usage-events.jsonl",
+    "conversations.json",
+    "config.ini",
+    "vendor-models.json",
+    "text-projects"
+)
+Write-Output ("Preserving portable data if present: " + ($preserveHint -join ", "))
+foreach ($name in $preserveHint) {
+    $p = Join-Path $out $name
+    if (Test-Path $p) {
+        Write-Output ("  keep: $p")
+    }
+}
+
 Copy-Item $exe $out -Force
 
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
