@@ -29,6 +29,7 @@ $preserveHint = @(
     "conversations.json",
     "config.ini",
     "vendor-models.json",
+    "pricing.json",
     "text-projects"
 )
 Write-Output ("Preserving portable data if present: " + ($preserveHint -join ", "))

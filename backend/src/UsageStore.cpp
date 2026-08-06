@@ -292,14 +292,10 @@ std::vector<json> UsageStore::events(
     return out;
 }
 
-json UsageStore::summary(
-    const std::string& fromDate,
-    const std::string& toDate,
-    const std::string& feature,
-    const std::string& groupBy,
-    const std::string& okFilter) const
+json UsageStore::summaryFromEvents(
+    const std::vector<json>& rows,
+    const std::string& groupBy)
 {
-    const auto rows = events(fromDate, toDate, feature, okFilter);
     json buckets = json::object();
 
     auto keyOf = [&](const json& row) -> std::string {
@@ -347,6 +343,7 @@ json UsageStore::summary(
                 {"cacheReadTokens", 0},
                 {"cacheWriteTokens", 0},
                 {"sourceChars", 0},
+                {"cost", 0.0},
             };
         }
         auto& b = buckets[key];
@@ -364,6 +361,7 @@ json UsageStore::summary(
         b["cacheWriteTokens"] =
             b.value("cacheWriteTokens", 0) + row.value("cacheWriteTokens", 0);
         b["sourceChars"] = b.value("sourceChars", 0) + row.value("sourceChars", 0);
+        b["cost"] = b.value("cost", 0.0) + row.value("cost", 0.0);
     }
 
     json items = json::array();
@@ -383,4 +381,14 @@ json UsageStore::summary(
         {"items", items},
         {"totalEvents", static_cast<int>(rows.size())},
     };
+}
+
+json UsageStore::summary(
+    const std::string& fromDate,
+    const std::string& toDate,
+    const std::string& feature,
+    const std::string& groupBy,
+    const std::string& okFilter) const
+{
+    return summaryFromEvents(events(fromDate, toDate, feature, okFilter), groupBy);
 }

@@ -27,6 +27,10 @@ import {
   type UnitySettingsTarget,
 } from "./UnitySettingsPanel";
 import {
+  PricingPanel,
+  type PricingPanelHandle,
+} from "./PricingPanel";
+import {
   defaultApiUrlForVendor,
   effectivePresets,
   groupModelPresets,
@@ -80,7 +84,8 @@ type SettingsTab =
   | "literature"
   | "image"
   | "text"
-  | "unity";
+  | "unity"
+  | "pricing";
 
 type Props = {
   settings: Settings;
@@ -98,6 +103,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   image: "图片文字识别",
   text: "翻译工程",
   unity: "Unity",
+  pricing: "计费",
 };
 
 const TAB_NAV: Partial<
@@ -157,6 +163,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
     "textProjectsDir",
   ],
   unity: [],
+  pricing: [],
 };
 
 type TestResult = {
@@ -845,6 +852,7 @@ export function SettingsView({
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
   const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
+  const pricingPanelRef = useRef<PricingPanelHandle>(null);
   const [unityTarget, setUnityTarget] = useState<UnitySettingsTarget>({
     hasGame: false,
     gameDir: "",
@@ -1178,7 +1186,7 @@ export function SettingsView({
   };
 
   const tabIsDirty = (which: SettingsTab, snapshot: Settings) => {
-    if (which === "unity") return false;
+    if (which === "unity" || which === "pricing") return false;
     const base = withDefaults(settingsRef.current);
     const prepared = prepareForm(snapshot);
     return TAB_FIELDS[which].some((key) => {
@@ -1271,11 +1279,38 @@ export function SettingsView({
       }
       return;
     }
+    if (tab === "pricing") {
+      setSaving(true);
+      try {
+        await pricingPanelRef.current?.save();
+      } catch (e) {
+        notify(toFriendlyError(e, "保存价目表失败"), false);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     await persistTab(
       formRef.current,
       tab,
       `已保存「${TAB_LABELS[tab]}」设置`,
     );
+  };
+
+  const discardPricingChanges = async () => {
+    if (!pricingPanelRef.current?.isDirty()) {
+      notify("当前没有未保存的修改");
+      return;
+    }
+    if (!window.confirm("确定取消修改？未保存的价目表改动将丢失。")) return;
+    setSaving(true);
+    try {
+      await pricingPanelRef.current.discard();
+    } catch (e) {
+      notify(toFriendlyError(e, "取消修改失败"), false);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const autoSaveTab = (
@@ -2588,6 +2623,7 @@ export function SettingsView({
     { id: "image", label: "图片文字识别" },
     { id: "text", label: "翻译工程" },
     { id: "unity", label: "Unity" },
+    { id: "pricing", label: "计费" },
   ];
 
   useEffect(() => {
@@ -4345,6 +4381,13 @@ export function SettingsView({
             onTargetChange={setUnityTarget}
           />
         )}
+        {tab === "pricing" && (
+          <PricingPanel
+            ref={pricingPanelRef}
+            active={tab === "pricing"}
+            notify={notify}
+          />
+        )}
       </div>
 
       <div className="settings-save-bar">
@@ -4355,7 +4398,9 @@ export function SettingsView({
               ? unityTarget.hasGame
                 ? "写入当前游戏 Config.ini，并同步更新通用模板。"
                 : "当前无选中游戏：保存为通用 AutoTranslator 模板（各游戏格式相同）。"
-              : `仅保存「${TAB_LABELS[tab]}」；下拉即时保存，输入框失焦后自动保存。`}
+              : tab === "pricing"
+                ? "保存模型单价与日期区间到 pricing.json；统计页按事件日期估算费用。"
+                : `仅保存「${TAB_LABELS[tab]}」；下拉即时保存，输入框失焦后自动保存。`}
           </span>
         </div>
         <div className="settings-save-bar-actions">
@@ -4366,6 +4411,16 @@ export function SettingsView({
               onClick={() => onNavigate(TAB_NAV[tab]!.page)}
             >
               {TAB_NAV[tab]!.label}
+            </button>
+          ) : null}
+          {tab === "pricing" ? (
+            <button
+              type="button"
+              className="settings-discard-current"
+              disabled={saving}
+              onClick={() => void discardPricingChanges()}
+            >
+              取消修改
             </button>
           ) : null}
           <button
@@ -4380,7 +4435,9 @@ export function SettingsView({
                 ? unityTarget.hasGame
                   ? "保存到当前游戏"
                   : "保存通用模板"
-                : `保存「${TAB_LABELS[tab]}」设置`}
+                : tab === "pricing"
+                  ? "保存价目表"
+                  : `保存「${TAB_LABELS[tab]}」设置`}
           </button>
         </div>
       </div>

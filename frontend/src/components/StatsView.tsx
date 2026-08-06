@@ -12,9 +12,11 @@ import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption, EChartsType } from "echarts/core";
 import {
   api,
+  type PricingCurrency,
   type UsageEvent,
   type UsageSummaryItem,
 } from "../api";
+import { formatMoney } from "../pricingDefaults";
 import { toFriendlyError } from "../friendlyError";
 
 echarts.use([
@@ -291,8 +293,12 @@ function formatPct(part: number, whole: number): string {
   return `${pct.toFixed(1).replace(/\.0$/, "")}%`;
 }
 
-function eventMetricValue(ev: UsageEvent, metric: "requests" | "tokens"): number {
+function eventMetricValue(
+  ev: UsageEvent,
+  metric: "requests" | "tokens" | "cost",
+): number {
   if (metric === "requests") return 1;
+  if (metric === "cost") return ev.cost ?? 0;
   return tokenTotalOf({
     cacheReadTokens: ev.cacheReadTokens,
     cacheWriteTokens: ev.cacheWriteTokens,
@@ -300,6 +306,44 @@ function eventMetricValue(ev: UsageEvent, metric: "requests" | "tokens"): number
     completionTokens: ev.completionTokens,
     totalTokens: ev.totalTokens,
   });
+}
+
+function formatMetricValue(
+  n: number,
+  metric: "requests" | "tokens" | "cost",
+  currency: PricingCurrency,
+): string {
+  if (metric === "cost") return formatMoney(n, currency);
+  if (metric === "requests") return String(Math.round(n));
+  return formatTokenExact(n);
+}
+
+function formatMetricCompact(
+  n: number,
+  metric: "requests" | "tokens" | "cost",
+  currency: PricingCurrency,
+): string {
+  if (metric === "cost") return formatMoney(n, currency);
+  if (metric === "requests") return String(Math.round(n));
+  return formatTokenCompact(n);
+}
+
+function metricLabel(
+  metric: "requests" | "tokens" | "cost",
+  currency: PricingCurrency,
+): string {
+  if (metric === "cost") return currency === "USD" ? "费用 ($)" : "费用 (¥)";
+  if (metric === "tokens") return "Tokens";
+  return "请求";
+}
+
+function summaryMetricValue(
+  r: UsageSummaryItem,
+  metric: "requests" | "tokens" | "cost",
+): number {
+  if (metric === "requests") return r.requests;
+  if (metric === "cost") return r.cost ?? 0;
+  return tokenTotalOf(r);
 }
 
 const MODEL_LINE_COLORS = [
@@ -319,7 +363,8 @@ type BarChartProps = {
   items: UsageSummaryItem[];
   events: UsageEvent[];
   groupBy: GroupBy;
-  metric: "requests" | "tokens";
+  metric: "requests" | "tokens" | "cost";
+  currency: PricingCurrency;
   rangeFrom: string;
   rangeTo: string;
 };
@@ -329,6 +374,7 @@ function UsageBarChart({
   events,
   groupBy,
   metric,
+  currency,
   rangeFrom,
   rangeTo,
 }: BarChartProps) {
@@ -353,7 +399,7 @@ function UsageBarChart({
       if (span > 1 && from && to) {
         const dates = enumerateDates(from, to);
         const dateSet = new Set(dates);
-        const valueLabel = metric === "requests" ? "请求" : "Tokens";
+        const valueLabel = metricLabel(metric, currency);
 
         // day -> model -> value ; day -> total
         const dayModel = new Map<string, Map<string, number>>();
@@ -379,8 +425,7 @@ function UsageBarChart({
         // Also include summary day totals for days with only engine (no model) traffic
         for (const r of rows) {
           if (!dateSet.has(r.key)) continue;
-          const fromSummary =
-            metric === "requests" ? r.requests : tokenTotalOf(r);
+          const fromSummary = summaryMetricValue(r, metric);
           const cur = dayTotal.get(r.key) ?? 0;
           if (fromSummary > cur) {
             dayTotal.set(r.key, fromSummary);
@@ -459,7 +504,7 @@ function UsageBarChart({
                   .sort((a, b) => b[1] - a[1]);
                 for (const [model, v] of mods) {
                   detailRows.push(
-                    `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${model}</span><span style="font-variant-numeric:tabular-nums">${formatTokenCompact(v)}&nbsp;&nbsp;${formatPct(v, dayVal)}</span></div>`,
+                    `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${model}</span><span style="font-variant-numeric:tabular-nums">${formatMetricCompact(v, metric, currency)}&nbsp;&nbsp;${formatPct(v, dayVal)}</span></div>`,
                   );
                 }
               }
@@ -471,11 +516,13 @@ function UsageBarChart({
               if (detailRows.length > 0) {
                 parts.push(...detailRows);
               } else {
-                parts.push(`<div style="color:#6b778a">无 Token 消耗</div>`);
+                parts.push(
+                  `<div style="color:#6b778a">${metric === "cost" ? "无费用" : "无 Token 消耗"}</div>`,
+                );
               }
               parts.push(
-                `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">当天消耗: <b>${formatTokenExact(dayVal)}</b> ${valueLabel}</div>`,
-                `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">累计消耗: <b>${formatTokenExact(cumVal)}</b> ${valueLabel}</div>`,
+                `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">当天消耗: <b>${formatMetricValue(dayVal, metric, currency)}</b> ${valueLabel}</div>`,
+                `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">累计消耗: <b>${formatMetricValue(cumVal, metric, currency)}</b> ${valueLabel}</div>`,
               );
               return parts.join("");
             },
@@ -494,7 +541,14 @@ function UsageBarChart({
           },
           yAxis: {
             type: "value",
-            name: metric === "requests" ? "累计请求" : "累计 Tokens",
+            name:
+              metric === "requests"
+                ? "累计请求"
+                : metric === "cost"
+                  ? currency === "USD"
+                    ? "累计费用 ($)"
+                    : "累计费用 (¥)"
+                  : "累计 Tokens",
             minInterval: metric === "requests" ? 1 : undefined,
           },
           series: seriesDefs.map((s, i) => ({
@@ -578,6 +632,50 @@ function UsageBarChart({
         ],
       };
     }
+    if (metric === "cost") {
+      return {
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "shadow" },
+          formatter: (params: unknown) => {
+            const list = Array.isArray(params) ? params : [params];
+            if (!list.length) return "";
+            const axis =
+              (list[0] as { axisValueLabel?: string; name?: string })
+                .axisValueLabel ||
+              (list[0] as { name?: string }).name ||
+              "";
+            const item = list[0] as {
+              marker?: string;
+              seriesName?: string;
+              value?: number | string;
+            };
+            const v = Number(item.value ?? 0);
+            return `<div style="font-weight:600;margin-bottom:4px">${axis}</div>${item.marker ?? ""}${item.seriesName ?? ""}: ${formatMoney(v, currency)}`;
+          },
+        },
+        grid: { left: 64, right: 16, top: 28, bottom: 48 },
+        xAxis: {
+          type: "category",
+          data: labels,
+          axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: 11 },
+        },
+        yAxis: {
+          type: "value",
+          name: currency === "USD" ? "费用 ($)" : "费用 (¥)",
+        },
+        series: [
+          {
+            name: metricLabel("cost", currency),
+            type: "bar",
+            data: rows.map((r) => r.cost ?? 0),
+            itemStyle: { color: "#0a7a32" },
+            barMaxWidth: 36,
+          },
+        ],
+      };
+    }
+
     return {
       tooltip: {
         trigger: "axis",
@@ -653,7 +751,7 @@ function UsageBarChart({
         },
       ],
     };
-  }, [events, groupBy, items, metric, rangeFrom, rangeTo]);
+  }, [events, groupBy, items, metric, currency, rangeFrom, rangeTo]);
 
   useEffect(() => {
     const el = hostRef.current;
@@ -717,12 +815,28 @@ export function StatsView() {
   const [feature, setFeature] = useState("");
   const [okFilter, setOkFilter] = useState<OkFilter>("");
   const [groupBy, setGroupBy] = useState<GroupBy>("feature");
-  const [metric, setMetric] = useState<"requests" | "tokens">("requests");
+  const [metric, setMetric] = useState<"requests" | "tokens" | "cost">(
+    "requests",
+  );
+  const [currency, setCurrency] = useState<PricingCurrency>("CNY");
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const p = await api.getPricing();
+        if (p.displayCurrency === "USD" || p.displayCurrency === "CNY") {
+          setCurrency(p.displayCurrency);
+        }
+      } catch {
+        /* keep CNY */
+      }
+    })();
+  }, []);
 
   const range = useMemo(() => {
     if (rangePreset === "custom") {
@@ -780,6 +894,7 @@ export function StatsView() {
         to: range.to || undefined,
         feature: feature || undefined,
         ok: okFilter || undefined,
+        currency,
       };
       const [sum, ev] = await Promise.all([
         api.usageSummary({ ...params, groupBy }),
@@ -794,7 +909,7 @@ export function StatsView() {
     } finally {
       setLoading(false);
     }
-  }, [feature, groupBy, okFilter, range.from, range.to]);
+  }, [currency, feature, groupBy, okFilter, range.from, range.to]);
 
   useEffect(() => {
     void load();
@@ -802,6 +917,13 @@ export function StatsView() {
 
   const onClear = async () => {
     if (!window.confirm("确定清空全部用量统计？此操作不可恢复。")) return;
+    if (
+      !window.confirm(
+        "再次确认：将永久删除本地全部用量记录，清空后无法撤销。是否继续？",
+      )
+    ) {
+      return;
+    }
     setClearing(true);
     try {
       await api.clearUsage();
@@ -824,6 +946,7 @@ export function StatsView() {
         acc.cacheWrite += r.cacheWriteTokens ?? 0;
         acc.input += nonCachedInput(r);
         acc.output += r.completionTokens ?? 0;
+        acc.cost += r.cost ?? 0;
         return acc;
       },
       {
@@ -835,6 +958,7 @@ export function StatsView() {
         cacheWrite: 0,
         input: 0,
         output: 0,
+        cost: 0,
       },
     );
   }, [summary]);
@@ -969,6 +1093,34 @@ export function StatsView() {
           >
             Token
           </button>
+          <button
+            type="button"
+            className={metric === "cost" ? "is-active" : undefined}
+            onClick={() => setMetric("cost")}
+          >
+            费用
+          </button>
+        </div>
+        <div
+          className="stats-seg"
+          role="group"
+          aria-label="货币"
+          title="按厂商计费货币筛选，不做汇率换算"
+        >
+          <button
+            type="button"
+            className={currency === "CNY" ? "is-active" : undefined}
+            onClick={() => setCurrency("CNY")}
+          >
+            CNY
+          </button>
+          <button
+            type="button"
+            className={currency === "USD" ? "is-active" : undefined}
+            onClick={() => setCurrency("USD")}
+          >
+            USD
+          </button>
         </div>
       </div>
 
@@ -1007,6 +1159,14 @@ export function StatsView() {
           <span className="stats-kpi-label">Output</span>
           <span className="stats-kpi-value">{totals.output}</span>
         </div>
+        <div className="stats-kpi">
+          <span className="stats-kpi-label">
+            费用 ({currency === "USD" ? "$" : "¥"})
+          </span>
+          <span className="stats-kpi-value">
+            {formatMoney(totals.cost, currency)}
+          </span>
+        </div>
       </div>
 
       <section className="stats-panel">
@@ -1018,6 +1178,7 @@ export function StatsView() {
             events={events}
             groupBy={groupBy}
             metric={metric}
+            currency={currency}
             rangeFrom={range.from}
             rangeTo={range.to}
           />
@@ -1036,6 +1197,7 @@ export function StatsView() {
                 <th>引擎 / 厂商·模型</th>
                 <th>结果</th>
                 <th>Tokens</th>
+                <th>费用</th>
                 <th title="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
                 <th>失败原因</th>
               </tr>
@@ -1043,7 +1205,7 @@ export function StatsView() {
             <tbody>
               {sortedEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="stats-td-empty">
+                  <td colSpan={9} className="stats-td-empty">
                     暂无明细
                   </td>
                 </tr>
@@ -1100,6 +1262,9 @@ export function StatsView() {
                         output={output}
                         total={ev.totalTokens ?? 0}
                       />
+                      <td className="stats-mono">
+                        {formatMoney(ev.cost ?? 0, currency)}
+                      </td>
                       <td className="stats-mono">{ev.sourceChars ?? 0}</td>
                       <td
                         className="stats-reason"

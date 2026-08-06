@@ -12,6 +12,7 @@ add_executable(llmchat-backend
     src/TranslateClient.cpp
     src/UnityAutoTranslator.cpp
     src/UsageStore.cpp
+    src/PricingStore.cpp
     src/HttpServer.cpp
 )
 

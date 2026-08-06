@@ -2661,6 +2661,34 @@ textarea {
     filter 0.12s ease;
 }
 
+.settings-discard-current {
+  flex: 0 0 auto;
+  min-width: 120px;
+  padding: 10px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.settings-discard-current:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.settings-discard-current:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .settings-save-current:hover:not(:disabled) {
   filter: brightness(1.05);
   box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 34%, transparent);
@@ -8083,4 +8111,472 @@ body.row-resizing .textLayer {
   height: 1px;
   margin: 6px 0;
   background: var(--border);
+}
+
+/* ---- Pricing (settings) ---- */
+.pricing-panel {
+  --pricing-mark: #0f766e;
+  --pricing-mark-soft: color-mix(in srgb, #0d9488 12%, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pricing-sync-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 14%, #fff) 0%,
+    color-mix(in srgb, var(--accent) 6%, #fff) 100%
+  );
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.pricing-sync-banner strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--accent-ink);
+  letter-spacing: 0.01em;
+}
+
+.pricing-sync-banner span {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.pricing-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  padding: 4px 0 8px;
+}
+
+.pricing-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.pricing-dirty-hint {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c45c26;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #c45c26 12%, #fff);
+}
+
+.pricing-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.pricing-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.pricing-btn:active {
+  transform: translateY(1px);
+}
+
+.pricing-btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.pricing-btn-primary {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.pricing-btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+  filter: none;
+}
+
+.pricing-btn-secondary {
+  background: var(--bg-muted);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.pricing-btn-secondary:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.pricing-btn-accent {
+  background: color-mix(in srgb, #0d9488 14%, #fff);
+  border-color: color-mix(in srgb, #0d9488 40%, var(--border));
+  color: #0f766e;
+}
+
+.pricing-btn-accent:hover {
+  background: color-mix(in srgb, #0d9488 22%, #fff);
+  border-color: color-mix(in srgb, #0d9488 55%, var(--border));
+  color: #0f766e;
+}
+
+.pricing-btn-danger {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  color: var(--danger);
+}
+
+.pricing-btn-danger:hover {
+  background: color-mix(in srgb, var(--danger) 14%, #fff);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+
+.pricing-vendor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+
+.settings-card .pricing-vendor-currency,
+.pricing-vendor-head .pricing-vendor-currency {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  margin: 0;
+}
+
+.settings-card .pricing-vendor-currency-label,
+.pricing-vendor-head .pricing-vendor-currency-label {
+  flex-shrink: 0;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--pricing-mark);
+  /* avoid settings-card label stacking the text as a block column */
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.settings-card .pricing-vendor-currency select,
+.pricing-vendor-head .pricing-vendor-currency select {
+  min-width: 148px;
+  margin: 0;
+  font-weight: 600;
+  color: var(--pricing-mark);
+  border-color: color-mix(in srgb, var(--pricing-mark) 42%, var(--border));
+  background: var(--pricing-mark-soft);
+}
+
+.settings-card .pricing-vendor-currency select:focus,
+.pricing-vendor-head .pricing-vendor-currency select:focus {
+  border-color: var(--pricing-mark);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pricing-mark) 18%, transparent);
+}
+
+.pricing-th-main {
+  display: block;
+  line-height: 1.2;
+}
+
+.pricing-th-unit {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--pricing-mark);
+  letter-spacing: 0.01em;
+}
+
+.pricing-vendor .settings-card-head h2,
+.pricing-vendor-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.pricing-table-scroll {
+  overflow-x: auto;
+  margin: 0 -2px;
+  padding: 0 2px 2px;
+}
+
+.pricing-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.pricing-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 8px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-muted));
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.pricing-table thead th:first-child {
+  border-radius: 8px 0 0 0;
+}
+
+.pricing-table thead th:last-child {
+  border-radius: 0 8px 0 0;
+}
+
+.pricing-table tbody td {
+  padding: 10px 8px;
+  vertical-align: middle;
+  text-align: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: var(--bg-panel);
+}
+
+.pricing-table tbody tr.is-model-start > td {
+  border-top: 2px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--bg-muted) 55%, #fff);
+}
+
+.pricing-table tbody tr.is-model-start:first-child > td {
+  border-top: none;
+}
+
+.pricing-table tbody tr.is-interval-cont > td {
+  background: color-mix(in srgb, var(--accent-soft) 28%, #fff);
+}
+
+.pricing-table tbody tr:hover > td {
+  background: color-mix(in srgb, var(--accent-soft) 55%, #fff);
+}
+
+/* Model-ID hover: all intervals light, model ID deeper */
+.pricing-table tbody tr.is-group-hover > td {
+  background: color-mix(in srgb, #0d9488 10%, #fff) !important;
+}
+
+.pricing-table tbody tr.is-group-hover > td.pricing-model-cell {
+  background: color-mix(in srgb, #0d9488 26%, #fff) !important;
+}
+
+/* Single interval hover: only that row (non-ID cells) */
+.pricing-table tbody tr.is-interval-hover > td:not(.pricing-model-cell) {
+  background: color-mix(in srgb, #0d9488 10%, #fff) !important;
+}
+
+.pricing-table tbody tr.is-interval-hover > td.pricing-model-cell,
+.pricing-table tbody tr.is-model-id-hot > td.pricing-model-cell {
+  background: color-mix(in srgb, #0d9488 26%, #fff) !important;
+}
+
+.pricing-table tbody tr:last-child > td {
+  border-bottom: none;
+}
+
+.pricing-model-cell {
+  min-width: 140px;
+  max-width: 220px;
+  vertical-align: middle !important;
+  text-align: center;
+  background: color-mix(in srgb, var(--bg-muted) 70%, #fff) !important;
+  cursor: default;
+}
+
+.pricing-model-id {
+  display: inline-block;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  word-break: break-all;
+  text-align: center;
+}
+
+.pricing-table tbody tr.is-group-hover .pricing-model-id,
+.pricing-table tbody tr.is-interval-hover .pricing-model-id,
+.pricing-table tbody tr.is-model-id-hot .pricing-model-id {
+  color: var(--pricing-mark);
+}
+
+.pricing-na {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-muted) 80%, transparent);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.pricing-date-input {
+  width: 100%;
+  max-width: 128px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.25;
+  background: var(--bg-muted);
+  color: var(--text);
+  text-align: center;
+}
+
+.pricing-rate-input,
+.pricing-table input[type="number"] {
+  width: 100%;
+  max-width: 88px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--bg-muted);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  /* Hide spinners so text-align:center is visually centered */
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.pricing-rate-input::-webkit-outer-spin-button,
+.pricing-rate-input::-webkit-inner-spin-button,
+.pricing-table input[type="number"]::-webkit-outer-spin-button,
+.pricing-table input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.pricing-date-input:hover,
+.pricing-rate-input:hover,
+.pricing-table input[type="number"]:hover {
+  border-color: var(--border-strong);
+  background: #fff;
+}
+
+.pricing-date-input:focus,
+.pricing-rate-input:focus,
+.pricing-table input[type="number"]:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pricing-bound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 138px;
+}
+
+.pricing-bound-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  gap: 2px;
+}
+
+.pricing-bound-chip {
+  flex: 1;
+  margin: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pricing-bound-chip:hover {
+  color: var(--text);
+}
+
+.pricing-bound-chip.is-active {
+  background: #fff;
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.pricing-row-actions {
+  padding: 8px !important;
+  vertical-align: middle !important;
+  text-align: center;
+}
+
+.pricing-row-actions-inner {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
 }

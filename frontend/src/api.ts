@@ -135,6 +135,8 @@ export type UsageEvent = {
   sourceChars?: number;
   endpoint?: string;
   errorMessage?: string;
+  /** Estimated cost in requested currency (not persisted). */
+  cost?: number;
 };
 
 export type UsageSummaryItem = {
@@ -148,6 +150,33 @@ export type UsageSummaryItem = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   sourceChars: number;
+  cost?: number;
+};
+
+export type PricingCurrency = "CNY" | "USD";
+
+export type PricingRates = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+export type PricingRule = {
+  id: string;
+  vendor: string;
+  model: string;
+  from: string;
+  to: string;
+  /** Rates in the vendor's billing currency */
+  rates: PricingRates;
+};
+
+export type PricingTable = {
+  ok?: boolean;
+  displayCurrency: PricingCurrency;
+  vendorCurrencies: Record<string, PricingCurrency>;
+  rules: PricingRule[];
 };
 
 export type TranslateOptions = {
@@ -425,15 +454,18 @@ export const api = {
     to?: string;
     feature?: string;
     ok?: "ok" | "fail" | "";
+    currency?: PricingCurrency;
   }) => {
     const q = new URLSearchParams();
     if (params?.from) q.set("from", params.from);
     if (params?.to) q.set("to", params.to);
     if (params?.feature) q.set("feature", params.feature);
     if (params?.ok) q.set("ok", params.ok);
+    if (params?.currency) q.set("currency", params.currency);
     const qs = q.toString();
     return request<{
       ok: boolean;
+      currency?: PricingCurrency;
       items: UsageEvent[];
     }>(`/api/usage/events${qs ? `?${qs}` : ""}`);
   },
@@ -443,6 +475,7 @@ export const api = {
     feature?: string;
     groupBy?: "feature" | "engine" | "llm" | "day";
     ok?: "ok" | "fail" | "";
+    currency?: PricingCurrency;
   }) => {
     const q = new URLSearchParams();
     if (params?.from) q.set("from", params.from);
@@ -450,16 +483,28 @@ export const api = {
     if (params?.feature) q.set("feature", params.feature);
     if (params?.groupBy) q.set("groupBy", params.groupBy);
     if (params?.ok) q.set("ok", params.ok);
+    if (params?.currency) q.set("currency", params.currency);
     const qs = q.toString();
     return request<{
       ok: boolean;
       groupBy: string;
+      currency?: PricingCurrency;
       totalEvents: number;
       items: UsageSummaryItem[];
     }>(`/api/usage/summary${qs ? `?${qs}` : ""}`);
   },
   clearUsage: () =>
     request<{ ok: boolean }>("/api/usage", { method: "DELETE" }),
+  getPricing: () => request<PricingTable>("/api/pricing"),
+  putPricing: (body: {
+    displayCurrency: PricingCurrency;
+    vendorCurrencies: Record<string, PricingCurrency>;
+    rules: PricingRule[];
+  }) =>
+    request<PricingTable>("/api/pricing", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   unityEndpoints: () =>
     request<{
       ok: boolean;

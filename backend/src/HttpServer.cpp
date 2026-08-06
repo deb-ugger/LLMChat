@@ -2,6 +2,7 @@
 #include "LlmClient.h"
 #include "TranslateClient.h"
 #include "UnityAutoTranslator.h"
+#include "PricingStore.h"
 #include "UsageStore.h"
 #include "Utf8Path.h"
 
@@ -218,6 +219,8 @@ HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
     , conversations_(conversations)
     , usage_(std::make_unique<UsageStore>(
           (fs::path(config.path()).parent_path() / "usage-events.jsonl").string()))
+    , pricing_(std::make_unique<PricingStore>(
+          (fs::path(config.path()).parent_path() / "pricing.json").string()))
 {
 }
 
@@ -248,13 +251,25 @@ int HttpServer::run()
         const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
         const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
         const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        std::string currency =
+            req.has_param("currency") ? req.get_param_value("currency") : "";
+        if (currency.empty() && pricing_)
+            currency = pricing_->displayCurrency();
+        if (currency.empty())
+            currency = "CNY";
         json items = json::array();
         if (usage_)
         {
             for (auto& row : usage_->events(from, to, feature, okFilter))
+            {
+                const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
+                row["cost"] = cost;
                 items.push_back(std::move(row));
+            }
         }
-        res.set_content(json{{"ok", true}, {"items", items}}.dump(), "application/json");
+        res.set_content(
+            json{{"ok", true}, {"currency", currency}, {"items", items}}.dump(),
+            "application/json");
     }));
 
     svr.Get("/api/usage/summary", withCors([this](const httplib::Request& req, httplib::Response& res) {
@@ -264,23 +279,81 @@ int HttpServer::run()
         const std::string groupBy =
             req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
         const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        std::string currency =
+            req.has_param("currency") ? req.get_param_value("currency") : "";
+        if (currency.empty() && pricing_)
+            currency = pricing_->displayCurrency();
+        if (currency.empty())
+            currency = "CNY";
         if (!usage_)
         {
             res.set_content(
-                json{{"ok", true}, {"groupBy", groupBy}, {"items", json::array()}, {"totalEvents", 0}}
+                json{
+                    {"ok", true},
+                    {"groupBy", groupBy},
+                    {"currency", currency},
+                    {"items", json::array()},
+                    {"totalEvents", 0}}
                     .dump(),
                 "application/json");
             return;
         }
-        res.set_content(
-            usage_->summary(from, to, feature, groupBy, okFilter).dump(),
-            "application/json");
+        auto rows = usage_->events(from, to, feature, okFilter);
+        for (auto& row : rows)
+        {
+            const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
+            row["cost"] = cost;
+        }
+        json body = UsageStore::summaryFromEvents(rows, groupBy);
+        body["currency"] = currency;
+        res.set_content(body.dump(), "application/json");
     }));
 
     svr.Delete("/api/usage", withCors([this](const httplib::Request&, httplib::Response& res) {
         if (usage_)
             usage_->clear();
         res.set_content(json{{"ok", true}}.dump(), "application/json");
+    }));
+
+    svr.Get("/api/pricing", withCors([this](const httplib::Request&, httplib::Response& res) {
+        if (!pricing_)
+        {
+            res.set_content(
+                json{{"ok", true}, {"displayCurrency", "CNY"}, {"rules", json::array()}}.dump(),
+                "application/json");
+            return;
+        }
+        json table = pricing_->get();
+        table["ok"] = true;
+        res.set_content(table.dump(), "application/json; charset=utf-8");
+    }));
+
+    svr.Put("/api/pricing", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        if (!pricing_)
+        {
+            res.status = 500;
+            res.set_content(errorJson("pricing unavailable").dump(), "application/json");
+            return;
+        }
+        try
+        {
+            const json body = json::parse(req.body.empty() ? "{}" : req.body);
+            const std::string err = pricing_->put(body);
+            if (!err.empty())
+            {
+                res.status = 400;
+                res.set_content(errorJson(err).dump(), "application/json");
+                return;
+            }
+            json table = pricing_->get();
+            table["ok"] = true;
+            res.set_content(table.dump(), "application/json; charset=utf-8");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 400;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
     }));
 
     svr.Get("/api/health", withCors([](const httplib::Request&, httplib::Response& res) {

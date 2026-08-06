@@ -51,6 +51,11 @@ public:
         const std::string& groupBy,
         const std::string& okFilter) const;
 
+    /** Aggregate pre-filtered event rows (may include cost). */
+    static nlohmann::json summaryFromEvents(
+        const std::vector<nlohmann::json>& rows,
+        const std::string& groupBy);
+
     static UsageEvent makeEventSkeleton();
     static std::string engineKindForProvider(const std::string& provider);
     static std::string hostFromApiUrl(const std::string& apiUrl);
