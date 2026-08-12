@@ -120,6 +120,21 @@ fn clipboard_read_image_png() -> Result<Vec<u8>, String> {
     }
 }
 
+/// Write raw bytes to an absolute path chosen via the save dialog.
+#[tauri::command]
+fn write_file_bytes(path: String, contents: Vec<u8>) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+    }
+    std::fs::write(&path, contents).map_err(|e| format!("写入文件失败: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -127,7 +142,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(BackendChild(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![clipboard_read_image_png])
+        .invoke_handler(tauri::generate_handler![
+            clipboard_read_image_png,
+            write_file_bytes
+        ])
         .setup(|app| {
             if let Err(err) = start_backend(app.handle()) {
                 eprintln!("Failed to start backend sidecar: {err}");

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { DictionaryEntry } from "../api";
 
 type Props = {
@@ -15,6 +15,23 @@ type Props = {
   /** Bottom box: dictionary only (must not rewrite 原文). */
   onDictLookup: (word: string) => void;
 };
+
+async function copyText(text: string) {
+  const t = text.trim();
+  if (!t) return false;
+  try {
+    await navigator.clipboard.writeText(t);
+    return true;
+  } catch {
+    const el = document.createElement("textarea");
+    el.value = t;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand("copy");
+    document.body.removeChild(el);
+    return true;
+  }
+}
 
 function pickPhonetics(entry: DictionaryEntry | null) {
   if (!entry) {
@@ -77,6 +94,7 @@ export function TranslatePanel({
   onDictLookup,
 }: Props) {
   const [manual, setManual] = useState("");
+  const [copiedKey, setCopiedKey] = useState<null | "dst" | "src">(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const phonetics = pickPhonetics(dict);
 
@@ -86,6 +104,19 @@ export function TranslatePanel({
     audioRef.current.src = url;
     void audioRef.current.play().catch(() => undefined);
   };
+
+  const onCopy = useCallback(async (key: "dst" | "src", text: string) => {
+    const ok = await copyText(text);
+    if (!ok) return;
+    setCopiedKey(key);
+    // Drop focus so the button does not stay "stuck" visible after mouse leave.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    window.setTimeout(() => {
+      setCopiedKey((cur) => (cur === key ? null : cur));
+    }, 1500);
+  }, []);
 
   const synonyms = Array.from(
     new Set(
@@ -106,32 +137,56 @@ export function TranslatePanel({
           ) : error ? (
             <pre className="boot-error boot-error-full">{error}</pre>
           ) : (
-            <p className="tr-text">
-              {translation || "在左侧 PDF 中拖选英文后显示译文"}
-            </p>
+            <div className="tr-box">
+              <button
+                type="button"
+                className="tr-copy-btn"
+                disabled={!translation.trim()}
+                onClick={() => void onCopy("dst", translation)}
+                title="复制译文"
+              >
+                {copiedKey === "dst" ? "已复制" : "复制文本"}
+              </button>
+              <p className="tr-text">
+                {translation || "在左侧 PDF 中拖选英文后显示译文"}
+              </p>
+            </div>
           )}
         </section>
 
         <section className="tr-block">
           <div className="tr-block-head">
             <h3>【原文】（可编辑）</h3>
+            <div className="tr-block-head-actions">
+              <button
+                type="button"
+                className="pdf-tool-btn"
+                disabled={loading || !source.trim()}
+                onClick={onRetranslate}
+                title="根据当前原文重新翻译"
+              >
+                重新翻译
+              </button>
+            </div>
+          </div>
+          <div className="tr-box">
             <button
               type="button"
-              className="pdf-tool-btn"
-              disabled={loading || !source.trim()}
-              onClick={onRetranslate}
-              title="根据当前原文重新翻译"
+              className="tr-copy-btn"
+              disabled={!source.trim()}
+              onClick={() => void onCopy("src", source)}
+              title="复制原文"
             >
-              重新翻译
+              {copiedKey === "src" ? "已复制" : "复制文本"}
             </button>
+            <textarea
+              className="tr-source-edit"
+              value={source}
+              placeholder="选中 PDF 文本将填入此处，也可手动修改后点「重新翻译」"
+              onChange={(e) => onSourceChange(e.target.value)}
+              rows={8}
+            />
           </div>
-          <textarea
-            className="tr-source-edit"
-            value={source}
-            placeholder="选中 PDF 文本将填入此处，也可手动修改后点「重新翻译」"
-            onChange={(e) => onSourceChange(e.target.value)}
-            rows={8}
-          />
         </section>
 
         <section className="tr-block">

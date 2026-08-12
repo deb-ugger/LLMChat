@@ -31,7 +31,15 @@ echarts.use([
 
 type GroupBy = "feature" | "engine" | "llm" | "day";
 type OkFilter = "" | "ok" | "fail";
-type RangePreset = "1" | "7" | "15" | "30" | "90" | "all" | "custom";
+type RangePreset =
+  | "1"
+  | "7"
+  | "15"
+  | "30"
+  | "90"
+  | "month"
+  | "all"
+  | "custom";
 
 const FEATURE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "全部功能" },
@@ -85,10 +93,17 @@ function enumerateDates(from: string, to: string): string[] {
   return out;
 }
 
+function monthToDateRange(): { from: string; to: string } {
+  const to = new Date();
+  const from = new Date(to.getFullYear(), to.getMonth(), 1);
+  return { from: localDateString(from), to: localDateString(to) };
+}
+
 function rangeFromPreset(preset: RangePreset): { from: string; to: string } {
   const to = new Date();
   const toStr = localDateString(to);
   if (preset === "all" || preset === "custom") return { from: "", to: "" };
+  if (preset === "month") return monthToDateRange();
   const days = Number(preset);
   const from = new Date(to);
   from.setDate(from.getDate() - (days - 1));
@@ -486,6 +501,11 @@ function UsageBarChart({
         return {
           tooltip: {
             trigger: "axis",
+            axisPointer: {
+              type: "line",
+              snap: true,
+              lineStyle: { type: "dashed", color: "#9aa7b8", width: 1 },
+            },
             formatter: (params: unknown) => {
               const list = Array.isArray(params) ? params : [params];
               const first = list[0] as { dataIndex?: number };
@@ -551,51 +571,93 @@ function UsageBarChart({
                   : "累计 Tokens",
             minInterval: metric === "requests" ? 1 : undefined,
           },
-          series: seriesDefs.map((s, i) => ({
-            name: s.name,
-            type: "line" as const,
-            stack: models.length > 0 ? "cum" : undefined,
-            smooth: true,
-            symbol: "circle",
-            symbolSize: 6,
-            showSymbol: dates.length <= 14,
-            data: s.cumulative,
-            lineStyle: { width: 2, color: s.color },
-            itemStyle: { color: s.color },
-            areaStyle:
-              models.length > 0
-                ? {
-                    opacity: 0.55,
-                    color: s.color,
-                  }
-                : {
-                    color: {
-                      type: "linear" as const,
-                      x: 0,
-                      y: 0,
-                      x2: 0,
-                      y2: 1,
-                      colorStops: [
-                        { offset: 0, color: "rgba(47,111,237,0.28)" },
-                        { offset: 1, color: "rgba(47,111,237,0.02)" },
+          series: seriesDefs.map((s, i) => {
+            const todayIdx = dates.indexOf(today);
+            const todayStackY =
+              todayIdx >= 0
+                ? seriesDefs
+                    .slice(0, i + 1)
+                    .reduce((sum, sd) => sum + (sd.cumulative[todayIdx] ?? 0), 0)
+                : null;
+            return {
+              name: s.name,
+              type: "line" as const,
+              stack: models.length > 0 ? "cum" : undefined,
+              smooth: true,
+              // Default hidden; axis hover shows hollow dots on each series.
+              showSymbol: false,
+              symbol: "circle",
+              symbolSize: 8,
+              data: s.cumulative,
+              lineStyle: { width: 2, color: s.color },
+              itemStyle: {
+                color: "#fff",
+                borderColor: s.color,
+                borderWidth: 2,
+              },
+              emphasis: {
+                disabled: false,
+                scale: false,
+                itemStyle: {
+                  color: "#fff",
+                  borderColor: s.color,
+                  borderWidth: 2,
+                },
+              },
+              areaStyle:
+                models.length > 0
+                  ? {
+                      opacity: 0.55,
+                      color: s.color,
+                    }
+                  : {
+                      color: {
+                        type: "linear" as const,
+                        x: 0,
+                        y: 0,
+                        x2: 0,
+                        y2: 1,
+                        colorStops: [
+                          { offset: 0, color: "rgba(47,111,237,0.28)" },
+                          { offset: 1, color: "rgba(47,111,237,0.02)" },
+                        ],
+                      },
+                    },
+              markPoint:
+                todayStackY != null
+                  ? {
+                      symbol: "circle",
+                      symbolSize: 8,
+                      itemStyle: {
+                        color: "#fff",
+                        borderColor: s.color,
+                        borderWidth: 2,
+                      },
+                      label: { show: false },
+                      data: [
+                        {
+                          xAxis: formatAxisDate(today),
+                          yAxis: todayStackY,
+                        },
                       ],
-                    },
-                  },
-            markLine:
-              i === 0 && dates.includes(today)
-                ? {
-                    symbol: "none" as const,
-                    label: {
-                      formatter: "Today",
-                      position: "end" as const,
-                      color: "#6b778a",
-                      fontSize: 11,
-                    },
-                    lineStyle: { type: "dashed" as const, color: "#c5d0de" },
-                    data: [{ xAxis: formatAxisDate(today) }],
-                  }
-                : undefined,
-          })),
+                    }
+                  : undefined,
+              markLine:
+                i === 0 && dates.includes(today)
+                  ? {
+                      symbol: "none" as const,
+                      label: {
+                        formatter: "Today",
+                        position: "end" as const,
+                        color: "#6b778a",
+                        fontSize: 11,
+                      },
+                      lineStyle: { type: "dashed" as const, color: "#c5d0de" },
+                      data: [{ xAxis: formatAxisDate(today) }],
+                    }
+                  : undefined,
+            };
+          }),
         };
       }
     }
@@ -808,15 +870,15 @@ function UsageBarChart({
 
 export function StatsView() {
   const today = localDateString(new Date());
-  const initialRange = rangeFromPreset("7");
-  const [rangePreset, setRangePreset] = useState<RangePreset>("7");
+  const initialRange = monthToDateRange();
+  const [rangePreset, setRangePreset] = useState<RangePreset>("month");
   const [customFrom, setCustomFrom] = useState(initialRange.from);
   const [customTo, setCustomTo] = useState(initialRange.to || today);
   const [feature, setFeature] = useState("");
   const [okFilter, setOkFilter] = useState<OkFilter>("");
-  const [groupBy, setGroupBy] = useState<GroupBy>("feature");
+  const [groupBy, setGroupBy] = useState<GroupBy>("day");
   const [metric, setMetric] = useState<"requests" | "tokens" | "cost">(
-    "requests",
+    "tokens",
   );
   const [currency, setCurrency] = useState<PricingCurrency>("CNY");
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
@@ -1010,6 +1072,7 @@ export function StatsView() {
             <option value="15">近 15 天</option>
             <option value="30">近 30 天</option>
             <option value="90">近 90 天</option>
+            <option value="month">本月</option>
             <option value="all">全部</option>
             <option value="custom">自定义</option>
           </select>
@@ -1128,36 +1191,110 @@ export function StatsView() {
 
       <div className="stats-kpis">
         <div className="stats-kpi">
-          <span className="stats-kpi-label">请求</span>
-          <span className="stats-kpi-value">{totals.requests}</span>
+          <div className="stats-kpi-line">
+            <span className="stats-kpi-part is-main">
+              <span className="stats-kpi-part-label">请求</span>
+              <span className="stats-kpi-part-value">{totals.requests}</span>
+            </span>
+            <span className="stats-kpi-eq" aria-hidden="true">
+              =
+            </span>
+            <span className="stats-kpi-brace-group">
+              <span className="stats-kpi-brace" aria-hidden="true">
+                <svg viewBox="0 0 18 64" width="14" height="48">
+                  <path
+                    d="M14 2 C7 2 5 12 5 18 C5 26 2 29 2 32 C2 35 5 38 5 46 C5 52 7 62 14 62"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="stats-kpi-parts">
+                <span className="stats-kpi-part is-ok">
+                  <span className="stats-kpi-part-label">成功</span>
+                  <span className="stats-kpi-part-value">{totals.ok}</span>
+                </span>
+                <span className="stats-kpi-part is-fail">
+                  <span className="stats-kpi-part-label">失败</span>
+                  <span className="stats-kpi-part-value">{totals.fail}</span>
+                </span>
+              </span>
+              <span className="stats-kpi-brace" aria-hidden="true">
+                <svg viewBox="0 0 18 64" width="14" height="48">
+                  <path
+                    d="M4 2 C11 2 13 12 13 18 C13 26 16 29 16 32 C16 35 13 38 13 46 C13 52 11 62 4 62"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </span>
+          </div>
         </div>
         <div className="stats-kpi">
-          <span className="stats-kpi-label">成功</span>
-          <span className="stats-kpi-value is-ok">{totals.ok}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">失败</span>
-          <span className="stats-kpi-value is-fail">{totals.fail}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">Total</span>
-          <span className="stats-kpi-value">{totals.tokens}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">Cache Read</span>
-          <span className="stats-kpi-value">{totals.cacheRead}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">Cache Write</span>
-          <span className="stats-kpi-value">{totals.cacheWrite}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">Input</span>
-          <span className="stats-kpi-value">{totals.input}</span>
-        </div>
-        <div className="stats-kpi">
-          <span className="stats-kpi-label">Output</span>
-          <span className="stats-kpi-value">{totals.output}</span>
+          <div className="stats-kpi-line">
+            <span className="stats-kpi-part is-main">
+              <span className="stats-kpi-part-label">Total</span>
+              <span className="stats-kpi-part-value">{totals.tokens}</span>
+            </span>
+            <span className="stats-kpi-eq" aria-hidden="true">
+              =
+            </span>
+            <span className="stats-kpi-brace-group">
+              <span className="stats-kpi-brace" aria-hidden="true">
+                <svg viewBox="0 0 18 64" width="14" height="48">
+                  <path
+                    d="M14 2 C7 2 5 12 5 18 C5 26 2 29 2 32 C2 35 5 38 5 46 C5 52 7 62 14 62"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="stats-kpi-parts is-token">
+                <span className="stats-kpi-part">
+                  <span className="stats-kpi-part-label">Cache Read</span>
+                  <span className="stats-kpi-part-value">
+                    {totals.cacheRead}
+                  </span>
+                </span>
+                <span className="stats-kpi-part">
+                  <span className="stats-kpi-part-label">Cache Write</span>
+                  <span className="stats-kpi-part-value">
+                    {totals.cacheWrite}
+                  </span>
+                </span>
+                <span className="stats-kpi-part">
+                  <span className="stats-kpi-part-label">Input</span>
+                  <span className="stats-kpi-part-value">{totals.input}</span>
+                </span>
+                <span className="stats-kpi-part">
+                  <span className="stats-kpi-part-label">Output</span>
+                  <span className="stats-kpi-part-value">{totals.output}</span>
+                </span>
+              </span>
+              <span className="stats-kpi-brace" aria-hidden="true">
+                <svg viewBox="0 0 18 64" width="14" height="48">
+                  <path
+                    d="M4 2 C11 2 13 12 13 18 C13 26 16 29 16 32 C16 35 13 38 13 46 C13 52 11 62 4 62"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </span>
+          </div>
         </div>
         <div className="stats-kpi">
           <span className="stats-kpi-label">

@@ -6025,30 +6025,62 @@ mark.search-hit-mark {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.pdf-outline-body > .hint {
+  padding: 12px 10px;
+  margin: 0;
+}
+
+.pdf-search-pane .pdf-outline-body {
+  display: block;
   overflow-x: hidden;
   overflow-y: auto;
   padding: 10px 8px 10px 10px;
-  box-sizing: border-box;
-  /* 滚动条在右侧（拖动条左侧） */
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--text-muted) 28%, transparent)
     transparent;
 }
 
-.pdf-outline-body::-webkit-scrollbar {
+.pdf-outline-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.pdf-outline-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 8px 10px 10px;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 28%, transparent)
+    transparent;
+}
+
+.pdf-outline-scroll::-webkit-scrollbar {
   width: 5px;
 }
 
-.pdf-outline-body::-webkit-scrollbar-track {
+.pdf-outline-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.pdf-outline-body::-webkit-scrollbar-thumb {
+.pdf-outline-scroll::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--text-muted) 26%, transparent);
   border-radius: 3px;
 }
 
-.pdf-outline-body::-webkit-scrollbar-thumb:hover {
+.pdf-outline-scroll::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text-muted) 42%, transparent);
 }
 
@@ -6161,11 +6193,25 @@ body.row-resizing .textLayer {
   padding: 0 6px;
 }
 
+.pdf-outline-toolbar {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 6px;
+  overflow: visible;
+  background: #f6f4ee;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
 .pdf-outline-filter {
   display: flex;
   align-items: center;
+  align-self: stretch;
   gap: 6px;
-  margin: 0 6px 8px;
+  margin: 6px 4px 2px;
 }
 
 .pdf-outline-filter input {
@@ -6200,8 +6246,139 @@ body.row-resizing .textLayer {
 .pdf-outline-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 0 6px 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0 2px;
+  overflow: visible;
+}
+
+.pdf-outline-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #5a6578;
+  cursor: pointer;
+  overflow: visible;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pdf-outline-icon-btn svg {
+  display: block;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+}
+
+/* 气泡主体 */
+.pdf-outline-icon-btn::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 30;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: #1a1d24;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px) scale(0.86);
+  transform-origin: top center;
+}
+
+/* 聊天气泡尖头（旋转方块） */
+.pdf-outline-icon-btn::before {
+  content: "";
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  z-index: 29;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  background: #1a1d24;
+  border-radius: 1px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(6px) rotate(45deg) scale(0.86);
+  transform-origin: center center;
+}
+
+.pdf-outline-icon-btn:hover:not(:disabled)::after,
+.pdf-outline-icon-btn:focus-visible:not(:disabled)::after {
+  opacity: 1;
+  animation: pdf-outline-tip-jelly 0.48s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.pdf-outline-icon-btn:hover:not(:disabled)::before,
+.pdf-outline-icon-btn:focus-visible:not(:disabled)::before {
+  opacity: 1;
+  animation: pdf-outline-tip-jelly-arrow 0.48s cubic-bezier(0.34, 1.56, 0.64, 1)
+    both;
+}
+
+@keyframes pdf-outline-tip-jelly {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px) scale(0.82);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-2px) scale(1.08);
+  }
+  75% {
+    transform: translateX(-50%) translateY(1px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes pdf-outline-tip-jelly-arrow {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) rotate(45deg) scale(0.82);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-2px) rotate(45deg) scale(1.08);
+  }
+  75% {
+    transform: translateY(1px) rotate(45deg) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(45deg) scale(1);
+  }
+}
+
+.pdf-outline-icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.pdf-outline-icon-btn.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.pdf-outline-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .pdf-outline-action {
@@ -6449,6 +6626,28 @@ body.row-resizing .textLayer {
   pointer-events: none;
 }
 
+/* Selectable PDF images: hand cursor over the image region */
+.pdf-scroll .pdfViewer .page > .pdf-image-hotspots {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.pdf-scroll .pdfViewer .page > .pdf-image-hotspots .pdf-image-hotspot {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
+  background: transparent;
+}
+
+.pdf-scroll.hand-mode .pdfViewer .page > .pdf-image-hotspots .pdf-image-hotspot {
+  pointer-events: none;
+  cursor: grab;
+}
+
 .tr-block-head {
   display: flex;
   align-items: center;
@@ -6459,6 +6658,85 @@ body.row-resizing .textLayer {
 
 .tr-block-head h3 {
   margin: 0;
+}
+
+.tr-block-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tr-box {
+  position: relative;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  background: #fff;
+  min-height: 72px;
+}
+
+.tr-box .tr-text {
+  margin: 0;
+  padding: 10px 12px;
+  min-height: 72px;
+  box-sizing: border-box;
+}
+
+.tr-box .tr-source-edit {
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  min-height: 120px;
+}
+
+.tr-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, #2f6fed 35%, #c5d0de);
+  border-radius: 6px;
+  background: #e8f1ff;
+  color: #1e4fbf;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(47, 111, 237, 0.12);
+}
+
+.tr-box:hover .tr-copy-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tr-copy-btn:disabled {
+  opacity: 0;
+  cursor: default;
+}
+
+.tr-box:hover .tr-copy-btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.tr-copy-btn:hover:not(:disabled) {
+  background: #d6e6ff;
+  border-color: color-mix(in srgb, #2f6fed 55%, #c5d0de);
+}
+
+.tr-copy-btn:focus {
+  outline: none;
+}
+
+.tr-copy-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, #2f6fed 55%, transparent);
+  outline-offset: 1px;
 }
 
 .tr-source-edit {
@@ -7677,15 +7955,17 @@ body.row-resizing .textLayer {
   z-index: 100;
   background: rgba(15, 23, 42, 0.55);
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 10px;
   box-sizing: border-box;
 }
 
 .pdf-image-viewer-panel {
-  flex: 1;
-  max-width: 1100px;
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   background: #e8eef5;
@@ -7693,6 +7973,7 @@ body.row-resizing .textLayer {
   overflow: hidden;
   box-shadow: var(--shadow-md);
   min-height: 0;
+  min-width: 0;
 }
 
 .pdf-image-viewer-bar {
@@ -7722,13 +8003,14 @@ body.row-resizing .textLayer {
 }
 
 .pdf-image-viewer-stage {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  align-items: safe center;
+  justify-content: safe center;
+  padding: 12px;
   background:
     linear-gradient(45deg, #dbe3ec 25%, transparent 25%) 0 0 / 16px 16px,
     linear-gradient(-45deg, #dbe3ec 25%, transparent 25%) 0 8px / 16px 16px,
@@ -7740,6 +8022,14 @@ body.row-resizing .textLayer {
   box-shadow: 0 4px 20px rgba(15, 23, 42, 0.2);
   background: #fff;
   user-select: none;
+}
+
+.pdf-img-toast {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
 }
 
 /* —— Usage stats page —— */
@@ -7887,13 +8177,13 @@ body.row-resizing .textLayer {
 
 .stats-kpis {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
 @media (max-width: 900px) {
   .stats-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 }
 
@@ -7917,13 +8207,100 @@ body.row-resizing .textLayer {
   font-size: 22px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
-.stats-kpi-value.is-ok {
+.stats-kpi-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.stats-kpi-eq {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  color: color-mix(in srgb, var(--text-muted) 75%, var(--border));
+}
+
+.stats-kpi-brace-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stats-kpi-brace {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+  color: color-mix(in srgb, var(--text-muted) 70%, var(--border));
+}
+
+.stats-kpi-brace svg {
+  display: block;
+  overflow: visible;
+}
+
+.stats-kpi-parts {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  min-width: 0;
+}
+
+.stats-kpi-parts.is-token {
+  gap: 0;
+}
+
+.stats-kpi-part {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.stats-kpi-parts.is-token .stats-kpi-part {
+  padding: 0 12px;
+  border-left: 1px solid color-mix(in srgb, var(--text-muted) 28%, var(--border));
+}
+
+.stats-kpi-parts.is-token .stats-kpi-part:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.stats-kpi-part-label {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+
+.stats-kpi-part-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  color: var(--text);
+}
+
+.stats-kpi-part.is-ok .stats-kpi-part-value {
   color: var(--success);
 }
 
-.stats-kpi-value.is-fail {
+.stats-kpi-part.is-fail .stats-kpi-part-value {
   color: var(--danger);
 }
 
@@ -8419,17 +8796,79 @@ body.row-resizing .textLayer {
   background: color-mix(in srgb, #0d9488 26%, #fff) !important;
 }
 
+/* Locked + hover: same mid-gray on model ID and intervals */
+.pricing-table tbody tr.is-locked.is-group-hover > td,
+.pricing-table tbody tr.is-locked.is-group-hover > td.pricing-model-cell,
+.pricing-table tbody tr.is-locked.is-interval-hover > td:not(.pricing-model-cell),
+.pricing-table
+  tbody
+  tr.is-locked.is-interval-hover
+  > td.pricing-model-cell,
+.pricing-table tbody tr.is-locked.is-model-id-hot > td.pricing-model-cell {
+  background: #dadee4 !important;
+}
+
 .pricing-table tbody tr:last-child > td {
   border-bottom: none;
 }
 
 .pricing-model-cell {
   min-width: 140px;
-  max-width: 220px;
+  max-width: 240px;
   vertical-align: middle !important;
   text-align: center;
   background: color-mix(in srgb, var(--bg-muted) 70%, #fff) !important;
   cursor: default;
+}
+
+.pricing-model-cell-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.pricing-lock-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 28%, var(--border));
+  background: color-mix(in srgb, var(--bg-muted) 70%, #fff);
+  color: var(--text-muted);
+  line-height: 0;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition),
+    color var(--transition), box-shadow var(--transition);
+}
+
+.pricing-lock-btn:hover {
+  border-color: color-mix(in srgb, var(--pricing-mark) 45%, var(--border));
+  color: var(--pricing-mark);
+  background: #fff;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--pricing-mark) 12%, transparent);
+}
+
+.pricing-lock-btn.is-locked {
+  color: #64748b;
+  background: color-mix(in srgb, #94a3b8 12%, #fff);
+  border-color: color-mix(in srgb, #94a3b8 40%, var(--border));
+}
+
+.pricing-lock-btn.is-unlocked {
+  color: var(--pricing-mark);
+  background: var(--pricing-mark-soft);
+  border-color: color-mix(in srgb, var(--pricing-mark) 42%, var(--border));
+}
+
+.pricing-lock-icon {
+  display: block;
+  flex-shrink: 0;
 }
 
 .pricing-model-id {
@@ -8440,13 +8879,37 @@ body.row-resizing .textLayer {
   color: var(--text);
   line-height: 1.35;
   word-break: break-all;
-  text-align: center;
+  text-align: left;
+}
+
+.pricing-table tbody tr.is-locked .pricing-rate-input:disabled,
+.pricing-table tbody tr.is-locked .pricing-date-input:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--bg-muted) 88%, #fff);
+}
+
+.pricing-bound.is-disabled {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.pricing-table tbody tr.is-locked .pricing-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.2);
 }
 
 .pricing-table tbody tr.is-group-hover .pricing-model-id,
 .pricing-table tbody tr.is-interval-hover .pricing-model-id,
 .pricing-table tbody tr.is-model-id-hot .pricing-model-id {
   color: var(--pricing-mark);
+}
+
+.pricing-table tbody tr.is-locked.is-group-hover .pricing-model-id,
+.pricing-table tbody tr.is-locked.is-interval-hover .pricing-model-id,
+.pricing-table tbody tr.is-locked.is-model-id-hot .pricing-model-id {
+  color: #475569;
 }
 
 .pricing-na {

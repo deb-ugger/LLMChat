@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-write-file-bytes"
+description = "Allow writing binary file contents to a user-chosen path"
+commands.allow = ["write_file_bytes"]

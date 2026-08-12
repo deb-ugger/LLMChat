@@ -40,8 +40,10 @@ import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml, highlightSearchNodes } from "../highlightText";
 import {
   copyImageBlob,
-  downloadImageBlob,
+  saveImageBlob,
   findImageAtPoint,
+  syncPageImageHotspots,
+  clearPageImageHotspots,
   type PdfImageHit,
 } from "../pdfImages";
 
@@ -89,6 +91,41 @@ const MAX_SCALE = 5;
 const SCALE_UI_BASE = 0.98;
 const DEFAULT_SCALE = SCALE_UI_BASE;
 const SCALE_STEP = SCALE_UI_BASE * 0.15;
+
+/** Preview zoom: buttons ±25%, wheel finer ±8%. Cap below 1:1 only on init-fit. */
+const IMG_PREVIEW_ZOOM_BTN = 0.25;
+const IMG_PREVIEW_ZOOM_WHEEL = 0.08;
+const IMG_PREVIEW_ZOOM_MIN = 0.05;
+const IMG_PREVIEW_ZOOM_MAX = 8;
+
+function clampImgPreviewZoom(z: number): number {
+  return Math.min(
+    IMG_PREVIEW_ZOOM_MAX,
+    Math.max(IMG_PREVIEW_ZOOM_MIN, Math.round(z * 1000) / 1000),
+  );
+}
+
+/** Prefer 1:1; if too large for the app window, shrink until fully visible. */
+function fitImgPreviewZoom(
+  naturalW: number,
+  naturalH: number,
+  overlay: HTMLElement,
+  barHeight: number,
+  stagePad: number,
+): number {
+  if (naturalW < 1 || naturalH < 1) return 1;
+  const style = getComputedStyle(overlay);
+  const padX =
+    (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const padY =
+    (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  const availW = Math.max(1, overlay.clientWidth - padX - stagePad * 2);
+  const availH = Math.max(
+    1,
+    overlay.clientHeight - padY - Math.max(0, barHeight) - stagePad * 2,
+  );
+  return clampImgPreviewZoom(Math.min(1, availW / naturalW, availH / naturalH));
+}
 
 function scaleToPercent(scale: number): number {
   return Math.round((scale / SCALE_UI_BASE) * 100);
@@ -208,6 +245,42 @@ function outlineAncestorKeys(key: string): string[] {
     out.push(parts.slice(0, i).join("."));
   }
   return out;
+}
+
+/** 按 key 找到目录节点；找不到返回 null */
+function findOutlineNode(
+  items: OutlineItem[],
+  key: string,
+): OutlineItem | null {
+  const parts = key.split(".").map((p) => Number(p));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  let list = items;
+  let node: OutlineItem | null = null;
+  for (const idx of parts) {
+    node = list[idx] ?? null;
+    if (!node) return null;
+    list = node.items;
+  }
+  return node;
+}
+
+/**
+ * 定位展开：祖先路径 + 当前节点，再沿「每个层级的第一个子标题」递归向下。
+ * 同级其余子标题保持折叠。
+ */
+function outlineRevealExpandKeys(
+  items: OutlineItem[],
+  activeKey: string,
+): string[] {
+  const keys = [...outlineAncestorKeys(activeKey)];
+  let node = findOutlineNode(items, activeKey);
+  let key = activeKey;
+  while (node && node.items.length > 0) {
+    keys.push(key);
+    key = `${key}.0`;
+    node = node.items[0] ?? null;
+  }
+  return keys;
 }
 
 /**
@@ -376,7 +449,10 @@ function OutlineTree({
   currentPage: number;
 }) {
   const treeRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [titleQuery, setTitleQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const branchKeys = useMemo(
     () => collectOutlineBranchKeys(items),
     [items],
@@ -418,6 +494,10 @@ function OutlineTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, filtering]);
 
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+
   const onToggle = useCallback((key: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -437,21 +517,28 @@ function OutlineTree({
 
   const revealActive = useCallback(() => {
     if (!activeKey) return;
+    const expandKeys = outlineRevealExpandKeys(items, activeKey);
     setCollapsed((prev) => {
       const next = new Set(prev);
-      for (const a of outlineAncestorKeys(activeKey)) next.delete(a);
+      for (const k of expandKeys) next.delete(k);
       return next;
     });
     // 等展开渲染后再滚动
     window.setTimeout(() => {
       requestAnimationFrame(() => {
-        const el = treeRef.current?.querySelector(
-          `[data-outline-key="${activeKey}"]`,
-        );
+        const root = scrollRef.current ?? treeRef.current;
+        const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
         el?.scrollIntoView({ block: "center", behavior: "smooth" });
       });
-    }, 50);
-  }, [activeKey]);
+    }, 80);
+  }, [activeKey, items]);
+
+  const toggleSearch = useCallback(() => {
+    setSearchOpen((open) => {
+      if (open) setTitleQuery("");
+      return !open;
+    });
+  }, []);
 
   /** 每次打开目录（组件挂载）自动定位到当前页章节 */
   useEffect(() => {
@@ -462,65 +549,158 @@ function OutlineTree({
 
   return (
     <div className="pdf-outline-tree" ref={treeRef}>
-      <div className="pdf-outline-filter">
-        <input
-          type="search"
-          value={titleQuery}
-          placeholder="搜索标题…"
-          onChange={(e) => setTitleQuery(e.target.value)}
-          aria-label="搜索目录标题"
-        />
-        {filtering && (
-          <span className="pdf-outline-filter-count">
-            {matches.size > 0 ? `${matches.size} 条` : "无匹配"}
-          </span>
-        )}
-      </div>
-      <div className="pdf-outline-actions">
-        <button
-          type="button"
-          className="pdf-outline-action"
-          onClick={revealActive}
-          disabled={!activeKey}
-          title="展开并滚动到当前页对应的目录项"
-        >
-          定位当前
-        </button>
-        {branchKeys.length > 0 && (
-          <>
+      <div className="pdf-outline-toolbar">
+        <div className="pdf-outline-actions">
+          <button
+            type="button"
+            className="pdf-outline-icon-btn"
+            onClick={revealActive}
+            disabled={!activeKey}
+            data-tip="定位到当前章节"
+            aria-label="定位到当前章节"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M5 4.5h14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+              />
+              <rect
+                x="4.5"
+                y="8"
+                width="15"
+                height="8"
+                rx="1.8"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+              />
+              <path
+                d="M5 19.5h14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={`pdf-outline-icon-btn${searchOpen ? " is-active" : ""}`}
+            onClick={toggleSearch}
+            data-tip="搜索标题"
+            aria-label="搜索标题"
+            aria-pressed={searchOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <circle
+                cx="10.5"
+                cy="10.5"
+                r="7"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+              />
+              <path
+                d="M16 16l5.2 5.2"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          {branchKeys.length > 0 && (
             <button
               type="button"
-              className="pdf-outline-action"
-              onClick={expandAll}
+              className="pdf-outline-icon-btn"
+              onClick={() => {
+                if (collapsed.size === 0) collapseAll();
+                else expandAll();
+              }}
+              data-tip={collapsed.size === 0 ? "全部折叠" : "全部展开"}
+              aria-label={collapsed.size === 0 ? "全部折叠" : "全部展开"}
             >
-              全部展开
+              {collapsed.size === 0 ? (
+                <svg viewBox="0 0 24 24" aria-hidden>
+                  <path
+                    d="M5 3.5l7 6.5 7-6.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M5 20.5l7-6.5 7 6.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden>
+                  <path
+                    d="M5 10L12 3.5 19 10"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M5 14L12 20.5 19 14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
             </button>
-            <button
-              type="button"
-              className="pdf-outline-action"
-              onClick={collapseAll}
-            >
-              全部折叠
-            </button>
-          </>
+          )}
+        </div>
+        {searchOpen && (
+          <div className="pdf-outline-filter">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={titleQuery}
+              placeholder="搜索标题…"
+              onChange={(e) => setTitleQuery(e.target.value)}
+              aria-label="搜索目录标题"
+            />
+            {filtering && (
+              <span className="pdf-outline-filter-count">
+                {matches.size > 0 ? `${matches.size} 条` : "无匹配"}
+              </span>
+            )}
+          </div>
         )}
       </div>
-      {filtering && matches.size === 0 ? (
-        <p className="hint pdf-outline-filter-empty">未找到匹配的标题</p>
-      ) : (
-        <OutlineBranch
-          items={items}
-          onGo={onGo}
-          resolvePage={resolvePage}
-          depth={0}
-          path=""
-          collapsed={collapsed}
-          onToggle={onToggle}
-          titleQuery={titleQuery}
-          visibleKeys={visibleKeys}
-          activeKey={activeKey}
-        />
-      )}
+      <div className="pdf-outline-scroll" ref={scrollRef}>
+        {filtering && matches.size === 0 ? (
+          <p className="hint pdf-outline-filter-empty">未找到匹配的标题</p>
+        ) : (
+          <OutlineBranch
+            items={items}
+            onGo={onGo}
+            resolvePage={resolvePage}
+            depth={0}
+            path=""
+            collapsed={collapsed}
+            onToggle={onToggle}
+            titleQuery={titleQuery}
+            visibleKeys={visibleKeys}
+            activeKey={activeKey}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -568,7 +748,21 @@ export function PdfPane({
     pageNumber: number;
     imageHit: PdfImageHit | null;
   } | null>(null);
+  const [imgPreview, setImgPreview] = useState<{
+    hit: PdfImageHit;
+    zoom: number;
+    naturalW: number;
+    naturalH: number;
+  } | null>(null);
   const [imgBusy, setImgBusy] = useState(false);
+  const [imgToast, setImgToast] = useState<{
+    message: string;
+    ok: boolean;
+  } | null>(null);
+  const imgToastTimerRef = useRef<number | null>(null);
+  const imgStageRef = useRef<HTMLDivElement>(null);
+  const imgViewerRef = useRef<HTMLDivElement>(null);
+  const imgBarRef = useRef<HTMLDivElement>(null);
   const [fitMode, setFitMode] = useState<
     "actual" | "fitHeight" | "fitWidth" | "custom"
   >("actual");
@@ -586,10 +780,16 @@ export function PdfPane({
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const pageWidthRef = useRef(0);
   const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
+  /** Last user/session page; may update on scroll. */
   const restoredPageRef = useRef<number | null>(null);
+  /** Page to apply on pagesinit; not overwritten by PDF.js interim page=1. */
+  const restoreTargetPageRef = useRef<number | null>(null);
   const wasVisibleRef = useRef(visible);
   const suppressPersistRef = useRef(false);
   const metaSaveTimer = useRef<number | null>(null);
+  const persistMetaRef = useRef<(opts?: { immediate?: boolean }) => void>(
+    () => undefined,
+  );
   const selectingRef = useRef(false);
   const lastEmittedTextRef = useRef("");
   const pageInputFocusedRef = useRef(false);
@@ -869,24 +1069,35 @@ export function PdfPane({
     return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
   }, [model, translateProvider]);
 
-  const persistMeta = useCallback(() => {
+  const persistMeta = useCallback((opts?: { immediate?: boolean }) => {
     if (!fileMeta) return;
     if (suppressPersistRef.current) return;
     const root = scrollRef.current;
+    const page =
+      pdfViewerRef.current?.currentPageNumber ||
+      restoredPageRef.current ||
+      pageNumber;
     const meta: PdfSessionMeta = {
       ...fileMeta,
       viewMode,
-      pageNumber,
+      pageNumber: Math.max(1, page),
       scale,
       scrollTop: root?.scrollTop ?? 0,
       scrollLeft: root?.scrollLeft ?? 0,
       outlineOpen,
     };
     if (metaSaveTimer.current) window.clearTimeout(metaSaveTimer.current);
+    if (opts?.immediate) {
+      metaSaveTimer.current = null;
+      void savePdfSessionMeta(meta);
+      return;
+    }
     metaSaveTimer.current = window.setTimeout(() => {
       void savePdfSessionMeta(meta);
     }, 350);
   }, [fileMeta, outlineOpen, pageNumber, scale, viewMode]);
+
+  persistMetaRef.current = persistMeta;
 
   const onPdfScroll = useCallback(() => {
     persistMeta();
@@ -894,6 +1105,22 @@ export function PdfPane({
 
   useEffect(() => {
     persistMeta();
+  }, [persistMeta]);
+
+  // Flush reading position before process kill / tab hide (rebuild Stop-Process).
+  useEffect(() => {
+    const flush = () => persistMeta({ immediate: true });
+    const onVis = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [persistMeta]);
 
   // Init official PDFViewer after the real viewer DOM is mounted.
@@ -950,7 +1177,11 @@ export function PdfPane({
     const onPageChanging = (evt: { pageNumber: number }) => {
       const p = evt.pageNumber;
       setPageNumber(p);
-      restoredPageRef.current = p;
+      // During session restore, PDF.js often emits page=1 before we jump.
+      // Do not clobber the target page or we land on page 1 permanently.
+      if (!suppressPersistRef.current) {
+        restoredPageRef.current = p;
+      }
       if (!pageInputFocusedRef.current) {
         setPageInput(String(p));
       }
@@ -970,23 +1201,31 @@ export function PdfPane({
       } finally {
         applyingViewerScaleRef.current = false;
       }
-      const keep = Math.min(
-        Math.max(1, restoredPageRef.current ?? 1),
-        pdfViewer.pagesCount || 1,
-      );
+      const target =
+        restoreTargetPageRef.current ?? restoredPageRef.current ?? 1;
+      const keep = Math.min(Math.max(1, target), pdfViewer.pagesCount || 1);
       pdfViewer.currentPageNumber = keep;
+      restoredPageRef.current = keep;
+      restoreTargetPageRef.current = null;
       setPageNumber(keep);
+      if (!pageInputFocusedRef.current) {
+        setPageInput(String(keep));
+      }
       window.setTimeout(() => reapplyPageRotationsRef.current(), 0);
       const pending = pendingScrollRef.current;
+      const finishRestore = () => {
+        suppressPersistRef.current = false;
+        persistMetaRef.current({ immediate: true });
+      };
       if (pending) {
         window.setTimeout(() => {
           container.scrollTop = pending.top;
           container.scrollLeft = pending.left;
           pendingScrollRef.current = null;
-          suppressPersistRef.current = false;
+          finishRestore();
         }, 80);
       } else {
-        suppressPersistRef.current = false;
+        finishRestore();
       }
     };
 
@@ -1111,6 +1350,7 @@ export function PdfPane({
         isViewMode(session.viewMode) ? session.viewMode : "single-scroll",
       );
       const keepPage = Math.max(1, session.pageNumber || 1);
+      restoreTargetPageRef.current = keepPage;
       restoredPageRef.current = keepPage;
       setPageNumber(keepPage);
       const savedScale = session.scale || DEFAULT_SCALE;
@@ -1172,6 +1412,7 @@ export function PdfPane({
       if (sameAsSaved && session) {
         const keep = Math.max(1, session.pageNumber || 1);
         suppressPersistRef.current = true;
+        restoreTargetPageRef.current = keep;
         restoredPageRef.current = keep;
         setPageNumber(keep);
         pendingScrollRef.current = {
@@ -1182,6 +1423,7 @@ export function PdfPane({
         return;
       }
 
+      restoreTargetPageRef.current = 1;
       restoredPageRef.current = 1;
       setPageNumber(1);
       pendingScrollRef.current = { top: 0, left: 0 };
@@ -1228,6 +1470,7 @@ export function PdfPane({
       setRecentOpen(false);
       const keep = Math.max(1, entry.pageNumber || 1);
       suppressPersistRef.current = true;
+      restoreTargetPageRef.current = keep;
       restoredPageRef.current = keep;
       setPageNumber(keep);
       pendingScrollRef.current = {
@@ -1480,14 +1723,72 @@ export function PdfPane({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  // Mark selectable PDF images with a hand cursor after each page render.
+  useEffect(() => {
+    const eventBus = eventBusRef.current;
+    if (!eventBus || !file || !viewerReady) return;
+
+    let cancelled = false;
+    const onPageRendered = (evt: {
+      pageNumber?: number;
+      source?: { div?: HTMLElement | null };
+    }) => {
+      const pageNum = evt.pageNumber;
+      const pageEl =
+        evt.source?.div ||
+        (typeof pageNum === "number"
+          ? (scrollRef.current?.querySelector(
+              `.page[data-page-number="${pageNum}"]`,
+            ) as HTMLElement | null)
+          : null);
+      if (!pageEl || !Number.isFinite(pageNum) || (pageNum as number) < 1) {
+        return;
+      }
+      const pdf = pdfRef.current;
+      if (!pdf) return;
+      void (async () => {
+        try {
+          const page = await pdf.getPage(pageNum as number);
+          if (cancelled) return;
+          await syncPageImageHotspots(page, pageEl);
+        } catch {
+          /* ignore hotspot sync errors */
+        }
+      })();
+    };
+
+    eventBus.on("pagerendered", onPageRendered);
+    return () => {
+      cancelled = true;
+      eventBus.off("pagerendered", onPageRendered);
+      if (scrollRef.current) clearPageImageHotspots(scrollRef.current);
+    };
+  }, [file, viewerReady]);
+
   // Right-click on PDF page: zoom/fit (whole doc) + rotate (this page); image actions if hit
+  // Double-click image: open fullscreen preview
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || !file) return;
 
-    const onContextMenu = (e: MouseEvent) => {
+    const resolveHit = async (
+      pageEl: HTMLElement,
+      pageNum: number,
+      clientX: number,
+      clientY: number,
+    ) => {
       const pdf = pdfRef.current;
-      if (!pdf || handMode) return;
+      if (!pdf) return null;
+      try {
+        const page = await pdf.getPage(pageNum);
+        return await findImageAtPoint(page, pageNum, pageEl, clientX, clientY);
+      } catch {
+        return null;
+      }
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      if (handMode) return;
       const target = e.target as HTMLElement | null;
       if (!target) return;
       const pageEl = target.closest(".page") as HTMLElement | null;
@@ -1504,21 +1805,8 @@ export function PdfPane({
       const clientY = e.clientY;
       setImgBusy(true);
       void (async () => {
-        let imageHit: PdfImageHit | null = null;
-        try {
-          const page = await pdf.getPage(pageNum);
-          imageHit = await findImageAtPoint(
-            page,
-            pageNum,
-            pageEl,
-            clientX,
-            clientY,
-          );
-        } catch {
-          imageHit = null;
-        } finally {
-          setImgBusy(false);
-        }
+        const imageHit = await resolveHit(pageEl, pageNum, clientX, clientY);
+        setImgBusy(false);
         setImgMenu((prev) => {
           if (prev?.imageHit?.objectUrl) {
             URL.revokeObjectURL(prev.imageHit.objectUrl);
@@ -1533,8 +1821,45 @@ export function PdfPane({
       })();
     };
 
+    const onDblClick = (e: MouseEvent) => {
+      if (handMode) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // textLayer 常盖住图片；与右键一样按坐标命中，有图则预览，无图则保留选词
+      const pageEl = target.closest(".page") as HTMLElement | null;
+      if (!pageEl || !root.contains(pageEl)) return;
+
+      const pageNum = Number(
+        pageEl.dataset.pageNumber || pageEl.getAttribute("data-page-number"),
+      );
+      if (!Number.isFinite(pageNum) || pageNum < 1) return;
+
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      setImgBusy(true);
+      void (async () => {
+        const imageHit = await resolveHit(pageEl, pageNum, clientX, clientY);
+        setImgBusy(false);
+        if (!imageHit) return;
+        window.getSelection()?.removeAllRanges();
+        setImgPreview((prev) => {
+          if (prev?.hit.objectUrl) URL.revokeObjectURL(prev.hit.objectUrl);
+          return {
+            hit: imageHit,
+            zoom: 1,
+            naturalW: 0,
+            naturalH: 0,
+          };
+        });
+      })();
+    };
+
     root.addEventListener("contextmenu", onContextMenu, true);
-    return () => root.removeEventListener("contextmenu", onContextMenu, true);
+    root.addEventListener("dblclick", onDblClick, true);
+    return () => {
+      root.removeEventListener("contextmenu", onContextMenu, true);
+      root.removeEventListener("dblclick", onDblClick, true);
+    };
   }, [file, handMode, viewerReady]);
 
   // Ctrl/Meta + wheel → zoom 15%; Shift + wheel → horizontal scroll.
@@ -1563,6 +1888,9 @@ export function PdfPane({
       if (imgMenu?.imageHit?.objectUrl) {
         URL.revokeObjectURL(imgMenu.imageHit.objectUrl);
       }
+      if (imgPreview?.hit.objectUrl) {
+        URL.revokeObjectURL(imgPreview.hit.objectUrl);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1575,6 +1903,94 @@ export function PdfPane({
       return null;
     });
   }, []);
+
+  const closeImgPreview = useCallback(() => {
+    setImgPreview((prev) => {
+      if (prev?.hit.objectUrl) URL.revokeObjectURL(prev.hit.objectUrl);
+      return null;
+    });
+  }, []);
+
+  const showImgToast = useCallback((message: string, ok = true) => {
+    if (imgToastTimerRef.current != null) {
+      window.clearTimeout(imgToastTimerRef.current);
+    }
+    setImgToast({ message, ok });
+    imgToastTimerRef.current = window.setTimeout(() => {
+      setImgToast(null);
+      imgToastTimerRef.current = null;
+    }, 1600);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (imgToastTimerRef.current != null) {
+        window.clearTimeout(imgToastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const openImgPreview = useCallback((hit: PdfImageHit) => {
+    setImgPreview((prev) => {
+      if (prev?.hit.objectUrl && prev.hit.objectUrl !== hit.objectUrl) {
+        URL.revokeObjectURL(prev.hit.objectUrl);
+      }
+      return { hit, zoom: 1, naturalW: 0, naturalH: 0 };
+    });
+  }, []);
+
+  const applyImgPreviewNaturalSize = useCallback(
+    (img: HTMLImageElement) => {
+      const nw = img.naturalWidth;
+      const nh = img.naturalHeight;
+      if (!nw || !nh) return;
+      const overlay = imgViewerRef.current;
+      const barH = imgBarRef.current?.offsetHeight ?? 44;
+      const stage = imgStageRef.current;
+      const stagePad = stage
+        ? (parseFloat(getComputedStyle(stage).paddingLeft) || 0) || 12
+        : 12;
+      const zoom = overlay
+        ? fitImgPreviewZoom(nw, nh, overlay, barH, stagePad)
+        : 1;
+      setImgPreview((p) => {
+        if (!p) return p;
+        // Only apply initial fit once — don't reset after user zooms.
+        if (p.naturalW > 0 && p.naturalH > 0) return p;
+        return { ...p, naturalW: nw, naturalH: nh, zoom };
+      });
+    },
+    [],
+  );
+
+  const nudgeImgPreviewZoom = useCallback((delta: number) => {
+    setImgPreview((p) =>
+      p ? { ...p, zoom: clampImgPreviewZoom(p.zoom + delta) } : p,
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!imgPreview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeImgPreview();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [imgPreview, closeImgPreview]);
+
+  useEffect(() => {
+    if (!imgPreview) return;
+    const stage = imgStageRef.current;
+    if (!stage) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = e.deltaY > 0 ? -1 : 1;
+      nudgeImgPreviewZoom(dir * IMG_PREVIEW_ZOOM_WHEEL);
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, [imgPreview, nudgeImgPreviewZoom]);
 
   // 菜单打开时：左键点外部关闭；右键在 PDF 页上由页面监听器换菜单位置，
   // 右键在其它区域则关闭。backdrop 不拦截指针，避免挡住再次右键。
@@ -1896,7 +2312,6 @@ export function PdfPane({
         {outlineOpen && (
           <aside className="pdf-outline" style={{ width: outlineWidth }}>
             <div className="pdf-outline-body">
-              <div className="pdf-outline-title">目录</div>
               {outline.length === 0 ? (
                 <p className="hint">当前 PDF 无目录大纲</p>
               ) : (
@@ -2040,7 +2455,21 @@ export function PdfPane({
                   role="menuitem"
                   onClick={() => {
                     const hit = imgMenu.imageHit!;
-                    void copyImageBlob(hit.blob).finally(closeImgMenu);
+                    setImgMenu(null);
+                    openImgPreview(hit);
+                  }}
+                >
+                  查看图片
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const hit = imgMenu.imageHit!;
+                    void copyImageBlob(hit.blob)
+                      .then(() => showImgToast("复制成功"))
+                      .catch(() => showImgToast("复制失败", false))
+                      .finally(closeImgMenu);
                   }}
                 >
                   复制图片
@@ -2050,11 +2479,10 @@ export function PdfPane({
                   role="menuitem"
                   onClick={() => {
                     const hit = imgMenu.imageHit!;
-                    downloadImageBlob(
+                    void saveImageBlob(
                       hit.blob,
                       `pdf-p${hit.pageNumber}-image.png`,
-                    );
-                    closeImgMenu();
+                    ).finally(closeImgMenu);
                   }}
                 >
                   图片另存为
@@ -2131,6 +2559,122 @@ export function PdfPane({
       )}
 
       {imgBusy && <div className="pdf-img-busy" aria-hidden />}
+
+      {imgPreview && (
+        <div
+          ref={imgViewerRef}
+          className="pdf-image-viewer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="查看图片"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeImgPreview();
+          }}
+        >
+          <div className="pdf-image-viewer-panel">
+            <div className="pdf-image-viewer-bar" ref={imgBarRef}>
+              <div className="pdf-image-viewer-title">
+                第 {imgPreview.hit.pageNumber} 页图片 ·{" "}
+                {Math.round(imgPreview.zoom * 100)}%
+              </div>
+              <div className="pdf-image-viewer-actions">
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={() => nudgeImgPreviewZoom(-IMG_PREVIEW_ZOOM_BTN)}
+                >
+                  缩小
+                </button>
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={() =>
+                    setImgPreview((p) =>
+                      p ? { ...p, zoom: 1 } : p,
+                    )
+                  }
+                >
+                  1:1
+                </button>
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={() => nudgeImgPreviewZoom(IMG_PREVIEW_ZOOM_BTN)}
+                >
+                  放大
+                </button>
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={() => {
+                    void copyImageBlob(imgPreview.hit.blob)
+                      .then(() => showImgToast("复制成功"))
+                      .catch(() => showImgToast("复制失败", false));
+                  }}
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={() =>
+                    void saveImageBlob(
+                      imgPreview.hit.blob,
+                      `pdf-p${imgPreview.hit.pageNumber}-image.png`,
+                    )
+                  }
+                >
+                  另存为
+                </button>
+                <button
+                  type="button"
+                  className="pdf-tool-btn"
+                  onClick={closeImgPreview}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="pdf-image-viewer-stage" ref={imgStageRef}>
+              <img
+                src={imgPreview.hit.objectUrl}
+                alt={`PDF 第 ${imgPreview.hit.pageNumber} 页图片`}
+                style={{
+                  width:
+                    imgPreview.naturalW > 0
+                      ? `${imgPreview.naturalW * imgPreview.zoom}px`
+                      : undefined,
+                  height:
+                    imgPreview.naturalH > 0
+                      ? `${imgPreview.naturalH * imgPreview.zoom}px`
+                      : undefined,
+                  maxWidth: "none",
+                  maxHeight: "none",
+                }}
+                draggable={false}
+                onLoad={(e) => applyImgPreviewNaturalSize(e.currentTarget)}
+                ref={(el) => {
+                  if (el?.complete && el.naturalWidth > 0) {
+                    applyImgPreviewNaturalSize(el);
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {imgToast && (
+        <div
+          className={
+            "settings-toast pdf-img-toast" +
+            (imgToast.ok ? " is-ok" : " is-fail")
+          }
+          role="status"
+        >
+          {imgToast.message}
+        </div>
+      )}
     </div>
   );
 }

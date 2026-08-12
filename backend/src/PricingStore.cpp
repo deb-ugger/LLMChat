@@ -92,15 +92,15 @@ json PricingStore::defaultTable()
     json rules = json::array();
 
     // DeepSeek — CNY — https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    // input = 缓存未命中; cacheRead = 缓存命中; cacheWrite 无单独项，按未命中计
+    // input = 缓存未命中; cacheRead = 缓存命中; output = 输出; cacheWrite 官方无此项 → 0
     rules.push_back(rule(
-        "DeepSeek", "deepseek-v4-flash", from, rateObj(1.0, 2.0, 0.02, 1.0)));
+        "DeepSeek", "deepseek-v4-flash", from, rateObj(1.0, 2.0, 0.02, 0.0)));
     rules.push_back(rule(
-        "DeepSeek", "deepseek-v4-pro", from, rateObj(3.0, 6.0, 0.025, 3.0)));
+        "DeepSeek", "deepseek-v4-pro", from, rateObj(3.0, 6.0, 0.025, 0.0)));
     rules.push_back(rule(
-        "DeepSeek", "deepseek-chat", from, rateObj(1.0, 2.0, 0.02, 1.0)));
+        "DeepSeek", "deepseek-chat", from, rateObj(1.0, 2.0, 0.02, 0.0)));
     rules.push_back(rule(
-        "DeepSeek", "deepseek-reasoner", from, rateObj(1.0, 2.0, 0.02, 1.0)));
+        "DeepSeek", "deepseek-reasoner", from, rateObj(1.0, 2.0, 0.02, 0.0)));
 
     // OpenAI — USD
     rules.push_back(rule(
@@ -129,6 +129,19 @@ json PricingStore::defaultTable()
           {"OpenAI", "USD"},
           {"Google", "USD"},
           {"通义千问", "CNY"}}},
+        {"lockedModels",
+         json::array(
+             {"deepseek-v4-flash",
+              "deepseek-v4-pro",
+              "deepseek-chat",
+              "deepseek-reasoner",
+              "gpt-4o",
+              "gpt-4o-mini",
+              "gpt-4-turbo",
+              "gpt-3.5-turbo",
+              "gemini-2.0-flash",
+              "qwen-plus",
+              "qwen-turbo"})},
         {"rules", rules},
     };
 }
@@ -440,9 +453,36 @@ std::string PricingStore::validateTable(const json& body, json& out)
         }
     }
 
+    json lockedModels = json::array();
+    if (body.contains("lockedModels") && body["lockedModels"].is_array())
+    {
+        for (const auto& item : body["lockedModels"])
+        {
+            if (!item.is_string())
+                return "lockedModels entries must be strings";
+            const std::string m = trimCopy(item.get<std::string>());
+            if (!m.empty())
+                lockedModels.push_back(m);
+        }
+    }
+    else
+    {
+        // Legacy tables: lock every model to prevent accidental edits
+        std::map<std::string, bool> seen;
+        for (const auto& r : rules)
+        {
+            const std::string m = r.value("model", "");
+            if (m.empty() || seen[m])
+                continue;
+            seen[m] = true;
+            lockedModels.push_back(m);
+        }
+    }
+
     out = json{
         {"displayCurrency", currency},
         {"vendorCurrencies", vendorCurrencies},
+        {"lockedModels", lockedModels},
         {"rules", rules},
     };
     return "";

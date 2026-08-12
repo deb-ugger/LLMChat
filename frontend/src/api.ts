@@ -176,6 +176,7 @@ export type PricingTable = {
   ok?: boolean;
   displayCurrency: PricingCurrency;
   vendorCurrencies: Record<string, PricingCurrency>;
+  lockedModels: string[];
   rules: PricingRule[];
 };
 
@@ -499,6 +500,7 @@ export const api = {
   putPricing: (body: {
     displayCurrency: PricingCurrency;
     vendorCurrencies: Record<string, PricingCurrency>;
+    lockedModels: string[];
     rules: PricingRule[];
   }) =>
     request<PricingTable>("/api/pricing", {

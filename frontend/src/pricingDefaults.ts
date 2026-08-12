@@ -25,6 +25,8 @@ export type PricingTable = {
   displayCurrency: PricingCurrency;
   /** Billing currency for each vendor */
   vendorCurrencies: Record<string, PricingCurrency>;
+  /** Model IDs whose rates/dates are locked against accidental edits */
+  lockedModels: string[];
   rules: PricingRule[];
 };
 
@@ -71,16 +73,13 @@ export function defaultVendorCurrency(vendor: string): PricingCurrency {
 }
 
 /** Default price table used for reset / display when API empty. */
-export const DEFAULT_PRICING_TABLE: PricingTable = {
-  displayCurrency: "CNY",
-  vendorCurrencies: { ...DEFAULT_VENDOR_CURRENCIES },
-  rules: [
+const DEFAULT_RULES: PricingRule[] = [
     // DeepSeek — CNY — https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    // input=缓存未命中, cacheRead=缓存命中, cacheWrite 无单独项→同未命中
-    rule("DeepSeek", "deepseek-v4-flash", FROM, rates(1.0, 2.0, 0.02, 1.0)),
-    rule("DeepSeek", "deepseek-v4-pro", FROM, rates(3.0, 6.0, 0.025, 3.0)),
-    rule("DeepSeek", "deepseek-chat", FROM, rates(1.0, 2.0, 0.02, 1.0)),
-    rule("DeepSeek", "deepseek-reasoner", FROM, rates(1.0, 2.0, 0.02, 1.0)),
+    // input=缓存未命中, cacheRead=缓存命中, output=输出, cacheWrite 官方无此项→0
+    rule("DeepSeek", "deepseek-v4-flash", FROM, rates(1.0, 2.0, 0.02, 0)),
+    rule("DeepSeek", "deepseek-v4-pro", FROM, rates(3.0, 6.0, 0.025, 0)),
+    rule("DeepSeek", "deepseek-chat", FROM, rates(1.0, 2.0, 0.02, 0)),
+    rule("DeepSeek", "deepseek-reasoner", FROM, rates(1.0, 2.0, 0.02, 0)),
     // OpenAI — USD
     rule("OpenAI", "gpt-4o", FROM, rates(2.5, 10.0, 1.25, 2.5)),
     rule("OpenAI", "gpt-4o-mini", FROM, rates(0.15, 0.6, 0.075, 0.15)),
@@ -91,7 +90,13 @@ export const DEFAULT_PRICING_TABLE: PricingTable = {
     // 通义千问 — CNY
     rule("通义千问", "qwen-plus", FROM, rates(0.8, 2.0, 0.16, 0.8)),
     rule("通义千问", "qwen-turbo", FROM, rates(0.3, 0.6, 0.06, 0.3)),
-  ],
+];
+
+export const DEFAULT_PRICING_TABLE: PricingTable = {
+  displayCurrency: "CNY",
+  vendorCurrencies: { ...DEFAULT_VENDOR_CURRENCIES },
+  lockedModels: [...new Set(DEFAULT_RULES.map((r) => r.model))],
+  rules: DEFAULT_RULES,
 };
 
 export function emptyRates(): TokenRates {
@@ -103,14 +108,17 @@ export function newRuleId(): string {
 }
 
 export function cloneDefaultPricingTable(): PricingTable {
+  const rules = DEFAULT_PRICING_TABLE.rules.map((r) => ({
+    ...r,
+    id: newRuleId(),
+    rates: { ...r.rates },
+  }));
   return {
     displayCurrency: DEFAULT_PRICING_TABLE.displayCurrency,
     vendorCurrencies: { ...DEFAULT_PRICING_TABLE.vendorCurrencies },
-    rules: DEFAULT_PRICING_TABLE.rules.map((r) => ({
-      ...r,
-      id: newRuleId(),
-      rates: { ...r.rates },
-    })),
+    // New/default tables start locked for all models
+    lockedModels: [...new Set(rules.map((r) => r.model))],
+    rules,
   };
 }
 

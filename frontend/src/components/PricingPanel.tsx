@@ -87,6 +87,7 @@ function normalizeTable(raw: Partial<PricingTable> & {
       rates?: TokenRates;
     }
   >;
+  lockedModels?: string[];
 } | null | undefined): PricingTable {
   const displayCurrency: PricingCurrency =
     raw?.displayCurrency === "USD" ? "USD" : "CNY";
@@ -127,7 +128,39 @@ function normalizeTable(raw: Partial<PricingTable> & {
       })
     : [];
 
-  return { displayCurrency, vendorCurrencies, rules };
+  const modelIds = [
+    ...new Set(rules.map((r) => r.model).filter(Boolean)),
+  ];
+  let lockedModels: string[];
+  if (Array.isArray(raw?.lockedModels)) {
+    lockedModels = [
+      ...new Set(
+        raw!.lockedModels
+          .map((s) => String(s || "").trim())
+          .filter(Boolean),
+      ),
+    ];
+  } else {
+    // Legacy / missing: lock all models by default
+    lockedModels = modelIds;
+  }
+
+  return { displayCurrency, vendorCurrencies, lockedModels, rules };
+}
+
+/** After syncing presets, lock any newly appeared model IDs. */
+function lockNewModels(
+  prevRules: PricingRule[],
+  nextRules: PricingRule[],
+  lockedModels: string[],
+): string[] {
+  const prev = new Set(prevRules.map((r) => r.model).filter(Boolean));
+  const locked = new Set(lockedModels);
+  for (const r of nextRules) {
+    const id = r.model.trim();
+    if (id && !prev.has(id)) locked.add(id);
+  }
+  return [...locked];
 }
 
 function syncRulesToPresets(
@@ -187,10 +220,6 @@ function rangesOverlap(
     rangeStartKey(a.from) <= rangeEndKey(b.to) &&
     rangeStartKey(b.from) <= rangeEndKey(a.to)
   );
-}
-
-function isDeepSeekVendor(vendor: string): boolean {
-  return vendor.trim().toLowerCase() === "deepseek";
 }
 
 function isIsoDate(s: string): boolean {
@@ -276,12 +305,14 @@ function BoundDateField({
   kind,
   value,
   peerDate,
+  disabled,
   onChange,
 }: {
   kind: "from" | "to";
   value: string;
   /** For end date: start date used when defaulting */
   peerDate?: string;
+  disabled?: boolean;
   onChange: (next: string) => void;
 }) {
   const open = !value;
@@ -292,11 +323,12 @@ function BoundDateField({
     return todayIso();
   };
   return (
-    <div className="pricing-bound">
+    <div className={"pricing-bound" + (disabled ? " is-disabled" : "")}>
       <div className="pricing-bound-toggle" role="group">
         <button
           type="button"
           className={"pricing-bound-chip" + (open ? " is-active" : "")}
+          disabled={disabled}
           onClick={() => onChange("")}
         >
           {kind === "from" ? "不限起始" : "不限结束"}
@@ -304,6 +336,7 @@ function BoundDateField({
         <button
           type="button"
           className={"pricing-bound-chip" + (!open ? " is-active" : "")}
+          disabled={disabled}
           onClick={() => {
             if (!value) onChange(defaultDated());
           }}
@@ -317,6 +350,7 @@ function BoundDateField({
           className="pricing-date-input"
           value={value}
           min={kind === "to" && peerDate ? peerDate : undefined}
+          disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
         />
       ) : null}
@@ -337,14 +371,16 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       const vendorCurrencies = {
         ...DEFAULT_PRICING_TABLE.vendorCurrencies,
       };
+      const rules = syncRulesToPresets(
+        [],
+        currentEffectivePresets(),
+        vendorCurrencies,
+      );
       return normalizeTable({
         displayCurrency: "CNY",
         vendorCurrencies,
-        rules: syncRulesToPresets(
-          [],
-          currentEffectivePresets(),
-          vendorCurrencies,
-        ),
+        rules,
+        // omit lockedModels → default lock all
       });
     });
     const [loading, setLoading] = useState(false);
@@ -371,14 +407,20 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
         const presets = currentEffectivePresets();
         const base = normalizeTable(res);
         const vendorCurrencies = { ...base.vendorCurrencies };
+        const nextRules = syncRulesToPresets(
+          migrateHalfOpenRules(base.rules),
+          presets,
+          vendorCurrencies,
+        );
         const synced = normalizeTable({
           displayCurrency: base.displayCurrency,
           vendorCurrencies,
-          rules: syncRulesToPresets(
-            migrateHalfOpenRules(base.rules),
-            presets,
-            vendorCurrencies,
+          lockedModels: lockNewModels(
+            base.rules,
+            nextRules,
+            base.lockedModels,
           ),
+          rules: nextRules,
         });
         setTable(synced);
         tableRef.current = synced;
@@ -397,15 +439,18 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
 
     const save = useCallback(async () => {
       const presets = currentEffectivePresets();
-      const vendorCurrencies = { ...tableRef.current.vendorCurrencies };
-      const body: PricingTable = {
-        displayCurrency: tableRef.current.displayCurrency,
+      const cur = tableRef.current;
+      const vendorCurrencies = { ...cur.vendorCurrencies };
+      const nextRules = syncRulesToPresets(
+        cur.rules,
+        presets,
         vendorCurrencies,
-        rules: syncRulesToPresets(
-          tableRef.current.rules,
-          presets,
-          vendorCurrencies,
-        ),
+      );
+      const body: PricingTable = {
+        displayCurrency: cur.displayCurrency,
+        vendorCurrencies,
+        lockedModels: lockNewModels(cur.rules, nextRules, cur.lockedModels),
+        rules: nextRules,
       };
       try {
         validateRules(body.rules);
@@ -416,10 +461,16 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       const res = await api.putPricing(body);
       const base = normalizeTable(res);
       const vc = { ...base.vendorCurrencies };
+      const syncedRules = syncRulesToPresets(base.rules, presets, vc);
       const synced = normalizeTable({
         displayCurrency: base.displayCurrency,
         vendorCurrencies: vc,
-        rules: syncRulesToPresets(base.rules, presets, vc),
+        lockedModels: lockNewModels(
+          base.rules,
+          syncedRules,
+          base.lockedModels,
+        ),
+        rules: syncedRules,
       });
       setTable(synced);
       tableRef.current = synced;
@@ -438,14 +489,20 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
             const presets = currentEffectivePresets();
             const base = normalizeTable(res);
             const vendorCurrencies = { ...base.vendorCurrencies };
+            const nextRules = syncRulesToPresets(
+              migrateHalfOpenRules(base.rules),
+              presets,
+              vendorCurrencies,
+            );
             const synced = normalizeTable({
               displayCurrency: base.displayCurrency,
               vendorCurrencies,
-              rules: syncRulesToPresets(
-                migrateHalfOpenRules(base.rules),
-                presets,
-                vendorCurrencies,
+              lockedModels: lockNewModels(
+                base.rules,
+                nextRules,
+                base.lockedModels,
               ),
+              rules: nextRules,
             });
             setTable(synced);
             tableRef.current = synced;
@@ -497,6 +554,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
 
     const tryPatchRule = (id: string, patch: Partial<PricingRule>) => {
       const cur = tableRef.current;
+      const target = cur.rules.find((r) => r.id === id);
+      if (target && isModelLocked(target.model)) {
+        notify(`「${target.model}」已锁定，请先解锁再修改`, false);
+        return;
+      }
       const nextRules = cur.rules.map((r) =>
         r.id === id ? { ...r, ...patch } : r,
       );
@@ -517,6 +579,10 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       const cur = tableRef.current;
       const rule = cur.rules.find((r) => r.id === id);
       if (!rule) return;
+      if (isModelLocked(rule.model)) {
+        notify(`「${rule.model}」已锁定，请先解锁再修改`, false);
+        return;
+      }
       const next: PricingRule = {
         ...rule,
         rates: {
@@ -541,8 +607,25 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       });
     };
 
+    const isModelLocked = (model: string) =>
+      tableRef.current.lockedModels.includes(model.trim());
+
+    const toggleModelLock = (model: string) => {
+      const id = model.trim();
+      if (!id) return;
+      const cur = tableRef.current;
+      const locked = new Set(cur.lockedModels);
+      if (locked.has(id)) locked.delete(id);
+      else locked.add(id);
+      applyLocal({ ...cur, lockedModels: [...locked] });
+    };
+
     /** Local only until save. New start = previous inclusive end + 1 day. */
     const addNewRange = (src: PricingRule) => {
+      if (isModelLocked(src.model)) {
+        notify(`「${src.model}」已锁定，请先解锁再修改`, false);
+        return;
+      }
       const cur = tableRef.current;
       if (!src.to) {
         notify(
@@ -578,6 +661,10 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
 
     const removeInterval = (row: DisplayRow) => {
       if (row.intervalCount <= 1) return;
+      if (isModelLocked(row.rule.model)) {
+        notify(`「${row.rule.model}」已锁定，请先解锁再修改`, false);
+        return;
+      }
       const cur = tableRef.current;
       applyLocal({
         ...cur,
@@ -589,24 +676,48 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     const resetDefaults = () => {
       if (
         !window.confirm(
-          "将用内置默认价覆盖当前价目表（需再点保存才会写入磁盘）。继续？",
+          "将用内置默认价覆盖「未锁定」模型的单价；已锁定模型保持不变（需再点保存才会写入磁盘）。继续？",
         )
       ) {
         return;
       }
+      const cur = tableRef.current;
+      const locked = new Set(
+        cur.lockedModels.map((m) => m.trim()).filter(Boolean),
+      );
+      const defaultRates = new Map<string, TokenRates>();
+      for (const r of DEFAULT_PRICING_TABLE.rules) {
+        const id = r.model.trim();
+        if (id && !defaultRates.has(id)) defaultRates.set(id, { ...r.rates });
+      }
+
+      const nextRules = cur.rules.map((r) => {
+        const id = r.model.trim();
+        if (locked.has(id)) return r;
+        const seed = defaultRates.get(id);
+        return {
+          ...r,
+          rates: seed ? { ...seed } : emptyRates(),
+        };
+      });
+
       const presets = currentEffectivePresets();
-      const vendorCurrencies = {
-        ...DEFAULT_PRICING_TABLE.vendorCurrencies,
-      };
+      const vendorCurrencies = { ...cur.vendorCurrencies };
+      const syncedRules = syncRulesToPresets(
+        nextRules,
+        presets,
+        vendorCurrencies,
+      );
       applyLocal(
         normalizeTable({
-          displayCurrency: tableRef.current.displayCurrency,
+          displayCurrency: cur.displayCurrency,
           vendorCurrencies,
-          rules: syncRulesToPresets(
-            DEFAULT_PRICING_TABLE.rules,
-            presets,
-            vendorCurrencies,
+          lockedModels: lockNewModels(
+            cur.rules,
+            syncedRules,
+            cur.lockedModels,
           ),
+          rules: syncedRules,
         }),
       );
     };
@@ -616,7 +727,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
         <div className="pricing-sync-banner" role="note">
           <strong>模型列表与「通用」同步</strong>
           <span>
-            计费页模型来自通用已配置列表，不能在此新增/删除模型；仅可维护区间与单价。新增/删除区间需点击底部「保存价目表」后才会写入；保存时会检查不重叠且按日连贯。
+            计费页模型来自通用已配置列表，不能在此新增/删除模型；仅可维护区间与单价。模型默认锁定，需先点模型 ID 旁的锁解锁后才能改价，防止误触。新增/删除区间需点击底部「保存价目表」后才会写入。
           </span>
         </div>
 
@@ -712,16 +823,25 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                             <th>结束</th>
                             {(
                               [
-                                "Input",
-                                "Output",
-                                "Cache Read",
-                                "Cache Write",
+                                {
+                                  label: "Input",
+                                  tip: "百万tokens输入（缓存未命中）",
+                                },
+                                {
+                                  label: "Output",
+                                  tip: "百万tokens输出",
+                                },
+                                {
+                                  label: "Cache Read",
+                                  tip: "百万tokens输入（缓存命中）",
+                                },
+                                {
+                                  label: "Cache Write",
+                                  tip: "百万tokens缓存写入",
+                                },
                               ] as const
-                            ).map((label) => (
-                              <th
-                                key={label}
-                                title={`${label}（${unitShort} tokens）`}
-                              >
+                            ).map(({ label, tip }) => (
+                              <th key={label} title={tip}>
                                 <span className="pricing-th-main">{label}</span>
                                 <span className="pricing-th-unit">
                                   {unitShort}
@@ -735,7 +855,9 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                           {rows.map((row) => {
                             const r = row.rule;
                             const rates = r.rates;
-                            const deepseek = isDeepSeekVendor(vendor);
+                            const locked = table.lockedModels.includes(
+                              r.model.trim(),
+                            );
                             const groupHover =
                               hover?.mode === "model" &&
                               hover.model === r.model;
@@ -762,7 +884,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                     : " is-interval-cont") +
                                   (groupHover ? " is-group-hover" : "") +
                                   (intervalHover ? " is-interval-hover" : "") +
-                                  (modelIdHot ? " is-model-id-hot" : "")
+                                  (modelIdHot ? " is-model-id-hot" : "") +
+                                  (locked ? " is-locked" : "")
                                 }
                               >
                                 {row.rowSpan > 0 ? (
@@ -776,18 +899,108 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                       })
                                     }
                                   >
-                                    <span
-                                      className="pricing-model-id"
-                                      title={r.model}
-                                    >
-                                      {r.model}
-                                    </span>
+                                    <div className="pricing-model-cell-inner">
+                                      <button
+                                        type="button"
+                                        className={
+                                          "pricing-lock-btn" +
+                                          (locked ? " is-locked" : " is-unlocked")
+                                        }
+                                        title={
+                                          locked
+                                            ? "已锁定：点击解锁后可修改价格与区间"
+                                            : "已解锁：点击锁定以防误改"
+                                        }
+                                        aria-label={
+                                          locked
+                                            ? `解锁 ${r.model}`
+                                            : `锁定 ${r.model}`
+                                        }
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleModelLock(r.model);
+                                        }}
+                                      >
+                                        {locked ? (
+                                          <svg
+                                            className="pricing-lock-icon"
+                                            viewBox="0 0 24 24"
+                                            width="16"
+                                            height="16"
+                                            aria-hidden="true"
+                                          >
+                                            <rect
+                                              x="5"
+                                              y="11"
+                                              width="14"
+                                              height="10"
+                                              rx="2"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="2"
+                                            />
+                                            <path
+                                              d="M8 11V8a4 4 0 0 1 8 0v3"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="2"
+                                              strokeLinecap="round"
+                                            />
+                                            <circle
+                                              cx="12"
+                                              cy="16"
+                                              r="1.25"
+                                              fill="currentColor"
+                                            />
+                                          </svg>
+                                        ) : (
+                                          <svg
+                                            className="pricing-lock-icon"
+                                            viewBox="0 0 24 24"
+                                            width="16"
+                                            height="16"
+                                            aria-hidden="true"
+                                          >
+                                            <rect
+                                              x="5"
+                                              y="11"
+                                              width="14"
+                                              height="10"
+                                              rx="2"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="2"
+                                            />
+                                            <path
+                                              d="M8 11V8a4 4 0 0 1 7.5-2"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="2"
+                                              strokeLinecap="round"
+                                            />
+                                            <circle
+                                              cx="12"
+                                              cy="16"
+                                              r="1.25"
+                                              fill="currentColor"
+                                            />
+                                          </svg>
+                                        )}
+                                      </button>
+                                      <span
+                                        className="pricing-model-id"
+                                        title={r.model}
+                                      >
+                                        {r.model}
+                                      </span>
+                                    </div>
                                   </td>
                                 ) : null}
                                 <td onMouseEnter={activateRow}>
                                   <BoundDateField
                                     kind="from"
                                     value={r.from}
+                                    disabled={locked}
                                     onChange={(from) =>
                                       tryPatchRule(r.id, { from })
                                     }
@@ -798,6 +1011,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                     kind="to"
                                     value={r.to}
                                     peerDate={r.from}
+                                    disabled={locked}
                                     onChange={(to) =>
                                       tryPatchRule(r.id, { to })
                                     }
@@ -813,6 +1027,12 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                       min={0}
                                       step="any"
                                       value={rates[field]}
+                                      disabled={locked}
+                                      title={
+                                        locked
+                                          ? "已锁定，请先点击模型旁解锁"
+                                          : undefined
+                                      }
                                       onChange={(e) =>
                                         patchRateField(
                                           r.id,
@@ -824,29 +1044,26 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                   </td>
                                 ))}
                                 <td onMouseEnter={activateRow}>
-                                  {deepseek ? (
-                                    <span
-                                      className="pricing-na"
-                                      title="DeepSeek 官方不计 Cache Write"
-                                    >
-                                      不计入
-                                    </span>
-                                  ) : (
-                                    <input
-                                      type="number"
-                                      className="pricing-rate-input"
-                                      min={0}
-                                      step="any"
-                                      value={rates.cacheWrite}
-                                      onChange={(e) =>
-                                        patchRateField(
-                                          r.id,
-                                          "cacheWrite",
-                                          Number(e.target.value),
-                                        )
-                                      }
-                                    />
-                                  )}
+                                  <input
+                                    type="number"
+                                    className="pricing-rate-input"
+                                    min={0}
+                                    step="any"
+                                    value={rates.cacheWrite}
+                                    disabled={locked}
+                                    title={
+                                      locked
+                                        ? "已锁定，请先点击模型旁解锁"
+                                        : undefined
+                                    }
+                                    onChange={(e) =>
+                                      patchRateField(
+                                        r.id,
+                                        "cacheWrite",
+                                        Number(e.target.value),
+                                      )
+                                    }
+                                  />
                                 </td>
                                 <td
                                   className="pricing-row-actions"
@@ -856,7 +1073,12 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                     <button
                                       type="button"
                                       className="pricing-btn pricing-btn-accent pricing-btn-sm"
-                                      title="暂存：上一段结束日+1 起新增不限结束区间"
+                                      title={
+                                        locked
+                                          ? "已锁定，请先解锁"
+                                          : "暂存：上一段结束日+1 起新增不限结束区间"
+                                      }
+                                      disabled={locked}
                                       onClick={() => addNewRange(r)}
                                     >
                                       新区间
@@ -865,6 +1087,12 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                       <button
                                         type="button"
                                         className="pricing-btn pricing-btn-danger pricing-btn-sm"
+                                        title={
+                                          locked
+                                            ? "已锁定，请先解锁"
+                                            : undefined
+                                        }
+                                        disabled={locked}
                                         onClick={() => removeInterval(row)}
                                       >
                                         删除区间
