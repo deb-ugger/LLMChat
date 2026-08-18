@@ -1,48 +1,38 @@
-const DB_NAME = "llmchat-pdf-session";
-/** v3: path-only sessions (no fileData blob). */
-const DB_VERSION = 3;
+const DB_NAME = "llmchat-epub-session";
+const DB_VERSION = 1;
 const STORE_CURRENT = "session";
 const STORE_RECENT = "recent";
 const CURRENT_KEY = "current";
 const MAX_RECENT = 12;
 
-export type ViewMode =
-  | "single"
-  | "single-scroll"
-  | "double"
-  | "double-scroll";
-
-export type PdfSessionMeta = {
+export type EpubSessionMeta = {
   filePath: string;
   fileName: string;
   fileSize: number;
   lastModified: number;
-  viewMode: ViewMode;
-  pageNumber: number;
-  scale: number;
-  scrollTop: number;
-  scrollLeft: number;
+  /** EPUB CFI for reading position */
+  cfi: string;
   outlineOpen: boolean;
 };
 
-export type PdfSession = PdfSessionMeta;
+export type EpubSession = EpubSessionMeta;
 
-export type PdfRecentSummary = {
+export type EpubRecentSummary = {
   id: string;
   filePath: string;
   fileName: string;
   fileSize: number;
   lastModified: number;
   openedAt: number;
-  pageNumber: number;
+  cfi: string;
 };
 
-export type PdfRecentEntry = PdfSession & {
+export type EpubRecentEntry = EpubSession & {
   id: string;
   openedAt: number;
 };
 
-export function makePdfId(filePath: string): string {
+export function makeEpubId(filePath: string): string {
   return filePath;
 }
 
@@ -51,18 +41,8 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
     req.onsuccess = () => resolve(req.result);
-    req.onupgradeneeded = (ev) => {
+    req.onupgradeneeded = () => {
       const db = req.result;
-      const oldVersion = ev.oldVersion;
-      if (oldVersion < 3) {
-        // Drop legacy stores that may contain full PDF blobs.
-        if (db.objectStoreNames.contains(STORE_CURRENT)) {
-          db.deleteObjectStore(STORE_CURRENT);
-        }
-        if (db.objectStoreNames.contains(STORE_RECENT)) {
-          db.deleteObjectStore(STORE_RECENT);
-        }
-      }
       if (!db.objectStoreNames.contains(STORE_CURRENT)) {
         db.createObjectStore(STORE_CURRENT);
       }
@@ -84,7 +64,7 @@ async function pruneRecent(
   store: IDBObjectStore,
   keepId?: string,
 ): Promise<void> {
-  const all = (await idbReq(store.getAll())) as PdfRecentEntry[];
+  const all = (await idbReq(store.getAll())) as EpubRecentEntry[];
   all.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
   for (let i = MAX_RECENT; i < all.length; i++) {
     if (keepId && all[i].id === keepId) continue;
@@ -92,13 +72,13 @@ async function pruneRecent(
   }
 }
 
-function isPathSession(raw: unknown): raw is PdfSession {
+function isPathSession(raw: unknown): raw is EpubSession {
   if (!raw || typeof raw !== "object") return false;
   const o = raw as Record<string, unknown>;
   return typeof o.filePath === "string" && !!o.filePath && !("fileData" in o);
 }
 
-export async function loadPdfSession(): Promise<PdfSession | null> {
+export async function loadEpubSession(): Promise<EpubSession | null> {
   try {
     const db = await openDb();
     const tx = db.transaction(STORE_CURRENT, "readonly");
@@ -111,13 +91,13 @@ export async function loadPdfSession(): Promise<PdfSession | null> {
   }
 }
 
-export async function listRecentPdfs(): Promise<PdfRecentSummary[]> {
+export async function listRecentEpubs(): Promise<EpubRecentSummary[]> {
   try {
     const db = await openDb();
     const tx = db.transaction(STORE_RECENT, "readonly");
     const all = (await idbReq(
       tx.objectStore(STORE_RECENT).getAll(),
-    )) as PdfRecentEntry[];
+    )) as EpubRecentEntry[];
     db.close();
     return all
       .filter((e) => e?.filePath && e?.fileName && !("fileData" in e))
@@ -129,22 +109,22 @@ export async function listRecentPdfs(): Promise<PdfRecentSummary[]> {
         fileSize: e.fileSize,
         lastModified: e.lastModified,
         openedAt: e.openedAt,
-        pageNumber: e.pageNumber || 1,
+        cfi: e.cfi || "",
       }));
   } catch {
     return [];
   }
 }
 
-export async function loadRecentPdf(
+export async function loadRecentEpub(
   id: string,
-): Promise<PdfRecentEntry | null> {
+): Promise<EpubRecentEntry | null> {
   try {
     const db = await openDb();
     const tx = db.transaction(STORE_RECENT, "readonly");
     const raw = (await idbReq(
       tx.objectStore(STORE_RECENT).get(id),
-    )) as PdfRecentEntry | undefined;
+    )) as EpubRecentEntry | undefined;
     db.close();
     if (!raw?.filePath || "fileData" in raw) return null;
     return raw;
@@ -153,7 +133,7 @@ export async function loadRecentPdf(
   }
 }
 
-export async function savePdfSession(session: PdfSession): Promise<void> {
+export async function saveEpubSession(session: EpubSession): Promise<void> {
   try {
     const db = await openDb();
     const tx = db.transaction([STORE_CURRENT, STORE_RECENT], "readwrite");
@@ -161,8 +141,8 @@ export async function savePdfSession(session: PdfSession): Promise<void> {
     const recent = tx.objectStore(STORE_RECENT);
     await idbReq(current.put(session, CURRENT_KEY));
 
-    const id = makePdfId(session.filePath);
-    const entry: PdfRecentEntry = {
+    const id = makeEpubId(session.filePath);
+    const entry: EpubRecentEntry = {
       ...session,
       id,
       openedAt: Date.now(),
@@ -175,8 +155,8 @@ export async function savePdfSession(session: PdfSession): Promise<void> {
   }
 }
 
-export async function savePdfSessionMeta(
-  meta: PdfSessionMeta,
+export async function saveEpubSessionMeta(
+  meta: EpubSessionMeta,
 ): Promise<void> {
   try {
     const db = await openDb();
@@ -185,7 +165,7 @@ export async function savePdfSessionMeta(
     const recentStore = tx.objectStore(STORE_RECENT);
     const existing = (await idbReq(
       currentStore.get(CURRENT_KEY),
-    )) as PdfSession | undefined;
+    )) as EpubSession | undefined;
     if (
       !existing?.filePath ||
       existing.filePath !== meta.filePath ||
@@ -194,14 +174,14 @@ export async function savePdfSessionMeta(
       db.close();
       return;
     }
-    const next: PdfSession = { ...existing, ...meta };
+    const next: EpubSession = { ...existing, ...meta };
     await idbReq(currentStore.put(next, CURRENT_KEY));
 
-    const id = makePdfId(meta.filePath);
+    const id = makeEpubId(meta.filePath);
     const prevRecent = (await idbReq(
       recentStore.get(id),
-    )) as PdfRecentEntry | undefined;
-    const entry: PdfRecentEntry = {
+    )) as EpubRecentEntry | undefined;
+    const entry: EpubRecentEntry = {
       ...next,
       id,
       openedAt: prevRecent?.openedAt ?? Date.now(),
@@ -213,23 +193,18 @@ export async function savePdfSessionMeta(
   }
 }
 
-/** Mark a recent entry as current and bump openedAt. */
-export async function touchRecentAsCurrent(
-  entry: PdfRecentEntry,
-  position: Pick<PdfSessionMeta, "pageNumber" | "scrollTop" | "scrollLeft">,
-  keepUi: Pick<PdfSessionMeta, "viewMode" | "scale" | "outlineOpen">,
+export async function touchRecentEpubAsCurrent(
+  entry: EpubRecentEntry,
+  position: Pick<EpubSessionMeta, "cfi">,
+  keepUi: Pick<EpubSessionMeta, "outlineOpen">,
 ): Promise<void> {
-  const session: PdfSession = {
+  const session: EpubSession = {
     filePath: entry.filePath,
     fileName: entry.fileName,
     fileSize: entry.fileSize,
     lastModified: entry.lastModified,
-    pageNumber: position.pageNumber,
-    scrollTop: position.scrollTop,
-    scrollLeft: position.scrollLeft,
-    viewMode: keepUi.viewMode,
-    scale: keepUi.scale,
+    cfi: position.cfi,
     outlineOpen: keepUi.outlineOpen,
   };
-  await savePdfSession(session);
+  await saveEpubSession(session);
 }

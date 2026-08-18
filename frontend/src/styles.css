@@ -1989,6 +1989,58 @@ textarea {
   width: 100%;
 }
 
+.literature-reader {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.epub-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #e8eef4;
+}
+
+.epub-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.epub-viewer-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  background: #ffffff;
+}
+
+.epub-viewer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.epub-viewer .epub-container {
+  width: 100% !important;
+  height: 100% !important;
+  background: #ffffff;
+}
+
+.epub-viewer iframe {
+  background: #ffffff;
+}
+
 .pdf-prompt-menu {
   position: relative;
   margin-left: 4px;
@@ -2120,8 +2172,10 @@ textarea {
 .pdf-pane {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: #e2e8f0;
 }
 
@@ -2665,28 +2719,32 @@ textarea {
   flex: 0 0 auto;
   min-width: 120px;
   padding: 10px 16px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
   border-radius: 10px;
-  background: var(--bg-panel);
-  color: var(--text-muted);
+  background: var(--danger);
+  color: #fff;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--danger) 28%, transparent);
   transition:
     background 0.12s ease,
     border-color 0.12s ease,
-    color 0.12s ease;
+    color 0.12s ease,
+    filter 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
 .settings-discard-current:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 88%, #000);
+  border-color: color-mix(in srgb, var(--danger) 60%, #000);
+  color: #fff;
+  filter: brightness(1.02);
 }
 
 .settings-discard-current:disabled {
   opacity: 0.65;
-  cursor: wait;
+  cursor: not-allowed;
 }
 
 .settings-save-current:hover:not(:disabled) {
@@ -2700,8 +2758,13 @@ textarea {
 
 .settings-save-current:disabled {
   opacity: 0.65;
-  cursor: wait;
+  cursor: not-allowed;
   box-shadow: none;
+}
+
+.settings-save-current.is-saving:disabled,
+.settings-discard-current.is-saving:disabled {
+  cursor: wait;
 }
 
 .settings-saved {
@@ -5849,6 +5912,20 @@ body.row-resizing .unity-row-resizer::before {
   transition: background var(--transition);
 }
 
+.pdf-recent-kind {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 4px;
+  padding: 1px 6px;
+  line-height: 1.4;
+}
+
 .pdf-recent-item:hover {
   background: var(--bg-hover);
 }
@@ -6483,7 +6560,9 @@ body.row-resizing .textLayer {
 .pdf-outline-item {
   flex: 1 1 auto;
   min-width: 0;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   border: none;
@@ -6495,6 +6574,22 @@ body.row-resizing .textLayer {
   color: var(--text);
   line-height: 1.4;
   transition: color var(--transition);
+}
+
+.pdf-outline-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-outline-item-page {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  opacity: 0.85;
 }
 
 .pdf-outline-item.is-l0 {
@@ -6566,12 +6661,20 @@ body.row-resizing .textLayer {
 }
 
 .pdf-file-name {
-  max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pdf-file-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .pdf-scroll {
@@ -8866,6 +8969,24 @@ body.row-resizing .textLayer {
   border-color: color-mix(in srgb, var(--pricing-mark) 42%, var(--border));
 }
 
+.pricing-lock-btn.is-level2 {
+  width: 26px;
+  height: 26px;
+}
+
+.pricing-lock-btn.is-disabled,
+.pricing-lock-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pricing-lock-btn:disabled:hover {
+  border-color: color-mix(in srgb, #94a3b8 40%, var(--border));
+  color: inherit;
+  background: inherit;
+  box-shadow: none;
+}
+
 .pricing-lock-icon {
   display: block;
   flex-shrink: 0;
@@ -8941,6 +9062,238 @@ body.row-resizing .textLayer {
   background: var(--bg-muted);
   color: var(--text);
   text-align: center;
+}
+
+.pricing-th-parts {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.pricing-rate-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 72px;
+}
+
+.pricing-rate-input.is-peak,
+.pricing-rate-input.is-idle {
+  background: #fff;
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+  color: var(--text);
+}
+
+.pricing-part-col {
+  width: 52px;
+  padding-left: 6px !important;
+  padding-right: 6px !important;
+  vertical-align: middle;
+}
+
+.pricing-part-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+}
+
+.pricing-part-tag.is-peak {
+  color: #9a5b00;
+}
+
+.pricing-part-tag.is-idle {
+  color: #166534;
+}
+
+/* Continuous band backgrounds across 时段 + 4 rate columns */
+.pricing-table tbody td.pricing-band-cell.is-idle {
+  background: #dcfce7 !important;
+  border-bottom-color: color-mix(in srgb, #86efac 55%, var(--border));
+}
+
+.pricing-table tbody td.pricing-band-cell.is-peak {
+  background: #ffe0a3 !important;
+  border-bottom-color: color-mix(in srgb, #fbbf24 50%, var(--border));
+}
+
+.pricing-table tbody tr.pricing-band-idle > td.pricing-band-cell {
+  padding-top: 8px;
+  padding-bottom: 6px;
+}
+
+.pricing-table tbody tr.pricing-band-peak > td.pricing-band-cell {
+  padding-top: 6px;
+  padding-bottom: 8px;
+}
+
+.pricing-table tbody tr.is-group-hover > td.pricing-band-cell.is-idle,
+.pricing-table tbody tr.is-interval-hover > td.pricing-band-cell.is-idle {
+  background: color-mix(in srgb, #0d9488 10%, #dcfce7) !important;
+}
+
+.pricing-table tbody tr.is-group-hover > td.pricing-band-cell.is-peak,
+.pricing-table tbody tr.is-interval-hover > td.pricing-band-cell.is-peak {
+  background: color-mix(in srgb, #0d9488 10%, #ffe0a3) !important;
+}
+
+.pricing-table tbody tr.is-locked.is-group-hover > td.pricing-band-cell.is-idle,
+.pricing-table
+  tbody
+  tr.is-locked.is-interval-hover
+  > td.pricing-band-cell.is-idle {
+  background: color-mix(in srgb, #94a3b8 12%, #dcfce7) !important;
+}
+
+.pricing-table tbody tr.is-locked.is-group-hover > td.pricing-band-cell.is-peak,
+.pricing-table
+  tbody
+  tr.is-locked.is-interval-hover
+  > td.pricing-band-cell.is-peak {
+  background: color-mix(in srgb, #94a3b8 12%, #ffe0a3) !important;
+}
+
+/* Enclose 时段 + 4 rate columns with dashed vertical rules (body only) */
+.pricing-table thead th.pricing-rates-start,
+.pricing-table thead th.pricing-rates-end {
+  border-left: none;
+  border-right: none;
+}
+
+.pricing-table tbody td.pricing-rates-start {
+  border-left: 2px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.pricing-table tbody td.pricing-rates-end {
+  border-right: 2px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.pricing-windows-row td.pricing-windows-cell {
+  border-left: 2px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-right: 2px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.pricing-windows-row td {
+  background: color-mix(in srgb, #ffcc66 10%, var(--bg-panel));
+  border-top: none;
+  padding-top: 6px;
+  padding-bottom: 10px;
+}
+
+.pricing-windows-cell {
+  vertical-align: top;
+}
+
+.pricing-windows-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.pricing-windows-label {
+  font-size: 12px;
+  font-weight: 650;
+  color: #9a5b00;
+  white-space: nowrap;
+}
+
+.pricing-window-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #ffcc66 22%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, #e09a2b 35%, var(--border));
+}
+
+.pricing-window-chip .pricing-time-input {
+  width: auto;
+  min-width: 96px;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: #ffcc66;
+  border-color: #e09a2b;
+  color: #5c3a00;
+}
+
+.pricing-window-sep {
+  color: #9a5b00;
+  font-size: 12px;
+}
+
+.pricing-window-remove {
+  border: none;
+  background: transparent;
+  color: #9a5b00;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.pricing-window-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 18%, transparent);
+  color: #b91c1c;
+}
+
+.pricing-window-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pricing-windows-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pricing-rate-input.is-idle:disabled,
+.pricing-rate-input.is-peak:disabled {
+  opacity: 0.45;
+}
+
+.pricing-dayparts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.pricing-dayparts-inputs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pricing-dayparts-sep {
+  color: var(--text-muted);
+}
+
+.pricing-time-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pricing-dayparts-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .pricing-rate-input,

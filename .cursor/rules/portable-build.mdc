@@ -1,15 +1,20 @@
 ---
-description: After code changes, always rebuild the portable dist and free locked exe first
+description: After ANY LLMChat change set, ALWAYS rebuild sidecar + Tauri + portable before finishing. Never wait for the user to ask.
 alwaysApply: true
 ---
 
-# Portable build after every change
+# Portable build after every change (mandatory)
 
-Whenever you finish modifying LLMChat (frontend, backend, Tauri, or related scripts):
+The user runs **`dist-portable\llmchat.exe`**. Source edits alone do not update what they use.
 
-1. Rebuild so `frontend/src-tauri/target/release/llmchat.exe` is up to date (`npm run tauri -- build` from `frontend/`, with VS + Cargo env as usual).
-2. If `dist-portable\llmchat.exe` (or `llmchat-backend`) is running / locked, stop those processes first, then continue.
-3. Run `powershell -File scripts/make-portable.ps1` so `dist-portable/` is refreshed.
-4. Tell the user the portable path is ready: `dist-portable\llmchat.exe`.
+**Before the final reply of any change set** (frontend, backend/sidecar, Tauri, CSS, pricing, scripts, etc.):
 
-Do this by default after each change set in this project; the user should not need to ask.
+1. `powershell -ExecutionPolicy Bypass -File .\scripts\prepare-sidecar.ps1`
+2. From `frontend/`: `npm run tauri -- build` (ensure VS/Cargo env as usual)
+3. If `dist-portable\llmchat.exe` / `llmchat-backend` is locked, stop those processes, then continue
+4. `powershell -ExecutionPolicy Bypass -File .\scripts\make-portable.ps1`
+5. Confirm in the reply: portable ready at `dist-portable\llmchat.exe`
+
+**Do this by default.** Do not skip because the change “looks small”, because the user did not ask, or because a conversation summary omitted packaging. Only skip if the user explicitly says not to package.
+
+If a step fails, report the error; never claim the portable build succeeded.

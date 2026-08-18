@@ -10,6 +10,7 @@
     "clipboard-manager:allow-read-text",
     "allow-clipboard-read-image-png",
     "allow-write-file-bytes",
+    "allow-read-file-bytes",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

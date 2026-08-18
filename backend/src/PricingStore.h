@@ -24,13 +24,16 @@ public:
     std::string displayCurrency() const;
 
     /**
-     * Rates for model on date when the model's vendor bills in `currency`.
-     * nullopt if no rule, or vendor currency ≠ requested currency.
-     */
+ * Rates for model on date[/time] when the model's vendor bills in `currency`.
+ * nullopt if no rule, or vendor currency ≠ requested currency.
+ * When `time` is outside the rule's peakWindows and the rule has idleRates,
+ * those are returned; empty peakWindows means always peak/default rates.
+ */
     std::optional<TokenRates> ratesFor(
         const std::string& model,
         const std::string& date,
-        const std::string& currency) const;
+        const std::string& currency,
+        const std::string& time = "") const;
 
     /** Cost in filter currency; 0 if vendor bills in another currency. */
     double costFor(const nlohmann::json& event, const std::string& currency) const;

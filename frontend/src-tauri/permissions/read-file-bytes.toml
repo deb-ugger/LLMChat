@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-read-file-bytes"
+description = "Allow reading binary file contents from a user-chosen path"
+commands.allow = ["read_file_bytes", "file_stat"]

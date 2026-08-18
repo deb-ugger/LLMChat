@@ -162,14 +162,31 @@ export type PricingRates = {
   cacheWrite: number;
 };
 
+export type PeakWindow = {
+  from: string;
+  to: string;
+};
+
 export type PricingRule = {
   id: string;
   vendor: string;
   model: string;
   from: string;
   to: string;
-  /** Rates in the vendor's billing currency */
+  /** Peak / default rates in the vendor's billing currency */
   rates: PricingRates;
+  /** Idle-period rates when outside this rule's peakWindows */
+  idleRates: PricingRates;
+  /** Per-rule peak windows; empty = always peak */
+  peakWindows: PeakWindow[];
+  /** Per date-interval lock */
+  locked?: boolean;
+};
+
+/** @deprecated Migrated into per-rule peakWindows */
+export type PricingDayParts = {
+  idleFrom: string;
+  idleTo: string;
 };
 
 export type PricingTable = {
@@ -177,6 +194,7 @@ export type PricingTable = {
   displayCurrency: PricingCurrency;
   vendorCurrencies: Record<string, PricingCurrency>;
   lockedModels: string[];
+  dayParts?: PricingDayParts;
   rules: PricingRule[];
 };
 
@@ -501,7 +519,12 @@ export const api = {
     displayCurrency: PricingCurrency;
     vendorCurrencies: Record<string, PricingCurrency>;
     lockedModels: string[];
-    rules: PricingRule[];
+    dayParts?: PricingDayParts;
+    rules: Array<
+      PricingRule & {
+        peakWindows?: PeakWindow[];
+      }
+    >;
   }) =>
     request<PricingTable>("/api/pricing", {
       method: "PUT",

@@ -8,11 +8,24 @@ import {
   resolveLiteraturePromptState,
   type LiteraturePromptEntry,
 } from "../literaturePrompt";
+import type { DocKind, LocalDocFile } from "../localDocFile";
 import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
+import { EpubPane } from "./EpubPane";
 import { PdfPane } from "./PdfPane";
 import { TranslatePanel } from "./TranslatePanel";
 
 const WORD_RE = /^[A-Za-z][A-Za-z'-]*$/;
+const LIT_DOC_KIND_KEY = "llmchat-lit-doc-kind";
+
+function loadDocKind(): DocKind {
+  try {
+    const v = localStorage.getItem(LIT_DOC_KIND_KEY);
+    if (v === "epub" || v === "pdf") return v;
+  } catch {
+    /* ignore */
+  }
+  return "pdf";
+}
 
 /** Collapse PDF selection line breaks so they don't break translation. */
 function normalizePdfSelectionText(text: string): string {
@@ -88,6 +101,27 @@ export function LiteratureView({
   const [dictLoading, setDictLoading] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
   const promptMenuRef = useRef<HTMLDivElement | null>(null);
+  const [docKind, setDocKind] = useState<DocKind>(loadDocKind);
+  const [pdfSeed, setPdfSeed] = useState<LocalDocFile | null>(null);
+  const [epubSeed, setEpubSeed] = useState<LocalDocFile | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LIT_DOC_KIND_KEY, docKind);
+    } catch {
+      /* ignore */
+    }
+  }, [docKind]);
+
+  const onOpenFromPdf = useCallback((_kind: "epub", doc: LocalDocFile) => {
+    setEpubSeed(doc);
+    setDocKind("epub");
+  }, []);
+
+  const onOpenFromEpub = useCallback((_kind: "pdf", doc: LocalDocFile) => {
+    setPdfSeed(doc);
+    setDocKind("pdf");
+  }, []);
 
   const resolved = useMemo(
     () =>
@@ -338,53 +372,71 @@ export function LiteratureView({
     })();
   }, [source, translateOnly]);
 
-  return (
-    <div className="literature-layout">
-      <PdfPane
-        visible={visible}
-        onTextSelected={onTextSelected}
-        translateProvider={translateProvider}
-        model={model}
-        onOpenImageOcr={onOpenImageOcr}
-        toolbarExtra={
-          <div className="pdf-prompt-menu" ref={promptMenuRef}>
+  const clearPdfSeed = useCallback(() => setPdfSeed(null), []);
+  const clearEpubSeed = useCallback(() => setEpubSeed(null), []);
+
+  const promptMenu = (
+    <div className="pdf-prompt-menu" ref={promptMenuRef}>
+      <button
+        type="button"
+        className={"pdf-tool-btn" + (promptMenuOpen ? " is-active" : "")}
+        disabled={!usesLlm}
+        title={
+          usesLlm
+            ? `提示词：${activeTag}`
+            : "切换为「大模型翻译」后可使用提示词"
+        }
+        onClick={() => setPromptMenuOpen((v) => !v)}
+      >
+        提示词 · {activeTag}
+      </button>
+      {promptMenuOpen && usesLlm ? (
+        <div className="pdf-prompt-dropdown">
+          <div className="pdf-prompt-dropdown-head">
+            <strong>文献翻译提示词</strong>
             <button
               type="button"
-              className={
-                "pdf-tool-btn" + (promptMenuOpen ? " is-active" : "")
-              }
-              disabled={!usesLlm}
-              title={
-                usesLlm
-                  ? `提示词：${activeTag}`
-                  : "切换为「大模型翻译」后可使用提示词"
-              }
-              onClick={() => setPromptMenuOpen((v) => !v)}
+              className="pdf-tool-btn"
+              onClick={() => setPromptMenuOpen(false)}
             >
-              提示词 · {activeTag}
+              关闭
             </button>
-            {promptMenuOpen && usesLlm ? (
-              <div className="pdf-prompt-dropdown">
-                <div className="pdf-prompt-dropdown-head">
-                  <strong>文献翻译提示词</strong>
-                  <button
-                    type="button"
-                    className="pdf-tool-btn"
-                    onClick={() => setPromptMenuOpen(false)}
-                  >
-                    关闭
-                  </button>
-                </div>
-                <LiteraturePromptPanel
-                  catalog={catalog}
-                  activeId={activeId}
-                  onCommit={commitPromptCatalog}
-                />
-              </div>
-            ) : null}
           </div>
-        }
-      />
+          <LiteraturePromptPanel
+            catalog={catalog}
+            activeId={activeId}
+            onCommit={commitPromptCatalog}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <div className="literature-layout">
+      <div className="literature-reader">
+        <PdfPane
+          visible={visible && docKind === "pdf"}
+          onTextSelected={onTextSelected}
+          translateProvider={translateProvider}
+          model={model}
+          onOpenImageOcr={onOpenImageOcr}
+          seedDoc={pdfSeed}
+          onSeedConsumed={clearPdfSeed}
+          onOpenOtherKind={onOpenFromPdf}
+          toolbarExtra={docKind === "pdf" ? promptMenu : null}
+        />
+        <EpubPane
+          visible={visible && docKind === "epub"}
+          onTextSelected={onTextSelected}
+          translateProvider={translateProvider}
+          model={model}
+          seedDoc={epubSeed}
+          onSeedConsumed={clearEpubSeed}
+          onOpenOtherKind={onOpenFromEpub}
+          toolbarExtra={docKind === "epub" ? promptMenu : null}
+        />
+      </div>
       <div
         className="col-resizer col-resizer-panel"
         title="拖动调整译文面板宽度"

@@ -24,20 +24,22 @@ import {
 } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 import {
-  fileToArrayBuffer,
-  listRecentPdfs,
   loadPdfSession,
   loadRecentPdf,
   savePdfSession,
   savePdfSessionMeta,
   touchRecentAsCurrent,
-  type PdfRecentSummary,
   type PdfSessionMeta,
   type ViewMode,
 } from "../pdfSession";
+import {
+  listRecentDocuments,
+  recentKindLabel,
+  type LitRecentItem,
+} from "../litRecent";
 import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
-import { highlightSearchHtml, highlightSearchNodes } from "../highlightText";
+import { highlightSearchHtml } from "../highlightText";
 import {
   copyImageBlob,
   saveImageBlob,
@@ -46,6 +48,12 @@ import {
   clearPageImageHotspots,
   type PdfImageHit,
 } from "../pdfImages";
+import { loadLocalDoc, pickAndLoadDocument, detectDocKind, type LocalDocFile } from "../localDocFile";
+import {
+  DocOutlineTree,
+  findActiveOutlineKeyByPage,
+  type DocOutlineNode,
+} from "./DocOutlineTree";
 
 const PDF_DOCUMENT_OPTIONS = {
   cMapUrl: `${import.meta.env.BASE_URL}cmaps/`,
@@ -55,13 +63,6 @@ const PDF_DOCUMENT_OPTIONS = {
 
 export type { ViewMode };
 
-type OutlineItem = {
-  title: string;
-  pageNumber: number | null;
-  dest: unknown;
-  items: OutlineItem[];
-};
-
 type Props = {
   onTextSelected: (text: string) => void;
   visible?: boolean;
@@ -70,9 +71,15 @@ type Props = {
   onOpenImageOcr?: (file: File) => void;
   /** Extra controls rendered at the end of the PDF toolbar. */
   toolbarExtra?: ReactNode;
+  /** Open a document handed off from LiteratureView / EpubPane. */
+  seedDoc?: LocalDocFile | null;
+  onSeedConsumed?: () => void;
+  /** When user picks an EPUB while this pane is active. */
+  onOpenOtherKind?: (kind: "epub", doc: LocalDocFile) => void;
 };
 
 type FileMeta = {
+  filePath: string;
   fileName: string;
   fileSize: number;
   lastModified: number;
@@ -144,6 +151,84 @@ function isViewMode(v: unknown): v is ViewMode {
   );
 }
 
+/** Normalize PDF text-layer extraction (hyphenation / whitespace). */
+function normalizePdfExtractedText(raw: string): string {
+  return raw
+    .replace(/\u00a0/g, " ")
+    .replace(/-\s*[\r\n]+/g, "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[ \t\f\v]+/g, " ")
+    .trim();
+}
+
+/** Skip PDF footer/header printed page numbers in the text layer. */
+function isPrintedPageNumberSpan(span: HTMLElement): boolean {
+  const raw = (span.textContent || "").replace(/\s+/g, "");
+  if (!/^\d{1,4}$/.test(raw)) return false;
+  const page = span.closest(".page") as HTMLElement | null;
+  if (!page) return false;
+  const pageNum = Number(
+    page.dataset.pageNumber || page.getAttribute("data-page-number"),
+  );
+  const n = Number(raw);
+  const pageRect = page.getBoundingClientRect();
+  const spanRect = span.getBoundingClientRect();
+  if (pageRect.height <= 1) {
+    return Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1;
+  }
+  const relY =
+    (spanRect.top + spanRect.height / 2 - pageRect.top) / pageRect.height;
+  const nearEdge = relY < 0.1 || relY > 0.88;
+  if (!nearEdge) return false;
+  if (Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1) return true;
+  return raw.length <= 3;
+}
+
+function isPrintedPageNumberNode(textNode: Node): boolean {
+  const el =
+    textNode.nodeType === Node.ELEMENT_NODE
+      ? (textNode as HTMLElement)
+      : textNode.parentElement;
+  if (!el) return false;
+  const span = el.closest(".textLayer span") as HTMLElement | null;
+  if (!span) return false;
+  return isPrintedPageNumberSpan(span);
+}
+
+/** All visible text on a rendered page (skips printed page numbers). */
+function readPageTextFromDom(pageEl: HTMLElement): string {
+  const layer = pageEl.querySelector(".textLayer");
+  if (!layer) return "";
+  const parts: string[] = [];
+  for (const span of layer.querySelectorAll("span")) {
+    if (isPrintedPageNumberSpan(span as HTMLElement)) continue;
+    const t = span.textContent || "";
+    if (t) parts.push(t);
+  }
+  return normalizePdfExtractedText(parts.join(""));
+}
+
+async function copyPlainText(text: string): Promise<boolean> {
+  const t = text.trim();
+  if (!t) return false;
+  try {
+    await navigator.clipboard.writeText(t);
+    return true;
+  } catch {
+    try {
+      const el = document.createElement("textarea");
+      el.value = t;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      el.remove();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function viewModeToScrollSpread(mode: ViewMode): {
   scroll: number;
   spread: number;
@@ -200,9 +285,9 @@ async function resolveDestPage(
 async function buildOutline(
   pdf: PDFDocumentProxy,
   items: Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>,
-): Promise<OutlineItem[]> {
+): Promise<DocOutlineNode[]> {
   if (!items) return [];
-  const result: OutlineItem[] = [];
+  const result: DocOutlineNode[] = [];
   for (const item of items) {
     const pageNumber = await resolveDestPage(pdf, item.dest);
     result.push({
@@ -215,496 +300,6 @@ async function buildOutline(
   return result;
 }
 
-function collectOutlineBranchKeys(
-  items: OutlineItem[],
-  prefix = "",
-): string[] {
-  const keys: string[] = [];
-  items.forEach((it, i) => {
-    const key = prefix ? `${prefix}.${i}` : `${i}`;
-    if (it.items.length > 0) {
-      keys.push(key);
-      keys.push(...collectOutlineBranchKeys(it.items, key));
-    }
-  });
-  return keys;
-}
-
-function defaultCollapsedKeys(items: OutlineItem[]): Set<string> {
-  const initial = new Set<string>();
-  for (const key of collectOutlineBranchKeys(items)) {
-    if (key.includes(".")) initial.add(key);
-  }
-  return initial;
-}
-
-function outlineAncestorKeys(key: string): string[] {
-  const parts = key.split(".");
-  const out: string[] = [];
-  for (let i = 1; i < parts.length; i++) {
-    out.push(parts.slice(0, i).join("."));
-  }
-  return out;
-}
-
-/** 按 key 找到目录节点；找不到返回 null */
-function findOutlineNode(
-  items: OutlineItem[],
-  key: string,
-): OutlineItem | null {
-  const parts = key.split(".").map((p) => Number(p));
-  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  let list = items;
-  let node: OutlineItem | null = null;
-  for (const idx of parts) {
-    node = list[idx] ?? null;
-    if (!node) return null;
-    list = node.items;
-  }
-  return node;
-}
-
-/**
- * 定位展开：祖先路径 + 当前节点，再沿「每个层级的第一个子标题」递归向下。
- * 同级其余子标题保持折叠。
- */
-function outlineRevealExpandKeys(
-  items: OutlineItem[],
-  activeKey: string,
-): string[] {
-  const keys = [...outlineAncestorKeys(activeKey)];
-  let node = findOutlineNode(items, activeKey);
-  let key = activeKey;
-  while (node && node.items.length > 0) {
-    keys.push(key);
-    key = `${key}.0`;
-    node = node.items[0] ?? null;
-  }
-  return keys;
-}
-
-/**
- * 当前页对应的最细目录项：文档序中最后一个 page <= currentPage 的条目
- *（同页时子级在父级之后，故自然取最细分）
- */
-function findActiveOutlineKey(
-  items: OutlineItem[],
-  currentPage: number,
-): string | null {
-  if (!Number.isFinite(currentPage) || currentPage < 1) return null;
-  let best: string | null = null;
-  const walk = (list: OutlineItem[], prefix: string) => {
-    for (let i = 0; i < list.length; i++) {
-      const it = list[i];
-      const key = prefix ? `${prefix}.${i}` : `${i}`;
-      if (it.pageNumber != null && it.pageNumber <= currentPage) {
-        best = key;
-      }
-      if (it.items.length > 0) walk(it.items, key);
-    }
-  };
-  walk(items, "");
-  return best;
-}
-
-/** 收集标题匹配节点及其祖先，便于过滤显示 */
-function collectOutlineTitleMatches(
-  items: OutlineItem[],
-  query: string,
-  prefix = "",
-  matches = new Set<string>(),
-  visible = new Set<string>(),
-): { matches: Set<string>; visible: Set<string> } {
-  const q = query.trim().toLowerCase();
-  if (!q) return { matches, visible };
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const key = prefix ? `${prefix}.${i}` : `${i}`;
-    const selfHit = it.title.toLowerCase().includes(q);
-    collectOutlineTitleMatches(it.items, query, key, matches, visible);
-    let hasVisibleChild = false;
-    for (let j = 0; j < it.items.length; j++) {
-      if (visible.has(`${key}.${j}`)) {
-        hasVisibleChild = true;
-        break;
-      }
-    }
-    if (selfHit) matches.add(key);
-    if (selfHit || hasVisibleChild) visible.add(key);
-  }
-  return { matches, visible };
-}
-
-function OutlineBranch({
-  items,
-  onGo,
-  resolvePage,
-  depth,
-  path,
-  collapsed,
-  onToggle,
-  titleQuery,
-  visibleKeys,
-  activeKey,
-}: {
-  items: OutlineItem[];
-  onGo: (page: number) => void;
-  resolvePage: (
-    dest: unknown,
-    fallback: number | null,
-  ) => Promise<number | null>;
-  depth: number;
-  path: string;
-  collapsed: Set<string>;
-  onToggle: (key: string) => void;
-  titleQuery: string;
-  visibleKeys: Set<string> | null;
-  activeKey: string | null;
-}) {
-  const level = Math.min(Math.max(depth, 0), 4);
-  const q = titleQuery.trim();
-  return (
-    <ul className={`pdf-outline-list is-depth-${level}`}>
-      {items.map((it, i) => {
-        const key = path ? `${path}.${i}` : `${i}`;
-        if (visibleKeys && !visibleKeys.has(key)) return null;
-        const hasKids =
-          it.items.length > 0 &&
-          (!visibleKeys ||
-            it.items.some((_, j) => visibleKeys.has(`${key}.${j}`)));
-        const isCollapsed = hasKids && collapsed.has(key);
-        const isActive = activeKey === key;
-        return (
-          <li key={key} className={isCollapsed ? "is-collapsed" : undefined}>
-            <div
-              className={`pdf-outline-row is-l${level}${isActive ? " is-active" : ""}`}
-              data-outline-key={key}
-            >
-              {hasKids ? (
-                <button
-                  type="button"
-                  className={`pdf-outline-twist${isCollapsed ? " is-collapsed" : ""}`}
-                  aria-expanded={!isCollapsed}
-                  aria-label={isCollapsed ? "展开" : "折叠"}
-                  title={isCollapsed ? "展开" : "折叠"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggle(key);
-                  }}
-                >
-                  <span className="pdf-outline-twist-icon" aria-hidden />
-                </button>
-              ) : (
-                <span className="pdf-outline-twist is-leaf" aria-hidden />
-              )}
-              <button
-                type="button"
-                className={`pdf-outline-item is-l${level}${isActive ? " is-active" : ""}`}
-                onClick={() => {
-                  void (async () => {
-                    const page = await resolvePage(it.dest, it.pageNumber);
-                    if (page != null) onGo(page);
-                  })();
-                }}
-                title={
-                  it.pageNumber != null ? `第 ${it.pageNumber} 页` : "点击跳转"
-                }
-              >
-                {q ? highlightSearchNodes(it.title, q) : it.title}
-              </button>
-            </div>
-            {hasKids && !isCollapsed && (
-              <OutlineBranch
-                items={it.items}
-                onGo={onGo}
-                resolvePage={resolvePage}
-                depth={depth + 1}
-                path={key}
-                collapsed={collapsed}
-                onToggle={onToggle}
-                titleQuery={titleQuery}
-                visibleKeys={visibleKeys}
-                activeKey={activeKey}
-              />
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function OutlineTree({
-  items,
-  onGo,
-  resolvePage,
-  currentPage,
-}: {
-  items: OutlineItem[];
-  onGo: (page: number) => void;
-  resolvePage: (
-    dest: unknown,
-    fallback: number | null,
-  ) => Promise<number | null>;
-  currentPage: number;
-}) {
-  const treeRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const [titleQuery, setTitleQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const branchKeys = useMemo(
-    () => collectOutlineBranchKeys(items),
-    [items],
-  );
-  const { matches, visible } = useMemo(
-    () => collectOutlineTitleMatches(items, titleQuery),
-    [items, titleQuery],
-  );
-  const filtering = titleQuery.trim().length > 0;
-  const visibleKeys = filtering ? visible : null;
-
-  const activeKey = useMemo(
-    () => findActiveOutlineKey(items, currentPage),
-    [items, currentPage],
-  );
-
-  /** 默认折叠二级及以下；搜索时展开全部以便看到匹配项 */
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    const next = defaultCollapsedKeys(items);
-    const key = findActiveOutlineKey(items, currentPage);
-    if (key) {
-      for (const a of outlineAncestorKeys(key)) next.delete(a);
-    }
-    return next;
-  });
-
-  useEffect(() => {
-    if (filtering) {
-      setCollapsed(new Set());
-      return;
-    }
-    const next = defaultCollapsedKeys(items);
-    const key = findActiveOutlineKey(items, currentPage);
-    if (key) {
-      for (const a of outlineAncestorKeys(key)) next.delete(a);
-    }
-    setCollapsed(next);
-    // 仅在目录数据/搜索状态变化时重置折叠；翻页不打断用户手动展开
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, filtering]);
-
-  useEffect(() => {
-    if (searchOpen) searchInputRef.current?.focus();
-  }, [searchOpen]);
-
-  const onToggle = useCallback((key: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  const expandAll = useCallback(() => {
-    setCollapsed(new Set());
-  }, []);
-
-  const collapseAll = useCallback(() => {
-    setCollapsed(new Set(branchKeys));
-  }, [branchKeys]);
-
-  const revealActive = useCallback(() => {
-    if (!activeKey) return;
-    const expandKeys = outlineRevealExpandKeys(items, activeKey);
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      for (const k of expandKeys) next.delete(k);
-      return next;
-    });
-    // 等展开渲染后再滚动
-    window.setTimeout(() => {
-      requestAnimationFrame(() => {
-        const root = scrollRef.current ?? treeRef.current;
-        const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
-        el?.scrollIntoView({ block: "center", behavior: "smooth" });
-      });
-    }, 80);
-  }, [activeKey, items]);
-
-  const toggleSearch = useCallback(() => {
-    setSearchOpen((open) => {
-      if (open) setTitleQuery("");
-      return !open;
-    });
-  }, []);
-
-  /** 每次打开目录（组件挂载）自动定位到当前页章节 */
-  useEffect(() => {
-    revealActive();
-    // OutlineTree 仅在目录打开时挂载，故只在打开时执行一次
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <div className="pdf-outline-tree" ref={treeRef}>
-      <div className="pdf-outline-toolbar">
-        <div className="pdf-outline-actions">
-          <button
-            type="button"
-            className="pdf-outline-icon-btn"
-            onClick={revealActive}
-            disabled={!activeKey}
-            data-tip="定位到当前章节"
-            aria-label="定位到当前章节"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M5 4.5h14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-              />
-              <rect
-                x="4.5"
-                y="8"
-                width="15"
-                height="8"
-                rx="1.8"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-              />
-              <path
-                d="M5 19.5h14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`pdf-outline-icon-btn${searchOpen ? " is-active" : ""}`}
-            onClick={toggleSearch}
-            data-tip="搜索标题"
-            aria-label="搜索标题"
-            aria-pressed={searchOpen}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <circle
-                cx="10.5"
-                cy="10.5"
-                r="7"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-              />
-              <path
-                d="M16 16l5.2 5.2"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          {branchKeys.length > 0 && (
-            <button
-              type="button"
-              className="pdf-outline-icon-btn"
-              onClick={() => {
-                if (collapsed.size === 0) collapseAll();
-                else expandAll();
-              }}
-              data-tip={collapsed.size === 0 ? "全部折叠" : "全部展开"}
-              aria-label={collapsed.size === 0 ? "全部折叠" : "全部展开"}
-            >
-              {collapsed.size === 0 ? (
-                <svg viewBox="0 0 24 24" aria-hidden>
-                  <path
-                    d="M5 3.5l7 6.5 7-6.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M5 20.5l7-6.5 7 6.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" aria-hidden>
-                  <path
-                    d="M5 10L12 3.5 19 10"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M5 14L12 20.5 19 14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-            </button>
-          )}
-        </div>
-        {searchOpen && (
-          <div className="pdf-outline-filter">
-            <input
-              ref={searchInputRef}
-              type="search"
-              value={titleQuery}
-              placeholder="搜索标题…"
-              onChange={(e) => setTitleQuery(e.target.value)}
-              aria-label="搜索目录标题"
-            />
-            {filtering && (
-              <span className="pdf-outline-filter-count">
-                {matches.size > 0 ? `${matches.size} 条` : "无匹配"}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="pdf-outline-scroll" ref={scrollRef}>
-        {filtering && matches.size === 0 ? (
-          <p className="hint pdf-outline-filter-empty">未找到匹配的标题</p>
-        ) : (
-          <OutlineBranch
-            items={items}
-            onGo={onGo}
-            resolvePage={resolvePage}
-            depth={0}
-            path=""
-            collapsed={collapsed}
-            onToggle={onToggle}
-            titleQuery={titleQuery}
-            visibleKeys={visibleKeys}
-            activeKey={activeKey}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function PdfPane({
   onTextSelected,
   visible = true,
@@ -712,6 +307,9 @@ export function PdfPane({
   model = "",
   onOpenImageOcr,
   toolbarExtra,
+  seedDoc = null,
+  onSeedConsumed,
+  onOpenOtherKind,
 }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
@@ -731,13 +329,13 @@ export function PdfPane({
     top: number;
     left: number;
   } | null>(null);
-  const [outline, setOutline] = useState<OutlineItem[]>([]);
+  const [outline, setOutline] = useState<DocOutlineNode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [handMode, setHandMode] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [docLoading, setDocLoading] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
-  const [recentList, setRecentList] = useState<PdfRecentSummary[]>([]);
+  const [recentList, setRecentList] = useState<LitRecentItem[]>([]);
   const [scaleInput, setScaleInput] = useState(
     String(scaleToPercent(DEFAULT_SCALE)),
   );
@@ -747,6 +345,8 @@ export function PdfPane({
     y: number;
     pageNumber: number;
     imageHit: PdfImageHit | null;
+    /** Non-empty when there is a text selection at right-click time */
+    selectedText: string | null;
   } | null>(null);
   const [imgPreview, setImgPreview] = useState<{
     hit: PdfImageHit;
@@ -770,7 +370,6 @@ export function PdfPane({
   const { width: outlineWidth, beginResize: beginOutlineResize } =
     usePersistedWidth("llmchat-pdf-outline-width", 220, 140, 480);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const viewerDivRef = useRef<HTMLDivElement>(null);
@@ -824,6 +423,11 @@ export function PdfPane({
     [],
   );
 
+  const outlineActiveKey = useMemo(
+    () => findActiveOutlineKeyByPage(outline, pageNumber),
+    [outline, pageNumber],
+  );
+
   const clampPage = useCallback(
     (page: number) => {
       if (!numPages) return Math.max(1, page);
@@ -854,6 +458,19 @@ export function PdfPane({
       restoredPageRef.current = next;
     },
     [clampPage],
+  );
+
+  const onOutlineActivate = useCallback(
+    (node: DocOutlineNode) => {
+      void (async () => {
+        const page = await resolveOutlinePage(
+          node.dest,
+          node.pageNumber ?? null,
+        );
+        if (page != null) goToPage(page);
+      })();
+    },
+    [goToPage, resolveOutlinePage],
   );
 
   const commitPageInput = useCallback(() => {
@@ -1030,7 +647,7 @@ export function PdfPane({
   }, [pageNumber]);
 
   const refreshRecent = useCallback(async () => {
-    setRecentList(await listRecentPdfs());
+    setRecentList(await listRecentDocuments());
   }, []);
 
   const recentCloseTimer = useRef<number | null>(null);
@@ -1324,46 +941,59 @@ export function PdfPane({
     };
   }, [restoring, visible, file, viewerReady]);
 
-  // Session restore on first mount
+  // Session restore on first mount (path-only: re-read from disk)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const session = await loadPdfSession();
       if (cancelled) return;
-      if (!session) {
+      if (!session?.filePath) {
         setRestoring(false);
         return;
       }
-      suppressPersistRef.current = true;
-      const blob = new Blob([session.fileData], { type: "application/pdf" });
-      const restored = new File([blob], session.fileName, {
-        type: "application/pdf",
-        lastModified: session.lastModified || Date.now(),
-      });
-      setFile(restored);
-      setFileMeta({
-        fileName: session.fileName,
-        fileSize: session.fileSize,
-        lastModified: session.lastModified,
-      });
-      setViewMode(
-        isViewMode(session.viewMode) ? session.viewMode : "single-scroll",
-      );
-      const keepPage = Math.max(1, session.pageNumber || 1);
-      restoreTargetPageRef.current = keepPage;
-      restoredPageRef.current = keepPage;
-      setPageNumber(keepPage);
-      const savedScale = session.scale || DEFAULT_SCALE;
-      setScale(
-        Math.min(MAX_SCALE, Math.max(MIN_SCALE, savedScale)),
-      );
-      setOutlineOpen(!!session.outlineOpen);
-      pendingScrollRef.current = {
-        top: session.scrollTop || 0,
-        left: session.scrollLeft || 0,
-      };
-      setRestoring(false);
-      void refreshRecent();
+      try {
+        const doc = await loadLocalDoc(session.filePath);
+        if (cancelled) return;
+        // Warn if file changed but still try to open.
+        suppressPersistRef.current = true;
+        const restored = new File([doc.bytes], doc.fileName, {
+          type: "application/pdf",
+          lastModified: doc.lastModified || Date.now(),
+        });
+        setFile(restored);
+        setFileMeta({
+          filePath: doc.filePath,
+          fileName: doc.fileName,
+          fileSize: doc.fileSize,
+          lastModified: doc.lastModified,
+        });
+        setViewMode(
+          isViewMode(session.viewMode) ? session.viewMode : "single-scroll",
+        );
+        const keepPage = Math.max(1, session.pageNumber || 1);
+        restoreTargetPageRef.current = keepPage;
+        restoredPageRef.current = keepPage;
+        setPageNumber(keepPage);
+        const savedScale = session.scale || DEFAULT_SCALE;
+        setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, savedScale)));
+        setOutlineOpen(!!session.outlineOpen);
+        pendingScrollRef.current = {
+          top: session.scrollTop || 0,
+          left: session.scrollLeft || 0,
+        };
+        setError(null);
+      } catch {
+        if (!cancelled) {
+          setError(
+            "找不到上次打开的 PDF（文件可能已移动或变更）。请重新选择文件；阅读进度仍会保留。",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setRestoring(false);
+          void refreshRecent();
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -1390,22 +1020,38 @@ export function PdfPane({
     }
   }, [visible, file, numPages, pageNumber]);
 
-  const openFile = useCallback(
-    async (f: File) => {
+  const applyOpenedDoc = useCallback(
+    async (
+      doc: {
+        filePath: string;
+        fileName: string;
+        fileSize: number;
+        lastModified: number;
+        bytes: ArrayBuffer;
+      },
+      opts?: { restoreFromSession?: boolean },
+    ) => {
       const session = await loadPdfSession();
       const sameAsSaved =
         !!session &&
-        session.fileName === f.name &&
-        session.fileSize === f.size &&
-        session.lastModified === f.lastModified;
+        session.filePath === doc.filePath &&
+        (opts?.restoreFromSession ||
+          (session.fileSize === doc.fileSize &&
+            session.lastModified === doc.lastModified));
 
+      const f = new File([doc.bytes], doc.fileName, {
+        type: "application/pdf",
+        lastModified: doc.lastModified || Date.now(),
+      });
       setFile(f);
       setFileMeta({
-        fileName: f.name,
-        fileSize: f.size,
-        lastModified: f.lastModified,
+        filePath: doc.filePath,
+        fileName: doc.fileName,
+        fileSize: doc.fileSize,
+        lastModified: doc.lastModified,
       });
       setOutline([]);
+      setSearchHits([]);
       setError(null);
       setRecentOpen(false);
 
@@ -1419,6 +1065,27 @@ export function PdfPane({
           top: session.scrollTop || 0,
           left: session.scrollLeft || 0,
         };
+        if (isViewMode(session.viewMode)) setViewMode(session.viewMode);
+        if (session.scale) {
+          setScale(
+            Math.min(MAX_SCALE, Math.max(MIN_SCALE, session.scale)),
+          );
+        }
+        setOutlineOpen(!!session.outlineOpen);
+        await savePdfSession({
+          filePath: doc.filePath,
+          fileName: doc.fileName,
+          fileSize: doc.fileSize,
+          lastModified: doc.lastModified,
+          viewMode: isViewMode(session.viewMode)
+            ? session.viewMode
+            : viewMode,
+          pageNumber: keep,
+          scale: session.scale || scale,
+          scrollTop: session.scrollTop || 0,
+          scrollLeft: session.scrollLeft || 0,
+          outlineOpen: !!session.outlineOpen,
+        });
         void refreshRecent();
         return;
       }
@@ -1428,12 +1095,11 @@ export function PdfPane({
       setPageNumber(1);
       pendingScrollRef.current = { top: 0, left: 0 };
       try {
-        const data = await fileToArrayBuffer(f);
         await savePdfSession({
-          fileName: f.name,
-          fileSize: f.size,
-          lastModified: f.lastModified,
-          fileData: data,
+          filePath: doc.filePath,
+          fileName: doc.fileName,
+          fileSize: doc.fileSize,
+          lastModified: doc.lastModified,
           viewMode,
           pageNumber: 1,
           scale,
@@ -1449,47 +1115,99 @@ export function PdfPane({
     [outlineOpen, refreshRecent, scale, viewMode],
   );
 
-  const openRecent = useCallback(
-    async (id: string) => {
-      const entry = await loadRecentPdf(id);
-      if (!entry) return;
-      const blob = new Blob([entry.fileData], { type: "application/pdf" });
-      const f = new File([blob], entry.fileName, {
-        type: "application/pdf",
-        lastModified: entry.lastModified || Date.now(),
-      });
-      setFile(f);
-      setFileMeta({
-        fileName: entry.fileName,
-        fileSize: entry.fileSize,
-        lastModified: entry.lastModified,
-      });
-      setOutline([]);
-      setSearchHits([]);
-      setError(null);
-      setRecentOpen(false);
-      const keep = Math.max(1, entry.pageNumber || 1);
-      suppressPersistRef.current = true;
-      restoreTargetPageRef.current = keep;
-      restoredPageRef.current = keep;
-      setPageNumber(keep);
-      pendingScrollRef.current = {
-        top: entry.scrollTop || 0,
-        left: entry.scrollLeft || 0,
-      };
-      await touchRecentAsCurrent(
-        entry,
-        {
-          pageNumber: Math.max(1, entry.pageNumber || 1),
-          scrollTop: entry.scrollTop || 0,
-          scrollLeft: entry.scrollLeft || 0,
-        },
-        { viewMode, scale, outlineOpen },
+  const openFilePicker = useCallback(async () => {
+    try {
+      const doc = await pickAndLoadDocument(["pdf", "epub"]);
+      if (!doc) return;
+      const kind = detectDocKind(doc.filePath);
+      if (kind === "epub") {
+        onOpenOtherKind?.("epub", doc);
+        return;
+      }
+      await applyOpenedDoc(doc);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "打开 PDF 失败。请确认文件仍在原路径。",
       );
-      void refreshRecent();
+    }
+  }, [applyOpenedDoc, onOpenOtherKind]);
+
+  const openRecent = useCallback(
+    async (item: LitRecentItem) => {
+      if (item.kind === "epub") {
+        try {
+          const doc = await loadLocalDoc(item.filePath);
+          onOpenOtherKind?.("epub", doc);
+          setRecentOpen(false);
+        } catch {
+          setError(
+            "找不到该 EPUB（文件可能已移动或变更）。请重新选择文件；阅读进度仍会保留。",
+          );
+          setRecentOpen(false);
+        }
+        return;
+      }
+      const entry = await loadRecentPdf(item.filePath);
+      if (!entry?.filePath) return;
+      try {
+        const doc = await loadLocalDoc(entry.filePath);
+        await applyOpenedDoc(doc, { restoreFromSession: true });
+        await touchRecentAsCurrent(
+          {
+            ...entry,
+            filePath: doc.filePath,
+            fileName: doc.fileName,
+            fileSize: doc.fileSize,
+            lastModified: doc.lastModified,
+          },
+          {
+            pageNumber: Math.max(1, entry.pageNumber || 1),
+            scrollTop: entry.scrollTop || 0,
+            scrollLeft: entry.scrollLeft || 0,
+          },
+          { viewMode, scale, outlineOpen },
+        );
+        void refreshRecent();
+      } catch {
+        setError(
+          "找不到该 PDF（文件可能已移动或变更）。请重新选择文件；阅读进度仍会保留。",
+        );
+        setRecentOpen(false);
+      }
     },
-    [outlineOpen, refreshRecent, scale, viewMode],
+    [
+      applyOpenedDoc,
+      onOpenOtherKind,
+      outlineOpen,
+      refreshRecent,
+      scale,
+      viewMode,
+    ],
   );
+
+  // Seed from LiteratureView / EpubPane handoff
+  useEffect(() => {
+    if (!seedDoc) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await applyOpenedDoc(seedDoc);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "打开 PDF 失败");
+        }
+      } finally {
+        if (!cancelled) onSeedConsumed?.();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only react to new seedDoc identity
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedDoc]);
 
   const runPdfSearch = useCallback(async () => {
     const pdf = pdfRef.current;
@@ -1577,37 +1295,6 @@ export function PdfPane({
     if (!root || !anchor || !focus) return null;
     if (!root.contains(anchor) || !root.contains(focus)) return null;
 
-    /** Skip PDF footer/header printed page numbers in the text layer. */
-    const isPrintedPageNumber = (textNode: Node): boolean => {
-      const el =
-        textNode.nodeType === Node.ELEMENT_NODE
-          ? (textNode as HTMLElement)
-          : textNode.parentElement;
-      if (!el) return false;
-      const span = el.closest(".textLayer span") as HTMLElement | null;
-      if (!span) return false;
-      const raw = (span.textContent || "").replace(/\s+/g, "");
-      if (!/^\d{1,4}$/.test(raw)) return false;
-      const page = span.closest(".page") as HTMLElement | null;
-      if (!page) return false;
-      const pageNum = Number(
-        page.dataset.pageNumber || page.getAttribute("data-page-number"),
-      );
-      const n = Number(raw);
-      const pageRect = page.getBoundingClientRect();
-      const spanRect = span.getBoundingClientRect();
-      if (pageRect.height <= 1) {
-        return Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1;
-      }
-      const relY =
-        (spanRect.top + spanRect.height / 2 - pageRect.top) / pageRect.height;
-      const nearEdge = relY < 0.1 || relY > 0.88;
-      if (!nearEdge) return false;
-      if (Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1) return true;
-      // Lone short number sitting in the margin/footer.
-      return raw.length <= 3;
-    };
-
     const chunks: string[] = [];
     try {
       for (let ri = 0; ri < sel.rangeCount; ri++) {
@@ -1624,7 +1311,7 @@ export function PdfPane({
             node = walker.nextNode();
             continue;
           }
-          if (isPrintedPageNumber(node)) {
+          if (isPrintedPageNumberNode(node)) {
             node = walker.nextNode();
             continue;
           }
@@ -1642,14 +1329,10 @@ export function PdfPane({
     }
 
     const raw = chunks.length > 0 ? chunks.join("") : sel.toString();
-    const text = raw
-      .replace(/\u00a0/g, " ")
-      .replace(/-\s*[\r\n]+/g, "")
-      .replace(/[\r\n]+/g, " ")
-      .replace(/[ \t\f\v]+/g, " ")
-      // Cross-page leftovers: "…word 12 Next…" where 12 is a page number.
-      .replace(/(\p{L})\s+\d{1,4}\s+(?=\p{L})/gu, "$1 ")
-      .trim();
+    // Do NOT strip "letter + digits + letter" globally — that removes body
+    // numbers like "between 2 and 10 seconds". Page numbers are skipped only
+    // via isPrintedPageNumberSpan (edge position + short digit span).
+    const text = normalizePdfExtractedText(raw);
     return text || null;
   }, []);
 
@@ -1803,6 +1486,8 @@ export function PdfPane({
       e.stopPropagation();
       const clientX = e.clientX;
       const clientY = e.clientY;
+      // Capture selection before async work (selection may clear later).
+      const selectedText = readPdfSelection();
       setImgBusy(true);
       void (async () => {
         const imageHit = await resolveHit(pageEl, pageNum, clientX, clientY);
@@ -1816,6 +1501,7 @@ export function PdfPane({
             y: clientY,
             pageNumber: pageNum,
             imageHit,
+            selectedText,
           };
         });
       })();
@@ -1860,7 +1546,7 @@ export function PdfPane({
       root.removeEventListener("contextmenu", onContextMenu, true);
       root.removeEventListener("dblclick", onDblClick, true);
     };
-  }, [file, handMode, viewerReady]);
+  }, [file, handMode, viewerReady, readPdfSelection]);
 
   // Ctrl/Meta + wheel → zoom 15%; Shift + wheel → horizontal scroll.
   useEffect(() => {
@@ -1921,6 +1607,49 @@ export function PdfPane({
       imgToastTimerRef.current = null;
     }, 1600);
   }, []);
+
+  const copySelectedPdfText = useCallback(
+    async (text: string) => {
+      const ok = await copyPlainText(text);
+      showImgToast(ok ? "已复制选中文本" : "复制失败", ok);
+    },
+    [showImgToast],
+  );
+
+  const copyCurrentPageText = useCallback(
+    async (pageNumber: number) => {
+      const root = scrollRef.current;
+      const pageEl = root?.querySelector(
+        `.page[data-page-number="${pageNumber}"]`,
+      ) as HTMLElement | null;
+      let text = pageEl ? readPageTextFromDom(pageEl) : "";
+      if (!text) {
+        const pdf = pdfRef.current;
+        if (pdf && pageNumber >= 1) {
+          try {
+            const page = await pdf.getPage(pageNumber);
+            const content = await page.getTextContent();
+            const parts: string[] = [];
+            for (const item of content.items) {
+              if (item && typeof item === "object" && "str" in item) {
+                parts.push(String((item as { str: string }).str));
+              }
+            }
+            text = normalizePdfExtractedText(parts.join(" "));
+          } catch {
+            text = "";
+          }
+        }
+      }
+      if (!text) {
+        showImgToast("当前页无可复制文本", false);
+        return;
+      }
+      const ok = await copyPlainText(text);
+      showImgToast(ok ? "已复制当前页文本" : "复制失败", ok);
+    },
+    [showImgToast],
+  );
 
   useEffect(() => {
     return () => {
@@ -2067,7 +1796,7 @@ export function PdfPane({
   }, [persistMeta]);
 
   return (
-    <div className="pdf-pane">
+    <div className="pdf-pane" style={{ display: visible ? undefined : "none" }}>
       <div className="pdf-toolbar">
         <div
           className="pdf-open-menu"
@@ -2078,7 +1807,8 @@ export function PdfPane({
           <button
             type="button"
             className="pdf-tool-btn"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => void openFilePicker()}
+            title="打开 PDF"
           >
             打开 PDF
           </button>
@@ -2097,32 +1827,30 @@ export function PdfPane({
                     key={item.id}
                     type="button"
                     className="pdf-recent-item"
-                    title={`${item.fileName} · 第 ${item.pageNumber} 页`}
-                    onClick={() => void openRecent(item.id)}
+                    title={`${item.filePath}${
+                      item.pageNumber ? ` · 第 ${item.pageNumber} 页` : ""
+                    }`}
+                    onClick={() => void openRecent(item)}
                   >
+                    <span className="pdf-recent-kind">
+                      {recentKindLabel(item.kind)}
+                    </span>
                     <span className="pdf-recent-name">{item.fileName}</span>
-                    <span className="pdf-recent-meta">p.{item.pageNumber}</span>
+                    {item.kind === "pdf" && item.pageNumber ? (
+                      <span className="pdf-recent-meta">
+                        p.{item.pageNumber}
+                      </span>
+                    ) : null}
                   </button>
                 ))
               )}
             </div>
           )}
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf,.pdf"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            void openFile(f);
-            e.target.value = "";
-          }}
-        />
         {fileMeta && (
-          <span className="pdf-file-name" title={fileMeta.fileName}>
-            {fileMeta.fileName}
+          <span className="pdf-file-name" title={fileMeta.filePath}>
+            <span className="pdf-recent-kind">{recentKindLabel("pdf")}</span>
+            <span className="pdf-file-name-text">{fileMeta.fileName}</span>
           </span>
         )}
 
@@ -2312,16 +2040,12 @@ export function PdfPane({
         {outlineOpen && (
           <aside className="pdf-outline" style={{ width: outlineWidth }}>
             <div className="pdf-outline-body">
-              {outline.length === 0 ? (
-                <p className="hint">当前 PDF 无目录大纲</p>
-              ) : (
-                <OutlineTree
-                  items={outline}
-                  onGo={goToPage}
-                  resolvePage={resolveOutlinePage}
-                  currentPage={pageNumber}
-                />
-              )}
+              <DocOutlineTree
+                items={outline}
+                onActivate={onOutlineActivate}
+                activeKey={outlineActiveKey}
+                emptyHint="当前 PDF 无目录大纲"
+              />
             </div>
             <div
               className="col-resizer pdf-outline-resizer"
@@ -2405,19 +2129,25 @@ export function PdfPane({
           </div>
           {!file && !restoring && (
             <div className="pdf-empty pdf-viewer-overlay">
-              <p>
-                打开带文字层的英文 PDF，在左侧 PDF
-                区域内拖选文本即可翻译（长度不限）。
-              </p>
-              <p className="hint">
-                会记住上次打开的文件、视图、页码、缩放与滚动位置。扫描件无文字层时无法框选。
-              </p>
+              {error ? (
+                <p className="boot-error">{error}</p>
+              ) : (
+                <>
+                  <p>
+                    打开带文字层的英文 PDF，在左侧 PDF
+                    区域内拖选文本即可翻译（长度不限）。
+                  </p>
+                  <p className="hint">
+                    会记住本地路径与阅读进度（页码、缩放、滚动）。文件被移动后需重新选择；进度仍会保留。扫描件无文字层时无法框选。
+                  </p>
+                </>
+              )}
               <button
                 type="button"
                 className="send-btn"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => void openFilePicker()}
               >
-                选择文件
+                {error ? "重新选择文件" : "选择文件"}
               </button>
             </div>
           )}
@@ -2506,6 +2236,31 @@ export function PdfPane({
               </>
             ) : (
               <>
+                {imgMenu.selectedText ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const text = imgMenu.selectedText!;
+                      closeImgMenu();
+                      void copySelectedPdfText(text);
+                    }}
+                  >
+                    复制选中文本
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const page = imgMenu.pageNumber;
+                    closeImgMenu();
+                    void copyCurrentPageText(page);
+                  }}
+                >
+                  复制当前页文本
+                </button>
+                <div className="pdf-ctx-sep" />
                 {(
                   [
                     ["actual", "实际大小"],

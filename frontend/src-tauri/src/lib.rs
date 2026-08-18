@@ -135,6 +135,32 @@ fn write_file_bytes(path: String, contents: Vec<u8>) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("写入文件失败: {e}"))
 }
 
+/// Read raw bytes from an absolute path chosen via the open dialog.
+#[tauri::command]
+fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+    std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))
+}
+
+/// File metadata for path-based document sessions (size + mtime ms).
+#[tauri::command]
+fn file_stat(path: String) -> Result<(u64, u64), String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取文件信息失败: {e}"))?;
+    let size = meta.len();
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Ok((size, mtime_ms))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -144,7 +170,9 @@ pub fn run() {
         .manage(BackendChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             clipboard_read_image_png,
-            write_file_bytes
+            write_file_bytes,
+            read_file_bytes,
+            file_stat
         ])
         .setup(|app| {
             if let Err(err) = start_backend(app.handle()) {

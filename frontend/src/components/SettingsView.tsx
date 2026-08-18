@@ -853,6 +853,7 @@ export function SettingsView({
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
   const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
   const pricingPanelRef = useRef<PricingPanelHandle>(null);
+  const [pricingDirty, setPricingDirty] = useState(false);
   const [unityTarget, setUnityTarget] = useState<UnitySettingsTarget>({
     hasGame: false,
     gameDir: "",
@@ -4386,6 +4387,7 @@ export function SettingsView({
             ref={pricingPanelRef}
             active={tab === "pricing"}
             notify={notify}
+            onDirtyChange={setPricingDirty}
           />
         )}
       </div>
@@ -4413,10 +4415,12 @@ export function SettingsView({
               {TAB_NAV[tab]!.label}
             </button>
           ) : null}
-          {tab === "pricing" ? (
+          {tab === "pricing" && pricingDirty ? (
             <button
               type="button"
-              className="settings-discard-current"
+              className={
+                "settings-discard-current" + (saving ? " is-saving" : "")
+              }
               disabled={saving}
               onClick={() => void discardPricingChanges()}
             >
@@ -4425,8 +4429,17 @@ export function SettingsView({
           ) : null}
           <button
             type="button"
-            className="settings-save-current"
-            disabled={saving}
+            className={
+              "settings-save-current" + (saving ? " is-saving" : "")
+            }
+            disabled={
+              saving || (tab === "pricing" && !pricingDirty)
+            }
+            title={
+              tab === "pricing" && !pricingDirty
+                ? "价目表无修改，无需保存"
+                : undefined
+            }
             onClick={() => void saveCurrentPage()}
           >
             {saving

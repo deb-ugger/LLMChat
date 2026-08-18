@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -62,16 +63,98 @@ json rule(
     const std::string& model,
     const std::string& from,
     const json& rates,
-    const std::string& to = "")
+    const std::string& to = "",
+    const json& idleRates = json(),
+    const json& peakWindows = json::array())
 {
-    return json{
+    json o = json{
         {"id", makeRuleId()},
         {"vendor", vendor},
         {"model", model},
         {"from", from},
         {"to", to},
         {"rates", rates},
+        {"peakWindows", peakWindows.is_array() ? peakWindows : json::array()},
+        {"locked", true},
     };
+    if (idleRates.is_object() && !idleRates.empty())
+        o["idleRates"] = idleRates;
+    return o;
+}
+
+json halfRateObj(const json& r)
+{
+    return rateObj(
+        r.value("input", 0.0) / 2.0,
+        r.value("output", 0.0) / 2.0,
+        r.value("cacheRead", 0.0) / 2.0,
+        r.value("cacheWrite", 0.0) / 2.0);
+}
+
+json deepSeekPeakWindows()
+{
+    // Legacy single-window peak used by built-in baseline defaults.
+    // Latest official dual windows are applied via frontend date-interval append.
+    return json::array({json{{"from", "08:30"}, {"to", "00:30"}}});
+}
+
+/** Minutes from midnight; -1 if invalid. Accepts HH:MM or HH:MM:SS. */
+int parseTimeMinutes(const std::string& raw)
+{
+    const std::string s = trimCopy(raw);
+    int h = 0, m = 0, sec = 0;
+    if (s.size() >= 5 && std::sscanf(s.c_str(), "%d:%d:%d", &h, &m, &sec) >= 2)
+    {
+        if (h < 0 || h > 23 || m < 0 || m > 59)
+            return -1;
+        return h * 60 + m;
+    }
+    return -1;
+}
+
+bool isInHalfOpenTimeRange(
+    const std::string& time,
+    const std::string& from,
+    const std::string& to)
+{
+    const int t = parseTimeMinutes(time);
+    const int a = parseTimeMinutes(from);
+    const int b = parseTimeMinutes(to);
+    if (t < 0 || a < 0 || b < 0)
+        return false;
+    if (a == b)
+        return false;
+    if (a < b)
+        return t >= a && t < b;
+    return t >= a || t < b;
+}
+
+/** Empty peakWindows → always peak. */
+bool isPeakLocalTime(const std::string& time, const json& peakWindows)
+{
+    if (!peakWindows.is_array() || peakWindows.empty())
+        return true;
+    for (const auto& w : peakWindows)
+    {
+        if (!w.is_object())
+            continue;
+        if (isInHalfOpenTimeRange(
+                time,
+                trimCopy(w.value("from", "")),
+                trimCopy(w.value("to", ""))))
+            return true;
+    }
+    return false;
+}
+
+bool ratesRoughlyEqual(const json& a, const json& b)
+{
+    if (!a.is_object() || !b.is_object())
+        return false;
+    return a.value("input", 0.0) == b.value("input", 0.0)
+        && a.value("output", 0.0) == b.value("output", 0.0)
+        && a.value("cacheRead", 0.0) == b.value("cacheRead", 0.0)
+        && a.value("cacheWrite", 0.0) == b.value("cacheWrite", 0.0);
 }
 
 std::string defaultVendorCurrency(const std::string& vendor)
@@ -91,16 +174,19 @@ json PricingStore::defaultTable()
     const std::string from = "";
     json rules = json::array();
 
-    // DeepSeek — CNY — https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    // input = 缓存未命中; cacheRead = 缓存命中; output = 输出; cacheWrite 官方无此项 → 0
-    rules.push_back(rule(
-        "DeepSeek", "deepseek-v4-flash", from, rateObj(1.0, 2.0, 0.02, 0.0)));
-    rules.push_back(rule(
-        "DeepSeek", "deepseek-v4-pro", from, rateObj(3.0, 6.0, 0.025, 0.0)));
-    rules.push_back(rule(
-        "DeepSeek", "deepseek-chat", from, rateObj(1.0, 2.0, 0.02, 0.0)));
-    rules.push_back(rule(
-        "DeepSeek", "deepseek-reasoner", from, rateObj(1.0, 2.0, 0.02, 0.0)));
+    // DeepSeek — CNY — baseline defaults (latest official cutover is appended
+    // as a new date interval on the frontend, not baked into defaults).
+    // input = 缓存未命中; cacheRead = 缓存命中; output = 输出; cacheWrite → 0
+    {
+        const json flash = rateObj(1.0, 2.0, 0.02, 0.0);
+        const json pro = rateObj(3.0, 6.0, 0.025, 0.0);
+        const json chat = rateObj(1.0, 2.0, 0.02, 0.0);
+        const json peak = deepSeekPeakWindows();
+        rules.push_back(rule("DeepSeek", "deepseek-v4-flash", from, flash, "", halfRateObj(flash), peak));
+        rules.push_back(rule("DeepSeek", "deepseek-v4-pro", from, pro, "", halfRateObj(pro), peak));
+        rules.push_back(rule("DeepSeek", "deepseek-chat", from, chat, "", halfRateObj(chat), peak));
+        rules.push_back(rule("DeepSeek", "deepseek-reasoner", from, chat, "", halfRateObj(chat), peak));
+    }
 
     // OpenAI — USD
     rules.push_back(rule(
@@ -129,6 +215,7 @@ json PricingStore::defaultTable()
           {"OpenAI", "USD"},
           {"Google", "USD"},
           {"通义千问", "CNY"}}},
+        {"dayParts", {{"idleFrom", "00:30"}, {"idleTo", "08:30"}}},
         {"lockedModels",
          json::array(
              {"deepseek-v4-flash",
@@ -318,6 +405,21 @@ std::string PricingStore::validateTable(const json& body, json& out)
     };
 
     json rules = json::array();
+    std::set<std::string> legacyLockedModels;
+    bool hasLegacyLockedModels = false;
+    if (body.contains("lockedModels") && body["lockedModels"].is_array())
+    {
+        hasLegacyLockedModels = true;
+        for (const auto& item : body["lockedModels"])
+        {
+            if (!item.is_string())
+                return "lockedModels entries must be strings";
+            const std::string m = trimCopy(item.get<std::string>());
+            if (!m.empty())
+                legacyLockedModels.insert(m);
+        }
+    }
+
     for (const auto& item : body["rules"])
     {
         if (!item.is_object())
@@ -355,18 +457,77 @@ std::string PricingStore::validateTable(const json& body, json& out)
         if (auto e = checkRates(ratesIn, "rates"); !e.empty())
             return e;
 
+        json idleRatesOut = json();
+        if (item.contains("idleRates") && item["idleRates"].is_object())
+        {
+            if (auto e = checkRates(item["idleRates"], "idleRates"); !e.empty())
+                return e;
+            idleRatesOut = ratesToJson(ratesFromJson(item["idleRates"]));
+        }
+        else
+        {
+            // Always persist idleRates (default = peak rates) so UI can show both.
+            idleRatesOut = ratesToJson(ratesFromJson(ratesIn));
+        }
+
+        json peakWindowsOut = json::array();
+        if (item.contains("peakWindows") && item["peakWindows"].is_array())
+        {
+            for (const auto& w : item["peakWindows"])
+            {
+                if (!w.is_object())
+                    return "peakWindows entries must be objects";
+                const std::string pf = trimCopy(w.value("from", ""));
+                const std::string pt = trimCopy(w.value("to", ""));
+                if (parseTimeMinutes(pf) < 0 || parseTimeMinutes(pt) < 0)
+                    return "peakWindows.from/to must be HH:MM";
+                peakWindowsOut.push_back(json{{"from", pf}, {"to", pt}});
+            }
+        }
+        else
+        {
+            // Migrate legacy global dayParts only when idle rates differ from peak.
+            std::string idleFrom = "00:30";
+            std::string idleTo = "08:30";
+            if (body.contains("dayParts") && body["dayParts"].is_object())
+            {
+                idleFrom = trimCopy(body["dayParts"].value("idleFrom", idleFrom));
+                idleTo = trimCopy(body["dayParts"].value("idleTo", idleTo));
+            }
+            const json peakRates = ratesToJson(ratesFromJson(ratesIn));
+            if (!ratesRoughlyEqual(peakRates, idleRatesOut)
+                && parseTimeMinutes(idleFrom) >= 0
+                && parseTimeMinutes(idleTo) >= 0
+                && idleFrom != idleTo)
+            {
+                // idle [idleFrom, idleTo) → peak complement [idleTo, idleFrom)
+                peakWindowsOut.push_back(json{{"from", idleTo}, {"to", idleFrom}});
+            }
+        }
+
         std::string id = trimCopy(item.value("id", ""));
         if (id.empty())
             id = makeRuleId();
 
-        rules.push_back(json{
+        bool locked = true;
+        if (item.contains("locked") && item["locked"].is_boolean())
+            locked = item["locked"].get<bool>();
+        else if (hasLegacyLockedModels)
+            locked = legacyLockedModels.count(model) > 0;
+        // else: missing both → default lock
+
+        json row = json{
             {"id", id},
             {"vendor", vendor},
             {"model", model},
             {"from", from},
             {"to", to},
             {"rates", ratesToJson(ratesFromJson(ratesIn))},
-        });
+            {"idleRates", idleRatesOut},
+            {"peakWindows", peakWindowsOut},
+            {"locked", locked},
+        };
+        rules.push_back(std::move(row));
     }
 
     // Same model: no overlapping inclusive ranges [from, to]
@@ -467,7 +628,7 @@ std::string PricingStore::validateTable(const json& body, json& out)
     }
     else
     {
-        // Legacy tables: lock every model to prevent accidental edits
+        // Legacy tables without lockedModels: level-1 lock every model
         std::map<std::string, bool> seen;
         for (const auto& r : rules)
         {
@@ -479,19 +640,34 @@ std::string PricingStore::validateTable(const json& body, json& out)
         }
     }
 
-    out = json{
+    // dayParts is legacy; keep if provided for old clients, otherwise omit.
+    json outObj = json{
         {"displayCurrency", currency},
         {"vendorCurrencies", vendorCurrencies},
         {"lockedModels", lockedModels},
         {"rules", rules},
     };
+    if (body.contains("dayParts") && body["dayParts"].is_object())
+    {
+        const std::string idleFrom =
+            trimCopy(body["dayParts"].value("idleFrom", "00:30"));
+        const std::string idleTo =
+            trimCopy(body["dayParts"].value("idleTo", "08:30"));
+        if (parseTimeMinutes(idleFrom) < 0)
+            return "dayParts.idleFrom must be HH:MM";
+        if (parseTimeMinutes(idleTo) < 0)
+            return "dayParts.idleTo must be HH:MM";
+        outObj["dayParts"] = json{{"idleFrom", idleFrom}, {"idleTo", idleTo}};
+    }
+    out = std::move(outObj);
     return "";
 }
 
 std::optional<TokenRates> PricingStore::ratesFor(
     const std::string& model,
     const std::string& date,
-    const std::string& currency) const
+    const std::string& currency,
+    const std::string& time) const
 {
     const std::string m = trimCopy(model);
     if (m.empty())
@@ -538,6 +714,30 @@ std::optional<TokenRates> PricingStore::ratesFor(
     if (vendorCur != cur)
         return std::nullopt;
 
+    // Prefer per-rule peakWindows; fall back to legacy table dayParts.
+    json peakWindows = json::array();
+    if (best->contains("peakWindows") && (*best)["peakWindows"].is_array())
+    {
+        peakWindows = (*best)["peakWindows"];
+    }
+    else if (table_.contains("dayParts") && table_["dayParts"].is_object())
+    {
+        const std::string idleFrom =
+            trimCopy(table_["dayParts"].value("idleFrom", "00:30"));
+        const std::string idleTo =
+            trimCopy(table_["dayParts"].value("idleTo", "08:30"));
+        if (parseTimeMinutes(idleFrom) >= 0 && parseTimeMinutes(idleTo) >= 0
+            && idleFrom != idleTo)
+            peakWindows = json::array({json{{"from", idleTo}, {"to", idleFrom}}});
+    }
+
+    const bool useIdle = !time.empty()
+        && !isPeakLocalTime(time, peakWindows)
+        && best->contains("idleRates") && (*best)["idleRates"].is_object();
+
+    if (useIdle)
+        return ratesFromJson((*best)["idleRates"]);
+
     if (best->contains("rates") && (*best)["rates"].is_object())
         return ratesFromJson((*best)["rates"]);
 
@@ -567,7 +767,8 @@ double PricingStore::costFor(const json& event, const std::string& currency) con
         return 0.0;
     const std::string model = event.value("model", "");
     const std::string date = event.value("date", "");
-    const auto rates = ratesFor(model, date, currency);
+    const std::string time = event.value("time", "");
+    const auto rates = ratesFor(model, date, currency, time);
     if (!rates)
         return 0.0;
     return computeCost(

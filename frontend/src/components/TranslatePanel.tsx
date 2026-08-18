@@ -148,7 +148,7 @@ export function TranslatePanel({
                 {copiedKey === "dst" ? "已复制" : "复制文本"}
               </button>
               <p className="tr-text">
-                {translation || "在左侧 PDF 中拖选英文后显示译文"}
+                {translation || "在左侧文档中拖选英文后显示译文"}
               </p>
             </div>
           )}
@@ -182,7 +182,7 @@ export function TranslatePanel({
             <textarea
               className="tr-source-edit"
               value={source}
-              placeholder="选中 PDF 文本将填入此处，也可手动修改后点「重新翻译」"
+              placeholder="选中文档文本将填入此处，也可手动修改后点「重新翻译」"
               onChange={(e) => onSourceChange(e.target.value)}
               rows={8}
             />

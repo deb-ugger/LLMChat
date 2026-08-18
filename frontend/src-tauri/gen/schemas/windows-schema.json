@@ -393,6 +393,12 @@
           "markdownDescription": "Allow reading a PNG image from the system clipboard"
         },
         {
+          "description": "Allow reading binary file contents from a user-chosen path",
+          "type": "string",
+          "const": "allow-read-file-bytes",
+          "markdownDescription": "Allow reading binary file contents from a user-chosen path"
+        },
+        {
           "description": "Allow writing binary file contents to a user-chosen path",
           "type": "string",
           "const": "allow-write-file-bytes",
