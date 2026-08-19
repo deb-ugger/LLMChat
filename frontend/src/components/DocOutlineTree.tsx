@@ -205,6 +205,8 @@ function OutlineBranch({
   titleQuery,
   visibleKeys,
   activeKey,
+  onItemTipShow,
+  onItemTipHide,
 }: {
   items: DocOutlineNode[];
   onActivate: (node: DocOutlineNode) => void;
@@ -215,6 +217,8 @@ function OutlineBranch({
   titleQuery: string;
   visibleKeys: Set<string> | null;
   activeKey: string | null;
+  onItemTipShow: (title: string, anchor: DOMRect) => void;
+  onItemTipHide: () => void;
 }) {
   const level = Math.min(Math.max(depth, 0), 4);
   const q = titleQuery.trim();
@@ -229,6 +233,7 @@ function OutlineBranch({
             it.items.some((_, j) => visibleKeys.has(`${key}.${j}`)));
         const isCollapsed = hasKids && collapsed.has(key);
         const isActive = activeKey === key;
+        const fullTitle = (it.title || "").trim();
         return (
           <li key={key} className={isCollapsed ? "is-collapsed" : undefined}>
             <div
@@ -256,13 +261,17 @@ function OutlineBranch({
                 type="button"
                 className={`pdf-outline-item is-l${level}${isActive ? " is-active" : ""}`}
                 onClick={() => onActivate(it)}
-                title={
-                  it.pageNumber != null
-                    ? `第 ${it.pageNumber} 页`
-                    : it.href
-                      ? it.href
-                      : "点击跳转"
-                }
+                aria-label={fullTitle || "跳转章节"}
+                onMouseEnter={(e) => {
+                  if (!fullTitle) return;
+                  onItemTipShow(fullTitle, e.currentTarget.getBoundingClientRect());
+                }}
+                onMouseLeave={onItemTipHide}
+                onFocus={(e) => {
+                  if (!fullTitle) return;
+                  onItemTipShow(fullTitle, e.currentTarget.getBoundingClientRect());
+                }}
+                onBlur={onItemTipHide}
               >
                 <span className="pdf-outline-item-text">
                   {q ? highlightSearchNodes(it.title, q) : it.title}
@@ -283,6 +292,8 @@ function OutlineBranch({
                 titleQuery={titleQuery}
                 visibleKeys={visibleKeys}
                 activeKey={activeKey}
+                onItemTipShow={onItemTipShow}
+                onItemTipHide={onItemTipHide}
               />
             )}
           </li>
@@ -311,6 +322,13 @@ export function DocOutlineTree({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [titleQuery, setTitleQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [itemTip, setItemTip] = useState<{
+    text: string;
+    left: number;
+    top: number;
+    key: number;
+  } | null>(null);
+  const tipKeyRef = useRef(0);
   const branchKeys = useMemo(() => collectOutlineBranchKeys(items), [items]);
   const { matches, visible } = useMemo(
     () => collectOutlineTitleMatches(items, titleQuery),
@@ -318,6 +336,32 @@ export function DocOutlineTree({
   );
   const filtering = titleQuery.trim().length > 0;
   const visibleKeys = filtering ? visible : null;
+
+  const onItemTipShow = useCallback((title: string, anchor: DOMRect) => {
+    const gap = 10;
+    const maxW = Math.min(360, window.innerWidth - 24);
+    let left = Math.round(anchor.right + gap);
+    if (left + maxW > window.innerWidth - 8) {
+      left = Math.max(8, Math.round(anchor.left - gap - maxW));
+    }
+    tipKeyRef.current += 1;
+    setItemTip({
+      text: title,
+      left,
+      top: Math.round(anchor.top + anchor.height / 2),
+      key: tipKeyRef.current,
+    });
+  }, []);
+
+  const onItemTipHide = useCallback(() => setItemTip(null), []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const hide = () => setItemTip(null);
+    el.addEventListener("scroll", hide, { passive: true });
+    return () => el.removeEventListener("scroll", hide);
+  }, []);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     const next = defaultCollapsedKeys(items);
@@ -544,9 +588,21 @@ export function DocOutlineTree({
             titleQuery={titleQuery}
             visibleKeys={visibleKeys}
             activeKey={activeKey}
+            onItemTipShow={onItemTipShow}
+            onItemTipHide={onItemTipHide}
           />
         )}
       </div>
+      {itemTip ? (
+        <div
+          key={itemTip.key}
+          className="pdf-outline-float-tip"
+          style={{ left: itemTip.left, top: itemTip.top }}
+          role="tooltip"
+        >
+          {itemTip.text}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -6397,26 +6397,26 @@ body.row-resizing .textLayer {
 .pdf-outline-icon-btn:hover:not(:disabled)::after,
 .pdf-outline-icon-btn:focus-visible:not(:disabled)::after {
   opacity: 1;
-  animation: pdf-outline-tip-jelly 0.48s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: pdf-outline-tip-jelly 0.26s cubic-bezier(0.34, 1.7, 0.64, 1) both;
 }
 
 .pdf-outline-icon-btn:hover:not(:disabled)::before,
 .pdf-outline-icon-btn:focus-visible:not(:disabled)::before {
   opacity: 1;
-  animation: pdf-outline-tip-jelly-arrow 0.48s cubic-bezier(0.34, 1.56, 0.64, 1)
+  animation: pdf-outline-tip-jelly-arrow 0.26s cubic-bezier(0.34, 1.7, 0.64, 1)
     both;
 }
 
 @keyframes pdf-outline-tip-jelly {
   0% {
     opacity: 0;
-    transform: translateX(-50%) translateY(8px) scale(0.82);
+    transform: translateX(-50%) translateY(6px) scale(0.84);
   }
-  55% {
+  50% {
     opacity: 1;
-    transform: translateX(-50%) translateY(-2px) scale(1.08);
+    transform: translateX(-50%) translateY(-2px) scale(1.1);
   }
-  75% {
+  78% {
     transform: translateX(-50%) translateY(1px) scale(0.96);
   }
   100% {
@@ -6428,18 +6428,92 @@ body.row-resizing .textLayer {
 @keyframes pdf-outline-tip-jelly-arrow {
   0% {
     opacity: 0;
-    transform: translateY(8px) rotate(45deg) scale(0.82);
+    transform: translateY(6px) rotate(45deg) scale(0.84);
   }
-  55% {
+  50% {
     opacity: 1;
-    transform: translateY(-2px) rotate(45deg) scale(1.08);
+    transform: translateY(-2px) rotate(45deg) scale(1.1);
   }
-  75% {
+  78% {
     transform: translateY(1px) rotate(45deg) scale(0.96);
   }
   100% {
     opacity: 1;
     transform: translateY(0) rotate(45deg) scale(1);
+  }
+}
+
+/* 目录项完整标题：右侧深色气泡（fixed，避免被滚动区裁切） */
+.pdf-outline-float-tip {
+  position: fixed;
+  z-index: 80;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #1a1d24;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(0) scale(1);
+  transform-origin: left center;
+  animation: pdf-outline-float-tip-jelly 0.26s
+    cubic-bezier(0.34, 1.7, 0.64, 1) both;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.22);
+}
+
+.pdf-outline-float-tip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  background: #1a1d24;
+  border-radius: 1px;
+  transform: rotate(45deg) scale(1);
+  transform-origin: center center;
+  animation: pdf-outline-float-tip-arrow-jelly 0.26s
+    cubic-bezier(0.34, 1.7, 0.64, 1) both;
+}
+
+@keyframes pdf-outline-float-tip-jelly {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) translateX(6px) scale(0.84);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-50%) translateX(-2px) scale(1.1);
+  }
+  78% {
+    transform: translateY(-50%) translateX(1px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0) scale(1);
+  }
+}
+
+@keyframes pdf-outline-float-tip-arrow-jelly {
+  0% {
+    opacity: 0;
+    transform: rotate(45deg) scale(0.84);
+  }
+  50% {
+    opacity: 1;
+    transform: rotate(45deg) scale(1.1);
+  }
+  78% {
+    transform: rotate(45deg) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: rotate(45deg) scale(1);
   }
 }
 

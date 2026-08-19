@@ -94,7 +94,7 @@ export function TranslatePanel({
   onDictLookup,
 }: Props) {
   const [manual, setManual] = useState("");
-  const [copiedKey, setCopiedKey] = useState<null | "dst" | "src">(null);
+  const [copiedKey, setCopiedKey] = useState<null | "dst" | "src" | "word">(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const phonetics = pickPhonetics(dict);
 
@@ -105,7 +105,7 @@ export function TranslatePanel({
     void audioRef.current.play().catch(() => undefined);
   };
 
-  const onCopy = useCallback(async (key: "dst" | "src", text: string) => {
+  const onCopy = useCallback(async (key: "dst" | "src" | "word", text: string) => {
     const ok = await copyText(text);
     if (!ok) return;
     setCopiedKey(key);
@@ -190,7 +190,20 @@ export function TranslatePanel({
         </section>
 
         <section className="tr-block">
-          <h3>【词典】</h3>
+          <div className="tr-block-head">
+            <h3>【词典】</h3>
+            <div className="tr-block-head-actions">
+              <button
+                type="button"
+                className="pdf-tool-btn"
+                disabled={!dict?.word?.trim()}
+                onClick={() => void onCopy("word", dict?.word ?? "")}
+                title="复制单词"
+              >
+                {copiedKey === "word" ? "已复制" : "复制单词"}
+              </button>
+            </div>
+          </div>
           {dictLoading && <p className="hint">词典查询中…</p>}
           {dictHint && <p className="hint">{dictHint}</p>}
           {!dict && !dictHint && !dictLoading && (
