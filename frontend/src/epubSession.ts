@@ -133,6 +133,20 @@ export async function loadRecentEpub(
   }
 }
 
+/** Remove one entry from the recent list (does not clear the current session). */
+export async function removeRecentEpub(filePath: string): Promise<void> {
+  const path = (filePath || "").trim();
+  if (!path) return;
+  try {
+    const db = await openDb();
+    const tx = db.transaction(STORE_RECENT, "readwrite");
+    await idbReq(tx.objectStore(STORE_RECENT).delete(makeEpubId(path)));
+    db.close();
+  } catch {
+    // ignore
+  }
+}
+
 export async function saveEpubSession(session: EpubSession): Promise<void> {
   try {
     const db = await openDb();

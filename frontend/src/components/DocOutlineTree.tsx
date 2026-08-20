@@ -83,6 +83,32 @@ function outlineRevealExpandKeys(
   return keys;
 }
 
+/**
+ * Scroll outline so the active row sits in the middle of the pane when
+ * possible; near start/end, clamp so first chapters stay at top and last
+ * chapters stay near bottom.
+ */
+function scrollOutlineKeyToCenter(
+  scrollRoot: HTMLElement | null,
+  key: string,
+  behavior: ScrollBehavior = "smooth",
+) {
+  if (!scrollRoot || !key) return;
+  const el = scrollRoot.querySelector(
+    `[data-outline-key="${key}"]`,
+  ) as HTMLElement | null;
+  if (!el) return;
+  const rootRect = scrollRoot.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const delta =
+    elRect.top +
+    elRect.height / 2 -
+    (rootRect.top + rootRect.height / 2);
+  const maxTop = Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight);
+  const nextTop = Math.min(maxTop, Math.max(0, scrollRoot.scrollTop + delta));
+  scrollRoot.scrollTo({ top: nextTop, behavior });
+}
+
 /** PDF: last outline entry with page <= currentPage. */
 export function findActiveOutlineKeyByPage(
   items: DocOutlineNode[],
@@ -426,9 +452,7 @@ export function DocOutlineTree({
       if (opts?.scroll === false) return;
       window.setTimeout(() => {
         requestAnimationFrame(() => {
-          const root = scrollRef.current ?? treeRef.current;
-          const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
-          el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          scrollOutlineKeyToCenter(scrollRef.current, activeKey, "smooth");
         });
       }, 80);
     },
@@ -443,9 +467,8 @@ export function DocOutlineTree({
   }, []);
 
   const prevActiveKeyRef = useRef<string | null>(null);
-  const autoRevealTimerRef = useRef<number | null>(null);
 
-  // Follow PDF/EPUB reading position: expand collapsed parents and scroll into view.
+  // Follow PDF/EPUB reading position: expand collapsed parents only (no auto-scroll).
   useEffect(() => {
     if (!activeKey || filtering) return;
     if (activeKey === prevActiveKeyRef.current) return;
@@ -463,27 +486,10 @@ export function DocOutlineTree({
       }
       return changed ? next : prev;
     });
-
-    if (autoRevealTimerRef.current != null) {
-      window.clearTimeout(autoRevealTimerRef.current);
-    }
-    autoRevealTimerRef.current = window.setTimeout(() => {
-      autoRevealTimerRef.current = null;
-      requestAnimationFrame(() => {
-        const root = scrollRef.current ?? treeRef.current;
-        const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
-        el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      });
-    }, 120);
-
-    return () => {
-      if (autoRevealTimerRef.current != null) {
-        window.clearTimeout(autoRevealTimerRef.current);
-      }
-    };
   }, [activeKey, filtering, items]);
 
   useEffect(() => {
+    // Opening the outline pane: same as manual「定位到当前章节」.
     revealActive();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

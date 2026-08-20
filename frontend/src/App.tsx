@@ -389,23 +389,26 @@ export default function App() {
   };
 
   if (!backendReady) {
-    return (
-      <div className="boot">
-        <div className="boot-card">
-          <h1>LLMChat</h1>
-          <p>正在连接本地后端…</p>
-          <p className="hint">请确认已启动 backend\build\Release\llmchat-backend.exe</p>
-          {backendError && <p className="boot-error">{backendError}</p>}
-          <button
-            className="save-btn"
-            style={{ marginTop: 12 }}
-            onClick={() => window.location.reload()}
-          >
-            重试
-          </button>
+    if (backendError) {
+      return (
+        <div className="boot">
+          <div className="boot-card">
+            <h1>LLMChat</h1>
+            <p className="boot-error">{backendError}</p>
+            <p className="hint">请确认已启动 backend\build\Release\llmchat-backend.exe</p>
+            <button
+              className="save-btn"
+              style={{ marginTop: 12 }}
+              onClick={() => window.location.reload()}
+            >
+              重试
+            </button>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
+    // Quiet boot: no gray splash card while connecting.
+    return <div className="boot boot-quiet" aria-busy="true" />;
   }
 
   return (

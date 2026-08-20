@@ -23,6 +23,8 @@ export type PdfSessionMeta = {
   scrollTop: number;
   scrollLeft: number;
   outlineOpen: boolean;
+  /** SHA-256 of file bytes; missing on legacy entries. */
+  contentHash?: string;
 };
 
 export type PdfSession = PdfSessionMeta;
@@ -35,6 +37,7 @@ export type PdfRecentSummary = {
   lastModified: number;
   openedAt: number;
   pageNumber: number;
+  contentHash?: string;
 };
 
 export type PdfRecentEntry = PdfSession & {
@@ -129,7 +132,11 @@ export async function listRecentPdfs(): Promise<PdfRecentSummary[]> {
         fileSize: e.fileSize,
         lastModified: e.lastModified,
         openedAt: e.openedAt,
-        pageNumber: e.pageNumber || 1,
+        pageNumber: Math.max(
+          1,
+          Math.floor(Number(e.pageNumber)) || 1,
+        ),
+        contentHash: e.contentHash || undefined,
       }));
   } catch {
     return [];
@@ -153,17 +160,35 @@ export async function loadRecentPdf(
   }
 }
 
+/** Remove one entry from the recent list (does not clear the current session). */
+export async function removeRecentPdf(filePath: string): Promise<void> {
+  const path = (filePath || "").trim();
+  if (!path) return;
+  try {
+    const db = await openDb();
+    const tx = db.transaction(STORE_RECENT, "readwrite");
+    await idbReq(tx.objectStore(STORE_RECENT).delete(makePdfId(path)));
+    db.close();
+  } catch {
+    // ignore
+  }
+}
+
 export async function savePdfSession(session: PdfSession): Promise<void> {
   try {
+    const normalized: PdfSession = {
+      ...session,
+      pageNumber: Math.max(1, Math.floor(Number(session.pageNumber)) || 1),
+    };
     const db = await openDb();
     const tx = db.transaction([STORE_CURRENT, STORE_RECENT], "readwrite");
     const current = tx.objectStore(STORE_CURRENT);
     const recent = tx.objectStore(STORE_RECENT);
-    await idbReq(current.put(session, CURRENT_KEY));
+    await idbReq(current.put(normalized, CURRENT_KEY));
 
-    const id = makePdfId(session.filePath);
+    const id = makePdfId(normalized.filePath);
     const entry: PdfRecentEntry = {
-      ...session,
+      ...normalized,
       id,
       openedAt: Date.now(),
     };
@@ -194,7 +219,11 @@ export async function savePdfSessionMeta(
       db.close();
       return;
     }
-    const next: PdfSession = { ...existing, ...meta };
+    const next: PdfSession = {
+      ...existing,
+      ...meta,
+      pageNumber: Math.max(1, Math.floor(Number(meta.pageNumber)) || 1),
+    };
     await idbReq(currentStore.put(next, CURRENT_KEY));
 
     const id = makePdfId(meta.filePath);
@@ -217,7 +246,10 @@ export async function savePdfSessionMeta(
 export async function touchRecentAsCurrent(
   entry: PdfRecentEntry,
   position: Pick<PdfSessionMeta, "pageNumber" | "scrollTop" | "scrollLeft">,
-  keepUi: Pick<PdfSessionMeta, "viewMode" | "scale" | "outlineOpen">,
+  keepUi: Pick<
+    PdfSessionMeta,
+    "viewMode" | "scale" | "outlineOpen" | "contentHash"
+  >,
 ): Promise<void> {
   const session: PdfSession = {
     filePath: entry.filePath,
@@ -230,6 +262,39 @@ export async function touchRecentAsCurrent(
     viewMode: keepUi.viewMode,
     scale: keepUi.scale,
     outlineOpen: keepUi.outlineOpen,
+    contentHash: keepUi.contentHash ?? entry.contentHash,
   };
   await savePdfSession(session);
+}
+
+/**
+ * Move a recent/session entry from oldPath to a new path while keeping
+ * reading progress (and optionally contentHash).
+ */
+export async function relocatePdfRecent(
+  oldPath: string,
+  next: PdfSession,
+): Promise<void> {
+  const from = (oldPath || "").trim();
+  try {
+    const db = await openDb();
+    const tx = db.transaction([STORE_CURRENT, STORE_RECENT], "readwrite");
+    const current = tx.objectStore(STORE_CURRENT);
+    const recent = tx.objectStore(STORE_RECENT);
+    if (from) {
+      await idbReq(recent.delete(makePdfId(from)));
+    }
+    await idbReq(current.put(next, CURRENT_KEY));
+    const id = makePdfId(next.filePath);
+    const entry: PdfRecentEntry = {
+      ...next,
+      id,
+      openedAt: Date.now(),
+    };
+    await idbReq(recent.put(entry));
+    await pruneRecent(recent, id);
+    db.close();
+  } catch {
+    // ignore
+  }
 }

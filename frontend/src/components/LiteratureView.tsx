@@ -134,6 +134,7 @@ export function LiteratureView({
   const promptMenuRef = useRef<HTMLDivElement | null>(null);
   const [docKind, setDocKind] = useState<DocKind>(loadDocKind);
   const [pdfSeed, setPdfSeed] = useState<LocalDocFile | null>(null);
+  const [pdfSeedPage, setPdfSeedPage] = useState<number | null>(null);
   const [epubSeed, setEpubSeed] = useState<LocalDocFile | null>(null);
 
   useEffect(() => {
@@ -149,10 +150,18 @@ export function LiteratureView({
     setDocKind("epub");
   }, []);
 
-  const onOpenFromEpub = useCallback((_kind: "pdf", doc: LocalDocFile) => {
-    setPdfSeed(doc);
-    setDocKind("pdf");
-  }, []);
+  const onOpenFromEpub = useCallback(
+    (_kind: "pdf", doc: LocalDocFile, pageNumber?: number) => {
+      setPdfSeed(doc);
+      setPdfSeedPage(
+        typeof pageNumber === "number" && pageNumber > 0
+          ? Math.floor(pageNumber)
+          : null,
+      );
+      setDocKind("pdf");
+    },
+    [],
+  );
 
   const resolved = useMemo(
     () =>
@@ -434,7 +443,10 @@ export function LiteratureView({
     })();
   }, [source, translateOnly]);
 
-  const clearPdfSeed = useCallback(() => setPdfSeed(null), []);
+  const clearPdfSeed = useCallback(() => {
+    setPdfSeed(null);
+    setPdfSeedPage(null);
+  }, []);
   const clearEpubSeed = useCallback(() => setEpubSeed(null), []);
 
   const promptMenu = (
@@ -484,6 +496,7 @@ export function LiteratureView({
           model={model}
           onOpenImageOcr={onOpenImageOcr}
           seedDoc={pdfSeed}
+          seedPageNumber={pdfSeedPage}
           onSeedConsumed={clearPdfSeed}
           onOpenOtherKind={onOpenFromPdf}
           onDocumentChange={clearSegmentHistory}

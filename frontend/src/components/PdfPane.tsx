@@ -26,17 +26,21 @@ import "pdfjs-dist/web/pdf_viewer.css";
 import {
   loadPdfSession,
   loadRecentPdf,
+  relocatePdfRecent,
+  removeRecentPdf,
   savePdfSession,
   savePdfSessionMeta,
-  touchRecentAsCurrent,
+  type PdfSession,
   type PdfSessionMeta,
   type ViewMode,
 } from "../pdfSession";
 import {
   listRecentDocuments,
   recentKindLabel,
+  removeRecentDocument,
   type LitRecentItem,
 } from "../litRecent";
+import { sha256Hex } from "../fileFingerprint";
 import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml } from "../highlightText";
@@ -48,7 +52,14 @@ import {
   clearPageImageHotspots,
   type PdfImageHit,
 } from "../pdfImages";
-import { loadLocalDoc, pickAndLoadDocument, detectDocKind, type LocalDocFile } from "../localDocFile";
+import {
+  loadLocalDoc,
+  pickAndLoadDocument,
+  pickDocumentPath,
+  detectDocKind,
+  type LocalDocFile,
+} from "../localDocFile";
+import { message as tauriMessage } from "@tauri-apps/plugin-dialog";
 import {
   DocOutlineTree,
   findActiveOutlineKeyByPage,
@@ -73,6 +84,8 @@ type Props = {
   toolbarExtra?: ReactNode;
   /** Open a document handed off from LiteratureView / EpubPane. */
   seedDoc?: LocalDocFile | null;
+  /** Page hint from recent list (EPUB→PDF); PdfPane also re-reads IDB. */
+  seedPageNumber?: number | null;
   onSeedConsumed?: () => void;
   /** When user picks an EPUB while this pane is active. */
   onOpenOtherKind?: (kind: "epub", doc: LocalDocFile) => void;
@@ -86,6 +99,60 @@ type FileMeta = {
   fileSize: number;
   lastModified: number;
 };
+
+type PdfResume = Pick<
+  PdfSessionMeta,
+  | "pageNumber"
+  | "scrollTop"
+  | "scrollLeft"
+  | "contentHash"
+> &
+  Partial<Pick<PdfSessionMeta, "viewMode" | "scale" | "outlineOpen">>;
+
+async function promptPdfInvalid(
+  fileName: string,
+  reason: "missing" | "changed",
+): Promise<"relocate" | "delete" | "cancel"> {
+  const why =
+    reason === "missing"
+      ? `找不到「${fileName}」（可能已移动或删除）。`
+      : `「${fileName}」内容已变化，可能不是同一文件。`;
+  const result = await tauriMessage(
+    `${why}\n\n阅读进度仍保留。请选择下一步：`,
+    {
+      title: "PDF 无法打开",
+      kind: "warning",
+      buttons: {
+        yes: "重新定位",
+        no: "删除该记录",
+        cancel: "取消",
+      },
+    },
+  );
+  if (result === "重新定位" || result === "Yes") return "relocate";
+  if (result === "删除该记录" || result === "No") return "delete";
+  return "cancel";
+}
+
+async function promptHashMismatch(
+  fileName: string,
+): Promise<"apply" | "relocate" | "delete" | "cancel"> {
+  const result = await tauriMessage(
+    `所选文件与「${fileName}」校验不一致，可能不是同一本。\n阅读位置仅作近似恢复，页码会限制在新文件页数内。`,
+    {
+      title: "文件内容不一致",
+      kind: "warning",
+      buttons: {
+        yes: "仍应用原进度",
+        no: "重新选择",
+        cancel: "取消",
+      },
+    },
+  );
+  if (result === "仍应用原进度" || result === "Yes") return "apply";
+  if (result === "重新选择" || result === "No") return "relocate";
+  return "cancel";
+}
 
 const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
   { id: "single", label: "单页视图" },
@@ -360,6 +427,46 @@ function pageDisplayLabel(
   return label;
 }
 
+/** PDF page index: positive integer only (never Roman page-labels like "i"). */
+function sanitizePdfPage(n: unknown, fallback = 1): number {
+  const v = typeof n === "number" ? n : Number.parseInt(String(n ?? ""), 10);
+  if (!Number.isFinite(v) || v < 1) return fallback;
+  return Math.floor(v);
+}
+
+/** Always re-read progress from IndexedDB for this path. */
+async function fetchSavedPdfProgress(
+  filePath: string,
+): Promise<PdfResume | null> {
+  const path = (filePath || "").trim();
+  if (!path) return null;
+  const recent = await loadRecentPdf(path);
+  if (recent?.filePath) {
+    return {
+      pageNumber: sanitizePdfPage(recent.pageNumber),
+      scrollTop: recent.scrollTop || 0,
+      scrollLeft: recent.scrollLeft || 0,
+      viewMode: recent.viewMode,
+      scale: recent.scale,
+      outlineOpen: !!recent.outlineOpen,
+      contentHash: recent.contentHash,
+    };
+  }
+  const session = await loadPdfSession();
+  if (session?.filePath === path) {
+    return {
+      pageNumber: sanitizePdfPage(session.pageNumber),
+      scrollTop: session.scrollTop || 0,
+      scrollLeft: session.scrollLeft || 0,
+      viewMode: session.viewMode,
+      scale: session.scale,
+      outlineOpen: !!session.outlineOpen,
+      contentHash: session.contentHash,
+    };
+  }
+  return null;
+}
+
 export function PdfPane({
   onTextSelected,
   visible = true,
@@ -368,6 +475,7 @@ export function PdfPane({
   onOpenImageOcr,
   toolbarExtra,
   seedDoc = null,
+  seedPageNumber = null,
   onSeedConsumed,
   onOpenOtherKind,
   onDocumentChange,
@@ -375,6 +483,15 @@ export function PdfPane({
   const [file, setFile] = useState<File | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
   const openedDocPathRef = useRef<string | null>(null);
+  /** SHA-256 of the currently open file bytes (for session meta). */
+  const contentHashRef = useRef<string | undefined>(undefined);
+  const handlePdfIntegrityIssueRef = useRef<
+    (args: {
+      reason: "missing" | "changed";
+      saved: PdfSession;
+      oldPath: string;
+    }) => Promise<void>
+  >(async () => undefined);
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(DEFAULT_SCALE);
@@ -447,12 +564,24 @@ export function PdfPane({
   const restoredPageRef = useRef<number | null>(null);
   /** Page to apply on pagesinit; not overwritten by PDF.js interim page=1. */
   const restoreTargetPageRef = useRef<number | null>(null);
-  const wasVisibleRef = useRef(visible);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const lastGoodPageByPathRef = useRef<Map<string, number>>(new Map());
+  /**
+   * Last known good PDF page for this book. Updated only by real navigation /
+   * successful restore — never by teardown pagechanging→1. Used when hiding
+   * the pane and when reopening after EPUB switch.
+   */
+  const committedPageRef = useRef(1);
+  /** While opening a PDF, pin the page we must restore (beats any page-1 persist). */
+  const forcedResumePageRef = useRef<number | null>(null);
   const suppressPersistRef = useRef(false);
   const metaSaveTimer = useRef<number | null>(null);
   const persistMetaRef = useRef<
     (opts?: { immediate?: boolean; force?: boolean }) => void
   >(() => undefined);
+  const fileMetaRef = useRef<FileMeta | null>(null);
+  const pageNumberRef = useRef(1);
   const selectingRef = useRef(false);
   const lastEmittedTextRef = useRef("");
   const pageInputFocusedRef = useRef(false);
@@ -477,6 +606,8 @@ export function PdfPane({
   viewModeRef.current = viewMode;
   scaleRef.current = scale;
   pageLabelsRef.current = pageLabels;
+  fileMetaRef.current = fileMeta;
+  pageNumberRef.current = pageNumber;
 
   const resolveOutlinePage = useCallback(
     async (dest: unknown, fallback: number | null) => {
@@ -509,20 +640,15 @@ export function PdfPane({
     viewer.spreadMode = spread;
   }, []);
 
-  const syncPageInputDisplay = useCallback(
-    (pageIndex: number) => {
-      if (pageInputFocusedRef.current) return;
-      const label =
-        pdfViewerRef.current?.currentPageLabel ??
-        pageDisplayLabel(pageLabels, pageIndex);
-      setPageInput(label ?? String(pageIndex));
-    },
-    [pageLabels],
-  );
+  const syncPageInputDisplay = useCallback((pageIndex: number) => {
+    if (pageInputFocusedRef.current) return;
+    // Toolbar shows PDF ordinal (1..N), not printed page-labels (i, ii, …).
+    setPageInput(String(sanitizePdfPage(pageIndex)));
+  }, []);
 
   const goToPage = useCallback(
     (page: number, _opts?: { smooth?: boolean }) => {
-      const next = clampPage(page);
+      const next = clampPage(sanitizePdfPage(page));
       setPageNumber(next);
       syncPageInputDisplay(next);
       const viewer = pdfViewerRef.current;
@@ -530,9 +656,68 @@ export function PdfPane({
         viewer.currentPageNumber = next;
       }
       restoredPageRef.current = next;
+      committedPageRef.current = next;
     },
     [clampPage, syncPageInputDisplay],
   );
+
+  /** Hard rule: after any PDF open, re-read page from IDB and jump there. */
+  const jumpToSavedPage = useCallback(async (filePath?: string | null) => {
+    const path =
+      (filePath || "").trim() ||
+      fileMetaRef.current?.filePath ||
+      openedDocPathRef.current;
+    if (!path) return;
+    const saved = await fetchSavedPdfProgress(path);
+    const remembered = lastGoodPageByPathRef.current.get(path);
+    const page = sanitizePdfPage(
+      forcedResumePageRef.current ??
+        remembered ??
+        saved?.pageNumber ??
+        committedPageRef.current,
+    );
+    if (page > 1) lastGoodPageByPathRef.current.set(path, page);
+    const scrollTop = saved?.scrollTop || 0;
+    const scrollLeft = saved?.scrollLeft || 0;
+    suppressPersistRef.current = true;
+    forcedResumePageRef.current = page;
+    restoreTargetPageRef.current = page;
+    restoredPageRef.current = page;
+    committedPageRef.current = page;
+    pendingScrollRef.current = { top: scrollTop, left: scrollLeft };
+    setPageNumber(page);
+    if (!pageInputFocusedRef.current) setPageInput(String(page));
+
+    const viewer = pdfViewerRef.current;
+    const count = viewer?.pagesCount || 0;
+    // Viewer not ready yet (typical EPUB→PDF): keep the target, let pagesinit retry.
+    if (!viewer || count < 1) return;
+
+    const keep = Math.min(page, count);
+    viewer.currentPageNumber = keep;
+    restoredPageRef.current = keep;
+    committedPageRef.current = keep;
+    restoreTargetPageRef.current = null;
+    forcedResumePageRef.current = null;
+    setPageNumber(keep);
+    if (!pageInputFocusedRef.current) setPageInput(String(keep));
+    const pending = pendingScrollRef.current;
+    const root = scrollRef.current;
+    if (root && pending) {
+      const maxTop = Math.max(0, root.scrollHeight - root.clientHeight);
+      const maxLeft = Math.max(0, root.scrollWidth - root.clientWidth);
+      root.scrollTop = Math.min(maxTop, Math.max(0, pending.top));
+      root.scrollLeft = Math.min(maxLeft, Math.max(0, pending.left));
+      pendingScrollRef.current = null;
+    }
+    window.setTimeout(() => {
+      suppressPersistRef.current = false;
+      persistMetaRef.current({ immediate: true, force: true });
+    }, 150);
+  }, []);
+
+  const jumpToSavedPageRef = useRef(jumpToSavedPage);
+  jumpToSavedPageRef.current = jumpToSavedPage;
 
   const onOutlineActivate = useCallback(
     (node: DocOutlineNode) => {
@@ -571,21 +756,14 @@ export function PdfPane({
       syncPageInputDisplay(pageNumber);
       return;
     }
-    const link = linkServiceRef.current;
-    if (link) {
-      link.goToPage(raw);
-      const p = pdfViewerRef.current?.currentPageNumber;
-      if (p != null) {
-        goToPage(p);
-      }
-      return;
-    }
+    // Only accept positive integers (PDF page index). Printed labels like "i"
+    // are shown in the tooltip, not typed into this box.
     const n = Number.parseInt(raw, 10);
-    if (!Number.isFinite(n)) {
+    if (!Number.isFinite(n) || String(n) !== raw || n < 1) {
       syncPageInputDisplay(pageNumber);
       return;
     }
-    goToPage(clampPage(Math.round(n)));
+    goToPage(clampPage(n));
   }, [clampPage, goToPage, pageInput, pageNumber, syncPageInputDisplay]);
 
   const fitScaleForDouble = useCallback(
@@ -793,20 +971,29 @@ export function PdfPane({
 
   const persistMeta = useCallback((opts?: { immediate?: boolean; force?: boolean }) => {
     if (!fileMeta) return;
+    if (!visibleRef.current && !opts?.force) return;
     if (suppressPersistRef.current && !opts?.force) return;
     const root = scrollRef.current;
-    const page =
-      pdfViewerRef.current?.currentPageNumber ||
-      restoredPageRef.current ||
-      pageNumber;
+    const path = fileMeta.filePath;
+    const remembered = lastGoodPageByPathRef.current.get(path);
+    const page = sanitizePdfPage(
+      forcedResumePageRef.current ??
+        restoreTargetPageRef.current ??
+        remembered ??
+        committedPageRef.current ??
+        restoredPageRef.current ??
+        pageNumber,
+    );
+    if (page > 1) lastGoodPageByPathRef.current.set(path, page);
     const meta: PdfSessionMeta = {
       ...fileMeta,
       viewMode,
-      pageNumber: Math.max(1, page),
+      pageNumber: page,
       scale,
       scrollTop: root?.scrollTop ?? 0,
       scrollLeft: root?.scrollLeft ?? 0,
       outlineOpen,
+      contentHash: contentHashRef.current,
     };
     if (metaSaveTimer.current) window.clearTimeout(metaSaveTimer.current);
     if (opts?.immediate) {
@@ -824,18 +1011,21 @@ export function PdfPane({
   const syncPageFromViewer = useCallback(() => {
     const viewer = pdfViewerRef.current;
     if (!viewer || viewer.pagesCount <= 0) return;
-    const p = viewer.currentPageNumber;
-    if (!Number.isFinite(p) || p < 1) return;
+    if (suppressPersistRef.current) return;
+    if (
+      forcedResumePageRef.current != null ||
+      restoreTargetPageRef.current != null
+    ) {
+      return;
+    }
+    const p = sanitizePdfPage(viewer.currentPageNumber);
+    if (p < 1) return;
     setPageNumber((prev) => {
       if (prev === p) return prev;
-      if (!suppressPersistRef.current) {
-        restoredPageRef.current = p;
-      }
+      restoredPageRef.current = p;
+      committedPageRef.current = p;
       if (!pageInputFocusedRef.current) {
-        const label =
-          viewer.currentPageLabel ??
-          pageDisplayLabel(pageLabelsRef.current, p);
-        setPageInput(label ?? String(p));
+        setPageInput(String(p));
       }
       return p;
     });
@@ -870,7 +1060,7 @@ export function PdfPane({
   // Must not run while `restoring` early-return used to omit the container
   // (that left viewerReady stuck false and the literature pane blank).
   useEffect(() => {
-    if (restoring || !visible) return;
+    if (restoring) return;
 
     const container = scrollRef.current;
     const viewerEl = viewerDivRef.current;
@@ -918,26 +1108,23 @@ export function PdfPane({
     }
 
     const onPageChanging = (evt: { pageNumber: number }) => {
-      const p = evt.pageNumber;
-      // During restore/teardown PDF.js may briefly report page 1 — skip UI flicker only.
+      if (!visibleRef.current) return;
+      const p = sanitizePdfPage(evt.pageNumber);
       const restoreTarget = restoreTargetPageRef.current;
-      if (
-        suppressPersistRef.current &&
-        restoreTarget != null &&
-        restoreTarget > 1 &&
-        p === 1
-      ) {
-        return;
+      if (suppressPersistRef.current) {
+        // Teardown / mid-restore: ignore interim pages (especially page 1).
+        if (p === 1) return;
+        if (restoreTarget != null && p !== restoreTarget) return;
       }
       setPageNumber(p);
       if (!pageInputFocusedRef.current) {
-        const label =
-          pdfViewer.currentPageLabel ??
-          pageDisplayLabel(pageLabelsRef.current, p);
-        setPageInput(label ?? String(p));
+        setPageInput(String(p));
       }
       if (!suppressPersistRef.current) {
         restoredPageRef.current = p;
+        committedPageRef.current = p;
+        const path = openedDocPathRef.current;
+        if (p > 1 && path) lastGoodPageByPathRef.current.set(path, p);
       }
     };
     const onScaleChanging = (evt: { scale: number }) => {
@@ -955,29 +1142,57 @@ export function PdfPane({
       } finally {
         applyingViewerScaleRef.current = false;
       }
-      const target =
-        restoreTargetPageRef.current ?? restoredPageRef.current ?? 1;
-      const keep = Math.min(Math.max(1, target), pdfViewer.pagesCount || 1);
+      const target = sanitizePdfPage(
+        forcedResumePageRef.current ??
+          restoreTargetPageRef.current ??
+          committedPageRef.current ??
+          restoredPageRef.current ??
+          1,
+      );
+      const pageCount = pdfViewer.pagesCount;
+      // CRITICAL: pagesCount may be 0/undefined at the first pagesinit tick.
+      // `Math.min(target, pagesCount || 1)` used to force page 1 and then
+      // persist it — wiping real progress after every EPUB↔PDF switch.
+      if (!pageCount || pageCount < 1) {
+        restoreTargetPageRef.current = target;
+        restoredPageRef.current = target;
+        committedPageRef.current = target;
+        setPageNumber(target);
+        if (!pageInputFocusedRef.current) setPageInput(String(target));
+        window.setTimeout(() => {
+          void jumpToSavedPageRef.current(openedDocPathRef.current);
+        }, 0);
+        return;
+      }
+      const keep = Math.min(target, pageCount);
       pdfViewer.currentPageNumber = keep;
       restoredPageRef.current = keep;
+      committedPageRef.current = keep;
       restoreTargetPageRef.current = null;
       setPageNumber(keep);
-      const initLabel =
-        pdfViewer.currentPageLabel ??
-        pageDisplayLabel(pageLabelsRef.current, keep);
       if (!pageInputFocusedRef.current) {
-        setPageInput(initLabel ?? String(keep));
+        setPageInput(String(keep));
       }
       window.setTimeout(() => reapplyPageRotationsRef.current(), 0);
       const pending = pendingScrollRef.current;
       const finishRestore = () => {
-        suppressPersistRef.current = false;
-        persistMetaRef.current({ immediate: true });
+        // Always re-read from IDB after the viewer is ready (EPUB→PDF handoff).
+        void jumpToSavedPageRef.current(openedDocPathRef.current).finally(() => {
+          suppressPersistRef.current = false;
+        });
       };
       if (pending) {
         window.setTimeout(() => {
-          container.scrollTop = pending.top;
-          container.scrollLeft = pending.left;
+          const maxTop = Math.max(
+            0,
+            container.scrollHeight - container.clientHeight,
+          );
+          const maxLeft = Math.max(
+            0,
+            container.scrollWidth - container.clientWidth,
+          );
+          container.scrollTop = Math.min(maxTop, Math.max(0, pending.top));
+          container.scrollLeft = Math.min(maxLeft, Math.max(0, pending.left));
           pendingScrollRef.current = null;
           finishRestore();
         }, 80);
@@ -1007,11 +1222,11 @@ export function PdfPane({
       viewerReadyRef.current = false;
       setViewerReady(false);
     };
-  }, [restoring, visible, applyScrollSpread]);
+  }, [restoring, applyScrollSpread]);
 
   // Load document into viewer when file / viewer are ready
   useEffect(() => {
-    if (restoring || !visible || !file || !viewerReady) return;
+    if (restoring || !file || !viewerReady) return;
     const pdfViewer = pdfViewerRef.current;
     if (!pdfViewer) return;
     let cancelled = false;
@@ -1099,7 +1314,7 @@ export function PdfPane({
       setPageLabels(null);
       void prev?.destroy();
     };
-  }, [restoring, visible, file, viewerReady]);
+  }, [restoring, file, viewerReady]);
 
   // Session restore on first mount (path-only: re-read from disk)
   useEffect(() => {
@@ -1114,8 +1329,20 @@ export function PdfPane({
       try {
         const doc = await loadLocalDoc(session.filePath);
         if (cancelled) return;
-        // Warn if file changed but still try to open.
+        const hash = await sha256Hex(doc.bytes);
+        if (cancelled) return;
+        if (session.contentHash && session.contentHash !== hash) {
+          setRestoring(false);
+          void refreshRecent();
+          await handlePdfIntegrityIssueRef.current({
+            reason: "changed",
+            saved: session,
+            oldPath: session.filePath,
+          });
+          return;
+        }
         suppressPersistRef.current = true;
+        contentHashRef.current = hash;
         const restored = new File([doc.bytes], doc.fileName, {
           type: "application/pdf",
           lastModified: doc.lastModified || Date.now(),
@@ -1130,9 +1357,10 @@ export function PdfPane({
         setViewMode(
           isViewMode(session.viewMode) ? session.viewMode : "single-scroll",
         );
-        const keepPage = Math.max(1, session.pageNumber || 1);
+        const keepPage = sanitizePdfPage(session.pageNumber);
         restoreTargetPageRef.current = keepPage;
         restoredPageRef.current = keepPage;
+        committedPageRef.current = keepPage;
         setPageNumber(keepPage);
         const savedScale = session.scale || DEFAULT_SCALE;
         setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, savedScale)));
@@ -1142,11 +1370,19 @@ export function PdfPane({
           left: session.scrollLeft || 0,
         };
         setError(null);
+        if (!session.contentHash) {
+          await savePdfSession({ ...session, contentHash: hash });
+        }
       } catch {
         if (!cancelled) {
-          setError(
-            "找不到上次打开的 PDF（文件可能已移动或变更）。请重新选择文件；阅读进度仍会保留。",
-          );
+          setRestoring(false);
+          void refreshRecent();
+          await handlePdfIntegrityIssueRef.current({
+            reason: "missing",
+            saved: session,
+            oldPath: session.filePath,
+          });
+          return;
         }
       } finally {
         if (!cancelled) {
@@ -1160,58 +1396,30 @@ export function PdfPane({
     };
   }, [refreshRecent]);
 
-  // Save position when leaving literature; re-apply when returning.
+  // Persist on hide only. Becoming visible must NOT sync the live viewer
+  // (it is still on page 1 after EPUB→PDF remount) — pagesinit/jumpToSavedPage
+  // own restore.
   useEffect(() => {
-    const becameVisible = visible && !wasVisibleRef.current;
-    wasVisibleRef.current = visible;
-
-    if (becameVisible && file) {
-      const keep = Math.max(
-        1,
-        restoreTargetPageRef.current ??
-          restoredPageRef.current ??
-          pageNumber,
-      );
-      restoreTargetPageRef.current = keep;
-      restoredPageRef.current = keep;
-      setPageNumber(keep);
-      const viewer = pdfViewerRef.current;
-      const label =
-        viewer?.currentPageLabel ??
-        pageDisplayLabel(pageLabelsRef.current, keep);
-      if (!pageInputFocusedRef.current) {
-        setPageInput(label ?? String(keep));
-      }
-      if (viewer && numPages > 0) {
-        viewer.currentPageNumber = Math.min(keep, viewer.pagesCount || keep);
-        viewer.update();
-      }
-      const pending = pendingScrollRef.current;
-      const root = scrollRef.current;
-      if (root && pending) {
-        root.scrollTop = pending.top;
-        root.scrollLeft = pending.left;
-      }
-      window.setTimeout(() => {
-        suppressPersistRef.current = false;
-        syncPageFromViewer();
-      }, 120);
-    }
+    if (!visible) return;
 
     return () => {
-      if (!visible || !fileMeta) return;
-      const keep = Math.max(
-        1,
-        pdfViewerRef.current?.currentPageNumber ||
-          restoredPageRef.current ||
-          pageNumber,
+      if (!fileMetaRef.current) return;
+      const path = fileMetaRef.current.filePath;
+      const keepHide = sanitizePdfPage(
+        restoreTargetPageRef.current ??
+          forcedResumePageRef.current ??
+          lastGoodPageByPathRef.current.get(path) ??
+          committedPageRef.current,
       );
-      restoredPageRef.current = keep;
-      restoreTargetPageRef.current = keep;
+      restoredPageRef.current = keepHide;
+      committedPageRef.current = keepHide;
+      if (keepHide > 1 && path) {
+        lastGoodPageByPathRef.current.set(path, keepHide);
+      }
       suppressPersistRef.current = true;
       persistMetaRef.current({ immediate: true, force: true });
     };
-  }, [visible, file, fileMeta, numPages, pageNumber, syncPageFromViewer]);
+  }, [visible]);
 
   const applyOpenedDoc = useCallback(
     async (
@@ -1222,8 +1430,88 @@ export function PdfPane({
         lastModified: number;
         bytes: ArrayBuffer;
       },
-      opts?: { restoreFromSession?: boolean },
+      opts?: {
+        restoreFromSession?: boolean;
+        /** Prefer this position (e.g. from 最近打开) over the current session. */
+        resume?: PdfResume;
+        contentHash?: string;
+        /** When relocating, remove the old recent key. */
+        relocateFrom?: string;
+      },
     ) => {
+      const hash = opts?.contentHash || (await sha256Hex(doc.bytes));
+
+      // Same book already open (content hash match): keep the viewer, only
+      // refresh path/session metadata when needed.
+      const sameBookOpen =
+        !!hash &&
+        contentHashRef.current === hash &&
+        openedDocPathRef.current != null &&
+        !!pdfRef.current;
+
+      if (sameBookOpen) {
+        setError(null);
+        setRecentOpen(false);
+        const live = pdfViewerRef.current?.currentPageNumber;
+        const liveOk =
+          pdfViewerRef.current &&
+          (pdfViewerRef.current.pagesCount || 0) > 0 &&
+          typeof live === "number" &&
+          live > 1;
+        if (liveOk && live != null) {
+          committedPageRef.current = live;
+          restoredPageRef.current = live;
+          lastGoodPageByPathRef.current.set(doc.filePath, live);
+          persistMetaRef.current({ immediate: true, force: true });
+          void refreshRecent();
+          return;
+        }
+        const pathChanged = openedDocPathRef.current !== doc.filePath;
+        const needRelocate =
+          !!opts?.relocateFrom && opts.relocateFrom !== doc.filePath;
+        const saved = await fetchSavedPdfProgress(doc.filePath);
+        const page = sanitizePdfPage(
+          opts?.resume?.pageNumber ??
+            lastGoodPageByPathRef.current.get(doc.filePath) ??
+            saved?.pageNumber ??
+            committedPageRef.current,
+        );
+        if (pathChanged || needRelocate) {
+          if (openedDocPathRef.current !== doc.filePath) {
+            onDocumentChange?.();
+          }
+          openedDocPathRef.current = doc.filePath;
+          setFileMeta({
+            filePath: doc.filePath,
+            fileName: doc.fileName,
+            fileSize: doc.fileSize,
+            lastModified: doc.lastModified,
+          });
+          const root = scrollRef.current;
+          const next: PdfSession = {
+            filePath: doc.filePath,
+            fileName: doc.fileName,
+            fileSize: doc.fileSize,
+            lastModified: doc.lastModified,
+            viewMode,
+            pageNumber: page,
+            scale,
+            scrollTop: root?.scrollTop ?? saved?.scrollTop ?? 0,
+            scrollLeft: root?.scrollLeft ?? saved?.scrollLeft ?? 0,
+            outlineOpen,
+            contentHash: hash,
+          };
+          if (needRelocate) {
+            await relocatePdfRecent(opts!.relocateFrom!, next);
+          } else {
+            await savePdfSession(next);
+          }
+        }
+        await jumpToSavedPage(doc.filePath);
+        void refreshRecent();
+        return;
+      }
+
       if (
         openedDocPathRef.current !== null &&
         openedDocPathRef.current !== doc.filePath
@@ -1231,14 +1519,36 @@ export function PdfPane({
         onDocumentChange?.();
       }
       openedDocPathRef.current = doc.filePath;
+      contentHashRef.current = hash;
 
-      const session = await loadPdfSession();
-      const sameAsSaved =
-        !!session &&
-        session.filePath === doc.filePath &&
-        (opts?.restoreFromSession ||
-          (session.fileSize === doc.fileSize &&
-            session.lastModified === doc.lastModified));
+      // Always re-read this book's saved progress from IDB.
+      const savedProgress = await fetchSavedPdfProgress(doc.filePath);
+      const resume = opts?.resume ?? savedProgress;
+      const restoreFrom: PdfResume | null = resume;
+
+      // Commit restore targets BEFORE setFile so document-load / pagesinit
+      // never race with a missing target (which defaulted to page 1).
+      if (restoreFrom) {
+        const keep = sanitizePdfPage(restoreFrom.pageNumber);
+        suppressPersistRef.current = true;
+        forcedResumePageRef.current = keep;
+        restoreTargetPageRef.current = keep;
+        restoredPageRef.current = keep;
+        committedPageRef.current = keep;
+        setPageNumber(keep);
+        pendingScrollRef.current = {
+          top: restoreFrom.scrollTop || 0,
+          left: restoreFrom.scrollLeft || 0,
+        };
+      } else {
+        suppressPersistRef.current = true;
+        forcedResumePageRef.current = null;
+        restoreTargetPageRef.current = 1;
+        restoredPageRef.current = 1;
+        committedPageRef.current = 1;
+        setPageNumber(1);
+        pendingScrollRef.current = { top: 0, left: 0 };
+      }
 
       const f = new File([doc.bytes], doc.fileName, {
         type: "application/pdf",
@@ -1256,65 +1566,179 @@ export function PdfPane({
       setError(null);
       setRecentOpen(false);
 
-      if (sameAsSaved && session) {
-        const keep = Math.max(1, session.pageNumber || 1);
-        suppressPersistRef.current = true;
-        restoreTargetPageRef.current = keep;
-        restoredPageRef.current = keep;
-        setPageNumber(keep);
-        pendingScrollRef.current = {
-          top: session.scrollTop || 0,
-          left: session.scrollLeft || 0,
-        };
-        if (isViewMode(session.viewMode)) setViewMode(session.viewMode);
-        if (session.scale) {
-          setScale(
-            Math.min(MAX_SCALE, Math.max(MIN_SCALE, session.scale)),
-          );
+      const buildSession = (
+        page: number,
+        scrollTop: number,
+        scrollLeft: number,
+        view: ViewMode,
+        nextScale: number,
+        nextOutline: boolean,
+      ): PdfSession => ({
+        filePath: doc.filePath,
+        fileName: doc.fileName,
+        fileSize: doc.fileSize,
+        lastModified: doc.lastModified,
+        viewMode: view,
+        pageNumber: page,
+        scale: nextScale,
+        scrollTop,
+        scrollLeft,
+        outlineOpen: nextOutline,
+        contentHash: hash,
+      });
+
+      if (restoreFrom) {
+        const keep = sanitizePdfPage(restoreFrom.pageNumber);
+        const nextView = isViewMode(restoreFrom.viewMode)
+          ? restoreFrom.viewMode
+          : viewMode;
+        if (isViewMode(restoreFrom.viewMode)) setViewMode(restoreFrom.viewMode);
+        const nextScale = restoreFrom.scale
+          ? Math.min(MAX_SCALE, Math.max(MIN_SCALE, restoreFrom.scale))
+          : scale;
+        if (restoreFrom.scale) setScale(nextScale);
+        const nextOutline = !!restoreFrom.outlineOpen;
+        setOutlineOpen(nextOutline);
+        const next = buildSession(
+          keep,
+          restoreFrom.scrollTop || 0,
+          restoreFrom.scrollLeft || 0,
+          nextView,
+          nextScale,
+          nextOutline,
+        );
+        if (opts?.relocateFrom && opts.relocateFrom !== doc.filePath) {
+          await relocatePdfRecent(opts.relocateFrom, next);
+        } else {
+          await savePdfSession(next);
         }
-        setOutlineOpen(!!session.outlineOpen);
-        await savePdfSession({
-          filePath: doc.filePath,
-          fileName: doc.fileName,
-          fileSize: doc.fileSize,
-          lastModified: doc.lastModified,
-          viewMode: isViewMode(session.viewMode)
-            ? session.viewMode
-            : viewMode,
-          pageNumber: keep,
-          scale: session.scale || scale,
-          scrollTop: session.scrollTop || 0,
-          scrollLeft: session.scrollLeft || 0,
-          outlineOpen: !!session.outlineOpen,
-        });
         void refreshRecent();
+        // Viewer may not be ready yet; pagesinit will call jumpToSavedPage too.
+        await jumpToSavedPage(doc.filePath);
         return;
       }
 
-      restoreTargetPageRef.current = 1;
-      restoredPageRef.current = 1;
-      setPageNumber(1);
-      pendingScrollRef.current = { top: 0, left: 0 };
       try {
-        await savePdfSession({
-          filePath: doc.filePath,
-          fileName: doc.fileName,
-          fileSize: doc.fileSize,
-          lastModified: doc.lastModified,
-          viewMode,
-          pageNumber: 1,
-          scale,
-          scrollTop: 0,
-          scrollLeft: 0,
-          outlineOpen,
-        });
+        const next = buildSession(1, 0, 0, viewMode, scale, outlineOpen);
+        if (opts?.relocateFrom && opts.relocateFrom !== doc.filePath) {
+          await relocatePdfRecent(opts.relocateFrom, next);
+        } else {
+          await savePdfSession(next);
+        }
         void refreshRecent();
       } catch {
         // ignore
       }
     },
-    [onDocumentChange, outlineOpen, refreshRecent, scale, viewMode],
+    [
+      jumpToSavedPage,
+      onDocumentChange,
+      outlineOpen,
+      refreshRecent,
+      scale,
+      viewMode,
+    ],
   );
+
+  const handlePdfIntegrityIssue = useCallback(
+    async (args: {
+      reason: "missing" | "changed";
+      saved: PdfSession;
+      oldPath: string;
+    }) => {
+      const { reason, saved, oldPath } = args;
+      const fileName = saved.fileName || oldPath;
+
+      const resumeFromSaved = (): PdfResume => ({
+        pageNumber: sanitizePdfPage(saved.pageNumber),
+        scrollTop: saved.scrollTop || 0,
+        scrollLeft: saved.scrollLeft || 0,
+        viewMode: isViewMode(saved.viewMode) ? saved.viewMode : viewMode,
+        scale: saved.scale || scale,
+        outlineOpen: !!saved.outlineOpen,
+        contentHash: saved.contentHash,
+      });
+
+      const openWithDoc = async (
+        doc: LocalDocFile,
+        hash: string,
+        applyProgress: boolean,
+      ) => {
+        await applyOpenedDoc(doc, {
+          restoreFromSession: true,
+          relocateFrom: oldPath,
+          contentHash: hash,
+          resume: applyProgress ? resumeFromSaved() : undefined,
+        });
+        setError(null);
+      };
+
+      const runRelocateLoop = async (): Promise<void> => {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const path = await pickDocumentPath(["pdf"]);
+          if (!path) {
+            // User cancelled the file dialog — abort with no further UI.
+            setError(null);
+            setRecentOpen(false);
+            return;
+          }
+          let doc: LocalDocFile;
+          let hash: string;
+          try {
+            doc = await loadLocalDoc(path);
+            hash = await sha256Hex(doc.bytes);
+          } catch {
+            setError("无法读取所选文件，请重试。");
+            continue;
+          }
+
+          const expected = (saved.contentHash || "").trim();
+          if (!expected || expected === hash) {
+            await openWithDoc(doc, hash, true);
+            return;
+          }
+
+          const mismatch = await promptHashMismatch(fileName);
+          if (mismatch === "apply") {
+            await openWithDoc(doc, hash, true);
+            return;
+          }
+          if (mismatch === "relocate") continue;
+          if (mismatch === "delete") {
+            await removeRecentPdf(oldPath);
+            void refreshRecent();
+            setError(null);
+            setRecentOpen(false);
+            return;
+          }
+          // Cancel on mismatch dialog — stop, no banner.
+          setError(null);
+          setRecentOpen(false);
+          return;
+        }
+      };
+
+      const action = await promptPdfInvalid(fileName, reason);
+      if (action === "relocate") {
+        await runRelocateLoop();
+        return;
+      }
+      if (action === "delete") {
+        await removeRecentPdf(oldPath);
+        void refreshRecent();
+        setError(null);
+        setRecentOpen(false);
+        return;
+      }
+      // Cancel: leave UI exactly as before the click — no error banner, no further dialogs.
+      setError(null);
+      setRecentOpen(false);
+    },
+    [applyOpenedDoc, refreshRecent, scale, viewMode],
+  );
+
+  handlePdfIntegrityIssueRef.current = handlePdfIntegrityIssue;
 
   const openFilePicker = useCallback(async () => {
     try {
@@ -1322,10 +1746,40 @@ export function PdfPane({
       if (!doc) return;
       const kind = detectDocKind(doc.filePath);
       if (kind === "epub") {
+        persistMetaRef.current({ immediate: true, force: true });
         onOpenOtherKind?.("epub", doc);
         return;
       }
-      await applyOpenedDoc(doc);
+      const hash = await sha256Hex(doc.bytes);
+      const session = await loadPdfSession();
+      if (
+        session?.filePath === doc.filePath &&
+        session.contentHash &&
+        session.contentHash !== hash
+      ) {
+        await handlePdfIntegrityIssue({
+          reason: "changed",
+          saved: session,
+          oldPath: session.filePath,
+        });
+        return;
+      }
+      await applyOpenedDoc(doc, {
+        contentHash: hash,
+        resume:
+          session?.filePath === doc.filePath
+            ? {
+                pageNumber: session.pageNumber,
+                scrollTop: session.scrollTop,
+                scrollLeft: session.scrollLeft,
+                viewMode: session.viewMode,
+                scale: session.scale,
+                outlineOpen: session.outlineOpen,
+                contentHash: hash,
+              }
+            : undefined,
+        restoreFromSession: session?.filePath === doc.filePath,
+      });
     } catch (e) {
       setError(
         e instanceof Error
@@ -1333,12 +1787,14 @@ export function PdfPane({
           : "打开 PDF 失败。请确认文件仍在原路径。",
       );
     }
-  }, [applyOpenedDoc, onOpenOtherKind]);
+  }, [applyOpenedDoc, handlePdfIntegrityIssue, onOpenOtherKind]);
 
   const openRecent = useCallback(
     async (item: LitRecentItem) => {
       if (item.kind === "epub") {
         try {
+          // Flush PDF progress before the pane is hidden for EPUB.
+          persistMetaRef.current({ immediate: true, force: true });
           const doc = await loadLocalDoc(item.filePath);
           onOpenOtherKind?.("epub", doc);
           setRecentOpen(false);
@@ -1354,47 +1810,96 @@ export function PdfPane({
       if (!entry?.filePath) return;
       try {
         const doc = await loadLocalDoc(entry.filePath);
-        await applyOpenedDoc(doc, { restoreFromSession: true });
-        await touchRecentAsCurrent(
-          {
-            ...entry,
-            filePath: doc.filePath,
-            fileName: doc.fileName,
-            fileSize: doc.fileSize,
-            lastModified: doc.lastModified,
-          },
-          {
-            pageNumber: Math.max(1, entry.pageNumber || 1),
+        const hash = await sha256Hex(doc.bytes);
+        if (entry.contentHash && entry.contentHash !== hash) {
+          await handlePdfIntegrityIssue({
+            reason: "changed",
+            saved: entry,
+            oldPath: entry.filePath,
+          });
+          return;
+        }
+        const keepPage = sanitizePdfPage(entry.pageNumber);
+        await applyOpenedDoc(doc, {
+          restoreFromSession: true,
+          contentHash: hash,
+          resume: {
+            pageNumber: keepPage,
             scrollTop: entry.scrollTop || 0,
             scrollLeft: entry.scrollLeft || 0,
+            viewMode: isViewMode(entry.viewMode) ? entry.viewMode : viewMode,
+            scale: entry.scale || scale,
+            outlineOpen: !!entry.outlineOpen,
+            contentHash: hash,
           },
-          { viewMode, scale, outlineOpen },
-        );
+        });
         void refreshRecent();
       } catch {
-        setError(
-          "找不到该 PDF（文件可能已移动或变更）。请重新选择文件；阅读进度仍会保留。",
-        );
-        setRecentOpen(false);
+        await handlePdfIntegrityIssue({
+          reason: "missing",
+          saved: entry,
+          oldPath: entry.filePath,
+        });
       }
     },
     [
       applyOpenedDoc,
+      handlePdfIntegrityIssue,
       onOpenOtherKind,
-      outlineOpen,
       refreshRecent,
       scale,
       viewMode,
     ],
   );
 
-  // Seed from LiteratureView / EpubPane handoff
+  const removeRecent = useCallback(
+    async (item: LitRecentItem) => {
+      await removeRecentDocument(item);
+      await refreshRecent();
+    },
+    [refreshRecent],
+  );
+
+  // Seed from LiteratureView / EpubPane handoff — wait until this pane is
+  // actually shown so the viewer exists before we try to jump.
   useEffect(() => {
-    if (!seedDoc) return;
+    if (!seedDoc || !visible) return;
     let cancelled = false;
     (async () => {
       try {
-        await applyOpenedDoc(seedDoc);
+        const hash = await sha256Hex(seedDoc.bytes);
+        if (cancelled) return;
+        const saved = await fetchSavedPdfProgress(seedDoc.filePath);
+        if (cancelled) return;
+        const remembered = lastGoodPageByPathRef.current.get(seedDoc.filePath);
+        const hint =
+          typeof seedPageNumber === "number" && seedPageNumber > 0
+            ? Math.floor(seedPageNumber)
+            : 0;
+        const page = sanitizePdfPage(
+          hint > 0
+            ? hint
+            : (remembered ?? saved?.pageNumber ?? committedPageRef.current),
+        );
+        if (page > 1) {
+          lastGoodPageByPathRef.current.set(seedDoc.filePath, page);
+        }
+        forcedResumePageRef.current = page;
+        restoreTargetPageRef.current = page;
+        suppressPersistRef.current = true;
+        await applyOpenedDoc(seedDoc, {
+          contentHash: hash,
+          resume: {
+            pageNumber: page,
+            scrollTop: saved?.scrollTop || 0,
+            scrollLeft: saved?.scrollLeft || 0,
+            viewMode: saved?.viewMode,
+            scale: saved?.scale,
+            outlineOpen: saved?.outlineOpen,
+            contentHash: saved?.contentHash,
+          },
+          restoreFromSession: true,
+        });
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "打开 PDF 失败");
@@ -1406,9 +1911,8 @@ export function PdfPane({
     return () => {
       cancelled = true;
     };
-    // Only react to new seedDoc identity
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seedDoc]);
+  }, [seedDoc, visible]);
 
   const runPdfSearch = useCallback(async () => {
     const pdf = pdfRef.current;
@@ -2001,7 +2505,10 @@ export function PdfPane({
   }, [persistMeta]);
 
   return (
-    <div className="pdf-pane" style={{ display: visible ? undefined : "none" }}>
+    <div
+      className={"pdf-pane" + (visible ? "" : " is-hidden")}
+      aria-hidden={!visible}
+    >
       <div className="pdf-toolbar">
         <div
           className="pdf-open-menu"
@@ -2028,25 +2535,39 @@ export function PdfPane({
                 <div className="pdf-recent-empty">暂无记录</div>
               ) : (
                 recentList.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="pdf-recent-item"
-                    title={`${item.filePath}${
-                      item.pageNumber ? ` · 第 ${item.pageNumber} 页` : ""
-                    }`}
-                    onClick={() => void openRecent(item)}
-                  >
-                    <span className="pdf-recent-kind">
-                      {recentKindLabel(item.kind)}
-                    </span>
-                    <span className="pdf-recent-name">{item.fileName}</span>
-                    {item.kind === "pdf" && item.pageNumber ? (
-                      <span className="pdf-recent-meta">
-                        p.{item.pageNumber}
+                  <div key={item.id} className="pdf-recent-row">
+                    <button
+                      type="button"
+                      className="pdf-recent-item"
+                      title={`${item.filePath}${
+                        item.pageNumber ? ` · 第 ${item.pageNumber} 页` : ""
+                      }`}
+                      onClick={() => void openRecent(item)}
+                    >
+                      <span className="pdf-recent-kind">
+                        {recentKindLabel(item.kind)}
                       </span>
-                    ) : null}
-                  </button>
+                      <span className="pdf-recent-name">{item.fileName}</span>
+                      {item.kind === "pdf" && item.pageNumber ? (
+                        <span className="pdf-recent-meta">
+                          p.{item.pageNumber}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="pdf-recent-remove"
+                      title="从最近列表移除"
+                      aria-label={`移除 ${item.fileName}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void removeRecent(item);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))
               )}
             </div>
@@ -2165,7 +2686,7 @@ export function PdfPane({
           title={
             currentPageLabel
               ? `书籍页码 ${currentPageLabel} · PDF 第 ${pageNumber} / ${numPages || "?"} 页`
-              : "输入书籍页码或 PDF 页序后回车"
+              : "输入 PDF 页序（正整数）后回车"
           }
         >
           <input
@@ -2187,7 +2708,8 @@ export function PdfPane({
                 e.currentTarget.blur();
               }
             }}
-            inputMode="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
           />
           / {numPages || "—"}
         </span>

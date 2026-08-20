@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg-app: #eef2f6;
   --bg-panel: #ffffff;
   --bg-muted: #f4f7fa;
@@ -2035,6 +2035,22 @@ textarea {
   overflow: hidden;
 }
 
+.pdf-pane.is-hidden,
+.epub-pane.is-hidden {
+  /* Keep layout size so pdf.js / epub.js do not reset to page 1. */
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pdf-pane:not(.is-hidden),
+.epub-pane:not(.is-hidden) {
+  position: relative;
+  z-index: 1;
+}
+
 .epub-pane {
   flex: 1;
   min-width: 0;
@@ -2212,7 +2228,7 @@ textarea {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #e2e8f0;
+  background: var(--bg-panel);
 }
 
 .pdf-toolbar {
@@ -5936,16 +5952,61 @@ body.row-resizing .unity-row-resizer::before {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 6px 8px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   color: var(--text);
   transition: background var(--transition);
+}
+
+.pdf-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.pdf-recent-row:hover {
+  background: var(--bg-hover);
+}
+
+.pdf-recent-row:hover .pdf-recent-item {
+  background: transparent;
+}
+
+.pdf-recent-remove {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin-right: 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity var(--transition),
+    color var(--transition),
+    background var(--transition);
+}
+
+.pdf-recent-row:hover .pdf-recent-remove {
+  opacity: 1;
+}
+
+.pdf-recent-remove:hover {
+  color: #b42318;
+  background: color-mix(in srgb, #b42318 10%, transparent);
 }
 
 .pdf-recent-kind {
@@ -6105,17 +6166,28 @@ mark.search-hit-mark {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px;
-  background: #e2e8f0;
+  padding: 24px 32px;
+  /* Fill the whole reader, not the old 420px gray strip. */
+  max-width: none;
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: var(--bg-panel);
+  color: var(--text-muted);
   box-sizing: border-box;
 }
 
 .pdf-empty {
-  max-width: 420px;
-  margin: 0 auto;
   text-align: center;
   color: var(--text-muted);
   line-height: 1.6;
+}
+
+.pdf-viewer-overlay p,
+.pdf-empty p {
+  max-width: 36em;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .pdf-outline {
@@ -7164,9 +7236,12 @@ body.row-resizing .textLayer {
   height: 100%;
   display: grid;
   place-items: center;
-  background:
-    radial-gradient(900px 480px at 20% 0%, rgba(47, 111, 237, 0.1), transparent 55%),
-    linear-gradient(160deg, #f7f9fc, #e8eef5);
+  background: var(--bg-app);
+}
+
+.boot-quiet {
+  /* Match app chrome; no card / gradient splash on startup. */
+  background: var(--bg-app);
 }
 
 .boot-card {

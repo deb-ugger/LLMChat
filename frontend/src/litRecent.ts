@@ -1,6 +1,6 @@
 import type { DocKind } from "./localDocFile";
-import { listRecentEpubs } from "./epubSession";
-import { listRecentPdfs } from "./pdfSession";
+import { listRecentEpubs, removeRecentEpub } from "./epubSession";
+import { listRecentPdfs, removeRecentPdf } from "./pdfSession";
 
 export type LitRecentItem = {
   kind: DocKind;
@@ -10,6 +10,8 @@ export type LitRecentItem = {
   openedAt: number;
   /** PDF page hint for subtitle */
   pageNumber?: number;
+  /** PDF content fingerprint when known */
+  contentHash?: string;
 };
 
 /** Merge PDF + EPUB recent lists, newest first. */
@@ -26,6 +28,7 @@ export async function listRecentDocuments(): Promise<LitRecentItem[]> {
       fileName: p.fileName,
       openedAt: p.openedAt || 0,
       pageNumber: p.pageNumber,
+      contentHash: p.contentHash,
     })),
     ...epubs.map((e) => ({
       kind: "epub" as const,
@@ -37,6 +40,16 @@ export async function listRecentDocuments(): Promise<LitRecentItem[]> {
   ];
   items.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
   return items;
+}
+
+export async function removeRecentDocument(
+  item: Pick<LitRecentItem, "kind" | "filePath">,
+): Promise<void> {
+  if (item.kind === "epub") {
+    await removeRecentEpub(item.filePath);
+  } else {
+    await removeRecentPdf(item.filePath);
+  }
 }
 
 export function recentKindLabel(kind: DocKind): string {

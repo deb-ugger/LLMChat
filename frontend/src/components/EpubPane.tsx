@@ -23,9 +23,11 @@ import {
   touchRecentEpubAsCurrent,
   type EpubSessionMeta,
 } from "../epubSession";
+import { loadRecentPdf } from "../pdfSession";
 import {
   listRecentDocuments,
   recentKindLabel,
+  removeRecentDocument,
   type LitRecentItem,
 } from "../litRecent";
 import { getEngineInfo } from "../translateEngines";
@@ -71,7 +73,7 @@ type Props = {
   seedDoc?: LocalDocFile | null;
   onSeedConsumed?: () => void;
   /** When user picks a PDF while this pane is active. */
-  onOpenOtherKind?: (kind: "pdf", doc: LocalDocFile) => void;
+  onOpenOtherKind?: (kind: "pdf", doc: LocalDocFile, pageNumber?: number) => void;
   /** Fired when a different document is opened (not on first load). */
   onDocumentChange?: () => void;
 };
@@ -346,7 +348,10 @@ export function EpubPane({
   );
 
   const applyOpenedDoc = useCallback(
-    async (doc: LocalDocFile, opts?: { restoreFromSession?: boolean }) => {
+    async (
+      doc: LocalDocFile,
+      _opts?: { restoreFromSession?: boolean },
+    ) => {
       if (
         openedDocPathRef.current !== null &&
         openedDocPathRef.current !== doc.filePath
@@ -356,25 +361,23 @@ export function EpubPane({
       openedDocPathRef.current = doc.filePath;
 
       const session = await loadEpubSession();
-      const sameAsSaved =
-        !!session &&
-        session.filePath === doc.filePath &&
-        (opts?.restoreFromSession ||
-          (session.fileSize === doc.fileSize &&
-            session.lastModified === doc.lastModified));
+      const recent = await loadRecentEpub(doc.filePath);
+      const restore =
+        recent ||
+        (session?.filePath === doc.filePath ? session : null);
 
-      if (sameAsSaved && session) {
+      if (restore) {
         await mountBook(doc, {
-          restoreCfi: session.cfi,
-          outlineOpen: !!session.outlineOpen,
+          restoreCfi: restore.cfi,
+          outlineOpen: !!restore.outlineOpen,
         });
         await saveEpubSession({
           filePath: doc.filePath,
           fileName: doc.fileName,
           fileSize: doc.fileSize,
           lastModified: doc.lastModified,
-          cfi: session.cfi || "",
-          outlineOpen: !!session.outlineOpen,
+          cfi: restore.cfi || "",
+          outlineOpen: !!restore.outlineOpen,
         });
         void refreshRecent();
         return;
@@ -400,7 +403,14 @@ export function EpubPane({
       if (!doc) return;
       const kind = detectDocKind(doc.filePath);
       if (kind === "pdf") {
-        onOpenOtherKind?.("pdf", doc);
+        const entry = await loadRecentPdf(doc.filePath);
+        onOpenOtherKind?.(
+          "pdf",
+          doc,
+          entry?.pageNumber != null && entry.pageNumber > 0
+            ? entry.pageNumber
+            : undefined,
+        );
         return;
       }
       await applyOpenedDoc(doc);
@@ -417,8 +427,16 @@ export function EpubPane({
     async (item: LitRecentItem) => {
       if (item.kind === "pdf") {
         try {
-          const doc = await loadLocalDoc(item.filePath);
-          onOpenOtherKind?.("pdf", doc);
+          const [doc, entry] = await Promise.all([
+            loadLocalDoc(item.filePath),
+            loadRecentPdf(item.filePath),
+          ]);
+          const page =
+            entry?.pageNumber ||
+            (item.pageNumber != null && item.pageNumber > 0
+              ? item.pageNumber
+              : undefined);
+          onOpenOtherKind?.("pdf", doc, page);
           setRecentOpen(false);
         } catch {
           setError(
@@ -453,6 +471,14 @@ export function EpubPane({
       }
     },
     [applyOpenedDoc, onOpenOtherKind, outlineOpen, refreshRecent],
+  );
+
+  const removeRecent = useCallback(
+    async (item: LitRecentItem) => {
+      await removeRecentDocument(item);
+      await refreshRecent();
+    },
+    [refreshRecent],
   );
 
   // Session restore — only when pane is actually shown with a layout box.
@@ -601,7 +627,10 @@ export function EpubPane({
   );
 
   return (
-    <div className="epub-pane" style={{ display: visible ? undefined : "none" }}>
+    <div
+      className={"epub-pane" + (visible ? "" : " is-hidden")}
+      aria-hidden={!visible}
+    >
       <div className="epub-toolbar pdf-toolbar">
         <div
           className="pdf-open-menu"
@@ -628,18 +657,42 @@ export function EpubPane({
                 <div className="pdf-recent-empty">暂无记录</div>
               ) : (
                 recentList.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="pdf-recent-item"
-                    title={item.filePath}
-                    onClick={() => void openRecent(item)}
-                  >
-                    <span className="pdf-recent-kind">
-                      {recentKindLabel(item.kind)}
-                    </span>
-                    <span className="pdf-recent-name">{item.fileName}</span>
-                  </button>
+                  <div key={item.id} className="pdf-recent-row">
+                    <button
+                      type="button"
+                      className="pdf-recent-item"
+                      title={
+                        item.filePath +
+                        (item.kind === "pdf" && item.pageNumber
+                          ? ` · 第 ${item.pageNumber} 页`
+                          : "")
+                      }
+                      onClick={() => void openRecent(item)}
+                    >
+                      <span className="pdf-recent-kind">
+                        {recentKindLabel(item.kind)}
+                      </span>
+                      <span className="pdf-recent-name">{item.fileName}</span>
+                      {item.kind === "pdf" && item.pageNumber ? (
+                        <span className="pdf-recent-meta">
+                          p.{item.pageNumber}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="pdf-recent-remove"
+                      title="从最近列表移除"
+                      aria-label={`移除 ${item.fileName}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void removeRecent(item);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))
               )}
             </div>
