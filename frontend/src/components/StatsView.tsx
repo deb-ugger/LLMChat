@@ -32,7 +32,8 @@ echarts.use([
 type GroupBy = "feature" | "engine" | "llm" | "day";
 type OkFilter = "" | "ok" | "fail";
 type RangePreset =
-  | "1"
+  | "today"
+  | "yesterday"
   | "7"
   | "15"
   | "30"
@@ -40,6 +41,46 @@ type RangePreset =
   | "month"
   | "all"
   | "custom";
+
+const STATS_FILTERS_KEY = "llmchat-stats-filters";
+
+type StatsFiltersState = {
+  rangePreset: RangePreset;
+  customFrom: string;
+  customTo: string;
+  feature: string;
+  okFilter: OkFilter;
+  groupBy: GroupBy;
+  metric: "requests" | "tokens" | "cost";
+};
+
+const RANGE_PRESETS = new Set<RangePreset>([
+  "today",
+  "yesterday",
+  "7",
+  "15",
+  "30",
+  "90",
+  "month",
+  "all",
+  "custom",
+]);
+
+function isRangePreset(v: unknown): v is RangePreset {
+  return typeof v === "string" && RANGE_PRESETS.has(v as RangePreset);
+}
+
+function isGroupBy(v: unknown): v is GroupBy {
+  return v === "feature" || v === "engine" || v === "llm" || v === "day";
+}
+
+function isOkFilter(v: unknown): v is OkFilter {
+  return v === "" || v === "ok" || v === "fail";
+}
+
+function isMetric(v: unknown): v is StatsFiltersState["metric"] {
+  return v === "requests" || v === "tokens" || v === "cost";
+}
 
 const FEATURE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "全部功能" },
@@ -100,14 +141,78 @@ function monthToDateRange(): { from: string; to: string } {
 }
 
 function rangeFromPreset(preset: RangePreset): { from: string; to: string } {
-  const to = new Date();
-  const toStr = localDateString(to);
+  const now = new Date();
+  const todayStr = localDateString(now);
   if (preset === "all" || preset === "custom") return { from: "", to: "" };
   if (preset === "month") return monthToDateRange();
+  if (preset === "today") return { from: todayStr, to: todayStr };
+  if (preset === "yesterday") {
+    const y = new Date(now);
+    y.setDate(y.getDate() - 1);
+    const yStr = localDateString(y);
+    return { from: yStr, to: yStr };
+  }
   const days = Number(preset);
-  const from = new Date(to);
+  const from = new Date(now);
   from.setDate(from.getDate() - (days - 1));
-  return { from: localDateString(from), to: toStr };
+  return { from: localDateString(from), to: todayStr };
+}
+
+function loadStatsFilters(today: string): StatsFiltersState {
+  const month = monthToDateRange();
+  const defaults: StatsFiltersState = {
+    rangePreset: "month",
+    customFrom: month.from,
+    customTo: month.to || today,
+    feature: "",
+    okFilter: "",
+    groupBy: "day",
+    metric: "tokens",
+  };
+  try {
+    const raw = localStorage.getItem(STATS_FILTERS_KEY);
+    if (!raw) return defaults;
+    const saved = JSON.parse(raw) as Partial<StatsFiltersState>;
+    const rangePreset = isRangePreset(saved.rangePreset)
+      ? saved.rangePreset
+      : defaults.rangePreset;
+    let customFrom =
+      typeof saved.customFrom === "string" ? saved.customFrom : defaults.customFrom;
+    let customTo =
+      typeof saved.customTo === "string" ? saved.customTo : defaults.customTo;
+    if (rangePreset !== "custom" && rangePreset !== "all") {
+      const r = rangeFromPreset(rangePreset);
+      customFrom = r.from;
+      customTo = r.to;
+    } else if (rangePreset === "all") {
+      customFrom = "";
+      customTo = today;
+    }
+    const feature =
+      typeof saved.feature === "string" &&
+      FEATURE_OPTIONS.some((o) => o.value === saved.feature)
+        ? saved.feature
+        : defaults.feature;
+    return {
+      rangePreset,
+      customFrom,
+      customTo,
+      feature,
+      okFilter: isOkFilter(saved.okFilter) ? saved.okFilter : defaults.okFilter,
+      groupBy: isGroupBy(saved.groupBy) ? saved.groupBy : defaults.groupBy,
+      metric: isMetric(saved.metric) ? saved.metric : defaults.metric,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveStatsFilters(state: StatsFiltersState) {
+  try {
+    localStorage.setItem(STATS_FILTERS_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 function formatAxisDate(iso: string): string {
@@ -138,6 +243,7 @@ function displayKey(groupBy: GroupBy, key: string): string {
 }
 
 function formatTokenCount(n: number): string {
+  if (n < 0) return "未知";
   if (!Number.isFinite(n) || n <= 0) return "0";
   if (n >= 10_000) {
     const wan = n / 10_000;
@@ -147,7 +253,29 @@ function formatTokenCount(n: number): string {
 }
 
 function formatTokenExact(n: number): string {
+  if (n < 0) return "未知";
   return Math.max(0, Math.round(n)).toLocaleString("en-US");
+}
+
+function tokenFieldForSum(n: number | undefined): number {
+  if (n == null || n < 0) return 0;
+  return n;
+}
+
+function isTokenUsageUnknown(item: {
+  totalTokens?: number;
+  promptTokens?: number;
+}): boolean {
+  return (item.totalTokens ?? 0) < 0 || (item.promptTokens ?? 0) < 0;
+}
+
+function eventRemark(ev: UsageEvent): string {
+  const parts = [(ev.note || "").trim(), (ev.errorMessage || "").trim()].filter(
+    Boolean,
+  );
+  if (parts.length > 0) return parts.join("；");
+  if (!ev.ok && ev.errorCode === "PENDING") return "Token 消耗未知";
+  return "—";
 }
 
 function TokenTotalCell({
@@ -163,11 +291,16 @@ function TokenTotalCell({
   output: number;
   total: number;
 }) {
+  const unknown = total < 0 || cacheRead < 0 || cacheWrite < 0 || input < 0 || output < 0;
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const sumParts = cacheRead + cacheWrite + input + output;
-  const displayTotal = sumParts > 0 ? sumParts : total;
+  const sumParts =
+    tokenFieldForSum(cacheRead) +
+    tokenFieldForSum(cacheWrite) +
+    tokenFieldForSum(input) +
+    tokenFieldForSum(output);
+  const displayTotal = unknown ? -1 : sumParts > 0 ? sumParts : total;
 
   const placeTip = useCallback(() => {
     const el = triggerRef.current;
@@ -264,10 +397,11 @@ function hasConsumption(item: UsageSummaryItem): boolean {
 /** Non-cached input: prompt minus cache read/write when those are reported. */
 function nonCachedInput(item: UsageSummaryItem): number {
   const prompt = item.promptTokens ?? 0;
+  if (prompt < 0) return 0;
   const read = item.cacheReadTokens ?? 0;
   const write = item.cacheWriteTokens ?? 0;
   if (read <= 0 && write <= 0) return prompt;
-  return Math.max(0, prompt - read - write);
+  return Math.max(0, prompt - Math.max(0, read) - Math.max(0, write));
 }
 
 /** Total tokens = Cache Read + Cache Write + Input + Output. */
@@ -278,13 +412,14 @@ function tokenTotalOf(item: {
   completionTokens?: number;
   totalTokens?: number;
 }): number {
-  const cacheRead = item.cacheReadTokens ?? 0;
-  const cacheWrite = item.cacheWriteTokens ?? 0;
+  if (isTokenUsageUnknown(item)) return 0;
+  const cacheRead = tokenFieldForSum(item.cacheReadTokens);
+  const cacheWrite = tokenFieldForSum(item.cacheWriteTokens);
   const input = nonCachedInput(item as UsageSummaryItem);
-  const output = item.completionTokens ?? 0;
+  const output = tokenFieldForSum(item.completionTokens);
   const parts = cacheRead + cacheWrite + input + output;
   if (parts > 0) return parts;
-  return item.totalTokens ?? 0;
+  return tokenFieldForSum(item.totalTokens);
 }
 
 function formatTokenCompact(n: number): string {
@@ -783,7 +918,7 @@ function UsageBarChart({
           name: "Cache Read",
           type: "bar",
           stack: "tok",
-          data: rows.map((r) => r.cacheReadTokens ?? 0),
+          data: rows.map((r) => tokenFieldForSum(r.cacheReadTokens)),
           itemStyle: { color: "#7c6bc4" },
           barMaxWidth: 36,
         },
@@ -791,7 +926,7 @@ function UsageBarChart({
           name: "Cache Write",
           type: "bar",
           stack: "tok",
-          data: rows.map((r) => r.cacheWriteTokens ?? 0),
+          data: rows.map((r) => tokenFieldForSum(r.cacheWriteTokens)),
           itemStyle: { color: "#b07a3a" },
           barMaxWidth: 36,
         },
@@ -807,7 +942,7 @@ function UsageBarChart({
           name: "Output",
           type: "bar",
           stack: "tok",
-          data: rows.map((r) => r.completionTokens),
+          data: rows.map((r) => tokenFieldForSum(r.completionTokens)),
           itemStyle: { color: "#5a8cb4" },
           barMaxWidth: 36,
         },
@@ -868,17 +1003,21 @@ function UsageBarChart({
   return <div className="stats-chart" ref={hostRef} />;
 }
 
-export function StatsView() {
+export function StatsView({ active = true }: { active?: boolean }) {
   const today = localDateString(new Date());
-  const initialRange = monthToDateRange();
-  const [rangePreset, setRangePreset] = useState<RangePreset>("month");
-  const [customFrom, setCustomFrom] = useState(initialRange.from);
-  const [customTo, setCustomTo] = useState(initialRange.to || today);
-  const [feature, setFeature] = useState("");
-  const [okFilter, setOkFilter] = useState<OkFilter>("");
-  const [groupBy, setGroupBy] = useState<GroupBy>("day");
+  const initialFilters = useMemo(() => loadStatsFilters(today), [today]);
+  const [rangePreset, setRangePreset] = useState<RangePreset>(
+    () => initialFilters.rangePreset,
+  );
+  const [customFrom, setCustomFrom] = useState(() => initialFilters.customFrom);
+  const [customTo, setCustomTo] = useState(() => initialFilters.customTo);
+  const [feature, setFeature] = useState(() => initialFilters.feature);
+  const [okFilter, setOkFilter] = useState<OkFilter>(
+    () => initialFilters.okFilter,
+  );
+  const [groupBy, setGroupBy] = useState<GroupBy>(() => initialFilters.groupBy);
   const [metric, setMetric] = useState<"requests" | "tokens" | "cost">(
-    "tokens",
+    () => initialFilters.metric,
   );
   const [currency, setCurrency] = useState<PricingCurrency>("CNY");
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
@@ -886,6 +1025,18 @@ export function StatsView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    saveStatsFilters({
+      rangePreset,
+      customFrom,
+      customTo,
+      feature,
+      okFilter,
+      groupBy,
+      metric,
+    });
+  }, [rangePreset, customFrom, customTo, feature, okFilter, groupBy, metric]);
 
   useEffect(() => {
     void (async () => {
@@ -1004,10 +1155,10 @@ export function StatsView() {
         acc.ok += r.ok;
         acc.fail += r.fail;
         acc.tokens += tokenTotalOf(r);
-        acc.cacheRead += r.cacheReadTokens ?? 0;
-        acc.cacheWrite += r.cacheWriteTokens ?? 0;
+        acc.cacheRead += tokenFieldForSum(r.cacheReadTokens);
+        acc.cacheWrite += tokenFieldForSum(r.cacheWriteTokens);
         acc.input += nonCachedInput(r);
-        acc.output += r.completionTokens ?? 0;
+        acc.output += tokenFieldForSum(r.completionTokens);
         acc.cost += r.cost ?? 0;
         return acc;
       },
@@ -1032,7 +1183,7 @@ export function StatsView() {
   );
 
   return (
-    <div className="stats-page">
+    <div className="stats-page" aria-hidden={!active}>
       <header className="stats-header">
         <div>
           <h1 className="stats-title">用量统计</h1>
@@ -1067,7 +1218,8 @@ export function StatsView() {
             value={rangePreset === "custom" ? "custom" : rangePreset}
             onChange={(e) => applyPreset(e.target.value as RangePreset)}
           >
-            <option value="1">近 1 天</option>
+            <option value="today">今天</option>
+            <option value="yesterday">昨天</option>
             <option value="7">近 7 天</option>
             <option value="15">近 15 天</option>
             <option value="30">近 30 天</option>
@@ -1336,7 +1488,7 @@ export function StatsView() {
                 <th>Tokens</th>
                 <th>费用</th>
                 <th title="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
-                <th>失败原因</th>
+                <th>备注</th>
               </tr>
             </thead>
             <tbody>
@@ -1366,13 +1518,13 @@ export function StatsView() {
                   const cacheW = ev.cacheWriteTokens ?? 0;
                   const prompt = ev.promptTokens ?? 0;
                   const input =
-                    cacheR > 0 || cacheW > 0
-                      ? Math.max(0, prompt - cacheR - cacheW)
-                      : prompt;
+                    prompt < 0
+                      ? -1
+                      : cacheR > 0 || cacheW > 0
+                        ? Math.max(0, prompt - Math.max(0, cacheR) - Math.max(0, cacheW))
+                        : prompt;
                   const output = ev.completionTokens ?? 0;
-                  const reason = !ev.ok
-                    ? (ev.errorMessage || "").trim() || "—"
-                    : "—";
+                  const remark = eventRemark(ev);
                   return (
                     <tr key={ev.id}>
                       <td>
@@ -1405,9 +1557,9 @@ export function StatsView() {
                       <td className="stats-mono">{ev.sourceChars ?? 0}</td>
                       <td
                         className="stats-reason"
-                        title={reason === "—" ? undefined : reason}
+                        title={remark === "—" ? undefined : remark}
                       >
-                        <span className="stats-reason-text">{reason}</span>
+                        <span className="stats-reason-text">{remark}</span>
                       </td>
                     </tr>
                   );

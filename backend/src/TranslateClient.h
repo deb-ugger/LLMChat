@@ -46,7 +46,8 @@ public:
         const std::string& proxyMode = "auto",
         const std::string& httpProxy = "",
         const std::string& customPrompt = "",
-        const std::string& glossaryJson = "");
+        const std::string& glossaryJson = "",
+        const std::string& contextJson = "");
 
     /** JSON: {ok, entry?, error?, provider?} — Bing webpage dictionary. */
     static std::string lookupDictionaryJson(

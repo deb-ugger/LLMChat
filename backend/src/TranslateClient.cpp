@@ -2300,7 +2300,8 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string& proxyMode,
     const std::string& httpProxy,
     const std::string& customPrompt,
-    const std::string& glossaryJson)
+    const std::string& glossaryJson,
+    const std::string& contextJson)
 {
     TranslateResult result;
     result.provider = "llm";
@@ -2359,6 +2360,8 @@ TranslateResult TranslateClient::translateWithLlm(
                     const std::string info = item.value("info", "");
                     if (gSrc.empty() || gDst.empty())
                         continue;
+                    if (item.contains("enabled") && !item.value("enabled", true))
+                        continue;
                     oss << "- " << gSrc << " => " << gDst;
                     if (!info.empty())
                         oss << " (" << info << ")";
@@ -2378,6 +2381,32 @@ TranslateResult TranslateClient::translateWithLlm(
         {"role", "system"},
         {"content", systemPrompt},
     });
+    if (!contextJson.empty() && contextJson != "[]")
+    {
+        try
+        {
+            const json ctx = json::parse(contextJson);
+            if (ctx.is_array())
+            {
+                for (const auto& seg : ctx)
+                {
+                    if (!seg.is_object())
+                        continue;
+                    const std::string segSrc = seg.value("source", "");
+                    const std::string segDst = seg.value("translation", "");
+                    if (segSrc.empty() || segDst.empty())
+                        continue;
+                    messages.push_back({{"role", "user"}, {"content", segSrc}});
+                    messages.push_back(
+                        {{"role", "assistant"}, {"content", segDst}});
+                }
+            }
+        }
+        catch (...)
+        {
+            // ignore bad context JSON
+        }
+    }
     messages.push_back({{"role", "user"}, {"content", text}});
 
     LlmRequest req;

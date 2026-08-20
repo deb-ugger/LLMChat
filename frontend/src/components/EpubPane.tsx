@@ -72,6 +72,8 @@ type Props = {
   onSeedConsumed?: () => void;
   /** When user picks a PDF while this pane is active. */
   onOpenOtherKind?: (kind: "pdf", doc: LocalDocFile) => void;
+  /** Fired when a different document is opened (not on first load). */
+  onDocumentChange?: () => void;
 };
 
 export function EpubPane({
@@ -83,8 +85,10 @@ export function EpubPane({
   seedDoc = null,
   onSeedConsumed,
   onOpenOtherKind,
+  onDocumentChange,
 }: Props) {
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
+  const openedDocPathRef = useRef<string | null>(null);
   const [hasBook, setHasBook] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -343,6 +347,14 @@ export function EpubPane({
 
   const applyOpenedDoc = useCallback(
     async (doc: LocalDocFile, opts?: { restoreFromSession?: boolean }) => {
+      if (
+        openedDocPathRef.current !== null &&
+        openedDocPathRef.current !== doc.filePath
+      ) {
+        onDocumentChange?.();
+      }
+      openedDocPathRef.current = doc.filePath;
+
       const session = await loadEpubSession();
       const sameAsSaved =
         !!session &&
@@ -379,7 +391,7 @@ export function EpubPane({
       });
       void refreshRecent();
     },
-    [mountBook, outlineOpen, refreshRecent],
+    [mountBook, onDocumentChange, outlineOpen, refreshRecent],
   );
 
   const openFilePicker = useCallback(async () => {

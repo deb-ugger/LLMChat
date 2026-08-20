@@ -76,6 +76,8 @@ type Props = {
   onSeedConsumed?: () => void;
   /** When user picks an EPUB while this pane is active. */
   onOpenOtherKind?: (kind: "epub", doc: LocalDocFile) => void;
+  /** Fired when a different document is opened (not on first load). */
+  onDocumentChange?: () => void;
 };
 
 type FileMeta = {
@@ -161,6 +163,46 @@ function normalizePdfExtractedText(raw: string): string {
     .trim();
 }
 
+const PDF_SAME_LINE_PX = 4;
+const PDF_WORD_GAP_PX = 1.5;
+
+type PdfTextFragment = { text: string; rect: DOMRect | null };
+
+function spanRectForTextNode(node: Node): DOMRect | null {
+  const host =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as HTMLElement)
+      : node.parentElement;
+  const span = host?.closest(".textLayer span") as HTMLElement | null;
+  if (!span) return null;
+  return span.getBoundingClientRect();
+}
+
+/** Join PDF text-layer fragments; insert spaces at line wraps and word gaps. */
+function mergePdfTextFragments(fragments: PdfTextFragment[]): string {
+  let raw = "";
+  let prevRect: DOMRect | null = null;
+  for (const { text, rect } of fragments) {
+    if (!text) continue;
+    if (raw.length > 0 && prevRect && rect) {
+      const sameLine = Math.abs(rect.top - prevRect.top) <= PDF_SAME_LINE_PX;
+      if (sameLine) {
+        const gap = rect.left - prevRect.right;
+        if (gap > PDF_WORD_GAP_PX && !raw.endsWith(" ") && !text.startsWith(" ")) {
+          raw += " ";
+        }
+      } else if (raw.endsWith("-")) {
+        raw = raw.slice(0, -1);
+      } else if (!raw.endsWith(" ") && !text.startsWith(" ")) {
+        raw += " ";
+      }
+    }
+    raw += text;
+    if (rect) prevRect = rect;
+  }
+  return normalizePdfExtractedText(raw);
+}
+
 /** Skip PDF footer/header printed page numbers in the text layer. */
 function isPrintedPageNumberSpan(span: HTMLElement): boolean {
   const raw = (span.textContent || "").replace(/\s+/g, "");
@@ -199,13 +241,13 @@ function isPrintedPageNumberNode(textNode: Node): boolean {
 function readPageTextFromDom(pageEl: HTMLElement): string {
   const layer = pageEl.querySelector(".textLayer");
   if (!layer) return "";
-  const parts: string[] = [];
+  const parts: PdfTextFragment[] = [];
   for (const span of layer.querySelectorAll("span")) {
     if (isPrintedPageNumberSpan(span as HTMLElement)) continue;
     const t = span.textContent || "";
-    if (t) parts.push(t);
+    if (t) parts.push({ text: t, rect: span.getBoundingClientRect() });
   }
-  return normalizePdfExtractedText(parts.join(""));
+  return mergePdfTextFragments(parts);
 }
 
 async function copyPlainText(text: string): Promise<boolean> {
@@ -285,19 +327,37 @@ async function resolveDestPage(
 async function buildOutline(
   pdf: PDFDocumentProxy,
   items: Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>,
+  pageLabels: string[] | null,
 ): Promise<DocOutlineNode[]> {
   if (!items) return [];
   const result: DocOutlineNode[] = [];
   for (const item of items) {
     const pageNumber = await resolveDestPage(pdf, item.dest);
+    const rawLabel =
+      pageNumber != null && pageLabels?.length
+        ? pageLabels[pageNumber - 1] ?? null
+        : null;
+    const pageLabel =
+      rawLabel && rawLabel !== String(pageNumber) ? rawLabel : null;
     result.push({
       title: item.title || "（无标题）",
       pageNumber,
+      pageLabel,
       dest: item.dest,
-      items: await buildOutline(pdf, item.items),
+      items: await buildOutline(pdf, item.items, pageLabels),
     });
   }
   return result;
+}
+
+function pageDisplayLabel(
+  pageLabels: string[] | null,
+  pageIndex: number,
+): string | null {
+  if (pageIndex < 1 || !pageLabels?.length) return null;
+  const label = pageLabels[pageIndex - 1];
+  if (!label || label === String(pageIndex)) return null;
+  return label;
 }
 
 export function PdfPane({
@@ -310,9 +370,11 @@ export function PdfPane({
   seedDoc = null,
   onSeedConsumed,
   onOpenOtherKind,
+  onDocumentChange,
 }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
+  const openedDocPathRef = useRef<string | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(DEFAULT_SCALE);
@@ -330,6 +392,8 @@ export function PdfPane({
     left: number;
   } | null>(null);
   const [outline, setOutline] = useState<DocOutlineNode[]>([]);
+  const [pageLabels, setPageLabels] = useState<string[] | null>(null);
+  const pageLabelsRef = useRef<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [handMode, setHandMode] = useState(false);
   const [restoring, setRestoring] = useState(true);
@@ -386,9 +450,9 @@ export function PdfPane({
   const wasVisibleRef = useRef(visible);
   const suppressPersistRef = useRef(false);
   const metaSaveTimer = useRef<number | null>(null);
-  const persistMetaRef = useRef<(opts?: { immediate?: boolean }) => void>(
-    () => undefined,
-  );
+  const persistMetaRef = useRef<
+    (opts?: { immediate?: boolean; force?: boolean }) => void
+  >(() => undefined);
   const selectingRef = useRef(false);
   const lastEmittedTextRef = useRef("");
   const pageInputFocusedRef = useRef(false);
@@ -412,6 +476,7 @@ export function PdfPane({
 
   viewModeRef.current = viewMode;
   scaleRef.current = scale;
+  pageLabelsRef.current = pageLabels;
 
   const resolveOutlinePage = useCallback(
     async (dest: unknown, fallback: number | null) => {
@@ -444,25 +509,51 @@ export function PdfPane({
     viewer.spreadMode = spread;
   }, []);
 
+  const syncPageInputDisplay = useCallback(
+    (pageIndex: number) => {
+      if (pageInputFocusedRef.current) return;
+      const label =
+        pdfViewerRef.current?.currentPageLabel ??
+        pageDisplayLabel(pageLabels, pageIndex);
+      setPageInput(label ?? String(pageIndex));
+    },
+    [pageLabels],
+  );
+
   const goToPage = useCallback(
     (page: number, _opts?: { smooth?: boolean }) => {
       const next = clampPage(page);
       setPageNumber(next);
-      if (!pageInputFocusedRef.current) {
-        setPageInput(String(next));
-      }
+      syncPageInputDisplay(next);
       const viewer = pdfViewerRef.current;
       if (viewer) {
         viewer.currentPageNumber = next;
       }
       restoredPageRef.current = next;
     },
-    [clampPage],
+    [clampPage, syncPageInputDisplay],
   );
 
   const onOutlineActivate = useCallback(
     (node: DocOutlineNode) => {
       void (async () => {
+        const link = linkServiceRef.current;
+        if (node.dest != null && link) {
+          suppressPersistRef.current = true;
+          try {
+            await link.goToDestination(node.dest as string | unknown[]);
+          } finally {
+            suppressPersistRef.current = false;
+          }
+          const p = pdfViewerRef.current?.currentPageNumber;
+          if (p != null) {
+            restoredPageRef.current = p;
+            setPageNumber(p);
+            syncPageInputDisplay(p);
+            persistMetaRef.current({ immediate: true });
+          }
+          return;
+        }
         const page = await resolveOutlinePage(
           node.dest,
           node.pageNumber ?? null,
@@ -470,23 +561,32 @@ export function PdfPane({
         if (page != null) goToPage(page);
       })();
     },
-    [goToPage, resolveOutlinePage],
+    [goToPage, resolveOutlinePage, syncPageInputDisplay],
   );
 
   const commitPageInput = useCallback(() => {
     pageInputFocusedRef.current = false;
     const raw = pageInput.trim();
-    const n = Number.parseInt(raw, 10);
-    if (!Number.isFinite(n)) {
-      setPageInput(String(pageNumber));
+    if (!raw) {
+      syncPageInputDisplay(pageNumber);
       return;
     }
-    const next = clampPage(Math.round(n));
-    setPageInput(String(next));
-    if (next !== pageNumber) {
-      goToPage(next);
+    const link = linkServiceRef.current;
+    if (link) {
+      link.goToPage(raw);
+      const p = pdfViewerRef.current?.currentPageNumber;
+      if (p != null) {
+        goToPage(p);
+      }
+      return;
     }
-  }, [clampPage, goToPage, pageInput, pageNumber]);
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n)) {
+      syncPageInputDisplay(pageNumber);
+      return;
+    }
+    goToPage(clampPage(Math.round(n)));
+  }, [clampPage, goToPage, pageInput, pageNumber, syncPageInputDisplay]);
 
   const fitScaleForDouble = useCallback(
     (preferred?: number) => {
@@ -642,9 +742,14 @@ export function PdfPane({
 
   useEffect(() => {
     if (!pageInputFocusedRef.current) {
-      setPageInput(String(pageNumber));
+      syncPageInputDisplay(pageNumber);
     }
-  }, [pageNumber]);
+  }, [pageNumber, pageLabels, syncPageInputDisplay]);
+
+  const currentPageLabel = useMemo(
+    () => pageDisplayLabel(pageLabels, pageNumber),
+    [pageLabels, pageNumber],
+  );
 
   const refreshRecent = useCallback(async () => {
     setRecentList(await listRecentDocuments());
@@ -686,9 +791,9 @@ export function PdfPane({
     return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
   }, [model, translateProvider]);
 
-  const persistMeta = useCallback((opts?: { immediate?: boolean }) => {
+  const persistMeta = useCallback((opts?: { immediate?: boolean; force?: boolean }) => {
     if (!fileMeta) return;
-    if (suppressPersistRef.current) return;
+    if (suppressPersistRef.current && !opts?.force) return;
     const root = scrollRef.current;
     const page =
       pdfViewerRef.current?.currentPageNumber ||
@@ -716,9 +821,30 @@ export function PdfPane({
 
   persistMetaRef.current = persistMeta;
 
+  const syncPageFromViewer = useCallback(() => {
+    const viewer = pdfViewerRef.current;
+    if (!viewer || viewer.pagesCount <= 0) return;
+    const p = viewer.currentPageNumber;
+    if (!Number.isFinite(p) || p < 1) return;
+    setPageNumber((prev) => {
+      if (prev === p) return prev;
+      if (!suppressPersistRef.current) {
+        restoredPageRef.current = p;
+      }
+      if (!pageInputFocusedRef.current) {
+        const label =
+          viewer.currentPageLabel ??
+          pageDisplayLabel(pageLabelsRef.current, p);
+        setPageInput(label ?? String(p));
+      }
+      return p;
+    });
+  }, []);
+
   const onPdfScroll = useCallback(() => {
+    syncPageFromViewer();
     persistMeta();
-  }, [persistMeta]);
+  }, [persistMeta, syncPageFromViewer]);
 
   useEffect(() => {
     persistMeta();
@@ -793,14 +919,25 @@ export function PdfPane({
 
     const onPageChanging = (evt: { pageNumber: number }) => {
       const p = evt.pageNumber;
+      // During restore/teardown PDF.js may briefly report page 1 — skip UI flicker only.
+      const restoreTarget = restoreTargetPageRef.current;
+      if (
+        suppressPersistRef.current &&
+        restoreTarget != null &&
+        restoreTarget > 1 &&
+        p === 1
+      ) {
+        return;
+      }
       setPageNumber(p);
-      // During session restore, PDF.js often emits page=1 before we jump.
-      // Do not clobber the target page or we land on page 1 permanently.
+      if (!pageInputFocusedRef.current) {
+        const label =
+          pdfViewer.currentPageLabel ??
+          pageDisplayLabel(pageLabelsRef.current, p);
+        setPageInput(label ?? String(p));
+      }
       if (!suppressPersistRef.current) {
         restoredPageRef.current = p;
-      }
-      if (!pageInputFocusedRef.current) {
-        setPageInput(String(p));
       }
     };
     const onScaleChanging = (evt: { scale: number }) => {
@@ -825,8 +962,11 @@ export function PdfPane({
       restoredPageRef.current = keep;
       restoreTargetPageRef.current = null;
       setPageNumber(keep);
+      const initLabel =
+        pdfViewer.currentPageLabel ??
+        pageDisplayLabel(pageLabelsRef.current, keep);
       if (!pageInputFocusedRef.current) {
-        setPageInput(String(keep));
+        setPageInput(initLabel ?? String(keep));
       }
       window.setTimeout(() => reapplyPageRotationsRef.current(), 0);
       const pending = pendingScrollRef.current;
@@ -851,6 +991,7 @@ export function PdfPane({
     eventBus.on("pagesinit", onPagesInit);
 
     return () => {
+      suppressPersistRef.current = true;
       eventBus.off("pagechanging", onPageChanging);
       eventBus.off("scalechanging", onScaleChanging);
       eventBus.off("pagesinit", onPagesInit);
@@ -899,15 +1040,32 @@ export function PdfPane({
         } catch {
           pageWidthRef.current = 0;
         }
+        let labels: string[] | null = null;
+        try {
+          const rawLabels = await pdf.getPageLabels();
+          if (rawLabels?.length === pdf.numPages) {
+            labels = rawLabels;
+          }
+        } catch {
+          labels = null;
+        }
+        if (cancelled) return;
         try {
           const raw = await pdf.getOutline();
-          setOutline(await buildOutline(pdf, raw));
+          setOutline(await buildOutline(pdf, raw, labels));
         } catch {
           setOutline([]);
         }
         linkServiceRef.current?.setDocument(pdf, null);
         findControllerRef.current?.setDocument(pdf);
         pdfViewer.setDocument(pdf);
+        if (labels) {
+          pdfViewer.setPageLabels(labels);
+          setPageLabels(labels);
+        } else {
+          pdfViewer.setPageLabels(null);
+          setPageLabels(null);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -920,6 +1078,7 @@ export function PdfPane({
 
     return () => {
       cancelled = true;
+      suppressPersistRef.current = true;
       try {
         pdfViewerRef.current?.setDocument(null as never);
       } catch {
@@ -937,6 +1096,7 @@ export function PdfPane({
       }
       const prev = pdfRef.current;
       pdfRef.current = null;
+      setPageLabels(null);
       void prev?.destroy();
     };
   }, [restoring, visible, file, viewerReady]);
@@ -1000,25 +1160,58 @@ export function PdfPane({
     };
   }, [refreshRecent]);
 
-  // Re-lock when literature pane becomes visible
+  // Save position when leaving literature; re-apply when returning.
   useEffect(() => {
     const becameVisible = visible && !wasVisibleRef.current;
     wasVisibleRef.current = visible;
-    if (!becameVisible || !file || !numPages) return;
-    const keep = restoredPageRef.current ?? pageNumber;
-    const viewer = pdfViewerRef.current;
-    if (viewer) {
-      viewer.currentPageNumber = keep;
-      viewer.update();
+
+    if (becameVisible && file) {
+      const keep = Math.max(
+        1,
+        restoreTargetPageRef.current ??
+          restoredPageRef.current ??
+          pageNumber,
+      );
+      restoreTargetPageRef.current = keep;
+      restoredPageRef.current = keep;
+      setPageNumber(keep);
+      const viewer = pdfViewerRef.current;
+      const label =
+        viewer?.currentPageLabel ??
+        pageDisplayLabel(pageLabelsRef.current, keep);
+      if (!pageInputFocusedRef.current) {
+        setPageInput(label ?? String(keep));
+      }
+      if (viewer && numPages > 0) {
+        viewer.currentPageNumber = Math.min(keep, viewer.pagesCount || keep);
+        viewer.update();
+      }
+      const pending = pendingScrollRef.current;
+      const root = scrollRef.current;
+      if (root && pending) {
+        root.scrollTop = pending.top;
+        root.scrollLeft = pending.left;
+      }
+      window.setTimeout(() => {
+        suppressPersistRef.current = false;
+        syncPageFromViewer();
+      }, 120);
     }
-    setPageNumber(keep);
-    const pending = pendingScrollRef.current;
-    const root = scrollRef.current;
-    if (root && pending) {
-      root.scrollTop = pending.top;
-      root.scrollLeft = pending.left;
-    }
-  }, [visible, file, numPages, pageNumber]);
+
+    return () => {
+      if (!visible || !fileMeta) return;
+      const keep = Math.max(
+        1,
+        pdfViewerRef.current?.currentPageNumber ||
+          restoredPageRef.current ||
+          pageNumber,
+      );
+      restoredPageRef.current = keep;
+      restoreTargetPageRef.current = keep;
+      suppressPersistRef.current = true;
+      persistMetaRef.current({ immediate: true, force: true });
+    };
+  }, [visible, file, fileMeta, numPages, pageNumber, syncPageFromViewer]);
 
   const applyOpenedDoc = useCallback(
     async (
@@ -1031,6 +1224,14 @@ export function PdfPane({
       },
       opts?: { restoreFromSession?: boolean },
     ) => {
+      if (
+        openedDocPathRef.current !== null &&
+        openedDocPathRef.current !== doc.filePath
+      ) {
+        onDocumentChange?.();
+      }
+      openedDocPathRef.current = doc.filePath;
+
       const session = await loadPdfSession();
       const sameAsSaved =
         !!session &&
@@ -1112,7 +1313,7 @@ export function PdfPane({
         // ignore
       }
     },
-    [outlineOpen, refreshRecent, scale, viewMode],
+    [onDocumentChange, outlineOpen, refreshRecent, scale, viewMode],
   );
 
   const openFilePicker = useCallback(async () => {
@@ -1295,7 +1496,7 @@ export function PdfPane({
     if (!root || !anchor || !focus) return null;
     if (!root.contains(anchor) || !root.contains(focus)) return null;
 
-    const chunks: string[] = [];
+    const fragments: PdfTextFragment[] = [];
     try {
       for (let ri = 0; ri < sel.rangeCount; ri++) {
         const range = sel.getRangeAt(ri);
@@ -1320,19 +1521,23 @@ export function PdfPane({
           let end = full.length;
           if (node === range.startContainer) start = range.startOffset;
           if (node === range.endContainer) end = range.endOffset;
-          if (end > start) chunks.push(full.slice(start, end));
+          if (end > start) {
+            fragments.push({
+              text: full.slice(start, end),
+              rect: spanRectForTextNode(node),
+            });
+          }
           node = walker.nextNode();
         }
       }
     } catch {
-      chunks.length = 0;
+      fragments.length = 0;
     }
 
-    const raw = chunks.length > 0 ? chunks.join("") : sel.toString();
-    // Do NOT strip "letter + digits + letter" globally — that removes body
-    // numbers like "between 2 and 10 seconds". Page numbers are skipped only
-    // via isPrintedPageNumberSpan (edge position + short digit span).
-    const text = normalizePdfExtractedText(raw);
+    const text =
+      fragments.length > 0
+        ? mergePdfTextFragments(fragments)
+        : normalizePdfExtractedText(sel.toString());
     return text || null;
   }, []);
 
@@ -1955,12 +2160,17 @@ export function PdfPane({
             />
           </svg>
         </button>
-        <span className="pdf-page-label">
+        <span
+          className="pdf-page-label"
+          title={
+            currentPageLabel
+              ? `书籍页码 ${currentPageLabel} · PDF 第 ${pageNumber} / ${numPages || "?"} 页`
+              : "输入书籍页码或 PDF 页序后回车"
+          }
+        >
           <input
             className="pdf-page-input"
-            type="number"
-            min={1}
-            max={numPages || 1}
+            type="text"
             value={pageInput}
             onFocus={() => {
               pageInputFocusedRef.current = true;
@@ -1972,13 +2182,12 @@ export function PdfPane({
                 e.preventDefault();
                 e.currentTarget.blur();
               } else if (e.key === "Escape") {
-                setPageInput(String(pageNumber));
+                syncPageInputDisplay(pageNumber);
                 pageInputFocusedRef.current = false;
                 e.currentTarget.blur();
               }
             }}
-            inputMode="numeric"
-            title="输入页码后按回车或点击别处跳转"
+            inputMode="text"
           />
           / {numPages || "—"}
         </span>

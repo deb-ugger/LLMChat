@@ -765,6 +765,8 @@ double PricingStore::costFor(const json& event, const std::string& currency) con
 {
     if (event.value("channel", "") != "llm")
         return 0.0;
+    if (event.value("promptTokens", 0) < 0 || event.value("totalTokens", 0) < 0)
+        return 0.0;
     const std::string model = event.value("model", "");
     const std::string date = event.value("date", "");
     const std::string time = event.value("time", "");

@@ -27,15 +27,24 @@ struct UsageEvent {
     int cacheWriteTokens = 0;
     int sourceChars = 0;
     std::string endpoint;
+    /** Optional remark (success or failure), e.g. manual backfill. */
+    std::string note;
     /** Human-readable failure reason when ok=false. */
     std::string errorMessage;
 };
+
+/** Sentinel in JSON when usage was interrupted before the API returned token counts. */
+constexpr int kUsageTokensUnknown = -1;
 
 class UsageStore {
 public:
     explicit UsageStore(std::string filePath);
 
     void append(const UsageEvent& ev);
+    /** Persist in-flight marker immediately (same id finalized later). */
+    void markPending(UsageEvent& ev);
+    /** Append completion row; readers keep latest row per id. */
+    void finalize(const UsageEvent& ev);
     void clear();
 
     std::vector<nlohmann::json> events(

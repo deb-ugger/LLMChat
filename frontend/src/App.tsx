@@ -53,6 +53,8 @@ const defaultSettings: Settings = {
   translatePrompt: DEFAULT_LIT_PROMPT_GENERAL,
   translateMaxLength: 0,
   translateAutoChunk: true,
+  translateContextParagraphs: 0,
+  translateGlossary: "[]",
   ocrLang: "eng",
   ocrAutoTranslate: true,
   ocrTranslateProvider: "bing",
@@ -181,6 +183,8 @@ export default function App() {
             })(),
             translateMaxLength: s.translateMaxLength ?? 0,
             translateAutoChunk: s.translateAutoChunk ?? true,
+            translateContextParagraphs: s.translateContextParagraphs ?? 0,
+            translateGlossary: s.translateGlossary || "[]",
             ocrLang: s.ocrLang || "eng",
             ocrAutoTranslate: s.ocrAutoTranslate ?? true,
             ocrTranslateProvider: (() => {
@@ -552,6 +556,8 @@ export default function App() {
             translateTarget={settings.translateTarget}
             translateMaxLength={settings.translateMaxLength}
             translateAutoChunk={settings.translateAutoChunk}
+            translateContextParagraphs={settings.translateContextParagraphs}
+            translateGlossary={settings.translateGlossary}
             translatePromptCatalog={settings.translatePromptCatalog}
             translatePromptId={settings.translatePromptId}
             translatePromptKind={settings.translatePromptKind}
@@ -616,7 +622,14 @@ export default function App() {
             }}
           />
         </div>
-        {page === "stats" && <StatsView />}
+        <div
+          className={
+            page === "stats" ? "literature-host" : "literature-host is-hidden"
+          }
+          aria-hidden={page !== "stats"}
+        >
+          <StatsView active={page === "stats"} />
+        </div>
         {page === "settings" && (
           <SettingsView
             settings={settings}

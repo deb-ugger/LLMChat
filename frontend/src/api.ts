@@ -57,6 +57,10 @@ export type Settings = {
   translateMaxLength: number;
   /** When over limit: auto split+join (only for length-limited engines) */
   translateAutoChunk: boolean;
+  /** LLM literature: prior translated segments as context; 0 = off */
+  translateContextParagraphs: number;
+  /** Literature LLM glossary JSON: [{src,dst,info?}] */
+  translateGlossary: string;
   /** OCR language(s) for Tesseract, e.g. eng / chi_sim / eng+chi_sim */
   ocrLang: string;
   /** After OCR, auto call translate */
@@ -135,6 +139,8 @@ export type UsageEvent = {
   sourceChars?: number;
   endpoint?: string;
   errorMessage?: string;
+  /** Optional remark for success or failure (manual backfill, etc.). */
+  note?: string;
   /** Estimated cost in requested currency (not persisted). */
   cost?: number;
 };
@@ -214,6 +220,8 @@ export type TranslateOptions = {
   prompt?: string;
   /** Glossary JSON string or array (LLM) */
   glossary?: string | { src: string; dst: string; info?: string }[];
+  /** Prior translated segments for LLM context (literature) */
+  context?: { source: string; translation: string }[];
   /** Usage stats feature tag */
   feature?:
     | "chat"

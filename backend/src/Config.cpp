@@ -168,6 +168,14 @@ void ConfigStore::load()
             config_.translateAutoChunk =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
         }
+        else if (key == "translateContextParagraphs")
+        {
+            config_.translateContextParagraphs = std::stoi(value);
+        }
+        else if (key == "translateGlossary")
+        {
+            config_.translateGlossary = unescapeIniValue(value);
+        }
         else if (key == "ocrLang")
         {
             config_.ocrLang = value;
@@ -283,6 +291,8 @@ void ConfigStore::save() const
     out << "translatePrompt=" << escapeIniValue(config_.translatePrompt) << "\n";
     out << "translateMaxLength=" << config_.translateMaxLength << "\n";
     out << "translateAutoChunk=" << (config_.translateAutoChunk ? "true" : "false") << "\n";
+    out << "translateContextParagraphs=" << config_.translateContextParagraphs << "\n";
+    out << "translateGlossary=" << escapeIniValue(config_.translateGlossary) << "\n";
     out << "ocrLang=" << config_.ocrLang << "\n";
     out << "ocrAutoTranslate=" << (config_.ocrAutoTranslate ? "true" : "false") << "\n";
     out << "ocrTranslateProvider=" << config_.ocrTranslateProvider << "\n";

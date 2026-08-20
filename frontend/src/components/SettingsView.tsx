@@ -137,6 +137,8 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
     "translatePrompt",
     "translateMaxLength",
     "translateAutoChunk",
+    "translateContextParagraphs",
+    "translateGlossary",
   ],
   image: [
     "ocrLang",
@@ -286,6 +288,8 @@ function withDefaults(s: Settings): Settings {
     })(),
     translateMaxLength: s.translateMaxLength ?? 0,
     translateAutoChunk: s.translateAutoChunk ?? true,
+    translateContextParagraphs: s.translateContextParagraphs ?? 0,
+    translateGlossary: s.translateGlossary || "[]",
     ocrLang: s.ocrLang || "eng",
     ocrAutoTranslate: s.ocrAutoTranslate ?? true,
     ocrTranslateProvider: normalizeProvider(
@@ -754,13 +758,22 @@ function ReplaceTable({
   rows,
   onChange,
   showInfo,
+  showEnabled,
 }: {
   title: string;
   hint: string;
   rows: GlossaryEntry[];
   onChange: (rows: GlossaryEntry[]) => void;
   showInfo?: boolean;
+  showEnabled?: boolean;
 }) {
+  const rowClass = [
+    showEnabled ? "has-enabled" : "",
+    showInfo ? "has-info" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div className="settings-rule-block">
       <div className="settings-rule-head">
@@ -768,7 +781,17 @@ function ReplaceTable({
         <button
           type="button"
           className="settings-test-btn"
-          onClick={() => onChange([...rows, { src: "", dst: "", info: "" }])}
+          onClick={() =>
+            onChange([
+              ...rows,
+              {
+                src: "",
+                dst: "",
+                info: "",
+                enabled: true,
+              },
+            ])
+          }
         >
           添加行
         </button>
@@ -778,13 +801,8 @@ function ReplaceTable({
         <p className="hint">暂无条目</p>
       ) : (
         <div className="settings-rule-table">
-          <div
-            className={
-              showInfo
-                ? "settings-rule-row is-head has-info"
-                : "settings-rule-row is-head"
-            }
-          >
+          <div className={`settings-rule-row is-head ${rowClass}`.trim()}>
+            {showEnabled && <span>启用</span>}
             <span>原文</span>
             <span>译文</span>
             {showInfo && <span>备注</span>}
@@ -793,12 +811,24 @@ function ReplaceTable({
           {rows.map((row, i) => (
             <div
               key={i}
-              className={
-                showInfo
-                  ? "settings-rule-row has-info"
-                  : "settings-rule-row"
-              }
+              className={`settings-rule-row ${rowClass}${
+                showEnabled && row.enabled === false ? " is-disabled" : ""
+              }`.trim()}
             >
+              {showEnabled && (
+                <input
+                  type="checkbox"
+                  className="settings-rule-enable"
+                  checked={row.enabled !== false}
+                  title={row.enabled === false ? "启用此术语" : "停用此术语"}
+                  aria-label="启用此术语"
+                  onChange={(e) => {
+                    const next = [...rows];
+                    next[i] = { ...next[i], enabled: e.target.checked };
+                    onChange(next);
+                  }}
+                />
+              )}
               <input
                 value={row.src}
                 placeholder="原文"
@@ -1453,6 +1483,10 @@ export function SettingsView({
   const glossaryRows = useMemo(
     () => parseJsonArray<GlossaryEntry>(form.textGlossary, []),
     [form.textGlossary],
+  );
+  const litGlossaryRows = useMemo(
+    () => parseJsonArray<GlossaryEntry>(form.translateGlossary, []),
+    [form.translateGlossary],
   );
   const preRows = useMemo(
     () => parseJsonArray<ReplaceRule>(form.textPreReplace, []),
@@ -3728,50 +3762,100 @@ export function SettingsView({
                     autoSaveTab(next);
                   }}
                 />
+                {litUsesLlm ? (
+                  <div
+                    className="settings-mode-llm-extra"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="settings-field">
+                      <span className="settings-field-label">
+                        上下文段落数（0=关闭）
+                      </span>
+                      <p className="hint">
+                        将本次阅读中已翻译的前 N
+                        段原文与译文一并发送，便于术语与文风衔接。切换文档后会清空历史。
+                      </p>
+                      <div className="settings-row settings-row-controls">
+                        <MaxLengthInput
+                          value={form.translateContextParagraphs}
+                          min={0}
+                          max={20}
+                          onCommit={(n) => {
+                            const next = {
+                              ...form,
+                              translateContextParagraphs: n,
+                            };
+                            formRef.current = next;
+                            setForm(next);
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <ReplaceTable
+                      title="文献术语表"
+                      hint="注入大模型提示词，保证整篇文档专有名词译法一致。与「文本翻译」术语表相互独立。"
+                      showInfo
+                      showEnabled
+                      rows={litGlossaryRows}
+                      onChange={(rows) => {
+                        const next = {
+                          ...form,
+                          translateGlossary: stringifyRules(rows),
+                        };
+                        formRef.current = next;
+                        setForm(next);
+                        if (rows.length !== litGlossaryRows.length) {
+                          autoSaveTab(next);
+                        }
+                      }}
+                    />
+                    <div className="settings-rule-block">
+                      <div className="settings-rule-head">
+                        <h3>文献翻译提示词</h3>
+                      </div>
+                      <p className="hint">
+                        选择类型即可切换；修改内容后需点「保存」，自定义需填写标题后点「新增」。文献页工具栏「提示词」按钮可同样管理。
+                      </p>
+                      <LiteraturePromptPanel
+                        catalog={
+                          resolveLiteraturePromptState({
+                            catalogRaw: form.translatePromptCatalog,
+                            activeIdRaw: form.translatePromptId,
+                            legacyKind: form.translatePromptKind,
+                            legacyPrompt: form.translatePrompt,
+                          }).catalog
+                        }
+                        activeId={
+                          resolveLiteraturePromptState({
+                            catalogRaw: form.translatePromptCatalog,
+                            activeIdRaw: form.translatePromptId,
+                            legacyKind: form.translatePromptKind,
+                            legacyPrompt: form.translatePrompt,
+                          }).activeId
+                        }
+                        onCommit={({ catalog, activeId }) => {
+                          const prompt =
+                            catalog.find((c) => c.id === activeId)?.prompt ||
+                            DEFAULT_LIT_PROMPT_GENERAL;
+                          commitForm(
+                            {
+                              ...form,
+                              translatePromptCatalog:
+                                stringifyLiteraturePromptCatalog(catalog),
+                              translatePromptId: activeId,
+                              translatePromptKind: activeId,
+                              translatePrompt: prompt,
+                            },
+                            true,
+                            null,
+                          );
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </ModePanel>
               </div>
-            </section>
-
-            <section className="settings-card">
-              <h2>文献翻译提示词</h2>
-              <p className="hint">
-                仅在选用「大模型翻译」时生效。选择类型即可切换；修改内容后需点「保存」，自定义需填写标题后点「新增」。文献页工具栏「提示词」按钮可同样管理。
-              </p>
-              <LiteraturePromptPanel
-                catalog={
-                  resolveLiteraturePromptState({
-                    catalogRaw: form.translatePromptCatalog,
-                    activeIdRaw: form.translatePromptId,
-                    legacyKind: form.translatePromptKind,
-                    legacyPrompt: form.translatePrompt,
-                  }).catalog
-                }
-                activeId={
-                  resolveLiteraturePromptState({
-                    catalogRaw: form.translatePromptCatalog,
-                    activeIdRaw: form.translatePromptId,
-                    legacyKind: form.translatePromptKind,
-                    legacyPrompt: form.translatePrompt,
-                  }).activeId
-                }
-                onCommit={({ catalog, activeId }) => {
-                  const prompt =
-                    catalog.find((c) => c.id === activeId)?.prompt ||
-                    DEFAULT_LIT_PROMPT_GENERAL;
-                  commitForm(
-                    {
-                      ...form,
-                      translatePromptCatalog:
-                        stringifyLiteraturePromptCatalog(catalog),
-                      translatePromptId: activeId,
-                      translatePromptKind: activeId,
-                      translatePrompt: prompt,
-                    },
-                    true,
-                    null,
-                  );
-                }}
-              />
             </section>
           </>
         )}

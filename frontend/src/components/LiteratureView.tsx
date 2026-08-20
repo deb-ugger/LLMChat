@@ -8,6 +8,7 @@ import {
   resolveLiteraturePromptState,
   type LiteraturePromptEntry,
 } from "../literaturePrompt";
+import { parseJsonArray, type GlossaryEntry } from "../textTranslate";
 import type { DocKind, LocalDocFile } from "../localDocFile";
 import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
 import { EpubPane } from "./EpubPane";
@@ -53,6 +54,32 @@ function extractEnglishWord(text: string): string | null {
   return null;
 }
 
+type LitSegment = { source: string; translation: string };
+
+function buildLitContext(
+  history: LitSegment[],
+  current: string,
+  n: number,
+): LitSegment[] {
+  if (n <= 0) return [];
+  const prior = history.filter((s) => s.source !== current);
+  return prior.slice(-n);
+}
+
+function upsertLitSegment(
+  history: LitSegment[],
+  source: string,
+  translation: string,
+): LitSegment[] {
+  const idx = history.findIndex((s) => s.source === source);
+  if (idx >= 0) {
+    const next = [...history];
+    next[idx] = { source, translation };
+    return next;
+  }
+  return [...history, { source, translation }];
+}
+
 type Props = {
   visible: boolean;
   translateProvider: string;
@@ -60,6 +87,8 @@ type Props = {
   translateTarget?: string;
   translateMaxLength?: number;
   translateAutoChunk?: boolean;
+  translateContextParagraphs?: number;
+  translateGlossary?: string;
   translatePromptCatalog?: string;
   translatePromptId?: string;
   translatePromptKind?: string;
@@ -82,6 +111,8 @@ export function LiteratureView({
   translateTarget = "zh-CN",
   translateMaxLength = 0,
   translateAutoChunk = true,
+  translateContextParagraphs = 0,
+  translateGlossary = "[]",
   translatePromptCatalog = "",
   translatePromptId = "",
   translatePromptKind = "general",
@@ -157,6 +188,14 @@ export function LiteratureView({
   const reqIdRef = useRef(0);
   const dictReqIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const segmentHistoryRef = useRef<LitSegment[]>([]);
+  const glossaryEntries = useMemo(
+    () =>
+      parseJsonArray<GlossaryEntry>(translateGlossary, []).filter(
+        (r) => r.enabled !== false && r.src.trim() && r.dst.trim(),
+      ),
+    [translateGlossary],
+  );
   const { width: panelWidth, beginResize: beginPanelResize } =
     usePersistedWidth("llmchat-translate-panel-width", 320, 220, 640);
 
@@ -217,6 +256,10 @@ export function LiteratureView({
     [onPromptCatalogChange],
   );
 
+  const clearSegmentHistory = useCallback(() => {
+    segmentHistoryRef.current = [];
+  }, []);
+
   const translateOnly = useCallback(
     async (text: string, reqId: number) => {
       const trimmed = text.trim();
@@ -234,6 +277,14 @@ export function LiteratureView({
         const useCustomPrompt =
           activeIdRef.current !== GENERAL_PROMPT_ID &&
           !!(activePromptRef.current || "").trim();
+        const context =
+          provider === "llm" && translateContextParagraphs > 0
+            ? buildLitContext(
+                segmentHistoryRef.current,
+                trimmed,
+                translateContextParagraphs,
+              )
+            : [];
         const tr = await api.translate(
           trimmed,
           { signal: ac.signal },
@@ -251,6 +302,10 @@ export function LiteratureView({
                   ...(useCustomPrompt
                     ? { prompt: activePromptRef.current }
                     : {}),
+                  ...(glossaryEntries.length
+                    ? { glossary: glossaryEntries }
+                    : {}),
+                  ...(context.length ? { context } : {}),
                   feature: "literature",
                 }
               : { feature: "literature" }),
@@ -272,6 +327,11 @@ export function LiteratureView({
           return;
         }
         setTranslation(out);
+        segmentHistoryRef.current = upsertLitSegment(
+          segmentHistoryRef.current,
+          trimmed,
+          out,
+        );
       } catch (err) {
         if (ac.signal.aborted || reqId !== reqIdRef.current) return;
         setTranslation("");
@@ -287,10 +347,12 @@ export function LiteratureView({
       apiUrl,
       model,
       translateAutoChunk,
+      translateContextParagraphs,
       translateMaxLength,
       translateProvider,
       translateSource,
       translateTarget,
+      glossaryEntries,
     ],
   );
 
@@ -424,6 +486,7 @@ export function LiteratureView({
           seedDoc={pdfSeed}
           onSeedConsumed={clearPdfSeed}
           onOpenOtherKind={onOpenFromPdf}
+          onDocumentChange={clearSegmentHistory}
           toolbarExtra={docKind === "pdf" ? promptMenu : null}
         />
         <EpubPane
@@ -434,6 +497,7 @@ export function LiteratureView({
           seedDoc={epubSeed}
           onSeedConsumed={clearEpubSeed}
           onOpenOtherKind={onOpenFromEpub}
+          onDocumentChange={clearSegmentHistory}
           toolbarExtra={docKind === "epub" ? promptMenu : null}
         />
       </div>

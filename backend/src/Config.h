@@ -32,6 +32,10 @@ struct AppConfig {
     /** Max chars per translate request; 0 = use engine default */
     int translateMaxLength = 0;      // 0 = engine default
     bool translateAutoChunk = true;  // split long text when limited
+    /** LLM literature: include prior N translated segments as context; 0 = off */
+    int translateContextParagraphs = 0;
+    /** Literature LLM glossary JSON: [{src,dst,info?}] */
+    std::string translateGlossary = "[]";
     std::string ocrLang = "eng";
     bool ocrAutoTranslate = true;
     std::string ocrTranslateProvider = "bing";

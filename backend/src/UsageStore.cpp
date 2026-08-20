@@ -1,6 +1,7 @@
 #include "UsageStore.h"
 
 #include <atomic>
+#include <unordered_map>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -19,6 +20,17 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace {
+
+bool usageTokensKnown(const json& row)
+{
+    return row.value("totalTokens", 0) >= 0 && row.value("promptTokens", 0) >= 0;
+}
+
+int usageTokenField(const json& row, const char* key)
+{
+    const int v = row.value(key, 0);
+    return v < 0 ? 0 : v;
+}
 
 std::string trimCopy(std::string s)
 {
@@ -206,6 +218,7 @@ json UsageStore::toJson(const UsageEvent& ev) const
         {"cacheWriteTokens", ev.cacheWriteTokens},
         {"sourceChars", ev.sourceChars},
         {"endpoint", ev.endpoint},
+        {"note", ev.note},
         {"errorMessage", ev.errorMessage},
     };
 }
@@ -222,11 +235,31 @@ void UsageStore::append(const UsageEvent& ev)
         if (!out)
             return;
         out << toJson(ev).dump() << "\n";
+        out.flush();
     }
     catch (...)
     {
         // Never break API calls due to usage logging.
     }
+}
+
+void UsageStore::markPending(UsageEvent& ev)
+{
+    ev.ok = false;
+    ev.errorCode = "PENDING";
+    ev.promptTokens = kUsageTokensUnknown;
+    ev.completionTokens = kUsageTokensUnknown;
+    ev.totalTokens = kUsageTokensUnknown;
+    ev.cacheReadTokens = kUsageTokensUnknown;
+    ev.cacheWriteTokens = kUsageTokensUnknown;
+    ev.errorMessage =
+        "请求未完成（等待响应时程序已退出），Token 消耗未知";
+    append(ev);
+}
+
+void UsageStore::finalize(const UsageEvent& ev)
+{
+    append(ev);
 }
 
 void UsageStore::clear()
@@ -262,6 +295,7 @@ std::vector<json> UsageStore::events(
 {
     std::lock_guard<std::mutex> lock(mu_);
     std::vector<json> out;
+    std::vector<json> rows;
     std::ifstream in(path_, std::ios::binary);
     if (!in)
         return out;
@@ -283,11 +317,31 @@ std::vector<json> UsageStore::events(
                 continue;
             if (okFilter == "fail" && row.value("ok", false))
                 continue;
-            out.push_back(std::move(row));
+            rows.push_back(std::move(row));
         }
         catch (...)
         {
         }
+    }
+
+    std::unordered_map<std::string, size_t> lastIdxById;
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        const std::string id = rows[i].value("id", "");
+        if (!id.empty())
+            lastIdxById[id] = i;
+    }
+
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        const std::string id = rows[i].value("id", "");
+        if (!id.empty())
+        {
+            const auto it = lastIdxById.find(id);
+            if (it == lastIdxById.end() || it->second != i)
+                continue;
+        }
+        out.push_back(rows[i]);
     }
     return out;
 }
@@ -352,14 +406,19 @@ json UsageStore::summaryFromEvents(
             b["ok"] = b.value("ok", 0) + 1;
         else
             b["fail"] = b.value("fail", 0) + 1;
-        b["promptTokens"] = b.value("promptTokens", 0) + row.value("promptTokens", 0);
-        b["completionTokens"] =
-            b.value("completionTokens", 0) + row.value("completionTokens", 0);
-        b["totalTokens"] = b.value("totalTokens", 0) + row.value("totalTokens", 0);
-        b["cacheReadTokens"] =
-            b.value("cacheReadTokens", 0) + row.value("cacheReadTokens", 0);
-        b["cacheWriteTokens"] =
-            b.value("cacheWriteTokens", 0) + row.value("cacheWriteTokens", 0);
+        if (usageTokensKnown(row))
+        {
+            b["promptTokens"] =
+                b.value("promptTokens", 0) + usageTokenField(row, "promptTokens");
+            b["completionTokens"] = b.value("completionTokens", 0)
+                + usageTokenField(row, "completionTokens");
+            b["totalTokens"] =
+                b.value("totalTokens", 0) + usageTokenField(row, "totalTokens");
+            b["cacheReadTokens"] = b.value("cacheReadTokens", 0)
+                + usageTokenField(row, "cacheReadTokens");
+            b["cacheWriteTokens"] = b.value("cacheWriteTokens", 0)
+                + usageTokenField(row, "cacheWriteTokens");
+        }
         b["sourceChars"] = b.value("sourceChars", 0) + row.value("sourceChars", 0);
         b["cost"] = b.value("cost", 0.0) + row.value("cost", 0.0);
     }

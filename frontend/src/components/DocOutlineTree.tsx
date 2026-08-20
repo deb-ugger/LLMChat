@@ -11,6 +11,8 @@ import { highlightSearchNodes } from "../highlightText";
 export type DocOutlineNode = {
   title: string;
   pageNumber?: number | null;
+  /** Printed / logical page label when it differs from PDF index. */
+  pageLabel?: string | null;
   /** PDF destination (resolved on click when pageNumber missing). */
   dest?: unknown;
   /** EPUB nav href. */
@@ -276,8 +278,10 @@ function OutlineBranch({
                 <span className="pdf-outline-item-text">
                   {q ? highlightSearchNodes(it.title, q) : it.title}
                 </span>
-                {it.pageNumber != null ? (
-                  <span className="pdf-outline-item-page">{it.pageNumber}</span>
+                {(it.pageLabel ?? it.pageNumber) != null ? (
+                  <span className="pdf-outline-item-page">
+                    {it.pageLabel ?? it.pageNumber}
+                  </span>
                 ) : null}
               </button>
             </div>
@@ -372,6 +376,10 @@ export function DocOutlineTree({
   });
 
   useEffect(() => {
+    prevActiveKeyRef.current = null;
+  }, [items]);
+
+  useEffect(() => {
     if (filtering) {
       setCollapsed(new Set());
       return;
@@ -405,22 +413,27 @@ export function DocOutlineTree({
     setCollapsed(new Set(branchKeys));
   }, [branchKeys]);
 
-  const revealActive = useCallback(() => {
-    if (!activeKey) return;
-    const expandKeys = outlineRevealExpandKeys(items, activeKey);
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      for (const k of expandKeys) next.delete(k);
-      return next;
-    });
-    window.setTimeout(() => {
-      requestAnimationFrame(() => {
-        const root = scrollRef.current ?? treeRef.current;
-        const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
-        el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  const revealActive = useCallback(
+    (opts?: { scroll?: boolean }) => {
+      if (!activeKey) return;
+      const expandKeys = outlineRevealExpandKeys(items, activeKey);
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        for (const k of expandKeys) next.delete(k);
+        for (const a of outlineAncestorKeys(activeKey)) next.delete(a);
+        return next;
       });
-    }, 80);
-  }, [activeKey, items]);
+      if (opts?.scroll === false) return;
+      window.setTimeout(() => {
+        requestAnimationFrame(() => {
+          const root = scrollRef.current ?? treeRef.current;
+          const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
+          el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      }, 80);
+    },
+    [activeKey, items],
+  );
 
   const toggleSearch = useCallback(() => {
     setSearchOpen((open) => {
@@ -428,6 +441,47 @@ export function DocOutlineTree({
       return !open;
     });
   }, []);
+
+  const prevActiveKeyRef = useRef<string | null>(null);
+  const autoRevealTimerRef = useRef<number | null>(null);
+
+  // Follow PDF/EPUB reading position: expand collapsed parents and scroll into view.
+  useEffect(() => {
+    if (!activeKey || filtering) return;
+    if (activeKey === prevActiveKeyRef.current) return;
+    prevActiveKeyRef.current = activeKey;
+
+    const expandKeys = new Set([
+      ...outlineAncestorKeys(activeKey),
+      ...outlineRevealExpandKeys(items, activeKey),
+    ]);
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const k of expandKeys) {
+        if (next.delete(k)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+
+    if (autoRevealTimerRef.current != null) {
+      window.clearTimeout(autoRevealTimerRef.current);
+    }
+    autoRevealTimerRef.current = window.setTimeout(() => {
+      autoRevealTimerRef.current = null;
+      requestAnimationFrame(() => {
+        const root = scrollRef.current ?? treeRef.current;
+        const el = root?.querySelector(`[data-outline-key="${activeKey}"]`);
+        el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      });
+    }, 120);
+
+    return () => {
+      if (autoRevealTimerRef.current != null) {
+        window.clearTimeout(autoRevealTimerRef.current);
+      }
+    };
+  }, [activeKey, filtering, items]);
 
   useEffect(() => {
     revealActive();
@@ -445,7 +499,7 @@ export function DocOutlineTree({
           <button
             type="button"
             className="pdf-outline-icon-btn"
-            onClick={revealActive}
+            onClick={() => revealActive()}
             disabled={!activeKey}
             data-tip="定位到当前章节"
             aria-label="定位到当前章节"

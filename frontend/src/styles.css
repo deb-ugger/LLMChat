@@ -866,6 +866,42 @@ textarea {
   grid-template-columns: 1fr 1fr 1fr 44px;
 }
 
+.settings-rule-row.has-enabled {
+  grid-template-columns: 44px 1fr 1fr 44px;
+}
+
+.settings-rule-row.has-enabled.has-info {
+  grid-template-columns: 44px 1fr 1fr 1fr 44px;
+}
+
+.settings-rule-row.is-disabled {
+  opacity: 0.55;
+}
+
+.settings-rule-enable {
+  justify-self: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.settings-mode-panel .settings-mode-llm-extra {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  cursor: default;
+}
+
+.settings-mode-panel .settings-mode-llm-extra .settings-rule-block {
+  margin-top: 12px;
+}
+
+.settings-mode-panel .settings-mode-llm-extra .settings-rule-block:first-child {
+  margin-top: 0;
+}
+
 .settings-rule-row.is-head {
   font-size: 12px;
   font-weight: 600;

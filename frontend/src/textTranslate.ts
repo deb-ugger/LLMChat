@@ -1,5 +1,11 @@
 export type ReplaceRule = { src: string; dst: string };
-export type GlossaryEntry = { src: string; dst: string; info?: string };
+export type GlossaryEntry = {
+  src: string;
+  dst: string;
+  info?: string;
+  /** Default true when omitted */
+  enabled?: boolean;
+};
 
 export type TransEntryStatus =
   | "pending"

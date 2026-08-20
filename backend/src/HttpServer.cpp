@@ -72,6 +72,32 @@ json errorJson(const std::string& message)
     return json{{"ok", false}, {"error", message}};
 }
 
+/** Writes markPending on construction and finalize on destruction (same event id). */
+class ScopedUsageLog {
+public:
+    ScopedUsageLog(UsageStore* store, UsageEvent ev, bool track)
+        : store_(track ? store : nullptr), ev_(std::move(ev))
+    {
+        if (store_)
+            store_->markPending(ev_);
+    }
+
+    ~ScopedUsageLog()
+    {
+        if (store_)
+            store_->finalize(ev_);
+    }
+
+    UsageEvent& ev() { return ev_; }
+
+    ScopedUsageLog(const ScopedUsageLog&) = delete;
+    ScopedUsageLog& operator=(const ScopedUsageLog&) = delete;
+
+private:
+    UsageStore* store_;
+    UsageEvent ev_;
+};
+
 fs::path dataDirectory(const ConfigStore& config)
 {
     return fs::path(config.path()).parent_path();
@@ -380,6 +406,8 @@ int HttpServer::run()
             {"translatePrompt", c.translatePrompt},
             {"translateMaxLength", c.translateMaxLength},
             {"translateAutoChunk", c.translateAutoChunk},
+            {"translateContextParagraphs", c.translateContextParagraphs},
+            {"translateGlossary", c.translateGlossary},
             {"ocrLang", c.ocrLang},
             {"ocrAutoTranslate", c.ocrAutoTranslate},
             {"ocrTranslateProvider", c.ocrTranslateProvider},
@@ -475,6 +503,15 @@ int HttpServer::run()
             if (body.contains("translateAutoChunk"))
             {
                 c.translateAutoChunk = body["translateAutoChunk"].get<bool>();
+            }
+            if (body.contains("translateContextParagraphs"))
+            {
+                c.translateContextParagraphs =
+                    body["translateContextParagraphs"].get<int>();
+            }
+            if (body.contains("translateGlossary"))
+            {
+                c.translateGlossary = body["translateGlossary"].get<std::string>();
             }
             if (body.contains("ocrLang"))
             {
@@ -1145,27 +1182,27 @@ int HttpServer::run()
             llmReq.model = cfg.model;
             llmReq.messages = conv.messages;
 
+            UsageEvent usageEv = UsageStore::makeEventSkeleton();
+            usageEv.feature = "chat";
+            usageEv.channel = "llm";
+            usageEv.model = cfg.model;
+            usageEv.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
+            usageEv.vendor = UsageStore::vendorFromHostOrModel(
+                usageEv.apiHost, cfg.model, "");
+            usageEv.sourceChars = static_cast<int>(content.size());
+            usageEv.endpoint = "chat";
+
+            const bool trackUsage = static_cast<bool>(usage_);
+            ScopedUsageLog usageLog(usage_.get(), usageEv, trackUsage);
             const LlmResponse llmRes = LlmClient::chat(llmReq);
-            {
-                UsageEvent ev = UsageStore::makeEventSkeleton();
-                ev.feature = "chat";
-                ev.ok = llmRes.ok;
-                ev.errorCode = llmRes.ok ? "" : "LLM_ERROR";
-                ev.errorMessage = llmRes.ok ? "" : llmRes.error;
-                ev.channel = "llm";
-                ev.model = cfg.model;
-                ev.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
-                ev.vendor = UsageStore::vendorFromHostOrModel(ev.apiHost, cfg.model, "");
-                ev.promptTokens = llmRes.promptTokens;
-                ev.completionTokens = llmRes.completionTokens;
-                ev.totalTokens = llmRes.totalTokens;
-                ev.cacheReadTokens = llmRes.cacheReadTokens;
-                ev.cacheWriteTokens = llmRes.cacheWriteTokens;
-                ev.sourceChars = static_cast<int>(content.size());
-                ev.endpoint = "chat";
-                if (usage_ && (llmRes.ok || llmRes.externalCall))
-                    usage_->append(std::move(ev));
-            }
+            usageLog.ev().ok = llmRes.ok;
+            usageLog.ev().errorCode = llmRes.ok ? "" : "LLM_ERROR";
+            usageLog.ev().errorMessage = llmRes.ok ? "" : llmRes.error;
+            usageLog.ev().promptTokens = llmRes.promptTokens;
+            usageLog.ev().completionTokens = llmRes.completionTokens;
+            usageLog.ev().totalTokens = llmRes.totalTokens;
+            usageLog.ev().cacheReadTokens = llmRes.cacheReadTokens;
+            usageLog.ev().cacheWriteTokens = llmRes.cacheWriteTokens;
             if (!llmRes.ok)
             {
                 res.status = 502;
@@ -1415,21 +1452,19 @@ int HttpServer::run()
                     return;
                 }
 
+                UsageEvent usageEv = UsageStore::makeEventSkeleton();
+                usageEv.feature = "vendor_models";
+                usageEv.channel = "llm";
+                usageEv.apiHost = UsageStore::hostFromApiUrl(lm.apiUrl);
+                usageEv.vendor = UsageStore::vendorFromHostOrModel(
+                    usageEv.apiHost, "", vendor);
+                usageEv.endpoint = "list_models";
+
+                ScopedUsageLog usageLog(usage_.get(), usageEv, static_cast<bool>(usage_));
                 const LlmListModelsResponse listed = LlmClient::listModels(lm);
-                {
-                    UsageEvent ev = UsageStore::makeEventSkeleton();
-                    ev.feature = "vendor_models";
-                    ev.ok = listed.ok;
-                    ev.errorCode = listed.ok ? "" : "LIST_MODELS_ERROR";
-                    ev.errorMessage = listed.ok ? "" : listed.error;
-                    ev.channel = "llm";
-                    ev.apiHost = UsageStore::hostFromApiUrl(lm.apiUrl);
-                    ev.vendor = UsageStore::vendorFromHostOrModel(
-                        ev.apiHost, "", vendor);
-                    ev.endpoint = "list_models";
-                    if (usage_ && (listed.ok || listed.externalCall))
-                        usage_->append(std::move(ev));
-                }
+                usageLog.ev().ok = listed.ok;
+                usageLog.ev().errorCode = listed.ok ? "" : "LIST_MODELS_ERROR";
+                usageLog.ev().errorMessage = listed.ok ? "" : listed.error;
                 if (!listed.ok)
                 {
                     res.status = listed.statusCode >= 400 ? listed.statusCode : 502;
@@ -1537,12 +1572,29 @@ int HttpServer::run()
             std::string apiUrl;
             std::string model;
             std::string vendorHint;
+
+            UsageEvent usageEv = UsageStore::makeEventSkeleton();
+            usageEv.feature = body.value("feature", "unknown");
+            if (usageEv.feature.empty())
+                usageEv.feature = "unknown";
+            usageEv.sourceChars = static_cast<int>(text.size());
+            usageEv.endpoint = "translate";
+
+            const bool trackUsage = static_cast<bool>(usage_);
+            ScopedUsageLog usageLog(usage_.get(), usageEv, trackUsage);
+
             if (provider == "llm")
             {
                 apiUrl = body.value("apiUrl", cfg.apiUrl);
                 const std::string apiKey = body.value("apiKey", cfg.apiKey);
                 model = body.value("model", cfg.model);
                 vendorHint = body.value("vendor", "");
+                usageLog.ev().channel = "llm";
+                usageLog.ev().model = model;
+                usageLog.ev().apiHost = UsageStore::hostFromApiUrl(apiUrl);
+                usageLog.ev().vendor = UsageStore::vendorFromHostOrModel(
+                    usageLog.ev().apiHost, model, vendorHint);
+
                 const std::string prompt = body.value("prompt", "");
                 std::string glossary;
                 if (body.contains("glossary"))
@@ -1556,48 +1608,48 @@ int HttpServer::run()
                         glossary = body["glossary"].dump();
                     }
                 }
+                else if (body.value("feature", "") == "literature")
+                {
+                    glossary = cfg.translateGlossary;
+                }
+                std::string contextJson;
+                if (body.contains("context"))
+                {
+                    if (body["context"].is_string())
+                    {
+                        contextJson = body["context"].get<std::string>();
+                    }
+                    else if (body["context"].is_array())
+                    {
+                        contextJson = body["context"].dump();
+                    }
+                }
                 tr = TranslateClient::translateWithLlm(
                     text, apiUrl, apiKey, model, source, target,
-                    cfg.proxyMode, cfg.httpProxy, prompt, glossary);
+                    cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson);
             }
             else
             {
+                usageLog.ev().channel = "engine";
+                usageLog.ev().engineId = provider;
+                usageLog.ev().engineKind = UsageStore::engineKindForProvider(provider);
                 tr = TranslateClient::translateFree(
                     text, source, target, provider, maxLength, autoChunk,
                     cfg.proxyMode, cfg.httpProxy, cfg.translateEngineKeys);
+                if (tr.provider.empty() == false)
+                    usageLog.ev().engineId = tr.provider;
             }
 
+            usageLog.ev().ok = tr.ok;
+            usageLog.ev().errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
+            usageLog.ev().errorMessage = tr.ok ? "" : tr.error;
+            if (provider == "llm")
             {
-                UsageEvent ev = UsageStore::makeEventSkeleton();
-                ev.feature = body.value("feature", "unknown");
-                if (ev.feature.empty())
-                    ev.feature = "unknown";
-                ev.ok = tr.ok;
-                ev.errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
-                ev.errorMessage = tr.ok ? "" : tr.error;
-                ev.sourceChars = static_cast<int>(text.size());
-                ev.endpoint = "translate";
-                if (provider == "llm")
-                {
-                    ev.channel = "llm";
-                    ev.model = model;
-                    ev.apiHost = UsageStore::hostFromApiUrl(apiUrl);
-                    ev.vendor = UsageStore::vendorFromHostOrModel(
-                        ev.apiHost, model, vendorHint);
-                    ev.promptTokens = tr.promptTokens;
-                    ev.completionTokens = tr.completionTokens;
-                    ev.totalTokens = tr.totalTokens;
-                    ev.cacheReadTokens = tr.cacheReadTokens;
-                    ev.cacheWriteTokens = tr.cacheWriteTokens;
-                }
-                else
-                {
-                    ev.channel = "engine";
-                    ev.engineId = tr.provider.empty() ? provider : tr.provider;
-                    ev.engineKind = UsageStore::engineKindForProvider(ev.engineId);
-                }
-                if (usage_ && (tr.ok || tr.externalCall))
-                    usage_->append(std::move(ev));
+                usageLog.ev().promptTokens = tr.promptTokens;
+                usageLog.ev().completionTokens = tr.completionTokens;
+                usageLog.ev().totalTokens = tr.totalTokens;
+                usageLog.ev().cacheReadTokens = tr.cacheReadTokens;
+                usageLog.ev().cacheWriteTokens = tr.cacheWriteTokens;
             }
 
             if (!tr.ok)
@@ -1694,6 +1746,17 @@ int HttpServer::run()
                     ? req.get_param_value("to")
                     : "zh-CN";
 
+            UsageEvent usageEv = UsageStore::makeEventSkeleton();
+            usageEv.feature = "unity";
+            usageEv.channel = "llm";
+            usageEv.model = cfg.model;
+            usageEv.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
+            usageEv.vendor = UsageStore::vendorFromHostOrModel(
+                usageEv.apiHost, cfg.model, "");
+            usageEv.sourceChars = static_cast<int>(text.size());
+            usageEv.endpoint = "unity_llm";
+
+            ScopedUsageLog usageLog(usage_.get(), usageEv, static_cast<bool>(usage_));
             const TranslateResult tr = TranslateClient::translateWithLlm(
                 text,
                 cfg.apiUrl,
@@ -1706,28 +1769,17 @@ int HttpServer::run()
                 "You are a precise game UI / dialogue translator. "
                 "Translate faithfully and concisely for on-screen text. "
                 "Preserve placeholders like {0}, %s, \\n, and markup tags. "
-                "Output only the translation.");
-
-            {
-                UsageEvent ev = UsageStore::makeEventSkeleton();
-                ev.feature = "unity";
-                ev.ok = tr.ok;
-                ev.errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
-                ev.errorMessage = tr.ok ? "" : tr.error;
-                ev.channel = "llm";
-                ev.model = cfg.model;
-                ev.apiHost = UsageStore::hostFromApiUrl(cfg.apiUrl);
-                ev.vendor = UsageStore::vendorFromHostOrModel(ev.apiHost, cfg.model, "");
-                ev.promptTokens = tr.promptTokens;
-                ev.completionTokens = tr.completionTokens;
-                ev.totalTokens = tr.totalTokens;
-                ev.cacheReadTokens = tr.cacheReadTokens;
-                ev.cacheWriteTokens = tr.cacheWriteTokens;
-                ev.sourceChars = static_cast<int>(text.size());
-                ev.endpoint = "unity_llm";
-                if (usage_ && (tr.ok || tr.externalCall))
-                    usage_->append(std::move(ev));
-            }
+                "Output only the translation.",
+                "",
+                "");
+            usageLog.ev().ok = tr.ok;
+            usageLog.ev().errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
+            usageLog.ev().errorMessage = tr.ok ? "" : tr.error;
+            usageLog.ev().promptTokens = tr.promptTokens;
+            usageLog.ev().completionTokens = tr.completionTokens;
+            usageLog.ev().totalTokens = tr.totalTokens;
+            usageLog.ev().cacheReadTokens = tr.cacheReadTokens;
+            usageLog.ev().cacheWriteTokens = tr.cacheWriteTokens;
 
             if (!tr.ok)
             {
