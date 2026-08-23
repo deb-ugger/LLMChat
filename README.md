@@ -4,6 +4,14 @@ Tauri + React 前端，C++ HTTP 后端。本地前后端分离，已剔除 Qt。
 
 功能：对话聊天、Markdown/LaTeX 渲染、**文献翻译**（PDF 框选 + 免费/大模型翻译 + 词典音标发音）。
 
+## 使用 OpenAI GPT 翻译
+
+1. 打开「设置 → 通用 → 大模型 API → OpenAI」。
+2. API URL 保持 `https://api.openai.com/v1/chat/completions`，填写自己的 OpenAI API Key 后保存，并点击「测试连接」。
+3. 在「文献翻译」「图片识别」或「文本翻译」设置中选择「大模型」，模型推荐 `gpt-5.4-mini`；更重视质量可选 `gpt-5.4`，更重视成本可选 `gpt-5.4-nano`。
+
+API Key 仅通过设置页配置，不要提交到 Git 或写入前端源码。OpenAI API 与 ChatGPT/Cursor 订阅分开计费，需确保 API 账户已有可用额度。
+
 ## 目录
 
 - `backend/` — C++20 HTTP 服务（cpp-httplib + nlohmann/json + WinHTTP）

@@ -8326,10 +8326,10 @@ body.row-resizing .textLayer {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 20px 24px 32px;
+  padding: clamp(10px, 2vh, 20px) clamp(12px, 1.8vw, 24px) 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: clamp(8px, 1.5vh, 16px);
   background:
     radial-gradient(800px 400px at 0% 0%, rgba(47, 111, 237, 0.05), transparent 60%),
     var(--bg-muted);
@@ -8390,8 +8390,9 @@ body.row-resizing .textLayer {
 .stats-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 14px;
+  gap: clamp(6px, 1vh, 10px) clamp(8px, 1vw, 14px);
   align-items: flex-end;
+  flex-shrink: 0;
 }
 
 .stats-field {
@@ -8465,8 +8466,9 @@ body.row-resizing .textLayer {
 
 .stats-kpis {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: clamp(6px, 0.8vw, 10px);
+  flex-shrink: 0;
 }
 
 @media (max-width: 900px) {
@@ -8479,20 +8481,23 @@ body.row-resizing .textLayer {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
+  padding: clamp(7px, 1vh, 12px) clamp(8px, 0.9vw, 14px);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  justify-content: center;
+  gap: clamp(2px, 0.5vh, 4px);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .stats-kpi-label {
-  font-size: 14px;
+  font-size: clamp(11px, 0.9vw, 14px);
   font-weight: 600;
   color: var(--text-muted);
 }
 
 .stats-kpi-value {
-  font-size: 22px;
+  font-size: clamp(16px, 1.35vw, 22px);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
@@ -8501,8 +8506,8 @@ body.row-resizing .textLayer {
 .stats-kpi-line {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 10px;
+  flex-wrap: nowrap;
+  gap: clamp(2px, 0.45vw, 10px);
   min-width: 0;
 }
 
@@ -8511,8 +8516,8 @@ body.row-resizing .textLayer {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 48px;
-  font-size: 22px;
+  height: clamp(34px, 4.2vw, 48px);
+  font-size: clamp(16px, 1.35vw, 22px);
   font-weight: 700;
   line-height: 1;
   color: color-mix(in srgb, var(--text-muted) 75%, var(--border));
@@ -8521,7 +8526,8 @@ body.row-resizing .textLayer {
 .stats-kpi-brace-group {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: clamp(2px, 0.35vw, 6px);
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -8530,20 +8536,24 @@ body.row-resizing .textLayer {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 48px;
+  height: clamp(34px, 4.2vw, 48px);
   color: color-mix(in srgb, var(--text-muted) 70%, var(--border));
 }
 
 .stats-kpi-brace svg {
   display: block;
   overflow: visible;
+  width: clamp(8px, 0.85vw, 14px);
+  height: clamp(34px, 4.2vw, 48px);
 }
 
 .stats-kpi-parts {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px 16px;
+  flex-wrap: nowrap;
+  justify-content: space-evenly;
+  gap: clamp(3px, 0.7vw, 16px);
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -8560,7 +8570,7 @@ body.row-resizing .textLayer {
 }
 
 .stats-kpi-parts.is-token .stats-kpi-part {
-  padding: 0 12px;
+  padding: 0 clamp(4px, 0.6vw, 12px);
   border-left: 1px solid color-mix(in srgb, var(--text-muted) 28%, var(--border));
 }
 
@@ -8570,14 +8580,14 @@ body.row-resizing .textLayer {
 }
 
 .stats-kpi-part-label {
-  font-size: 14px;
+  font-size: clamp(10px, 0.82vw, 14px);
   font-weight: 600;
   line-height: 1.2;
   color: var(--text-muted);
 }
 
 .stats-kpi-part-value {
-  font-size: 22px;
+  font-size: clamp(15px, 1.3vw, 22px);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
@@ -8596,13 +8606,73 @@ body.row-resizing .textLayer {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
-  min-height: 280px;
+  padding: clamp(8px, 1.2vh, 14px) clamp(10px, 1.1vw, 16px);
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.stats-panel-charts {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1vh, 12px);
+  min-height: 0;
+}
+
+.stats-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: clamp(26px, 3.5vh, 30px);
+  flex-shrink: 0;
+}
+
+.stats-chart-toolbar > .stats-seg {
+  margin-left: auto;
+}
+
+.stats-chart-drill-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stats-chart-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.stats-chart-back:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.stats-chart-drill-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stats-chart {
   width: 100%;
-  height: 280px;
+  height: clamp(220px, 30vh, 280px);
+  min-height: 220px;
+  flex: 0 0 auto;
 }
 
 .stats-empty {
@@ -8622,12 +8692,53 @@ body.row-resizing .textLayer {
 
 .stats-table-wrap {
   min-height: 0;
-  padding-bottom: 8px;
+  padding-bottom: 0;
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  display: flex;
+  flex: 1 0 clamp(180px, 30vh, 360px);
+  flex-direction: column;
 }
 
 .stats-table-scroll {
-  max-height: 360px;
+  flex: 1 1 auto;
+  min-height: 180px;
+  max-height: none;
   overflow: auto;
+}
+
+@media (max-height: 760px) {
+  .stats-title {
+    font-size: 18px;
+  }
+
+  .stats-sub {
+    margin-top: 2px;
+    font-size: 11px;
+  }
+
+  .stats-field,
+  .stats-field select,
+  .stats-field input[type="date"],
+  .stats-seg button {
+    font-size: 11px;
+  }
+
+  .stats-field select,
+  .stats-field input[type="date"],
+  .stats-seg button {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .stats-chart {
+    height: 220px;
+  }
+
+  .stats-table-scroll {
+    min-height: 180px;
+  }
 }
 
 .stats-table {

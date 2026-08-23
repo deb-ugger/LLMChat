@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as echarts from "echarts/core";
-import { BarChart, LineChart } from "echarts/charts";
+import { BarChart, CustomChart, LineChart } from "echarts/charts";
 import {
   GridComponent,
   LegendComponent,
+  MarkAreaComponent,
   MarkLineComponent,
   TooltipComponent,
 } from "echarts/components";
@@ -13,17 +14,24 @@ import type { EChartsCoreOption, EChartsType } from "echarts/core";
 import {
   api,
   type PricingCurrency,
+  type PricingRule,
   type UsageEvent,
   type UsageSummaryItem,
 } from "../api";
-import { formatMoney } from "../pricingDefaults";
+import {
+  formatMoney,
+  isPeakLocalTime,
+  parseTimeToMinutes,
+} from "../pricingDefaults";
 import { toFriendlyError } from "../friendlyError";
 
 echarts.use([
   BarChart,
+  CustomChart,
   LineChart,
   GridComponent,
   LegendComponent,
+  MarkAreaComponent,
   MarkLineComponent,
   TooltipComponent,
   CanvasRenderer,
@@ -395,7 +403,11 @@ function hasConsumption(item: UsageSummaryItem): boolean {
 }
 
 /** Non-cached input: prompt minus cache read/write when those are reported. */
-function nonCachedInput(item: UsageSummaryItem): number {
+function nonCachedInput(item: {
+  promptTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}): number {
   const prompt = item.promptTokens ?? 0;
   if (prompt < 0) return 0;
   const read = item.cacheReadTokens ?? 0;
@@ -415,7 +427,7 @@ function tokenTotalOf(item: {
   if (isTokenUsageUnknown(item)) return 0;
   const cacheRead = tokenFieldForSum(item.cacheReadTokens);
   const cacheWrite = tokenFieldForSum(item.cacheWriteTokens);
-  const input = nonCachedInput(item as UsageSummaryItem);
+  const input = nonCachedInput(item);
   const output = tokenFieldForSum(item.completionTokens);
   const parts = cacheRead + cacheWrite + input + output;
   if (parts > 0) return parts;
@@ -509,6 +521,505 @@ const MODEL_LINE_COLORS = [
   "#546e7a",
 ];
 
+const PEAK_AREA = "rgba(251,191,36,0.20)";
+const IDLE_AREA = "rgba(34,197,94,0.14)";
+const PEAK_LABEL = "#9a5b00";
+const IDLE_LABEL = "#166534";
+
+function eventHourIndex(time: string): number {
+  const mins = parseTimeToMinutes(time);
+  if (mins < 0) return -1;
+  return Math.min(23, Math.floor(mins / 60));
+}
+
+function minutesToHours(mins: number): number {
+  return mins / 60;
+}
+
+function formatHourTick(hours: number): string {
+  if (hours >= 24) return "24:00";
+  const total = Math.max(0, Math.round(hours * 60));
+  const hh = Math.floor(total / 60) % 24;
+  const mm = total % 60;
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function hoursToClock(hours: number): string {
+  if (hours >= 24) return "23:59";
+  const total = Math.max(0, Math.round(hours * 60));
+  const hh = Math.min(23, Math.floor(total / 60));
+  const mm = total % 60;
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function peakHourRanges(windows: { from: string; to: string }[]) {
+  const raw: { from: number; to: number }[] = [];
+  for (const w of windows) {
+    const a = parseTimeToMinutes(w.from);
+    const b = parseTimeToMinutes(w.to);
+    if (a < 0 || b < 0 || a === b) continue;
+    if (a < b) raw.push({ from: minutesToHours(a), to: minutesToHours(b) });
+    else {
+      raw.push({ from: minutesToHours(a), to: 24 });
+      if (b > 0) raw.push({ from: 0, to: minutesToHours(b) });
+    }
+  }
+  raw.sort((x, y) => x.from - y.from || x.to - y.to);
+  const merged: { from: number; to: number }[] = [];
+  for (const r of raw) {
+    const last = merged[merged.length - 1];
+    if (last && r.from <= last.to) last.to = Math.max(last.to, r.to);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+function idleHourRanges(peaks: { from: number; to: number }[]) {
+  const idle: { from: number; to: number }[] = [];
+  let cur = 0;
+  for (const p of peaks) {
+    if (p.from > cur) idle.push({ from: cur, to: p.from });
+    cur = Math.max(cur, p.to);
+  }
+  if (cur < 24) idle.push({ from: cur, to: 24 });
+  return idle;
+}
+
+function valueBandArea(from: number, to: number, peak: boolean) {
+  const wide = to - from >= 1.2;
+  return [
+    {
+      name: peak ? "高峰" : "闲时",
+      xAxis: from,
+      itemStyle: { color: peak ? PEAK_AREA : IDLE_AREA },
+      label: {
+        show: wide,
+        position: "insideTop" as const,
+        color: peak ? PEAK_LABEL : IDLE_LABEL,
+        fontSize: 10,
+        fontWeight: 600,
+      },
+    },
+    { xAxis: to },
+  ];
+}
+
+function exactBandMarkAreas(rule: PricingRule | null) {
+  if (!rule || !(rule.peakWindows || []).length) return [];
+  const peaks = peakHourRanges(rule.peakWindows);
+  const idles = idleHourRanges(peaks);
+  return [
+    ...idles.map((r) => valueBandArea(r.from, r.to, false)),
+    ...peaks.map((r) => valueBandArea(r.from, r.to, true)),
+  ];
+}
+
+function ruleCoversDate(rule: PricingRule, date: string): boolean {
+  if (rule.from && date < rule.from) return false;
+  if (rule.to && date > rule.to) return false;
+  return true;
+}
+
+function pickRuleForDay(
+  rules: PricingRule[],
+  date: string,
+  events: UsageEvent[],
+): PricingRule | null {
+  const weights = new Map<string, number>();
+  for (const ev of events) {
+    if (ev.date !== date) continue;
+    const model = (ev.model || "").trim();
+    if (!model) continue;
+    weights.set(model, (weights.get(model) ?? 0) + eventMetricValue(ev, "tokens"));
+  }
+  const ranked = [...weights.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [model] of ranked) {
+    const hit = rules.find((r) => r.model === model && ruleCoversDate(r, date));
+    if (hit) return hit;
+  }
+  return (
+    rules.find(
+      (r) => ruleCoversDate(r, date) && (r.peakWindows || []).length > 0,
+    ) ?? null
+  );
+}
+
+function tickIsPeak(rule: PricingRule | null, hours: number): boolean | null {
+  if (!rule || !(rule.peakWindows || []).length) return null;
+  return isPeakLocalTime(hoursToClock(hours), rule.peakWindows);
+}
+
+function dataIntervalTicks(occupiedHours: number[]): number[] {
+  const hours = [...new Set(occupiedHours)]
+    .filter((h) => h >= 0 && h < 24)
+    .sort((a, b) => a - b);
+  const ticks = new Set<number>();
+  for (const h of hours) {
+    // 每根小时柱都标出左右边界；相邻柱共享的边界只保留一个刻度。
+    ticks.add(h);
+    ticks.add(Math.min(24, h + 1));
+  }
+  return [...ticks].sort((a, b) => a - b);
+}
+
+function collectHourlyAxisTicks(
+  rule: PricingRule | null,
+  occupiedHours: number[],
+): number[] {
+  const ticks = new Set<number>([0, 24]);
+  if (rule?.peakWindows?.length) {
+    for (const w of rule.peakWindows) {
+      const a = parseTimeToMinutes(w.from);
+      const b = parseTimeToMinutes(w.to);
+      if (a >= 0) ticks.add(minutesToHours(a));
+      if (b >= 0) ticks.add(b === 0 ? 24 : minutesToHours(b));
+    }
+  }
+  for (const t of dataIntervalTicks(occupiedHours)) ticks.add(t);
+  return [...ticks]
+    .filter((t) => t >= 0 && t <= 24)
+    .sort((a, b) => a - b)
+    .filter((t, i, arr) => i === 0 || Math.abs(t - arr[i - 1]) > 1e-6);
+}
+
+function hourRangeLabel(h: number): string {
+  return `${pad2(h)}:00–${pad2(h + 1)}:00`;
+}
+
+function eventActorKey(ev: UsageEvent): string {
+  if (ev.channel === "llm") {
+    return `llm|${(ev.vendor || "").trim()}|${(ev.model || "").trim()}`;
+  }
+  return `eng|${(ev.engineId || "").trim()}|${(ev.engineKind || "").trim()}`;
+}
+
+function eventActorLabel(ev: UsageEvent): string {
+  if (ev.channel === "llm") {
+    return (ev.model || "").trim() || "未知模型";
+  }
+  const id = (ev.engineId || "").trim() || "未知引擎";
+  if (ev.engineKind === "free") return `${id}（免费）`;
+  if (ev.engineKind === "keyed") return `${id}（需 Key）`;
+  return id;
+}
+
+type ActorOption = { key: string; label: string };
+
+function collectActors(
+  events: UsageEvent[],
+  date: string,
+  metric: "requests" | "tokens" | "cost" = "tokens",
+): ActorOption[] {
+  const map = new Map<string, { label: string; weight: number }>();
+  for (const ev of events) {
+    if (ev.date !== date) continue;
+    const key = eventActorKey(ev);
+    const add = eventMetricValue(ev, metric);
+    const cur = map.get(key);
+    if (!cur) map.set(key, { label: eventActorLabel(ev), weight: add });
+    else cur.weight += add;
+  }
+  return [...map.entries()]
+    .sort(
+      (a, b) =>
+        b[1].weight - a[1].weight ||
+        a[1].label.localeCompare(b[1].label, "zh-CN"),
+    )
+    .map(([key, v]) => ({ key, label: v.label }));
+}
+
+function hourlyXAxis(rule: PricingRule | null, ticks: number[]) {
+  return {
+    type: "value" as const,
+    min: 0,
+    max: 24,
+    scale: false,
+    boundaryGap: [0, 0] as [number, number],
+    minInterval: 0.25,
+    axisTick: {
+      show: true,
+      alignWithLabel: true,
+      customValues: ticks,
+    },
+    axisLabel: {
+      fontSize: 11,
+      fontWeight: 600,
+      hideOverlap: false,
+      showMinLabel: true,
+      showMaxLabel: true,
+      customValues: ticks,
+      formatter: (v: number) => formatHourTick(v),
+      color: (value: string) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "#6b778a";
+        const peak = tickIsPeak(rule, n >= 24 ? 23.999 : n);
+        if (peak == null) return "#6b778a";
+        return peak ? PEAK_LABEL : IDLE_LABEL;
+      },
+    },
+    splitLine: { show: false },
+  };
+}
+
+function markAreaHost(markAreas: ReturnType<typeof exactBandMarkAreas>) {
+  if (!markAreas.length) return [];
+  return [
+    {
+      name: "",
+      type: "bar" as const,
+      data: [] as number[],
+      silent: true,
+      tooltip: { show: false },
+      itemStyle: { opacity: 0 },
+      markArea: { silent: true, z: 0, data: markAreas },
+    },
+  ];
+}
+
+const hourlyBarRender = (
+  _params: unknown,
+  api: {
+    value: (dim: number) => number;
+    coord: (data: number[]) => number[];
+    style: () => Record<string, unknown>;
+  },
+) => {
+  const x0 = Number(api.value(0));
+  const yVal = Number(api.value(1));
+  const yBase = Number(api.value(2) ?? 0);
+  const yTop = Number(api.value(3) ?? yBase + yVal);
+  if (!Number.isFinite(x0) || !Number.isFinite(yVal) || yVal === 0) {
+    return undefined;
+  }
+  const start = api.coord([x0, yBase]);
+  const end = api.coord([x0 + 1, yTop]);
+  const x = start[0];
+  const y = end[1];
+  const width = Math.max(0, end[0] - start[0] - 1);
+  const height = Math.max(0, start[1] - end[1]);
+  return {
+    type: "rect",
+    shape: { x: x + 0.5, y, width, height },
+    style: api.style(),
+  };
+};
+
+function hourlyBarPoint(hour: number, value: number, base: number) {
+  return [hour, value, base, base + value];
+}
+
+function buildActorDetailOption({
+  actor,
+  day,
+  events,
+  currency,
+  metric,
+  pricingRules,
+}: {
+  actor: ActorOption;
+  day: string;
+  events: UsageEvent[];
+  currency: PricingCurrency;
+  metric: "requests" | "tokens" | "cost";
+  pricingRules: PricingRule[];
+}): EChartsCoreOption {
+  const rule = pickRuleForDay(pricingRules, day, events);
+  const markAreas = exactBandMarkAreas(rule);
+  const hourEvents: UsageEvent[][] = Array.from({ length: 24 }, () => []);
+  for (const ev of events) {
+    if (ev.date !== day || eventActorKey(ev) !== actor.key) continue;
+    const h = eventHourIndex(ev.time);
+    if (h >= 0) hourEvents[h].push(ev);
+  }
+
+  const occupiedHours = Array.from({ length: 24 }, (_, h) => h).filter(
+    (h) => hourEvents[h].length > 0,
+  );
+  const ticks = collectHourlyAxisTicks(rule, occupiedHours);
+  const hourOk = (h: number) => hourEvents[h].filter((ev) => ev.ok).length;
+  const hourFail = (h: number) => hourEvents[h].filter((ev) => !ev.ok).length;
+  const hourCost = (h: number) =>
+    hourEvents[h].reduce((sum, ev) => sum + (ev.cost ?? 0), 0);
+  const hourField = (h: number, pick: (ev: UsageEvent) => number) =>
+    hourEvents[h].reduce((sum, ev) => sum + pick(ev), 0);
+
+  const tooltipHtml = (h: number) => {
+    const peak = tickIsPeak(rule, h);
+    const band = peak == null ? "" : peak ? "高峰" : "闲时";
+    const bandColor =
+      peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
+    const head = [
+      `<div style="font-weight:700;margin-bottom:4px">${actor.label}</div>`,
+      `<div style="font-weight:700;margin-bottom:4px">${hourRangeLabel(h)}</div>`,
+      band
+        ? `<div style="margin-bottom:6px;color:${bandColor};font-weight:700">${band}</div>`
+        : "",
+    ];
+    if (metric === "requests") {
+      return [
+        ...head,
+        `<div>成功：${hourOk(h)}</div>`,
+        `<div>失败：${hourFail(h)}</div>`,
+        `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">合计：${hourOk(h) + hourFail(h)}</div>`,
+      ].join("");
+    }
+    if (metric === "cost") {
+      return [
+        ...head,
+        `<div>费用：${formatMoney(hourCost(h), currency)}</div>`,
+      ].join("");
+    }
+    const cacheRead = hourField(h, (ev) =>
+      tokenFieldForSum(ev.cacheReadTokens),
+    );
+    const cacheWrite = hourField(h, (ev) =>
+      tokenFieldForSum(ev.cacheWriteTokens),
+    );
+    const input = hourField(h, (ev) => nonCachedInput(ev));
+    const output = hourField(h, (ev) =>
+      tokenFieldForSum(ev.completionTokens),
+    );
+    return [
+      ...head,
+      `<div>Cache Read：${formatTokenExact(cacheRead)}</div>`,
+      `<div>Cache Write：${formatTokenExact(cacheWrite)}</div>`,
+      `<div>Input：${formatTokenExact(input)}</div>`,
+      `<div>Output：${formatTokenExact(output)}</div>`,
+      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">Total：${formatTokenExact(cacheRead + cacheWrite + input + output)}</div>`,
+    ].join("");
+  };
+
+  const series: Record<string, unknown>[] = [
+    ...markAreaHost(markAreas),
+  ];
+  if (metric === "requests") {
+    const ok = Array.from({ length: 24 }, (_, h) => hourOk(h));
+    const fail = Array.from({ length: 24 }, (_, h) => hourFail(h));
+    series.push(
+      {
+        name: "成功",
+        type: "custom",
+        renderItem: hourlyBarRender,
+        encode: { x: 0, y: [2, 3] },
+        itemStyle: { color: "#0a7a32" },
+        data: ok.map((v, h) => hourlyBarPoint(h, v, 0)),
+      },
+      {
+        name: "失败",
+        type: "custom",
+        renderItem: hourlyBarRender,
+        encode: { x: 0, y: [2, 3] },
+        itemStyle: { color: "#c62828" },
+        data: fail.map((v, h) => hourlyBarPoint(h, v, ok[h])),
+      },
+    );
+  } else if (metric === "cost") {
+    series.push({
+      name: metricLabel("cost", currency),
+      type: "custom",
+      renderItem: hourlyBarRender,
+      encode: { x: 0, y: [2, 3] },
+      itemStyle: { color: "#2f6fed" },
+      data: Array.from({ length: 24 }, (_, h) =>
+        hourlyBarPoint(h, hourCost(h), 0),
+      ),
+    });
+  } else {
+    const stacks = [
+      {
+        name: "Cache Read",
+        color: "#7c6bc4",
+        values: Array.from({ length: 24 }, (_, h) =>
+          hourField(h, (ev) => tokenFieldForSum(ev.cacheReadTokens)),
+        ),
+      },
+      {
+        name: "Cache Write",
+        color: "#b07a3a",
+        values: Array.from({ length: 24 }, (_, h) =>
+          hourField(h, (ev) => tokenFieldForSum(ev.cacheWriteTokens)),
+        ),
+      },
+      {
+        name: "Input",
+        color: "#2f6fed",
+        values: Array.from({ length: 24 }, (_, h) =>
+          hourField(h, (ev) => nonCachedInput(ev)),
+        ),
+      },
+      {
+        name: "Output",
+        color: "#5a8cb4",
+        values: Array.from({ length: 24 }, (_, h) =>
+          hourField(h, (ev) => tokenFieldForSum(ev.completionTokens)),
+        ),
+      },
+    ];
+    stacks.forEach((stack, i) => {
+      const bases = new Array(24).fill(0);
+      for (let j = 0; j < i; j++) {
+        for (let h = 0; h < 24; h++) bases[h] += stacks[j].values[h];
+      }
+      series.push({
+        name: stack.name,
+        type: "custom",
+        renderItem: hourlyBarRender,
+        encode: { x: 0, y: [2, 3] },
+        itemStyle: { color: stack.color },
+        data: stack.values.map((v, h) => hourlyBarPoint(h, v, bases[h])),
+      });
+    });
+  }
+
+  return {
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: unknown) => {
+        const list = Array.isArray(params) ? params : [params];
+        const first = list[0] as { value?: number[] | number };
+        const raw = first?.value;
+        const x = Array.isArray(raw) ? Number(raw[0]) : Number(raw);
+        const h = Number.isFinite(x)
+          ? Math.max(0, Math.min(23, Math.floor(x)))
+          : 0;
+        return tooltipHtml(h);
+      },
+    },
+    legend:
+      metric === "cost"
+        ? { show: false }
+        : {
+            data:
+              metric === "requests"
+                ? ["成功", "失败"]
+                : ["Cache Read", "Cache Write", "Input", "Output"],
+            top: 0,
+          },
+    grid: {
+      left: 56,
+      right: 24,
+      top: metric === "cost" ? 28 : 40,
+      bottom: 44,
+      containLabel: false,
+    },
+    xAxis: hourlyXAxis(rule, ticks),
+    yAxis: {
+      type: "value",
+      name:
+        metric === "requests"
+          ? "次数"
+          : metric === "cost"
+            ? currency === "USD"
+              ? "费用 ($)"
+              : "费用 (¥)"
+            : "Tokens",
+      minInterval: metric === "requests" ? 1 : undefined,
+    },
+    series: series as EChartsCoreOption["series"],
+  };
+}
+
 type BarChartProps = {
   items: UsageSummaryItem[];
   events: UsageEvent[];
@@ -517,6 +1028,9 @@ type BarChartProps = {
   currency: PricingCurrency;
   rangeFrom: string;
   rangeTo: string;
+  pricingRules: PricingRule[];
+  selectedActor: ActorOption | null;
+  onSelectActor: (actor: ActorOption) => void;
 };
 
 function UsageBarChart({
@@ -527,12 +1041,38 @@ function UsageBarChart({
   currency,
   rangeFrom,
   rangeTo,
+  pricingRules,
+  selectedActor,
+  onSelectActor,
 }: BarChartProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<EChartsType | null>(null);
 
+  const singleDay =
+    groupBy === "day" &&
+    rangeFrom &&
+    rangeTo &&
+    inclusiveDayCount(rangeFrom, rangeTo) === 1
+      ? rangeFrom
+      : "";
+  const drillableActors = useMemo(
+    () => (singleDay ? collectActors(events, singleDay, metric) : []),
+    [events, metric, singleDay],
+  );
+
   const option = useMemo((): EChartsCoreOption => {
     const rows = items.filter(hasConsumption);
+
+    if (singleDay && selectedActor) {
+      return buildActorDetailOption({
+        actor: selectedActor,
+        day: singleDay,
+        events,
+        currency,
+        metric,
+        pricingRules,
+      });
+    }
 
     // 按日期 + 时间跨度 > 1 天 → 按模型累计折线/面积图
     if (groupBy === "day") {
@@ -795,6 +1335,146 @@ function UsageBarChart({
           }),
         };
       }
+
+      if (span === 1 && from) {
+        const day = from;
+        const rule = pickRuleForDay(pricingRules, day, events);
+        const markAreas = exactBandMarkAreas(rule);
+
+        const hourEvents: UsageEvent[][] = Array.from({ length: 24 }, () => []);
+        for (const ev of events) {
+          if (ev.date !== day) continue;
+          const h = eventHourIndex(ev.time);
+          if (h < 0) continue;
+          hourEvents[h].push(ev);
+        }
+
+        const hourValue = (h: number) =>
+          hourEvents[h].reduce((s, ev) => s + eventMetricValue(ev, metric), 0);
+        const occupiedHours = Array.from({ length: 24 }, (_, h) => h).filter(
+          (h) => hourValue(h) > 0,
+        );
+        const ticks = collectHourlyAxisTicks(rule, occupiedHours);
+
+        const tooltipHtml = (h: number) => {
+          const peak = tickIsPeak(rule, h);
+          const band = peak == null ? "" : peak ? "高峰" : "闲时";
+          const bandColor =
+            peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
+          const byActor = new Map<string, number>();
+          for (const ev of hourEvents[h]) {
+            const label = eventActorLabel(ev);
+            byActor.set(
+              label,
+              (byActor.get(label) ?? 0) + eventMetricValue(ev, metric),
+            );
+          }
+          const actorRows = [...byActor.entries()].sort((a, b) => b[1] - a[1]);
+          const total = hourValue(h);
+          const lines = actorRows.map(
+            ([name, v]) =>
+              `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${name}</span><span style="font-variant-numeric:tabular-nums">${formatMetricValue(v, metric, currency)}</span></div>`,
+          );
+          return [
+            `<div style="font-weight:700;margin-bottom:4px">${hourRangeLabel(h)}</div>`,
+            band
+              ? `<div style="margin-bottom:6px;color:${bandColor};font-weight:700">${band}</div>`
+              : "",
+            lines.length
+              ? lines.join("")
+              : `<div style="color:#6b778a">无消耗</div>`,
+            `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;font-weight:700;display:flex;justify-content:space-between;gap:16px"><span>合计</span><span>${formatMetricValue(total, metric, currency)}</span></div>`,
+          ].join("");
+        };
+
+        const yName =
+          metric === "requests"
+            ? "次数"
+            : metric === "cost"
+              ? currency === "USD"
+                ? "费用 ($)"
+                : "费用 (¥)"
+              : "Tokens";
+        const actors = collectActors(events, day, metric);
+        const actorHourValues = actors.map((a) =>
+          Array.from({ length: 24 }, (_, h) =>
+            hourEvents[h]
+              .filter((ev) => eventActorKey(ev) === a.key)
+              .reduce((s, ev) => s + eventMetricValue(ev, metric), 0),
+          ),
+        );
+
+        const series = [
+          ...markAreaHost(markAreas),
+          ...(actors.length === 0
+            ? [
+                {
+                  name: metricLabel(metric, currency),
+                  type: "custom" as const,
+                  renderItem: hourlyBarRender,
+                  data: [] as number[][],
+                },
+              ]
+            : actors.map((a, i) => {
+                const bases = new Array(24).fill(0);
+                for (let j = 0; j < i; j++) {
+                  for (let h = 0; h < 24; h++) {
+                    bases[h] += actorHourValues[j][h];
+                  }
+                }
+                return {
+                  id: a.key,
+                  name: a.label,
+                  type: "custom" as const,
+                  renderItem: hourlyBarRender,
+                  encode: { x: 0, y: [2, 3] },
+                  cursor: "pointer",
+                  itemStyle: {
+                    color: MODEL_LINE_COLORS[i % MODEL_LINE_COLORS.length],
+                  },
+                  data: actorHourValues[i].map((v, h) =>
+                    hourlyBarPoint(h, v, bases[h]),
+                  ),
+                };
+              })),
+        ];
+
+        return {
+          tooltip: {
+            trigger: "axis",
+            axisPointer: { type: "shadow" },
+            formatter: (params: unknown) => {
+              const list = Array.isArray(params) ? params : [params];
+              const first = list[0] as { value?: number[] | number };
+              const raw = first?.value;
+              const x = Array.isArray(raw) ? Number(raw[0]) : Number(raw);
+              const h = Number.isFinite(x)
+                ? Math.max(0, Math.min(23, Math.floor(x)))
+                : 0;
+              return tooltipHtml(h);
+            },
+          },
+          legend: {
+            data: actors.map((a) => a.label),
+            top: 0,
+            type: actors.length > 3 ? "scroll" : "plain",
+          },
+          grid: {
+            left: 56,
+            right: 24,
+            top: actors.length ? 40 : 28,
+            bottom: 44,
+            containLabel: false,
+          },
+          xAxis: hourlyXAxis(rule, ticks),
+          yAxis: {
+            type: "value",
+            name: yName,
+            minInterval: metric === "requests" ? 1 : undefined,
+          },
+          series,
+        };
+      }
     }
 
     const labels = rows.map((r) => displayKey(groupBy, r.key));
@@ -948,7 +1628,18 @@ function UsageBarChart({
         },
       ],
     };
-  }, [events, groupBy, items, metric, currency, rangeFrom, rangeTo]);
+  }, [
+    events,
+    groupBy,
+    items,
+    metric,
+    currency,
+    pricingRules,
+    rangeFrom,
+    rangeTo,
+    selectedActor,
+    singleDay,
+  ]);
 
   useEffect(() => {
     const el = hostRef.current;
@@ -959,15 +1650,23 @@ function UsageBarChart({
       chartRef.current = chart;
     }
     chart.setOption(option, true);
+    const onChartClick = (params: unknown) => {
+      if (!singleDay || selectedActor) return;
+      const hit = params as { seriesId?: string };
+      const actor = drillableActors.find((item) => item.key === hit.seriesId);
+      if (actor) onSelectActor(actor);
+    };
+    chart.on("click", onChartClick);
     const onResize = () => chart?.resize();
     window.addEventListener("resize", onResize);
     const ro = new ResizeObserver(onResize);
     ro.observe(el);
     return () => {
+      chart?.off("click", onChartClick);
       window.removeEventListener("resize", onResize);
       ro.disconnect();
     };
-  }, [option]);
+  }, [drillableActors, onSelectActor, option, selectedActor, singleDay]);
 
   useEffect(
     () => () => {
@@ -995,8 +1694,17 @@ function UsageBarChart({
       }
       return from && to ? inclusiveDayCount(from, to) > 1 : false;
     })();
+  const isSingleDayHourly =
+    groupBy === "day" &&
+    !!rangeFrom &&
+    !!rangeTo &&
+    inclusiveDayCount(rangeFrom, rangeTo) === 1;
 
-  if (!isDayLine && items.filter(hasConsumption).length === 0) {
+  if (
+    !isDayLine &&
+    !isSingleDayHourly &&
+    items.filter(hasConsumption).length === 0
+  ) {
     return <div className="stats-empty">所选范围内暂无用量数据</div>;
   }
 
@@ -1020,6 +1728,8 @@ export function StatsView({ active = true }: { active?: boolean }) {
     () => initialFilters.metric,
   );
   const [currency, setCurrency] = useState<PricingCurrency>("CNY");
+  const [pricingRules, setPricingRules] = useState<PricingRule[]>([]);
+  const [selectedActor, setSelectedActor] = useState<ActorOption | null>(null);
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1045,6 +1755,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         if (p.displayCurrency === "USD" || p.displayCurrency === "CNY") {
           setCurrency(p.displayCurrency);
         }
+        setPricingRules(p.rules ?? []);
       } catch {
         /* keep CNY */
       }
@@ -1066,6 +1777,10 @@ export function StatsView({ active = true }: { active?: boolean }) {
     if (rangePreset === "all") return { from: "", to: "" };
     return rangeFromPreset(rangePreset);
   }, [customFrom, customTo, rangePreset]);
+
+  useEffect(() => {
+    setSelectedActor(null);
+  }, [feature, groupBy, okFilter, range.from, range.to]);
 
   const applyPreset = (preset: RangePreset) => {
     setRangePreset(preset);
@@ -1293,29 +2008,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
             </button>
           ))}
         </div>
-        <div className="stats-seg" role="group" aria-label="指标">
-          <button
-            type="button"
-            className={metric === "requests" ? "is-active" : undefined}
-            onClick={() => setMetric("requests")}
-          >
-            请求次数
-          </button>
-          <button
-            type="button"
-            className={metric === "tokens" ? "is-active" : undefined}
-            onClick={() => setMetric("tokens")}
-          >
-            Token
-          </button>
-          <button
-            type="button"
-            className={metric === "cost" ? "is-active" : undefined}
-            onClick={() => setMetric("cost")}
-          >
-            费用
-          </button>
-        </div>
         <div
           className="stats-seg"
           role="group"
@@ -1458,19 +2150,64 @@ export function StatsView({ active = true }: { active?: boolean }) {
         </div>
       </div>
 
-      <section className="stats-panel">
+      <section className="stats-panel stats-panel-charts">
+        <div className="stats-chart-toolbar">
+          {selectedActor && (
+            <div className="stats-chart-drill-head">
+              <button
+                type="button"
+                className="stats-chart-back"
+                onClick={() => setSelectedActor(null)}
+              >
+                <span aria-hidden="true">←</span>
+                返回
+              </button>
+              <span className="stats-chart-drill-title">
+                {selectedActor.label} 明细
+              </span>
+            </div>
+          )}
+          <div className="stats-seg" role="group" aria-label="主图指标">
+            <button
+              type="button"
+              className={metric === "requests" ? "is-active" : undefined}
+              onClick={() => setMetric("requests")}
+            >
+              请求次数
+            </button>
+            <button
+              type="button"
+              className={metric === "tokens" ? "is-active" : undefined}
+              onClick={() => setMetric("tokens")}
+            >
+              Token
+            </button>
+            <button
+              type="button"
+              className={metric === "cost" ? "is-active" : undefined}
+              onClick={() => setMetric("cost")}
+            >
+              费用
+            </button>
+          </div>
+        </div>
         {loading ? (
           <div className="stats-empty">加载中…</div>
         ) : (
-          <UsageBarChart
-            items={summary}
-            events={events}
-            groupBy={groupBy}
-            metric={metric}
-            currency={currency}
-            rangeFrom={range.from}
-            rangeTo={range.to}
-          />
+          <>
+            <UsageBarChart
+              items={summary}
+              events={events}
+              groupBy={groupBy}
+              metric={metric}
+              currency={currency}
+              rangeFrom={range.from}
+              rangeTo={range.to}
+              pricingRules={pricingRules}
+              selectedActor={selectedActor}
+              onSelectActor={setSelectedActor}
+            />
+          </>
         )}
       </section>
 

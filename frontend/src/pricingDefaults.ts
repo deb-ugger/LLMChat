@@ -336,6 +336,9 @@ const DEFAULT_RULES: PricingRule[] = (() => {
       dsPeakLegacy,
     ),
     // OpenAI — USD（无官方闲时价 → 空高峰时段 = 始终高峰价）
+    rule("OpenAI", "gpt-5.4", FROM, rates(2.5, 15.0, 0.25, 2.5)),
+    rule("OpenAI", "gpt-5.4-mini", FROM, rates(0.75, 4.5, 0.075, 0.75)),
+    rule("OpenAI", "gpt-5.4-nano", FROM, rates(0.2, 1.25, 0.02, 0.2)),
     rule("OpenAI", "gpt-4o", FROM, rates(2.5, 10.0, 1.25, 2.5)),
     rule("OpenAI", "gpt-4o-mini", FROM, rates(0.15, 0.6, 0.075, 0.15)),
     rule("OpenAI", "gpt-4-turbo", FROM, rates(10.0, 30.0, 5.0, 10.0)),

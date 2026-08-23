@@ -41,6 +41,24 @@ export const MODEL_PRESETS: ModelPreset[] = [
     group: "DeepSeek",
   },
   {
+    model: "gpt-5.4-mini",
+    label: "GPT-5.4 mini（翻译推荐）",
+    apiUrl: "https://api.openai.com/v1/chat/completions",
+    group: "OpenAI",
+  },
+  {
+    model: "gpt-5.4",
+    label: "GPT-5.4（高质量）",
+    apiUrl: "https://api.openai.com/v1/chat/completions",
+    group: "OpenAI",
+  },
+  {
+    model: "gpt-5.4-nano",
+    label: "GPT-5.4 nano（低成本）",
+    apiUrl: "https://api.openai.com/v1/chat/completions",
+    group: "OpenAI",
+  },
+  {
     model: "gpt-4o",
     label: "GPT-4o",
     apiUrl: "https://api.openai.com/v1/chat/completions",
