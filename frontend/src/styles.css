@@ -7772,7 +7772,10 @@ body.row-resizing .textLayer {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(100%, 230px), 1fr)
+  );
   gap: 6px;
 }
 
@@ -8144,7 +8147,6 @@ body.row-resizing .textLayer {
   .text-home-grid,
   .settings-engine-catalog,
   .settings-vendor-catalog,
-  .settings-vendor-models-list,
   .text-format-grid {
     grid-template-columns: 1fr;
   }
