@@ -21,6 +21,19 @@ export type PricingDayParts = {
   idleTo: string;
 };
 
+export type PricingBand = "idle" | "peak";
+
+/**
+ * One weekday + band + rates row inside a date interval.
+ * Array order is priority: index 0 wins when multiple sub-rules match.
+ */
+export type PricingSubRule = {
+  id: string;
+  peakWeekdays?: number[];
+  band: PricingBand;
+  rates: TokenRates;
+};
+
 export type PricingRule = {
   id: string;
   vendor: string;
@@ -41,6 +54,17 @@ export type PricingRule = {
    * Empty = always peak (use rates). Non-empty: in any window → rates, else idleRates.
    */
   peakWindows: PeakWindow[];
+  /**
+   * ISO weekdays that may use peak rates: 1=Mon … 7=Sun.
+   * Empty = every day (default). Length 7 is stored as empty.
+   * @deprecated Prefer per-sub-rule peakWeekdays
+   */
+  peakWeekdays?: number[];
+  /**
+   * Sub-rules inside this date interval (星期 + 时段 + 四列价).
+   * First matching entry wins (top of the list = highest priority).
+   */
+  subRules?: PricingSubRule[];
   /** Level-2 lock: this date-interval cannot be edited until unlocked */
   locked?: boolean;
 };
@@ -73,48 +97,14 @@ export const DEFAULT_DEEPSEEK_PEAK_WINDOWS: PeakWindow[] = [
   { from: "14:00", to: "18:00" },
 ];
 
-function rates(
-  input: number,
-  output: number,
-  cacheRead: number,
-  cacheWrite: number,
-): TokenRates {
-  return { input, output, cacheRead, cacheWrite };
+function ratesRoughlyEqual(a: TokenRates, b: TokenRates): boolean {
+  return (
+    a.input === b.input &&
+    a.output === b.output &&
+    a.cacheRead === b.cacheRead &&
+    a.cacheWrite === b.cacheWrite
+  );
 }
-
-function halfRates(r: TokenRates): TokenRates {
-  return {
-    input: r.input / 2,
-    output: r.output / 2,
-    cacheRead: r.cacheRead / 2,
-    cacheWrite: r.cacheWrite / 2,
-  };
-}
-
-function rule(
-  vendor: string,
-  model: string,
-  from: string,
-  r: TokenRates,
-  to = "",
-  idle?: TokenRates,
-  peakWindows: PeakWindow[] = [],
-): PricingRule {
-  return {
-    id: `builtin-${vendor}-${model}-${from || "open"}`,
-    vendor,
-    model,
-    from,
-    to,
-    rates: r,
-    idleRates: idle ? idle : { ...r },
-    peakWindows: peakWindows.map((w) => ({ ...w })),
-    locked: true,
-  };
-}
-
-const FROM = ""; // empty = open start (不限起始)
-
 /** Default billing currency by vendor. */
 export const DEFAULT_VENDOR_CURRENCIES: Record<string, PricingCurrency> = {
   DeepSeek: "CNY",
@@ -129,235 +119,6 @@ export function defaultVendorCurrency(vendor: string): PricingCurrency {
   return "USD";
 }
 
-/**
- * Official DeepSeek rates (CNY / 1M tokens) from pricing docs.
- * chat / reasoner aliases use Flash rates.
- */
-export function deepSeekOfficialRates(model: string): {
-  peak: TokenRates;
-  idle: TokenRates;
-} | null {
-  const id = model.trim();
-  if (!id.toLowerCase().startsWith("deepseek")) return null;
-  const flashPeak = rates(3.0, 9.0, 0.1, 0);
-  const flashIdle = rates(1.5, 4.5, 0.05, 0);
-  const proPeak = rates(9.0, 27.0, 0.3, 0);
-  const proIdle = rates(4.5, 13.5, 0.15, 0);
-  if (id === "deepseek-v4-pro") return { peak: proPeak, idle: proIdle };
-  // v4-flash + legacy aliases
-  if (
-    id === "deepseek-v4-flash" ||
-    id === "deepseek-chat" ||
-    id === "deepseek-reasoner" ||
-    id.startsWith("deepseek-")
-  ) {
-    return { peak: flashPeak, idle: flashIdle };
-  }
-  return null;
-}
-
-function ratesRoughlyEqual(a: TokenRates, b: TokenRates): boolean {
-  return (
-    a.input === b.input &&
-    a.output === b.output &&
-    a.cacheRead === b.cacheRead &&
-    a.cacheWrite === b.cacheWrite
-  );
-}
-
-function peakWindowsEqual(a: PeakWindow[] | undefined, b: PeakWindow[]): boolean {
-  const aa = [...(a || [])]
-    .map((w) => `${w.from}-${w.to}`)
-    .sort();
-  const bb = [...b].map((w) => `${w.from}-${w.to}`).sort();
-  if (aa.length !== bb.length) return false;
-  return aa.every((s, i) => s === bb[i]);
-}
-
-function isDeepSeekOfficialInterval(rule: PricingRule): boolean {
-  const off = deepSeekOfficialRates(rule.model);
-  if (!off) return false;
-  return (
-    ratesRoughlyEqual(rule.rates, off.peak) &&
-    ratesRoughlyEqual(rule.idleRates || rule.rates, off.idle) &&
-    peakWindowsEqual(rule.peakWindows, DEFAULT_DEEPSEEK_PEAK_WINDOWS)
-  );
-}
-
-function todayIsoLocal(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function addDaysIsoLocal(iso: string, days: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
-  if (!m) return iso;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-/**
- * For each DeepSeek model already in the table, ensure a date interval carries
- * the latest official rates + peak windows. Does not rewrite built-in defaults;
- * closes the previous open-ended interval and appends a new one from today.
- */
-export function appendDeepSeekOfficialDateIntervals(
-  rules: PricingRule[],
-  opts?: { today?: string; lockedModels?: string[] },
-): { rules: PricingRule[]; addedModels: string[] } {
-  const today = opts?.today || todayIsoLocal();
-  const yesterday = addDaysIsoLocal(today, -1);
-  const byModel = new Map<string, PricingRule[]>();
-  for (const r of rules) {
-    const id = r.model.trim();
-    if (!id) continue;
-    if (!byModel.has(id)) byModel.set(id, []);
-    byModel.get(id)!.push(r);
-  }
-
-  const out = rules.map((r) => ({
-    ...r,
-    rates: { ...r.rates },
-    idleRates: { ...(r.idleRates || r.rates) },
-    peakWindows: (r.peakWindows || []).map((w) => ({ ...w })),
-    locked: !!r.locked,
-  }));
-  const addedModels: string[] = [];
-
-  for (const [model, list] of byModel) {
-    const off = deepSeekOfficialRates(model);
-    if (!off) continue;
-    if (list.some((r) => isDeepSeekOfficialInterval(r))) continue;
-
-    const sorted = [...list].sort((a, b) =>
-      (a.from || "0000-01-01").localeCompare(b.from || "0000-01-01"),
-    );
-    const open = sorted.find((r) => !(r.to || "").trim()) || sorted[sorted.length - 1];
-    if (!open) continue;
-    // Do not alter a locked interval (level-2) or a model under level-1 lock.
-    if (open.locked) continue;
-    if ((opts?.lockedModels || []).includes(model)) continue;
-
-    const openIdx = out.findIndex((r) => r.id === open.id);
-    if (openIdx < 0) continue;
-
-    const openFrom = (out[openIdx]!.from || "").trim();
-    // Cannot close an interval that starts today/future — update in place instead.
-    if (openFrom && openFrom >= today) {
-      out[openIdx] = {
-        ...out[openIdx]!,
-        rates: { ...off.peak },
-        idleRates: { ...off.idle },
-        peakWindows: DEFAULT_DEEPSEEK_PEAK_WINDOWS.map((w) => ({ ...w })),
-        to: "",
-      };
-      addedModels.push(model);
-      continue;
-    }
-
-    // Close previous open-ended range at yesterday (inclusive).
-    if (!(out[openIdx]!.to || "").trim()) {
-      if (openFrom && yesterday < openFrom) {
-        // Zero-width — just overwrite
-        out[openIdx] = {
-          ...out[openIdx]!,
-          rates: { ...off.peak },
-          idleRates: { ...off.idle },
-          peakWindows: DEFAULT_DEEPSEEK_PEAK_WINDOWS.map((w) => ({ ...w })),
-        };
-        addedModels.push(model);
-        continue;
-      }
-      out[openIdx] = { ...out[openIdx]!, to: yesterday };
-    }
-
-    out.push({
-      id: newRuleId(),
-      vendor: out[openIdx]!.vendor || "DeepSeek",
-      model,
-      from: today,
-      to: "",
-      rates: { ...off.peak },
-      idleRates: { ...off.idle },
-      peakWindows: DEFAULT_DEEPSEEK_PEAK_WINDOWS.map((w) => ({ ...w })),
-      locked: false,
-    });
-    addedModels.push(model);
-  }
-
-  return { rules: out, addedModels };
-}
-
-/** Default price table used for reset / display when API empty. */
-const DEFAULT_RULES: PricingRule[] = (() => {
-  // Built-in baseline (not the latest official cutover — that is appended as a
-  // new date interval via appendDeepSeekOfficialDateIntervals).
-  // DeepSeek — CNY
-  const dsFlash = rates(1.0, 2.0, 0.02, 0);
-  const dsPro = rates(3.0, 6.0, 0.025, 0);
-  const dsChat = rates(1.0, 2.0, 0.02, 0);
-  const dsPeakLegacy: PeakWindow[] = [{ from: "08:30", to: "00:30" }];
-  return [
-    rule(
-      "DeepSeek",
-      "deepseek-v4-flash",
-      FROM,
-      dsFlash,
-      "",
-      halfRates(dsFlash),
-      dsPeakLegacy,
-    ),
-    rule(
-      "DeepSeek",
-      "deepseek-v4-pro",
-      FROM,
-      dsPro,
-      "",
-      halfRates(dsPro),
-      dsPeakLegacy,
-    ),
-    rule(
-      "DeepSeek",
-      "deepseek-chat",
-      FROM,
-      dsChat,
-      "",
-      halfRates(dsChat),
-      dsPeakLegacy,
-    ),
-    rule(
-      "DeepSeek",
-      "deepseek-reasoner",
-      FROM,
-      dsChat,
-      "",
-      halfRates(dsChat),
-      dsPeakLegacy,
-    ),
-    // OpenAI — USD（无官方闲时价 → 空高峰时段 = 始终高峰价）
-    rule("OpenAI", "gpt-5.4", FROM, rates(2.5, 15.0, 0.25, 2.5)),
-    rule("OpenAI", "gpt-5.4-mini", FROM, rates(0.75, 4.5, 0.075, 0.75)),
-    rule("OpenAI", "gpt-5.4-nano", FROM, rates(0.2, 1.25, 0.02, 0.2)),
-    rule("OpenAI", "gpt-4o", FROM, rates(2.5, 10.0, 1.25, 2.5)),
-    rule("OpenAI", "gpt-4o-mini", FROM, rates(0.15, 0.6, 0.075, 0.15)),
-    rule("OpenAI", "gpt-4-turbo", FROM, rates(10.0, 30.0, 5.0, 10.0)),
-    rule("OpenAI", "gpt-3.5-turbo", FROM, rates(0.5, 1.5, 0.25, 0.5)),
-    // Google — USD
-    rule("Google", "gemini-2.0-flash", FROM, rates(0.1, 0.4, 0.025, 0.1)),
-    // 通义千问 — CNY
-    rule("通义千问", "qwen-plus", FROM, rates(0.8, 2.0, 0.16, 0.8)),
-    rule("通义千问", "qwen-turbo", FROM, rates(0.3, 0.6, 0.06, 0.3)),
-  ];
-})();
-
-export const DEFAULT_PRICING_TABLE: PricingTable = {
-  displayCurrency: "CNY",
-  vendorCurrencies: { ...DEFAULT_VENDOR_CURRENCIES },
-  lockedModels: [...new Set(DEFAULT_RULES.map((r) => r.model))],
-  rules: DEFAULT_RULES,
-};
-
 export function emptyRates(): TokenRates {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
@@ -366,21 +127,115 @@ export function newRuleId(): string {
   return `p${Date.now()}-${Math.floor(Math.random() * 0xffff)}`;
 }
 
-export function cloneDefaultPricingTable(): PricingTable {
-  const rules = DEFAULT_PRICING_TABLE.rules.map((r) => ({
-    ...r,
-    id: newRuleId(),
-    rates: { ...r.rates },
-    idleRates: { ...(r.idleRates || r.rates) },
-    peakWindows: (r.peakWindows || []).map((w) => ({ ...w })),
-    locked: r.locked !== false,
-  }));
+export function newSubRuleId(): string {
+  return `s${Date.now()}-${Math.floor(Math.random() * 0xffff)}`;
+}
+
+export function normalizeSubRule(raw: Partial<PricingSubRule> | null | undefined): PricingSubRule {
+  const band = raw?.band === "idle" ? "idle" : "peak";
   return {
-    displayCurrency: DEFAULT_PRICING_TABLE.displayCurrency,
-    vendorCurrencies: { ...DEFAULT_PRICING_TABLE.vendorCurrencies },
-    lockedModels: [...new Set(rules.map((r) => r.model).filter(Boolean))],
-    rules,
+    id: String(raw?.id || "").trim() || newSubRuleId(),
+    peakWeekdays: normalizePeakWeekdays(raw?.peakWeekdays),
+    band,
+    rates: { ...emptyRates(), ...(raw?.rates || {}) },
   };
+}
+
+export function defaultSubRules(seed?: {
+  peakWeekdays?: number[];
+  rates?: TokenRates;
+  idleRates?: TokenRates;
+}): PricingSubRule[] {
+  const days = normalizePeakWeekdays(seed?.peakWeekdays);
+  const peak = { ...emptyRates(), ...(seed?.rates || {}) };
+  const idle = { ...emptyRates(), ...(seed?.idleRates || seed?.rates || {}) };
+  return [
+    {
+      id: newSubRuleId(),
+      peakWeekdays: [...days],
+      band: "idle",
+      rates: idle,
+    },
+    {
+      id: newSubRuleId(),
+      peakWeekdays: [...days],
+      band: "peak",
+      rates: peak,
+    },
+  ];
+}
+
+export function ensureSubRules(rule: PricingRule): PricingSubRule[] {
+  if (Array.isArray(rule.subRules) && rule.subRules.length > 0) {
+    return rule.subRules.map((s) => normalizeSubRule(s));
+  }
+  return defaultSubRules(rule);
+}
+
+export function syncLegacyRates(rule: PricingRule): PricingRule {
+  const subs = ensureSubRules(rule);
+  const peak = subs.find((s) => s.band === "peak");
+  const idle = subs.find((s) => s.band === "idle");
+  return {
+    ...rule,
+    subRules: subs,
+    rates: peak ? { ...peak.rates } : { ...rule.rates },
+    idleRates: idle
+      ? { ...idle.rates }
+      : { ...(rule.idleRates || rule.rates) },
+  };
+}
+
+export function weekdayApplies(
+  days: number[] | undefined,
+  date: string,
+): boolean {
+  const n = normalizePeakWeekdays(days);
+  if (n.length === 0) return true;
+  const wd = isoWeekdayFromDate(date);
+  return !!wd && n.includes(wd);
+}
+
+export function formatWeekdaysHint(days: number[] | undefined): string {
+  const n = normalizePeakWeekdays(days);
+  if (n.length === 0) return "每天";
+  const labels = ["", "一", "二", "三", "四", "五", "六", "日"];
+  return n.map((d) => labels[d] || "").join("");
+}
+
+export function formatPeakWindowsHint(
+  wins: PeakWindow[] | undefined,
+): string {
+  const list = wins || [];
+  if (list.length === 0) return "未配置（按列表优先级，不区分钟点）";
+  return list
+    .map((w) => `${(w.from || "").slice(0, 5)}–${(w.to || "").slice(0, 5)}`)
+    .join("、");
+}
+
+/**
+ * First list entry that matches weekday wins when peak windows are empty.
+ * With windows, first weekday + idle/peak band match wins; else first weekday.
+ */
+export function matchSubRule(
+  rule: PricingRule,
+  date: string,
+  time: string,
+): PricingSubRule | null {
+  const subs = ensureSubRules(rule);
+  if (subs.length === 0) return null;
+  const hasWindows = (rule.peakWindows || []).length > 0;
+  const wantBand: PricingBand = isPeakLocalTime(time, rule.peakWindows)
+    ? "peak"
+    : "idle";
+  let firstWeekday: PricingSubRule | null = null;
+  for (const s of subs) {
+    if (!weekdayApplies(s.peakWeekdays, date)) continue;
+    if (!firstWeekday) firstWeekday = s;
+    if (!hasWindows) return s;
+    if (s.band === wantBand) return s;
+  }
+  return firstWeekday || subs[0] || null;
 }
 
 /** Merge newly appeared model IDs into the level-1 lock set. */
@@ -432,8 +287,42 @@ export function isInHalfOpenTimeRange(
   return t >= a || t < b;
 }
 
+/** 1=Mon … 7=Sun. Empty or all seven → every day. */
+export function normalizePeakWeekdays(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const set = new Set<number>();
+  for (const item of raw) {
+    const n = typeof item === "number" ? item : Number(item);
+    if (Number.isInteger(n) && n >= 1 && n <= 7) set.add(n);
+  }
+  const out = [...set].sort((a, b) => a - b);
+  return out.length === 7 ? [] : out;
+}
+
+/** Local ISO weekday from YYYY-MM-DD; 0 if invalid. */
+export function isoWeekdayFromDate(iso: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || "").trim());
+  if (!m) return 0;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(d.getTime())) return 0;
+  const js = d.getDay();
+  return js === 0 ? 7 : js;
+}
+
+export function dateInInclusiveRange(
+  date: string,
+  from: string,
+  to: string,
+): boolean {
+  const d = date.trim();
+  if (!d) return false;
+  if (from.trim() && d < from.trim()) return false;
+  if (to.trim() && d > to.trim()) return false;
+  return true;
+}
+
 /**
- * Empty peakWindows → always peak.
+ * Empty peakWindows → not peak (list priority decides the sub-rule).
  * Otherwise true when local time falls in any window.
  */
 export function isPeakLocalTime(
@@ -441,8 +330,80 @@ export function isPeakLocalTime(
   peakWindows: PeakWindow[] | undefined,
 ): boolean {
   const wins = peakWindows || [];
-  if (wins.length === 0) return true;
+  if (wins.length === 0) return false;
   return wins.some((w) => isInHalfOpenTimeRange(time, w.from, w.to));
+}
+
+/** Peak if weekday is allowed and clock is in a peak window. */
+export function isPeakForRule(
+  date: string,
+  time: string,
+  rule: Pick<PricingRule, "peakWindows" | "peakWeekdays">,
+): boolean {
+  const days = normalizePeakWeekdays(rule.peakWeekdays);
+  if (days.length > 0) {
+    const wd = isoWeekdayFromDate(date);
+    if (!wd || !days.includes(wd)) return false;
+  }
+  if (!time.trim()) return true;
+  return isPeakLocalTime(time, rule.peakWindows);
+}
+
+export type CurrentModelRates = {
+  rates: TokenRates;
+  band: "idle" | "peak";
+  rule: PricingRule;
+  subRule: PricingSubRule | null;
+};
+
+/** Effective rates for a model at local now (or given date/time). */
+export function currentRatesForModel(
+  rules: PricingRule[],
+  model: string,
+  now: Date = new Date(),
+): CurrentModelRates | null {
+  const id = model.trim();
+  if (!id) return null;
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  let best: PricingRule | null = null;
+  for (const r of rules) {
+    if (r.model.trim() !== id) continue;
+    if (!dateInInclusiveRange(date, r.from, r.to)) continue;
+    if (
+      !best ||
+      (r.from || "") > (best.from || "") ||
+      ((r.from || "") === (best.from || "") && !best.to.trim() && r.to.trim())
+    ) {
+      best = r;
+    }
+  }
+  if (!best) return null;
+  const sub = matchSubRule(best, date, time);
+  if (sub) {
+    return {
+      rates: { ...sub.rates },
+      band: sub.band,
+      rule: best,
+      subRule: sub,
+    };
+  }
+  const peak = isPeakForRule(date, time, best);
+  return {
+    rates: peak ? { ...best.rates } : { ...(best.idleRates || best.rates) },
+    band: peak ? "peak" : "idle",
+    rule: best,
+    subRule: null,
+  };
+}
+
+export function formatIntervalHint(rule: PricingRule): string {
+  const from = (rule.from || "").trim();
+  const to = (rule.to || "").trim();
+  if (!from && !to) return "不限日期";
+  if (from && !to) return `${from} 起`;
+  if (!from && to) return `至 ${to}`;
+  return `${from} ~ ${to}`;
 }
 
 /** Legacy: idle = complement of peak derived from global dayParts. */

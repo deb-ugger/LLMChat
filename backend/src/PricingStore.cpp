@@ -27,7 +27,6 @@ std::string trimCopy(std::string s)
         s.pop_back();
     return s;
 }
-
 std::string toUpper(std::string s)
 {
     for (char& c : s)
@@ -129,11 +128,11 @@ bool isInHalfOpenTimeRange(
     return t >= a || t < b;
 }
 
-/** Empty peakWindows → always peak. */
+/** Empty peakWindows → not peak (list priority decides the sub-rule). */
 bool isPeakLocalTime(const std::string& time, const json& peakWindows)
 {
     if (!peakWindows.is_array() || peakWindows.empty())
-        return true;
+        return false;
     for (const auto& w : peakWindows)
     {
         if (!w.is_object())
@@ -142,6 +141,82 @@ bool isPeakLocalTime(const std::string& time, const json& peakWindows)
                 time,
                 trimCopy(w.value("from", "")),
                 trimCopy(w.value("to", ""))))
+            return true;
+    }
+    return false;
+}
+
+/** 1=Mon … 7=Sun. Empty or all seven → every day. */
+json normalizePeakWeekdays(const json& raw)
+{
+    std::set<int> days;
+    if (raw.is_array())
+    {
+        for (const auto& item : raw)
+        {
+            int n = 0;
+            if (item.is_number_integer())
+                n = item.get<int>();
+            else if (item.is_number())
+                n = static_cast<int>(item.get<double>());
+            else if (item.is_string())
+            {
+                try
+                {
+                    n = std::stoi(trimCopy(item.get<std::string>()));
+                }
+                catch (...)
+                {
+                    continue;
+                }
+            }
+            else
+                continue;
+            if (n >= 1 && n <= 7)
+                days.insert(n);
+        }
+    }
+    json out = json::array();
+    if (days.size() == 7)
+        return out;
+    for (int d : days)
+        out.push_back(d);
+    return out;
+}
+
+/** Local ISO weekday from YYYY-MM-DD; 0 if invalid. */
+int isoWeekdayFromDate(const std::string& iso)
+{
+    const std::string s = trimCopy(iso);
+    int y = 0, mo = 0, d = 0;
+    if (s.size() != 10 || std::sscanf(s.c_str(), "%d-%d-%d", &y, &mo, &d) != 3)
+        return 0;
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_isdst = -1;
+    const std::time_t t = std::mktime(&tm);
+    if (t == -1)
+        return 0;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    return tm.tm_wday == 0 ? 7 : tm.tm_wday;
+}
+
+bool weekdayAllowsPeak(const json& peakWeekdays, const std::string& date)
+{
+    if (!peakWeekdays.is_array() || peakWeekdays.empty())
+        return true;
+    const int wd = isoWeekdayFromDate(date);
+    if (wd <= 0)
+        return true;
+    for (const auto& item : peakWeekdays)
+    {
+        if (item.is_number_integer() && item.get<int>() == wd)
             return true;
     }
     return false;
@@ -169,45 +244,6 @@ std::string defaultVendorCurrency(const std::string& vendor)
 
 json PricingStore::defaultTable()
 {
-    // Open start (empty from) + open end until user splits ranges.
-    // Rates are in each vendor's billing currency (see vendorCurrencies).
-    const std::string from = "";
-    json rules = json::array();
-
-    // DeepSeek — CNY — baseline defaults (latest official cutover is appended
-    // as a new date interval on the frontend, not baked into defaults).
-    // input = 缓存未命中; cacheRead = 缓存命中; output = 输出; cacheWrite → 0
-    {
-        const json flash = rateObj(1.0, 2.0, 0.02, 0.0);
-        const json pro = rateObj(3.0, 6.0, 0.025, 0.0);
-        const json chat = rateObj(1.0, 2.0, 0.02, 0.0);
-        const json peak = deepSeekPeakWindows();
-        rules.push_back(rule("DeepSeek", "deepseek-v4-flash", from, flash, "", halfRateObj(flash), peak));
-        rules.push_back(rule("DeepSeek", "deepseek-v4-pro", from, pro, "", halfRateObj(pro), peak));
-        rules.push_back(rule("DeepSeek", "deepseek-chat", from, chat, "", halfRateObj(chat), peak));
-        rules.push_back(rule("DeepSeek", "deepseek-reasoner", from, chat, "", halfRateObj(chat), peak));
-    }
-
-    // OpenAI — USD
-    rules.push_back(rule(
-        "OpenAI", "gpt-4o", from, rateObj(2.5, 10.0, 1.25, 2.5)));
-    rules.push_back(rule(
-        "OpenAI", "gpt-4o-mini", from, rateObj(0.15, 0.6, 0.075, 0.15)));
-    rules.push_back(rule(
-        "OpenAI", "gpt-4-turbo", from, rateObj(10.0, 30.0, 5.0, 10.0)));
-    rules.push_back(rule(
-        "OpenAI", "gpt-3.5-turbo", from, rateObj(0.5, 1.5, 0.25, 0.5)));
-
-    // Google — USD
-    rules.push_back(rule(
-        "Google", "gemini-2.0-flash", from, rateObj(0.1, 0.4, 0.025, 0.1)));
-
-    // 通义千问 — CNY
-    rules.push_back(rule(
-        "通义千问", "qwen-plus", from, rateObj(0.8, 2.0, 0.16, 0.8)));
-    rules.push_back(rule(
-        "通义千问", "qwen-turbo", from, rateObj(0.3, 0.6, 0.06, 0.3)));
-
     return json{
         {"displayCurrency", "CNY"},
         {"vendorCurrencies",
@@ -215,21 +251,8 @@ json PricingStore::defaultTable()
           {"OpenAI", "USD"},
           {"Google", "USD"},
           {"通义千问", "CNY"}}},
-        {"dayParts", {{"idleFrom", "00:30"}, {"idleTo", "08:30"}}},
-        {"lockedModels",
-         json::array(
-             {"deepseek-v4-flash",
-              "deepseek-v4-pro",
-              "deepseek-chat",
-              "deepseek-reasoner",
-              "gpt-4o",
-              "gpt-4o-mini",
-              "gpt-4-turbo",
-              "gpt-3.5-turbo",
-              "gemini-2.0-flash",
-              "qwen-plus",
-              "qwen-turbo"})},
-        {"rules", rules},
+        {"lockedModels", json::array()},
+        {"rules", json::array()},
     };
 }
 
@@ -516,6 +539,55 @@ std::string PricingStore::validateTable(const json& body, json& out)
             locked = legacyLockedModels.count(model) > 0;
         // else: missing both → default lock
 
+        json peakWeekdaysOut = json::array();
+        if (item.contains("peakWeekdays"))
+            peakWeekdaysOut = normalizePeakWeekdays(item["peakWeekdays"]);
+
+        json subRulesOut = json::array();
+        if (item.contains("subRules") && item["subRules"].is_array())
+        {
+            for (const auto& s : item["subRules"])
+            {
+                if (!s.is_object())
+                    return "subRules entries must be objects";
+                json srates = s.contains("rates") && s["rates"].is_object()
+                    ? s["rates"]
+                    : json::object();
+                if (auto e = checkRates(srates, "subRules.rates"); !e.empty())
+                    return e;
+                std::string sid = trimCopy(s.value("id", ""));
+                if (sid.empty())
+                    sid = makeRuleId();
+                const std::string bandRaw = trimCopy(s.value("band", "peak"));
+                subRulesOut.push_back(json{
+                    {"id", sid},
+                    {"band", bandRaw == "idle" ? "idle" : "peak"},
+                    {"peakWeekdays",
+                     s.contains("peakWeekdays")
+                         ? normalizePeakWeekdays(s["peakWeekdays"])
+                         : json::array()},
+                    {"rates", ratesToJson(ratesFromJson(srates))},
+                });
+            }
+        }
+        if (subRulesOut.empty())
+        {
+            json idleCopy = idleRatesOut.is_object() ? idleRatesOut : ratesToJson(ratesFromJson(ratesIn));
+            json peakCopy = ratesToJson(ratesFromJson(ratesIn));
+            subRulesOut.push_back(json{
+                {"id", makeRuleId()},
+                {"band", "idle"},
+                {"peakWeekdays", peakWeekdaysOut},
+                {"rates", idleCopy},
+            });
+            subRulesOut.push_back(json{
+                {"id", makeRuleId()},
+                {"band", "peak"},
+                {"peakWeekdays", peakWeekdaysOut},
+                {"rates", peakCopy},
+            });
+        }
+
         json row = json{
             {"id", id},
             {"vendor", vendor},
@@ -525,6 +597,8 @@ std::string PricingStore::validateTable(const json& body, json& out)
             {"rates", ratesToJson(ratesFromJson(ratesIn))},
             {"idleRates", idleRatesOut},
             {"peakWindows", peakWindowsOut},
+            {"peakWeekdays", peakWeekdaysOut},
+            {"subRules", subRulesOut},
             {"locked", locked},
         };
         rules.push_back(std::move(row));
@@ -731,9 +805,49 @@ std::optional<TokenRates> PricingStore::ratesFor(
             peakWindows = json::array({json{{"from", idleTo}, {"to", idleFrom}}});
     }
 
-    const bool useIdle = !time.empty()
-        && !isPeakLocalTime(time, peakWindows)
-        && best->contains("idleRates") && (*best)["idleRates"].is_object();
+    json peakWeekdays = json::array();
+    if (best->contains("peakWeekdays"))
+        peakWeekdays = normalizePeakWeekdays((*best)["peakWeekdays"]);
+
+    const bool hasWindows = peakWindows.is_array() && !peakWindows.empty();
+    const bool clockPeak =
+        hasWindows && (time.empty() || isPeakLocalTime(time, peakWindows));
+    if (best->contains("subRules") && (*best)["subRules"].is_array()
+        && !(*best)["subRules"].empty())
+    {
+        const json* picked = nullptr;
+        const json* firstWeekday = nullptr;
+        for (const auto& s : (*best)["subRules"])
+        {
+            if (!s.is_object())
+                continue;
+            json days = s.contains("peakWeekdays")
+                ? normalizePeakWeekdays(s["peakWeekdays"])
+                : json::array();
+            if (!days.empty() && !weekdayAllowsPeak(days, date))
+                continue;
+            if (!firstWeekday)
+                firstWeekday = &s;
+            if (!hasWindows)
+            {
+                picked = &s;
+                break;
+            }
+            const std::string band = trimCopy(s.value("band", "peak"));
+            if (band == (clockPeak ? "peak" : "idle"))
+            {
+                picked = &s;
+                break;
+            }
+        }
+        if (!picked)
+            picked = firstWeekday;
+        if (picked && picked->contains("rates") && (*picked)["rates"].is_object())
+            return ratesFromJson((*picked)["rates"]);
+    }
+
+    const bool useIdle = best->contains("idleRates") && (*best)["idleRates"].is_object()
+        && (!weekdayAllowsPeak(peakWeekdays, date) || !clockPeak);
 
     if (useIdle)
         return ratesFromJson((*best)["idleRates"]);
@@ -744,6 +858,106 @@ std::optional<TokenRates> PricingStore::ratesFor(
     // Legacy dual fields
     const char* key = vendorCur == "USD" ? "usd" : "cny";
     return ratesFromJson(best->value(key, json::object()));
+}
+
+std::string PricingStore::bandFor(
+    const std::string& model,
+    const std::string& date,
+    const std::string& time) const
+{
+    const std::string m = trimCopy(model);
+    if (m.empty())
+        return "";
+
+    std::lock_guard<std::mutex> lock(mu_);
+    const json& rules = table_.contains("rules") ? table_["rules"] : json::array();
+
+    const json* best = nullptr;
+    std::string bestFrom;
+    for (const auto& r : rules)
+    {
+        if (!r.is_object())
+            continue;
+        if (trimCopy(r.value("model", "")) != m)
+            continue;
+        const std::string from = trimCopy(r.value("from", ""));
+        const std::string to = trimCopy(r.value("to", ""));
+        if (!dateInHalfOpen(date, from, to))
+            continue;
+        if (!best || from > bestFrom
+            || (from == bestFrom && trimCopy((*best).value("to", "")).empty()
+                && !to.empty()))
+        {
+            best = &r;
+            bestFrom = from;
+        }
+    }
+    if (!best)
+        return "flat";
+
+    json peakWindows = json::array();
+    if (best->contains("peakWindows") && (*best)["peakWindows"].is_array())
+        peakWindows = (*best)["peakWindows"];
+    else if (table_.contains("dayParts") && table_["dayParts"].is_object())
+    {
+        const std::string idleFrom =
+            trimCopy(table_["dayParts"].value("idleFrom", "00:30"));
+        const std::string idleTo =
+            trimCopy(table_["dayParts"].value("idleTo", "08:30"));
+        if (parseTimeMinutes(idleFrom) >= 0 && parseTimeMinutes(idleTo) >= 0
+            && idleFrom != idleTo)
+            peakWindows = json::array({json{{"from", idleTo}, {"to", idleFrom}}});
+    }
+
+    json peakWeekdays = json::array();
+    if (best->contains("peakWeekdays"))
+        peakWeekdays = normalizePeakWeekdays((*best)["peakWeekdays"]);
+
+    const bool hasWindows = peakWindows.is_array() && !peakWindows.empty();
+    if (!hasWindows)
+        return "flat";
+    const bool clockPeak = time.empty() || isPeakLocalTime(time, peakWindows);
+    if (best->contains("subRules") && (*best)["subRules"].is_array()
+        && !(*best)["subRules"].empty())
+    {
+        const json* picked = nullptr;
+        const json* firstWeekday = nullptr;
+        for (const auto& s : (*best)["subRules"])
+        {
+            if (!s.is_object())
+                continue;
+            json days = s.contains("peakWeekdays")
+                ? normalizePeakWeekdays(s["peakWeekdays"])
+                : json::array();
+            if (!days.empty() && !weekdayAllowsPeak(days, date))
+                continue;
+            if (!firstWeekday)
+                firstWeekday = &s;
+            if (!hasWindows)
+            {
+                picked = &s;
+                break;
+            }
+            const std::string band = trimCopy(s.value("band", "peak"));
+            if (band == (clockPeak ? "peak" : "idle"))
+            {
+                picked = &s;
+                break;
+            }
+        }
+        if (!picked)
+            picked = firstWeekday;
+        if (picked)
+        {
+            const std::string band = trimCopy(picked->value("band", ""));
+            if (band == "idle" || band == "peak")
+                return band;
+        }
+    }
+
+    const bool useIdle = best->contains("idleRates") && (*best)["idleRates"].is_object()
+        && (!weekdayAllowsPeak(peakWeekdays, date) || !clockPeak);
+    return useIdle ? "idle" : "peak";
 }
 
 double PricingStore::computeCost(

@@ -375,6 +375,15 @@ json UsageStore::summaryFromEvents(
             const std::string model = row.value("model", "unknown");
             return vendor + "|" + model;
         }
+        if (gb == "band")
+        {
+            const std::string band = row.value(
+                "pricingBand",
+                row.value("band", "flat"));
+            if (band == "idle" || band == "peak")
+                return band;
+            return "flat";
+        }
         // feature
         return row.value("feature", "unknown");
     };

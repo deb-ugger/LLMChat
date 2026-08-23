@@ -1047,8 +1047,7 @@ export function SettingsView({
   const engineKeys = useMemo(
     () => parseEngineKeys(form.translateEngineKeys),
     [form.translateEngineKeys],
-  );
-
+);
   const setEngineKeyField = (
     engineId: string,
     field: "appId" | "secret" | "apiKey" | "note",
@@ -4470,6 +4469,7 @@ export function SettingsView({
           <PricingPanel
             ref={pricingPanelRef}
             active={tab === "pricing"}
+            vendorModelsOverride={vendorModelsOverride}
             notify={notify}
             onDirtyChange={setPricingDirty}
           />

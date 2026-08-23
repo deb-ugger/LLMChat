@@ -143,6 +143,8 @@ export type UsageEvent = {
   note?: string;
   /** Estimated cost in requested currency (not persisted). */
   cost?: number;
+  /** idle | peak from pricing rules (LLM); flat = engine / all-hours. */
+  pricingBand?: "idle" | "peak" | "flat" | string;
 };
 
 export type UsageSummaryItem = {
@@ -173,6 +175,13 @@ export type PeakWindow = {
   to: string;
 };
 
+export type PricingSubRule = {
+  id: string;
+  peakWeekdays?: number[];
+  band: "idle" | "peak";
+  rates: PricingRates;
+};
+
 export type PricingRule = {
   id: string;
   vendor: string;
@@ -185,6 +194,9 @@ export type PricingRule = {
   idleRates: PricingRates;
   /** Per-rule peak windows; empty = always peak */
   peakWindows: PeakWindow[];
+  /** 1=Mon … 7=Sun; empty = every day */
+  peakWeekdays?: number[];
+  subRules?: PricingSubRule[];
   /** Per date-interval lock */
   locked?: boolean;
 };
@@ -264,7 +276,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return data as T;
 }
-
 export type TextProjectListItem = {
   folder: string;
   name: string;
@@ -482,6 +493,7 @@ export const api = {
     feature?: string;
     ok?: "ok" | "fail" | "";
     currency?: PricingCurrency;
+    band?: "idle" | "peak" | "flat" | "";
   }) => {
     const q = new URLSearchParams();
     if (params?.from) q.set("from", params.from);
@@ -489,6 +501,7 @@ export const api = {
     if (params?.feature) q.set("feature", params.feature);
     if (params?.ok) q.set("ok", params.ok);
     if (params?.currency) q.set("currency", params.currency);
+    if (params?.band) q.set("band", params.band);
     const qs = q.toString();
     return request<{
       ok: boolean;
@@ -500,9 +513,10 @@ export const api = {
     from?: string;
     to?: string;
     feature?: string;
-    groupBy?: "feature" | "engine" | "llm" | "day";
+    groupBy?: "feature" | "engine" | "llm" | "day" | "band";
     ok?: "ok" | "fail" | "";
     currency?: PricingCurrency;
+    band?: "idle" | "peak" | "flat" | "";
   }) => {
     const q = new URLSearchParams();
     if (params?.from) q.set("from", params.from);
@@ -511,6 +525,7 @@ export const api = {
     if (params?.groupBy) q.set("groupBy", params.groupBy);
     if (params?.ok) q.set("ok", params.ok);
     if (params?.currency) q.set("currency", params.currency);
+    if (params?.band) q.set("band", params.band);
     const qs = q.toString();
     return request<{
       ok: boolean;

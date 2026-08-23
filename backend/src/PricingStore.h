@@ -11,7 +11,6 @@ struct TokenRates {
     double cacheRead = 0;
     double cacheWrite = 0;
 };
-
 class PricingStore {
 public:
     explicit PricingStore(std::string filePath);
@@ -26,8 +25,10 @@ public:
     /**
  * Rates for model on date[/time] when the model's vendor bills in `currency`.
  * nullopt if no rule, or vendor currency ≠ requested currency.
- * When `time` is outside the rule's peakWindows and the rule has idleRates,
- * those are returned; empty peakWindows means always peak/default rates.
+ * Sub-rules (weekday + idle/peak + rates) are matched in list order;
+ * the first match wins. Weekdays not in peakWeekdays (1=Mon…7=Sun;
+ * empty=every day) skip that sub-rule. Empty peakWindows: first weekday
+ * match wins. Non-empty: first weekday + idle/peak band match wins.
  */
     std::optional<TokenRates> ratesFor(
         const std::string& model,
@@ -37,6 +38,15 @@ public:
 
     /** Cost in filter currency; 0 if vendor bills in another currency. */
     double costFor(const nlohmann::json& event, const std::string& currency) const;
+
+    /**
+     * idle | peak when the matching interval has peak windows;
+     * flat when no interval or no idle/peak split (callers treat engines as flat).
+     */
+    std::string bandFor(
+        const std::string& model,
+        const std::string& date,
+        const std::string& time = "") const;
 
     static nlohmann::json defaultTable();
     static double computeCost(

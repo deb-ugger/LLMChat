@@ -277,6 +277,8 @@ int HttpServer::run()
         const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
         const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
         const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        const std::string bandFilter =
+            req.has_param("band") ? req.get_param_value("band") : "";
         std::string currency =
             req.has_param("currency") ? req.get_param_value("currency") : "";
         if (currency.empty() && pricing_)
@@ -290,6 +292,23 @@ int HttpServer::run()
             {
                 const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
                 row["cost"] = cost;
+                std::string band = "flat";
+                if (pricing_ && row.value("channel", "") == "llm")
+                {
+                    const std::string model = row.value("model", "");
+                    if (!model.empty())
+                    {
+                        band = pricing_->bandFor(
+                            model,
+                            row.value("date", ""),
+                            row.value("time", ""));
+                        if (band.empty())
+                            band = "flat";
+                    }
+                }
+                row["pricingBand"] = band;
+                if (!bandFilter.empty() && band != bandFilter)
+                    continue;
                 items.push_back(std::move(row));
             }
         }
@@ -305,6 +324,8 @@ int HttpServer::run()
         const std::string groupBy =
             req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
         const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
+        const std::string bandFilter =
+            req.has_param("band") ? req.get_param_value("band") : "";
         std::string currency =
             req.has_param("currency") ? req.get_param_value("currency") : "";
         if (currency.empty() && pricing_)
@@ -325,12 +346,32 @@ int HttpServer::run()
             return;
         }
         auto rows = usage_->events(from, to, feature, okFilter);
+        std::vector<json> filteredRows;
+        filteredRows.reserve(rows.size());
         for (auto& row : rows)
         {
             const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
             row["cost"] = cost;
+            std::string band = "flat";
+            if (pricing_ && row.value("channel", "") == "llm")
+            {
+                const std::string model = row.value("model", "");
+                if (!model.empty())
+                {
+                    band = pricing_->bandFor(
+                        model,
+                        row.value("date", ""),
+                        row.value("time", ""));
+                    if (band.empty())
+                        band = "flat";
+                }
+            }
+            row["pricingBand"] = band;
+            if (!bandFilter.empty() && band != bandFilter)
+                continue;
+            filteredRows.push_back(std::move(row));
         }
-        json body = UsageStore::summaryFromEvents(rows, groupBy);
+        json body = UsageStore::summaryFromEvents(filteredRows, groupBy);
         body["currency"] = currency;
         res.set_content(body.dump(), "application/json");
     }));

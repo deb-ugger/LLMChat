@@ -37,8 +37,9 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-type GroupBy = "feature" | "engine" | "llm" | "day";
+type GroupBy = "feature" | "engine" | "llm" | "day" | "band";
 type OkFilter = "" | "ok" | "fail";
+type BandFilter = "" | "idle" | "peak" | "flat";
 type RangePreset =
   | "today"
   | "yesterday"
@@ -58,6 +59,7 @@ type StatsFiltersState = {
   customTo: string;
   feature: string;
   okFilter: OkFilter;
+  bandFilter: BandFilter;
   groupBy: GroupBy;
   metric: "requests" | "tokens" | "cost";
 };
@@ -77,9 +79,18 @@ const RANGE_PRESETS = new Set<RangePreset>([
 function isRangePreset(v: unknown): v is RangePreset {
   return typeof v === "string" && RANGE_PRESETS.has(v as RangePreset);
 }
-
 function isGroupBy(v: unknown): v is GroupBy {
-  return v === "feature" || v === "engine" || v === "llm" || v === "day";
+  return (
+    v === "feature" ||
+    v === "engine" ||
+    v === "llm" ||
+    v === "day" ||
+    v === "band"
+  );
+}
+
+function isBandFilter(v: unknown): v is BandFilter {
+  return v === "" || v === "idle" || v === "peak" || v === "flat";
 }
 
 function isOkFilter(v: unknown): v is OkFilter {
@@ -174,6 +185,7 @@ function loadStatsFilters(today: string): StatsFiltersState {
     customTo: month.to || today,
     feature: "",
     okFilter: "",
+    bandFilter: "",
     groupBy: "day",
     metric: "tokens",
   };
@@ -207,6 +219,9 @@ function loadStatsFilters(today: string): StatsFiltersState {
       customTo,
       feature,
       okFilter: isOkFilter(saved.okFilter) ? saved.okFilter : defaults.okFilter,
+      bandFilter: isBandFilter(saved.bandFilter)
+        ? saved.bandFilter
+        : defaults.bandFilter,
       groupBy: isGroupBy(saved.groupBy) ? saved.groupBy : defaults.groupBy,
       metric: isMetric(saved.metric) ? saved.metric : defaults.metric,
     };
@@ -247,7 +262,16 @@ function displayKey(groupBy: GroupBy, key: string): string {
     if (!model) return vendor || key;
     return vendor && vendor !== "unknown" ? `${vendor} / ${model}` : model;
   }
+  if (groupBy === "band") return bandLabel(key);
   return key;
+}
+
+function bandLabel(band: string | undefined): string {
+  if (band === "idle") return "闲时";
+  if (band === "peak") return "高峰";
+  if (band === "flat") return "全时段统一";
+  if (!band) return "—";
+  return band;
 }
 
 function formatTokenCount(n: number): string {
@@ -1723,6 +1747,9 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [okFilter, setOkFilter] = useState<OkFilter>(
     () => initialFilters.okFilter,
   );
+  const [bandFilter, setBandFilter] = useState<BandFilter>(
+    () => initialFilters.bandFilter,
+  );
   const [groupBy, setGroupBy] = useState<GroupBy>(() => initialFilters.groupBy);
   const [metric, setMetric] = useState<"requests" | "tokens" | "cost">(
     () => initialFilters.metric,
@@ -1734,7 +1761,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     saveStatsFilters({
@@ -1743,10 +1769,20 @@ export function StatsView({ active = true }: { active?: boolean }) {
       customTo,
       feature,
       okFilter,
+      bandFilter,
       groupBy,
       metric,
     });
-  }, [rangePreset, customFrom, customTo, feature, okFilter, groupBy, metric]);
+  }, [
+    rangePreset,
+    customFrom,
+    customTo,
+    feature,
+    okFilter,
+    bandFilter,
+    groupBy,
+    metric,
+  ]);
 
   useEffect(() => {
     void (async () => {
@@ -1823,6 +1859,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         feature: feature || undefined,
         ok: okFilter || undefined,
         currency,
+        band: bandFilter || undefined,
       };
       const [sum, ev] = await Promise.all([
         api.usageSummary({ ...params, groupBy }),
@@ -1837,31 +1874,11 @@ export function StatsView({ active = true }: { active?: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [currency, feature, groupBy, okFilter, range.from, range.to]);
+  }, [bandFilter, currency, feature, groupBy, okFilter, range.from, range.to]);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  const onClear = async () => {
-    if (!window.confirm("确定清空全部用量统计？此操作不可恢复。")) return;
-    if (
-      !window.confirm(
-        "再次确认：将永久删除本地全部用量记录，清空后无法撤销。是否继续？",
-      )
-    ) {
-      return;
-    }
-    setClearing(true);
-    try {
-      await api.clearUsage();
-      await load();
-    } catch (e) {
-      setError(toFriendlyError(e, "清空失败"));
-    } finally {
-      setClearing(false);
-    }
-  };
 
   const totals = useMemo(() => {
     return summary.reduce(
@@ -1914,14 +1931,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
             disabled={loading}
           >
             刷新
-          </button>
-          <button
-            type="button"
-            className="stats-btn stats-btn-danger"
-            onClick={() => void onClear()}
-            disabled={clearing || loading}
-          >
-            清空统计
           </button>
         </div>
       </header>
@@ -1989,6 +1998,18 @@ export function StatsView({ active = true }: { active?: boolean }) {
             <option value="fail">仅失败</option>
           </select>
         </label>
+        <label className="stats-field">
+          <span>时段</span>
+          <select
+            value={bandFilter}
+            onChange={(e) => setBandFilter(e.target.value as BandFilter)}
+          >
+            <option value="">全部时段</option>
+            <option value="idle">闲时</option>
+            <option value="peak">高峰</option>
+            <option value="flat">全时段统一</option>
+          </select>
+        </label>
         <div className="stats-seg" role="group" aria-label="分组">
           {(
             [
@@ -1996,6 +2017,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
               ["engine", "翻译引擎"],
               ["llm", "LLM"],
               ["day", "按日期"],
+              ["band", "按时段"],
             ] as const
           ).map(([k, label]) => (
             <button
@@ -2220,6 +2242,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 <th>日期时间</th>
                 <th>功能</th>
                 <th>通道</th>
+                <th>时段</th>
                 <th>引擎 / 厂商·模型</th>
                 <th>结果</th>
                 <th>Tokens</th>
@@ -2231,7 +2254,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
             <tbody>
               {sortedEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="stats-td-empty">
+                  <td colSpan={10} className="stats-td-empty">
                     暂无明细
                   </td>
                 </tr>
@@ -2271,6 +2294,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                       </td>
                       <td>{FEATURE_LABEL[ev.feature] ?? ev.feature}</td>
                       <td>{ev.channel === "llm" ? "LLM" : "引擎"}</td>
+                      <td>{bandLabel(ev.pricingBand)}</td>
                       <td>{target}</td>
                       <td>
                         <span
