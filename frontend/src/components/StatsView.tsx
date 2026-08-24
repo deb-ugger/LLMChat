@@ -38,7 +38,7 @@ echarts.use([
 ]);
 
 type GroupBy = "feature" | "engine" | "llm" | "day" | "band";
-type OkFilter = "" | "ok" | "fail";
+type OkFilter = "" | "ok" | "fail" | "supplement";
 type BandFilter = "" | "idle" | "peak" | "flat";
 type RangePreset =
   | "today"
@@ -94,7 +94,7 @@ function isBandFilter(v: unknown): v is BandFilter {
 }
 
 function isOkFilter(v: unknown): v is OkFilter {
-  return v === "" || v === "ok" || v === "fail";
+  return v === "" || v === "ok" || v === "fail" || v === "supplement";
 }
 
 function isMetric(v: unknown): v is StatsFiltersState["metric"] {
@@ -175,6 +175,250 @@ function rangeFromPreset(preset: RangePreset): { from: string; to: string } {
   const from = new Date(now);
   from.setDate(from.getDate() - (days - 1));
   return { from: localDateString(from), to: todayStr };
+}
+
+const CALENDAR_WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+
+function startOfCalendarMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addCalendarMonths(date: Date, amount: number): Date {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
+}
+
+function calendarMonthTitle(date: Date): string {
+  return `${date.getFullYear()}年${date.getMonth() + 1}月`;
+}
+
+function calendarMonthCells(month: Date): Array<Date | null> {
+  const first = startOfCalendarMonth(month);
+  const count = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const cells: Array<Date | null> = Array(first.getDay()).fill(null);
+  for (let day = 1; day <= count; day += 1) {
+    cells.push(new Date(first.getFullYear(), first.getMonth(), day));
+  }
+  while (cells.length < 42) cells.push(null);
+  return cells;
+}
+
+function DateRangePicker({
+  from,
+  to,
+  today,
+  open,
+  disabled,
+  onOpenChange,
+  onChange,
+}: {
+  from: string;
+  to: string;
+  today: string;
+  open: boolean;
+  disabled?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (from: string, to: string) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const todayDate = useMemo(() => parseLocalDate(today) ?? new Date(), [today]);
+  const latestAnchor = useMemo(
+    () => addCalendarMonths(startOfCalendarMonth(todayDate), -1),
+    [todayDate],
+  );
+  const initialAnchor = useCallback(() => {
+    const selected = parseLocalDate(from);
+    const wanted = selected ? startOfCalendarMonth(selected) : latestAnchor;
+    return wanted > latestAnchor ? latestAnchor : wanted;
+  }, [from, latestAnchor]);
+  const [anchorMonth, setAnchorMonth] = useState<Date>(initialAnchor);
+  const [draftFrom, setDraftFrom] = useState(from);
+  const [draftTo, setDraftTo] = useState(to);
+  const [selectingEnd, setSelectingEnd] = useState(false);
+  const [hovered, setHovered] = useState("");
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+
+  const updatePopoverPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.min(640, Math.max(320, window.innerWidth - 24));
+    const estimatedHeight = 390;
+    const left = Math.min(
+      Math.max(12, rect.left),
+      Math.max(12, window.innerWidth - width - 12),
+    );
+    const below = rect.bottom + 7;
+    const top =
+      below + estimatedHeight <= window.innerHeight
+        ? below
+        : Math.max(12, rect.top - estimatedHeight - 7);
+    setPopoverStyle({ left, top, width });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setAnchorMonth(initialAnchor());
+    setDraftFrom(from);
+    setDraftTo(to);
+    setSelectingEnd(false);
+    setHovered("");
+    updatePopoverPosition();
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !triggerRef.current?.contains(target) &&
+        !popoverRef.current?.contains(target)
+      ) {
+        onOpenChange(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onOpenChange(false);
+    };
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [from, initialAnchor, onOpenChange, open, to, updatePopoverPosition]);
+
+  const chooseDate = (date: Date) => {
+    const value = localDateString(date);
+    if (!selectingEnd || !draftFrom) {
+      setDraftFrom(value);
+      setDraftTo("");
+      setSelectingEnd(true);
+      setHovered("");
+      return;
+    }
+    const nextFrom = value < draftFrom ? value : draftFrom;
+    const nextTo = value < draftFrom ? draftFrom : value;
+    setDraftFrom(nextFrom);
+    setDraftTo(nextTo);
+    setSelectingEnd(false);
+    setHovered("");
+    onChange(nextFrom, nextTo);
+    onOpenChange(false);
+  };
+
+  const previewFrom = draftFrom;
+  const previewTo = selectingEnd && hovered ? hovered : draftTo;
+  const previewLow =
+    previewFrom && previewTo && previewTo < previewFrom ? previewTo : previewFrom;
+  const previewHigh =
+    previewFrom && previewTo && previewTo < previewFrom ? previewFrom : previewTo;
+
+  const renderMonth = (month: Date) => (
+    <section className="stats-calendar-month" key={localDateString(month)}>
+      <h3>{calendarMonthTitle(month)}</h3>
+      <div className="stats-calendar-weekdays" aria-hidden="true">
+        {CALENDAR_WEEKDAYS.map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="stats-calendar-days">
+        {calendarMonthCells(month).map((date, index) => {
+          if (!date) return <span key={`blank-${index}`} />;
+          const value = localDateString(date);
+          const isFuture = value > today;
+          const isStart = value === draftFrom;
+          const isEnd = value === draftTo;
+          const isInRange =
+            !!previewLow && !!previewHigh && value >= previewLow && value <= previewHigh;
+          return (
+            <button
+              type="button"
+              key={value}
+              className={[
+                isInRange ? "is-in-range" : "",
+                isStart ? "is-start" : "",
+                isEnd ? "is-end" : "",
+                value === today ? "is-today" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              disabled={isFuture}
+              aria-label={value}
+              aria-pressed={isStart || isEnd}
+              onPointerEnter={() => selectingEnd && setHovered(value)}
+              onFocus={() => selectingEnd && setHovered(value)}
+              onClick={() => chooseDate(date)}
+            >
+              {date.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+
+  const triggerText =
+    from && to
+      ? `${from.replaceAll("-", "/")}  →  ${to.replaceAll("-", "/")}`
+      : "请选择起始日期和结束日期";
+
+  return (
+    <div className="stats-date-range-picker">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="stats-date-range-trigger"
+        disabled={disabled}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+      >
+        <span>{triggerText}</span>
+        <span className="stats-date-range-icon" aria-hidden="true">▦</span>
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="stats-date-range-popover"
+              style={popoverStyle}
+              role="dialog"
+              aria-label="选择日期范围"
+            >
+              <div className="stats-calendar-toolbar">
+                <button
+                  type="button"
+                  aria-label="上两个月"
+                  onClick={() => setAnchorMonth((month) => addCalendarMonths(month, -2))}
+                >
+                  ‹
+                </button>
+                <p>{selectingEnd ? "请选择结束日期" : "请选择起始日期"}</p>
+                <button
+                  type="button"
+                  aria-label="下两个月"
+                  disabled={anchorMonth >= latestAnchor}
+                  onClick={() =>
+                    setAnchorMonth((month) => {
+                      const next = addCalendarMonths(month, 2);
+                      return next > latestAnchor ? latestAnchor : next;
+                    })
+                  }
+                >
+                  ›
+                </button>
+              </div>
+              <div className="stats-calendar-months">
+                {renderMonth(anchorMonth)}
+                {renderMonth(addCalendarMonths(anchorMonth, 1))}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
 }
 
 function loadStatsFilters(today: string): StatsFiltersState {
@@ -294,6 +538,10 @@ function tokenFieldForSum(n: number | undefined): number {
   return n;
 }
 
+function isSupplementEvent(ev: UsageEvent): boolean {
+  return ev.requestType === "supplement";
+}
+
 function isTokenUsageUnknown(item: {
   totalTokens?: number;
   promptTokens?: number;
@@ -306,7 +554,8 @@ function eventRemark(ev: UsageEvent): string {
     Boolean,
   );
   if (parts.length > 0) return parts.join("；");
-  if (!ev.ok && ev.errorCode === "PENDING") return "Token 消耗未知";
+  if (!isSupplementEvent(ev) && !ev.ok && ev.errorCode === "PENDING")
+    return "Token 消耗未知";
   return "—";
 }
 
@@ -860,8 +1109,12 @@ function buildActorDetailOption({
     (h) => hourEvents[h].length > 0,
   );
   const ticks = collectHourlyAxisTicks(rule, occupiedHours);
-  const hourOk = (h: number) => hourEvents[h].filter((ev) => ev.ok).length;
-  const hourFail = (h: number) => hourEvents[h].filter((ev) => !ev.ok).length;
+  const hourOk = (h: number) =>
+    hourEvents[h].filter((ev) => !isSupplementEvent(ev) && ev.ok).length;
+  const hourFail = (h: number) =>
+    hourEvents[h].filter((ev) => !isSupplementEvent(ev) && !ev.ok).length;
+  const hourSupplement = (h: number) =>
+    hourEvents[h].filter(isSupplementEvent).length;
   const hourCost = (h: number) =>
     hourEvents[h].reduce((sum, ev) => sum + (ev.cost ?? 0), 0);
   const hourField = (h: number, pick: (ev: UsageEvent) => number) =>
@@ -884,7 +1137,8 @@ function buildActorDetailOption({
         ...head,
         `<div>成功：${hourOk(h)}</div>`,
         `<div>失败：${hourFail(h)}</div>`,
-        `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">合计：${hourOk(h) + hourFail(h)}</div>`,
+        `<div>补充：${hourSupplement(h)}</div>`,
+        `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">合计：${hourOk(h) + hourFail(h) + hourSupplement(h)}</div>`,
       ].join("");
     }
     if (metric === "cost") {
@@ -919,6 +1173,7 @@ function buildActorDetailOption({
   if (metric === "requests") {
     const ok = Array.from({ length: 24 }, (_, h) => hourOk(h));
     const fail = Array.from({ length: 24 }, (_, h) => hourFail(h));
+    const supplement = Array.from({ length: 24 }, (_, h) => hourSupplement(h));
     series.push(
       {
         name: "成功",
@@ -935,6 +1190,16 @@ function buildActorDetailOption({
         encode: { x: 0, y: [2, 3] },
         itemStyle: { color: "#c62828" },
         data: fail.map((v, h) => hourlyBarPoint(h, v, ok[h])),
+      },
+      {
+        name: "补充",
+        type: "custom",
+        renderItem: hourlyBarRender,
+        encode: { x: 0, y: [2, 3] },
+        itemStyle: { color: "#b7791f" },
+        data: supplement.map((v, h) =>
+          hourlyBarPoint(h, v, ok[h] + fail[h]),
+        ),
       },
     );
   } else if (metric === "cost") {
@@ -997,11 +1262,11 @@ function buildActorDetailOption({
 
   return {
     tooltip: {
-      trigger: "axis",
-      axisPointer: { type: "shadow" },
+      trigger: "item",
       formatter: (params: unknown) => {
-        const list = Array.isArray(params) ? params : [params];
-        const first = list[0] as { value?: number[] | number };
+        const first = (Array.isArray(params) ? params[0] : params) as {
+          value?: number[] | number;
+        };
         const raw = first?.value;
         const x = Array.isArray(raw) ? Number(raw[0]) : Number(raw);
         const h = Number.isFinite(x)
@@ -1016,7 +1281,7 @@ function buildActorDetailOption({
         : {
             data:
               metric === "requests"
-                ? ["成功", "失败"]
+                ? ["成功", "失败", "补充"]
                 : ["Cache Read", "Cache Write", "Input", "Output"],
             top: 0,
           },
@@ -1465,11 +1730,11 @@ function UsageBarChart({
 
         return {
           tooltip: {
-            trigger: "axis",
-            axisPointer: { type: "shadow" },
+            trigger: "item",
             formatter: (params: unknown) => {
-              const list = Array.isArray(params) ? params : [params];
-              const first = list[0] as { value?: number[] | number };
+              const first = (Array.isArray(params) ? params[0] : params) as {
+                value?: number[] | number;
+              };
               const raw = first?.value;
               const x = Array.isArray(raw) ? Number(raw[0]) : Number(raw);
               const h = Number.isFinite(x)
@@ -1505,7 +1770,7 @@ function UsageBarChart({
     if (metric === "requests") {
       return {
         tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-        legend: { data: ["成功", "失败"], top: 0 },
+        legend: { data: ["成功", "失败", "补充"], top: 0 },
         grid: { left: 48, right: 16, top: 36, bottom: 48 },
         xAxis: {
           type: "category",
@@ -1528,6 +1793,14 @@ function UsageBarChart({
             stack: "req",
             data: rows.map((r) => r.fail),
             itemStyle: { color: "#c62828" },
+            barMaxWidth: 36,
+          },
+          {
+            name: "补充",
+            type: "bar",
+            stack: "req",
+            data: rows.map((r) => r.supplement ?? 0),
+            itemStyle: { color: "#b7791f" },
             barMaxWidth: 36,
           },
         ],
@@ -1761,6 +2034,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dateRangeOpen, setDateRangeOpen] = useState(false);
 
   useEffect(() => {
     saveStatsFilters({
@@ -1820,6 +2094,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
 
   const applyPreset = (preset: RangePreset) => {
     setRangePreset(preset);
+    setDateRangeOpen(preset === "custom");
     if (preset !== "custom" && preset !== "all") {
       const r = rangeFromPreset(preset);
       setCustomFrom(r.from);
@@ -1831,23 +2106,16 @@ export function StatsView({ active = true }: { active?: boolean }) {
     }
   };
 
-  const onCustomFrom = (v: string) => {
+  const onCustomRange = useCallback((from: string, to: string) => {
     setRangePreset("custom");
-    let from = v;
-    let to = customTo || today;
-    if (from && to && from > to) to = from;
     setCustomFrom(from);
     setCustomTo(to);
-  };
+  }, []);
 
-  const onCustomTo = (v: string) => {
-    setRangePreset("custom");
-    let from = customFrom;
-    let to = v;
-    if (from && to && from > to) from = to;
-    setCustomFrom(from);
-    setCustomTo(to);
-  };
+  const onDateRangeOpenChange = useCallback((nextOpen: boolean) => {
+    setDateRangeOpen(nextOpen);
+    if (nextOpen) setRangePreset("custom");
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1886,6 +2154,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         acc.requests += r.requests;
         acc.ok += r.ok;
         acc.fail += r.fail;
+        acc.supplement += r.supplement ?? 0;
         acc.tokens += tokenTotalOf(r);
         acc.cacheRead += tokenFieldForSum(r.cacheReadTokens);
         acc.cacheWrite += tokenFieldForSum(r.cacheWriteTokens);
@@ -1898,6 +2167,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         requests: 0,
         ok: 0,
         fail: 0,
+        supplement: 0,
         tokens: 0,
         cacheRead: 0,
         cacheWrite: 0,
@@ -1920,7 +2190,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         <div>
           <h1 className="stats-title">用量统计</h1>
           <p className="stats-sub">
-            记录对外 API 调用（含失败）。无消耗的系列不会出现在图表中。
+            记录对外 API 调用（含失败及补充用量）。无消耗的系列不会出现在图表中。
           </p>
         </div>
         <div className="stats-header-actions">
@@ -1953,27 +2223,18 @@ export function StatsView({ active = true }: { active?: boolean }) {
             <option value="custom">自定义</option>
           </select>
         </label>
-        <label className="stats-field">
-          <span>开始日期</span>
-          <input
-            type="date"
-            value={customFrom}
-            max={customTo || today}
+        <div className="stats-field stats-date-range-field">
+          <span>日期范围</span>
+          <DateRangePicker
+            from={customFrom}
+            to={customTo}
+            today={today}
+            open={dateRangeOpen}
             disabled={rangePreset === "all"}
-            onChange={(e) => onCustomFrom(e.target.value)}
+            onOpenChange={onDateRangeOpenChange}
+            onChange={onCustomRange}
           />
-        </label>
-        <label className="stats-field">
-          <span>结束日期</span>
-          <input
-            type="date"
-            value={customTo}
-            min={customFrom || undefined}
-            max={today}
-            disabled={rangePreset === "all"}
-            onChange={(e) => onCustomTo(e.target.value)}
-          />
-        </label>
+        </div>
         <label className="stats-field">
           <span>功能</span>
           <select
@@ -1996,6 +2257,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
             <option value="">全部</option>
             <option value="ok">仅成功</option>
             <option value="fail">仅失败</option>
+            <option value="supplement">仅补充</option>
           </select>
         </label>
         <label className="stats-field">
@@ -2086,6 +2348,10 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 <span className="stats-kpi-part is-fail">
                   <span className="stats-kpi-part-label">失败</span>
                   <span className="stats-kpi-part-value">{totals.fail}</span>
+                </span>
+                <span className="stats-kpi-part is-supplement">
+                  <span className="stats-kpi-part-label">补充</span>
+                  <span className="stats-kpi-part-value">{totals.supplement}</span>
                 </span>
               </span>
               <span className="stats-kpi-brace" aria-hidden="true">
@@ -2242,9 +2508,9 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 <th>日期时间</th>
                 <th>功能</th>
                 <th>通道</th>
-                <th>时段</th>
                 <th>引擎 / 厂商·模型</th>
                 <th>结果</th>
+                <th>时段</th>
                 <th>Tokens</th>
                 <th>费用</th>
                 <th title="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
@@ -2285,6 +2551,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                         : prompt;
                   const output = ev.completionTokens ?? 0;
                   const remark = eventRemark(ev);
+                  const supplement = isSupplementEvent(ev);
                   return (
                     <tr key={ev.id}>
                       <td>
@@ -2294,15 +2561,28 @@ export function StatsView({ active = true }: { active?: boolean }) {
                       </td>
                       <td>{FEATURE_LABEL[ev.feature] ?? ev.feature}</td>
                       <td>{ev.channel === "llm" ? "LLM" : "引擎"}</td>
-                      <td>{bandLabel(ev.pricingBand)}</td>
                       <td>{target}</td>
                       <td>
                         <span
                           className={
-                            ev.ok ? "stats-badge is-ok" : "stats-badge is-fail"
+                            supplement
+                              ? "stats-badge is-supplement"
+                              : ev.ok
+                                ? "stats-badge is-ok"
+                                : "stats-badge is-fail"
                           }
                         >
-                          {ev.ok ? "成功" : "失败"}
+                          {supplement ? "补充" : ev.ok ? "成功" : "失败"}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            "stats-band-label is-" +
+                            (ev.pricingBand || "none")
+                          }
+                        >
+                          {bandLabel(ev.pricingBand)}
                         </span>
                       </td>
                       <TokenTotalCell

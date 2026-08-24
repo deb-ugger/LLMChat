@@ -32,6 +32,13 @@ int usageTokenField(const json& row, const char* key)
     return v < 0 ? 0 : v;
 }
 
+std::string usageRequestType(const json& row)
+{
+    if (row.value("requestType", "") == "supplement")
+        return "supplement";
+    return row.value("ok", false) ? "ok" : "fail";
+}
+
 std::string trimCopy(std::string s)
 {
     while (!s.empty() && (unsigned char)s.front() <= 0x20)
@@ -204,6 +211,7 @@ json UsageStore::toJson(const UsageEvent& ev) const
         {"time", ev.time},
         {"feature", ev.feature},
         {"ok", ev.ok},
+        {"requestType", ev.requestType},
         {"errorCode", ev.errorCode},
         {"channel", ev.channel},
         {"engineId", ev.engineId},
@@ -313,9 +321,12 @@ std::vector<json> UsageStore::events(
                 continue;
             if (!feature.empty() && row.value("feature", "") != feature)
                 continue;
-            if (okFilter == "ok" && !row.value("ok", false))
+            const std::string requestType = usageRequestType(row);
+            if (okFilter == "ok" && requestType != "ok")
                 continue;
-            if (okFilter == "fail" && row.value("ok", false))
+            if (okFilter == "fail" && requestType != "fail")
+                continue;
+            if (okFilter == "supplement" && requestType != "supplement")
                 continue;
             rows.push_back(std::move(row));
         }
@@ -400,6 +411,7 @@ json UsageStore::summaryFromEvents(
                 {"requests", 0},
                 {"ok", 0},
                 {"fail", 0},
+                {"supplement", 0},
                 {"promptTokens", 0},
                 {"completionTokens", 0},
                 {"totalTokens", 0},
@@ -411,7 +423,10 @@ json UsageStore::summaryFromEvents(
         }
         auto& b = buckets[key];
         b["requests"] = b.value("requests", 0) + 1;
-        if (row.value("ok", false))
+        const std::string requestType = usageRequestType(row);
+        if (requestType == "supplement")
+            b["supplement"] = b.value("supplement", 0) + 1;
+        else if (requestType == "ok")
             b["ok"] = b.value("ok", 0) + 1;
         else
             b["fail"] = b.value("fail", 0) + 1;

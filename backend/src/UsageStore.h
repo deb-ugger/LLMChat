@@ -13,6 +13,8 @@ struct UsageEvent {
     std::string time;
     std::string feature;
     bool ok = false;
+    /** Empty for normal requests; "supplement" for manual token backfill. */
+    std::string requestType;
     std::string errorCode;
     std::string channel; // llm | engine
     std::string engineId;

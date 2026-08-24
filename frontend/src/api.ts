@@ -124,6 +124,8 @@ export type UsageEvent = {
   time: string;
   feature: string;
   ok: boolean;
+  /** supplement = manually backfilled token usage, neither success nor failure. */
+  requestType?: "supplement" | string;
   errorCode?: string;
   channel: string;
   engineId?: string;
@@ -152,6 +154,7 @@ export type UsageSummaryItem = {
   requests: number;
   ok: number;
   fail: number;
+  supplement: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -491,7 +494,7 @@ export const api = {
     from?: string;
     to?: string;
     feature?: string;
-    ok?: "ok" | "fail" | "";
+    ok?: "ok" | "fail" | "supplement" | "";
     currency?: PricingCurrency;
     band?: "idle" | "peak" | "flat" | "";
   }) => {
@@ -514,7 +517,7 @@ export const api = {
     to?: string;
     feature?: string;
     groupBy?: "feature" | "engine" | "llm" | "day" | "band";
-    ok?: "ok" | "fail" | "";
+    ok?: "ok" | "fail" | "supplement" | "";
     currency?: PricingCurrency;
     band?: "idle" | "peak" | "flat" | "";
   }) => {
