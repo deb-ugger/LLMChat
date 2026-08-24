@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node ./node_modules/typescript/bin/tsc -b && node ./node_modules/vite/bin/vite.js build",
+    "test": "node scripts/test-latex.mts",
     "preview": "vite preview",
     "tauri": "tauri",
     "prepare:sidecar": "powershell -File ../scripts/prepare-sidecar.ps1"

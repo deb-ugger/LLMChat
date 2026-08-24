@@ -149,6 +149,38 @@ export type UsageEvent = {
   pricingBand?: "idle" | "peak" | "flat" | string;
 };
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  if (timeoutMs <= 0) return fetch(input, init);
+  const controller = new AbortController();
+  let timedOut = false;
+  const relayAbort = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) relayAbort();
+  else init.signal?.addEventListener("abort", relayAbort, { once: true });
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error(`请求超过 ${Math.round(timeoutMs / 1000)} 秒未完成`);
+      (timeoutError as Error & { code?: string }).code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    init.signal?.removeEventListener("abort", relayAbort);
+  }
+}
+
 export type UsageSummaryItem = {
   key: string;
   requests: number;
@@ -252,7 +284,7 @@ export type TranslateOptions = {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetchWithTimeout(`${API_BASE}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -261,6 +293,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
+    if (e instanceof Error && (e as Error & { code?: string }).code === "REQUEST_TIMEOUT") {
+      throw e;
+    }
     const err = new Error(
       toFriendlyError(e, "网络异常或连接超时，请检查网络后重试"),
     ) as Error & { code?: string };
@@ -734,7 +769,7 @@ export const api = {
     if (opts.to) q.set("to", opts.to);
     let res: Response;
     try {
-      res = await fetch(
+      res = await fetchWithTimeout(
         `${API_BASE}/api/unity/llm-translate?${q.toString()}`,
       );
     } catch (e) {
@@ -855,7 +890,7 @@ export async function lookupDictionary(
       source: opts?.source || "en",
       target: opts?.target || "zh-CN",
     });
-    const res = await fetch(`${API_BASE}/api/dictionary?${params.toString()}`);
+    const res = await fetchWithTimeout(`${API_BASE}/api/dictionary?${params.toString()}`);
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       entry?: DictionaryEntry;
@@ -878,7 +913,7 @@ export async function lookupDictionary(
   }
 
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(q)}`,
     );
     if (res.status === 404) {

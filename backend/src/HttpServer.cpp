@@ -1,4 +1,5 @@
 #include "HttpServer.h"
+#include "AtomicFile.h"
 #include "LlmClient.h"
 #include "TranslateClient.h"
 #include "UnityAutoTranslator.h"
@@ -60,9 +61,32 @@ fs::path findProjectFile(const fs::path& folder)
     return {};
 }
 
-void setCors(httplib::Response& res)
+bool isAllowedBrowserOrigin(const httplib::Request& req)
 {
-    res.set_header("Access-Control-Allow-Origin", "*");
+    const std::string origin = req.get_header_value("Origin");
+    if (origin.empty())
+    {
+        const std::string fetchSite = req.get_header_value("Sec-Fetch-Site");
+        return fetchSite.empty() || fetchSite == "same-origin" || fetchSite == "same-site";
+    }
+    static const std::set<std::string> allowed{
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+    };
+    return allowed.contains(origin);
+}
+
+void setCors(const httplib::Request& req, httplib::Response& res)
+{
+    const std::string origin = req.get_header_value("Origin");
+    if (!origin.empty())
+    {
+        res.set_header("Access-Control-Allow-Origin", origin);
+        res.set_header("Vary", "Origin");
+    }
     res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 }
@@ -105,7 +129,7 @@ fs::path dataDirectory(const ConfigStore& config)
 
 fs::path resolveTextProjectsRoot(const ConfigStore& config)
 {
-    const auto& raw = config.get().textProjectsDir;
+    const std::string raw = config.snapshot().textProjectsDir;
     if (raw.empty())
     {
         return dataDirectory(config) / "text-projects";
@@ -254,14 +278,26 @@ int HttpServer::run()
 {
     httplib::Server svr;
 
-    svr.Options(R"(.*)", [](const httplib::Request&, httplib::Response& res) {
-        setCors(res);
+    svr.Options(R"(.*)", [](const httplib::Request& req, httplib::Response& res) {
+        if (!isAllowedBrowserOrigin(req))
+        {
+            res.status = 403;
+            res.set_content(errorJson("不允许的请求来源").dump(), "application/json");
+            return;
+        }
+        setCors(req, res);
         res.status = 204;
     });
 
     auto withCors = [](auto handler) {
         return [handler](const httplib::Request& req, httplib::Response& res) {
-            setCors(res);
+            if (!isAllowedBrowserOrigin(req))
+            {
+                res.status = 403;
+                res.set_content(errorJson("不允许的请求来源").dump(), "application/json");
+                return;
+            }
+            setCors(req, res);
             handler(req, res);
             if (!res.get_header_value("Content-Type").empty()
                 && res.get_header_value("Content-Type").find("charset=") == std::string::npos
@@ -428,7 +464,7 @@ int HttpServer::run()
     }));
 
     svr.Get("/api/settings", withCors([this](const httplib::Request&, httplib::Response& res) {
-        const auto& c = config_.get();
+        const AppConfig c = config_.snapshot();
         json body{
             {"apiUrl", c.apiUrl},
             {"apiKey", c.apiKey},
@@ -480,7 +516,8 @@ int HttpServer::run()
         try
         {
             const json body = json::parse(req.body);
-            auto& c = config_.get();
+            AppConfig candidate = config_.snapshot();
+            auto& c = candidate;
             if (body.contains("apiUrl"))
             {
                 c.apiUrl = body["apiUrl"].get<std::string>();
@@ -638,7 +675,22 @@ int HttpServer::run()
             {
                 c.translateEngineKeys = body["translateEngineKeys"].get<std::string>();
             }
-            config_.save();
+            if (c.messagePageSize < 1 || c.messagePageSize > 1000)
+                throw std::runtime_error("messagePageSize 必须在 1 到 1000 之间");
+            if (c.translateMaxLength < 0 || c.ocrTranslateMaxLength < 0)
+                throw std::runtime_error("翻译长度限制不能为负数");
+            if (c.translateContextParagraphs < 0)
+                throw std::runtime_error("上下文段落数不能为负数");
+            if (c.proxyMode != "direct" && c.proxyMode != "auto" && c.proxyMode != "custom")
+                throw std::runtime_error("不支持的代理模式");
+
+            std::string saveError;
+            if (!config_.replace(candidate, &saveError))
+            {
+                res.status = 500;
+                res.set_content(errorJson("保存设置失败: " + saveError).dump(), "application/json");
+                return;
+            }
             res.set_content(json{
                 {"ok", true},
                 {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
@@ -1063,7 +1115,7 @@ int HttpServer::run()
                 res.set_content(errorJson("缺少 path / content").dump(), "application/json");
                 return;
             }
-            const fs::path outPath(body["path"].get<std::string>());
+            const fs::path outPath = utf8path::pathFromUtf8(body["path"].get<std::string>());
             if (!outPath.is_absolute())
             {
                 res.status = 400;
@@ -1215,7 +1267,7 @@ int HttpServer::run()
             }
 
             auto conv = conversations_.conversation(conversationId);
-            const auto& cfg = config_.get();
+            const AppConfig cfg = config_.snapshot();
 
             LlmRequest llmReq;
             llmReq.apiUrl = cfg.apiUrl;
@@ -1270,7 +1322,7 @@ int HttpServer::run()
     svr.Get("/api/dictionary", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
-            const auto& cfg = config_.get();
+            const AppConfig cfg = config_.snapshot();
             const std::string q = req.has_param("q") ? req.get_param_value("q") : "";
             const std::string source = req.has_param("source")
                 ? req.get_param_value("source")
@@ -1317,14 +1369,7 @@ int HttpServer::run()
     };
 
     const auto saveVendorModelsFile = [&](const json& root) -> bool {
-        const fs::path path = vendorModelsPath();
-        std::error_code ec;
-        fs::create_directories(path.parent_path(), ec);
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return false;
-        out << root.dump(2);
-        return static_cast<bool>(out);
+        return atomicfile::writeText(vendorModelsPath(), root.dump(2));
     };
 
     const auto decodeVendorSegment = [](std::string s) -> std::string {
@@ -1470,7 +1515,7 @@ int HttpServer::run()
                     return;
                 }
                 const json body = json::parse(req.body.empty() ? "{}" : req.body);
-                const auto& cfg = config_.get();
+                const AppConfig cfg = config_.snapshot();
                 LlmListModelsRequest lm;
                 lm.apiUrl = body.value("apiUrl", cfg.apiUrl);
                 lm.apiKey = body.value("apiKey", cfg.apiKey);
@@ -1602,7 +1647,7 @@ int HttpServer::run()
                 return;
             }
 
-            const auto& cfg = config_.get();
+            const AppConfig cfg = config_.snapshot();
             const std::string source = body.value("source", cfg.translateSource);
             const std::string target = body.value("target", cfg.translateTarget);
             const std::string provider = body.value("provider", cfg.translateProvider);
@@ -1767,7 +1812,7 @@ int HttpServer::run()
 
         try
         {
-            const auto& cfg = config_.get();
+            const AppConfig cfg = config_.snapshot();
             if (cfg.apiUrl.empty() || cfg.model.empty())
             {
                 res.status = 503;
@@ -2294,7 +2339,7 @@ int HttpServer::run()
         }
     }));
 
-    const int port = config_.get().port;
+    const int port = config_.snapshot().port;
     std::cout << "LLMChat backend listening on http://127.0.0.1:" << port << std::endl;
     if (!svr.listen("127.0.0.1", port))
     {

@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { DictionaryEntry } from "../api";
+import { copyText } from "../clipboard";
 
 type Props = {
   width?: number;
@@ -15,23 +16,6 @@ type Props = {
   /** Bottom box: dictionary only (must not rewrite 原文). */
   onDictLookup: (word: string) => void;
 };
-
-async function copyText(text: string) {
-  const t = text.trim();
-  if (!t) return false;
-  try {
-    await navigator.clipboard.writeText(t);
-    return true;
-  } catch {
-    const el = document.createElement("textarea");
-    el.value = t;
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand("copy");
-    document.body.removeChild(el);
-    return true;
-  }
-}
 
 function pickPhonetics(entry: DictionaryEntry | null) {
   if (!entry) {

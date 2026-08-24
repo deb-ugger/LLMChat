@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { createWorker, PSM, type Worker } from "tesseract.js";
 import { api } from "../api";
+import { copyText } from "../clipboard";
 import { toFriendlyError } from "../friendlyError";
 import { highlightSearchNodes } from "../highlightText";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
@@ -488,21 +489,6 @@ function overlayFontSize(boxWpx: number, boxHpx: number, text: string): number {
     else hi = mid;
   }
   return Math.max(7, +lo.toFixed(1));
-}
-
-async function copyText(text: string) {
-  const t = text.trim();
-  if (!t) return;
-  try {
-    await navigator.clipboard.writeText(t);
-  } catch {
-    const el = document.createElement("textarea");
-    el.value = t;
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand("copy");
-    document.body.removeChild(el);
-  }
 }
 
 function newPageId() {

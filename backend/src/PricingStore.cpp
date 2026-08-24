@@ -1,4 +1,5 @@
 #include "PricingStore.h"
+#include "AtomicFile.h"
 
 #include <algorithm>
 #include <atomic>
@@ -308,21 +309,7 @@ void PricingStore::loadUnlocked()
 
 bool PricingStore::saveUnlocked() const
 {
-    try
-    {
-        const fs::path p(path_);
-        std::error_code ec;
-        fs::create_directories(p.parent_path(), ec);
-        std::ofstream out(p, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return false;
-        out << table_.dump(2);
-        return static_cast<bool>(out);
-    }
-    catch (...)
-    {
-        return false;
-    }
+    return atomicfile::writeText(fs::path(path_), table_.dump(2));
 }
 
 json PricingStore::get() const

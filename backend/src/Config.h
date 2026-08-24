@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 
 struct AppConfig {
@@ -94,15 +95,16 @@ class ConfigStore {
 public:
     explicit ConfigStore(std::string path);
 
-    const AppConfig& get() const { return config_; }
-    AppConfig& get() { return config_; }
+    AppConfig snapshot() const;
+    bool replace(const AppConfig& next, std::string* error = nullptr);
 
     void load();
-    void save() const;
+    bool save(std::string* error = nullptr) const;
 
     const std::string& path() const { return path_; }
 
 private:
     std::string path_;
+    mutable std::mutex mutex_;
     AppConfig config_;
 };

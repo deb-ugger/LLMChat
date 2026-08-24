@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "AtomicFile.h"
 
 #include <algorithm>
 #include <cctype>
@@ -61,6 +62,53 @@ std::string unescapeIniValue(const std::string& s)
     return out;
 }
 
+std::string serializeConfig(const AppConfig& config)
+{
+    std::ostringstream out;
+    out << "[General]\n";
+    out << "apiUrl=" << config.apiUrl << "\n";
+    out << "apiKey=" << config.apiKey << "\n";
+    out << "model=" << config.model << "\n";
+    out << "messagePageSize=" << config.messagePageSize << "\n";
+    out << "port=" << config.port << "\n";
+    out << "proxyMode=" << config.proxyMode << "\n";
+    out << "httpProxy=" << config.httpProxy << "\n";
+    out << "translateProvider=" << config.translateProvider << "\n";
+    out << "translateSource=" << config.translateSource << "\n";
+    out << "translateTarget=" << config.translateTarget << "\n";
+    out << "translateModel=" << config.translateModel << "\n";
+    out << "translatePromptId=" << config.translatePromptId << "\n";
+    out << "translatePromptCatalog=" << escapeIniValue(config.translatePromptCatalog) << "\n";
+    out << "translatePromptKind=" << config.translatePromptKind << "\n";
+    out << "translatePrompt=" << escapeIniValue(config.translatePrompt) << "\n";
+    out << "translateMaxLength=" << config.translateMaxLength << "\n";
+    out << "translateAutoChunk=" << (config.translateAutoChunk ? "true" : "false") << "\n";
+    out << "translateContextParagraphs=" << config.translateContextParagraphs << "\n";
+    out << "translateGlossary=" << escapeIniValue(config.translateGlossary) << "\n";
+    out << "ocrLang=" << config.ocrLang << "\n";
+    out << "ocrAutoTranslate=" << (config.ocrAutoTranslate ? "true" : "false") << "\n";
+    out << "ocrTranslateProvider=" << config.ocrTranslateProvider << "\n";
+    out << "ocrTranslateSource=" << config.ocrTranslateSource << "\n";
+    out << "ocrTranslateTarget=" << config.ocrTranslateTarget << "\n";
+    out << "ocrTranslateModel=" << config.ocrTranslateModel << "\n";
+    out << "ocrTranslateMaxLength=" << config.ocrTranslateMaxLength << "\n";
+    out << "ocrTranslateAutoChunk=" << (config.ocrTranslateAutoChunk ? "true" : "false") << "\n";
+    out << "textTranslateSource=" << config.textTranslateSource << "\n";
+    out << "textTranslateTarget=" << config.textTranslateTarget << "\n";
+    out << "textTranslateProvider=" << config.textTranslateProvider << "\n";
+    out << "textTranslateModel=" << config.textTranslateModel << "\n";
+    out << "textTranslatePrompt=" << escapeIniValue(config.textTranslatePrompt) << "\n";
+    out << "textPromptMtool=" << escapeIniValue(config.textPromptMtool) << "\n";
+    out << "textPromptSubtitle=" << escapeIniValue(config.textPromptSubtitle) << "\n";
+    out << "textPromptSubtitleRetime=" << escapeIniValue(config.textPromptSubtitleRetime) << "\n";
+    out << "textGlossary=" << escapeIniValue(config.textGlossary) << "\n";
+    out << "textPreReplace=" << escapeIniValue(config.textPreReplace) << "\n";
+    out << "textPostReplace=" << escapeIniValue(config.textPostReplace) << "\n";
+    out << "textProjectsDir=" << config.textProjectsDir << "\n";
+    out << "translateEngineKeys=" << escapeIniValue(config.translateEngineKeys) << "\n";
+    return out.str();
+}
+
 } // namespace
 
 ConfigStore::ConfigStore(std::string path)
@@ -76,6 +124,8 @@ void ConfigStore::load()
     {
         return;
     }
+
+    AppConfig next;
 
     std::string line;
     while (std::getline(in, line))
@@ -99,219 +149,79 @@ void ConfigStore::load()
         const std::string key = trim(line.substr(0, eq));
         const std::string value = trim(line.substr(eq + 1));
 
-        if (key == "apiUrl")
+        try
         {
-            config_.apiUrl = value;
-        }
-        else if (key == "apiKey")
-        {
-            config_.apiKey = value;
-        }
-        else if (key == "model")
-        {
-            config_.model = value;
-        }
-        else if (key == "messagePageSize")
-        {
-            config_.messagePageSize = std::stoi(value);
-        }
-        else if (key == "port")
-        {
-            config_.port = std::stoi(value);
-        }
-        else if (key == "proxyMode")
-        {
-            config_.proxyMode = value;
-        }
-        else if (key == "httpProxy")
-        {
-            config_.httpProxy = value;
-        }
-        else if (key == "translateProvider")
-        {
-            config_.translateProvider = value;
-        }
-        else if (key == "translateSource")
-        {
-            config_.translateSource = value;
-        }
-        else if (key == "translateTarget")
-        {
-            config_.translateTarget = value;
-        }
-        else if (key == "translateModel")
-        {
-            config_.translateModel = value;
-        }
-        else if (key == "translatePromptKind")
-        {
-            config_.translatePromptKind = value;
-        }
-        else if (key == "translatePromptId")
-        {
-            config_.translatePromptId = value;
-        }
-        else if (key == "translatePromptCatalog")
-        {
-            config_.translatePromptCatalog = unescapeIniValue(value);
-        }
-        else if (key == "translatePrompt")
-        {
-            config_.translatePrompt = unescapeIniValue(value);
-        }
-        else if (key == "translateMaxLength")
-        {
-            config_.translateMaxLength = std::stoi(value);
-        }
-        else if (key == "translateAutoChunk")
-        {
-            config_.translateAutoChunk =
+            if (key == "apiUrl") next.apiUrl = value;
+            else if (key == "apiKey") next.apiKey = value;
+            else if (key == "model") next.model = value;
+            else if (key == "messagePageSize") next.messagePageSize = std::stoi(value);
+            else if (key == "port") next.port = std::stoi(value);
+            else if (key == "proxyMode") next.proxyMode = value;
+            else if (key == "httpProxy") next.httpProxy = value;
+            else if (key == "translateProvider") next.translateProvider = value;
+            else if (key == "translateSource") next.translateSource = value;
+            else if (key == "translateTarget") next.translateTarget = value;
+            else if (key == "translateModel") next.translateModel = value;
+            else if (key == "translatePromptKind") next.translatePromptKind = value;
+            else if (key == "translatePromptId") next.translatePromptId = value;
+            else if (key == "translatePromptCatalog") next.translatePromptCatalog = unescapeIniValue(value);
+            else if (key == "translatePrompt") next.translatePrompt = unescapeIniValue(value);
+            else if (key == "translateMaxLength") next.translateMaxLength = std::stoi(value);
+            else if (key == "translateAutoChunk") next.translateAutoChunk =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
-        }
-        else if (key == "translateContextParagraphs")
-        {
-            config_.translateContextParagraphs = std::stoi(value);
-        }
-        else if (key == "translateGlossary")
-        {
-            config_.translateGlossary = unescapeIniValue(value);
-        }
-        else if (key == "ocrLang")
-        {
-            config_.ocrLang = value;
-        }
-        else if (key == "ocrAutoTranslate")
-        {
-            config_.ocrAutoTranslate =
+            else if (key == "translateContextParagraphs") next.translateContextParagraphs = std::stoi(value);
+            else if (key == "translateGlossary") next.translateGlossary = unescapeIniValue(value);
+            else if (key == "ocrLang") next.ocrLang = value;
+            else if (key == "ocrAutoTranslate") next.ocrAutoTranslate =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
-        }
-        else if (key == "ocrTranslateProvider")
-        {
-            config_.ocrTranslateProvider = value;
-        }
-        else if (key == "ocrTranslateSource")
-        {
-            config_.ocrTranslateSource = value;
-        }
-        else if (key == "ocrTranslateTarget")
-        {
-            config_.ocrTranslateTarget = value;
-        }
-        else if (key == "ocrTranslateModel")
-        {
-            config_.ocrTranslateModel = value;
-        }
-        else if (key == "ocrTranslateMaxLength")
-        {
-            config_.ocrTranslateMaxLength = std::stoi(value);
-        }
-        else if (key == "ocrTranslateAutoChunk")
-        {
-            config_.ocrTranslateAutoChunk =
+            else if (key == "ocrTranslateProvider") next.ocrTranslateProvider = value;
+            else if (key == "ocrTranslateSource") next.ocrTranslateSource = value;
+            else if (key == "ocrTranslateTarget") next.ocrTranslateTarget = value;
+            else if (key == "ocrTranslateModel") next.ocrTranslateModel = value;
+            else if (key == "ocrTranslateMaxLength") next.ocrTranslateMaxLength = std::stoi(value);
+            else if (key == "ocrTranslateAutoChunk") next.ocrTranslateAutoChunk =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
+            else if (key == "textTranslateSource") next.textTranslateSource = value;
+            else if (key == "textTranslateTarget") next.textTranslateTarget = value;
+            else if (key == "textTranslateProvider") next.textTranslateProvider = value;
+            else if (key == "textTranslateModel") next.textTranslateModel = value;
+            else if (key == "textTranslatePrompt") next.textTranslatePrompt = unescapeIniValue(value);
+            else if (key == "textPromptMtool") next.textPromptMtool = unescapeIniValue(value);
+            else if (key == "textPromptSubtitle") next.textPromptSubtitle = unescapeIniValue(value);
+            else if (key == "textPromptSubtitleRetime") next.textPromptSubtitleRetime = unescapeIniValue(value);
+            else if (key == "textGlossary") next.textGlossary = unescapeIniValue(value);
+            else if (key == "textPreReplace") next.textPreReplace = unescapeIniValue(value);
+            else if (key == "textPostReplace") next.textPostReplace = unescapeIniValue(value);
+            else if (key == "textProjectsDir") next.textProjectsDir = value;
+            else if (key == "translateEngineKeys") next.translateEngineKeys = unescapeIniValue(value);
         }
-        else if (key == "textTranslateSource")
+        catch (...)
         {
-            config_.textTranslateSource = value;
-        }
-        else if (key == "textTranslateTarget")
-        {
-            config_.textTranslateTarget = value;
-        }
-        else if (key == "textTranslateProvider")
-        {
-            config_.textTranslateProvider = value;
-        }
-        else if (key == "textTranslateModel")
-        {
-            config_.textTranslateModel = value;
-        }
-        else if (key == "textTranslatePrompt")
-        {
-            config_.textTranslatePrompt = unescapeIniValue(value);
-        }
-        else if (key == "textPromptMtool")
-        {
-            config_.textPromptMtool = unescapeIniValue(value);
-        }
-        else if (key == "textPromptSubtitle")
-        {
-            config_.textPromptSubtitle = unescapeIniValue(value);
-        }
-        else if (key == "textPromptSubtitleRetime")
-        {
-            config_.textPromptSubtitleRetime = unescapeIniValue(value);
-        }
-        else if (key == "textGlossary")
-        {
-            config_.textGlossary = unescapeIniValue(value);
-        }
-        else if (key == "textPreReplace")
-        {
-            config_.textPreReplace = unescapeIniValue(value);
-        }
-        else if (key == "textPostReplace")
-        {
-            config_.textPostReplace = unescapeIniValue(value);
-        }
-        else if (key == "textProjectsDir")
-        {
-            config_.textProjectsDir = value;
-        }
-        else if (key == "translateEngineKeys")
-        {
-            config_.translateEngineKeys = unescapeIniValue(value);
+            // Keep the default for one malformed line instead of rejecting the whole file.
         }
     }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ = std::move(next);
 }
 
-void ConfigStore::save() const
+AppConfig ConfigStore::snapshot() const
 {
-    std::ofstream out(path_, std::ios::trunc);
-    if (!out)
-    {
-        return;
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_;
+}
 
-    out << "[General]\n";
-    out << "apiUrl=" << config_.apiUrl << "\n";
-    out << "apiKey=" << config_.apiKey << "\n";
-    out << "model=" << config_.model << "\n";
-    out << "messagePageSize=" << config_.messagePageSize << "\n";
-    out << "port=" << config_.port << "\n";
-    out << "proxyMode=" << config_.proxyMode << "\n";
-    out << "httpProxy=" << config_.httpProxy << "\n";
-    out << "translateProvider=" << config_.translateProvider << "\n";
-    out << "translateSource=" << config_.translateSource << "\n";
-    out << "translateTarget=" << config_.translateTarget << "\n";
-    out << "translateModel=" << config_.translateModel << "\n";
-    out << "translatePromptId=" << config_.translatePromptId << "\n";
-    out << "translatePromptCatalog=" << escapeIniValue(config_.translatePromptCatalog) << "\n";
-    out << "translatePromptKind=" << config_.translatePromptKind << "\n";
-    out << "translatePrompt=" << escapeIniValue(config_.translatePrompt) << "\n";
-    out << "translateMaxLength=" << config_.translateMaxLength << "\n";
-    out << "translateAutoChunk=" << (config_.translateAutoChunk ? "true" : "false") << "\n";
-    out << "translateContextParagraphs=" << config_.translateContextParagraphs << "\n";
-    out << "translateGlossary=" << escapeIniValue(config_.translateGlossary) << "\n";
-    out << "ocrLang=" << config_.ocrLang << "\n";
-    out << "ocrAutoTranslate=" << (config_.ocrAutoTranslate ? "true" : "false") << "\n";
-    out << "ocrTranslateProvider=" << config_.ocrTranslateProvider << "\n";
-    out << "ocrTranslateSource=" << config_.ocrTranslateSource << "\n";
-    out << "ocrTranslateTarget=" << config_.ocrTranslateTarget << "\n";
-    out << "ocrTranslateModel=" << config_.ocrTranslateModel << "\n";
-    out << "ocrTranslateMaxLength=" << config_.ocrTranslateMaxLength << "\n";
-    out << "ocrTranslateAutoChunk=" << (config_.ocrTranslateAutoChunk ? "true" : "false") << "\n";
-    out << "textTranslateSource=" << config_.textTranslateSource << "\n";
-    out << "textTranslateTarget=" << config_.textTranslateTarget << "\n";
-    out << "textTranslateProvider=" << config_.textTranslateProvider << "\n";
-    out << "textTranslateModel=" << config_.textTranslateModel << "\n";
-    out << "textTranslatePrompt=" << escapeIniValue(config_.textTranslatePrompt) << "\n";
-    out << "textPromptMtool=" << escapeIniValue(config_.textPromptMtool) << "\n";
-    out << "textPromptSubtitle=" << escapeIniValue(config_.textPromptSubtitle) << "\n";
-    out << "textPromptSubtitleRetime=" << escapeIniValue(config_.textPromptSubtitleRetime) << "\n";
-    out << "textGlossary=" << escapeIniValue(config_.textGlossary) << "\n";
-    out << "textPreReplace=" << escapeIniValue(config_.textPreReplace) << "\n";
-    out << "textPostReplace=" << escapeIniValue(config_.textPostReplace) << "\n";
-    out << "textProjectsDir=" << config_.textProjectsDir << "\n";
-    out << "translateEngineKeys=" << escapeIniValue(config_.translateEngineKeys) << "\n";
+bool ConfigStore::replace(const AppConfig& next, std::string* error)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!atomicfile::writeText(path_, serializeConfig(next), error))
+        return false;
+    config_ = next;
+    return true;
+}
+
+bool ConfigStore::save(std::string* error) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return atomicfile::writeText(path_, serializeConfig(config_), error);
 }

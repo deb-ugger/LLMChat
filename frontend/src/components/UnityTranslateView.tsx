@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, API_BASE, type UnityGameInfo, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
+import { isBoolIniValue, setIniValue } from "../unityIni";
 import { usePersistedHeight } from "../hooks/usePersistedHeight";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import {
@@ -192,32 +193,6 @@ function getIniValue(
   );
   const row = sec?.keys.find((k) => k.key.toLowerCase() === key.toLowerCase());
   return row?.value;
-}
-
-function setIniValue(
-  sections: UnityIniSection[],
-  section: string,
-  key: string,
-  value: string,
-): UnityIniSection[] {
-  const next = sections.map((sec) => ({
-    ...sec,
-    keys: sec.keys.map((k) => ({ ...k })),
-  }));
-  let sec = next.find((s) => s.name.toLowerCase() === section.toLowerCase());
-  if (!sec) {
-    sec = { name: section, keys: [] };
-    next.push(sec);
-  }
-  const row = sec.keys.find((k) => k.key.toLowerCase() === key.toLowerCase());
-  if (row) row.value = value;
-  else sec.keys.push({ key, value });
-  return next;
-}
-
-function isBoolIniValue(v: string) {
-  const t = v.trim().toLowerCase();
-  return t === "true" || t === "false";
 }
 
 function formatClock(d = new Date()) {

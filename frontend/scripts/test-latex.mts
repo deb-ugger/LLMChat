@@ -1,4 +1,4 @@
-import { latexToMarkdown } from "../src/latexToMarkdown";
+import { latexToMarkdown } from "../src/latexToMarkdown.ts";
 
 const sample = `% !TEX program = xelatex
 \\documentclass[UTF8]{ctexart}
@@ -14,10 +14,10 @@ const sample = `% !TEX program = xelatex
 \\end{document}`;
 
 const out = latexToMarkdown(sample);
-console.log(out);
-console.log("---");
-console.log("has $$", out.includes("$$"));
-console.log(
-  "broken single $ multiline",
-  /\$\s*\n+\s*\\int/.test(out) && !out.includes("$$\n\\int"),
-);
+if (!out.includes("$$")) {
+  throw new Error("块级公式没有转换为 $$ 包围格式");
+}
+if (/\$\s*\n+\s*\\int/.test(out) && !out.includes("$$\n\\int")) {
+  throw new Error("块级公式被错误地转换成跨行单美元符号");
+}
+console.log("latexToMarkdown smoke test passed");

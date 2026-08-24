@@ -8,6 +8,7 @@ import {
 } from "react";
 import { api, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
+import { isBoolIniValue, setIniValue } from "../unityIni";
 import {
   advancedUnityConfigSections,
   CONFIG_ENGINE_NEEDS_CREDS,
@@ -38,32 +39,6 @@ type Props = {
   onTargetChange?: (target: UnitySettingsTarget) => void;
   onDirtyChange?: (dirty: boolean) => void;
 };
-
-function setIniValue(
-  sections: UnityIniSection[],
-  section: string,
-  key: string,
-  value: string,
-): UnityIniSection[] {
-  const next = sections.map((sec) => ({
-    ...sec,
-    keys: sec.keys.map((k) => ({ ...k })),
-  }));
-  let sec = next.find((s) => s.name.toLowerCase() === section.toLowerCase());
-  if (!sec) {
-    sec = { name: section, keys: [] };
-    next.push(sec);
-  }
-  const row = sec.keys.find((k) => k.key.toLowerCase() === key.toLowerCase());
-  if (row) row.value = value;
-  else sec.keys.push({ key, value });
-  return next;
-}
-
-function isBoolIniValue(v: string) {
-  const t = v.trim().toLowerCase();
-  return t === "true" || t === "false";
-}
 
 function isSecretField(key: string) {
   const k = key.toLowerCase();

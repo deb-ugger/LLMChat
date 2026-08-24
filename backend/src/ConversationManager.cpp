@@ -1,4 +1,5 @@
 #include "ConversationManager.h"
+#include "AtomicFile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -218,12 +219,7 @@ void ConversationManager::saveToFile()
         arr.push_back(obj);
     }
 
-    std::ofstream out(filePath_, std::ios::trunc);
-    if (!out)
-    {
-        return;
-    }
-    out << arr.dump(2);
+    atomicfile::writeText(filePath_, arr.dump(2));
 }
 
 void ConversationManager::loadFromFile()
