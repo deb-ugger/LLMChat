@@ -1,0 +1,18 @@
+---
+description: Mandatory cooperative file and build locks for every Cursor agent in LLMChat
+alwaysApply: true
+---
+
+# File locking is mandatory
+
+Before changing any repository file, follow the complete locking protocol in `AGENTS.md`.
+
+- Choose one stable, unique `-Owner` for this conversation.
+- Run `scripts/file-lock.ps1 list`, then atomically acquire every intended file with `acquire`.
+- On conflict, wait or stop. Never edit the locked file and never use `-Force` without explicit user approval.
+- Re-read each file after acquiring its lock; do not write from a stale snapshot.
+- If additional files become necessary, acquire them before editing.
+- Check the diff and release all owned file locks when the change is done or interrupted.
+- Acquire the `-Global` lock before any backend/frontend/Tauri/portable build. While another owner holds the global lock, do not edit source or build.
+
+These requirements override the older “touch shared hubs carefully” guidance: careful editing without a lock is not sufficient.

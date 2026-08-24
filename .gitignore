@@ -40,6 +40,7 @@ config.ini
 conversations.json
 **/config.ini
 **/conversations.json
+.agent-locks/
 
 # IDE / OS
 .vs/

@@ -884,6 +884,7 @@ export function SettingsView({
   const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
   const pricingPanelRef = useRef<PricingPanelHandle>(null);
   const [pricingDirty, setPricingDirty] = useState(false);
+  const [unityDirty, setUnityDirty] = useState(false);
   const [unityTarget, setUnityTarget] = useState<UnitySettingsTarget>({
     hasGame: false,
     gameDir: "",
@@ -1217,14 +1218,21 @@ export function SettingsView({
 
   const tabIsDirty = (which: SettingsTab, snapshot: Settings) => {
     if (which === "unity" || which === "pricing") return false;
-    const base = withDefaults(settingsRef.current);
+    const base = prepareForm(withDefaults(settingsRef.current));
     const prepared = prepareForm(snapshot);
     return TAB_FIELDS[which].some((key) => {
       const a = (prepared as Record<string, unknown>)[key];
       const b = (base as Record<string, unknown>)[key];
-      return String(a ?? "") !== String(b ?? "");
+      return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
     });
   };
+
+  const currentPageDirty =
+    tab === "pricing"
+      ? pricingDirty
+      : tab === "unity"
+        ? unityDirty
+        : tabIsDirty(tab, form);
 
   const persistTab = async (
     nextForm: Settings,
@@ -1300,6 +1308,7 @@ export function SettingsView({
   };
 
   const saveCurrentPage = async () => {
+    if (!currentPageDirty || saving) return;
     if (tab === "unity") {
       setSaving(true);
       try {
@@ -4463,6 +4472,7 @@ export function SettingsView({
             active={tab === "unity"}
             notify={notify}
             onTargetChange={setUnityTarget}
+            onDirtyChange={setUnityDirty}
           />
         )}
         {tab === "pricing" && (
@@ -4517,11 +4527,11 @@ export function SettingsView({
               "settings-save-current" + (saving ? " is-saving" : "")
             }
             disabled={
-              saving || (tab === "pricing" && !pricingDirty)
+              saving || !currentPageDirty
             }
             title={
-              tab === "pricing" && !pricingDirty
-                ? "价目表无修改，无需保存"
+              !currentPageDirty
+                ? `${TAB_LABELS[tab]}无修改，无需保存`
                 : undefined
             }
             onClick={() => void saveCurrentPage()}

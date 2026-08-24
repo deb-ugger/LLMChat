@@ -36,6 +36,7 @@ type Props = {
   active: boolean;
   notify: (message: string, ok?: boolean) => void;
   onTargetChange?: (target: UnitySettingsTarget) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 function setIniValue(
@@ -75,7 +76,10 @@ function isSecretField(key: string) {
 }
 
 export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
-  function UnitySettingsPanel({ active, notify, onTargetChange }, ref) {
+  function UnitySettingsPanel(
+    { active, notify, onTargetChange, onDirtyChange },
+    ref,
+  ) {
     const [gameDir, setGameDir] = useState(() => lastUnityGameDir());
     const [sections, setSections] = useState<UnityIniSection[]>([]);
     const [configPath, setConfigPath] = useState("");
@@ -88,9 +92,25 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
     );
     const notifyRef = useRef(notify);
     const onTargetChangeRef = useRef(onTargetChange);
+    const onDirtyChangeRef = useRef(onDirtyChange);
+    const savedSectionsRef = useRef<UnityIniSection[]>([]);
     const loadingRef = useRef(false);
     notifyRef.current = notify;
     onTargetChangeRef.current = onTargetChange;
+    onDirtyChangeRef.current = onDirtyChange;
+
+    const setDirty = useCallback((dirty: boolean) => {
+      onDirtyChangeRef.current?.(dirty);
+    }, []);
+
+    const acceptLoadedSections = useCallback(
+      (next: UnityIniSection[]) => {
+        savedSectionsRef.current = next;
+        setSections(next);
+        setDirty(false);
+      },
+      [setDirty],
+    );
 
     const load = useCallback(async () => {
       if (loadingRef.current) return;
@@ -105,7 +125,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
         if (!res.ok) {
           const draft = loadUnityConfigDraft();
           if (draft?.length) {
-            setSections(draft);
+            acceptLoadedSections(draft);
             setConfigPath("");
             setConfigExists(false);
             setLoadError(res.error || "读取游戏配置失败，已回退到通用模板");
@@ -127,17 +147,17 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
         }
         setConfigPath(res.path || "");
         setConfigExists(!!res.exists);
-        setSections(next);
+        acceptLoadedSections(next);
       } catch (e) {
         const msg = toFriendlyError(e, "读取配置失败");
         const draft = loadUnityConfigDraft();
         if (draft?.length) {
-          setSections(draft);
+          acceptLoadedSections(draft);
           setConfigPath("");
           setConfigExists(false);
           setLoadError(`${msg}；已回退到通用模板`);
         } else {
-          setSections([]);
+          acceptLoadedSections([]);
           setLoadError(msg);
         }
         notifyRef.current(msg, false);
@@ -145,7 +165,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
         loadingRef.current = false;
         setLoading(false);
       }
-    }, []);
+    }, [acceptLoadedSections]);
 
     useEffect(() => {
       if (!active) return;
@@ -159,6 +179,8 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
           const dir = lastUnityGameDir();
           saveUnityConfigDraft(sections);
           if (!dir) {
+            savedSectionsRef.current = sections;
+            setDirty(false);
             notifyRef.current(
               "已保存为通用 AutoTranslator 模板（各游戏格式相同）",
             );
@@ -174,17 +196,23 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
           }
           setConfigPath(res.path || configPath);
           setConfigExists(true);
+          savedSectionsRef.current = sections;
+          setDirty(false);
           notifyRef.current("已写入当前游戏 Config.ini，并更新通用模板");
         },
       }),
-      [sections, configPath],
+      [sections, configPath, setDirty],
     );
 
     const engines = engineConfigSections(sections);
     const advanced = advancedUnityConfigSections(sections);
 
     const updateKey = (section: string, key: string, value: string) => {
-      setSections((prev) => setIniValue(prev, section, key, value));
+      const next = setIniValue(sections, section, key, value);
+      setSections(next);
+      setDirty(
+        JSON.stringify(next) !== JSON.stringify(savedSectionsRef.current),
+      );
     };
 
     return (

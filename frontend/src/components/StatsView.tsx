@@ -76,6 +76,17 @@ const RANGE_PRESETS = new Set<RangePreset>([
   "custom",
 ]);
 
+const RANGE_PRESET_OPTIONS: Array<{ value: RangePreset; label: string }> = [
+  { value: "today", label: "今天" },
+  { value: "yesterday", label: "昨天" },
+  { value: "7", label: "近 7 天" },
+  { value: "15", label: "近 15 天" },
+  { value: "30", label: "近 30 天" },
+  { value: "90", label: "近 90 天" },
+  { value: "month", label: "本月" },
+  { value: "all", label: "全部" },
+];
+
 function isRangePreset(v: unknown): v is RangePreset {
   return typeof v === "string" && RANGE_PRESETS.has(v as RangePreset);
 }
@@ -206,17 +217,19 @@ function DateRangePicker({
   from,
   to,
   today,
+  preset,
   open,
-  disabled,
   onOpenChange,
+  onPresetChange,
   onChange,
 }: {
   from: string;
   to: string;
   today: string;
+  preset: RangePreset;
   open: boolean;
-  disabled?: boolean;
   onOpenChange: (open: boolean) => void;
+  onPresetChange: (preset: RangePreset) => void;
   onChange: (from: string, to: string) => void;
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -242,8 +255,8 @@ function DateRangePicker({
     const trigger = triggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    const width = Math.min(640, Math.max(320, window.innerWidth - 24));
-    const estimatedHeight = 390;
+    const width = Math.min(680, Math.max(300, window.innerWidth - 24));
+    const estimatedHeight = 370;
     const left = Math.min(
       Math.max(12, rect.left),
       Math.max(12, window.innerWidth - width - 12),
@@ -358,10 +371,12 @@ function DateRangePicker({
     </section>
   );
 
-  const triggerText =
+  const rangeText =
     from && to
       ? `${from.replaceAll("-", "/")}  →  ${to.replaceAll("-", "/")}`
-      : "请选择起始日期和结束日期";
+      : preset === "all"
+        ? "全部时间"
+        : "请选择日期范围";
 
   return (
     <div className="stats-date-range-picker">
@@ -369,13 +384,21 @@ function DateRangePicker({
         ref={triggerRef}
         type="button"
         className="stats-date-range-trigger"
-        disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => onOpenChange(!open)}
       >
-        <span>{triggerText}</span>
-        <span className="stats-date-range-icon" aria-hidden="true">▦</span>
+        <span className="stats-date-range-trigger-copy">
+          <span>{rangeText}</span>
+        </span>
+        <span
+          className={`stats-date-range-icon${open ? " is-open" : ""}`}
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 20 20" focusable="false">
+            <path d="m5 7.5 5 5 5-5" />
+          </svg>
+        </span>
       </button>
       {open
         ? createPortal(
@@ -384,34 +407,59 @@ function DateRangePicker({
               className="stats-date-range-popover"
               style={popoverStyle}
               role="dialog"
-              aria-label="选择日期范围"
+              aria-label="选择时间范围"
             >
-              <div className="stats-calendar-toolbar">
-                <button
-                  type="button"
-                  aria-label="上两个月"
-                  onClick={() => setAnchorMonth((month) => addCalendarMonths(month, -2))}
-                >
-                  ‹
-                </button>
-                <p>{selectingEnd ? "请选择结束日期" : "请选择起始日期"}</p>
-                <button
-                  type="button"
-                  aria-label="下两个月"
-                  disabled={anchorMonth >= latestAnchor}
-                  onClick={() =>
-                    setAnchorMonth((month) => {
-                      const next = addCalendarMonths(month, 2);
-                      return next > latestAnchor ? latestAnchor : next;
-                    })
-                  }
-                >
-                  ›
-                </button>
-              </div>
-              <div className="stats-calendar-months">
-                {renderMonth(anchorMonth)}
-                {renderMonth(addCalendarMonths(anchorMonth, 1))}
+              <div className="stats-date-range-layout">
+                <nav className="stats-range-presets" aria-label="快捷时间范围">
+                  {RANGE_PRESET_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={preset === option.value ? "is-active" : undefined}
+                      aria-pressed={preset === option.value}
+                      onClick={() => {
+                        onPresetChange(option.value);
+                        onOpenChange(false);
+                      }}
+                    >
+                      <span>{option.label}</span>
+                      {preset === option.value ? (
+                        <span className="stats-range-preset-check" aria-hidden="true">✓</span>
+                      ) : null}
+                    </button>
+                  ))}
+                </nav>
+                <div className="stats-calendar-pane">
+                  <div className="stats-calendar-toolbar">
+                    <button
+                      type="button"
+                      aria-label="上两个月"
+                      onClick={() =>
+                        setAnchorMonth((month) => addCalendarMonths(month, -2))
+                      }
+                    >
+                      ‹
+                    </button>
+                    <p>{selectingEnd ? "请选择结束日期" : "请选择起始日期"}</p>
+                    <button
+                      type="button"
+                      aria-label="下两个月"
+                      disabled={anchorMonth >= latestAnchor}
+                      onClick={() =>
+                        setAnchorMonth((month) => {
+                          const next = addCalendarMonths(month, 2);
+                          return next > latestAnchor ? latestAnchor : next;
+                        })
+                      }
+                    >
+                      ›
+                    </button>
+                  </div>
+                  <div className="stats-calendar-months">
+                    {renderMonth(anchorMonth)}
+                    {renderMonth(addCalendarMonths(anchorMonth, 1))}
+                  </div>
+                </div>
               </div>
             </div>,
             document.body,
@@ -2114,7 +2162,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
 
   const onDateRangeOpenChange = useCallback((nextOpen: boolean) => {
     setDateRangeOpen(nextOpen);
-    if (nextOpen) setRangePreset("custom");
   }, []);
 
   const load = useCallback(async () => {
@@ -2206,32 +2253,16 @@ export function StatsView({ active = true }: { active?: boolean }) {
       </header>
 
       <div className="stats-filters">
-        <label className="stats-field">
-          <span>时间</span>
-          <select
-            value={rangePreset === "custom" ? "custom" : rangePreset}
-            onChange={(e) => applyPreset(e.target.value as RangePreset)}
-          >
-            <option value="today">今天</option>
-            <option value="yesterday">昨天</option>
-            <option value="7">近 7 天</option>
-            <option value="15">近 15 天</option>
-            <option value="30">近 30 天</option>
-            <option value="90">近 90 天</option>
-            <option value="month">本月</option>
-            <option value="all">全部</option>
-            <option value="custom">自定义</option>
-          </select>
-        </label>
         <div className="stats-field stats-date-range-field">
-          <span>日期范围</span>
+          <span>时间</span>
           <DateRangePicker
-            from={customFrom}
-            to={customTo}
+            from={range.from}
+            to={range.to}
             today={today}
+            preset={rangePreset}
             open={dateRangeOpen}
-            disabled={rangePreset === "all"}
             onOpenChange={onDateRangeOpenChange}
+            onPresetChange={applyPreset}
             onChange={onCustomRange}
           />
         </div>
