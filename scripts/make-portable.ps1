@@ -25,6 +25,7 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # Only refresh binaries/resources. Never wipe user data next to the portable app:
 # usage-events.jsonl, conversations.json, config.ini, vendor-models.json, text-projects/, etc.
 $preserveHint = @(
+    "usage.db",
     "usage-events.jsonl",
     "conversations.json",
     "config.ini",

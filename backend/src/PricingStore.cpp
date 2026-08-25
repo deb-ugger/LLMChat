@@ -262,6 +262,24 @@ PricingStore::PricingStore(std::string filePath)
 {
     std::lock_guard<std::mutex> lock(mu_);
     loadUnlocked();
+    rebuildRuleIndexUnlocked();
+}
+
+void PricingStore::rebuildRuleIndexUnlocked()
+{
+    ruleIndexesByModel_.clear();
+    if (!table_.contains("rules") || !table_["rules"].is_array())
+        return;
+    const auto& rules = table_["rules"];
+    for (size_t i = 0; i < rules.size(); ++i)
+    {
+        const auto& rule = rules[i];
+        if (!rule.is_object())
+            continue;
+        const std::string model = trimCopy(rule.value("model", ""));
+        if (!model.empty())
+            ruleIndexesByModel_[model].push_back(i);
+    }
 }
 
 void PricingStore::loadUnlocked()
@@ -332,6 +350,7 @@ std::string PricingStore::put(const json& body)
         return err;
     std::lock_guard<std::mutex> lock(mu_);
     table_ = std::move(normalized);
+    rebuildRuleIndexUnlocked();
     if (!saveUnlocked())
         return "failed to write pricing.json";
     return "";
@@ -744,11 +763,15 @@ std::optional<TokenRates> PricingStore::ratesFor(
 
     const json* best = nullptr;
     std::string bestFrom;
-    for (const auto& r : rules)
+    const auto candidates = ruleIndexesByModel_.find(m);
+    if (candidates == ruleIndexesByModel_.end())
+        return std::nullopt;
+    for (const size_t index : candidates->second)
     {
-        if (!r.is_object())
+        if (index >= rules.size())
             continue;
-        if (trimCopy(r.value("model", "")) != m)
+        const auto& r = rules[index];
+        if (!r.is_object())
             continue;
         const std::string from = trimCopy(r.value("from", ""));
         const std::string to = trimCopy(r.value("to", ""));
@@ -861,11 +884,15 @@ std::string PricingStore::bandFor(
 
     const json* best = nullptr;
     std::string bestFrom;
-    for (const auto& r : rules)
+    const auto candidates = ruleIndexesByModel_.find(m);
+    if (candidates == ruleIndexesByModel_.end())
+        return "flat";
+    for (const size_t index : candidates->second)
     {
-        if (!r.is_object())
+        if (index >= rules.size())
             continue;
-        if (trimCopy(r.value("model", "")) != m)
+        const auto& r = rules[index];
+        if (!r.is_object())
             continue;
         const std::string from = trimCopy(r.value("from", ""));
         const std::string to = trimCopy(r.value("to", ""));

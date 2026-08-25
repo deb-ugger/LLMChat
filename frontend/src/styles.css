@@ -10039,6 +10039,40 @@ body.row-resizing .textLayer {
   flex-direction: column;
 }
 
+.stats-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.stats-detail-header .stats-section-title {
+  margin: 0;
+}
+
+.stats-pagination,
+.stats-pagination-actions {
+  display: flex;
+  align-items: center;
+}
+
+.stats-pagination {
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-pagination-actions {
+  gap: 6px;
+}
+
+.stats-pagination .stats-btn {
+  min-height: 28px;
+  padding: 4px 10px;
+}
+
 .stats-table-scroll {
   flex: 1 1 auto;
   min-height: 180px;

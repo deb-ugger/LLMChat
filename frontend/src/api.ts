@@ -149,6 +149,11 @@ export type UsageEvent = {
   cost?: number;
   /** idle | peak from pricing rules (LLM); flat = engine / all-hours. */
   pricingBand?: "idle" | "peak" | "flat" | string;
+  /** Present on database-aggregated chart buckets. */
+  requests?: number;
+  okCount?: number;
+  failCount?: number;
+  supplementCount?: number;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
@@ -623,6 +628,42 @@ export const api = {
       totalEvents: number;
       items: UsageSummaryItem[];
     }>(`/api/usage/summary${qs ? `?${qs}` : ""}`);
+  },
+  usageReport: (params: {
+    from: string;
+    to: string;
+    feature?: string;
+    groupBy?: "feature" | "engine" | "llm" | "day" | "band";
+    ok?: "ok" | "fail" | "supplement" | "";
+    currency?: PricingCurrency;
+    band?: "idle" | "peak" | "flat" | "";
+    page?: number;
+    pageSize?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("from", params.from);
+    q.set("to", params.to);
+    if (params.feature) q.set("feature", params.feature);
+    if (params.groupBy) q.set("groupBy", params.groupBy);
+    if (params.ok) q.set("ok", params.ok);
+    if (params.currency) q.set("currency", params.currency);
+    if (params.band) q.set("band", params.band);
+    if (params.page) q.set("page", String(params.page));
+    if (params.pageSize) q.set("pageSize", String(params.pageSize));
+    return request<{
+      ok: boolean;
+      groupBy: string;
+      currency?: PricingCurrency;
+      summary: UsageSummaryItem[];
+      chart: UsageEvent[];
+      events: UsageEvent[];
+      pagination: {
+        page: number;
+        pageSize: number;
+        total: number;
+        pages: number;
+      };
+    }>(`/api/usage/report?${q.toString()}`);
   },
   clearUsage: () =>
     request<{ ok: boolean }>("/api/usage", { method: "DELETE" }),

@@ -48,10 +48,10 @@ type RangePreset =
   | "30"
   | "90"
   | "month"
-  | "all"
   | "custom";
 
 const STATS_FILTERS_KEY = "llmchat-stats-filters";
+const DETAIL_PAGE_SIZE = 100;
 
 type StatsFiltersState = {
   rangePreset: RangePreset;
@@ -72,7 +72,6 @@ const RANGE_PRESETS = new Set<RangePreset>([
   "30",
   "90",
   "month",
-  "all",
   "custom",
 ]);
 
@@ -84,7 +83,6 @@ const RANGE_PRESET_OPTIONS: Array<{ value: RangePreset; label: string }> = [
   { value: "30", label: "近 30 天" },
   { value: "90", label: "近 90 天" },
   { value: "month", label: "本月" },
-  { value: "all", label: "全部" },
 ];
 
 function isRangePreset(v: unknown): v is RangePreset {
@@ -173,7 +171,7 @@ function monthToDateRange(): { from: string; to: string } {
 function rangeFromPreset(preset: RangePreset): { from: string; to: string } {
   const now = new Date();
   const todayStr = localDateString(now);
-  if (preset === "all" || preset === "custom") return { from: "", to: "" };
+  if (preset === "custom") return { from: "", to: "" };
   if (preset === "month") return monthToDateRange();
   if (preset === "today") return { from: todayStr, to: todayStr };
   if (preset === "yesterday") {
@@ -374,9 +372,7 @@ function DateRangePicker({
   const rangeText =
     from && to
       ? `${from.replaceAll("-", "/")}  →  ${to.replaceAll("-", "/")}`
-      : preset === "all"
-        ? "全部时间"
-        : "请选择日期范围";
+      : "请选择日期范围";
 
   return (
     <div className="stats-date-range-picker">
@@ -492,13 +488,10 @@ function loadStatsFilters(today: string): StatsFiltersState {
       typeof saved.customFrom === "string" ? saved.customFrom : defaults.customFrom;
     let customTo =
       typeof saved.customTo === "string" ? saved.customTo : defaults.customTo;
-    if (rangePreset !== "custom" && rangePreset !== "all") {
+    if (rangePreset !== "custom") {
       const r = rangeFromPreset(rangePreset);
       customFrom = r.from;
       customTo = r.to;
-    } else if (rangePreset === "all") {
-      customFrom = "";
-      customTo = today;
     }
     const feature =
       typeof saved.feature === "string" &&
@@ -780,7 +773,7 @@ function eventMetricValue(
   ev: UsageEvent,
   metric: "requests" | "tokens" | "cost",
 ): number {
-  if (metric === "requests") return 1;
+  if (metric === "requests") return Math.max(1, ev.requests ?? 1);
   if (metric === "cost") return ev.cost ?? 0;
   return tokenTotalOf({
     cacheReadTokens: ev.cacheReadTokens,
@@ -789,6 +782,21 @@ function eventMetricValue(
     completionTokens: ev.completionTokens,
     totalTokens: ev.totalTokens,
   });
+}
+
+function eventOkCount(ev: UsageEvent): number {
+  if (ev.okCount != null) return ev.okCount;
+  return !isSupplementEvent(ev) && ev.ok ? Math.max(1, ev.requests ?? 1) : 0;
+}
+
+function eventFailCount(ev: UsageEvent): number {
+  if (ev.failCount != null) return ev.failCount;
+  return !isSupplementEvent(ev) && !ev.ok ? Math.max(1, ev.requests ?? 1) : 0;
+}
+
+function eventSupplementCount(ev: UsageEvent): number {
+  if (ev.supplementCount != null) return ev.supplementCount;
+  return isSupplementEvent(ev) ? Math.max(1, ev.requests ?? 1) : 0;
 }
 
 function formatMetricValue(
@@ -1158,11 +1166,11 @@ function buildActorDetailOption({
   );
   const ticks = collectHourlyAxisTicks(rule, occupiedHours);
   const hourOk = (h: number) =>
-    hourEvents[h].filter((ev) => !isSupplementEvent(ev) && ev.ok).length;
+    hourEvents[h].reduce((sum, ev) => sum + eventOkCount(ev), 0);
   const hourFail = (h: number) =>
-    hourEvents[h].filter((ev) => !isSupplementEvent(ev) && !ev.ok).length;
+    hourEvents[h].reduce((sum, ev) => sum + eventFailCount(ev), 0);
   const hourSupplement = (h: number) =>
-    hourEvents[h].filter(isSupplementEvent).length;
+    hourEvents[h].reduce((sum, ev) => sum + eventSupplementCount(ev), 0);
   const hourCost = (h: number) =>
     hourEvents[h].reduce((sum, ev) => sum + (ev.cost ?? 0), 0);
   const hourField = (h: number, pick: (ev: UsageEvent) => number) =>
@@ -2079,7 +2087,12 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [pricingRules, setPricingRules] = useState<PricingRule[]>([]);
   const [selectedActor, setSelectedActor] = useState<ActorOption | null>(null);
   const [summary, setSummary] = useState<UsageSummaryItem[]>([]);
+  /** Minute-level database aggregates used only by the chart. */
   const [events, setEvents] = useState<UsageEvent[]>([]);
+  const [detailEvents, setDetailEvents] = useState<UsageEvent[]>([]);
+  const [detailPage, setDetailPage] = useState(1);
+  const [detailTotal, setDetailTotal] = useState(0);
+  const [detailPages, setDetailPages] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dateRangeOpen, setDateRangeOpen] = useState(false);
@@ -2132,25 +2145,21 @@ export function StatsView({ active = true }: { active?: boolean }) {
       // 最短一天：起止同一天亦可
       return { from: from || "", to: to || "" };
     }
-    if (rangePreset === "all") return { from: "", to: "" };
     return rangeFromPreset(rangePreset);
   }, [customFrom, customTo, rangePreset]);
 
   useEffect(() => {
     setSelectedActor(null);
-  }, [feature, groupBy, okFilter, range.from, range.to]);
+    setDetailPage(1);
+  }, [bandFilter, feature, groupBy, okFilter, range.from, range.to]);
 
   const applyPreset = (preset: RangePreset) => {
     setRangePreset(preset);
     setDateRangeOpen(preset === "custom");
-    if (preset !== "custom" && preset !== "all") {
+    if (preset !== "custom") {
       const r = rangeFromPreset(preset);
       setCustomFrom(r.from);
       setCustomTo(r.to);
-    }
-    if (preset === "all") {
-      setCustomFrom("");
-      setCustomTo(today);
     }
   };
 
@@ -2168,28 +2177,50 @@ export function StatsView({ active = true }: { active?: boolean }) {
     setLoading(true);
     setError(null);
     try {
-      const params = {
-        from: range.from || undefined,
-        to: range.to || undefined,
+      if (!range.from || !range.to) {
+        setSummary([]);
+        setEvents([]);
+        setDetailEvents([]);
+        setDetailTotal(0);
+        setDetailPages(0);
+        return;
+      }
+      const report = await api.usageReport({
+        from: range.from,
+        to: range.to,
         feature: feature || undefined,
+        groupBy,
         ok: okFilter || undefined,
         currency,
         band: bandFilter || undefined,
-      };
-      const [sum, ev] = await Promise.all([
-        api.usageSummary({ ...params, groupBy }),
-        api.usageEvents(params),
-      ]);
-      setSummary((sum.items ?? []).filter(hasConsumption));
-      setEvents(ev.items ?? []);
+        page: detailPage,
+        pageSize: DETAIL_PAGE_SIZE,
+      });
+      setSummary((report.summary ?? []).filter(hasConsumption));
+      setEvents(report.chart ?? []);
+      setDetailEvents(report.events ?? []);
+      setDetailTotal(report.pagination?.total ?? 0);
+      setDetailPages(report.pagination?.pages ?? 0);
     } catch (e) {
       setError(toFriendlyError(e, "加载统计失败"));
       setSummary([]);
       setEvents([]);
+      setDetailEvents([]);
+      setDetailTotal(0);
+      setDetailPages(0);
     } finally {
       setLoading(false);
     }
-  }, [bandFilter, currency, feature, groupBy, okFilter, range.from, range.to]);
+  }, [
+    bandFilter,
+    currency,
+    detailPage,
+    feature,
+    groupBy,
+    okFilter,
+    range.from,
+    range.to,
+  ]);
 
   useEffect(() => {
     void load();
@@ -2227,8 +2258,10 @@ export function StatsView({ active = true }: { active?: boolean }) {
 
   const sortedEvents = useMemo(
     () =>
-      [...events].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)),
-    [events],
+      [...detailEvents].sort((a, b) =>
+        a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0,
+      ),
+    [detailEvents],
   );
 
   return (
@@ -2531,7 +2564,35 @@ export function StatsView({ active = true }: { active?: boolean }) {
       </section>
 
       <section className="stats-panel stats-table-wrap">
-        <h2 className="stats-section-title">明细</h2>
+        <div className="stats-detail-header">
+          <h2 className="stats-section-title">明细</h2>
+          <div className="stats-pagination" aria-label="明细分页">
+            <span>
+              共 {detailTotal.toLocaleString("zh-CN")} 条
+              {detailPages > 0 ? ` · 第 ${detailPage} / ${detailPages} 页` : ""}
+            </span>
+            <div className="stats-pagination-actions">
+              <button
+                type="button"
+                className="stats-btn"
+                disabled={loading || detailPage <= 1}
+                onClick={() => setDetailPage((page) => Math.max(1, page - 1))}
+              >
+                上一页
+              </button>
+              <button
+                type="button"
+                className="stats-btn"
+                disabled={loading || detailPages <= 0 || detailPage >= detailPages}
+                onClick={() =>
+                  setDetailPage((page) => Math.min(detailPages, page + 1))
+                }
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+        </div>
         <div className="stats-table-scroll">
           <table className="stats-table">
             <thead>

@@ -1,5 +1,7 @@
 #include "UsageStore.h"
+#include "SqliteUsageDb.h"
 
+#include <algorithm>
 #include <atomic>
 #include <unordered_map>
 #include <chrono>
@@ -198,8 +200,11 @@ std::string UsageStore::vendorFromHostOrModel(
 
 UsageStore::UsageStore(std::string filePath)
     : path_(std::move(filePath))
+    , sqlite_(std::make_unique<SqliteUsageDb>(path_))
 {
 }
+
+UsageStore::~UsageStore() = default;
 
 json UsageStore::toJson(const UsageEvent& ev) const
 {
@@ -236,13 +241,18 @@ void UsageStore::append(const UsageEvent& ev)
     std::lock_guard<std::mutex> lock(mu_);
     try
     {
+        const json row = toJson(ev);
+        if (sqlite_ && sqlite_->upsert(row))
+            return;
+
+        // Keep a JSONL fallback if the system SQLite library is unavailable.
         const fs::path p(path_);
         std::error_code ec;
         fs::create_directories(p.parent_path(), ec);
         std::ofstream out(p, std::ios::binary | std::ios::app);
         if (!out)
             return;
-        out << toJson(ev).dump() << "\n";
+        out << row.dump() << "\n";
         out.flush();
     }
     catch (...)
@@ -275,6 +285,8 @@ void UsageStore::clear()
     std::lock_guard<std::mutex> lock(mu_);
     try
     {
+        if (sqlite_)
+            sqlite_->clear();
         std::error_code ec;
         fs::remove(path_, ec);
     }
@@ -304,6 +316,9 @@ std::vector<json> UsageStore::events(
     std::lock_guard<std::mutex> lock(mu_);
     std::vector<json> out;
     std::vector<json> rows;
+    if (sqlite_ && sqlite_->query(fromDate, toDate, feature, okFilter, out))
+        return out;
+
     std::ifstream in(path_, std::ios::binary);
     if (!in)
         return out;
@@ -355,6 +370,61 @@ std::vector<json> UsageStore::events(
         out.push_back(rows[i]);
     }
     return out;
+}
+
+std::vector<json> UsageStore::eventPage(
+    const std::string& fromDate,
+    const std::string& toDate,
+    const std::string& feature,
+    const std::string& okFilter,
+    int page,
+    int pageSize,
+    int& totalRows) const
+{
+    page = std::max(1, page);
+    pageSize = std::max(1, std::min(200, pageSize));
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<json> rows;
+        if (sqlite_
+            && sqlite_->queryPage(
+                fromDate,
+                toDate,
+                feature,
+                okFilter,
+                page,
+                pageSize,
+                rows,
+                totalRows))
+            return rows;
+    }
+
+    auto rows = events(fromDate, toDate, feature, okFilter);
+    std::sort(rows.begin(), rows.end(), [](const json& a, const json& b) {
+        return a.value("ts", "") > b.value("ts", "");
+    });
+    totalRows = static_cast<int>(rows.size());
+    const size_t begin = std::min(
+        rows.size(),
+        static_cast<size_t>(page - 1) * static_cast<size_t>(pageSize));
+    const size_t end = std::min(rows.size(), begin + static_cast<size_t>(pageSize));
+    return std::vector<json>(rows.begin() + begin, rows.begin() + end);
+}
+
+std::vector<json> UsageStore::chartBuckets(
+    const std::string& fromDate,
+    const std::string& toDate,
+    const std::string& feature,
+    const std::string& okFilter) const
+{
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<json> rows;
+        if (sqlite_
+            && sqlite_->aggregateByMinute(fromDate, toDate, feature, okFilter, rows))
+            return rows;
+    }
+    return events(fromDate, toDate, feature, okFilter);
 }
 
 json UsageStore::summaryFromEvents(
@@ -422,14 +492,23 @@ json UsageStore::summaryFromEvents(
             };
         }
         auto& b = buckets[key];
-        b["requests"] = b.value("requests", 0) + 1;
+        const int requests = std::max(1, row.value("requests", 1));
+        b["requests"] = b.value("requests", 0) + requests;
         const std::string requestType = usageRequestType(row);
-        if (requestType == "supplement")
-            b["supplement"] = b.value("supplement", 0) + 1;
+        if (row.contains("okCount") || row.contains("failCount")
+            || row.contains("supplementCount"))
+        {
+            b["ok"] = b.value("ok", 0) + row.value("okCount", 0);
+            b["fail"] = b.value("fail", 0) + row.value("failCount", 0);
+            b["supplement"] =
+                b.value("supplement", 0) + row.value("supplementCount", 0);
+        }
+        else if (requestType == "supplement")
+            b["supplement"] = b.value("supplement", 0) + requests;
         else if (requestType == "ok")
-            b["ok"] = b.value("ok", 0) + 1;
+            b["ok"] = b.value("ok", 0) + requests;
         else
-            b["fail"] = b.value("fail", 0) + 1;
+            b["fail"] = b.value("fail", 0) + requests;
         if (usageTokensKnown(row))
         {
             b["promptTokens"] =

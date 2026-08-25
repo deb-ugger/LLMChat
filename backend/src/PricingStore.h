@@ -4,6 +4,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 struct TokenRates {
     double input = 0;
@@ -60,8 +62,10 @@ private:
     std::string path_;
     mutable std::mutex mu_;
     nlohmann::json table_;
+    std::unordered_map<std::string, std::vector<size_t>> ruleIndexesByModel_;
 
     void loadUnlocked();
+    void rebuildRuleIndexUnlocked();
     bool saveUnlocked() const;
     static bool dateInHalfOpen(
         const std::string& date,

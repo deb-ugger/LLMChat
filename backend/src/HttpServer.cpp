@@ -8,13 +8,16 @@
 #include "Utf8Path.h"
 
 #include <httplib.h>
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -412,6 +415,187 @@ int HttpServer::run()
         json body = UsageStore::summaryFromEvents(filteredRows, groupBy);
         body["currency"] = currency;
         res.set_content(body.dump(), "application/json");
+    }));
+
+    svr.Get("/api/usage/report", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
+        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+        if (from.empty() || to.empty())
+        {
+            res.status = 400;
+            res.set_content(errorJson("统计查询必须指定起止日期").dump(), "application/json");
+            return;
+        }
+
+        const std::string feature =
+            req.has_param("feature") ? req.get_param_value("feature") : "";
+        const std::string groupBy =
+            req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
+        const std::string okFilter =
+            req.has_param("ok") ? req.get_param_value("ok") : "";
+        const std::string bandFilter =
+            req.has_param("band") ? req.get_param_value("band") : "";
+        std::string currency =
+            req.has_param("currency") ? req.get_param_value("currency") : "";
+        if (currency.empty() && pricing_)
+            currency = pricing_->displayCurrency();
+        if (currency.empty())
+            currency = "CNY";
+
+        auto intParam = [&](const char* name, int fallback, int low, int high) {
+            if (!req.has_param(name))
+                return fallback;
+            try
+            {
+                return std::max(
+                    low,
+                    std::min(high, std::stoi(req.get_param_value(name))));
+            }
+            catch (...)
+            {
+                return fallback;
+            }
+        };
+        const int page = intParam("page", 1, 1, 1000000);
+        const int pageSize = intParam("pageSize", 100, 20, 200);
+
+        if (!usage_)
+        {
+            res.set_content(
+                json{
+                    {"ok", true},
+                    {"groupBy", groupBy},
+                    {"currency", currency},
+                    {"summary", json::array()},
+                    {"chart", json::array()},
+                    {"events", json::array()},
+                    {"pagination",
+                     {{"page", page}, {"pageSize", pageSize}, {"total", 0}, {"pages", 0}}},
+                }
+                    .dump(),
+                "application/json");
+            return;
+        }
+
+        struct PriceContext {
+            std::optional<TokenRates> rates;
+            std::string band = "flat";
+        };
+        std::unordered_map<std::string, PriceContext> priceCache;
+        auto decorate = [&](json& row) {
+            row["cost"] = 0.0;
+            row["pricingBand"] = "flat";
+            if (!pricing_ || row.value("channel", "") != "llm")
+                return;
+            const std::string model = row.value("model", "");
+            if (model.empty())
+                return;
+            const std::string date = row.value("date", "");
+            const std::string time = row.value("time", "");
+            const std::string minute = time.size() >= 5 ? time.substr(0, 5) : time;
+            const std::string cacheKey = model + "\n" + date + "\n" + minute + "\n" + currency;
+            auto [it, inserted] = priceCache.try_emplace(cacheKey);
+            if (inserted)
+            {
+                it->second.rates = pricing_->ratesFor(model, date, currency, minute);
+                it->second.band = pricing_->bandFor(model, date, minute);
+                if (it->second.band.empty())
+                    it->second.band = "flat";
+            }
+            row["pricingBand"] = it->second.band;
+            if (!it->second.rates || row.value("promptTokens", 0) < 0
+                || row.value("totalTokens", 0) < 0)
+                return;
+            row["cost"] = PricingStore::computeCost(
+                row.value("promptTokens", 0),
+                row.value("completionTokens", 0),
+                row.value("cacheReadTokens", 0),
+                row.value("cacheWriteTokens", 0),
+                *it->second.rates);
+        };
+
+        auto chartRows = usage_->chartBuckets(from, to, feature, okFilter);
+        std::vector<json> filteredChart;
+        filteredChart.reserve(chartRows.size());
+        int filteredTotal = 0;
+        for (auto& row : chartRows)
+        {
+            decorate(row);
+            if (!bandFilter.empty() && row.value("pricingBand", "flat") != bandFilter)
+                continue;
+            filteredTotal += std::max(1, row.value("requests", 1));
+            filteredChart.push_back(std::move(row));
+        }
+
+        std::vector<json> pageRows;
+        int totalRows = 0;
+        if (bandFilter.empty())
+        {
+            pageRows = usage_->eventPage(
+                from,
+                to,
+                feature,
+                okFilter,
+                page,
+                pageSize,
+                totalRows);
+            for (auto& row : pageRows)
+                decorate(row);
+        }
+        else
+        {
+            totalRows = filteredTotal;
+            const int wantedBegin = (page - 1) * pageSize;
+            const int wantedEnd = wantedBegin + pageSize;
+            int matched = 0;
+            int sourcePage = 1;
+            int sourceTotal = 0;
+            while (matched < wantedEnd)
+            {
+                auto chunk = usage_->eventPage(
+                    from,
+                    to,
+                    feature,
+                    okFilter,
+                    sourcePage++,
+                    200,
+                    sourceTotal);
+                if (chunk.empty())
+                    break;
+                for (auto& row : chunk)
+                {
+                    decorate(row);
+                    if (row.value("pricingBand", "flat") != bandFilter)
+                        continue;
+                    if (matched >= wantedBegin && matched < wantedEnd)
+                        pageRows.push_back(std::move(row));
+                    ++matched;
+                    if (matched >= wantedEnd)
+                        break;
+                }
+                if ((sourcePage - 1) * 200 >= sourceTotal)
+                    break;
+            }
+        }
+
+        json summaryBody = UsageStore::summaryFromEvents(filteredChart, groupBy);
+        const int pages = totalRows <= 0 ? 0 : (totalRows + pageSize - 1) / pageSize;
+        res.set_content(
+            json{
+                {"ok", true},
+                {"groupBy", groupBy},
+                {"currency", currency},
+                {"summary", summaryBody.value("items", json::array())},
+                {"chart", filteredChart},
+                {"events", pageRows},
+                {"pagination",
+                 {{"page", page},
+                  {"pageSize", pageSize},
+                  {"total", totalRows},
+                  {"pages", pages}}},
+            }
+                .dump(),
+            "application/json");
     }));
 
     svr.Delete("/api/usage", withCors([this](const httplib::Request&, httplib::Response& res) {
