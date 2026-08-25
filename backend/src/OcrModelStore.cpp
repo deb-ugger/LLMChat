@@ -222,12 +222,16 @@ void downloadFile(const ModelSpec&, const fs::path&, const AppConfig&,
 #endif
 
 json modeStatus(const char* id, const char* label, bool builtIn, bool installed,
+                bool prerequisiteInstalled, bool recognitionInstalled,
                 std::uintmax_t downloadBytes, std::uintmax_t sizeBytes,
                 std::uintmax_t cachedModeBytes)
 {
     return json{
         {"id", id}, {"label", label}, {"builtIn", builtIn},
-        {"installed", installed}, {"downloadBytes", downloadBytes},
+        {"installed", installed},
+        {"prerequisiteInstalled", prerequisiteInstalled},
+        {"recognitionInstalled", recognitionInstalled},
+        {"downloadBytes", downloadBytes},
         {"sizeBytes", sizeBytes}, {"cachedBytes", cachedModeBytes},
     };
 }
@@ -259,13 +263,13 @@ json OcrModelStore::status() const
             {"totalBytes", downloadTotalBytes_},
         }},
         {"modes", json::array({
-            modeStatus("fast", "快速", true, true, 0,
+            modeStatus("fast", "快速", true, true, true, true, 0,
                        kFastModelBytes, kFastModelBytes),
-            modeStatus("precise", "精确", false, precise,
+            modeStatus("precise", "精确", false, precise, det, rec,
                        precise ? 0 : (det ? kMediumRec.bytes : kMediumDet.bytes + kMediumRec.bytes),
                        kMediumDet.bytes + kMediumRec.bytes,
                        (det ? kMediumDet.bytes : 0) + (rec ? kMediumRec.bytes : 0)),
-            modeStatus("english", "英文增强", false, english,
+            modeStatus("english", "英文增强", false, english, det, englishRec,
                        english ? 0 : (det ? kEnglishRec.bytes : kMediumDet.bytes + kEnglishRec.bytes),
                        kMediumDet.bytes + kEnglishRec.bytes,
                        (det ? kMediumDet.bytes : 0) + (englishRec ? kEnglishRec.bytes : 0)),

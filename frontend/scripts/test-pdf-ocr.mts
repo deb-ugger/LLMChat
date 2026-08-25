@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { buildStructuredPdfText, type PdfStructuredLine } from "../src/pdfOcr.ts";
+import {
+  buildNativePdfSelectionText,
+  buildStructuredPdfText,
+  type PdfSelectionFragment,
+  type PdfStructuredLine,
+} from "../src/pdfOcr.ts";
 
 const line = (
   text: string,
@@ -109,5 +114,51 @@ const splitBullets = buildStructuredPdfText(
 assert.equal(splitBullets.tableCount, 0);
 assert.equal(splitBullets.listItems, 3);
 assert.match(splitBullets.text, /^- First separated item$/m);
+
+const selection = (
+  text: string,
+  x0: number,
+  y0: number,
+  pageNumber = 1,
+  x1 = x0 + Math.max(12, text.length * 7),
+  y1 = y0 + 12,
+): PdfSelectionFragment => ({ text, x0, y0, x1, y1, pageNumber });
+
+const normalParagraphSelection = buildNativePdfSelectionText([
+  selection("A normal paragraph wraps", 20, 20),
+  selection("onto the next visual line.", 20, 34),
+  selection("Inter-", 20, 48),
+  selection("national words are dehyphenated.", 20, 62),
+]);
+assert.equal(
+  normalParagraphSelection,
+  "A normal paragraph wraps onto the next visual line. International words are dehyphenated.",
+);
+
+const listSelection = buildNativePdfSelectionText([
+  selection("•", 20, 20, 1, 26),
+  selection("First item", 42, 20),
+  selection("continues without a copied line break", 42, 34),
+  selection("2、", 20, 52, 1, 34),
+  selection("Second item", 42, 52),
+  selection("ordinary paragraph", 20, 84),
+  selection("still wraps normally", 20, 98),
+]);
+assert.equal(
+  listSelection,
+  "- First item continues without a copied line break\n2. Second item\n\nordinary paragraph still wraps normally",
+);
+
+const crossPageSelection = buildNativePdfSelectionText([
+  selection("End of page one.", 20, 700, 1),
+  selection("Start of page two.", 20, 20, 2),
+]);
+assert.equal(crossPageSelection, "End of page one.\n\nStart of page two.");
+
+const separatedColumns = buildNativePdfSelectionText([
+  selection("Left column", 20, 20, 1, 95),
+  selection("Right column", 260, 20, 1, 345),
+]);
+assert.equal(separatedColumns, "Left column\nRight column");
 
 console.log("PDF OCR structure tests passed");

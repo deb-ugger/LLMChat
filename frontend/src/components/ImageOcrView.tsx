@@ -12,7 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { createWorker, PSM, type Worker } from "tesseract.js";
-import { api } from "../api";
+import { api, type OcrMode, type OcrModelStatus } from "../api";
 import { copyText } from "../clipboard";
 import { toFriendlyError } from "../friendlyError";
 import { highlightSearchNodes } from "../highlightText";
@@ -24,6 +24,7 @@ import {
   type PaddleOcrLine,
 } from "../ocr/paddleOcr";
 import { getEngineInfo } from "../translateEngines";
+import { LangCombobox } from "./LangCombobox";
 
 export type OcrBlock = {
   id: string;
@@ -67,7 +68,30 @@ type Props = {
   onIncomingHandled?: () => void;
   /** When false, ignore Ctrl+V / paste (view stays mounted while hidden). */
   active?: boolean;
+  onOcrModeChange?: (mode: OcrMode) => void | Promise<void>;
+  onTranslateSourceChange?: (source: string) => void | Promise<void>;
+  onTranslateTargetChange?: (target: string) => void | Promise<void>;
 };
+
+const IMAGE_OCR_MODES: Array<{
+  id: OcrMode;
+  description: string;
+  warning?: string;
+}> = [
+  {
+    id: "fast",
+    description: "日常中英日图片，以及流程图、架构图和稀疏标签图",
+  },
+  {
+    id: "precise",
+    description: "密集排版、小字、复杂表格和低质量扫描件",
+    warning: "并不是越“精确”越好；流程图和稀疏标签图可能不如快速模式",
+  },
+  {
+    id: "english",
+    description: "英文论文、技术文档、代码说明和英文缩写",
+  },
+];
 
 type BBoxLine = {
   text: string;
@@ -715,8 +739,10 @@ function OcrPageCard({
   selectedBlockId,
   selectedField,
   showTranslation,
+  rerunDisabled,
   onSelectPage,
   onSelectBlock,
+  onRerun,
   onContextMenu,
 }: {
   page: OcrPage;
@@ -725,8 +751,10 @@ function OcrPageCard({
   selectedBlockId: string | null;
   selectedField: OcrSelectionField | null;
   showTranslation: boolean;
+  rerunDisabled: boolean;
   onSelectPage: () => void;
   onSelectBlock: (id: string, field: OcrSelectionField) => void;
+  onRerun: () => void;
   onContextMenu: (e: ReactMouseEvent, pageId: string) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -899,6 +927,18 @@ function OcrPageCard({
           {page.label ? ` · ${page.label}` : ""}
         </span>
         <span className="ocr-page-meta">
+          <button
+            type="button"
+            className="ocr-copy-btn"
+            disabled={rerunDisabled || page.busy}
+            title="使用当前识别模式重新识别此图片"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRerun();
+            }}
+          >
+            重新识别
+          </button>{" "}
           <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
             {Math.round(imageScale * 100)}%
           </span>
@@ -1010,6 +1050,7 @@ export function ImageOcrView({
   ocrMode,
   autoTranslate,
   translateProvider,
+  translateSource,
   translateTarget,
   translateMaxLength,
   translateAutoChunk,
@@ -1019,6 +1060,9 @@ export function ImageOcrView({
   incomingImage = null,
   onIncomingHandled,
   active = true,
+  onOcrModeChange,
+  onTranslateSourceChange,
+  onTranslateTargetChange,
 }: Props) {
   const [pages, setPages] = useState<OcrPage[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -1033,6 +1077,10 @@ export function ImageOcrView({
   );
   const toastTimerRef = useRef<number | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
+  const [ocrModeMenuOpen, setOcrModeMenuOpen] = useState(false);
+  const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
+  const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
+  const [ocrModeError, setOcrModeError] = useState<string | null>(null);
   const [srcQuery, setSrcQuery] = useState("");
   const [dstQuery, setDstQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1057,6 +1105,8 @@ export function ImageOcrView({
     900,
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  const ocrModeMenuRef = useRef<HTMLDivElement>(null);
+  const ocrProgressPollRef = useRef<number | null>(null);
   const paddleOcrRef = useRef<LocalPaddleOcr | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerLangRef = useRef<string | null>(null);
@@ -1081,6 +1131,35 @@ export function ImageOcrView({
   useEffect(() => {
     autoTranslateRef.current = autoTranslate;
   }, [autoTranslate]);
+
+  useEffect(() => {
+    if (!active) return;
+    void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+  }, [active]);
+
+  useEffect(() => {
+    if (!ocrModeMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!ocrModeMenuRef.current?.contains(event.target as Node)) {
+        setOcrModeMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOcrModeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [ocrModeMenuOpen]);
+
+  useEffect(() => () => {
+    if (ocrProgressPollRef.current !== null) {
+      window.clearInterval(ocrProgressPollRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const previous = paddleOcrRef.current;
@@ -1148,22 +1227,131 @@ export function ImageOcrView({
     return map[ocrLang] || ocrLang;
   }, [ocrLang]);
 
-  const translateLangLabel = useCallback((code: string) => {
-    const map: Record<string, string> = {
-      en: "英语",
-      "zh-CN": "简体中文",
-      "zh-TW": "繁体中文",
-      ja: "日语",
-      ko: "韩语",
-      auto: "自动",
-    };
-    return map[code] || code;
-  }, []);
+  const chooseImageOcrMode = useCallback(async (mode: OcrMode) => {
+    if (ocrModeBusy) return;
+    setOcrModeError(null);
+    try {
+      let modelStatus = ocrModelStatus;
+      if (!modelStatus) {
+        modelStatus = await api.getOcrModelStatus();
+        setOcrModelStatus(modelStatus);
+      }
+      const installed =
+        mode === "fast" || modelStatus.modes.find((item) => item.id === mode)?.installed;
+      if (!installed) {
+        setOcrModeBusy(mode);
+        const poll = async () => {
+          try {
+            setOcrModelStatus(await api.getOcrModelStatus());
+          } catch {
+            /* The download request remains authoritative. */
+          }
+        };
+        void poll();
+        ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
+        setOcrModelStatus(await api.ensureOcrMode(mode));
+      }
+      await onOcrModeChange?.(mode);
+      setOcrModeMenuOpen(false);
+    } catch (modeError) {
+      setOcrModeError(toFriendlyError(modeError, "识别模式切换失败"));
+    } finally {
+      if (ocrProgressPollRef.current !== null) {
+        window.clearInterval(ocrProgressPollRef.current);
+        ocrProgressPollRef.current = null;
+      }
+      setOcrModeBusy(null);
+      void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+    }
+  }, [ocrModeBusy, ocrModelStatus, onOcrModeChange]);
 
-  const langBadge = useMemo(
-    () =>
-      `识别：PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}（中英日） · 翻译：自动识别 → ${translateLangLabel(translateTarget)}`,
-    [normalizedOcrMode, translateLangLabel, translateTarget],
+  const ocrDownload = ocrModelStatus?.download;
+  const ocrDownloadTotal = Math.max(0, ocrDownload?.totalBytes ?? 0);
+  const ocrDownloadDone = Math.max(0, ocrDownload?.downloadedBytes ?? 0);
+  const ocrDownloadPercent = ocrDownloadTotal
+    ? Math.min(100, Math.round((ocrDownloadDone / ocrDownloadTotal) * 100))
+    : 0;
+
+  const ocrModeMenu = (
+    <div className="literature-ocr-menu" ref={ocrModeMenuRef}>
+      <button
+        type="button"
+        className={`pdf-tool-btn literature-ocr-trigger${ocrModeMenuOpen ? " is-active" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={ocrModeMenuOpen}
+        onClick={() => setOcrModeMenuOpen((open) => !open)}
+      >
+        识别模式 · {OCR_MODE_LABELS[normalizedOcrMode]}
+        <svg className="literature-ocr-trigger-arrow" viewBox="0 0 20 20" aria-hidden>
+          <path d="M4 7l6 6 6-6" />
+        </svg>
+      </button>
+      {ocrModeMenuOpen ? (
+        <div className="literature-ocr-dropdown" role="menu">
+          <div className="literature-ocr-dropdown-head">
+            <strong>图片识别模式</strong>
+            <span>本地 OCR</span>
+          </div>
+          <div className="literature-ocr-options">
+            {IMAGE_OCR_MODES.map((option) => {
+              const selected = normalizedOcrMode === option.id;
+              const statusItem = ocrModelStatus?.modes.find((item) => item.id === option.id);
+              const downloading =
+                ocrModeBusy === option.id ||
+                (ocrDownload?.active === true && ocrDownload.mode === option.id);
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  className={`literature-ocr-option${selected ? " is-selected" : ""}`}
+                  disabled={ocrModeBusy !== null || ocrDownload?.active === true}
+                  onClick={() => void chooseImageOcrMode(option.id)}
+                >
+                  <span className="literature-ocr-option-mark" aria-hidden>
+                    {selected ? "✓" : ""}
+                  </span>
+                  <span className="literature-ocr-option-copy">
+                    <strong>{OCR_MODE_LABELS[option.id]}</strong>
+                    <small>
+                      {option.description}
+                      {option.warning ? (
+                        <>
+                          <br />
+                          <strong>{option.warning}</strong>
+                        </>
+                      ) : null}
+                    </small>
+                  </span>
+                  <span className="literature-ocr-option-state">
+                    {option.id === "fast"
+                      ? "内置"
+                      : downloading
+                        ? `${ocrDownloadPercent}%`
+                        : statusItem?.installed
+                          ? "已下载"
+                          : "需下载"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {ocrModeBusy ? (
+            <div className="literature-ocr-progress" aria-live="polite">
+              <div>
+                <span>{ocrDownload?.model || "正在建立下载连接"}</span>
+                <strong>{ocrDownloadPercent}%</strong>
+              </div>
+              <span className="ocr-download-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ocrDownloadPercent}>
+                <span className="ocr-download-progress-fill" style={{ width: `${ocrDownloadPercent}%` }} />
+              </span>
+            </div>
+          ) : null}
+          {ocrModeError ? <p className="literature-ocr-error">{ocrModeError}</p> : null}
+        </div>
+      ) : null}
+    </div>
   );
 
   const allBlocks = useMemo(
@@ -1323,9 +1511,7 @@ export function ImageOcrView({
 
   const translateOpts = useMemo(
     () => ({
-      // OCR pages may contain Chinese, English and Japanese at once. Fixed
-      // source-language settings cause mixed images to be mistranslated.
-      source: "auto",
+      source: translateSource || "auto",
       target: translateTarget,
       provider: translateProvider,
       maxLength: translateMaxLength,
@@ -1340,6 +1526,7 @@ export function ImageOcrView({
       translateAutoChunk,
       translateMaxLength,
       translateProvider,
+      translateSource,
       translateTarget,
     ],
   );
@@ -1741,6 +1928,30 @@ export function ImageOcrView({
       setBusy(pagesRef.current.some((p) => p.busy));
     }
   }, [runOcrForPage]);
+
+  const rerunPage = useCallback(
+    (pageId: string) => {
+      const page = pagesRef.current.find((item) => item.id === pageId);
+      if (!page || page.busy || drainingRef.current) return;
+
+      queueRef.current = queueRef.current.filter((job) => job.pageId !== pageId);
+      queueRef.current.push({ pageId, file: page.file });
+      patchPage(pageId, {
+        blocks: [],
+        error: null,
+        statusText: "排队等待重新识别…",
+        busy: true,
+      });
+      setSelectedPageId(pageId);
+      setSelectedBlockId(null);
+      setSelectedField(null);
+      setError(null);
+      setStatus(`图 ${pagesRef.current.findIndex((item) => item.id === pageId) + 1} 正在重新识别…`);
+      setBusy(true);
+      void drainQueue();
+    },
+    [drainQueue, patchPage],
+  );
 
   const addImageFiles = useCallback(
     (files: File[]) => {
@@ -2182,16 +2393,31 @@ export function ImageOcrView({
             />
             显示译文叠字
           </label>
-          <span
-            className="ocr-toolbar-langs"
-            title="在「设置 → 图片文字识别」中修改识别语言与目标语言"
-          >
-            {langBadge}
-          </span>
+          <div className="toolbar-language-pair" aria-label="图片翻译语言">
+            <LangCombobox
+              label="源语言"
+              value={translateSource}
+              onChange={(code) => onTranslateSourceChange?.(code)}
+              onSaved={() => showToast("保存成功", true)}
+              compact
+            />
+            <span className="toolbar-language-arrow" aria-hidden>
+              →
+            </span>
+            <LangCombobox
+              label="目标语言"
+              value={translateTarget}
+              onChange={(code) => onTranslateTargetChange?.(code)}
+              onSaved={() => showToast("保存成功", true)}
+              allowAuto={false}
+              compact
+            />
+          </div>
           {status && <span className="hint">{status}</span>}
           <span className="ocr-toolbar-engine" title={engineBadge}>
             {engineBadge}
           </span>
+          {ocrModeMenu}
         </div>
 
         <div
@@ -2266,8 +2492,10 @@ export function ImageOcrView({
                   selectedBlockId={selectedBlockId}
                   selectedField={selectedField}
                   showTranslation={showTranslation}
+                  rerunDisabled={busy}
                   onSelectPage={() => selectPage(page.id)}
                   onSelectBlock={selectBlock}
+                  onRerun={() => rerunPage(page.id)}
                   onContextMenu={onPageContextMenu}
                 />
               ))}

@@ -328,6 +328,10 @@ export type OcrModelModeStatus = {
   label: string;
   builtIn: boolean;
   installed: boolean;
+  /** Whether this mode's prerequisite detection model is available locally. */
+  prerequisiteInstalled: boolean;
+  /** Whether this mode's text recognition model is available locally. */
+  recognitionInstalled: boolean;
   downloadBytes: number;
   /** Total model files used by this mode (shared files included). */
   sizeBytes: number;

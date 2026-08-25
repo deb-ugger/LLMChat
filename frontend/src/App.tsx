@@ -79,6 +79,15 @@ const defaultSettings: Settings = {
   translateEngineKeys: "{}",
 };
 
+function ocrLangForTranslateSource(source: string): string {
+  if (source === "zh-CN") return "chi_sim";
+  if (source === "zh-TW") return "chi_tra";
+  if (source === "ja") return "jpn";
+  if (source === "ko") return "kor";
+  if (source === "en") return "eng";
+  return "eng+chi_sim";
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
   const [settingsInitialTab, setSettingsInitialTab] = useState<
@@ -200,6 +209,7 @@ export default function App() {
               return p as Settings["translateProvider"];
             })(),
             ocrTranslateSource: (() => {
+              if (s.ocrTranslateSource) return s.ocrTranslateSource;
               const lang = s.ocrLang || "eng";
               if (lang === "chi_sim") return "zh-CN";
               if (lang === "chi_tra") return "zh-TW";
@@ -575,6 +585,15 @@ export default function App() {
             apiUrl={litLlm.apiUrl}
             apiKey={litLlm.apiKey}
             onOpenImageOcr={openImageOcr}
+            onOcrModeChange={async (ocrMode) => {
+              await onSaveSettings({ ...settings, ocrMode });
+            }}
+            onTranslateSourceChange={async (translateSource) => {
+              await onSaveSettings({ ...settings, translateSource });
+            }}
+            onTranslateTargetChange={async (translateTarget) => {
+              await onSaveSettings({ ...settings, translateTarget });
+            }}
             onPromptCatalogChange={async ({ catalog, activeId, prompt }) => {
               await onSaveSettings({
                 ...settings,
@@ -608,6 +627,19 @@ export default function App() {
             apiKey={ocrLlm.apiKey}
             incomingImage={ocrIncoming}
             onIncomingHandled={() => setOcrIncoming(null)}
+            onOcrModeChange={async (ocrMode) => {
+              await onSaveSettings({ ...settings, ocrMode });
+            }}
+            onTranslateSourceChange={async (ocrTranslateSource) => {
+              await onSaveSettings({
+                ...settings,
+                ocrTranslateSource,
+                ocrLang: ocrLangForTranslateSource(ocrTranslateSource),
+              });
+            }}
+            onTranslateTargetChange={async (ocrTranslateTarget) => {
+              await onSaveSettings({ ...settings, ocrTranslateTarget });
+            }}
           />
         </div>
         <div

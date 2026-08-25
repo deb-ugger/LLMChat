@@ -54,11 +54,13 @@ import {
   type PdfImageHit,
 } from "../pdfImages";
 import {
+  buildNativePdfSelectionText,
   buildStructuredPdfText,
   extractNativePdfLines,
   nativeTextLooksUsable,
   paddleLinesToPdfLines,
   type PixelRect,
+  type PdfSelectionFragment,
 } from "../pdfOcr";
 import {
   LocalPaddleOcr,
@@ -184,6 +186,40 @@ const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
   { id: "double-scroll", label: "双页滚动" },
 ];
 
+function ViewModeIcon({ mode }: { mode: ViewMode }) {
+  if (mode === "single") {
+    return (
+      <svg className="pdf-view-icon" viewBox="0 0 24 24" aria-hidden>
+        <rect x="6" y="3" width="12" height="18" rx="1.5" />
+      </svg>
+    );
+  }
+  if (mode === "single-scroll") {
+    return (
+      <svg className="pdf-view-icon" viewBox="0 0 24 24" aria-hidden>
+        <rect x="7" y="2.5" width="10" height="8" rx="1" />
+        <rect x="7" y="13.5" width="10" height="8" rx="1" />
+      </svg>
+    );
+  }
+  if (mode === "double") {
+    return (
+      <svg className="pdf-view-icon" viewBox="0 0 24 24" aria-hidden>
+        <rect x="2.5" y="5" width="8.5" height="14" rx="1" />
+        <rect x="13" y="5" width="8.5" height="14" rx="1" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="pdf-view-icon" viewBox="0 0 24 24" aria-hidden>
+      <rect x="2.5" y="2.5" width="8.5" height="8" rx="1" />
+      <rect x="13" y="2.5" width="8.5" height="8" rx="1" />
+      <rect x="2.5" y="13.5" width="8.5" height="8" rx="1" />
+      <rect x="13" y="13.5" width="8.5" height="8" rx="1" />
+    </svg>
+  );
+}
+
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 5;
 /** UI 100% maps to this pdf.js scale (former UI 70% under base 1.4). */
@@ -253,10 +289,11 @@ function normalizePdfExtractedText(raw: string): string {
     .trim();
 }
 
-const PDF_SAME_LINE_PX = 4;
-const PDF_WORD_GAP_PX = 1.5;
-
-type PdfTextFragment = { text: string; rect: DOMRect | null };
+type PdfTextFragment = {
+  text: string;
+  rect: DOMRect | null;
+  pageNumber: number;
+};
 
 function spanRectForTextNode(node: Node): DOMRect | null {
   const host =
@@ -268,29 +305,39 @@ function spanRectForTextNode(node: Node): DOMRect | null {
   return span.getBoundingClientRect();
 }
 
-/** Join PDF text-layer fragments; insert spaces at line wraps and word gaps. */
+function pageNumberForTextNode(node: Node): number {
+  const host =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as HTMLElement)
+      : node.parentElement;
+  const page = host?.closest(".page") as HTMLElement | null;
+  const value = Number(
+    page?.dataset.pageNumber || page?.getAttribute("data-page-number") || 1,
+  );
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+}
+
+/** Preserve semantic structure while keeping ordinary PDF soft wraps copy-friendly. */
 function mergePdfTextFragments(fragments: PdfTextFragment[]): string {
-  let raw = "";
-  let prevRect: DOMRect | null = null;
-  for (const { text, rect } of fragments) {
-    if (!text) continue;
-    if (raw.length > 0 && prevRect && rect) {
-      const sameLine = Math.abs(rect.top - prevRect.top) <= PDF_SAME_LINE_PX;
-      if (sameLine) {
-        const gap = rect.left - prevRect.right;
-        if (gap > PDF_WORD_GAP_PX && !raw.endsWith(" ") && !text.startsWith(" ")) {
-          raw += " ";
-        }
-      } else if (raw.endsWith("-")) {
-        raw = raw.slice(0, -1);
-      } else if (!raw.endsWith(" ") && !text.startsWith(" ")) {
-        raw += " ";
-      }
-    }
-    raw += text;
-    if (rect) prevRect = rect;
+  const positioned: PdfSelectionFragment[] = fragments.flatMap(
+    ({ text, rect, pageNumber }) =>
+      rect
+        ? [
+            {
+              text,
+              pageNumber,
+              x0: rect.left,
+              y0: rect.top,
+              x1: rect.right,
+              y1: rect.bottom,
+            },
+          ]
+        : [],
+  );
+  if (positioned.length === fragments.length) {
+    return buildNativePdfSelectionText(positioned);
   }
-  return normalizePdfExtractedText(raw);
+  return normalizePdfExtractedText(fragments.map((fragment) => fragment.text).join("\n"));
 }
 
 /** Skip PDF footer/header printed page numbers in the text layer. */
@@ -335,7 +382,13 @@ function readPageTextFromDom(pageEl: HTMLElement): string {
   for (const span of layer.querySelectorAll("span")) {
     if (isPrintedPageNumberSpan(span as HTMLElement)) continue;
     const t = span.textContent || "";
-    if (t) parts.push({ text: t, rect: span.getBoundingClientRect() });
+    if (t) {
+      parts.push({
+        text: t,
+        rect: span.getBoundingClientRect(),
+        pageNumber: pageNumberForTextNode(span),
+      });
+    }
   }
   return mergePdfTextFragments(parts);
 }
@@ -920,7 +973,12 @@ export function PdfPane({
   );
 
   const commitScaleInput = useCallback(() => {
-    const pct = Number(scaleInput);
+    const raw = scaleInput.trim();
+    if (!raw) {
+      setScaleInput(String(scaleToPercent(scale)));
+      return;
+    }
+    const pct = Number(raw);
     if (!Number.isFinite(pct)) {
       setScaleInput(String(scaleToPercent(scale)));
       return;
@@ -1264,6 +1322,42 @@ export function PdfPane({
       setViewerReady(false);
     };
   }, [restoring, applyScrollSpread]);
+
+  // PDFViewer normally refreshes its visible-page set from scroll events.
+  // Maximizing/restoring the desktop window changes the container dimensions
+  // without scrolling, which can leave the newly visible spread page blank
+  // until the user touches the wheel. Refresh once after layout and again
+  // after the resize settles so both pages are rendered immediately.
+  useEffect(() => {
+    if (restoring || !viewerReady) return;
+    const container = scrollRef.current;
+    if (!container) return;
+
+    let frame = 0;
+    let settleTimer = 0;
+    const updateViewer = () => {
+      const viewer = pdfViewerRef.current;
+      if (!viewer || !visibleRef.current) return;
+      viewer.update();
+    };
+    const scheduleUpdate = () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      frame = window.requestAnimationFrame(updateViewer);
+      settleTimer = window.setTimeout(updateViewer, 160);
+    };
+
+    const observer = new ResizeObserver(scheduleUpdate);
+    observer.observe(container);
+    window.addEventListener("resize", scheduleUpdate);
+    scheduleUpdate();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+    };
+  }, [restoring, viewerReady, visible]);
 
   // Load document into viewer when file / viewer are ready
   useEffect(() => {
@@ -2195,6 +2289,7 @@ export function PdfPane({
             fragments.push({
               text: full.slice(start, end),
               rect: spanRectForTextNode(node),
+              pageNumber: pageNumberForTextNode(node),
             });
           }
           node = walker.nextNode();
@@ -2676,6 +2771,7 @@ export function PdfPane({
       aria-hidden={!visible}
     >
       <div className="pdf-toolbar">
+        <div className="pdf-toolbar-row pdf-toolbar-primary">
         <div
           className="pdf-open-menu"
           ref={openMenuRef}
@@ -2759,17 +2855,32 @@ export function PdfPane({
           目录
         </button>
 
+        <span className="pdf-toolbar-engine" title={engineBadge}>
+          {engineBadge}
+        </span>
+        {toolbarExtra}
+        </div>
+
+        <div className="pdf-toolbar-row pdf-toolbar-secondary">
+          <div className="pdf-toolbar-secondary-start">
+
         <button
           type="button"
-          className={`pdf-tool-btn${searchOpen ? " active" : ""}`}
+          className={`pdf-tool-btn pdf-tool-icon-btn pdf-toolbar-glyph-btn${searchOpen ? " active" : ""}`}
           disabled={!file}
           onClick={() => {
             setSearchOpen((v) => !v);
             if (!searchOpen) setOutlineOpen(false);
           }}
           title="搜索"
+          aria-label="搜索"
         >
-          搜索
+          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M10.5 4a6.5 6.5 0 1 0 4.05 11.58L19 20l1-1-4.42-4.45A6.5 6.5 0 0 0 10.5 4zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9z"
+            />
+          </svg>
         </button>
 
         <button
@@ -2781,16 +2892,11 @@ export function PdfPane({
         >
           {pageOcrBusy ? "提取中…" : "提取本页"}
         </button>
-        {pageOcrStatus ? (
-          <span className="pdf-page-ocr-status" title={pageOcrStatus}>
-            {pageOcrStatus}
-          </span>
-        ) : null}
 
         <div className="pdf-view-menu" ref={viewMenuRef}>
           <button
             type="button"
-            className="pdf-tool-btn"
+            className="pdf-tool-btn pdf-view-trigger"
             disabled={!file}
             onClick={(e) => {
               const r = (
@@ -2799,9 +2905,11 @@ export function PdfPane({
               setViewMenuPos({ top: r.bottom + 4, left: r.left });
               setViewMenuOpen((v) => !v);
             }}
-            title="页面显示模式"
+            title={`页面显示模式：${VIEW_OPTIONS.find((option) => option.id === viewMode)?.label || "视图"}`}
+            aria-label="切换页面显示模式"
           >
-            视图 ▾
+            <ViewModeIcon mode={viewMode} />
+            <span className="pdf-view-chevron" aria-hidden>▾</span>
           </button>
           {viewMenuOpen && viewMenuPos && (
             <div
@@ -2827,10 +2935,9 @@ export function PdfPane({
                     setViewMenuOpen(false);
                   }}
                 >
-                  <span className="pdf-view-check">
-                    {viewMode === opt.id ? "✓" : ""}
-                  </span>
-                  {opt.label}
+                  <ViewModeIcon mode={opt.id} />
+                  <span className="pdf-view-option-label">{opt.label}</span>
+                  <span className="pdf-view-check">{viewMode === opt.id ? "✓" : ""}</span>
                 </button>
               ))}
             </div>
@@ -2839,17 +2946,32 @@ export function PdfPane({
 
         <button
           type="button"
-          className={`pdf-tool-btn${handMode ? " active" : ""}`}
+          className={`pdf-tool-btn pdf-tool-icon-btn pdf-toolbar-glyph-btn${handMode ? " active" : ""}`}
           disabled={!file}
           onClick={() => setHandMode((v) => !v)}
           title="拖动手势（也可按住 Alt 拖动）"
+          aria-label="拖动手势"
         >
-          拖动
+          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M7.5 11V6.5a1.5 1.5 0 0 1 3 0V10h.5V4.5a1.5 1.5 0 0 1 3 0V10h.5V6a1.5 1.5 0 0 1 3 0v4.5h.5V8a1.5 1.5 0 0 1 3 0v6.5c0 4.14-3.36 7.5-7.5 7.5h-1.2a7 7 0 0 1-5.57-2.77L3.3 14.7a1.65 1.65 0 0 1 2.33-2.33L7.5 14.1V11z"
+            />
+          </svg>
         </button>
+
+          {pageOcrStatus ? (
+            <span className="pdf-page-ocr-status" title={pageOcrStatus}>
+              {pageOcrStatus}
+            </span>
+          ) : null}
+          </div>
+
+          <div className="pdf-toolbar-pagination">
 
         <button
           type="button"
-          className="pdf-tool-btn pdf-tool-icon-btn"
+          className="pdf-tool-btn pdf-tool-icon-btn pdf-tool-round-btn"
           disabled={!file || pageNumber <= 1}
           onClick={() => goToPage(pageNumber - pageStep)}
           title="上一页"
@@ -2857,8 +2979,12 @@ export function PdfPane({
         >
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
             <path
-              fill="currentColor"
-              d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m15 6-6 6 6 6"
             />
           </svg>
         </button>
@@ -2896,7 +3022,7 @@ export function PdfPane({
         </span>
         <button
           type="button"
-          className="pdf-tool-btn pdf-tool-icon-btn"
+          className="pdf-tool-btn pdf-tool-icon-btn pdf-tool-round-btn"
           disabled={!file || !numPages || pageNumber >= numPages}
           onClick={() => goToPage(pageNumber + pageStep)}
           title="下一页"
@@ -2904,15 +3030,24 @@ export function PdfPane({
         >
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
             <path
-              fill="currentColor"
-              d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m9 6 6 6-6 6"
             />
           </svg>
         </button>
+          </div>
+
+          <div className="pdf-toolbar-zoom">
         <button
           type="button"
-          className="pdf-tool-btn"
+          className="pdf-tool-btn pdf-tool-round-btn"
           onClick={() => changeScale((s) => s - SCALE_STEP)}
+          title="缩小"
+          aria-label="缩小"
         >
           −
         </button>
@@ -2937,15 +3072,15 @@ export function PdfPane({
         </span>
         <button
           type="button"
-          className="pdf-tool-btn"
+          className="pdf-tool-btn pdf-tool-round-btn"
           onClick={() => changeScale((s) => s + SCALE_STEP)}
+          title="放大"
+          aria-label="放大"
         >
           +
         </button>
-        <span className="pdf-toolbar-engine" title={engineBadge}>
-          {engineBadge}
-        </span>
-        {toolbarExtra}
+          </div>
+        </div>
       </div>
 
       <div className="pdf-main">

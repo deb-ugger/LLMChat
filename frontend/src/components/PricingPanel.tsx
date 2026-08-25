@@ -590,11 +590,11 @@ function WeekdayChips({
   );
 }
 
-function normalizePriceOnBlur(raw: string): number {
+function normalizePriceOnBlur(raw: string, fallback: number): number {
   const t = raw.trim();
-  if (t === "" || t === "." || t === "-") return 0;
+  if (t === "" || t === "." || t === "-") return fallback;
   const n = Number(t);
-  if (!Number.isFinite(n) || n < 0) return 0;
+  if (!Number.isFinite(n) || n < 0) return fallback;
   return n;
 }
 
@@ -622,9 +622,9 @@ function PricingRateInput(props: {
         if (raw === "" || /^\d*\.?\d*$/.test(raw)) setDraft(raw);
       }}
       onBlur={() => {
-        const next = normalizePriceOnBlur(draft ?? "");
+        const next = normalizePriceOnBlur(draft ?? String(value), value);
         setDraft(null);
-        onCommit(next);
+        if (next !== value) onCommit(next);
       }}
     />
   );

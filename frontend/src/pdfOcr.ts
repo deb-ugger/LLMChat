@@ -11,6 +11,10 @@ export type PdfStructuredLine = {
   blockType?: "table";
 };
 
+export type PdfSelectionFragment = PdfStructuredLine & {
+  pageNumber: number;
+};
+
 export type PdfStructuredText = {
   text: string;
   keptLines: number;
@@ -171,6 +175,152 @@ function joinWrappedText(previous: string, current: string): string {
     return `${previous.slice(0, -1)}${current}`;
   }
   return `${previous} ${current}`.replace(/\s+/g, " ").trim();
+}
+
+function mergeSelectionPhysicalLines(
+  fragments: PdfSelectionFragment[],
+): PdfSelectionFragment[] {
+  const lines: PdfSelectionFragment[] = [];
+  for (const raw of fragments) {
+    const fragment = { ...raw, text: normalizeLineText(raw.text) };
+    if (!fragment.text) continue;
+    const previous = lines[lines.length - 1];
+    if (!previous || previous.pageNumber !== fragment.pageNumber) {
+      lines.push(fragment);
+      continue;
+    }
+    const height = Math.max(
+      1,
+      previous.y1 - previous.y0,
+      fragment.y1 - fragment.y0,
+    );
+    const previousCenter = (previous.y0 + previous.y1) / 2;
+    const currentCenter = (fragment.y0 + fragment.y1) / 2;
+    const gap = fragment.x0 - previous.x1;
+    const maxSameLineGap = isListMarkerOnly(previous.text)
+      ? height * 4.5
+      : height * 5.5;
+    if (
+      Math.abs(previousCenter - currentCenter) > Math.max(4, height * 0.42) ||
+      gap > maxSameLineGap
+    ) {
+      lines.push(fragment);
+      continue;
+    }
+    const withoutSpace =
+      BULLET_ONLY_RE.test(previous.text) ||
+      /[-/（(]$/u.test(previous.text) ||
+      /^[,.;:!?，。；：！？)）\]}]/u.test(fragment.text);
+    const separator = !withoutSpace && gap > 1.5 ? " " : "";
+    previous.text = normalizeLineText(`${previous.text}${separator}${fragment.text}`);
+    previous.x0 = Math.min(previous.x0, fragment.x0);
+    previous.y0 = Math.min(previous.y0, fragment.y0);
+    previous.x1 = Math.max(previous.x1, fragment.x1);
+    previous.y1 = Math.max(previous.y1, fragment.y1);
+  }
+  return lines;
+}
+
+/**
+ * Format a native PDF text-layer selection without restoring every visual line
+ * break. Soft wraps remain copy-friendly spaces; list items, paragraph gaps and
+ * cross-page boundaries retain structure.
+ */
+export function buildNativePdfSelectionText(
+  fragments: PdfSelectionFragment[],
+): string {
+  const lines = mergeSelectionPhysicalLines(fragments);
+  if (!lines.length) return "";
+  const typicalHeight = median(
+    lines.map((line) => Math.max(1, line.y1 - line.y0)),
+  );
+  const pageMinX = new Map<number, number>();
+  for (const line of lines) {
+    pageMinX.set(
+      line.pageNumber,
+      Math.min(pageMinX.get(line.pageNumber) ?? Infinity, line.x0),
+    );
+  }
+
+  const output: string[] = [];
+  let previous: PdfSelectionFragment | null = null;
+  let activeListX: number | null = null;
+  for (const line of lines) {
+    const pageChanged = previous && previous.pageNumber !== line.pageNumber;
+    if (pageChanged) {
+      if (output.length && output[output.length - 1] !== "") output.push("");
+      previous = null;
+      activeListX = null;
+    }
+
+    const listMatch = line.text.match(LIST_MARKER_RE);
+    const verticalGap = previous ? line.y0 - previous.y1 : Infinity;
+    if (listMatch && listMatch[2]) {
+      const minX = pageMinX.get(line.pageNumber) ?? line.x0;
+      const indent = Math.max(
+        0,
+        Math.min(
+          4,
+          Math.round((line.x0 - minX) / Math.max(18, typicalHeight * 1.7)),
+        ),
+      );
+      output.push(
+        `${"  ".repeat(indent)}${normalizeListMarker(listMatch[1])} ${listMatch[2]}`,
+      );
+      activeListX = line.x0;
+      previous = line;
+      continue;
+    }
+
+    const listContinuation =
+      previous &&
+      activeListX !== null &&
+      verticalGap >= -typicalHeight * 0.3 &&
+      verticalGap <= typicalHeight * 1.05 &&
+      line.x0 >= activeListX + typicalHeight * 0.45;
+    if (listContinuation && output.length) {
+      output[output.length - 1] = joinWrappedText(
+        output[output.length - 1],
+        line.text,
+      );
+      previous = line;
+      continue;
+    }
+
+    const heightDifference = previous
+      ? Math.abs(
+          line.y1 - line.y0 - (previous.y1 - previous.y0),
+        )
+      : Infinity;
+    const indentDifference = previous ? line.x0 - previous.x0 : Infinity;
+    const obviousParagraphBoundary =
+      !!previous &&
+      (verticalGap < -typicalHeight * 0.45 ||
+        verticalGap > typicalHeight * 0.85 ||
+        heightDifference > typicalHeight * 0.45 ||
+        (indentDifference > typicalHeight * 1.25 &&
+          /[.!?。！？:：]$/u.test(previous.text)));
+    if (previous && activeListX === null && !obviousParagraphBoundary) {
+      output[output.length - 1] = joinWrappedText(
+        output[output.length - 1],
+        line.text,
+      );
+    } else {
+      if (
+        output.length &&
+        previous &&
+        verticalGap > typicalHeight * 1.55 &&
+        output[output.length - 1] !== ""
+      ) {
+        output.push("");
+      }
+      output.push(line.text);
+    }
+    activeListX = null;
+    previous = line;
+  }
+
+  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 type PhysicalRow = {

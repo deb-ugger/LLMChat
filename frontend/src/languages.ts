@@ -31,10 +31,16 @@ export const LANG_OPTIONS: LangOption[] = [
   { code: "vi", label: "越南语 Vietnamese", aliases: ["vi", "vietnamese"] },
 ];
 
-export function filterLangOptions(query: string): LangOption[] {
+export function filterLangOptions(
+  query: string,
+  allowAuto = true,
+): LangOption[] {
   const q = query.trim().toLowerCase();
-  if (!q) return LANG_OPTIONS;
-  return LANG_OPTIONS.filter((opt) => {
+  const available = allowAuto
+    ? LANG_OPTIONS
+    : LANG_OPTIONS.filter((opt) => opt.code !== "auto");
+  if (!q) return available;
+  return available.filter((opt) => {
     if (opt.code.toLowerCase().startsWith(q)) return true;
     if (opt.label.toLowerCase().includes(q)) return true;
     return opt.aliases.some(

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, lookupDictionary, type DictionaryEntry } from "../api";
+import {
+  api,
+  lookupDictionary,
+  type DictionaryEntry,
+  type OcrMode,
+  type OcrModelStatus,
+} from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import {
@@ -14,9 +20,19 @@ import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
 import { EpubPane } from "./EpubPane";
 import { PdfPane } from "./PdfPane";
 import { TranslatePanel } from "./TranslatePanel";
+import { LangCombobox } from "./LangCombobox";
+import { normalizeOcrMode, OCR_MODE_LABELS } from "../ocr/paddleOcr";
 
 const WORD_RE = /^[A-Za-z][A-Za-z'-]*$/;
 const LIT_DOC_KIND_KEY = "llmchat-lit-doc-kind";
+const LITERATURE_OCR_MODES: Array<{
+  id: OcrMode;
+  description: string;
+}> = [
+  { id: "fast", description: "内置模型，适合日常中英日文档" },
+  { id: "precise", description: "复杂排版、小字和表格识别" },
+  { id: "english", description: "英文论文与技术文档优化" },
+];
 
 function loadDocKind(): DocKind {
   try {
@@ -98,6 +114,9 @@ type Props = {
   apiUrl?: string;
   apiKey?: string;
   onOpenImageOcr?: (file: File) => void;
+  onOcrModeChange?: (mode: OcrMode) => void | Promise<void>;
+  onTranslateSourceChange?: (source: string) => void | Promise<void>;
+  onTranslateTargetChange?: (target: string) => void | Promise<void>;
   onPromptCatalogChange?: (next: {
     catalog: LiteraturePromptEntry[];
     activeId: string;
@@ -123,17 +142,28 @@ export function LiteratureView({
   apiUrl = "",
   apiKey = "",
   onOpenImageOcr,
+  onOcrModeChange,
+  onTranslateSourceChange,
+  onTranslateTargetChange,
   onPromptCatalogChange,
 }: Props) {
   const [source, setSource] = useState("");
   const [translation, setTranslation] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [languageSaved, setLanguageSaved] = useState(false);
+  const languageSavedTimerRef = useRef<number | null>(null);
   const [dict, setDict] = useState<DictionaryEntry | null>(null);
   const [dictHint, setDictHint] = useState<string | null>(null);
   const [dictLoading, setDictLoading] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
   const promptMenuRef = useRef<HTMLDivElement | null>(null);
+  const [ocrModeMenuOpen, setOcrModeMenuOpen] = useState(false);
+  const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
+  const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
+  const [ocrModeError, setOcrModeError] = useState<string | null>(null);
+  const ocrModeMenuRef = useRef<HTMLDivElement | null>(null);
+  const ocrProgressPollRef = useRef<number | null>(null);
   const [docKind, setDocKind] = useState<DocKind>(loadDocKind);
   const [pdfSeed, setPdfSeed] = useState<LocalDocFile | null>(null);
   const [pdfSeedPage, setPdfSeedPage] = useState<number | null>(null);
@@ -217,8 +247,49 @@ export function LiteratureView({
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      if (languageSavedTimerRef.current !== null) {
+        window.clearTimeout(languageSavedTimerRef.current);
+      }
+      if (ocrProgressPollRef.current !== null) {
+        window.clearInterval(ocrProgressPollRef.current);
+      }
     };
   }, []);
+
+  const showLanguageSaved = useCallback(() => {
+    if (languageSavedTimerRef.current !== null) {
+      window.clearTimeout(languageSavedTimerRef.current);
+    }
+    setLanguageSaved(true);
+    languageSavedTimerRef.current = window.setTimeout(() => {
+      setLanguageSaved(false);
+      languageSavedTimerRef.current = null;
+    }, 2400);
+  }, []);
+
+  useEffect(() => {
+    if (!visible || docKind !== "pdf") return;
+    void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+  }, [docKind, visible]);
+
+  useEffect(() => {
+    if (!ocrModeMenuOpen) return;
+    const onDoc = (event: MouseEvent) => {
+      const element = ocrModeMenuRef.current;
+      if (element && !element.contains(event.target as Node)) {
+        setOcrModeMenuOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOcrModeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [ocrModeMenuOpen]);
 
   useEffect(() => {
     if (!promptMenuOpen) return;
@@ -451,6 +522,151 @@ export function LiteratureView({
   }, []);
   const clearEpubSeed = useCallback(() => setEpubSeed(null), []);
 
+  const chooseLiteratureOcrMode = useCallback(
+    async (mode: OcrMode) => {
+      if (ocrModeBusy) return;
+      setOcrModeError(null);
+      try {
+        let status = ocrModelStatus;
+        if (!status) {
+          status = await api.getOcrModelStatus();
+          setOcrModelStatus(status);
+        }
+        const installed =
+          mode === "fast" || status.modes.find((item) => item.id === mode)?.installed;
+        if (!installed) {
+          setOcrModeBusy(mode);
+          const poll = async () => {
+            try {
+              setOcrModelStatus(await api.getOcrModelStatus());
+            } catch {
+              /* keep the download request authoritative */
+            }
+          };
+          void poll();
+          ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
+          const next = await api.ensureOcrMode(mode);
+          setOcrModelStatus(next);
+        }
+        await onOcrModeChange?.(mode);
+        setOcrModeMenuOpen(false);
+      } catch (error) {
+        setOcrModeError(toFriendlyError(error, "识别模型切换失败"));
+      } finally {
+        if (ocrProgressPollRef.current !== null) {
+          window.clearInterval(ocrProgressPollRef.current);
+          ocrProgressPollRef.current = null;
+        }
+        setOcrModeBusy(null);
+        void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+      }
+    },
+    [ocrModeBusy, ocrModelStatus, onOcrModeChange],
+  );
+
+  const activeOcrMode = normalizeOcrMode(ocrMode);
+  const ocrDownload = ocrModelStatus?.download;
+  const ocrDownloadTotal = Math.max(0, ocrDownload?.totalBytes ?? 0);
+  const ocrDownloadDone = Math.max(0, ocrDownload?.downloadedBytes ?? 0);
+  const ocrDownloadPercent = ocrDownloadTotal
+    ? Math.min(100, Math.round((ocrDownloadDone / ocrDownloadTotal) * 100))
+    : 0;
+
+  const ocrModeMenu = (
+    <div className="literature-ocr-menu" ref={ocrModeMenuRef}>
+      <button
+        type="button"
+        className={`pdf-tool-btn literature-ocr-trigger${ocrModeMenuOpen ? " is-active" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={ocrModeMenuOpen}
+        onClick={() => {
+          setPromptMenuOpen(false);
+          setOcrModeMenuOpen((open) => !open);
+        }}
+      >
+        识别模式 · {OCR_MODE_LABELS[activeOcrMode]}
+        <svg
+          className="literature-ocr-trigger-arrow"
+          viewBox="0 0 20 20"
+          aria-hidden
+        >
+          <path d="M4 7l6 6 6-6" />
+        </svg>
+      </button>
+      {ocrModeMenuOpen ? (
+        <div className="literature-ocr-dropdown" role="menu">
+          <div className="literature-ocr-dropdown-head">
+            <strong>PDF 识别模型</strong>
+            <span>仅用于 OCR</span>
+          </div>
+          <p
+            className="hint"
+            style={{
+              margin: "0 3px 9px",
+              padding: "7px 9px",
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--accent) 7%, var(--bg-panel))",
+              color: "var(--accent-ink)",
+              lineHeight: 1.45,
+            }}
+          >
+            <strong>作用范围：</strong>
+            只影响扫描页、智能提取的 OCR 回退及 Shift+提取本页。普通原生文字层框选不使用此模型。
+          </p>
+          <div className="literature-ocr-options">
+            {LITERATURE_OCR_MODES.map((option) => {
+              const selected = activeOcrMode === option.id;
+              const status = ocrModelStatus?.modes.find((item) => item.id === option.id);
+              const downloading =
+                ocrModeBusy === option.id ||
+                (ocrDownload?.active === true && ocrDownload.mode === option.id);
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  className={`literature-ocr-option${selected ? " is-selected" : ""}`}
+                  disabled={ocrModeBusy !== null || ocrDownload?.active === true}
+                  onClick={() => void chooseLiteratureOcrMode(option.id)}
+                >
+                  <span className="literature-ocr-option-mark" aria-hidden>
+                    {selected ? "✓" : ""}
+                  </span>
+                  <span className="literature-ocr-option-copy">
+                    <strong>{OCR_MODE_LABELS[option.id]}</strong>
+                    <small>{option.description}</small>
+                  </span>
+                  <span className="literature-ocr-option-state">
+                    {option.id === "fast"
+                      ? "内置"
+                      : downloading
+                        ? `${ocrDownloadPercent}%`
+                        : status?.installed
+                          ? "已下载"
+                          : "需下载"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {ocrModeBusy ? (
+            <div className="literature-ocr-progress" aria-live="polite">
+              <div>
+                <span>{ocrDownload?.model || "正在建立下载连接"}</span>
+                <strong>{ocrDownloadPercent}%</strong>
+              </div>
+              <span className="ocr-download-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ocrDownloadPercent}>
+                <span className="ocr-download-progress-fill" style={{ width: `${ocrDownloadPercent}%` }} />
+              </span>
+            </div>
+          ) : null}
+          {ocrModeError ? <p className="literature-ocr-error">{ocrModeError}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+
   const promptMenu = (
     <div className="pdf-prompt-menu" ref={promptMenuRef}>
       <button
@@ -462,7 +678,10 @@ export function LiteratureView({
             ? `提示词：${activeTag}`
             : "切换为「大模型翻译」后可使用提示词"
         }
-        onClick={() => setPromptMenuOpen((v) => !v)}
+        onClick={() => {
+          setOcrModeMenuOpen(false);
+          setPromptMenuOpen((v) => !v);
+        }}
       >
         提示词 · {activeTag}
       </button>
@@ -488,9 +707,37 @@ export function LiteratureView({
     </div>
   );
 
+  const renderLanguageControls = () => (
+    <div className="toolbar-language-pair" aria-label="翻译语言">
+      <LangCombobox
+        label="源语言"
+        value={translateSource}
+        onChange={(code) => onTranslateSourceChange?.(code)}
+        onSaved={showLanguageSaved}
+        compact
+      />
+      <span className="toolbar-language-arrow" aria-hidden>
+        →
+      </span>
+      <LangCombobox
+        label="目标语言"
+        value={translateTarget}
+        onChange={(code) => onTranslateTargetChange?.(code)}
+        onSaved={showLanguageSaved}
+        allowAuto={false}
+        compact
+      />
+    </div>
+  );
+
   return (
     <div className="literature-layout">
       <div className="literature-reader">
+        {languageSaved ? (
+          <div className="settings-toast ocr-toast is-ok" role="status">
+            保存成功
+          </div>
+        ) : null}
         <PdfPane
           visible={visible && docKind === "pdf"}
           onTextSelected={onTextSelected}
@@ -503,7 +750,15 @@ export function LiteratureView({
           onSeedConsumed={clearPdfSeed}
           onOpenOtherKind={onOpenFromPdf}
           onDocumentChange={clearSegmentHistory}
-          toolbarExtra={docKind === "pdf" ? promptMenu : null}
+          toolbarExtra={
+            docKind === "pdf" ? (
+              <>
+                {renderLanguageControls()}
+                {ocrModeMenu}
+                {promptMenu}
+              </>
+            ) : null
+          }
         />
         <EpubPane
           visible={visible && docKind === "epub"}
@@ -514,7 +769,14 @@ export function LiteratureView({
           onSeedConsumed={clearEpubSeed}
           onOpenOtherKind={onOpenFromEpub}
           onDocumentChange={clearSegmentHistory}
-          toolbarExtra={docKind === "epub" ? promptMenu : null}
+          toolbarExtra={
+            docKind === "epub" ? (
+              <>
+                {renderLanguageControls()}
+                {promptMenu}
+              </>
+            ) : null
+          }
         />
       </div>
       <div
