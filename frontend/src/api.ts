@@ -63,6 +63,8 @@ export type Settings = {
   translateGlossary: string;
   /** OCR language(s) for Tesseract, e.g. eng / chi_sim / eng+chi_sim */
   ocrLang: string;
+  /** fast | precise | english */
+  ocrMode: "fast" | "precise" | "english" | string;
   /** After OCR, auto call translate */
   ocrAutoTranslate: boolean;
   ocrTranslateProvider: TranslateProvider;
@@ -281,7 +283,11 @@ export type TranslateOptions = {
     | string;
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetchWithTimeout(`${API_BASE}${path}`, {
@@ -290,7 +296,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
-    });
+    }, timeoutMs);
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
     if (e instanceof Error && (e as Error & { code?: string }).code === "REQUEST_TIMEOUT") {
@@ -314,6 +320,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return data as T;
 }
+
+export type OcrMode = "fast" | "precise" | "english";
+
+export type OcrModelModeStatus = {
+  id: OcrMode;
+  label: string;
+  builtIn: boolean;
+  installed: boolean;
+  downloadBytes: number;
+  /** Total model files used by this mode (shared files included). */
+  sizeBytes: number;
+  /** Bytes from this mode's required files currently present in cache. */
+  cachedBytes: number;
+};
+
+export type OcrModelDownloadProgress = {
+  active: boolean;
+  mode: OcrMode | "";
+  model: string;
+  downloadedBytes: number;
+  totalBytes: number;
+};
+
+export type OcrModelStatus = {
+  ok: boolean;
+  cacheDir: string;
+  cachedBytes: number;
+  modes: OcrModelModeStatus[];
+  download: OcrModelDownloadProgress;
+};
 export type TextProjectListItem = {
   folder: string;
   name: string;
@@ -385,6 +421,17 @@ export type UnitySelfCheckResult = {
 
 export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
+  getOcrModelStatus: () => request<OcrModelStatus>("/api/ocr/models"),
+  ensureOcrMode: (mode: OcrMode) =>
+    request<OcrModelStatus>(
+      `/api/ocr/models/${encodeURIComponent(mode)}`,
+      { method: "POST" },
+      15 * 60_000,
+    ),
+  removeOcrMode: (mode: Exclude<OcrMode, "fast">) =>
+    request<OcrModelStatus>(`/api/ocr/models/${encodeURIComponent(mode)}`, {
+      method: "DELETE",
+    }),
   getSettings: () => request<Settings>("/api/settings"),
   saveSettings: (settings: Settings) =>
     request<{

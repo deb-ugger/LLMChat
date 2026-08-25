@@ -271,6 +271,8 @@ HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
           (fs::path(config.path()).parent_path() / "usage-events.jsonl").string()))
     , pricing_(std::make_unique<PricingStore>(
           (fs::path(config.path()).parent_path() / "pricing.json").string()))
+    , ocrModels_(std::make_unique<OcrModelStore>(
+          fs::path(config.path()).parent_path()))
 {
 }
 
@@ -463,6 +465,47 @@ int HttpServer::run()
         res.set_content(json{{"ok", true}, {"service", "llmchat-backend"}}.dump(), "application/json; charset=utf-8");
     }));
 
+    svr.Get("/api/ocr/models", withCors([this](const httplib::Request&, httplib::Response& res) {
+        res.set_content(ocrModels_->status().dump(), "application/json");
+    }));
+
+    svr.Post(R"(/api/ocr/models/(fast|precise|english))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            const std::string mode = req.matches[1].str();
+            res.set_content(ocrModels_->ensureMode(mode, config_.snapshot()).dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 502;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Delete(R"(/api/ocr/models/(precise|english))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        try
+        {
+            res.set_content(ocrModels_->removeMode(req.matches[1].str()).dump(), "application/json");
+        }
+        catch (const std::exception& ex)
+        {
+            res.status = 409;
+            res.set_content(errorJson(ex.what()).dump(), "application/json");
+        }
+    }));
+
+    svr.Get(R"(/api/ocr/model-files/([^/]+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+        const std::string fileName = req.matches[1].str();
+        if (!ocrModels_->isAllowedModelFile(fileName))
+        {
+            res.status = 404;
+            res.set_content(errorJson("OCR 模型文件尚未下载").dump(), "application/json");
+            return;
+        }
+        res.set_header("Cache-Control", "private, max-age=31536000, immutable");
+        res.set_file_content(ocrModels_->modelFile(fileName).string(), "application/x-tar");
+    }));
+
     svr.Get("/api/settings", withCors([this](const httplib::Request&, httplib::Response& res) {
         const AppConfig c = config_.snapshot();
         json body{
@@ -486,6 +529,7 @@ int HttpServer::run()
             {"translateContextParagraphs", c.translateContextParagraphs},
             {"translateGlossary", c.translateGlossary},
             {"ocrLang", c.ocrLang},
+            {"ocrMode", c.ocrMode},
             {"ocrAutoTranslate", c.ocrAutoTranslate},
             {"ocrTranslateProvider", c.ocrTranslateProvider},
             {"ocrTranslateSource", c.ocrTranslateSource},
@@ -594,6 +638,11 @@ int HttpServer::run()
             if (body.contains("ocrLang"))
             {
                 c.ocrLang = body["ocrLang"].get<std::string>();
+            }
+            if (body.contains("ocrMode"))
+            {
+                const std::string mode = body["ocrMode"].get<std::string>();
+                c.ocrMode = (mode == "precise" || mode == "english") ? mode : "fast";
             }
             if (body.contains("ocrAutoTranslate"))
             {

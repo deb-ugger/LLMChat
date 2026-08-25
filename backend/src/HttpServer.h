@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "ConversationManager.h"
 #include "PricingStore.h"
+#include "OcrModelStore.h"
 #include "UsageStore.h"
 
 #include <memory>
@@ -17,4 +18,5 @@ private:
     ConversationManager& conversations_;
     std::unique_ptr<UsageStore> usage_;
     std::unique_ptr<PricingStore> pricing_;
+    std::unique_ptr<OcrModelStore> ocrModels_;
 };

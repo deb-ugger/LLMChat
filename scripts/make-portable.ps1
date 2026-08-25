@@ -30,7 +30,8 @@ $preserveHint = @(
     "config.ini",
     "vendor-models.json",
     "pricing.json",
-    "text-projects"
+    "text-projects",
+    "ocr-models"
 )
 Write-Output ("Preserving portable data if present: " + ($preserveHint -join ", "))
 foreach ($name in $preserveHint) {

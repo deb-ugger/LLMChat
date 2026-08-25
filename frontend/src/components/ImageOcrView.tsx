@@ -1,11 +1,13 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,6 +17,12 @@ import { copyText } from "../clipboard";
 import { toFriendlyError } from "../friendlyError";
 import { highlightSearchNodes } from "../highlightText";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import {
+  LocalPaddleOcr,
+  OCR_MODE_LABELS,
+  normalizeOcrMode,
+  type PaddleOcrLine,
+} from "../ocr/paddleOcr";
 import { getEngineInfo } from "../translateEngines";
 
 export type OcrBlock = {
@@ -44,6 +52,7 @@ type OcrPage = {
 
 type Props = {
   ocrLang: string;
+  ocrMode: string;
   autoTranslate: boolean;
   translateProvider: string;
   translateSource: string;
@@ -71,6 +80,9 @@ type BBoxLine = {
   lineH: number;
 };
 
+type OcrSelectionField = "source" | "translation";
+type OcrResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+
 function looksLikeCode(text: string): boolean {
   return /[{};()<>[\]=]|::|->|#include|\b(auto|void|int|return|if|else|for|while|class|struct)\b/.test(
     text,
@@ -80,6 +92,9 @@ function looksLikeCode(text: string): boolean {
 function isJunkText(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
+  // Screenshot viewers can paint this transient hint over the image itself.
+  // It is UI chrome rather than source content and may also obscure real text.
+  if (/^双击查看图片[。.!！]?$/u.test(t)) return true;
   if (looksLikeCode(t)) return false;
   if (t.length === 1 && !/[A-Za-z0-9\u4e00-\u9fff]/.test(t)) return true;
   const letters = t.replace(/[^A-Za-z0-9\u4e00-\u9fff]/g, "");
@@ -442,6 +457,198 @@ function mergeLinesToParagraphs(lines: BBoxLine[]): BBoxLine[] {
   return paras.map(cleanLineText);
 }
 
+/**
+ * Paddle already returns physical text lines. Only repair fragments that are
+ * clearly part of the same line: OCR subscripts and wrapped prose continuations.
+ * This deliberately avoids the broad paragraph merge used by Tesseract.
+ */
+function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
+  const source = lines
+    .filter((line) => !isJunkText(line.text))
+    .map((line) => ({
+      ...line,
+      text: line.text.replace(/^T\{(\d)$/, "T$1"),
+    }));
+  const consumed = new Set<number>();
+
+  source.forEach((fragment, fragmentIndex) => {
+    const digit = fragment.text.match(/^([0-9])$/)?.[1];
+    if (!digit) return;
+    const fragmentH = Math.max(1, fragment.y1 - fragment.y0);
+    const fragmentCy = (fragment.y0 + fragment.y1) / 2;
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    source.forEach((candidate, candidateIndex) => {
+      if (candidateIndex === fragmentIndex || !/^T(?:\d)?(?::|$)/.test(candidate.text)) {
+        return;
+      }
+      const candidateH = Math.max(1, candidate.y1 - candidate.y0);
+      const candidateCy = (candidate.y0 + candidate.y1) / 2;
+      const nearPrefix =
+        fragment.x0 >= candidate.x0 - candidateH * 0.15 &&
+        fragment.x1 <= candidate.x0 + candidateH * 2.2;
+      const sameBand =
+        Math.abs(fragmentCy - candidateCy) <= Math.max(candidateH, fragmentH) * 0.7;
+      if (!nearPrefix || !sameBand || fragmentH > candidateH * 0.85) return;
+      const distance = Math.abs(fragmentCy - candidateCy) + Math.abs(fragment.x0 - candidate.x0);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = candidateIndex;
+      }
+    });
+
+    if (bestIndex < 0) return;
+    const candidate = source[bestIndex];
+    if (!new RegExp(`^T${digit}(?::|$)`).test(candidate.text)) {
+      candidate.text = candidate.text.replace(/^T(?=:|$)/, `T${digit}`);
+    }
+    candidate.x0 = Math.min(candidate.x0, fragment.x0);
+    candidate.y0 = Math.min(candidate.y0, fragment.y0);
+    candidate.x1 = Math.max(candidate.x1, fragment.x1);
+    candidate.y1 = Math.max(candidate.y1, fragment.y1);
+    consumed.add(fragmentIndex);
+  });
+
+  // A low detection threshold helps recover T₂/T₃, but may also expose a tiny
+  // duplicate digit from a packet/icon. Once the same digit is already part of
+  // a T-label, discard only the much smaller isolated duplicate.
+  const medianHeight = [...source]
+    .map((line) => Math.max(1, line.y1 - line.y0))
+    .sort((a, b) => a - b)[Math.floor(source.length / 2)] || 1;
+  source.forEach((fragment, index) => {
+    if (consumed.has(index) || !/^\d$/.test(fragment.text)) return;
+    const hasMatchingLabel = source.some(
+      (candidate, candidateIndex) =>
+        candidateIndex !== index &&
+        new RegExp(`^T${fragment.text}(?::|$)`).test(candidate.text),
+    );
+    const fragmentH = Math.max(1, fragment.y1 - fragment.y0);
+    if (hasMatchingLabel && fragmentH < medianHeight * 0.75) {
+      consumed.add(index);
+    }
+  });
+
+  const sorted = source
+    .filter((_, index) => !consumed.has(index))
+    .sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  const repaired: BBoxLine[] = [];
+  // The detection result is sorted by rows, so a multi-column layout arrives
+  // as A1, B1, C1, A2, B2, C2. Track the last physical line of every group
+  // and find the nearest compatible group in 2D instead of considering only
+  // the previous array item.
+  const groupTails: BBoxLine[] = [];
+  for (const line of sorted) {
+    const lineH = Math.max(8, line.lineH || line.y1 - line.y0);
+    const technicalToken = /^(?:\d+|T\d*|[A-Z])$/.test(line.text);
+    const startsNewEntry = /^T(?:\d+)?\s*[:：]/.test(line.text);
+    let bestGroup = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    if (!technicalToken && !startsNewEntry) {
+      repaired.forEach((group, groupIndex) => {
+        const tail = groupTails[groupIndex];
+        const tailH = Math.max(8, tail.lineH || tail.y1 - tail.y0);
+        const refH = Math.max(tailH, lineH);
+        const heightRatio = lineH / tailH;
+        const comparableLineHeight = heightRatio >= 0.55 && heightRatio <= 1.8;
+        const groupCanContinue =
+          /[A-Za-z\u3040-\u30ff\u3400-\u9fff]/u.test(group.text) &&
+          !/^(?:\d+|T\d*)$/.test(group.text.trim());
+        if (!groupCanContinue) return;
+
+        const tailCy = (tail.y0 + tail.y1) / 2;
+        const lineCy = (line.y0 + line.y1) / 2;
+        const horizontalGap = line.x0 - tail.x1;
+        const samePhysicalLine =
+          comparableLineHeight &&
+          Math.abs(lineCy - tailCy) < refH * 0.55 &&
+          horizontalGap >= -lineH &&
+          horizontalGap < tailH * 1.6;
+
+        const verticalGap = line.y0 - tail.y1;
+        const overlap =
+          Math.min(tail.x1, line.x1) - Math.max(tail.x0, line.x0);
+        const minWidth = Math.max(
+          1,
+          Math.min(tail.x1 - tail.x0, line.x1 - line.x0),
+        );
+        const tailCx = (tail.x0 + tail.x1) / 2;
+        const lineCx = (line.x0 + line.x1) / 2;
+        const sameColumn =
+          overlap >= minWidth * 0.3 ||
+          Math.abs(lineCx - tailCx) <= refH * 1.25 ||
+          Math.abs(line.x0 - tail.x0) <= refH * 0.8;
+        const wrappedLine =
+          comparableLineHeight &&
+          verticalGap >= -tailH * 0.2 &&
+          verticalGap < refH * 1.05 &&
+          sameColumn;
+        if (!samePhysicalLine && !wrappedLine) return;
+
+        const score = samePhysicalLine
+          ? Math.abs(lineCy - tailCy) + Math.max(0, horizontalGap) * 0.2
+          : Math.max(0, verticalGap) + Math.abs(lineCx - tailCx) * 0.18;
+        if (score < bestScore) {
+          bestScore = score;
+          bestGroup = groupIndex;
+        }
+      });
+    }
+
+    if (bestGroup >= 0) {
+      const previous = repaired[bestGroup];
+      previous.text = `${previous.text} ${line.text}`.replace(/\s+/g, " ").trim();
+      previous.x0 = Math.min(previous.x0, line.x0);
+      previous.y0 = Math.min(previous.y0, line.y0);
+      previous.x1 = Math.max(previous.x1, line.x1);
+      previous.y1 = Math.max(previous.y1, line.y1);
+      previous.confidence = Math.min(previous.confidence, line.confidence);
+      previous.lineH = lineH;
+      groupTails[bestGroup] = { ...line, lineH };
+    } else {
+      repaired.push({ ...line });
+      groupTails.push({ ...line, lineH });
+    }
+  }
+  // Recover a missing subscript only when the surrounding OCR entries prove a
+  // simple numbered sequence (for example T:, T2:, T3:, T: -> T1..T4).
+  const entries = repaired
+    .map((line, index) => {
+      const match = line.text.match(/^T(\d)?\s*[:：]/);
+      return match ? { index, digit: match[1] ? Number(match[1]) : null } : null;
+    })
+    .filter((entry): entry is { index: number; digit: number | null } => entry !== null);
+  if (entries.filter((entry) => entry.digit !== null).length >= 2) {
+    entries.forEach((entry, position) => {
+      if (entry.digit !== null) return;
+      const previous = [...entries.slice(0, position)]
+        .reverse()
+        .find((candidate) => candidate.digit !== null)?.digit ?? undefined;
+      const next = entries
+        .slice(position + 1)
+        .find((candidate) => candidate.digit !== null)?.digit ?? undefined;
+      const inferred =
+        next !== undefined && next > 1
+          ? next - 1
+          : previous !== undefined && previous < 9
+            ? previous + 1
+            : null;
+      if (inferred !== null) {
+        repaired[entry.index].text = repaired[entry.index].text.replace(
+          /^T(?=\s*[:：])/,
+          `T${inferred}`,
+        );
+      }
+    });
+  }
+  return repaired;
+}
+
+function isLiteralOcrToken(text: string): boolean {
+  return /^(?:\d+|T(?:\d+)?|[A-Z])$/.test(text.trim());
+}
+
 function clamp01(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.min(1, Math.max(0, n));
@@ -463,8 +670,10 @@ function overlayFontSize(boxWpx: number, boxHpx: number, text: string): number {
   if (boxWpx <= 0 || boxHpx <= 0) return 10;
   const lineHeight = 1.2;
   const charEm = 0.95;
-  const availW = Math.max(8, boxWpx - 4);
-  const availH = Math.max(8, boxHpx - 4);
+  // Match the overlay's border and horizontal padding so calculated wrapping
+  // is the same as the text that is actually painted on the image.
+  const availW = Math.max(8, boxWpx - 8);
+  const availH = Math.max(8, boxHpx - 2);
   const segments = text
     .split(/\n/)
     .map((s) => s.replace(/\s+/g, ""))
@@ -482,7 +691,11 @@ function overlayFontSize(boxWpx: number, boxHpx: number, text: string): number {
   };
 
   let lo = 7;
-  let hi = Math.min(availH * 0.9, 56);
+  // Paragraph translations become visually dominant if a two-line OCR box is
+  // treated as one very tall line. Short labels may remain large; prose is
+  // capped to the surrounding document's typical reading size.
+  const proseCap = Array.from(text.replace(/\s+/g, "")).length >= 12 ? 26 : 56;
+  let hi = Math.min(availH * 0.9, proseCap);
   for (let i = 0; i < 16; i++) {
     const mid = (lo + hi) / 2;
     if (fits(mid)) lo = mid;
@@ -500,6 +713,7 @@ function OcrPageCard({
   index,
   selected,
   selectedBlockId,
+  selectedField,
   showTranslation,
   onSelectPage,
   onSelectBlock,
@@ -509,13 +723,76 @@ function OcrPageCard({
   index: number;
   selected: boolean;
   selectedBlockId: string | null;
+  selectedField: OcrSelectionField | null;
   showTranslation: boolean;
   onSelectPage: () => void;
-  onSelectBlock: (id: string) => void;
+  onSelectBlock: (id: string, field: OcrSelectionField) => void;
   onContextMenu: (e: ReactMouseEvent, pageId: string) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+  const [baseImageWidth, setBaseImageWidth] = useState<number | null>(null);
+  const [imageScale, setImageScale] = useState(1);
+  const [imageResizing, setImageResizing] = useState(false);
+  const initializedImageRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    initializedImageRef.current = null;
+    setBaseImageWidth(null);
+    setImageScale(1);
+  }, [page.imageUrl]);
+
+  const beginImageResize = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>, direction: OcrResizeDirection) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const pointerId = e.pointerId;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startScale = imageScale;
+      const aspect = rect.width / rect.height;
+      const horizontalSign = direction.includes("e")
+        ? 1
+        : direction.includes("w")
+          ? -1
+          : 0;
+      const verticalSign = direction.includes("s")
+        ? 1
+        : direction.includes("n")
+          ? -1
+          : 0;
+      setImageResizing(true);
+      e.currentTarget.setPointerCapture(pointerId);
+
+      const onMove = (event: PointerEvent) => {
+        let widthDelta = horizontalSign * (event.clientX - startX);
+        const verticalWidthDelta =
+          verticalSign * (event.clientY - startY) * aspect;
+        if (!horizontalSign) widthDelta = verticalWidthDelta;
+        else if (verticalSign && Math.abs(verticalWidthDelta) > Math.abs(widthDelta)) {
+          widthDelta = verticalWidthDelta;
+        }
+        const nextScale = startScale * ((rect.width + widthDelta) / rect.width);
+        setImageScale(Math.min(2, Math.max(0.05, nextScale)));
+      };
+      const onUp = () => {
+        setImageResizing(false);
+        document.body.classList.remove("ocr-image-resizing");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+      document.body.classList.add("ocr-image-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [imageScale],
+  );
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -525,6 +802,29 @@ function OcrPageCard({
     }
     const measure = () => {
       const img = stage.querySelector(".ocr-image") as HTMLImageElement | null;
+      if (
+        img?.complete &&
+        img.naturalWidth > 0 &&
+        initializedImageRef.current !== page.imageUrl
+      ) {
+        const card = stage.closest(".ocr-page") as HTMLElement | null;
+        const wrap = stage.closest(".ocr-canvas-wrap") as HTMLElement | null;
+        const header = card?.querySelector(".ocr-page-head") as HTMLElement | null;
+        const availableWidth = Math.max(
+          1,
+          (card?.clientWidth || stage.parentElement?.clientWidth || img.naturalWidth) - 24,
+        );
+        const fittedWidth = Math.min(img.naturalWidth, availableWidth);
+        const fittedHeight = fittedWidth * (img.naturalHeight / img.naturalWidth);
+        const availableHeight = Math.max(
+          1,
+          (wrap?.clientHeight || fittedHeight) - (header?.offsetHeight || 0) - 36,
+        );
+        const fitScale = Math.min(1, availableHeight / Math.max(1, fittedHeight));
+        initializedImageRef.current = page.imageUrl;
+        setBaseImageWidth(fittedWidth);
+        setImageScale(Math.max(0.02, fitScale));
+      }
       const w = img?.clientWidth || stage.clientWidth;
       const h = img?.clientHeight || stage.clientHeight;
       setStageSize((prev) =>
@@ -545,6 +845,43 @@ function OcrPageCard({
     };
   }, [page.imageUrl, page.blocks.length]);
 
+  // Character-count estimates are only a starting point. Mixed CJK/Latin
+  // fonts and browser word wrapping can need more rows than the estimate, so
+  // measure the actual rendered box and reduce its font until nothing clips.
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || stageSize.w <= 0 || stageSize.h <= 0) return;
+    const boxes = Array.from(stage.querySelectorAll(".ocr-box")) as HTMLElement[];
+    boxes.forEach((box) => {
+      const maximum = Number(box.dataset.fontMax || 0);
+      if (!Number.isFinite(maximum) || maximum <= 0) return;
+      const fits = () =>
+        box.scrollHeight <= box.clientHeight + 1 &&
+        box.scrollWidth <= box.clientWidth + 1;
+      box.style.fontSize = `${maximum}px`;
+      if (fits()) return;
+
+      let low = 5;
+      let high = maximum;
+      box.style.fontSize = `${low}px`;
+      if (!fits()) return;
+      for (let i = 0; i < 12; i += 1) {
+        const mid = (low + high) / 2;
+        box.style.fontSize = `${mid}px`;
+        if (fits()) low = mid;
+        else high = mid;
+      }
+      box.style.fontSize = `${Math.max(5, low - 0.2).toFixed(1)}px`;
+    });
+  }, [
+    page.blocks,
+    selectedBlockId,
+    selectedField,
+    showTranslation,
+    stageSize.h,
+    stageSize.w,
+  ]);
+
   return (
     <article
       className={
@@ -562,6 +899,9 @@ function OcrPageCard({
           {page.label ? ` · ${page.label}` : ""}
         </span>
         <span className="ocr-page-meta">
+          <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
+            {Math.round(imageScale * 100)}%
+          </span>
           {page.busy
             ? page.statusText || "处理中…"
             : page.error
@@ -575,10 +915,15 @@ function OcrPageCard({
       <div
         className={
           selectedBlockId && page.blocks.some((b) => b.id === selectedBlockId)
-            ? "ocr-stage has-selection"
-            : "ocr-stage"
+            ? `ocr-stage has-selection${imageResizing ? " is-resizing" : ""}`
+            : `ocr-stage${imageResizing ? " is-resizing" : ""}`
         }
         ref={stageRef}
+        style={{
+          width: baseImageWidth
+            ? `${baseImageWidth * imageScale}px`
+            : `${imageScale * 100}%`,
+        }}
       >
         <img
           src={page.imageUrl}
@@ -587,11 +932,14 @@ function OcrPageCard({
           draggable={false}
         />
         {page.blocks.map((b) => {
-          const rawLabel = showTranslation
-            ? b.status === "done" && b.translation.trim()
-              ? b.translation
-              : b.text
-            : b.text;
+          const blockSelected = b.id === selectedBlockId;
+          const displayTranslation = blockSelected
+            ? selectedField === "translation"
+            : showTranslation;
+          const hasTranslation = b.status === "done" && b.translation.trim();
+          const displayedField: OcrSelectionField =
+            displayTranslation && hasTranslation ? "translation" : "source";
+          const rawLabel = displayedField === "translation" ? b.translation : b.text;
           const boxW = b.w * stageSize.w;
           const boxH = b.h * stageSize.h;
           const label = rawLabel
@@ -605,8 +953,14 @@ function OcrPageCard({
               key={b.id}
               type="button"
               data-block-id={b.id}
+              data-field={displayedField}
+              data-font-max={fontSize.toFixed(1)}
               className={
-                b.id === selectedBlockId ? "ocr-box active" : "ocr-box"
+                blockSelected
+                  ? "ocr-box active"
+                  : selected && !selectedBlockId
+                    ? "ocr-box page-active"
+                    : "ocr-box"
               }
               style={{
                 left: `${b.x * 100}%`,
@@ -619,7 +973,7 @@ function OcrPageCard({
               }}
               onClick={(e) => {
                 e.stopPropagation();
-                onSelectBlock(b.id);
+                onSelectBlock(b.id, displayedField);
               }}
               title={b.text}
             >
@@ -627,6 +981,24 @@ function OcrPageCard({
             </button>
           );
         })}
+        {(["n", "ne", "e", "se", "s", "sw", "w", "nw"] as OcrResizeDirection[]).map(
+          (direction) => (
+            <button
+              key={direction}
+              type="button"
+              className={`ocr-image-resize-handle is-${direction}`}
+              aria-label="等比例缩放图片"
+              title="拖动以等比例缩放；双击恢复为 100%"
+              onPointerDown={(e) => beginImageResize(e, direction)}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setImageScale(1);
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ),
+        )}
       </div>
       {page.error && <p className="boot-error ocr-error">{page.error}</p>}
     </article>
@@ -635,9 +1007,9 @@ function OcrPageCard({
 
 export function ImageOcrView({
   ocrLang,
+  ocrMode,
   autoTranslate,
   translateProvider,
-  translateSource,
   translateTarget,
   translateMaxLength,
   translateAutoChunk,
@@ -651,6 +1023,8 @@ export function ImageOcrView({
   const [pages, setPages] = useState<OcrPage[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [selectedField, setSelectedField] = useState<OcrSelectionField | null>(null);
+  const [selectionPulse, setSelectionPulse] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -683,6 +1057,7 @@ export function ImageOcrView({
     900,
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  const paddleOcrRef = useRef<LocalPaddleOcr | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerLangRef = useRef<string | null>(null);
   const workerCreateGenRef = useRef(0);
@@ -697,6 +1072,7 @@ export function ImageOcrView({
   const queueRef = useRef<{ pageId: string; file: File }[]>([]);
   const drainingRef = useRef(false);
   const autoTranslateRef = useRef(autoTranslate);
+  const normalizedOcrMode = normalizeOcrMode(ocrMode);
 
   useEffect(() => {
     pagesRef.current = pages;
@@ -705,6 +1081,12 @@ export function ImageOcrView({
   useEffect(() => {
     autoTranslateRef.current = autoTranslate;
   }, [autoTranslate]);
+
+  useEffect(() => {
+    const previous = paddleOcrRef.current;
+    paddleOcrRef.current = null;
+    void previous?.dispose();
+  }, [normalizedOcrMode]);
 
   useEffect(() => {
     try {
@@ -719,6 +1101,8 @@ export function ImageOcrView({
       for (const p of pagesRef.current) {
         URL.revokeObjectURL(p.imageUrl);
       }
+      void paddleOcrRef.current?.dispose();
+      paddleOcrRef.current = null;
       void workerRef.current?.terminate();
       workerRef.current = null;
     };
@@ -778,8 +1162,8 @@ export function ImageOcrView({
 
   const langBadge = useMemo(
     () =>
-      `识别：${ocrLangLabel} · 翻译：${translateLangLabel(translateSource)} → ${translateLangLabel(translateTarget)}`,
-    [ocrLangLabel, translateLangLabel, translateSource, translateTarget],
+      `识别：PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}（中英日） · 翻译：自动识别 → ${translateLangLabel(translateTarget)}`,
+    [normalizedOcrMode, translateLangLabel, translateTarget],
   );
 
   const allBlocks = useMemo(
@@ -801,7 +1185,7 @@ export function ImageOcrView({
     [],
   );
 
-  const ensureWorker = useCallback(async () => {
+  const ensureTesseractWorker = useCallback(async () => {
     if (workerRef.current && workerLangRef.current === ocrLang) {
       return workerRef.current;
     }
@@ -847,11 +1231,13 @@ export function ImageOcrView({
   }, [ocrLang]);
 
   const selectBlock = useCallback(
-    (id: string) => {
+    (id: string, field: OcrSelectionField) => {
       const page = pagesRef.current.find((p) =>
         p.blocks.some((b) => b.id === id),
       );
-      setSelectedBlockId((prev) => (prev === id ? null : id));
+      setSelectedBlockId(id);
+      setSelectedField(field);
+      setSelectionPulse((value) => value + 1);
       if (page) setSelectedPageId(page.id);
     },
     [],
@@ -860,6 +1246,7 @@ export function ImageOcrView({
   const selectPage = useCallback((pageId: string) => {
     setSelectedPageId(pageId);
     setSelectedBlockId(null);
+    setSelectedField(null);
   }, []);
 
   useEffect(() => {
@@ -903,9 +1290,42 @@ export function ImageOcrView({
     requestAnimationFrame(() => requestAnimationFrame(scrollBoth));
   }, [selectedBlockId, selectedPageId]);
 
+  useEffect(() => {
+    if (!selectedBlockId || !selectedField || selectionPulse === 0) return;
+    const escapedId = CSS.escape(selectedBlockId);
+    const targets = [
+      canvasWrapRef.current?.querySelector(
+        `[data-block-id="${escapedId}"]`,
+      ) as HTMLElement | null,
+      srcListRef.current?.querySelector(
+        `[data-row-id="${escapedId}"][data-field="source"]`,
+      ) as HTMLElement | null,
+      dstListRef.current?.querySelector(
+        `[data-row-id="${escapedId}"][data-field="translation"]`,
+      ) as HTMLElement | null,
+    ].filter((element): element is HTMLElement => element !== null);
+    // Let smooth scrolling reveal both paired rows before the stronger pulse.
+    const startTimer = window.setTimeout(() => {
+      targets.forEach((element) => {
+        element.classList.remove("is-flashing");
+        void element.offsetWidth;
+        element.classList.add("is-flashing");
+      });
+    }, 260);
+    const endTimer = window.setTimeout(() => {
+      targets.forEach((element) => element.classList.remove("is-flashing"));
+    }, 1660);
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearTimeout(endTimer);
+    };
+  }, [selectedBlockId, selectedField, selectionPulse]);
+
   const translateOpts = useMemo(
     () => ({
-      source: translateSource,
+      // OCR pages may contain Chinese, English and Japanese at once. Fixed
+      // source-language settings cause mixed images to be mistranslated.
+      source: "auto",
       target: translateTarget,
       provider: translateProvider,
       maxLength: translateMaxLength,
@@ -920,7 +1340,6 @@ export function ImageOcrView({
       translateAutoChunk,
       translateMaxLength,
       translateProvider,
-      translateSource,
       translateTarget,
     ],
   );
@@ -942,14 +1361,20 @@ export function ImageOcrView({
     ) => {
       const gen = ++translateGenRef.current;
       const workIdx = list
-        .map((b, i) => (b.text.trim() ? i : -1))
+        .map((b, i) => (b.text.trim() && !isLiteralOcrToken(b.text) ? i : -1))
         .filter((i) => i >= 0);
-      if (!workIdx.length) return list;
+      if (!workIdx.length) {
+        return list.map((block) => ({
+          ...block,
+          translation: block.text.trim(),
+          status: "done" as const,
+        }));
+      }
 
       const pending: OcrBlock[] = list.map((b) =>
-        b.text.trim()
+        b.text.trim() && !isLiteralOcrToken(b.text)
           ? { ...b, status: "pending", translation: "" }
-          : { ...b, status: "done" },
+          : { ...b, status: "done", translation: b.text.trim() },
       );
       patchPage(pageId, { blocks: pending });
 
@@ -989,9 +1414,9 @@ export function ImageOcrView({
       }
 
       const next: OcrBlock[] = list.map((b) =>
-        b.text.trim()
+        b.text.trim() && !isLiteralOcrToken(b.text)
           ? { ...b, status: "pending", translation: "" }
-          : { ...b, status: "done" },
+          : { ...b, status: "done", translation: b.text.trim() },
       );
       patchPage(pageId, { blocks: [...next] });
       const concurrency = translateProvider === "llm" ? 5 : 2;
@@ -1044,17 +1469,14 @@ export function ImageOcrView({
       patchPage(pageId, {
         busy: true,
         error: null,
-        statusText: `正在加载${ocrLangLabel}识别模型…`,
+        statusText: "正在加载本地 PaddleOCR 识别模型…",
       });
-      setStatus(`正在加载${ocrLangLabel}识别模型…`);
+      setStatus("正在加载本地 PaddleOCR 识别模型…");
       setError(null);
       try {
         const page = pagesRef.current.find((p) => p.id === pageId);
         if (!page) return;
-        const [{ w: iw, h: ih }, worker] = await Promise.all([
-          loadImageSize(page.imageUrl),
-          ensureWorker(),
-        ]);
+        const { w: iw, h: ih } = await loadImageSize(page.imageUrl);
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
         const toBox = (raw: {
@@ -1119,22 +1541,63 @@ export function ImageOcrView({
           return boxes;
         };
 
-        patchPage(pageId, {
-          statusText: `正在识别文字（${ocrLangLabel}）…`,
-        });
-        setStatus(`正在识别文字（${ocrLangLabel}）…`);
-        const result = await withTimeout(
-          worker.recognize(file),
-          180_000,
-          `识别超时（${ocrLangLabel}）。可删除该图后重试，或改用更小图片。`,
-        );
-        if (!pagesRef.current.some((p) => p.id === pageId)) return;
-        let lineBoxes = boxesFromPage(result.data);
+        let lineBoxes: BBoxLine[];
+        let recognitionEngine = `PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}`;
+        try {
+          const loadingText =
+            normalizedOcrMode === "fast"
+              ? "正在加载本地 PP-OCRv6 快速模型…"
+              : `正在准备 PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}模型（首次使用会下载并缓存）…`;
+          patchPage(pageId, {
+            statusText: loadingText,
+          });
+          setStatus(loadingText);
+          const paddle =
+            paddleOcrRef.current ??
+            (paddleOcrRef.current = new LocalPaddleOcr(normalizedOcrMode));
+          const result = await withTimeout(
+            paddle.recognize(file),
+            240_000,
+            "PaddleOCR 识别超时，正在准备兼容引擎…",
+          );
+          if (!pagesRef.current.some((p) => p.id === pageId)) return;
+          const rawLines = result.lines
+            .map((line: PaddleOcrLine): BBoxLine | null => {
+              const text = line.text.trim().replace(/\s+/g, " ");
+              if (!text) return null;
+              return {
+                text,
+                x0: line.x0,
+                y0: line.y0,
+                x1: line.x1,
+                y1: line.y1,
+                confidence: line.confidence,
+                lineH: Math.max(8, line.y1 - line.y0),
+              };
+            })
+            .filter((line): line is BBoxLine => line !== null);
+          // PaddleOCR already returns one item per detected text line. Merging
+          // again here joined labels (T1/T2) to nearby prose and could cascade
+          // several diagram captions into one oversized translation overlay.
+          lineBoxes = repairPaddleLines(rawLines);
+        } catch (paddleError) {
+          console.warn("[OCR] PaddleOCR unavailable; using Tesseract fallback", paddleError);
+          recognitionEngine = `兼容引擎（PaddleOCR 不可用：${toFriendlyError(
+            paddleError,
+            "初始化失败",
+          )}）`;
+          const fallbackStatus = `PaddleOCR 暂不可用，正在使用${ocrLangLabel}兼容识别…`;
+          patchPage(pageId, { statusText: fallbackStatus });
+          setStatus(fallbackStatus);
+          const worker = await ensureTesseractWorker();
+          const result = await withTimeout(
+            worker.recognize(file),
+            180_000,
+            `兼容识别超时（${ocrLangLabel}）。可删除该图后重试，或改用更小图片。`,
+          );
+          if (!pagesRef.current.some((p) => p.id === pageId)) return;
+          lineBoxes = boxesFromPage(result.data);
 
-        const skipSparse =
-          /^(jpn|kor|chi_sim|chi_tra)$/i.test(ocrLang) ||
-          ocrLang.toLowerCase().includes("chi_");
-        if (!skipSparse) {
           try {
             const enhanced = await preprocessImageForOcr(file);
             if (!pagesRef.current.some((p) => p.id === pageId)) return;
@@ -1195,10 +1658,10 @@ export function ImageOcrView({
 
         patchPage(pageId, {
           blocks: list,
-          statusText: `识别到 ${list.length} 段文字`,
+          statusText: `${recognitionEngine} 识别到 ${list.length} 段文字`,
           error: null,
         });
-        setStatus(`识别到 ${list.length} 段文字`);
+        setStatus(`${recognitionEngine} 识别到 ${list.length} 段文字`);
 
         if (autoTranslateRef.current && list.length > 0) {
           patchPage(pageId, {
@@ -1245,7 +1708,7 @@ export function ImageOcrView({
         setStatus(null);
       }
     },
-    [ensureWorker, ocrLang, ocrLangLabel, patchPage, translateBlocks],
+    [ensureTesseractWorker, normalizedOcrMode, ocrLangLabel, patchPage, translateBlocks],
   );
 
   const drainQueue = useCallback(async () => {
@@ -1318,6 +1781,7 @@ export function ImageOcrView({
       if (last) {
         setSelectedPageId(last.id);
         setSelectedBlockId(null);
+        setSelectedField(null);
       }
       window.setTimeout(() => {
         const el = canvasWrapRef.current?.querySelector(
@@ -1514,8 +1978,9 @@ export function ImageOcrView({
       if (!cur) return cur;
       return cur.startsWith(`${pageId}-`) ? null : cur;
     });
+    if (selectedBlockId?.startsWith(`${pageId}-`)) setSelectedField(null);
     setCtxMenu(null);
-  }, []);
+  }, [selectedBlockId]);
 
   const onRetranslateAll = async () => {
     const targets = pages.filter((p) => p.blocks.length > 0);
@@ -1577,6 +2042,8 @@ export function ImageOcrView({
     pasteLockRef.current = 0;
     queueRef.current = [];
     drainingRef.current = false;
+    void paddleOcrRef.current?.dispose();
+    paddleOcrRef.current = null;
     void workerRef.current?.terminate();
     workerRef.current = null;
     workerLangRef.current = null;
@@ -1588,6 +2055,7 @@ export function ImageOcrView({
     setPages([]);
     setSelectedPageId(null);
     setSelectedBlockId(null);
+    setSelectedField(null);
     setBusy(false);
     setStatus(null);
     setError(null);
@@ -1638,10 +2106,13 @@ export function ImageOcrView({
     return m;
   }, [pages]);
 
-  const rowClass = (b: OcrBlock) => {
+  const rowClass = (b: OcrBlock, field: OcrSelectionField) => {
     const isBlock = b.id === selectedBlockId;
-    const isPage = !!selectedPageId && b.pageId === selectedPageId;
-    if (isBlock) return "ocr-pair-row active";
+    const isPage =
+      !selectedBlockId && !!selectedPageId && b.pageId === selectedPageId;
+    if (isBlock) {
+      return `ocr-pair-row active${selectedField === field ? " primary" : " paired"}`;
+    }
     if (isPage) return "ocr-pair-row page-active";
     return "ocr-pair-row";
   };
@@ -1793,6 +2264,7 @@ export function ImageOcrView({
                   index={index}
                   selected={selectedPageId === page.id}
                   selectedBlockId={selectedBlockId}
+                  selectedField={selectedField}
                   showTranslation={showTranslation}
                   onSelectPage={() => selectPage(page.id)}
                   onSelectBlock={selectBlock}
@@ -1833,12 +2305,13 @@ export function ImageOcrView({
                   <div
                     key={b.id}
                     data-row-id={b.id}
-                    className={rowClass(b)}
-                    onClick={() => selectBlock(b.id)}
+                    data-field="source"
+                    className={rowClass(b, "source")}
+                    onClick={() => selectBlock(b.id, "source")}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        selectBlock(b.id);
+                        selectBlock(b.id, "source");
                       }
                     }}
                     role="button"
@@ -1895,12 +2368,13 @@ export function ImageOcrView({
                     <div
                       key={b.id}
                       data-row-id={b.id}
-                      className={rowClass(b)}
-                      onClick={() => selectBlock(b.id)}
+                      data-field="translation"
+                      className={rowClass(b, "translation")}
+                      onClick={() => selectBlock(b.id, "translation")}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          selectBlock(b.id);
+                          selectBlock(b.id, "translation");
                         }
                       }}
                       role="button"

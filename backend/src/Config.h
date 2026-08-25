@@ -38,6 +38,8 @@ struct AppConfig {
     /** Literature LLM glossary JSON: [{src,dst,info?}] */
     std::string translateGlossary = "[]";
     std::string ocrLang = "eng";
+    /** fast = bundled small; precise = medium; english = medium detection + English recognition */
+    std::string ocrMode = "fast";
     bool ocrAutoTranslate = true;
     std::string ocrTranslateProvider = "bing";
     std::string ocrTranslateSource = "en";

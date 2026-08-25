@@ -13,6 +13,7 @@ translateModel=
 translateMaxLength=0
 translateAutoChunk=true
 ocrLang=eng
+ocrMode=fast
 ocrAutoTranslate=true
 ocrTranslateProvider=bing
 ocrTranslateSource=en

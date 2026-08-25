@@ -94,6 +94,7 @@ type Props = {
   translatePromptKind?: string;
   translatePrompt?: string;
   model: string;
+  ocrMode?: string;
   apiUrl?: string;
   apiKey?: string;
   onOpenImageOcr?: (file: File) => void;
@@ -118,6 +119,7 @@ export function LiteratureView({
   translatePromptKind = "general",
   translatePrompt = "",
   model,
+  ocrMode = "fast",
   apiUrl = "",
   apiKey = "",
   onOpenImageOcr,
@@ -494,6 +496,7 @@ export function LiteratureView({
           onTextSelected={onTextSelected}
           translateProvider={translateProvider}
           model={model}
+          ocrMode={ocrMode}
           onOpenImageOcr={onOpenImageOcr}
           seedDoc={pdfSeed}
           seedPageNumber={pdfSeedPage}

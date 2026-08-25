@@ -45,6 +45,7 @@ import { getEngineInfo } from "../translateEngines";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml } from "../highlightText";
 import {
+  collectPageImageRects,
   copyImageBlob,
   saveImageBlob,
   findImageAtPoint,
@@ -52,6 +53,18 @@ import {
   clearPageImageHotspots,
   type PdfImageHit,
 } from "../pdfImages";
+import {
+  buildStructuredPdfText,
+  extractNativePdfLines,
+  nativeTextLooksUsable,
+  paddleLinesToPdfLines,
+  type PixelRect,
+} from "../pdfOcr";
+import {
+  LocalPaddleOcr,
+  OCR_MODE_LABELS,
+  normalizeOcrMode,
+} from "../ocr/paddleOcr";
 import {
   loadLocalDoc,
   pickAndLoadDocument,
@@ -72,6 +85,15 @@ const PDF_DOCUMENT_OPTIONS = {
   standardFontDataUrl: `${import.meta.env.BASE_URL}standard_fonts/`,
 } as const;
 
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("无法生成 PDF 页面图片"))),
+      "image/png",
+    );
+  });
+}
+
 export type { ViewMode };
 
 type Props = {
@@ -79,6 +101,7 @@ type Props = {
   visible?: boolean;
   translateProvider?: string;
   model?: string;
+  ocrMode?: string;
   onOpenImageOcr?: (file: File) => void;
   /** Extra controls rendered at the end of the PDF toolbar. */
   toolbarExtra?: ReactNode;
@@ -472,6 +495,7 @@ export function PdfPane({
   visible = true,
   translateProvider = "google",
   model = "",
+  ocrMode = "fast",
   onOpenImageOcr,
   toolbarExtra,
   seedDoc = null,
@@ -536,6 +560,8 @@ export function PdfPane({
     naturalH: number;
   } | null>(null);
   const [imgBusy, setImgBusy] = useState(false);
+  const [pageOcrBusy, setPageOcrBusy] = useState(false);
+  const [pageOcrStatus, setPageOcrStatus] = useState<string | null>(null);
   const [imgToast, setImgToast] = useState<{
     message: string;
     ok: boolean;
@@ -558,6 +584,8 @@ export function PdfPane({
   const openMenuRef = useRef<HTMLDivElement>(null);
   const imgCtxMenuRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
+  const pageOcrEnginesRef = useRef<Map<string, LocalPaddleOcr>>(new Map());
+  const pageTextCacheRef = useRef<Map<string, { text: string; status: string }>>(new Map());
   const pageWidthRef = useRef(0);
   const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
   /** Last user/session page; may update on scroll. */
@@ -608,6 +636,19 @@ export function PdfPane({
   pageLabelsRef.current = pageLabels;
   fileMetaRef.current = fileMeta;
   pageNumberRef.current = pageNumber;
+
+  useEffect(() => {
+    return () => {
+      const engines = [...pageOcrEnginesRef.current.values()];
+      pageOcrEnginesRef.current.clear();
+      for (const engine of engines) void engine.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    setPageOcrStatus(null);
+    pageTextCacheRef.current.clear();
+  }, [file]);
 
   const resolveOutlinePage = useCallback(
     async (dest: unknown, fallback: number | null) => {
@@ -1991,6 +2032,131 @@ export function PdfPane({
     [goToPage, searchQuery],
   );
 
+  const extractCurrentPage = useCallback(
+    async (forceOcr = false) => {
+      const pdf = pdfRef.current;
+      if (!pdf || pageOcrBusy) return;
+      const currentPage = Math.max(1, Math.min(pdf.numPages, pageNumberRef.current));
+      const mode = normalizeOcrMode(ocrMode);
+      const documentKey =
+        contentHashRef.current ||
+        fileMetaRef.current?.filePath ||
+        `${file?.name || "pdf"}:${file?.size || 0}`;
+      const cacheKey = `${documentKey}:${currentPage}:${forceOcr ? `ocr-${mode}` : "smart"}`;
+      const cached = pageTextCacheRef.current.get(cacheKey);
+      if (cached) {
+        onTextSelected(cached.text);
+        setPageOcrStatus(cached.status);
+        return;
+      }
+
+      setPageOcrBusy(true);
+      setPageOcrStatus(forceOcr ? `正在使用${OCR_MODE_LABELS[mode]}识别第 ${currentPage} 页…` : `正在提取第 ${currentPage} 页…`);
+      try {
+        const page = await pdf.getPage(currentPage);
+        const unitViewport = page.getViewport({ scale: 1 });
+        const imagePdfRects = await collectPageImageRects(page).catch(() => []);
+        const toPixelRects = (scale: number): PixelRect[] => {
+          const viewport = page.getViewport({ scale });
+          return imagePdfRects.map((rect) => {
+            const [x1, y1] = viewport.convertToViewportPoint(rect.xMin, rect.yMin);
+            const [x2, y2] = viewport.convertToViewportPoint(rect.xMax, rect.yMax);
+            return {
+              x0: Math.min(x1, x2),
+              y0: Math.min(y1, y2),
+              x1: Math.max(x1, x2),
+              y1: Math.max(y1, y2),
+            };
+          });
+        };
+
+        const nativeLines = forceOcr ? [] : await extractNativePdfLines(page);
+        if (!forceOcr && nativeTextLooksUsable(nativeLines)) {
+          const structured = buildStructuredPdfText(
+            nativeLines,
+            unitViewport.width,
+            unitViewport.height,
+            toPixelRects(1),
+          );
+          if (!structured.text) throw new Error("本页没有可提取的正文");
+          const status = `第 ${currentPage} 页使用原生文字层 · ${structured.keptLines} 行${
+            structured.listItems ? ` · ${structured.listItems} 个列表项` : ""
+          }${structured.tableCount ? ` · ${structured.tableCount} 个表格/${structured.tableRows} 行` : ""
+          }${structured.removedPageNumbers ? ` · 已排除 ${structured.removedPageNumbers} 个页码` : ""}${
+            structured.removedImageLines ? ` · 已排除 ${structured.removedImageLines} 行图片文字` : ""
+          }`;
+          pageTextCacheRef.current.set(cacheKey, { text: structured.text, status });
+          onTextSelected(structured.text);
+          setPageOcrStatus(status);
+          return;
+        }
+
+        const longestSide = Math.max(unitViewport.width, unitViewport.height);
+        const renderScale = Math.min(4, Math.max(2.5, 2800 / Math.max(1, longestSide)));
+        const viewport = page.getViewport({ scale: renderScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.ceil(viewport.width));
+        canvas.height = Math.max(1, Math.ceil(viewport.height));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) throw new Error("无法创建 PDF OCR 画布");
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        const imageRects = toPixelRects(renderScale);
+        const pageArea = Math.max(1, canvas.width * canvas.height);
+        const isScannedPage = imageRects.some(
+          (rect) => ((rect.x1 - rect.x0) * (rect.y1 - rect.y0)) / pageArea >= 0.68,
+        );
+        const excludedImageRects = isScannedPage ? [] : imageRects;
+        if (!isScannedPage) {
+          context.save();
+          context.fillStyle = "#fff";
+          for (const rect of excludedImageRects) {
+            const pad = 2;
+            context.fillRect(
+              Math.max(0, rect.x0 - pad),
+              Math.max(0, rect.y0 - pad),
+              Math.min(canvas.width, rect.x1 + pad) - Math.max(0, rect.x0 - pad),
+              Math.min(canvas.height, rect.y1 + pad) - Math.max(0, rect.y0 - pad),
+            );
+          }
+          context.restore();
+        }
+
+        const blob = await canvasToPngBlob(canvas);
+        let engine = pageOcrEnginesRef.current.get(mode);
+        if (!engine) {
+          engine = new LocalPaddleOcr(mode);
+          pageOcrEnginesRef.current.set(mode, engine);
+        }
+        setPageOcrStatus(`正在使用${OCR_MODE_LABELS[mode]}识别第 ${currentPage} 页…`);
+        const recognition = await engine.recognize(blob);
+        const structured = buildStructuredPdfText(
+          paddleLinesToPdfLines(recognition.lines),
+          canvas.width,
+          canvas.height,
+          excludedImageRects,
+        );
+        if (!structured.text) throw new Error("本页没有识别到可复制的正文");
+        const status = `第 ${currentPage} 页使用${OCR_MODE_LABELS[mode]} · ${structured.keptLines} 行${
+          structured.listItems ? ` · ${structured.listItems} 个列表项` : ""
+        }${structured.tableCount ? ` · ${structured.tableCount} 个表格/${structured.tableRows} 行` : ""
+        }${structured.removedPageNumbers ? ` · 已排除 ${structured.removedPageNumbers} 个页码` : ""}${
+          excludedImageRects.length ? ` · 已屏蔽 ${excludedImageRects.length} 个图片区域` : ""
+        }`;
+        pageTextCacheRef.current.set(cacheKey, { text: structured.text, status });
+        onTextSelected(structured.text);
+        setPageOcrStatus(status);
+      } catch (reason) {
+        setPageOcrStatus(
+          reason instanceof Error ? reason.message : "PDF 页面提取失败",
+        );
+      } finally {
+        setPageOcrBusy(false);
+      }
+    },
+    [file, ocrMode, onTextSelected, pageOcrBusy],
+  );
+
   const readPdfSelection = useCallback((): string | null => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return null;
@@ -2605,6 +2771,21 @@ export function PdfPane({
         >
           搜索
         </button>
+
+        <button
+          type="button"
+          className="pdf-tool-btn"
+          disabled={!file || pageOcrBusy}
+          onClick={(event) => void extractCurrentPage(event.shiftKey)}
+          title={`智能提取本页：原生文字优先，无可用文字层时使用${OCR_MODE_LABELS[normalizeOcrMode(ocrMode)]}。Shift+点击强制 OCR；复制结果不包含页码和图片。`}
+        >
+          {pageOcrBusy ? "提取中…" : "提取本页"}
+        </button>
+        {pageOcrStatus ? (
+          <span className="pdf-page-ocr-status" title={pageOcrStatus}>
+            {pageOcrStatus}
+          </span>
+        ) : null}
 
         <div className="pdf-view-menu" ref={viewMenuRef}>
           <button

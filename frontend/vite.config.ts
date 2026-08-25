@@ -63,10 +63,36 @@ function copyPdfjsAssets(): Plugin {
 export default defineConfig(async () => ({
   plugins: [react(), copyPdfjsAssets()],
   clearScreen: false,
+  resolve: {
+    // PaddleOCR is configured for the portable WASM backend. Avoid bundling
+    // the full WebGPU runtime and use the explicitly shipped JSEP-capable
+    // WASM file instead of emitting a duplicate copy.
+    conditions: [
+      "module",
+      "browser",
+      "development|production",
+      "onnxruntime-web-use-extern-wasm",
+    ],
+    alias: [
+      {
+        find: /^onnxruntime-web$/,
+        replacement: "onnxruntime-web/wasm",
+      },
+    ],
+  },
   // Relative base so cmaps/fonts resolve under Tauri asset protocol
   base: "./",
   optimizeDeps: {
-    include: ["pdfjs-dist"],
+    include: [
+      "pdfjs-dist",
+      "clipper-lib",
+      "js-yaml",
+      "@techstark/opencv-js",
+      "onnxruntime-web/wasm",
+    ],
+    // The SDK resolves its module Worker relative to its own package output;
+    // dependency pre-bundling moves the entry without moving that Worker.
+    exclude: ["@paddleocr/paddleocr-js"],
   },
   server: {
     port: 1420,
@@ -80,7 +106,7 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/public/ocr/**", "**/public/ort/**"],
     },
   },
 }));

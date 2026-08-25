@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("acquire", "release", "renew", "status", "list", "cleanup")]
+    [ValidateSet("acquire", "release", "release-all", "renew", "status", "list", "cleanup", "diagnose")]
     [string]$Action,
 
     [Alias("Path")]
@@ -22,6 +22,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $lockRoot = Join-Path $repoRoot ".agent-locks"
+$waitRoot = Join-Path $lockRoot "waiters"
 $globalResource = ".agent-resources/build-and-portable"
 
 function Get-Sha256Hex([string]$Text) {
@@ -145,6 +146,120 @@ function Get-ActiveLocksUnsafe {
     return @($records)
 }
 
+function Test-WaiterStale($Record) {
+    if (Test-LockExpired $Record) {
+        return $true
+    }
+    if ([string]$Record.machine -ne [System.Environment]::MachineName) {
+        return $false
+    }
+    try {
+        $process = Get-Process -Id ([int]$Record.processId) -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace([string]$Record.processStartedAt)) {
+            $expected = [System.DateTimeOffset]::Parse([string]$Record.processStartedAt)
+            $actual = [System.DateTimeOffset]$process.StartTime
+            if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 2) {
+                return $true
+            }
+        }
+        return $false
+    }
+    catch {
+        return $true
+    }
+}
+
+function Remove-StaleWaitersUnsafe {
+    if (-not (Test-Path -LiteralPath $waitRoot)) {
+        return 0
+    }
+    $removed = 0
+    foreach ($file in Get-ChildItem -LiteralPath $waitRoot -Filter "*.wait.json" -File -ErrorAction SilentlyContinue) {
+        $record = Read-LockFile $file.FullName
+        if ($null -eq $record -or (Test-WaiterStale $record)) {
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            $removed++
+        }
+    }
+    return $removed
+}
+
+function Get-ActiveWaitersUnsafe {
+    Remove-StaleWaitersUnsafe | Out-Null
+    if (-not (Test-Path -LiteralPath $waitRoot)) {
+        return @()
+    }
+    $records = @()
+    foreach ($file in Get-ChildItem -LiteralPath $waitRoot -Filter "*.wait.json" -File -ErrorAction SilentlyContinue) {
+        $record = Read-LockFile $file.FullName
+        if ($null -ne $record -and -not (Test-WaiterStale $record)) {
+            $records += $record
+        }
+    }
+    return @($records)
+}
+
+function Get-WaiterFile([string]$LockOwner) {
+    $key = Get-Sha256Hex ($LockOwner.ToLowerInvariant() + "|" + $PID)
+    return Join-Path $waitRoot ($key + ".wait.json")
+}
+
+function Write-WaiterUnsafe([string]$LockOwner, [string]$Scope, [string[]]$RequestedPaths, [datetimeoffset]$Deadline) {
+    New-Item -ItemType Directory -Path $waitRoot -Force | Out-Null
+    $processStartedAt = try { ([System.DateTimeOffset](Get-Process -Id $PID).StartTime).ToString("o") } catch { "" }
+    $payload = [ordered]@{
+        version = 1
+        kind = "waiter"
+        scope = $Scope
+        paths = @($RequestedPaths)
+        owner = $LockOwner
+        requestedAt = [System.DateTimeOffset]::UtcNow.ToString("o")
+        expiresAt = $Deadline.ToString("o")
+        machine = [System.Environment]::MachineName
+        processId = $PID
+        processStartedAt = $processStartedAt
+    } | ConvertTo-Json
+    $waiterFile = Get-WaiterFile $LockOwner
+    [System.IO.File]::WriteAllText($waiterFile, $payload + [System.Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Remove-OwnWaiterUnsafe([string]$LockOwner) {
+    $waiterFile = Get-WaiterFile $LockOwner
+    Remove-Item -LiteralPath $waiterFile -Force -ErrorAction SilentlyContinue
+}
+
+function Get-WaiterConflicts($Waiter, $ActiveLocks) {
+    if ([string]$Waiter.scope -eq "global") {
+        return @($ActiveLocks | Where-Object { $_.owner -ne $Waiter.owner })
+    }
+    $wanted = @($Waiter.paths)
+    return @($ActiveLocks | Where-Object {
+        $_.owner -ne $Waiter.owner -and ($_.scope -eq "global" -or $wanted -contains $_.path)
+    })
+}
+
+function Test-WaitReachable([string]$From, [string]$Target, $Edges) {
+    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    $visited = @{}
+    $pending.Push($From)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        if ($current -eq $Target) {
+            return $true
+        }
+        if ($visited.ContainsKey($current)) {
+            continue
+        }
+        $visited[$current] = $true
+        foreach ($next in @($Edges | Where-Object { $_.waiter -eq $current } | ForEach-Object { [string]$_.blocker } | Sort-Object -Unique)) {
+            if (-not $visited.ContainsKey($next)) {
+                $pending.Push($next)
+            }
+        }
+    }
+    return $false
+}
+
 function Write-LockFileUnsafe([string]$LockFile, [string]$Path, [string]$Scope, [string]$LockOwner, [datetimeoffset]$ExpiresAt, $Existing) {
     New-Item -ItemType Directory -Path $lockRoot -Force | Out-Null
     $acquiredAt = if ($null -ne $Existing -and -not [string]::IsNullOrWhiteSpace([string]$Existing.acquiredAt)) {
@@ -185,21 +300,90 @@ if (-not $Global -and $Action -in @("acquire", "release", "renew", "status") -an
 $globalLockFile = Join-Path $lockRoot "global.lock.json"
 
 if ($Action -eq "cleanup") {
-    $count = Invoke-WithRegistryMutex { Remove-ExpiredLocksUnsafe }
-    Write-Output "已清理 $count 个过期锁。"
+    $result = Invoke-WithRegistryMutex {
+        [pscustomobject]@{
+            Locks = Remove-ExpiredLocksUnsafe
+            Waiters = Remove-StaleWaitersUnsafe
+        }
+    }
+    Write-Output "已清理 $($result.Locks) 个过期锁、$($result.Waiters) 个失效等待记录。"
     exit 0
 }
 
 if ($Action -eq "list") {
-    $active = Invoke-WithRegistryMutex { @(Get-ActiveLocksUnsafe) }
-    if ($active.Count -eq 0) {
+    $snapshot = Invoke-WithRegistryMutex {
+        [pscustomobject]@{
+            Locks = @(Get-ActiveLocksUnsafe)
+            Waiters = @(Get-ActiveWaitersUnsafe)
+        }
+    }
+    if ($snapshot.Locks.Count -eq 0) {
         Write-Output "当前没有活动锁。"
     }
     else {
-        $active |
+        Write-Output "活动锁："
+        $snapshot.Locks |
             Sort-Object scope, path |
             Select-Object scope, path, owner, acquiredAt, expiresAt |
             Format-Table -AutoSize
+    }
+    if ($snapshot.Waiters.Count -eq 0) {
+        Write-Output "当前没有锁等待者。"
+    }
+    else {
+        Write-Output "锁等待者："
+        $snapshot.Waiters |
+            Sort-Object requestedAt |
+            Select-Object scope, @{Name="paths"; Expression={ @($_.paths) -join "," }}, owner, processId, requestedAt, expiresAt |
+            Format-Table -AutoSize
+    }
+    exit 0
+}
+
+if ($Action -eq "diagnose") {
+    $snapshot = Invoke-WithRegistryMutex {
+        [pscustomobject]@{
+            Locks = @(Get-ActiveLocksUnsafe)
+            Waiters = @(Get-ActiveWaitersUnsafe)
+        }
+    }
+    $edges = @()
+    $hazards = @()
+    foreach ($waiter in $snapshot.Waiters) {
+        $conflicts = @(Get-WaiterConflicts $waiter $snapshot.Locks)
+        foreach ($blocker in $conflicts) {
+            $edges += [pscustomobject]@{
+                waiter = $waiter.owner
+                requested = if ($waiter.scope -eq "global") { $globalResource } else { @($waiter.paths) -join "," }
+                blocker = $blocker.owner
+                blockedBy = $blocker.path
+            }
+        }
+        $held = @($snapshot.Locks | Where-Object { $_.owner -eq $waiter.owner })
+        if ($held.Count -gt 0 -and $conflicts.Count -gt 0) {
+            $hazards += "owner=$($waiter.owner) 在持有 $($held.Count) 个锁时等待其他 owner；必须先释放自己的锁，再重新一次性申请。"
+        }
+    }
+    foreach ($edge in $edges) {
+        $remainingEdges = @($edges | Where-Object { $_ -ne $edge })
+        if (Test-WaitReachable $edge.blocker $edge.waiter $remainingEdges) {
+            $hazards += "检测到循环等待链，其中包含：$($edge.waiter) -> $($edge.blocker)。"
+        }
+    }
+    if ($edges.Count -gt 0) {
+        Write-Output "等待关系："
+        $edges | Sort-Object waiter, blocker -Unique | Format-Table -AutoSize
+    }
+    if ($hazards.Count -gt 0) {
+        $hazards | Sort-Object -Unique | ForEach-Object { [System.Console]::Error.WriteLine("锁风险：$_") }
+        [System.Console]::Error.WriteLine("处理建议：通知相关 owner 正常 release；不得 -Force。确认 owner 已停止且用户明确同意后，才可强制处理未过期锁。")
+        exit 3
+    }
+    if ($edges.Count -eq 0) {
+        Write-Output "未发现锁等待关系或循环等待。"
+    }
+    else {
+        Write-Output "存在正常等待，但未发现持锁等待或双向循环。"
     }
     exit 0
 }
@@ -221,11 +405,56 @@ if ($Action -eq "status") {
 
 Assert-OwnerRequired
 
+if ($Action -eq "release-all") {
+    $released = Invoke-WithRegistryMutex {
+        $active = @(Get-ActiveLocksUnsafe)
+        $records = @($active | Where-Object { $_.owner -eq $Owner })
+        foreach ($record in $records) {
+            Remove-Item -LiteralPath $record.LockFile -Force
+        }
+        if (Test-Path -LiteralPath $waitRoot) {
+            foreach ($file in Get-ChildItem -LiteralPath $waitRoot -Filter "*.wait.json" -File -ErrorAction SilentlyContinue) {
+                $waiter = Read-LockFile $file.FullName
+                if ($null -ne $waiter -and $waiter.owner -eq $Owner) {
+                    Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        return $records
+    }
+    Write-Output "已正常释放 owner=$Owner 的全部 $($released.Count) 个锁。"
+    if ($released.Count -gt 0) {
+        $released | Select-Object scope, path, acquiredAt | Format-Table -AutoSize
+    }
+    exit 0
+}
+
 if ($Action -eq "acquire") {
     $deadline = [System.DateTimeOffset]::UtcNow.AddSeconds($WaitSeconds)
     while ($true) {
         $attempt = Invoke-WithRegistryMutex {
             $active = @(Get-ActiveLocksUnsafe)
+            $ownedFiles = @($active | Where-Object { $_.owner -eq $Owner -and $_.scope -eq "file" })
+            $ownedGlobal = @($active | Where-Object { $_.owner -eq $Owner -and $_.scope -eq "global" })
+            if ($Global -and $ownedFiles.Count -gt 0 -and $ownedGlobal.Count -eq 0) {
+                return [pscustomobject]@{
+                    Success = $false
+                    InvalidReason = "禁止从文件锁升级为全局锁：owner=$Owner 当前持有 $($ownedFiles.Count) 个文件锁。请先正常 release，再在不持有任何锁时申请全局锁。"
+                    Conflicts = @()
+                }
+            }
+            if (-not $Global -and $ownedGlobal.Count -eq 0 -and $ownedFiles.Count -gt 0) {
+                $wanted = @($targets | ForEach-Object { $_.Path })
+                $ownedPaths = @($ownedFiles | ForEach-Object { $_.path })
+                $additional = @($wanted | Where-Object { $ownedPaths -notcontains $_ })
+                if ($additional.Count -gt 0) {
+                    return [pscustomobject]@{
+                        Success = $false
+                        InvalidReason = "禁止逐步扩展文件锁集合：owner=$Owner 已持有文件锁，又申请 $($additional -join ', ')。请先正常 release，再一次性申请完整文件集合。"
+                        Conflicts = @()
+                    }
+                }
+            }
             $conflicts = @()
             if ($Global) {
                 $conflicts = @($active | Where-Object { $_.owner -ne $Owner })
@@ -238,6 +467,10 @@ if ($Action -eq "acquire") {
             }
 
             if ($conflicts.Count -gt 0) {
+                if ($WaitSeconds -gt 0) {
+                    $requestedPaths = if ($Global) { @($globalResource) } else { @($targets | ForEach-Object { $_.Path }) }
+                    Write-WaiterUnsafe $Owner $(if ($Global) { "global" } else { "file" }) $requestedPaths $deadline
+                }
                 return [pscustomobject]@{ Success = $false; Conflicts = $conflicts }
             }
 
@@ -252,7 +485,14 @@ if ($Action -eq "acquire") {
                     Write-LockFileUnsafe $target.LockFile $target.Path "file" $Owner $expires $existing
                 }
             }
+            Remove-OwnWaiterUnsafe $Owner
             return [pscustomobject]@{ Success = $true; Conflicts = @(); ExpiresAt = $expires }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$attempt.InvalidReason)) {
+            Invoke-WithRegistryMutex { Remove-OwnWaiterUnsafe $Owner }
+            [System.Console]::Error.WriteLine($attempt.InvalidReason)
+            exit 3
         }
 
         if ($attempt.Success) {
@@ -267,6 +507,7 @@ if ($Action -eq "acquire") {
         }
 
         if ([System.DateTimeOffset]::UtcNow -ge $deadline) {
+            Invoke-WithRegistryMutex { Remove-OwnWaiterUnsafe $Owner }
             $conflictTable = $attempt.Conflicts |
                 Select-Object scope, path, owner, acquiredAt, expiresAt |
                 Format-Table -AutoSize | Out-String

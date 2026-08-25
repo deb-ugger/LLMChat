@@ -56,6 +56,7 @@ const defaultSettings: Settings = {
   translateContextParagraphs: 0,
   translateGlossary: "[]",
   ocrLang: "eng",
+  ocrMode: "fast",
   ocrAutoTranslate: true,
   ocrTranslateProvider: "bing",
   ocrTranslateSource: "en",
@@ -186,6 +187,10 @@ export default function App() {
             translateContextParagraphs: s.translateContextParagraphs ?? 0,
             translateGlossary: s.translateGlossary || "[]",
             ocrLang: s.ocrLang || "eng",
+            ocrMode:
+              s.ocrMode === "precise" || s.ocrMode === "english"
+                ? s.ocrMode
+                : "fast",
             ocrAutoTranslate: s.ocrAutoTranslate ?? true,
             ocrTranslateProvider: (() => {
               const p = String(s.ocrTranslateProvider || "bing");
@@ -554,6 +559,7 @@ export default function App() {
         >
           <LiteratureView
             visible={page === "literature"}
+            ocrMode={settings.ocrMode}
             translateProvider={settings.translateProvider}
             translateSource={settings.translateSource}
             translateTarget={settings.translateTarget}
@@ -590,6 +596,7 @@ export default function App() {
           <ImageOcrView
             active={page === "image"}
             ocrLang={settings.ocrLang}
+            ocrMode={settings.ocrMode}
             autoTranslate={settings.ocrAutoTranslate}
             translateProvider={settings.ocrTranslateProvider}
             translateSource={settings.ocrTranslateSource}
