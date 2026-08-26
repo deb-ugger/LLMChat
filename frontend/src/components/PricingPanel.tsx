@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -56,6 +57,7 @@ type Props = {
   active: boolean;
   /** Keeps pricing model rows in sync with 通用 vendor-models.json */
   vendorModelsOverride: VendorModelsOverride;
+  scrollbarHost: HTMLDivElement | null;
   notify: (message: string, ok?: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
 };
@@ -723,7 +725,13 @@ function PricingLockButton(props: {
 
 export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
   function PricingPanel(
-    { active, vendorModelsOverride, notify, onDirtyChange },
+    {
+      active,
+      vendorModelsOverride,
+      scrollbarHost,
+      notify,
+      onDirtyChange,
+    },
     ref,
   ) {
     const [table, setTable] = useState<PricingTable>(() => {
@@ -752,6 +760,9 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       [onDirtyChange],
     );
     const tableRef = useRef(table);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const unifiedScrollRef = useRef<HTMLDivElement>(null);
+    const unifiedSpacerRef = useRef<HTMLDivElement>(null);
     tableRef.current = table;
     const presetSigRef = useRef(
       modelSetSignature(resolvePresets(vendorModelsOverride)),
@@ -1051,6 +1062,59 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       }
       return out;
     }, [activePresets, table.rules]);
+
+    const syncVendorScrolls = useCallback((scrollLeft: number) => {
+      const root = panelRef.current;
+      if (!root) return;
+      root
+        .querySelectorAll<HTMLElement>(".pricing-table-vendor-scroll")
+        .forEach((scroll) => {
+          if (scroll.scrollLeft !== scrollLeft) scroll.scrollLeft = scrollLeft;
+        });
+      const unified = unifiedScrollRef.current;
+      if (unified && unified.scrollLeft !== scrollLeft) {
+        unified.scrollLeft = scrollLeft;
+      }
+    }, []);
+
+    useLayoutEffect(() => {
+      const root = panelRef.current;
+      const unified = unifiedScrollRef.current;
+      const spacer = unifiedSpacerRef.current;
+      if (!root || !unified || !spacer || !scrollbarHost) return;
+
+      const vendorScrolls = Array.from(
+        root.querySelectorAll<HTMLElement>(".pricing-table-vendor-scroll"),
+      );
+      const update = () => {
+        const maxScrollWidth = vendorScrolls.reduce(
+          (width, scroll) => Math.max(width, scroll.scrollWidth),
+          0,
+        );
+        const minClientWidth = vendorScrolls.reduce(
+          (width, scroll) => Math.min(width, scroll.clientWidth),
+          Number.POSITIVE_INFINITY,
+        );
+        spacer.style.width = `${maxScrollWidth}px`;
+        scrollbarHost.hidden =
+          vendorScrolls.length === 0 ||
+          maxScrollWidth <= minClientWidth + 1;
+        if (!scrollbarHost.hidden) syncVendorScrolls(unified.scrollLeft);
+      };
+
+      const observer = new ResizeObserver(update);
+      observer.observe(root);
+      vendorScrolls.forEach((scroll) => {
+        observer.observe(scroll);
+        const table = scroll.firstElementChild;
+        if (table) observer.observe(table);
+      });
+      update();
+      return () => {
+        observer.disconnect();
+        scrollbarHost.hidden = false;
+      };
+    }, [loading, scrollbarHost, syncVendorScrolls, vendorGroups]);
 
     const now = useMemo(() => new Date(nowTick), [nowTick]);
 
@@ -1365,10 +1429,10 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     };
 
     const RATE_FIELDS = [
-      "input",
-      "output",
       "cacheRead",
+      "input",
       "cacheWrite",
+      "output",
     ] as const;
 
     const renderPeakWindowEditor = (rule: PricingRule, locked: boolean) => {
@@ -1644,7 +1708,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       : null;
 
     return (
-      <div className="pricing-panel">
+      <div ref={panelRef} className="pricing-panel">
         <div className="pricing-sync-banner" role="note">
           <strong>模型列表与「通用」同步（只增不减）</strong>
           <span>
@@ -1727,25 +1791,30 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                         </select>
                       </label>
                     </div>
-                    <div className="pricing-table-scroll">
+                    <div
+                      className="pricing-table-scroll pricing-table-vendor-scroll"
+                      onScroll={(event) =>
+                        syncVendorScrolls(event.currentTarget.scrollLeft)
+                      }
+                    >
                       <table className="pricing-table pricing-table-current">
                         <thead>
                           <tr>
                             <th>模型 ID</th>
-                            <th title="百万tokens输入（缓存未命中）">
-                              <span className="pricing-th-main">Input</span>
-                              <span className="pricing-th-unit">{unitShort}</span>
-                            </th>
-                            <th title="百万tokens输出">
-                              <span className="pricing-th-main">Output</span>
-                              <span className="pricing-th-unit">{unitShort}</span>
-                            </th>
                             <th title="百万tokens输入（缓存命中）">
                               <span className="pricing-th-main">Cache Read</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
+                            <th title="百万tokens输入（缓存未命中）">
+                              <span className="pricing-th-main">Input</span>
+                              <span className="pricing-th-unit">{unitShort}</span>
+                            </th>
                             <th title="百万tokens缓存写入">
                               <span className="pricing-th-main">Cache Write</span>
+                              <span className="pricing-th-unit">{unitShort}</span>
+                            </th>
+                            <th title="百万tokens输出">
+                              <span className="pricing-th-main">Output</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
                             <th>操作</th>
@@ -1902,20 +1971,20 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                 时段
                               </th>
                               <th>
-                                <span className="pricing-th-main">Input</span>
-                              </th>
-                              <th>
-                                <span className="pricing-th-main">Output</span>
-                              </th>
-                              <th>
                                 <span className="pricing-th-main">
                                   Cache Read
                                 </span>
                               </th>
-                              <th className="pricing-rates-end">
+                              <th>
+                                <span className="pricing-th-main">Input</span>
+                              </th>
+                              <th>
                                 <span className="pricing-th-main">
                                   Cache Write
                                 </span>
+                              </th>
+                              <th className="pricing-rates-end">
+                                <span className="pricing-th-main">Output</span>
                               </th>
                               <th className="pricing-row-actions">操作</th>
                             </tr>
@@ -2016,23 +2085,19 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                   </th>
                                   <th>
                                     <span className="pricing-th-main">
-                                      Input
-                                    </span>
-                                  </th>
-                                  <th>
-                                    <span className="pricing-th-main">
-                                      Output
-                                    </span>
-                                  </th>
-                                  <th>
-                                    <span className="pricing-th-main">
                                       Cache Read
                                     </span>
                                   </th>
-                                  <th className="pricing-rates-end">
+                                  <th>
+                                    <span className="pricing-th-main">Input</span>
+                                  </th>
+                                  <th>
                                     <span className="pricing-th-main">
                                       Cache Write
                                     </span>
+                                  </th>
+                                  <th className="pricing-rates-end">
+                                    <span className="pricing-th-main">Output</span>
                                   </th>
                                 </tr>
                               </thead>
@@ -2337,6 +2402,25 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                 </div>
               </div>,
               document.body,
+            )
+          : null}
+        {scrollbarHost
+          ? createPortal(
+              <div
+                ref={unifiedScrollRef}
+                className="pricing-unified-scroll"
+                aria-label="横向滚动全部厂商价目表"
+                tabIndex={0}
+                onScroll={(event) =>
+                  syncVendorScrolls(event.currentTarget.scrollLeft)
+                }
+              >
+                <div
+                  ref={unifiedSpacerRef}
+                  className="pricing-unified-scroll-spacer"
+                />
+              </div>,
+              scrollbarHost,
             )
           : null}
       </div>

@@ -10121,17 +10121,17 @@ body.row-resizing .textLayer {
   font-size: 13px;
 }
 
-/* Content bases total 1120px; all ten columns share surplus width equally. */
-.stats-table th:nth-child(1) { width: calc(10% + 28px); }
-.stats-table th:nth-child(2) { width: calc(10% - 32px); }
-.stats-table th:nth-child(3) { width: calc(10% - 44px); }
-.stats-table th:nth-child(4) { width: calc(10% + 58px); }
-.stats-table th:nth-child(5) { width: calc(10% - 42px); }
-.stats-table th:nth-child(6) { width: calc(10% - 32px); }
-.stats-table th:nth-child(7) { width: calc(10% + 48px); }
-.stats-table th:nth-child(8) { width: calc(10% - 12px); }
-.stats-table th:nth-child(9) { width: calc(10% - 22px); }
-.stats-table th:nth-child(10) { width: calc(10% + 50px); }
+/* Pure percentages are honored consistently by fixed-layout tables. */
+.stats-table th:nth-child(1) { width: 15%; }
+.stats-table th:nth-child(2) { width: 10%; }
+.stats-table th:nth-child(3) { width: 7%; }
+.stats-table th:nth-child(4) { width: 20%; }
+.stats-table th:nth-child(5) { width: 7%; }
+.stats-table th:nth-child(6) { width: 9%; }
+.stats-table th:nth-child(7) { width: 9%; }
+.stats-table th:nth-child(8) { width: 8%; }
+.stats-table th:nth-child(9) { width: 8%; }
+.stats-table th:nth-child(10) { width: 7%; }
 
 .stats-table th,
 .stats-table td {
@@ -10162,6 +10162,7 @@ body.row-resizing .textLayer {
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .stats-year {
@@ -10538,6 +10539,42 @@ body.row-resizing .textLayer {
   padding: 0 2px 2px;
 }
 
+.pricing-table-vendor-scroll {
+  scrollbar-width: none;
+  padding-bottom: 0;
+}
+
+.pricing-table-vendor-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-pricing-scrollbar-slot {
+  flex: 0 0 16px;
+  min-width: 0;
+  height: 16px;
+  box-sizing: border-box;
+  padding: 0 28px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.pricing-unified-scroll {
+  width: 100%;
+  height: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+}
+
+.pricing-unified-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.pricing-unified-scroll-spacer {
+  height: 1px;
+}
+
 .pricing-table {
   width: 100%;
   border-collapse: separate;
@@ -10546,17 +10583,17 @@ body.row-resizing .textLayer {
 }
 
 .pricing-table-current {
-  min-width: 820px;
+  min-width: 920px;
   table-layout: fixed;
 }
 
-/* Content bases total 760px; all six columns share surplus width equally. */
-.pricing-table-current th:nth-child(1) { width: calc(16.6667% + 53.33px); }
+/* Keep long model IDs on one line while allowing all columns to fit medium windows. */
+.pricing-table-current th:nth-child(1) { width: 42%; }
 .pricing-table-current th:nth-child(2),
 .pricing-table-current th:nth-child(3),
 .pricing-table-current th:nth-child(4),
-.pricing-table-current th:nth-child(5) { width: calc(16.6667% - 6.67px); }
-.pricing-table-current th:nth-child(6) { width: calc(16.6667% - 26.67px); }
+.pricing-table-current th:nth-child(5) { width: 10.5%; }
+.pricing-table-current th:nth-child(6) { width: 16%; }
 
 .pricing-table thead th {
   position: sticky;
@@ -10686,8 +10723,19 @@ body.row-resizing .textLayer {
   font-weight: 700;
   color: var(--text);
   line-height: 1.35;
-  word-break: break-all;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
   text-align: left;
+}
+
+.pricing-table-current .pricing-model-cell {
+  max-width: none;
+}
+
+.pricing-table-current .pricing-model-cell-inner {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .pricing-table tbody tr.is-locked .pricing-rate-input:disabled,
@@ -11655,32 +11703,34 @@ body.row-resizing .textLayer {
   background: color-mix(in srgb, var(--accent) 8%, #fff);
 }
 
-/* Fixed-column pricing editors use the same equal-surplus-width rule. */
+/* Fixed-column pricing editors reserve space according to content density. */
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table {
   min-width: 1150px;
   table-layout: fixed;
 }
 
-/* Content bases total 1050px; all nine columns share surplus width equally. */
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(1),
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(2) {
-  width: calc(11.1111% + 23.33px);
+  width: 13%;
 }
 
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(3) {
-  width: calc(11.1111% + 63.33px);
+  width: 16%;
 }
 
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(4) {
-  width: calc(11.1111% - 26.67px);
+  width: 8%;
 }
 
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(5),
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(6),
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(7),
-.pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(8),
+.pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(8) {
+  width: 8.75%;
+}
+
 .pricing-rule-modal:not(.pricing-sub-modal) .pricing-table th:nth-child(9) {
-  width: calc(11.1111% - 16.67px);
+  width: 15%;
 }
 
 .pricing-sub-table {
@@ -11688,11 +11738,11 @@ body.row-resizing .textLayer {
   table-layout: fixed;
 }
 
-/* Content bases total 770px; all seven columns share surplus width equally. */
-.pricing-sub-table th:nth-child(1) { width: calc(14.2857% - 10px); }
-.pricing-sub-table th:nth-child(2) { width: calc(14.2857% + 70px); }
-.pricing-sub-table th:nth-child(3) { width: calc(14.2857% - 20px); }
+/* Weekday rules need more room than the compact status and price fields. */
+.pricing-sub-table th:nth-child(1) { width: 12%; }
+.pricing-sub-table th:nth-child(2) { width: 22%; }
+.pricing-sub-table th:nth-child(3) { width: 12%; }
 .pricing-sub-table th:nth-child(4),
 .pricing-sub-table th:nth-child(5),
 .pricing-sub-table th:nth-child(6),
-.pricing-sub-table th:nth-child(7) { width: calc(14.2857% - 10px); }
+.pricing-sub-table th:nth-child(7) { width: 13.5%; }

@@ -955,6 +955,8 @@ export function SettingsView({
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
   const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
   const pricingPanelRef = useRef<PricingPanelHandle>(null);
+  const [pricingScrollbarHost, setPricingScrollbarHost] =
+    useState<HTMLDivElement | null>(null);
   const [pricingDirty, setPricingDirty] = useState(false);
   const [unityDirty, setUnityDirty] = useState(false);
   const [unityTarget, setUnityTarget] = useState<UnitySettingsTarget>({
@@ -4926,11 +4928,19 @@ export function SettingsView({
             ref={pricingPanelRef}
             active={tab === "pricing"}
             vendorModelsOverride={vendorModelsOverride}
+            scrollbarHost={pricingScrollbarHost}
             notify={notify}
             onDirtyChange={setPricingDirty}
           />
         )}
       </div>
+
+      {tab === "pricing" ? (
+        <div
+          ref={setPricingScrollbarHost}
+          className="settings-pricing-scrollbar-slot"
+        />
+      ) : null}
 
       <div className="settings-save-bar">
         <div className="settings-save-bar-text">
