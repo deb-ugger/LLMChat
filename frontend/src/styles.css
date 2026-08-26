@@ -6417,6 +6417,18 @@ body.ocr-image-resizing * {
   max-height: 100%;
   display: block;
   text-align: left;
+  transition: transform 0.14s ease, opacity 0.14s ease;
+}
+
+.ocr-box[data-field="translation"] {
+  cursor: grab;
+  touch-action: none;
+}
+
+.ocr-box.is-dragging {
+  cursor: grabbing;
+  transition: none;
+  z-index: 6;
 }
 
 /* Selected OCR box: clearer overlay text */
@@ -6434,7 +6446,9 @@ body.ocr-image-resizing * {
 }
 
 .ocr-stage.has-selection .ocr-box:not(.active) {
-  opacity: 0.28;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 @keyframes ocr-selection-flash {
@@ -6637,6 +6651,15 @@ body.ocr-image-resizing * {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+.ocr-rerun-btn {
+  padding: 3px 8px;
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--bg-muted));
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .toolbar-language-pair {

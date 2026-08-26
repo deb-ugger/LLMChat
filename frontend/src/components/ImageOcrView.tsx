@@ -739,7 +739,6 @@ function OcrPageCard({
   selectedBlockId,
   selectedField,
   showTranslation,
-  rerunDisabled,
   onSelectPage,
   onSelectBlock,
   onRerun,
@@ -751,7 +750,6 @@ function OcrPageCard({
   selectedBlockId: string | null;
   selectedField: OcrSelectionField | null;
   showTranslation: boolean;
-  rerunDisabled: boolean;
   onSelectPage: () => void;
   onSelectBlock: (id: string, field: OcrSelectionField) => void;
   onRerun: () => void;
@@ -762,7 +760,46 @@ function OcrPageCard({
   const [baseImageWidth, setBaseImageWidth] = useState<number | null>(null);
   const [imageScale, setImageScale] = useState(1);
   const [imageResizing, setImageResizing] = useState(false);
+  const [draggedOverlay, setDraggedOverlay] = useState<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const initializedImageRef = useRef<string | null>(null);
+
+  const beginOverlayDrag = useCallback(
+    (
+      e: ReactPointerEvent<HTMLButtonElement>,
+      id: string,
+      field: OcrSelectionField,
+    ) => {
+      if (field !== "translation" || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onSelectBlock(id, field);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      setDraggedOverlay({ id, x: 0, y: 0 });
+
+      const onMove = (event: PointerEvent) => {
+        setDraggedOverlay({
+          id,
+          x: event.clientX - startX,
+          y: event.clientY - startY,
+        });
+      };
+      const onUp = () => {
+        setDraggedOverlay(null);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [onSelectBlock],
+  );
 
   useEffect(() => {
     initializedImageRef.current = null;
@@ -929,8 +966,8 @@ function OcrPageCard({
         <span className="ocr-page-meta">
           <button
             type="button"
-            className="ocr-copy-btn"
-            disabled={rerunDisabled || page.busy}
+            className="ocr-copy-btn ocr-rerun-btn"
+            disabled={page.busy}
             title="使用当前识别模式重新识别此图片"
             onClick={(e) => {
               e.stopPropagation();
@@ -988,6 +1025,7 @@ function OcrPageCard({
           const fontSize = label
             ? overlayFontSize(boxW, boxH, label)
             : Math.max(8, boxH * 0.75);
+          const dragOffset = draggedOverlay?.id === b.id ? draggedOverlay : null;
           return (
             <button
               key={b.id}
@@ -997,7 +1035,7 @@ function OcrPageCard({
               data-font-max={fontSize.toFixed(1)}
               className={
                 blockSelected
-                  ? "ocr-box active"
+                  ? `ocr-box active${dragOffset ? " is-dragging" : ""}`
                   : selected && !selectedBlockId
                     ? "ocr-box page-active"
                     : "ocr-box"
@@ -1010,7 +1048,11 @@ function OcrPageCard({
                 fontSize: `${fontSize.toFixed(1)}px`,
                 lineHeight: 1.2,
                 whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
+                transform: dragOffset
+                  ? `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0)`
+                  : undefined,
               }}
+              onPointerDown={(e) => beginOverlayDrag(e, b.id, displayedField)}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectBlock(b.id, displayedField);
@@ -1925,14 +1967,16 @@ export function ImageOcrView({
         void drainQueue();
         return;
       }
-      setBusy(pagesRef.current.some((p) => p.busy));
+      const stillBusy = pagesRef.current.some((p) => p.busy);
+      setBusy(stillBusy);
+      if (!stillBusy) setStatus(null);
     }
   }, [runOcrForPage]);
 
   const rerunPage = useCallback(
     (pageId: string) => {
       const page = pagesRef.current.find((item) => item.id === pageId);
-      if (!page || page.busy || drainingRef.current) return;
+      if (!page || page.busy) return;
 
       queueRef.current = queueRef.current.filter((job) => job.pageId !== pageId);
       queueRef.current.push({ pageId, file: page.file });
@@ -2492,7 +2536,6 @@ export function ImageOcrView({
                   selectedBlockId={selectedBlockId}
                   selectedField={selectedField}
                   showTranslation={showTranslation}
-                  rerunDisabled={busy}
                   onSelectPage={() => selectPage(page.id)}
                   onSelectBlock={selectBlock}
                   onRerun={() => rerunPage(page.id)}
