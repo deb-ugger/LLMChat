@@ -964,6 +964,19 @@ function OcrPageCard({
           {page.label ? ` · ${page.label}` : ""}
         </span>
         <span className="ocr-page-meta">
+          <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
+            缩放 {Math.round(imageScale * 100)}%
+          </span>
+          <span className="ocr-page-status">
+            {page.busy
+              ? page.statusText || "处理中…"
+              : page.error
+                ? page.error
+                : page.statusText ||
+                  (page.blocks.length
+                    ? `${page.blocks.length} 段`
+                    : "等待识别")}
+          </span>
           <button
             type="button"
             className="ocr-copy-btn ocr-rerun-btn"
@@ -975,18 +988,7 @@ function OcrPageCard({
             }}
           >
             重新识别
-          </button>{" "}
-          <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
-            {Math.round(imageScale * 100)}%
-          </span>
-          {page.busy
-            ? page.statusText || "处理中…"
-            : page.error
-              ? page.error
-              : page.statusText ||
-                (page.blocks.length
-                  ? `${page.blocks.length} 段`
-                  : "等待识别")}
+          </button>
         </span>
       </header>
       <div
