@@ -31,34 +31,77 @@ struct ModelSpec {
 
 constexpr ModelSpec kMediumDet{
     "PP-OCRv6_medium_det",
-    "PP-OCRv6_medium_det_infer.tar",
-    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_infer.tar",
-    62279680,
+    "PP-OCRv6_medium_det_onnx_infer.tar",
+    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_onnx_infer.tar",
+    62044160,
 };
 constexpr ModelSpec kMediumRec{
     "PP-OCRv6_medium_rec",
-    "PP-OCRv6_medium_rec_infer.tar",
-    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_rec_infer.tar",
-    76851200,
+    "PP-OCRv6_medium_rec_onnx_infer.tar",
+    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_rec_onnx_infer.tar",
+    76718080,
 };
 constexpr ModelSpec kEnglishRec{
     "en_PP-OCRv5_mobile_rec",
-    "en_PP-OCRv5_mobile_rec_infer.tar",
-    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/en_PP-OCRv5_mobile_rec_infer.tar",
-    8007680,
+    "en_PP-OCRv5_mobile_rec_onnx_infer.tar",
+    "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/en_PP-OCRv5_mobile_rec_onnx_infer.tar",
+    7874560,
 };
 constexpr std::array<const ModelSpec*, 3> kDownloadable{
     &kMediumDet,
     &kMediumRec,
     &kEnglishRec,
 };
+constexpr std::array<const char*, 3> kLegacyPaddleModels{
+    "PP-OCRv6_medium_det_infer.tar",
+    "PP-OCRv6_medium_rec_infer.tar",
+    "en_PP-OCRv5_mobile_rec_infer.tar",
+};
 constexpr std::uintmax_t kFastModelBytes = 9891840 + 21319680;
+
+bool hasOnnxTarEntries(const fs::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return false;
+    bool foundOnnx = false;
+    bool foundYaml = false;
+    std::array<char, 512> header{};
+    while (input.read(header.data(), static_cast<std::streamsize>(header.size())))
+    {
+        if (std::all_of(header.begin(), header.end(), [](char value) { return value == 0; }))
+            break;
+        const auto nameEnd = std::find(header.begin(), header.begin() + 100, '\0');
+        const std::string name(header.begin(), nameEnd);
+        const auto slash = name.find_last_of('/');
+        const std::string baseName = slash == std::string::npos ? name : name.substr(slash + 1);
+        foundOnnx = foundOnnx || baseName == "inference.onnx";
+        foundYaml = foundYaml || baseName == "inference.yml";
+
+        std::uintmax_t size = 0;
+        for (std::size_t index = 124; index < 136; ++index)
+        {
+            const char digit = header[index];
+            if (digit >= '0' && digit <= '7')
+                size = size * 8 + static_cast<unsigned>(digit - '0');
+        }
+        const auto padded = static_cast<std::streamoff>(((size + 511) / 512) * 512);
+        input.seekg(padded, std::ios::cur);
+        if (!input)
+            return false;
+        if (foundOnnx && foundYaml)
+            return true;
+    }
+    return foundOnnx && foundYaml;
+}
 
 bool isComplete(const fs::path& root, const ModelSpec& spec)
 {
     std::error_code ec;
-    return fs::is_regular_file(root / spec.fileName, ec)
-        && fs::file_size(root / spec.fileName, ec) == spec.bytes && !ec;
+    const fs::path path = root / spec.fileName;
+    return fs::is_regular_file(path, ec)
+        && fs::file_size(path, ec) == spec.bytes && !ec
+        && hasOnnxTarEntries(path);
 }
 
 std::uintmax_t cachedBytes(const fs::path& root)
@@ -197,6 +240,8 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
         out.close();
         if (written != spec.bytes)
             throw std::runtime_error("模型下载不完整，请重试");
+        if (!hasOnnxTarEntries(partial))
+            throw std::runtime_error("模型格式无效：缺少 inference.onnx 或 inference.yml");
         fs::remove(destination, ec);
         ec.clear();
         fs::rename(partial, destination, ec);
@@ -241,6 +286,18 @@ json modeStatus(const char* id, const char* label, bool builtIn, bool installed,
 OcrModelStore::OcrModelStore(fs::path dataDir)
     : root_(std::move(dataDir) / "ocr-models")
 {
+    // Releases before the browser ONNX runner used Paddle-native archives.
+    // They can never initialize in paddleocr-js, so remove only those exact
+    // obsolete cache names and let the normal downloader fetch valid ONNX tar files.
+    std::error_code ec;
+    for (const char* fileName : kLegacyPaddleModels)
+    {
+        const fs::path path = root_ / fileName;
+        fs::remove(path, ec);
+        ec.clear();
+        fs::remove(path.wstring() + L".part", ec);
+        ec.clear();
+    }
 }
 
 json OcrModelStore::status() const

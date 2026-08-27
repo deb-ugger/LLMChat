@@ -285,7 +285,7 @@ export function TranslatePanel({
       >
         <input
           value={manual}
-          placeholder="输入单词查词典（不改动上方原文）"
+          placeholder="输入单词查词典"
           onChange={(e) => setManual(e.target.value)}
           enterKeyHint="search"
         />

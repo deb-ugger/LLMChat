@@ -11,7 +11,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { createWorker, PSM, type Worker } from "tesseract.js";
 import { api, type OcrMode, type OcrModelStatus } from "../api";
 import { copyText } from "../clipboard";
 import { toFriendlyError } from "../friendlyError";
@@ -52,7 +51,6 @@ type OcrPage = {
 };
 
 type Props = {
-  ocrLang: string;
   ocrMode: string;
   autoTranslate: boolean;
   translateProvider: string;
@@ -125,52 +123,8 @@ function isJunkText(text: string): boolean {
   return letters.length === 0 && t.length < 4;
 }
 
-function coversPoint(box: BBoxLine, x: number, y: number): boolean {
-  const pad = Math.max(2, box.lineH * 0.15);
-  return (
-    x >= box.x0 - pad &&
-    x <= box.x1 + pad &&
-    y >= box.y0 - pad &&
-    y <= box.y1 + pad
-  );
-}
-
-/** Keep lines that Tesseract put outside paragraph boxes (common for code). */
-function mergeOrphanLines(paras: BBoxLine[], lines: BBoxLine[]): BBoxLine[] {
-  if (!lines.length) return paras;
-  const out = [...paras];
-  for (const ln of lines) {
-    const cx = (ln.x0 + ln.x1) / 2;
-    const cy = (ln.y0 + ln.y1) / 2;
-    const host = out.find((p) => coversPoint(p, cx, cy));
-    if (!host) {
-      out.push({ ...ln });
-      continue;
-    }
-    // Short diagram labels (Client/Server) often sit inside a large colored
-    // region whose paragraph text never includes them — keep as own box.
-    const short =
-      ln.text.length <= 16 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(ln.text);
-    const missing = !host.text.toLowerCase().includes(ln.text.toLowerCase());
-    if (short && missing) {
-      out.push({ ...ln });
-    }
-  }
-  return out.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-}
-
 function clampRatio(n: number) {
   return Math.min(0.75, Math.max(0.25, n));
-}
-
-function cleanLineText(ln: BBoxLine): BBoxLine {
-  let t = ln.text.trim().replace(/\s+/g, " ");
-  t = t.replace(/[\s·•|/\-–—_]{2,}$/u, "").trim();
-  const m = t.match(/^(.*[.!?。！？…])\s+(\S{1,4})$/u);
-  if (m && isJunkText(m[2])) {
-    t = m[1].trim();
-  }
-  return { ...ln, text: t };
 }
 
 function imageExtFromMime(mime: string): string {
@@ -372,119 +326,10 @@ function loadImageSize(url: string): Promise<{ w: number; h: number }> {
   });
 }
 
-/** Grayscale / binarize colored fills so black labels on blue/green stay crisp. */
-async function preprocessImageForOcr(file: File): Promise<Blob> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error("无法预处理图片"));
-      el.src = url;
-    });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, img.naturalWidth || img.width);
-    canvas.height = Math.max(1, img.naturalHeight || img.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return file;
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const d = imageData.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const r = d[i];
-      const g = d[i + 1];
-      const b = d[i + 2];
-      let y = 0.299 * r + 0.587 * g + 0.114 * b;
-      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-      if (chroma > 30) {
-        // Saturated fill (blue/green blocks): hard threshold keeps dark glyphs
-        y = y < 155 ? 0 : 255;
-      } else {
-        y = Math.max(0, Math.min(255, (y - 128) * 1.2 + 128));
-      }
-      d[i] = d[i + 1] = d[i + 2] = y;
-    }
-    ctx.putImageData(imageData, 0, 0);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
-    );
-    return blob ?? file;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-function mergeWordsToLines(words: BBoxLine[]): BBoxLine[] {
-  const sorted = [...words].sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-  const lines: BBoxLine[] = [];
-  for (const w of sorted) {
-    const last = lines[lines.length - 1];
-    const mid = (w.y0 + w.y1) / 2;
-    const sameLine =
-      last &&
-      Math.abs(mid - (last.y0 + last.y1) / 2) <
-        Math.max(10, last.lineH * 0.55);
-    const xNear =
-      last && w.x0 <= last.x1 + Math.max(40, last.lineH * 2.5);
-    if (sameLine && xNear && last) {
-      last.text = `${last.text} ${w.text}`.replace(/\s+/g, " ").trim();
-      last.x0 = Math.min(last.x0, w.x0);
-      last.y0 = Math.min(last.y0, w.y0);
-      last.x1 = Math.max(last.x1, w.x1);
-      last.y1 = Math.max(last.y1, w.y1);
-      last.confidence = Math.min(last.confidence, w.confidence);
-      last.lineH = Math.max(last.lineH, w.y1 - w.y0);
-    } else {
-      lines.push({ ...w, lineH: Math.max(8, w.y1 - w.y0) });
-    }
-  }
-  return lines;
-}
-
-/**
- * Merge adjacent lines into paragraphs.
- * IMPORTANT: use last physical line height for gap threshold — never the
- * accumulated paragraph height (that cascade-merges the whole page).
- */
-function mergeLinesToParagraphs(lines: BBoxLine[]): BBoxLine[] {
-  if (!lines.length) return [];
-  const sorted = [...lines].sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-  const paras: BBoxLine[] = [];
-  for (const ln of sorted) {
-    const lineH = Math.max(8, ln.lineH || ln.y1 - ln.y0);
-    const last = paras[paras.length - 1];
-    if (!last) {
-      paras.push({ ...ln, lineH });
-      continue;
-    }
-    const gap = ln.y0 - last.y1;
-    const refH = Math.max(8, last.lineH);
-    const overlap =
-      Math.min(last.x1, ln.x1) - Math.max(last.x0, ln.x0);
-    const minW = Math.min(last.x1 - last.x0, ln.x1 - ln.x0) || 1;
-    const leftAligned = Math.abs(ln.x0 - last.x0) < Math.max(20, refH * 1.1);
-    const sameColumn = overlap > minW * 0.15 || leftAligned;
-    // Same paragraph: gap smaller than ~1 line; larger gap = new paragraph
-    const closeVertically = gap < refH * 0.85 && gap > -refH * 0.35;
-    if (sameColumn && closeVertically) {
-      last.text = `${last.text} ${ln.text}`.replace(/\s+/g, " ").trim();
-      last.x0 = Math.min(last.x0, ln.x0);
-      last.y0 = Math.min(last.y0, ln.y0);
-      last.x1 = Math.max(last.x1, ln.x1);
-      last.y1 = Math.max(last.y1, ln.y1);
-      last.confidence = Math.min(last.confidence, ln.confidence);
-      last.lineH = lineH;
-    } else {
-      paras.push({ ...ln, lineH });
-    }
-  }
-  return paras.map(cleanLineText);
-}
-
 /**
  * Paddle already returns physical text lines. Only repair fragments that are
  * clearly part of the same line: OCR subscripts and wrapped prose continuations.
- * This deliberately avoids the broad paragraph merge used by Tesseract.
+ * This deliberately avoids broad paragraph merging.
  */
 function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
   const source = lines
@@ -1090,7 +935,6 @@ function OcrPageCard({
 }
 
 export function ImageOcrView({
-  ocrLang,
   ocrMode,
   autoTranslate,
   translateProvider,
@@ -1152,9 +996,6 @@ export function ImageOcrView({
   const ocrModeMenuRef = useRef<HTMLDivElement>(null);
   const ocrProgressPollRef = useRef<number | null>(null);
   const paddleOcrRef = useRef<LocalPaddleOcr | null>(null);
-  const workerRef = useRef<Worker | null>(null);
-  const workerLangRef = useRef<string | null>(null);
-  const workerCreateGenRef = useRef(0);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const dualRef = useRef<HTMLDivElement>(null);
   const srcListRef = useRef<HTMLDivElement>(null);
@@ -1226,8 +1067,6 @@ export function ImageOcrView({
       }
       void paddleOcrRef.current?.dispose();
       paddleOcrRef.current = null;
-      void workerRef.current?.terminate();
-      workerRef.current = null;
     };
   }, []);
 
@@ -1258,18 +1097,6 @@ export function ImageOcrView({
     const info = getEngineInfo(translateProvider);
     return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
   }, [model, translateProvider]);
-
-  const ocrLangLabel = useMemo(() => {
-    const map: Record<string, string> = {
-      eng: "英语",
-      chi_sim: "简体中文",
-      chi_tra: "繁体中文",
-      "eng+chi_sim": "英语+简体中文",
-      jpn: "日语",
-      kor: "韩语",
-    };
-    return map[ocrLang] || ocrLang;
-  }, [ocrLang]);
 
   const chooseImageOcrMode = useCallback(async (mode: OcrMode) => {
     if (ocrModeBusy) return;
@@ -1416,51 +1243,6 @@ export function ImageOcrView({
     },
     [],
   );
-
-  const ensureTesseractWorker = useCallback(async () => {
-    if (workerRef.current && workerLangRef.current === ocrLang) {
-      return workerRef.current;
-    }
-    const createId = ++workerCreateGenRef.current;
-    if (workerRef.current) {
-      try {
-        await workerRef.current.terminate();
-      } catch {
-        /* ignore */
-      }
-      workerRef.current = null;
-      workerLangRef.current = null;
-    }
-    const worker = await withTimeout(
-      createWorker(ocrLang),
-      120_000,
-      `加载「${ocrLang}」识别模型超时（首次需联网下载）。请检查网络后重试，或到设置改回英语再试。`,
-    );
-    if (createId !== workerCreateGenRef.current) {
-      try {
-        await worker.terminate();
-      } catch {
-        /* ignore */
-      }
-      throw new Error("识别已取消");
-    }
-    await worker.setParameters({
-      tessedit_pageseg_mode: PSM.AUTO,
-      preserve_interword_spaces: "1",
-    });
-    workerRef.current = worker;
-    workerLangRef.current = ocrLang;
-    return worker;
-  }, [ocrLang]);
-
-  useEffect(() => {
-    if (workerRef.current && workerLangRef.current !== ocrLang) {
-      workerCreateGenRef.current += 1;
-      void workerRef.current.terminate();
-      workerRef.current = null;
-      workerLangRef.current = null;
-    }
-  }, [ocrLang]);
 
   const selectBlock = useCallback(
     (id: string, field: OcrSelectionField) => {
@@ -1710,68 +1492,6 @@ export function ImageOcrView({
         const { w: iw, h: ih } = await loadImageSize(page.imageUrl);
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
-        const toBox = (raw: {
-          text: string;
-          confidence?: number;
-          bbox: { x0: number; y0: number; x1: number; y1: number };
-        }): BBoxLine | null => {
-          const text = (raw.text || "").trim().replace(/\s+/g, " ");
-          if (!text || isJunkText(text)) return null;
-          const conf = raw.confidence ?? 0;
-          const shortLabel =
-            text.length <= 16 && /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(text);
-          const minConf = looksLikeCode(text) ? 18 : shortLabel ? 0 : 28;
-          if (conf < minConf) return null;
-          return {
-            text,
-            x0: raw.bbox.x0,
-            y0: raw.bbox.y0,
-            x1: raw.bbox.x1,
-            y1: raw.bbox.y1,
-            confidence: conf,
-            lineH: Math.max(8, raw.bbox.y1 - raw.bbox.y0),
-          };
-        };
-
-        const boxesFromPage = (data: {
-          lines?: Array<{
-            text: string;
-            confidence?: number;
-            bbox: { x0: number; y0: number; x1: number; y1: number };
-          }>;
-          paragraphs?: Array<{
-            text: string;
-            confidence?: number;
-            bbox: { x0: number; y0: number; x1: number; y1: number };
-          }>;
-          words?: Array<{
-            text: string;
-            confidence?: number;
-            bbox: { x0: number; y0: number; x1: number; y1: number };
-          }>;
-        }): BBoxLine[] => {
-          const linesRaw = (data.lines ?? [])
-            .map((l) => toBox(l))
-            .filter((x): x is BBoxLine => !!x);
-          const wordsRaw = (data.words ?? [])
-            .map((w) => toBox(w))
-            .filter((x): x is BBoxLine => !!x);
-          let boxes: BBoxLine[] = [];
-          if (linesRaw.length) {
-            boxes = mergeLinesToParagraphs(linesRaw);
-          } else {
-            const parasRaw = (data.paragraphs ?? [])
-              .map((p) => toBox(p))
-              .filter((x): x is BBoxLine => !!x);
-            boxes = parasRaw.length
-              ? parasRaw
-              : mergeLinesToParagraphs(mergeWordsToLines(wordsRaw));
-          }
-          boxes = mergeOrphanLines(boxes, linesRaw);
-          boxes = mergeOrphanLines(boxes, wordsRaw);
-          return boxes;
-        };
-
         let lineBoxes: BBoxLine[];
         let recognitionEngine = `PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}`;
         try {
@@ -1789,7 +1509,7 @@ export function ImageOcrView({
           const result = await withTimeout(
             paddle.recognize(file),
             240_000,
-            "PaddleOCR 识别超时，正在准备兼容引擎…",
+            "PaddleOCR 识别超时，请重新识别",
           );
           if (!pagesRef.current.some((p) => p.id === pageId)) return;
           const rawLines = result.lines
@@ -1812,53 +1532,12 @@ export function ImageOcrView({
           // several diagram captions into one oversized translation overlay.
           lineBoxes = repairPaddleLines(rawLines);
         } catch (paddleError) {
-          console.warn("[OCR] PaddleOCR unavailable; using Tesseract fallback", paddleError);
-          recognitionEngine = `兼容引擎（PaddleOCR 不可用：${toFriendlyError(
-            paddleError,
-            "初始化失败",
-          )}）`;
-          const fallbackStatus = `PaddleOCR 暂不可用，正在使用${ocrLangLabel}兼容识别…`;
-          patchPage(pageId, { statusText: fallbackStatus });
-          setStatus(fallbackStatus);
-          const worker = await ensureTesseractWorker();
-          const result = await withTimeout(
-            worker.recognize(file),
-            180_000,
-            `兼容识别超时（${ocrLangLabel}）。可删除该图后重试，或改用更小图片。`,
+          const failedPaddle = paddleOcrRef.current;
+          paddleOcrRef.current = null;
+          void failedPaddle?.dispose();
+          throw new Error(
+            `PaddleOCR 识别失败：${toFriendlyError(paddleError, "初始化失败")}`,
           );
-          if (!pagesRef.current.some((p) => p.id === pageId)) return;
-          lineBoxes = boxesFromPage(result.data);
-
-          try {
-            const enhanced = await preprocessImageForOcr(file);
-            if (!pagesRef.current.some((p) => p.id === pageId)) return;
-            await worker.setParameters({
-              tessedit_pageseg_mode: PSM.SPARSE_TEXT,
-              preserve_interword_spaces: "1",
-            });
-            const sparse = await withTimeout(
-              worker.recognize(enhanced),
-              120_000,
-              "补充识别超时",
-            );
-            if (!pagesRef.current.some((p) => p.id === pageId)) return;
-            lineBoxes = mergeOrphanLines(lineBoxes, boxesFromPage(sparse.data));
-            const sparseWords = (sparse.data.words ?? [])
-              .map((w) => toBox(w))
-              .filter((x): x is BBoxLine => !!x);
-            lineBoxes = mergeOrphanLines(lineBoxes, sparseWords);
-          } catch {
-            // ignore supplemental pass
-          } finally {
-            try {
-              await worker.setParameters({
-                tessedit_pageseg_mode: PSM.AUTO,
-                preserve_interword_spaces: "1",
-              });
-            } catch {
-              // ignore
-            }
-          }
         }
 
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
@@ -1925,21 +1604,13 @@ export function ImageOcrView({
             busy: false,
           });
           setError(msg);
-          workerCreateGenRef.current += 1;
-          try {
-            await workerRef.current?.terminate();
-          } catch {
-            /* ignore */
-          }
-          workerRef.current = null;
-          workerLangRef.current = null;
         } else {
           patchPage(pageId, { busy: false, statusText: null });
         }
         setStatus(null);
       }
     },
-    [ensureTesseractWorker, normalizedOcrMode, ocrLangLabel, patchPage, translateBlocks],
+    [normalizedOcrMode, patchPage, translateBlocks],
   );
 
   const drainQueue = useCallback(async () => {
@@ -2295,15 +1966,11 @@ export function ImageOcrView({
     }
     sessionGenRef.current += 1;
     translateGenRef.current += 1;
-    workerCreateGenRef.current += 1;
     pasteLockRef.current = 0;
     queueRef.current = [];
     drainingRef.current = false;
     void paddleOcrRef.current?.dispose();
     paddleOcrRef.current = null;
-    void workerRef.current?.terminate();
-    workerRef.current = null;
-    workerLangRef.current = null;
     if (inputRef.current) inputRef.current.value = "";
     for (const p of pagesRef.current) {
       URL.revokeObjectURL(p.imageUrl);

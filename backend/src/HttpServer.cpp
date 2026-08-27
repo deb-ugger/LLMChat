@@ -710,6 +710,7 @@ int HttpServer::run()
             {"translatePrompt", c.translatePrompt},
             {"translateMaxLength", c.translateMaxLength},
             {"translateAutoChunk", c.translateAutoChunk},
+            {"translateClearLineBreaks", c.translateClearLineBreaks},
             {"translateContextParagraphs", c.translateContextParagraphs},
             {"translateGlossary", c.translateGlossary},
             {"ocrLang", c.ocrLang},
@@ -809,6 +810,10 @@ int HttpServer::run()
             if (body.contains("translateAutoChunk"))
             {
                 c.translateAutoChunk = body["translateAutoChunk"].get<bool>();
+            }
+            if (body.contains("translateClearLineBreaks"))
+            {
+                c.translateClearLineBreaks = body["translateClearLineBreaks"].get<bool>();
             }
             if (body.contains("translateContextParagraphs"))
             {

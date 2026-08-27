@@ -57,11 +57,13 @@ export type Settings = {
   translateMaxLength: number;
   /** When over limit: auto split+join (only for length-limited engines) */
   translateAutoChunk: boolean;
+  /** Replace literature source line breaks with spaces; false preserves code layout. */
+  translateClearLineBreaks: boolean;
   /** LLM literature: prior translated segments as context; 0 = off */
   translateContextParagraphs: number;
   /** Literature LLM glossary JSON: [{src,dst,info?}] */
   translateGlossary: string;
-  /** OCR language(s) for Tesseract, e.g. eng / chi_sim / eng+chi_sim */
+  /** Legacy OCR language value retained for configuration compatibility. */
   ocrLang: string;
   /** fast | precise | english */
   ocrMode: "fast" | "precise" | "english" | string;

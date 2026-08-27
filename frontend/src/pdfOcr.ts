@@ -222,12 +222,13 @@ function mergeSelectionPhysicalLines(
 }
 
 /**
- * Format a native PDF text-layer selection without restoring every visual line
- * break. Soft wraps remain copy-friendly spaces; list items, paragraph gaps and
- * cross-page boundaries retain structure.
+ * Format a native PDF text-layer selection. By default soft wraps remain
+ * copy-friendly spaces; callers can instead retain every physical line for
+ * code-sensitive copying and translation.
  */
 export function buildNativePdfSelectionText(
   fragments: PdfSelectionFragment[],
+  preservePhysicalLines = false,
 ): string {
   const lines = mergeSelectionPhysicalLines(fragments);
   if (!lines.length) return "";
@@ -240,6 +241,29 @@ export function buildNativePdfSelectionText(
       line.pageNumber,
       Math.min(pageMinX.get(line.pageNumber) ?? Infinity, line.x0),
     );
+  }
+
+  if (preservePhysicalLines) {
+    const indentWidth = Math.max(4, typicalHeight * 0.75);
+    const output: string[] = [];
+    let previousPage: number | null = null;
+    for (const line of lines) {
+      if (
+        previousPage !== null &&
+        previousPage !== line.pageNumber &&
+        output[output.length - 1] !== ""
+      ) {
+        output.push("");
+      }
+      const minX = pageMinX.get(line.pageNumber) ?? line.x0;
+      const indentLevel = Math.max(
+        0,
+        Math.min(24, Math.round((line.x0 - minX) / indentWidth)),
+      );
+      output.push(`${"  ".repeat(indentLevel)}${line.text}`);
+      previousPage = line.pageNumber;
+    }
+    return output.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
   }
 
   const output: string[] = [];

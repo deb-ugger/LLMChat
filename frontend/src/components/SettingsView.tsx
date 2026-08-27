@@ -185,6 +185,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
     "translatePrompt",
     "translateMaxLength",
     "translateAutoChunk",
+    "translateClearLineBreaks",
     "translateContextParagraphs",
     "translateGlossary",
   ],
@@ -355,6 +356,7 @@ function withDefaults(s: Settings): Settings {
     })(),
     translateMaxLength: s.translateMaxLength ?? 0,
     translateAutoChunk: s.translateAutoChunk ?? true,
+    translateClearLineBreaks: s.translateClearLineBreaks ?? true,
     translateContextParagraphs: s.translateContextParagraphs ?? 0,
     translateGlossary: s.translateGlossary || "[]",
     ocrLang: s.ocrLang || "eng",
@@ -597,30 +599,56 @@ function StatusSelect({
   groups,
   onChange,
   className,
+  searchable = false,
 }: {
   label?: string;
   value: string;
   groups: StatusSelectGroup[];
   onChange: (value: string) => void;
   className?: string;
+  searchable?: boolean;
 }) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const flat = useMemo(
     () => groups.flatMap((g) => g.options),
     [groups],
   );
   const selected = flat.find((o) => o.value === value) || flat[0];
+  const filteredGroups = useMemo(() => {
+    const keyword = query.trim().toLocaleLowerCase();
+    if (!searchable || !keyword) return groups;
+    return groups
+      .map((group) => ({
+        ...group,
+        options: group.options.filter((option) =>
+          [option.value, option.title, option.subtitle || ""]
+            .join(" ")
+            .toLocaleLowerCase()
+            .includes(keyword),
+        ),
+      }))
+      .filter((group) => group.options.length > 0);
+  }, [groups, query, searchable]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setQuery("");
+      return;
+    }
     const onDoc = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  useEffect(() => {
+    if (open && searchable) searchRef.current?.focus();
+  }, [open, searchable]);
 
   return (
     <div
@@ -636,7 +664,8 @@ function StatusSelect({
         aria-controls={listId}
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((v) => !v);
+          if (!open) setQuery("");
+          setOpen(!open);
         }}
       >
         {selected ? (
@@ -658,7 +687,25 @@ function StatusSelect({
       </button>
       {open && (
         <div id={listId} className="status-select-menu" role="listbox">
-          {groups.map((g) => (
+          {searchable ? (
+            <div className="status-select-search">
+              <input
+                ref={searchRef}
+                type="search"
+                value={query}
+                placeholder={`搜索${label || "选项"}…`}
+                aria-label={`搜索${label || "选项"}`}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setOpen(false);
+                }}
+              />
+            </div>
+          ) : null}
+          {filteredGroups.length === 0 ? (
+            <div className="status-select-empty">没有匹配的选项</div>
+          ) : null}
+          {filteredGroups.map((g) => (
             <div key={g.label} className="status-select-group">
               <div className="status-select-group-label">{g.label}</div>
               {g.options.map((opt) => (
@@ -812,6 +859,7 @@ function FeatureModelSelect({
         value={vendor}
         groups={vendorGroups}
         onChange={pickVendor}
+        searchable
       />
       <StatusSelect
         label="模型"
@@ -819,6 +867,7 @@ function FeatureModelSelect({
         value={selectedModel}
         groups={modelGroups}
         onChange={onChange}
+        searchable
       />
     </div>
   );
@@ -872,74 +921,91 @@ function ReplaceTable({
       {rows.length === 0 ? (
         <p className="hint">暂无条目</p>
       ) : (
-        <div className="settings-rule-table">
-          <div className={`settings-rule-row is-head ${rowClass}`.trim()}>
-            {showEnabled && <span>启用</span>}
-            <span>原文</span>
-            <span>译文</span>
-            {showInfo && <span>备注</span>}
-            <span />
-          </div>
-          {rows.map((row, i) => (
-            <div
-              key={i}
-              className={`settings-rule-row ${rowClass}${
-                showEnabled && row.enabled === false ? " is-disabled" : ""
-              }`.trim()}
-            >
-              {showEnabled && (
-                <input
-                  type="checkbox"
-                  className="settings-rule-enable"
-                  checked={row.enabled !== false}
-                  title={row.enabled === false ? "启用此术语" : "停用此术语"}
-                  aria-label="启用此术语"
-                  onChange={(e) => {
-                    const next = [...rows];
-                    next[i] = { ...next[i], enabled: e.target.checked };
-                    onChange(next);
-                  }}
-                />
-              )}
-              <input
-                value={row.src}
-                placeholder="原文"
-                onChange={(e) => {
-                  const next = [...rows];
-                  next[i] = { ...next[i], src: e.target.value };
-                  onChange(next);
-                }}
-              />
-              <input
-                value={row.dst}
-                placeholder="译文"
-                onChange={(e) => {
-                  const next = [...rows];
-                  next[i] = { ...next[i], dst: e.target.value };
-                  onChange(next);
-                }}
-              />
-              {showInfo && (
-                <input
-                  value={row.info ?? ""}
-                  placeholder="可选"
-                  onChange={(e) => {
-                    const next = [...rows];
-                    next[i] = { ...next[i], info: e.target.value };
-                    onChange(next);
-                  }}
-                />
-              )}
-              <button
-                type="button"
-                className="settings-rule-del"
-                title="删除"
-                onClick={() => onChange(rows.filter((_, j) => j !== i))}
-              >
-                删
-              </button>
-            </div>
-          ))}
+        <div className="settings-rule-table-wrap">
+          <table className={`settings-rule-table ${rowClass}`.trim()}>
+            <thead>
+              <tr>
+                {showEnabled && <th className="settings-rule-enabled-col">启用</th>}
+                <th>原文</th>
+                <th>译文</th>
+                {showInfo && <th>备注</th>}
+                <th className="settings-rule-action-col" aria-label="操作" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr
+                  key={i}
+                  className={showEnabled && row.enabled === false ? "is-disabled" : undefined}
+                >
+                  {showEnabled && (
+                    <td className="settings-rule-enabled-col">
+                      <input
+                        type="checkbox"
+                        className="settings-rule-enable"
+                        checked={row.enabled !== false}
+                        title={row.enabled === false ? "启用此术语" : "停用此术语"}
+                        aria-label="启用此术语"
+                        onChange={(e) => {
+                          const next = [...rows];
+                          next[i] = { ...next[i], enabled: e.target.checked };
+                          onChange(next);
+                        }}
+                      />
+                    </td>
+                  )}
+                  <td>
+                    <input
+                      value={row.src}
+                      placeholder="原文"
+                      onChange={(e) => {
+                        const next = [...rows];
+                        next[i] = { ...next[i], src: e.target.value };
+                        onChange(next);
+                      }}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={row.dst}
+                      placeholder="译文"
+                      onChange={(e) => {
+                        const next = [...rows];
+                        next[i] = { ...next[i], dst: e.target.value };
+                        onChange(next);
+                      }}
+                    />
+                  </td>
+                  {showInfo && (
+                    <td>
+                      <input
+                        value={row.info ?? ""}
+                        placeholder="可选"
+                        onChange={(e) => {
+                          const next = [...rows];
+                          next[i] = { ...next[i], info: e.target.value };
+                          onChange(next);
+                        }}
+                      />
+                    </td>
+                  )}
+                  <td className="settings-rule-action-col">
+                    <button
+                      type="button"
+                      className="settings-rule-del"
+                      title="删除此行"
+                      aria-label="删除此行"
+                      onClick={() => onChange(rows.filter((_, j) => j !== i))}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -1057,7 +1123,6 @@ export function SettingsView({
   >(null);
   const [ocrUninstallConfirm, setOcrUninstallConfirm] = useState<{
     mode: Exclude<OcrMode, "fast">;
-    step: 1 | 2;
   } | null>(null);
   const [ocrCenterNotice, setOcrCenterNotice] = useState<{
     title: string;
@@ -1724,7 +1789,6 @@ export function SettingsView({
                           onClick={() =>
                             setOcrUninstallConfirm({
                               mode: option.id as Exclude<OcrMode, "fast">,
-                              step: 1,
                             })
                           }
                         >
@@ -3081,13 +3145,9 @@ export function SettingsView({
               </svg>
             </div>
             <div className="ocr-confirm-copy">
-              <h3 id="ocr-uninstall-confirm-title">
-                {ocrUninstallConfirm.step === 1 ? "卸载本地模型？" : "请再次确认"}
-              </h3>
+              <h3 id="ocr-uninstall-confirm-title">卸载本地模型？</h3>
               <p>
-                {ocrUninstallConfirm.step === 1
-                  ? `准备卸载“${ocrUninstallConfirm.mode === "precise" ? "精确" : "英文增强"}”模式。系统会先检查共享模型，其他可用模式仍需使用的文件不会删除。`
-                  : `确认卸载“${ocrUninstallConfirm.mode === "precise" ? "精确" : "英文增强"}”模式？以后再次选择时，需要重新下载其专用模型。`}
+                {`确认卸载“${ocrUninstallConfirm.mode === "precise" ? "精确" : "英文增强"}”模式？系统会先检查共享模型，其他可用模式仍需使用的文件不会删除；以后再次选择时，需要重新下载其专用模型。`}
               </p>
             </div>
             <div className="ocr-confirm-actions">
@@ -3101,15 +3161,9 @@ export function SettingsView({
               <button
                 type="button"
                 className="ocr-confirm-remove"
-                onClick={() => {
-                  if (ocrUninstallConfirm.step === 1) {
-                    setOcrUninstallConfirm({ ...ocrUninstallConfirm, step: 2 });
-                  } else {
-                    void uninstallOcrMode(ocrUninstallConfirm.mode);
-                  }
-                }}
+                onClick={() => void uninstallOcrMode(ocrUninstallConfirm.mode)}
               >
-                {ocrUninstallConfirm.step === 1 ? "继续" : "确认卸载"}
+                确认卸载
               </button>
             </div>
           </div>
@@ -4079,6 +4133,21 @@ export function SettingsView({
                     <div />
                   )}
                 </div>
+              </div>
+              <div className="settings-field">
+                <SettingToggle
+                  checked={form.translateClearLineBreaks}
+                  onChange={(value) =>
+                    commitForm({
+                      ...form,
+                      translateClearLineBreaks: value,
+                    })
+                  }
+                  label="清除原文换行符（替换为空格）"
+                />
+                <p className="hint" style={{ marginTop: 6 }}>
+                  开启时便于复制普通段落；关闭时保留原文换行与代码缩进，适合 Python 等代码内容。
+                </p>
               </div>
               <p className="hint" style={{ marginTop: 8 }}>
                 当前文献翻译方式：

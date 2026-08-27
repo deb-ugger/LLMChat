@@ -33,6 +33,8 @@ struct AppConfig {
     /** Max chars per translate request; 0 = use engine default */
     int translateMaxLength = 0;      // 0 = engine default
     bool translateAutoChunk = true;  // split long text when limited
+    /** Replace literature source line breaks with spaces for copy-friendly prose. */
+    bool translateClearLineBreaks = true;
     /** LLM literature: include prior N translated segments as context; 0 = off */
     int translateContextParagraphs = 0;
     /** Literature LLM glossary JSON: [{src,dst,info?}] */

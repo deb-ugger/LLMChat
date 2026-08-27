@@ -100,6 +100,7 @@ export type { ViewMode };
 
 type Props = {
   onTextSelected: (text: string) => void;
+  clearLineBreaks?: boolean;
   visible?: boolean;
   translateProvider?: string;
   model?: string;
@@ -280,9 +281,15 @@ function isViewMode(v: unknown): v is ViewMode {
 }
 
 /** Normalize PDF text-layer extraction (hyphenation / whitespace). */
-function normalizePdfExtractedText(raw: string): string {
-  return raw
-    .replace(/\u00a0/g, " ")
+function normalizePdfExtractedText(
+  raw: string,
+  clearLineBreaks = true,
+): string {
+  const normalized = raw.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  if (!clearLineBreaks) {
+    return normalized.replace(/^\n+|\n+$/g, "");
+  }
+  return normalized
     .replace(/-\s*[\r\n]+/g, "")
     .replace(/[\r\n]+/g, " ")
     .replace(/[ \t\f\v]+/g, " ")
@@ -318,7 +325,10 @@ function pageNumberForTextNode(node: Node): number {
 }
 
 /** Preserve semantic structure while keeping ordinary PDF soft wraps copy-friendly. */
-function mergePdfTextFragments(fragments: PdfTextFragment[]): string {
+function mergePdfTextFragments(
+  fragments: PdfTextFragment[],
+  clearLineBreaks = true,
+): string {
   const positioned: PdfSelectionFragment[] = fragments.flatMap(
     ({ text, rect, pageNumber }) =>
       rect
@@ -335,9 +345,15 @@ function mergePdfTextFragments(fragments: PdfTextFragment[]): string {
         : [],
   );
   if (positioned.length === fragments.length) {
-    return buildNativePdfSelectionText(positioned);
+    return normalizePdfExtractedText(
+      buildNativePdfSelectionText(positioned, !clearLineBreaks),
+      clearLineBreaks,
+    );
   }
-  return normalizePdfExtractedText(fragments.map((fragment) => fragment.text).join("\n"));
+  return normalizePdfExtractedText(
+    fragments.map((fragment) => fragment.text).join("\n"),
+    clearLineBreaks,
+  );
 }
 
 /** Skip PDF footer/header printed page numbers in the text layer. */
@@ -375,7 +391,10 @@ function isPrintedPageNumberNode(textNode: Node): boolean {
 }
 
 /** All visible text on a rendered page (skips printed page numbers). */
-function readPageTextFromDom(pageEl: HTMLElement): string {
+function readPageTextFromDom(
+  pageEl: HTMLElement,
+  clearLineBreaks = true,
+): string {
   const layer = pageEl.querySelector(".textLayer");
   if (!layer) return "";
   const parts: PdfTextFragment[] = [];
@@ -390,7 +409,7 @@ function readPageTextFromDom(pageEl: HTMLElement): string {
       });
     }
   }
-  return mergePdfTextFragments(parts);
+  return mergePdfTextFragments(parts, clearLineBreaks);
 }
 
 async function copyPlainText(text: string): Promise<boolean> {
@@ -545,6 +564,7 @@ async function fetchSavedPdfProgress(
 
 export function PdfPane({
   onTextSelected,
+  clearLineBreaks = true,
   visible = true,
   translateProvider = "google",
   model = "",
@@ -2301,10 +2321,10 @@ export function PdfPane({
 
     const text =
       fragments.length > 0
-        ? mergePdfTextFragments(fragments)
-        : normalizePdfExtractedText(sel.toString());
+        ? mergePdfTextFragments(fragments, clearLineBreaks)
+        : normalizePdfExtractedText(sel.toString(), clearLineBreaks);
     return text || null;
-  }, []);
+  }, [clearLineBreaks]);
 
   const scheduleSelectionTranslate = useCallback(() => {
     if (handMode) return;
@@ -2592,7 +2612,9 @@ export function PdfPane({
       const pageEl = root?.querySelector(
         `.page[data-page-number="${pageNumber}"]`,
       ) as HTMLElement | null;
-      let text = pageEl ? readPageTextFromDom(pageEl) : "";
+      let text = pageEl
+        ? readPageTextFromDom(pageEl, clearLineBreaks)
+        : "";
       if (!text) {
         const pdf = pdfRef.current;
         if (pdf && pageNumber >= 1) {
@@ -2605,7 +2627,10 @@ export function PdfPane({
                 parts.push(String((item as { str: string }).str));
               }
             }
-            text = normalizePdfExtractedText(parts.join(" "));
+            text = normalizePdfExtractedText(
+              parts.join(clearLineBreaks ? " " : "\n"),
+              clearLineBreaks,
+            );
           } catch {
             text = "";
           }
@@ -2618,7 +2643,7 @@ export function PdfPane({
       const ok = await copyPlainText(text);
       showImgToast(ok ? "已复制当前页文本" : "复制失败", ok);
     },
-    [showImgToast],
+    [clearLineBreaks, showImgToast],
   );
 
   useEffect(() => {

@@ -33,17 +33,17 @@ function modelPair(mode: OcrMode): ModelPair {
   if (mode === "precise") {
     return {
       detName: "PP-OCRv6_medium_det",
-      detUrl: backendModelUrl("PP-OCRv6_medium_det_infer.tar"),
+      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
       recName: "PP-OCRv6_medium_rec",
-      recUrl: backendModelUrl("PP-OCRv6_medium_rec_infer.tar"),
+      recUrl: backendModelUrl("PP-OCRv6_medium_rec_onnx_infer.tar"),
     };
   }
   if (mode === "english") {
     return {
       detName: "PP-OCRv6_medium_det",
-      detUrl: backendModelUrl("PP-OCRv6_medium_det_infer.tar"),
+      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
       recName: "en_PP-OCRv5_mobile_rec",
-      recUrl: backendModelUrl("en_PP-OCRv5_mobile_rec_infer.tar"),
+      recUrl: backendModelUrl("en_PP-OCRv5_mobile_rec_onnx_infer.tar"),
     };
   }
   return {
@@ -136,12 +136,10 @@ async function prepareRecognitionImage(
 export class LocalPaddleOcr {
   private instance: PaddleOcrInstance | null = null;
   private initializing: Promise<PaddleOcrInstance> | null = null;
-  private unavailable: Error | null = null;
 
   constructor(private readonly mode: OcrMode = "fast") {}
 
   private async create(): Promise<PaddleOcrInstance> {
-    if (this.unavailable) throw this.unavailable;
     if (this.instance) return this.instance;
     if (!this.initializing) {
       const models = modelPair(this.mode);
@@ -182,14 +180,6 @@ export class LocalPaddleOcr {
           this.instance = instance;
           return instance;
         })
-        .catch((reason: unknown) => {
-          const error =
-            reason instanceof Error
-              ? reason
-              : new Error(String(reason || "PaddleOCR 初始化失败"));
-          this.unavailable = error;
-          throw error;
-        })
         .finally(() => {
           this.initializing = null;
         });
@@ -222,7 +212,6 @@ export class LocalPaddleOcr {
   async dispose(): Promise<void> {
     const pending = this.initializing;
     this.initializing = null;
-    this.unavailable = null;
     let instance = this.instance;
     this.instance = null;
     if (!instance && pending) {

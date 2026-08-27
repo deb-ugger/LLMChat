@@ -53,6 +53,7 @@ const defaultSettings: Settings = {
   translatePrompt: DEFAULT_LIT_PROMPT_GENERAL,
   translateMaxLength: 0,
   translateAutoChunk: true,
+  translateClearLineBreaks: true,
   translateContextParagraphs: 0,
   translateGlossary: "[]",
   ocrLang: "eng",
@@ -79,17 +80,9 @@ const defaultSettings: Settings = {
   translateEngineKeys: "{}",
 };
 
-function ocrLangForTranslateSource(source: string): string {
-  if (source === "zh-CN") return "chi_sim";
-  if (source === "zh-TW") return "chi_tra";
-  if (source === "ja") return "jpn";
-  if (source === "ko") return "kor";
-  if (source === "en") return "eng";
-  return "eng+chi_sim";
-}
-
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
+  const [navRailHidden, setNavRailHidden] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
     "unity" | undefined
   >(undefined);
@@ -193,6 +186,7 @@ export default function App() {
             })(),
             translateMaxLength: s.translateMaxLength ?? 0,
             translateAutoChunk: s.translateAutoChunk ?? true,
+            translateClearLineBreaks: s.translateClearLineBreaks ?? true,
             translateContextParagraphs: s.translateContextParagraphs ?? 0,
             translateGlossary: s.translateGlossary || "[]",
             ocrLang: s.ocrLang || "eng",
@@ -428,7 +422,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <nav className="nav-rail">
+      <nav className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         <div className="nav-brand" title="LLMChat">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
             <path
@@ -532,6 +526,19 @@ export default function App() {
           <span>设置</span>
         </button>
         <div className="nav-version">v1.0</div>
+        <button
+          type="button"
+          className="nav-rail-toggle"
+          aria-label={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
+          aria-expanded={!navRailHidden}
+          title={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
+          onClick={() => setNavRailHidden((hidden) => !hidden)}
+        >
+          <span
+            className={`nav-rail-toggle-icon${navRailHidden ? " is-expand" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
       </nav>
 
       <div className="app-main">
@@ -575,6 +582,7 @@ export default function App() {
             translateTarget={settings.translateTarget}
             translateMaxLength={settings.translateMaxLength}
             translateAutoChunk={settings.translateAutoChunk}
+            translateClearLineBreaks={settings.translateClearLineBreaks}
             translateContextParagraphs={settings.translateContextParagraphs}
             translateGlossary={settings.translateGlossary}
             translatePromptCatalog={settings.translatePromptCatalog}
@@ -614,7 +622,6 @@ export default function App() {
         >
           <ImageOcrView
             active={page === "image"}
-            ocrLang={settings.ocrLang}
             ocrMode={settings.ocrMode}
             autoTranslate={settings.ocrAutoTranslate}
             translateProvider={settings.ocrTranslateProvider}
@@ -634,7 +641,6 @@ export default function App() {
               await onSaveSettings({
                 ...settings,
                 ocrTranslateSource,
-                ocrLang: ocrLangForTranslateSource(ocrTranslateSource),
               });
             }}
             onTranslateTargetChange={async (ocrTranslateTarget) => {

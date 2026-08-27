@@ -44,10 +44,16 @@ function loadDocKind(): DocKind {
   return "pdf";
 }
 
-/** Collapse PDF selection line breaks so they don't break translation. */
-function normalizePdfSelectionText(text: string): string {
-  return text
-    .replace(/\u00a0/g, " ")
+/** Normalize PDF selection text, optionally preserving code-sensitive line breaks. */
+function normalizePdfSelectionText(
+  text: string,
+  clearLineBreaks = true,
+): string {
+  const normalized = text.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
+  if (!clearLineBreaks) {
+    return normalized.replace(/^\n+|\n+$/g, "");
+  }
+  return normalized
     .replace(/-\s*[\r\n]+/g, "")
     .replace(/[\r\n]+/g, " ")
     .replace(/[ \t\f\v]+/g, " ")
@@ -103,6 +109,7 @@ type Props = {
   translateTarget?: string;
   translateMaxLength?: number;
   translateAutoChunk?: boolean;
+  translateClearLineBreaks?: boolean;
   translateContextParagraphs?: number;
   translateGlossary?: string;
   translatePromptCatalog?: string;
@@ -131,6 +138,7 @@ export function LiteratureView({
   translateTarget = "zh-CN",
   translateMaxLength = 0,
   translateAutoChunk = true,
+  translateClearLineBreaks = true,
   translateContextParagraphs = 0,
   translateGlossary = "[]",
   translatePromptCatalog = "",
@@ -239,6 +247,7 @@ export function LiteratureView({
   );
   const { width: panelWidth, beginResize: beginPanelResize } =
     usePersistedWidth("llmchat-translate-panel-width", 320, 220, 640);
+  const [panelHidden, setPanelHidden] = useState(false);
 
   const usesLlm = translateProvider === "llm";
   const activeTag =
@@ -476,14 +485,17 @@ export function LiteratureView({
 
   const runLookup = useCallback(
     async (text: string) => {
-      const trimmed = normalizePdfSelectionText(text);
-      if (!trimmed) return;
+      const trimmed = normalizePdfSelectionText(
+        text,
+        translateClearLineBreaks,
+      );
+      if (!trimmed.trim()) return;
 
       const reqId = ++reqIdRef.current;
       setSource(trimmed);
       await translateOnly(trimmed, reqId);
     },
-    [translateOnly],
+    [translateClearLineBreaks, translateOnly],
   );
 
   const runDictOnly = useCallback(
@@ -495,26 +507,32 @@ export function LiteratureView({
 
   const onTextSelected = useCallback(
     (text: string) => {
-      const trimmed = normalizePdfSelectionText(text);
-      if (!trimmed) return;
+      const trimmed = normalizePdfSelectionText(
+        text,
+        translateClearLineBreaks,
+      );
+      if (!trimmed.trim()) return;
       if (extractEnglishWord(trimmed)) {
         void fillDict(trimmed);
         return;
       }
       void runLookup(trimmed);
     },
-    [fillDict, runLookup],
+    [fillDict, runLookup, translateClearLineBreaks],
   );
 
   const onRetranslate = useCallback(() => {
     void (async () => {
-      const trimmed = normalizePdfSelectionText(source);
-      if (!trimmed) return;
+      const trimmed = normalizePdfSelectionText(
+        source,
+        translateClearLineBreaks,
+      );
+      if (!trimmed.trim()) return;
       if (trimmed !== source) setSource(trimmed);
       const reqId = ++reqIdRef.current;
       await translateOnly(trimmed, reqId);
     })();
-  }, [source, translateOnly]);
+  }, [source, translateClearLineBreaks, translateOnly]);
 
   const clearPdfSeed = useCallback(() => {
     setPdfSeed(null);
@@ -741,6 +759,7 @@ export function LiteratureView({
         <PdfPane
           visible={visible && docKind === "pdf"}
           onTextSelected={onTextSelected}
+          clearLineBreaks={translateClearLineBreaks}
           translateProvider={translateProvider}
           model={model}
           ocrMode={ocrMode}
@@ -780,23 +799,44 @@ export function LiteratureView({
         />
       </div>
       <div
-        className="col-resizer col-resizer-panel"
-        title="拖动调整译文面板宽度"
-        onMouseDown={(e) => beginPanelResize(e, "grow-left")}
-      />
-      <TranslatePanel
-        width={panelWidth}
-        source={source}
-        translation={translation}
-        loading={loading}
-        error={error}
-        dict={dict}
-        dictHint={dictHint}
-        dictLoading={dictLoading}
-        onSourceChange={setSource}
-        onRetranslate={onRetranslate}
-        onDictLookup={runDictOnly}
-      />
+        className={`col-resizer col-resizer-panel${panelHidden ? " is-collapsed" : ""}`}
+        title={panelHidden ? "" : "拖动调整译文面板宽度"}
+        onMouseDown={
+          panelHidden
+            ? undefined
+            : (e) => beginPanelResize(e, "grow-left")
+        }
+      >
+        <button
+          type="button"
+          className="translate-panel-toggle"
+          aria-label={panelHidden ? "显示翻译侧边栏" : "隐藏翻译侧边栏"}
+          aria-expanded={!panelHidden}
+          title={panelHidden ? "显示翻译侧边栏" : "隐藏翻译侧边栏"}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => setPanelHidden((hidden) => !hidden)}
+        >
+          <span
+            className={`translate-panel-toggle-icon${panelHidden ? " is-expand" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+      {!panelHidden ? (
+        <TranslatePanel
+          width={panelWidth}
+          source={source}
+          translation={translation}
+          loading={loading}
+          error={error}
+          dict={dict}
+          dictHint={dictHint}
+          dictLoading={dictLoading}
+          onSourceChange={setSource}
+          onRetranslate={onRetranslate}
+          onDictLookup={runDictOnly}
+        />
+      ) : null}
     </div>
   );
 }

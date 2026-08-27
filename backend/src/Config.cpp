@@ -83,6 +83,7 @@ std::string serializeConfig(const AppConfig& config)
     out << "translatePrompt=" << escapeIniValue(config.translatePrompt) << "\n";
     out << "translateMaxLength=" << config.translateMaxLength << "\n";
     out << "translateAutoChunk=" << (config.translateAutoChunk ? "true" : "false") << "\n";
+    out << "translateClearLineBreaks=" << (config.translateClearLineBreaks ? "true" : "false") << "\n";
     out << "translateContextParagraphs=" << config.translateContextParagraphs << "\n";
     out << "translateGlossary=" << escapeIniValue(config.translateGlossary) << "\n";
     out << "ocrLang=" << config.ocrLang << "\n";
@@ -169,6 +170,8 @@ void ConfigStore::load()
             else if (key == "translatePrompt") next.translatePrompt = unescapeIniValue(value);
             else if (key == "translateMaxLength") next.translateMaxLength = std::stoi(value);
             else if (key == "translateAutoChunk") next.translateAutoChunk =
+                (value == "1" || value == "true" || value == "True" || value == "yes");
+            else if (key == "translateClearLineBreaks") next.translateClearLineBreaks =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
             else if (key == "translateContextParagraphs") next.translateContextParagraphs = std::stoi(value);
             else if (key == "translateGlossary") next.translateGlossary = unescapeIniValue(value);
