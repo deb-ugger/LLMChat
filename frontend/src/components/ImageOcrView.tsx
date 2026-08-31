@@ -328,8 +328,8 @@ function loadImageSize(url: string): Promise<{ w: number; h: number }> {
 
 /**
  * Paddle already returns physical text lines. Only repair fragments that are
- * clearly part of the same line: OCR subscripts and wrapped prose continuations.
- * This deliberately avoids broad paragraph merging.
+ * clearly belong to the same physical line, plus OCR subscripts. Keeping
+ * vertical neighbors separate is important for menus, subtitles and code.
  */
 function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
   const source = lines
@@ -415,17 +415,12 @@ function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
     let bestScore = Number.POSITIVE_INFINITY;
 
     if (!technicalToken && !startsNewEntry) {
-      repaired.forEach((group, groupIndex) => {
+      repaired.forEach((_, groupIndex) => {
         const tail = groupTails[groupIndex];
         const tailH = Math.max(8, tail.lineH || tail.y1 - tail.y0);
         const refH = Math.max(tailH, lineH);
         const heightRatio = lineH / tailH;
         const comparableLineHeight = heightRatio >= 0.55 && heightRatio <= 1.8;
-        const groupCanContinue =
-          /[A-Za-z\u3040-\u30ff\u3400-\u9fff]/u.test(group.text) &&
-          !/^(?:\d+|T\d*)$/.test(group.text.trim());
-        if (!groupCanContinue) return;
-
         const tailCy = (tail.y0 + tail.y1) / 2;
         const lineCy = (line.y0 + line.y1) / 2;
         const horizontalGap = line.x0 - tail.x1;
@@ -434,30 +429,10 @@ function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
           Math.abs(lineCy - tailCy) < refH * 0.55 &&
           horizontalGap >= -lineH &&
           horizontalGap < tailH * 1.6;
+        if (!samePhysicalLine) return;
 
-        const verticalGap = line.y0 - tail.y1;
-        const overlap =
-          Math.min(tail.x1, line.x1) - Math.max(tail.x0, line.x0);
-        const minWidth = Math.max(
-          1,
-          Math.min(tail.x1 - tail.x0, line.x1 - line.x0),
-        );
-        const tailCx = (tail.x0 + tail.x1) / 2;
-        const lineCx = (line.x0 + line.x1) / 2;
-        const sameColumn =
-          overlap >= minWidth * 0.3 ||
-          Math.abs(lineCx - tailCx) <= refH * 1.25 ||
-          Math.abs(line.x0 - tail.x0) <= refH * 0.8;
-        const wrappedLine =
-          comparableLineHeight &&
-          verticalGap >= -tailH * 0.2 &&
-          verticalGap < refH * 1.05 &&
-          sameColumn;
-        if (!samePhysicalLine && !wrappedLine) return;
-
-        const score = samePhysicalLine
-          ? Math.abs(lineCy - tailCy) + Math.max(0, horizontalGap) * 0.2
-          : Math.max(0, verticalGap) + Math.abs(lineCx - tailCx) * 0.18;
+        const score =
+          Math.abs(lineCy - tailCy) + Math.max(0, horizontalGap) * 0.2;
         if (score < bestScore) {
           bestScore = score;
           bestGroup = groupIndex;
@@ -1495,10 +1470,39 @@ export function ImageOcrView({
         let lineBoxes: BBoxLine[];
         let recognitionEngine = `PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}`;
         try {
+          const cachedModeStatus = ocrModelStatus?.modes.find(
+            (mode) => mode.id === normalizedOcrMode,
+          );
+          let modelInstallKnown =
+            normalizedOcrMode === "fast" ||
+            paddleOcrRef.current !== null ||
+            cachedModeStatus !== undefined;
+          let modelInstalled =
+            normalizedOcrMode === "fast" ||
+            paddleOcrRef.current !== null ||
+            cachedModeStatus?.installed === true;
+          if (!modelInstalled && normalizedOcrMode !== "fast") {
+            try {
+              const latestStatus = await api.getOcrModelStatus();
+              setOcrModelStatus(latestStatus);
+              const latestModeStatus = latestStatus.modes.find(
+                (mode) => mode.id === normalizedOcrMode,
+              );
+              modelInstallKnown = latestModeStatus !== undefined;
+              modelInstalled = latestModeStatus?.installed === true;
+            } catch {
+              // The model loader will report the actual backend error below.
+            }
+          }
+          const modeLabel = OCR_MODE_LABELS[normalizedOcrMode];
           const loadingText =
             normalizedOcrMode === "fast"
               ? "正在加载本地 PP-OCRv6 快速模型…"
-              : `正在准备 PaddleOCR ${OCR_MODE_LABELS[normalizedOcrMode]}模型（首次使用会下载并缓存）…`;
+              : modelInstalled
+                ? `正在加载本地 PaddleOCR ${modeLabel}模型…`
+                : modelInstallKnown
+                  ? `正在下载并准备 PaddleOCR ${modeLabel}模型（首次使用，完成后会缓存）…`
+                  : `正在准备 PaddleOCR ${modeLabel}模型…`;
           patchPage(pageId, {
             statusText: loadingText,
           });
@@ -1610,7 +1614,7 @@ export function ImageOcrView({
         setStatus(null);
       }
     },
-    [normalizedOcrMode, patchPage, translateBlocks],
+    [normalizedOcrMode, ocrModelStatus, patchPage, translateBlocks],
   );
 
   const drainQueue = useCallback(async () => {
