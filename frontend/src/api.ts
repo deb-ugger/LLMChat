@@ -67,6 +67,8 @@ export type Settings = {
   ocrLang: string;
   /** fast | precise | english */
   ocrMode: "fast" | "precise" | "english" | string;
+  /** Image-only OCR mode; additionally supports manga. */
+  imageOcrMode: "fast" | "precise" | "english" | "manga" | string;
   /** After OCR, auto call translate */
   ocrAutoTranslate: boolean;
   ocrTranslateProvider: TranslateProvider;
@@ -328,7 +330,7 @@ async function request<T>(
   return data as T;
 }
 
-export type OcrMode = "fast" | "precise" | "english";
+export type OcrMode = "fast" | "precise" | "english" | "manga";
 
 export type OcrModelModeStatus = {
   id: OcrMode;
@@ -344,6 +346,10 @@ export type OcrModelModeStatus = {
   sizeBytes: number;
   /** Bytes from this mode's required files currently present in cache. */
   cachedBytes: number;
+  /** Full size of this mode's prerequisite detection model. */
+  prerequisiteSizeBytes: number;
+  /** Full size of this mode's text recognition model. */
+  recognitionSizeBytes: number;
 };
 
 export type OcrModelDownloadProgress = {

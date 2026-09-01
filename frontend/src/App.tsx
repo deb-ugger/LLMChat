@@ -58,6 +58,7 @@ const defaultSettings: Settings = {
   translateGlossary: "[]",
   ocrLang: "eng",
   ocrMode: "fast",
+  imageOcrMode: "fast",
   ocrAutoTranslate: true,
   ocrTranslateProvider: "bing",
   ocrTranslateSource: "en",
@@ -193,6 +194,12 @@ export default function App() {
             ocrMode:
               s.ocrMode === "precise" || s.ocrMode === "english"
                 ? s.ocrMode
+                : "fast",
+            imageOcrMode:
+              s.imageOcrMode === "precise" ||
+              s.imageOcrMode === "english" ||
+              s.imageOcrMode === "manga"
+                ? s.imageOcrMode
                 : "fast",
             ocrAutoTranslate: s.ocrAutoTranslate ?? true,
             ocrTranslateProvider: (() => {
@@ -622,7 +629,7 @@ export default function App() {
         >
           <ImageOcrView
             active={page === "image"}
-            ocrMode={settings.ocrMode}
+            ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
             translateProvider={settings.ocrTranslateProvider}
             translateSource={settings.ocrTranslateSource}
@@ -635,7 +642,7 @@ export default function App() {
             incomingImage={ocrIncoming}
             onIncomingHandled={() => setOcrIncoming(null)}
             onOcrModeChange={async (ocrMode) => {
-              await onSaveSettings({ ...settings, ocrMode });
+              await onSaveSettings({ ...settings, imageOcrMode: ocrMode });
             }}
             onTranslateSourceChange={async (ocrTranslateSource) => {
               await onSaveSettings({

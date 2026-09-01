@@ -12,6 +12,7 @@
     "prepare:sidecar": "powershell -File ../scripts/prepare-sidecar.ps1"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@likecoin/epub-ts": "^0.7.1",
     "@paddleocr/paddleocr-js": "^0.4.2",
     "@tauri-apps/api": "^2.5.0",
@@ -20,6 +21,7 @@
     "@tauri-apps/plugin-shell": "^2.2.1",
     "echarts": "^6.1.0",
     "katex": "^0.16.21",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "pdfjs-dist": "^4.8.69",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

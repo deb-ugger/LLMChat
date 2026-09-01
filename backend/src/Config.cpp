@@ -88,6 +88,7 @@ std::string serializeConfig(const AppConfig& config)
     out << "translateGlossary=" << escapeIniValue(config.translateGlossary) << "\n";
     out << "ocrLang=" << config.ocrLang << "\n";
     out << "ocrMode=" << config.ocrMode << "\n";
+    out << "imageOcrMode=" << config.imageOcrMode << "\n";
     out << "ocrAutoTranslate=" << (config.ocrAutoTranslate ? "true" : "false") << "\n";
     out << "ocrTranslateProvider=" << config.ocrTranslateProvider << "\n";
     out << "ocrTranslateSource=" << config.ocrTranslateSource << "\n";
@@ -177,6 +178,7 @@ void ConfigStore::load()
             else if (key == "translateGlossary") next.translateGlossary = unescapeIniValue(value);
             else if (key == "ocrLang") next.ocrLang = value;
             else if (key == "ocrMode") next.ocrMode = value;
+            else if (key == "imageOcrMode") next.imageOcrMode = value;
             else if (key == "ocrAutoTranslate") next.ocrAutoTranslate =
                 (value == "1" || value == "true" || value == "True" || value == "yes");
             else if (key == "ocrTranslateProvider") next.ocrTranslateProvider = value;

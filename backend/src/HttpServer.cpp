@@ -653,7 +653,7 @@ int HttpServer::run()
         res.set_content(ocrModels_->status().dump(), "application/json");
     }));
 
-    svr.Post(R"(/api/ocr/models/(fast|precise|english))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    svr.Post(R"(/api/ocr/models/(fast|precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const std::string mode = req.matches[1].str();
@@ -666,7 +666,7 @@ int HttpServer::run()
         }
     }));
 
-    svr.Delete(R"(/api/ocr/models/(precise|english))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    svr.Delete(R"(/api/ocr/models/(precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
             res.set_content(ocrModels_->removeMode(req.matches[1].str()).dump(), "application/json");
@@ -678,7 +678,7 @@ int HttpServer::run()
         }
     }));
 
-    svr.Get(R"(/api/ocr/model-files/([^/]+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    svr.Get(R"(/api/ocr/model-files/(.+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         const std::string fileName = req.matches[1].str();
         if (!ocrModels_->isAllowedModelFile(fileName))
         {
@@ -687,7 +687,14 @@ int HttpServer::run()
             return;
         }
         res.set_header("Cache-Control", "private, max-age=31536000, immutable");
-        res.set_file_content(ocrModels_->modelFile(fileName).string(), "application/x-tar");
+        const std::string contentType = fileName.ends_with(".onnx")
+            ? "application/octet-stream"
+            : fileName.ends_with(".json")
+                ? "application/json; charset=utf-8"
+                : fileName.ends_with(".txt")
+                    ? "text/plain; charset=utf-8"
+                    : "application/x-tar";
+        res.set_file_content(ocrModels_->modelFile(fileName).string(), contentType);
     }));
 
     svr.Get("/api/settings", withCors([this](const httplib::Request&, httplib::Response& res) {
@@ -715,6 +722,7 @@ int HttpServer::run()
             {"translateGlossary", c.translateGlossary},
             {"ocrLang", c.ocrLang},
             {"ocrMode", c.ocrMode},
+            {"imageOcrMode", c.imageOcrMode},
             {"ocrAutoTranslate", c.ocrAutoTranslate},
             {"ocrTranslateProvider", c.ocrTranslateProvider},
             {"ocrTranslateSource", c.ocrTranslateSource},
@@ -832,6 +840,12 @@ int HttpServer::run()
             {
                 const std::string mode = body["ocrMode"].get<std::string>();
                 c.ocrMode = (mode == "precise" || mode == "english") ? mode : "fast";
+            }
+            if (body.contains("imageOcrMode"))
+            {
+                const std::string mode = body["imageOcrMode"].get<std::string>();
+                c.imageOcrMode = (mode == "precise" || mode == "english" || mode == "manga")
+                    ? mode : "fast";
             }
             if (body.contains("ocrAutoTranslate"))
             {

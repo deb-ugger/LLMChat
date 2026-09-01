@@ -27,6 +27,7 @@ struct ModelSpec {
     const char* fileName;
     const char* url;
     std::uintmax_t bytes;
+    bool onnxTar = false;
 };
 
 constexpr ModelSpec kMediumDet{
@@ -34,30 +35,94 @@ constexpr ModelSpec kMediumDet{
     "PP-OCRv6_medium_det_onnx_infer.tar",
     "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_onnx_infer.tar",
     62044160,
+    true,
 };
 constexpr ModelSpec kMediumRec{
     "PP-OCRv6_medium_rec",
     "PP-OCRv6_medium_rec_onnx_infer.tar",
     "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_rec_onnx_infer.tar",
     76718080,
+    true,
 };
 constexpr ModelSpec kEnglishRec{
     "en_PP-OCRv5_mobile_rec",
     "en_PP-OCRv5_mobile_rec_onnx_infer.tar",
     "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/en_PP-OCRv5_mobile_rec_onnx_infer.tar",
     7874560,
+    true,
 };
-constexpr std::array<const ModelSpec*, 3> kDownloadable{
+constexpr ModelSpec kMangaConfig{
+    "Manga OCR config",
+    "manga-ocr-base-ONNX/config.json",
+    "https://huggingface.co/NorwayFish/manga-ocr/resolve/main/config.json?download=true",
+    75028,
+};
+constexpr ModelSpec kMangaGenerationConfig{
+    "Manga OCR generation config",
+    "manga-ocr-base-ONNX/generation_config.json",
+    "https://huggingface.co/NorwayFish/manga-ocr/resolve/main/generation_config.json?download=true",
+    261,
+};
+constexpr ModelSpec kMangaPreprocessorConfig{
+    "Manga OCR preprocessor config",
+    "manga-ocr-base-ONNX/preprocessor_config.json",
+    "https://huggingface.co/NorwayFish/manga-ocr/resolve/main/preprocessor_config.json?download=true",
+    351,
+};
+constexpr ModelSpec kMangaTokenizer{
+    "Manga OCR tokenizer",
+    "manga-ocr-base-ONNX/tokenizer.json",
+    "https://huggingface.co/NorwayFish/manga-ocr/resolve/main/tokenizer.json?download=true",
+    117755,
+};
+constexpr ModelSpec kMangaTokenizerConfig{
+    "Manga OCR tokenizer config",
+    "manga-ocr-base-ONNX/tokenizer_config.json",
+    "https://huggingface.co/NorwayFish/manga-ocr/resolve/main/tokenizer_config.json?download=true",
+    1536,
+};
+constexpr ModelSpec kMangaEncoder{
+    "Manga OCR INT8 encoder",
+    "manga-ocr-base-ONNX/onnx/encoder_model_quantized.onnx",
+    "https://huggingface.co/onnx-community/manga-ocr-base-ONNX/resolve/main/onnx/encoder_model_quantized.onnx?download=true",
+    86967767,
+};
+constexpr ModelSpec kMangaDecoder{
+    "Manga OCR INT8 decoder",
+    "manga-ocr-base-ONNX/onnx/decoder_model_quantized.onnx",
+    "https://huggingface.co/onnx-community/manga-ocr-base-ONNX/resolve/main/onnx/decoder_model_quantized.onnx?download=true",
+    29627936,
+};
+constexpr std::array<const ModelSpec*, 7> kMangaFiles{
+    &kMangaConfig,
+    &kMangaGenerationConfig,
+    &kMangaPreprocessorConfig,
+    &kMangaTokenizer,
+    &kMangaTokenizerConfig,
+    &kMangaEncoder,
+    &kMangaDecoder,
+};
+constexpr std::uintmax_t kMangaModelBytes = 116790634;
+constexpr std::array<const ModelSpec*, 10> kDownloadable{
     &kMediumDet,
     &kMediumRec,
     &kEnglishRec,
+    &kMangaConfig,
+    &kMangaGenerationConfig,
+    &kMangaPreprocessorConfig,
+    &kMangaTokenizer,
+    &kMangaTokenizerConfig,
+    &kMangaEncoder,
+    &kMangaDecoder,
 };
 constexpr std::array<const char*, 3> kLegacyPaddleModels{
     "PP-OCRv6_medium_det_infer.tar",
     "PP-OCRv6_medium_rec_infer.tar",
     "en_PP-OCRv5_mobile_rec_infer.tar",
 };
-constexpr std::uintmax_t kFastModelBytes = 9891840 + 21319680;
+constexpr std::uintmax_t kFastDetModelBytes = 9891840;
+constexpr std::uintmax_t kFastRecModelBytes = 21319680;
+constexpr std::uintmax_t kFastModelBytes = kFastDetModelBytes + kFastRecModelBytes;
 
 bool hasOnnxTarEntries(const fs::path& path)
 {
@@ -99,9 +164,27 @@ bool isComplete(const fs::path& root, const ModelSpec& spec)
 {
     std::error_code ec;
     const fs::path path = root / spec.fileName;
-    return fs::is_regular_file(path, ec)
-        && fs::file_size(path, ec) == spec.bytes && !ec
-        && hasOnnxTarEntries(path);
+    if (!fs::is_regular_file(path, ec)
+        || fs::file_size(path, ec) != spec.bytes || ec)
+        return false;
+    return !spec.onnxTar || hasOnnxTarEntries(path);
+}
+
+bool isMangaComplete(const fs::path& root)
+{
+    return std::all_of(kMangaFiles.begin(), kMangaFiles.end(),
+                       [&root](const ModelSpec* spec) { return isComplete(root, *spec); });
+}
+
+std::uintmax_t mangaCachedBytes(const fs::path& root)
+{
+    std::uintmax_t total = 0;
+    for (const auto* spec : kMangaFiles)
+    {
+        if (isComplete(root, *spec))
+            total += spec->bytes;
+    }
+    return total;
 }
 
 std::uintmax_t cachedBytes(const fs::path& root)
@@ -210,6 +293,9 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
 
     const fs::path partial = destination.wstring() + L".part";
     std::error_code ec;
+    fs::create_directories(destination.parent_path(), ec);
+    if (ec)
+        throw std::runtime_error("无法创建 OCR 模型子目录");
     fs::remove(partial, ec);
     std::ofstream out(partial, std::ios::binary | std::ios::trunc);
     if (!out)
@@ -240,7 +326,7 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
         out.close();
         if (written != spec.bytes)
             throw std::runtime_error("模型下载不完整，请重试");
-        if (!hasOnnxTarEntries(partial))
+        if (spec.onnxTar && !hasOnnxTarEntries(partial))
             throw std::runtime_error("模型格式无效：缺少 inference.onnx 或 inference.yml");
         fs::remove(destination, ec);
         ec.clear();
@@ -269,7 +355,9 @@ void downloadFile(const ModelSpec&, const fs::path&, const AppConfig&,
 json modeStatus(const char* id, const char* label, bool builtIn, bool installed,
                 bool prerequisiteInstalled, bool recognitionInstalled,
                 std::uintmax_t downloadBytes, std::uintmax_t sizeBytes,
-                std::uintmax_t cachedModeBytes)
+                std::uintmax_t cachedModeBytes,
+                std::uintmax_t prerequisiteSizeBytes,
+                std::uintmax_t recognitionSizeBytes)
 {
     return json{
         {"id", id}, {"label", label}, {"builtIn", builtIn},
@@ -278,6 +366,8 @@ json modeStatus(const char* id, const char* label, bool builtIn, bool installed,
         {"recognitionInstalled", recognitionInstalled},
         {"downloadBytes", downloadBytes},
         {"sizeBytes", sizeBytes}, {"cachedBytes", cachedModeBytes},
+        {"prerequisiteSizeBytes", prerequisiteSizeBytes},
+        {"recognitionSizeBytes", recognitionSizeBytes},
     };
 }
 
@@ -306,8 +396,11 @@ json OcrModelStore::status() const
     const bool det = isComplete(root_, kMediumDet);
     const bool rec = isComplete(root_, kMediumRec);
     const bool englishRec = isComplete(root_, kEnglishRec);
+    const bool mangaRec = isMangaComplete(root_);
+    const std::uintmax_t mangaCached = mangaCachedBytes(root_);
     const bool precise = det && rec;
     const bool english = det && englishRec;
+    const bool manga = det && mangaRec;
     return json{
         {"ok", true},
         {"cacheDir", utf8path::pathUtf8(root_)},
@@ -321,15 +414,23 @@ json OcrModelStore::status() const
         }},
         {"modes", json::array({
             modeStatus("fast", "快速", true, true, true, true, 0,
-                       kFastModelBytes, kFastModelBytes),
+                       kFastModelBytes, kFastModelBytes,
+                       kFastDetModelBytes, kFastRecModelBytes),
             modeStatus("precise", "精确", false, precise, det, rec,
                        precise ? 0 : (det ? kMediumRec.bytes : kMediumDet.bytes + kMediumRec.bytes),
                        kMediumDet.bytes + kMediumRec.bytes,
-                       (det ? kMediumDet.bytes : 0) + (rec ? kMediumRec.bytes : 0)),
+                       (det ? kMediumDet.bytes : 0) + (rec ? kMediumRec.bytes : 0),
+                       kMediumDet.bytes, kMediumRec.bytes),
             modeStatus("english", "英文增强", false, english, det, englishRec,
                        english ? 0 : (det ? kEnglishRec.bytes : kMediumDet.bytes + kEnglishRec.bytes),
                        kMediumDet.bytes + kEnglishRec.bytes,
-                       (det ? kMediumDet.bytes : 0) + (englishRec ? kEnglishRec.bytes : 0)),
+                       (det ? kMediumDet.bytes : 0) + (englishRec ? kEnglishRec.bytes : 0),
+                       kMediumDet.bytes, kEnglishRec.bytes),
+            modeStatus("manga", "漫画增强", false, manga, det, mangaRec,
+                       manga ? 0 : (det ? 0 : kMediumDet.bytes) + (kMangaModelBytes - mangaCached),
+                       kMediumDet.bytes + kMangaModelBytes,
+                       (det ? kMediumDet.bytes : 0) + mangaCached,
+                       kMediumDet.bytes, kMangaModelBytes),
         })},
     };
 }
@@ -338,12 +439,16 @@ json OcrModelStore::ensureMode(const std::string& mode, const AppConfig& config)
 {
     if (mode == "fast")
         return status();
-    if (mode != "precise" && mode != "english")
+    if (mode != "precise" && mode != "english" && mode != "manga")
         throw std::runtime_error("未知的 OCR 模式");
 
-    const std::array<const ModelSpec*, 2> required = mode == "precise"
-        ? std::array<const ModelSpec*, 2>{&kMediumDet, &kMediumRec}
-        : std::array<const ModelSpec*, 2>{&kMediumDet, &kEnglishRec};
+    std::vector<const ModelSpec*> required{&kMediumDet};
+    if (mode == "precise")
+        required.push_back(&kMediumRec);
+    else if (mode == "english")
+        required.push_back(&kEnglishRec);
+    else
+        required.insert(required.end(), kMangaFiles.begin(), kMangaFiles.end());
 
     std::uintmax_t totalMissing = 0;
     for (const auto* spec : required)
@@ -411,22 +516,35 @@ json OcrModelStore::ensureMode(const std::string& mode, const AppConfig& config)
 
 json OcrModelStore::removeMode(const std::string& mode)
 {
-    if (mode != "precise" && mode != "english")
+    if (mode != "precise" && mode != "english" && mode != "manga")
         throw std::runtime_error("内置快速模型无法卸载");
     {
         std::lock_guard lock(mutex_);
         if (downloadActive_)
             throw std::runtime_error("模型正在下载，暂时无法删除缓存");
         std::error_code ec;
-        const ModelSpec& recognition = mode == "precise" ? kMediumRec : kEnglishRec;
-        fs::remove(root_ / recognition.fileName, ec);
-        fs::remove((root_ / recognition.fileName).wstring() + L".part", ec);
+        if (mode == "manga")
+        {
+            for (const auto* spec : kMangaFiles)
+            {
+                fs::remove(root_ / utf8path::pathFromUtf8(spec->fileName), ec);
+                fs::remove((root_ / utf8path::pathFromUtf8(spec->fileName)).wstring() + L".part", ec);
+            }
+            fs::remove(root_ / "manga-ocr-base-ONNX" / "onnx", ec);
+            fs::remove(root_ / "manga-ocr-base-ONNX", ec);
+        }
+        else
+        {
+            const ModelSpec& recognition = mode == "precise" ? kMediumRec : kEnglishRec;
+            fs::remove(root_ / recognition.fileName, ec);
+            fs::remove((root_ / recognition.fileName).wstring() + L".part", ec);
+        }
 
-        // The medium detector is shared by precise and English modes. Keep it
-        // while the other mode's recognition model is cached; otherwise this
-        // uninstall can reclaim the shared file as well.
-        const ModelSpec& otherRecognition = mode == "precise" ? kEnglishRec : kMediumRec;
-        if (!isComplete(root_, otherRecognition))
+        // The medium detector is shared by precise, English and manga modes.
+        // Reclaim it only when no remaining mode can use it.
+        if (!isComplete(root_, kMediumRec)
+            && !isComplete(root_, kEnglishRec)
+            && !isMangaComplete(root_))
         {
             fs::remove(root_ / kMediumDet.fileName, ec);
             fs::remove((root_ / kMediumDet.fileName).wstring() + L".part", ec);

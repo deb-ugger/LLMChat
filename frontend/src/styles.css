@@ -2849,10 +2849,24 @@ textarea {
   display: block;
 }
 
-.ocr-model-file-status {
+.ocr-model-file-meta {
   margin-top: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.ocr-model-file-status {
   padding: 2px 7px;
   font-size: 11px;
+}
+
+.ocr-model-file-size {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 750;
 }
 
 .ocr-mode-purpose {

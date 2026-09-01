@@ -20,13 +20,16 @@ function backendModelUrl(fileName: string): string {
 }
 
 export function normalizeOcrMode(value: string): OcrMode {
-  return value === "precise" || value === "english" ? value : "fast";
+  return value === "precise" || value === "english" || value === "manga"
+    ? value
+    : "fast";
 }
 
 export const OCR_MODE_LABELS: Record<OcrMode, string> = {
   fast: "快速",
   precise: "精确",
   english: "英文增强",
+  manga: "漫画增强",
 };
 
 function modelPair(mode: OcrMode): ModelPair {
@@ -44,6 +47,16 @@ function modelPair(mode: OcrMode): ModelPair {
       detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
       recName: "en_PP-OCRv5_mobile_rec",
       recUrl: backendModelUrl("en_PP-OCRv5_mobile_rec_onnx_infer.tar"),
+    };
+  }
+  if (mode === "manga") {
+    return {
+      // Manga OCR is recognition-only. Reuse the accurate shared detector;
+      // the bundled small recognizer supplies proposal text that is discarded.
+      detName: "PP-OCRv6_medium_det",
+      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
+      recName: "PP-OCRv6_small_rec",
+      recUrl: localAssetUrl("./ocr/PP-OCRv6_small_rec_onnx_infer.tar"),
     };
   }
   return {

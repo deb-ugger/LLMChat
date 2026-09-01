@@ -42,6 +42,8 @@ struct AppConfig {
     std::string ocrLang = "eng";
     /** fast = bundled small; precise = medium; english = medium detection + English recognition */
     std::string ocrMode = "fast";
+    /** Image OCR additionally supports manga; independent from literature OCR. */
+    std::string imageOcrMode = "fast";
     bool ocrAutoTranslate = true;
     std::string ocrTranslateProvider = "bing";
     std::string ocrTranslateSource = "en";

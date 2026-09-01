@@ -121,6 +121,15 @@ const OCR_MODE_OPTIONS: Array<{
     description:
       "英文论文、英文技术文档、代码说明及英文缩写较多的页面；流程图仍建议先与快速模式比较。",
   },
+  {
+    id: "manga",
+    title: "漫画增强",
+    detectionModel: "PP-OCRv6 medium det",
+    recognitionModel: "Manga OCR base INT8",
+    description:
+      "日文漫画、竖排气泡、振假名、艺术字体及图片背景上的文字；会按气泡合并并使用日文阅读顺序。",
+    warning: "仅用于图片文字识别，不用于文献 PDF。",
+  },
 ];
 
 type FeaturePage = "chat" | "literature" | "image" | "text" | "unity";
@@ -191,7 +200,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
   ],
   image: [
     "ocrLang",
-    "ocrMode",
+    "imageOcrMode",
     "ocrAutoTranslate",
     "ocrTranslateProvider",
     "ocrTranslateSource",
@@ -363,6 +372,12 @@ function withDefaults(s: Settings): Settings {
     ocrMode:
       s.ocrMode === "precise" || s.ocrMode === "english"
         ? s.ocrMode
+        : "fast",
+    imageOcrMode:
+      s.imageOcrMode === "precise" ||
+      s.imageOcrMode === "english" ||
+      s.imageOcrMode === "manga"
+        ? s.imageOcrMode
         : "fast",
     ocrAutoTranslate: s.ocrAutoTranslate ?? true,
     ocrTranslateProvider: normalizeProvider(
@@ -1119,7 +1134,7 @@ export function SettingsView({
   const [saving, setSaving] = useState(false);
   const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
   const [ocrModelBusy, setOcrModelBusy] = useState<
-    OcrMode | "remove-precise" | "remove-english" | null
+    OcrMode | `remove-${Exclude<OcrMode, "fast">}` | null
   >(null);
   const [ocrUninstallConfirm, setOcrUninstallConfirm] = useState<{
     mode: Exclude<OcrMode, "fast">;
@@ -1549,10 +1564,14 @@ export function SettingsView({
     }
   };
 
-  const chooseOcrMode = async (mode: OcrMode) => {
+  const chooseOcrMode = async (
+    mode: OcrMode,
+    context: "literature" | "image",
+  ) => {
     if (ocrModelBusy) return;
+    const modeField = context === "literature" ? "ocrMode" : "imageOcrMode";
     if (mode === "fast") {
-      commitForm({ ...formRef.current, ocrMode: mode });
+      commitForm({ ...formRef.current, [modeField]: mode });
       return;
     }
     const installed = ocrModelStatus?.modes.find((item) => item.id === mode)?.installed;
@@ -1571,7 +1590,8 @@ export function SettingsView({
         ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
         const nextStatus = await downloadPromise;
         setOcrModelStatus(nextStatus);
-        notify(`${mode === "precise" ? "精确" : "英文增强"}模型已下载并缓存`);
+        const label = OCR_MODE_OPTIONS.find((option) => option.id === mode)?.title ?? mode;
+        notify(`${label}模型已下载并缓存`);
       } catch (e) {
         notify(toFriendlyError(e, "扩展 OCR 模型下载失败"), false);
         return;
@@ -1584,12 +1604,12 @@ export function SettingsView({
         setOcrModelBusy(null);
       }
     }
-    commitForm({ ...formRef.current, ocrMode: mode });
+    commitForm({ ...formRef.current, [modeField]: mode });
   };
 
   const uninstallOcrMode = async (mode: Exclude<OcrMode, "fast">) => {
     if (ocrModelBusy) return;
-    const label = mode === "precise" ? "精确" : "英文增强";
+    const label = OCR_MODE_OPTIONS.find((option) => option.id === mode)?.title ?? mode;
     setOcrUninstallConfirm(null);
     setOcrModelBusy(`remove-${mode}`);
     try {
@@ -1598,14 +1618,21 @@ export function SettingsView({
       if (formRef.current.ocrMode === mode) {
         commitForm({ ...formRef.current, ocrMode: "fast" });
       }
-      const otherMode = mode === "precise" ? "english" : "precise";
-      const otherLabel = otherMode === "precise" ? "精确" : "英文增强";
-      const sharedDetectorKept =
-        nextStatus.modes.find((item) => item.id === otherMode)?.installed === true;
-      if (sharedDetectorKept) {
+      if (formRef.current.imageOcrMode === mode) {
+        commitForm({ ...formRef.current, imageOcrMode: "fast" });
+      }
+      const remainingSharedModes = nextStatus.modes.filter(
+        (item) =>
+          item.id !== "fast" &&
+          item.id !== mode &&
+          item.installed,
+      );
+      if (remainingSharedModes.length) {
         setOcrCenterNotice({
           title: `“${label}”模式已卸载`,
-          message: `PP-OCRv6 medium det 仍被“${otherLabel}”模式使用，因此已自动保留；仅删除了“${label}”专用的文字识别模型。`,
+          message: `PP-OCRv6 medium det 仍被${remainingSharedModes
+            .map((item) => `“${item.label}”`)
+            .join("、")}模式使用，因此已自动保留；仅删除了“${label}”专用的文字识别模型。`,
         });
       } else {
         notify(`“${label}”OCR 模型已卸载`);
@@ -1626,6 +1653,11 @@ export function SettingsView({
       : 0;
     const modeDisabled =
       ocrModelBusy !== null || ocrModelStatus?.download?.active === true;
+    const visibleOptions = OCR_MODE_OPTIONS.filter(
+      (option) => context === "image" || option.id !== "manga",
+    );
+    const selectedMode =
+      context === "literature" ? form.ocrMode : form.imageOcrMode;
 
     return (
       <div className="ocr-mode-settings">
@@ -1654,11 +1686,11 @@ export function SettingsView({
               </tr>
             </thead>
             <tbody role="radiogroup" aria-label="识别模式">
-              {OCR_MODE_OPTIONS.map((option) => {
+              {visibleOptions.map((option) => {
                 const statusItem = ocrModelStatus?.modes.find(
                   (item) => item.id === option.id,
                 );
-                const selected = form.ocrMode === option.id;
+                const selected = selectedMode === option.id;
                 const downloading =
                   ocrModelBusy === option.id ||
                   (progress?.active === true && progress.mode === option.id);
@@ -1709,7 +1741,7 @@ export function SettingsView({
                         className={`ocr-mode-select${selected ? " is-selected" : ""}`}
                         aria-checked={selected}
                         disabled={modeDisabled}
-                        onClick={() => void chooseOcrMode(option.id)}
+                        onClick={() => void chooseOcrMode(option.id, context)}
                       >
                         <span className="ocr-mode-select-mark" aria-hidden />
                         <strong>{option.title}</strong>
@@ -1733,14 +1765,28 @@ export function SettingsView({
                     </td>
                     <td className="ocr-mode-model-cell">
                       <code>{option.detectionModel}</code>
-                      <span className={`ocr-model-file-status ${prerequisiteInstalled ? "is-ready" : "is-missing"}`}>
-                        {prerequisiteInstalled ? "✓ 已下载" : "未下载"}
+                      <span className="ocr-model-file-meta">
+                        <span className={`ocr-model-file-status ${prerequisiteInstalled ? "is-ready" : "is-missing"}`}>
+                          {prerequisiteInstalled ? "✓ 已下载" : "未下载"}
+                        </span>
+                        <span className="ocr-model-file-size">
+                          {statusItem
+                            ? formatModelBytes(statusItem.prerequisiteSizeBytes)
+                            : "读取中"}
+                        </span>
                       </span>
                     </td>
                     <td className="ocr-mode-model-cell">
                       <code>{option.recognitionModel}</code>
-                      <span className={`ocr-model-file-status ${recognitionInstalled ? "is-ready" : "is-missing"}`}>
-                        {recognitionInstalled ? "✓ 已下载" : "未下载"}
+                      <span className="ocr-model-file-meta">
+                        <span className={`ocr-model-file-status ${recognitionInstalled ? "is-ready" : "is-missing"}`}>
+                          {recognitionInstalled ? "✓ 已下载" : "未下载"}
+                        </span>
+                        <span className="ocr-model-file-size">
+                          {statusItem
+                            ? formatModelBytes(statusItem.recognitionSizeBytes)
+                            : "读取中"}
+                        </span>
                       </span>
                     </td>
                     <td className="ocr-mode-purpose">
@@ -3147,7 +3193,7 @@ export function SettingsView({
             <div className="ocr-confirm-copy">
               <h3 id="ocr-uninstall-confirm-title">卸载本地模型？</h3>
               <p>
-                {`确认卸载“${ocrUninstallConfirm.mode === "precise" ? "精确" : "英文增强"}”模式？系统会先检查共享模型，其他可用模式仍需使用的文件不会删除；以后再次选择时，需要重新下载其专用模型。`}
+                {`确认卸载“${OCR_MODE_OPTIONS.find((option) => option.id === ocrUninstallConfirm.mode)?.title ?? ocrUninstallConfirm.mode}”模式？系统会先检查共享模型，其他可用模式仍需使用的文件不会删除；以后再次选择时，需要重新下载其专用模型。`}
               </p>
             </div>
             <div className="ocr-confirm-actions">

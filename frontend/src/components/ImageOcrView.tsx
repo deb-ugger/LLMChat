@@ -22,6 +22,7 @@ import {
   normalizeOcrMode,
   type PaddleOcrLine,
 } from "../ocr/paddleOcr";
+import { LocalMangaOcr } from "../ocr/mangaOcr";
 import { getEngineInfo } from "../translateEngines";
 import { LangCombobox } from "./LangCombobox";
 
@@ -36,6 +37,8 @@ export type OcrBlock = {
   y: number;
   w: number;
   h: number;
+  /** Source text is primarily vertical (used to fit translated overlays). */
+  vertical?: boolean;
 };
 
 type OcrPage = {
@@ -88,6 +91,11 @@ const IMAGE_OCR_MODES: Array<{
   {
     id: "english",
     description: "英文论文、技术文档、代码说明和英文缩写",
+  },
+  {
+    id: "manga",
+    description: "日文漫画、竖排气泡、振假名和复杂漫画字体",
+    warning: "约 111 MiB；首次使用需下载，识别速度慢于精确模式",
   },
 ];
 
@@ -489,6 +497,118 @@ function repairPaddleLines(lines: BBoxLine[]): BBoxLine[] {
   return repaired;
 }
 
+function groupMangaRegions(lines: BBoxLine[]): BBoxLine[] {
+  if (lines.length < 2) return lines;
+  const parent = lines.map((_, index) => index);
+  const find = (index: number): number => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
+    }
+    return index;
+  };
+  const join = (left: number, right: number) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parent[b] = a;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const a = lines[i];
+      const b = lines[j];
+      const aw = Math.max(1, a.x1 - a.x0);
+      const ah = Math.max(1, a.y1 - a.y0);
+      const bw = Math.max(1, b.x1 - b.x0);
+      const bh = Math.max(1, b.y1 - b.y0);
+      const xOverlap = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+      const yOverlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      const xGap = Math.max(0, Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1));
+      const yGap = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
+      const bothVertical = ah > aw * 1.15 && bh > bw * 1.15;
+      const verticalColumns =
+        bothVertical &&
+        yOverlap >= Math.min(ah, bh) * 0.32 &&
+        xGap <= Math.max(18, Math.min(ah, bh) * 0.22);
+      const horizontalLines =
+        !bothVertical &&
+        xOverlap >= Math.min(aw, bw) * 0.25 &&
+        yGap <= Math.max(14, Math.min(ah, bh) * 1.15);
+      const boxesOverlap = xOverlap > 0 && yOverlap > 0;
+      if (verticalColumns || horizontalLines || boxesOverlap) join(i, j);
+    }
+  }
+
+  const groups = new Map<number, BBoxLine[]>();
+  lines.forEach((line, index) => {
+    const root = find(index);
+    const group = groups.get(root) ?? [];
+    group.push(line);
+    groups.set(root, group);
+  });
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      text: group.map((line) => line.text).join(""),
+      confidence:
+        group.reduce((sum, line) => sum + line.confidence, 0) / group.length,
+      x0: Math.min(...group.map((line) => line.x0)),
+      y0: Math.min(...group.map((line) => line.y0)),
+      x1: Math.max(...group.map((line) => line.x1)),
+      y1: Math.max(...group.map((line) => line.y1)),
+      lineH: Math.max(...group.map((line) => line.lineH)),
+    }))
+    .sort((a, b) => {
+      const overlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      const minHeight = Math.min(a.y1 - a.y0, b.y1 - b.y0);
+      return overlap >= minHeight * 0.3 ? b.x0 - a.x0 : a.y0 - b.y0;
+    });
+}
+
+async function cropMangaRegion(
+  image: Blob,
+  region: BBoxLine,
+  imageWidth: number,
+  imageHeight: number,
+): Promise<Blob> {
+  const bitmap = await createImageBitmap(image);
+  try {
+    const regionWidth = Math.max(1, region.x1 - region.x0);
+    const regionHeight = Math.max(1, region.y1 - region.y0);
+    const padX = Math.max(10, Math.min(64, regionHeight * 0.1));
+    const padY = Math.max(8, Math.min(36, regionWidth * 0.1));
+    const x0 = Math.max(0, Math.floor(region.x0 - padX));
+    const y0 = Math.max(0, Math.floor(region.y0 - padY));
+    const x1 = Math.min(imageWidth, Math.ceil(region.x1 + padX));
+    const y1 = Math.min(imageHeight, Math.ceil(region.y1 + padY));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, x1 - x0);
+    canvas.height = Math.max(1, y1 - y0);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法创建漫画 OCR 裁剪画布");
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(
+      bitmap,
+      x0,
+      y0,
+      canvas.width,
+      canvas.height,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!blob) throw new Error("无法生成漫画 OCR 裁剪图片");
+    return blob;
+  } finally {
+    bitmap.close();
+  }
+}
+
 function isLiteralOcrToken(text: string): boolean {
   return /^(?:\d+|T(?:\d+)?|[A-Z])$/.test(text.trim());
 }
@@ -870,6 +990,10 @@ function OcrPageCard({
                 fontSize: `${fontSize.toFixed(1)}px`,
                 lineHeight: 1.2,
                 whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
+                writingMode:
+                  displayedField === "translation" && b.vertical
+                    ? "vertical-rl"
+                    : undefined,
                 transform: dragOffset
                   ? `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0)`
                   : undefined,
@@ -971,6 +1095,7 @@ export function ImageOcrView({
   const ocrModeMenuRef = useRef<HTMLDivElement>(null);
   const ocrProgressPollRef = useRef<number | null>(null);
   const paddleOcrRef = useRef<LocalPaddleOcr | null>(null);
+  const mangaOcrRef = useRef<LocalMangaOcr | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const dualRef = useRef<HTMLDivElement>(null);
   const srcListRef = useRef<HTMLDivElement>(null);
@@ -1023,8 +1148,11 @@ export function ImageOcrView({
 
   useEffect(() => {
     const previous = paddleOcrRef.current;
+    const previousManga = mangaOcrRef.current;
     paddleOcrRef.current = null;
+    mangaOcrRef.current = null;
     void previous?.dispose();
+    void previousManga?.dispose();
   }, [normalizedOcrMode]);
 
   useEffect(() => {
@@ -1042,6 +1170,8 @@ export function ImageOcrView({
       }
       void paddleOcrRef.current?.dispose();
       paddleOcrRef.current = null;
+      void mangaOcrRef.current?.dispose();
+      mangaOcrRef.current = null;
     };
   }, []);
 
@@ -1476,10 +1606,12 @@ export function ImageOcrView({
           let modelInstallKnown =
             normalizedOcrMode === "fast" ||
             paddleOcrRef.current !== null ||
+            mangaOcrRef.current !== null ||
             cachedModeStatus !== undefined;
           let modelInstalled =
             normalizedOcrMode === "fast" ||
             paddleOcrRef.current !== null ||
+            mangaOcrRef.current !== null ||
             cachedModeStatus?.installed === true;
           if (!modelInstalled && normalizedOcrMode !== "fast") {
             try {
@@ -1498,6 +1630,8 @@ export function ImageOcrView({
           const loadingText =
             normalizedOcrMode === "fast"
               ? "正在加载本地 PP-OCRv6 快速模型…"
+              : normalizedOcrMode === "manga" && modelInstalled
+                ? "正在加载本地 Manga OCR 漫画增强模型…"
               : modelInstalled
                 ? `正在加载本地 PaddleOCR ${modeLabel}模型…`
                 : modelInstallKnown
@@ -1531,16 +1665,43 @@ export function ImageOcrView({
               };
             })
             .filter((line): line is BBoxLine => line !== null);
-          // PaddleOCR already returns one item per detected text line. Merging
-          // again here joined labels (T1/T2) to nearby prose and could cascade
-          // several diagram captions into one oversized translation overlay.
-          lineBoxes = repairPaddleLines(rawLines);
+          if (normalizedOcrMode === "manga") {
+            const regions = groupMangaRegions(rawLines);
+            if (!regions.length) throw new Error("没有检测到可识别的漫画文字区域");
+            const manga =
+              mangaOcrRef.current ??
+              (mangaOcrRef.current = new LocalMangaOcr());
+            const recognized: BBoxLine[] = [];
+            for (let index = 0; index < regions.length; index += 1) {
+              const progressText = `正在识别漫画气泡 ${index + 1}/${regions.length}…`;
+              patchPage(pageId, { statusText: progressText });
+              setStatus(progressText);
+              const crop = await cropMangaRegion(file, regions[index], iw, ih);
+              const text = await withTimeout(
+                manga.recognize(crop),
+                300_000,
+                "Manga OCR 识别超时，请重新识别",
+              );
+              if (text) recognized.push({ ...regions[index], text });
+            }
+            if (!recognized.length) throw new Error("Manga OCR 没有返回日文文本");
+            lineBoxes = recognized;
+            recognitionEngine = "Manga OCR 漫画增强";
+          } else {
+            // PaddleOCR already returns one item per detected text line. Merging
+            // again here joined labels (T1/T2) to nearby prose and could cascade
+            // several diagram captions into one oversized translation overlay.
+            lineBoxes = repairPaddleLines(rawLines);
+          }
         } catch (paddleError) {
           const failedPaddle = paddleOcrRef.current;
+          const failedManga = mangaOcrRef.current;
           paddleOcrRef.current = null;
+          mangaOcrRef.current = null;
           void failedPaddle?.dispose();
+          void failedManga?.dispose();
           throw new Error(
-            `PaddleOCR 识别失败：${toFriendlyError(paddleError, "初始化失败")}`,
+            `${normalizedOcrMode === "manga" ? "漫画 OCR" : "PaddleOCR"} 识别失败：${toFriendlyError(paddleError, "初始化失败")}`,
           );
         }
 
@@ -1565,6 +1726,7 @@ export function ImageOcrView({
             y,
             w: Math.max(w, 0.02),
             h: Math.max(h, 0.012),
+            vertical: ln.y1 - ln.y0 > (ln.x1 - ln.x0) * 1.2,
           };
         });
 
@@ -1975,6 +2137,8 @@ export function ImageOcrView({
     drainingRef.current = false;
     void paddleOcrRef.current?.dispose();
     paddleOcrRef.current = null;
+    void mangaOcrRef.current?.dispose();
+    mangaOcrRef.current = null;
     if (inputRef.current) inputRef.current.value = "";
     for (const p of pagesRef.current) {
       URL.revokeObjectURL(p.imageUrl);
