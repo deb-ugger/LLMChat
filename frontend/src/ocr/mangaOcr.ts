@@ -1,4 +1,5 @@
 import { API_BASE, api } from "../api";
+import { OcrRuntime } from "./runtime";
 
 const MODEL_ID = "manga-ocr-base-ONNX";
 const DECODER_START_TOKEN_ID = 2;
@@ -88,12 +89,14 @@ async function createMangaRuntime(): Promise<MangaRuntime> {
     fetchModel("onnx/decoder_model_quantized.onnx"),
   ]);
   const sessionOptions = { executionProviders: ["wasm"] } as const;
-  const [encoder, decoder] = await Promise.all([
-    ort.InferenceSession.create(encoderBytes, sessionOptions),
-    ort.InferenceSession.create(decoderBytes, sessionOptions),
-  ]);
-
-  return { ort, vocabulary, processor, RawImage, encoder, decoder };
+  const encoder = await ort.InferenceSession.create(encoderBytes, sessionOptions);
+  try {
+    const decoder = await ort.InferenceSession.create(decoderBytes, sessionOptions);
+    return { ort, vocabulary, processor, RawImage, encoder, decoder };
+  } catch (error) {
+    await encoder.release();
+    throw error;
+  }
 }
 
 function argmaxLastToken(logits: import("onnxruntime-web").Tensor): number {
@@ -134,78 +137,70 @@ function decodeTokenIds(tokenIds: number[], vocabulary: string[]): string {
 async function recognizeWithRuntime(
   runtime: MangaRuntime,
   image: Blob,
+  signal: AbortSignal,
 ): Promise<string> {
   const rawImage = await runtime.RawImage.fromBlob(image);
   const processed = await runtime.processor(rawImage);
   const pixelValues = processed.pixel_values;
   if (!pixelValues) throw new Error("Manga OCR 图片预处理失败");
 
-  const encoderResult = await runtime.encoder.run({
-    pixel_values: new runtime.ort.Tensor(
-      "float32",
-      pixelValues.data as Float32Array,
-      [...pixelValues.dims],
-    ),
-  });
-  const hiddenState = encoderResult.last_hidden_state;
-  if (!hiddenState) throw new Error("Manga OCR 编码器没有返回图像特征");
+  if (signal.aborted) throw new Error("识别已取消");
+  const pixels = new runtime.ort.Tensor(
+    "float32",
+    pixelValues.data as Float32Array,
+    [...pixelValues.dims],
+  );
+  let encoderResult: Awaited<ReturnType<MangaRuntime["encoder"]["run"]>> = {};
+  try {
+    encoderResult = await runtime.encoder.run({ pixel_values: pixels });
+    const hiddenState = encoderResult.last_hidden_state;
+    if (!hiddenState) throw new Error("Manga OCR 编码器没有返回图像特征");
 
-  const tokenIds = [DECODER_START_TOKEN_ID];
-  for (let step = 0; step < MAX_NEW_TOKENS; step += 1) {
-    const decoderResult = await runtime.decoder.run({
-      input_ids: new runtime.ort.Tensor(
+    const tokenIds = [DECODER_START_TOKEN_ID];
+    const tokenBuffer = new BigInt64Array(MAX_NEW_TOKENS + 1);
+    tokenBuffer[0] = BigInt(DECODER_START_TOKEN_ID);
+    for (let step = 0; step < MAX_NEW_TOKENS; step += 1) {
+      if (signal.aborted) throw new Error("识别已取消");
+      const inputIds = new runtime.ort.Tensor(
         "int64",
-        BigInt64Array.from(tokenIds.map((token) => BigInt(token))),
+        tokenBuffer.subarray(0, tokenIds.length),
         [1, tokenIds.length],
-      ),
-      encoder_hidden_states: hiddenState,
-    });
-    const logits = decoderResult.logits;
-    if (!logits) throw new Error("Manga OCR 解码器没有返回文字概率");
-    const nextToken = argmaxLastToken(logits);
-    if (nextToken === EOS_TOKEN_ID) break;
-    tokenIds.push(nextToken);
+      );
+      let decoderResult: Awaited<ReturnType<MangaRuntime["decoder"]["run"]>> = {};
+      try {
+        decoderResult = await runtime.decoder.run({
+          input_ids: inputIds,
+          encoder_hidden_states: hiddenState,
+        });
+        const logits = decoderResult.logits;
+        if (!logits) throw new Error("Manga OCR 解码器没有返回文字概率");
+        const nextToken = argmaxLastToken(logits);
+        if (nextToken === EOS_TOKEN_ID) break;
+        tokenBuffer[tokenIds.length] = BigInt(nextToken);
+        tokenIds.push(nextToken);
+      } finally {
+        inputIds.dispose();
+        for (const tensor of Object.values(decoderResult)) tensor.dispose();
+      }
+    }
+    return decodeTokenIds(tokenIds, runtime.vocabulary);
+  } finally {
+    pixels.dispose();
+    for (const tensor of Object.values(encoderResult)) tensor.dispose();
   }
-
-  return decodeTokenIds(tokenIds, runtime.vocabulary);
 }
 
 export class LocalMangaOcr {
-  private instance: MangaRuntime | null = null;
-  private initializing: Promise<MangaRuntime> | null = null;
+  private runtime = new OcrRuntime(
+    createMangaRuntime,
+    (instance) => Promise.all([instance.encoder.release(), instance.decoder.release()]),
+  );
 
-  private async create(): Promise<MangaRuntime> {
-    if (this.instance) return this.instance;
-    if (!this.initializing) {
-      this.initializing = createMangaRuntime()
-        .then((instance) => {
-          this.instance = instance;
-          return instance;
-        })
-        .finally(() => {
-          this.initializing = null;
-        });
-    }
-    return this.initializing;
+  recognize(image: Blob): Promise<string> {
+    return this.runtime.run((instance, signal) => recognizeWithRuntime(instance, image, signal));
   }
 
-  async recognize(image: Blob): Promise<string> {
-    return recognizeWithRuntime(await this.create(), image);
-  }
-
-  async dispose(): Promise<void> {
-    const pending = this.initializing;
-    this.initializing = null;
-    let instance = this.instance;
-    this.instance = null;
-    if (!instance && pending) {
-      try {
-        instance = await pending;
-      } catch {
-        return;
-      }
-    }
-    if (!instance) return;
-    await Promise.all([instance.encoder.release(), instance.decoder.release()]);
+  dispose(): Promise<void> {
+    return this.runtime.dispose();
   }
 }

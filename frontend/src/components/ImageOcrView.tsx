@@ -5,13 +5,16 @@ import {
   useMemo,
   useRef,
   useState,
+  type ButtonHTMLAttributes,
   type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { api, type OcrMode, type OcrModelStatus } from "../api";
+import { api, type OcrMode } from "../api";
+import { useOcrModels } from "../ocr/useOcrModels";
+import { TaskScope, throwIfAborted, isAbortError } from "../ocr/taskScope";
 import { copyText } from "../clipboard";
 import { toFriendlyError } from "../friendlyError";
 import { highlightSearchNodes } from "../highlightText";
@@ -45,7 +48,7 @@ type OcrPage = {
   id: string;
   imageUrl: string;
   label: string;
-  /** Kept so a stuck "queued" page can be re-enqueued after a race. */
+  /** Original file retained for an explicit re-recognition request. */
   file: File;
   blocks: OcrBlock[];
   statusText: string | null;
@@ -217,8 +220,8 @@ type ClipboardPick = { file: File | null; error?: string };
 
 async function fileFromNativeClipboardCommand(): Promise<ClipboardPick> {
   try {
-    const bytes = await invoke<number[] | Uint8Array>("clipboard_read_image_png");
-    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const bytes = await invoke<ArrayBuffer>("clipboard_read_image_png");
+    const u8 = new Uint8Array(bytes);
     if (!u8.byteLength) return { file: null, error: "剪贴板图片为空" };
     const isJpeg = u8.length >= 3 && u8[0] === 0xff && u8[1] === 0xd8;
     const mime = isJpeg ? "image/jpeg" : "image/png";
@@ -566,47 +569,42 @@ function groupMangaRegions(lines: BBoxLine[]): BBoxLine[] {
 }
 
 async function cropMangaRegion(
-  image: Blob,
+  bitmap: ImageBitmap,
   region: BBoxLine,
   imageWidth: number,
   imageHeight: number,
 ): Promise<Blob> {
-  const bitmap = await createImageBitmap(image);
-  try {
-    const regionWidth = Math.max(1, region.x1 - region.x0);
-    const regionHeight = Math.max(1, region.y1 - region.y0);
-    const padX = Math.max(10, Math.min(64, regionHeight * 0.1));
-    const padY = Math.max(8, Math.min(36, regionWidth * 0.1));
-    const x0 = Math.max(0, Math.floor(region.x0 - padX));
-    const y0 = Math.max(0, Math.floor(region.y0 - padY));
-    const x1 = Math.min(imageWidth, Math.ceil(region.x1 + padX));
-    const y1 = Math.min(imageHeight, Math.ceil(region.y1 + padY));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, x1 - x0);
-    canvas.height = Math.max(1, y1 - y0);
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法创建漫画 OCR 裁剪画布");
-    context.fillStyle = "#fff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(
-      bitmap,
-      x0,
-      y0,
-      canvas.width,
-      canvas.height,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    );
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
-    );
-    if (!blob) throw new Error("无法生成漫画 OCR 裁剪图片");
-    return blob;
-  } finally {
-    bitmap.close();
-  }
+  const regionWidth = Math.max(1, region.x1 - region.x0);
+  const regionHeight = Math.max(1, region.y1 - region.y0);
+  const padX = Math.max(10, Math.min(64, regionHeight * 0.1));
+  const padY = Math.max(8, Math.min(36, regionWidth * 0.1));
+  const x0 = Math.max(0, Math.floor(region.x0 - padX));
+  const y0 = Math.max(0, Math.floor(region.y0 - padY));
+  const x1 = Math.min(imageWidth, Math.ceil(region.x1 + padX));
+  const y1 = Math.min(imageHeight, Math.ceil(region.y1 + padY));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, x1 - x0);
+  canvas.height = Math.max(1, y1 - y0);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("无法创建漫画 OCR 裁剪画布");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    bitmap,
+    x0,
+    y0,
+    canvas.width,
+    canvas.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!blob) throw new Error("无法生成漫画 OCR 裁剪图片");
+  return blob;
 }
 
 function isLiteralOcrToken(text: string): boolean {
@@ -670,6 +668,49 @@ function overlayFontSize(boxWpx: number, boxHpx: number, text: string): number {
 
 function newPageId() {
   return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Measure only the label whose content or geometry changed, not every page box. */
+function FittedOcrOverlay({
+  rawLabel, boxWidth, boxHeight, style, ...buttonProps
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  rawLabel: string; boxWidth: number; boxHeight: number;
+}) {
+  const boxRef = useRef<HTMLButtonElement>(null);
+  const label = useMemo(
+    () => formatOverlayText(rawLabel, boxWidth, boxHeight),
+    [rawLabel, boxWidth, boxHeight],
+  );
+  const maximum = useMemo(
+    () => label ? overlayFontSize(boxWidth, boxHeight, label) : Math.max(8, boxHeight * 0.75),
+    [label, boxWidth, boxHeight],
+  );
+  const writingMode = style?.writingMode;
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box || boxWidth <= 0 || boxHeight <= 0) return;
+    const fits = () =>
+      box.scrollHeight <= box.clientHeight + 1 &&
+      box.scrollWidth <= box.clientWidth + 1;
+    box.style.fontSize = `${maximum}px`;
+    if (fits()) return;
+    let low = 5, high = maximum;
+    box.style.fontSize = `${low}px`;
+    if (!fits()) return;
+    for (let i = 0; i < 12; i += 1) {
+      const mid = (low + high) / 2;
+      box.style.fontSize = `${mid}px`;
+      if (fits()) low = mid;
+      else high = mid;
+    }
+    box.style.fontSize = `${Math.max(5, low - 0.2).toFixed(1)}px`;
+  }, [label, maximum, boxWidth, boxHeight, writingMode]);
+  return <button {...buttonProps} ref={boxRef} style={{
+    ...style,
+    fontSize: `${maximum.toFixed(1)}px`,
+    lineHeight: 1.2,
+    whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
+  }}>{label}</button>;
 }
 
 function OcrPageCard({
@@ -850,42 +891,6 @@ function OcrPageCard({
     };
   }, [page.imageUrl, page.blocks.length]);
 
-  // Character-count estimates are only a starting point. Mixed CJK/Latin
-  // fonts and browser word wrapping can need more rows than the estimate, so
-  // measure the actual rendered box and reduce its font until nothing clips.
-  useLayoutEffect(() => {
-    const stage = stageRef.current;
-    if (!stage || stageSize.w <= 0 || stageSize.h <= 0) return;
-    const boxes = Array.from(stage.querySelectorAll(".ocr-box")) as HTMLElement[];
-    boxes.forEach((box) => {
-      const maximum = Number(box.dataset.fontMax || 0);
-      if (!Number.isFinite(maximum) || maximum <= 0) return;
-      const fits = () =>
-        box.scrollHeight <= box.clientHeight + 1 &&
-        box.scrollWidth <= box.clientWidth + 1;
-      box.style.fontSize = `${maximum}px`;
-      if (fits()) return;
-
-      let low = 5;
-      let high = maximum;
-      box.style.fontSize = `${low}px`;
-      if (!fits()) return;
-      for (let i = 0; i < 12; i += 1) {
-        const mid = (low + high) / 2;
-        box.style.fontSize = `${mid}px`;
-        if (fits()) low = mid;
-        else high = mid;
-      }
-      box.style.fontSize = `${Math.max(5, low - 0.2).toFixed(1)}px`;
-    });
-  }, [
-    page.blocks,
-    selectedBlockId,
-    selectedField,
-    showTranslation,
-    stageSize.h,
-    stageSize.w,
-  ]);
 
   return (
     <article
@@ -961,20 +966,16 @@ function OcrPageCard({
           const rawLabel = displayedField === "translation" ? b.translation : b.text;
           const boxW = b.w * stageSize.w;
           const boxH = b.h * stageSize.h;
-          const label = rawLabel
-            ? formatOverlayText(rawLabel, boxW, boxH)
-            : "";
-          const fontSize = label
-            ? overlayFontSize(boxW, boxH, label)
-            : Math.max(8, boxH * 0.75);
           const dragOffset = draggedOverlay?.id === b.id ? draggedOverlay : null;
           return (
-            <button
+            <FittedOcrOverlay
               key={b.id}
+              rawLabel={rawLabel}
+              boxWidth={boxW}
+              boxHeight={boxH}
               type="button"
               data-block-id={b.id}
               data-field={displayedField}
-              data-font-max={fontSize.toFixed(1)}
               className={
                 blockSelected
                   ? `ocr-box active${dragOffset ? " is-dragging" : ""}`
@@ -987,9 +988,6 @@ function OcrPageCard({
                 top: `${b.y * 100}%`,
                 width: `${b.w * 100}%`,
                 height: `${b.h * 100}%`,
-                fontSize: `${fontSize.toFixed(1)}px`,
-                lineHeight: 1.2,
-                whiteSpace: label.includes("\n") ? "pre-wrap" : "normal",
                 writingMode:
                   displayedField === "translation" && b.vertical
                     ? "vertical-rl"
@@ -1004,9 +1002,7 @@ function OcrPageCard({
                 onSelectBlock(b.id, displayedField);
               }}
               title={b.text}
-            >
-              {label}
-            </button>
+            />
           );
         })}
         {(["n", "ne", "e", "se", "s", "sw", "w", "nw"] as OcrResizeDirection[]).map(
@@ -1065,7 +1061,7 @@ export function ImageOcrView({
   const toastTimerRef = useRef<number | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
   const [ocrModeMenuOpen, setOcrModeMenuOpen] = useState(false);
-  const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
+  const { status: ocrModelStatus, error: modelStatusError, refresh: refreshOcrModels, ensure: ensureOcrMode } = useOcrModels();
   const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
   const [ocrModeError, setOcrModeError] = useState<string | null>(null);
   const [srcQuery, setSrcQuery] = useState("");
@@ -1093,14 +1089,13 @@ export function ImageOcrView({
   );
   const inputRef = useRef<HTMLInputElement>(null);
   const ocrModeMenuRef = useRef<HTMLDivElement>(null);
-  const ocrProgressPollRef = useRef<number | null>(null);
   const paddleOcrRef = useRef<LocalPaddleOcr | null>(null);
   const mangaOcrRef = useRef<LocalMangaOcr | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const dualRef = useRef<HTMLDivElement>(null);
   const srcListRef = useRef<HTMLDivElement>(null);
   const dstListRef = useRef<HTMLDivElement>(null);
-  const translateGenRef = useRef(0);
+  const translationTasksRef = useRef(new TaskScope());
   const sessionGenRef = useRef(0);
   const pasteLockRef = useRef(0);
   const pagesRef = useRef<OcrPage[]>([]);
@@ -1119,7 +1114,7 @@ export function ImageOcrView({
 
   useEffect(() => {
     if (!active) return;
-    void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+    void refreshOcrModels();
   }, [active]);
 
   useEffect(() => {
@@ -1140,11 +1135,6 @@ export function ImageOcrView({
     };
   }, [ocrModeMenuOpen]);
 
-  useEffect(() => () => {
-    if (ocrProgressPollRef.current !== null) {
-      window.clearInterval(ocrProgressPollRef.current);
-    }
-  }, []);
 
   useEffect(() => {
     const previous = paddleOcrRef.current;
@@ -1165,9 +1155,14 @@ export function ImageOcrView({
 
   useEffect(() => {
     return () => {
+      sessionGenRef.current += 1;
+      translationTasksRef.current.cancelAll();
+      queueRef.current = [];
+      drainingRef.current = false;
       for (const p of pagesRef.current) {
         URL.revokeObjectURL(p.imageUrl);
       }
+      pagesRef.current = [];
       void paddleOcrRef.current?.dispose();
       paddleOcrRef.current = null;
       void mangaOcrRef.current?.dispose();
@@ -1207,39 +1202,17 @@ export function ImageOcrView({
     if (ocrModeBusy) return;
     setOcrModeError(null);
     try {
-      let modelStatus = ocrModelStatus;
-      if (!modelStatus) {
-        modelStatus = await api.getOcrModelStatus();
-        setOcrModelStatus(modelStatus);
-      }
-      const installed =
-        mode === "fast" || modelStatus.modes.find((item) => item.id === mode)?.installed;
-      if (!installed) {
-        setOcrModeBusy(mode);
-        const poll = async () => {
-          try {
-            setOcrModelStatus(await api.getOcrModelStatus());
-          } catch {
-            /* The download request remains authoritative. */
-          }
-        };
-        void poll();
-        ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
-        setOcrModelStatus(await api.ensureOcrMode(mode));
-      }
+      setOcrModeBusy(mode);
+      if (mode !== "fast") await ensureOcrMode(mode);
       await onOcrModeChange?.(mode);
       setOcrModeMenuOpen(false);
     } catch (modeError) {
       setOcrModeError(toFriendlyError(modeError, "识别模式切换失败"));
     } finally {
-      if (ocrProgressPollRef.current !== null) {
-        window.clearInterval(ocrProgressPollRef.current);
-        ocrProgressPollRef.current = null;
-      }
       setOcrModeBusy(null);
-      void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+      void refreshOcrModels();
     }
-  }, [ocrModeBusy, ocrModelStatus, onOcrModeChange]);
+  }, [ocrModeBusy, ensureOcrMode, refreshOcrModels, onOcrModeChange]);
 
   const ocrDownload = ocrModelStatus?.download;
   const ocrDownloadTotal = Math.max(0, ocrDownload?.totalBytes ?? 0);
@@ -1324,7 +1297,12 @@ export function ImageOcrView({
               </span>
             </div>
           ) : null}
-          {ocrModeError ? <p className="literature-ocr-error">{ocrModeError}</p> : null}
+          {ocrModeError || modelStatusError ? (
+            <p className="literature-ocr-error">
+              {ocrModeError || modelStatusError}
+              {modelStatusError && <button type="button" onClick={() => void refreshOcrModels()}>重试</button>}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1477,106 +1455,133 @@ export function ImageOcrView({
       list: OcrBlock[],
       onProgress?: (done: number, total: number) => void,
     ) => {
-      const gen = ++translateGenRef.current;
-      const workIdx = list
-        .map((b, i) => (b.text.trim() && !isLiteralOcrToken(b.text) ? i : -1))
-        .filter((i) => i >= 0);
-      if (!workIdx.length) {
-        return list.map((block) => ({
-          ...block,
-          translation: block.text.trim(),
-          status: "done" as const,
-        }));
-      }
-
-      const pending: OcrBlock[] = list.map((b) =>
-        b.text.trim() && !isLiteralOcrToken(b.text)
-          ? { ...b, status: "pending", translation: "" }
-          : { ...b, status: "done", translation: b.text.trim() },
-      );
-      patchPage(pageId, { blocks: pending });
-
-      const canBatch =
-        translateProvider === "llm" &&
-        workIdx.reduce((n, i) => n + list[i].text.length, 0) < 6000;
-
-      if (canBatch) {
-        const SEP = "\n¶¶\n";
-        try {
-          onProgress?.(0, workIdx.length);
-          const joined = workIdx.map((i) => list[i].text.trim()).join(SEP);
-          const tr = await api.translate(joined, undefined, translateOpts);
-          if (gen !== translateGenRef.current) return list;
-          if (!pagesRef.current.some((p) => p.id === pageId)) return list;
-          const parts = tr.translation
-            .split(/\n?\s*¶¶\s*\n?/)
-            .map((s) => s.trim());
-          if (
-            parts.length === workIdx.length ||
-            Math.abs(parts.length - workIdx.length) <= 1
-          ) {
-            onProgress?.(workIdx.length, workIdx.length);
-            const next = list.map((b) => ({ ...b }));
-            workIdx.forEach((idx, j) => {
-              next[idx] = {
-                ...next[idx],
-                translation: parts[j] || "（无译文）",
-                status: "done",
-              };
-            });
-            return next;
-          }
-        } catch {
-          // fall through to per-block
+      const scope = translationTasksRef.current;
+      const controller = scope.start(pageId);
+      const { signal } = controller;
+      try {
+        throwIfAborted(signal);
+        if (!pagesRef.current.some((p) => p.id === pageId)) {
+          controller.abort();
+          throwIfAborted(signal);
         }
-      }
+        const workIdx = list
+          .map((b, i) => (b.text.trim() && !isLiteralOcrToken(b.text) ? i : -1))
+          .filter((i) => i >= 0);
+        if (!workIdx.length) {
+          return list.map((block) => ({
+            ...block,
+            translation: block.text.trim(),
+            status: "done" as const,
+          }));
+        }
 
-      const next: OcrBlock[] = list.map((b) =>
-        b.text.trim() && !isLiteralOcrToken(b.text)
-          ? { ...b, status: "pending", translation: "" }
-          : { ...b, status: "done", translation: b.text.trim() },
-      );
-      patchPage(pageId, { blocks: [...next] });
-      const concurrency = translateProvider === "llm" ? 5 : 2;
-      let done = 0;
-      for (let start = 0; start < workIdx.length; start += concurrency) {
-        if (gen !== translateGenRef.current) return next;
-        if (!pagesRef.current.some((p) => p.id === pageId)) return next;
-        const slice = workIdx.slice(start, start + concurrency);
-        await Promise.all(
-          slice.map(async (idx) => {
-            try {
-              const tr = await api.translate(
-                next[idx].text,
-                undefined,
-                translateOpts,
-              );
-              next[idx] = {
-                ...next[idx],
-                translation: tr.translation,
-                status: "done",
-              };
-            } catch (e) {
-              const msg = toFriendlyError(e);
-              next[idx] = {
-                ...next[idx],
-                translation: `（翻译失败）${msg}`,
-                status: "error",
-              };
-            } finally {
-              done += 1;
-              onProgress?.(done, workIdx.length);
-              if (
-                gen === translateGenRef.current &&
-                pagesRef.current.some((p) => p.id === pageId)
-              ) {
-                patchPage(pageId, { blocks: [...next] });
-              }
-            }
-          }),
+        const pending: OcrBlock[] = list.map((b) =>
+          b.text.trim() && !isLiteralOcrToken(b.text)
+            ? { ...b, status: "pending", translation: "" }
+            : { ...b, status: "done", translation: b.text.trim() },
         );
+        patchPage(pageId, { blocks: pending });
+
+        const canBatch =
+          translateProvider === "llm" &&
+          workIdx.reduce((n, i) => n + list[i].text.length, 0) < 6000;
+
+        if (canBatch) {
+          const SEP = "\n¶¶\n";
+          try {
+            onProgress?.(0, workIdx.length);
+            const joined = workIdx.map((i) => list[i].text.trim()).join(SEP);
+            const tr = await api.translate(joined, { signal }, translateOpts);
+            throwIfAborted(signal);
+            const parts = tr.translation
+              .split(/\n?\s*¶¶\s*\n?/)
+              .map((s) => s.trim());
+            if (
+              parts.length === workIdx.length ||
+              Math.abs(parts.length - workIdx.length) <= 1
+            ) {
+              onProgress?.(workIdx.length, workIdx.length);
+              const next = list.map((b) => ({ ...b }));
+              workIdx.forEach((idx, j) => {
+                next[idx] = {
+                  ...next[idx],
+                  translation: parts[j] || "（无译文）",
+                  status: "done",
+                };
+              });
+              return next;
+            }
+          } catch (error) {
+            throwIfAborted(signal);
+            if (isAbortError(error)) {
+              controller.abort();
+              throw error;
+            }
+            // A non-cancellation batch failure may retry per block.
+          }
+        }
+
+        const next: OcrBlock[] = list.map((b) =>
+          b.text.trim() && !isLiteralOcrToken(b.text)
+            ? { ...b, status: "pending", translation: "" }
+            : { ...b, status: "done", translation: b.text.trim() },
+        );
+        patchPage(pageId, { blocks: [...next] });
+        const concurrency = translateProvider === "llm" ? 5 : 2;
+        let done = 0;
+        for (let start = 0; start < workIdx.length; start += concurrency) {
+          throwIfAborted(signal);
+          const slice = workIdx.slice(start, start + concurrency);
+          await Promise.all(
+            slice.map(async (idx) => {
+              try {
+                const tr = await api.translate(
+                  next[idx].text,
+                  { signal },
+                  translateOpts,
+                );
+                throwIfAborted(signal);
+                next[idx] = {
+                  ...next[idx],
+                  translation: tr.translation,
+                  status: "done",
+                };
+              } catch (e) {
+                throwIfAborted(signal);
+                if (isAbortError(e)) {
+                  controller.abort();
+                  throw e;
+                }
+                const msg = toFriendlyError(e);
+                next[idx] = {
+                  ...next[idx],
+                  translation: `（翻译失败）${msg}`,
+                  status: "error",
+                };
+              } finally {
+                done += 1;
+                if (
+                  !signal.aborted &&
+                  pagesRef.current.some((p) => p.id === pageId)
+                ) {
+                  onProgress?.(done, workIdx.length);
+                  patchPage(pageId, { blocks: [...next] });
+                }
+              }
+            }),
+          );
+        }
+        throwIfAborted(signal);
+        return next;
+      } catch (error) {
+        if (isAbortError(error)) {
+          controller.abort();
+          if (scope.isCurrent(pageId, controller)) patchPage(pageId, { busy: false, statusText: null });
+        }
+        throw error;
+      } finally {
+        scope.finish(pageId, controller);
       }
-      return next;
     },
     [patchPage, translateOpts, translateProvider],
   );
@@ -1591,6 +1596,8 @@ export function ImageOcrView({
       });
       setStatus("正在加载本地 PaddleOCR 识别模型…");
       setError(null);
+      let taskPaddle: LocalPaddleOcr | null = null;
+      let taskManga: LocalMangaOcr | null = null;
       try {
         const page = pagesRef.current.find((p) => p.id === pageId);
         if (!page) return;
@@ -1615,9 +1622,8 @@ export function ImageOcrView({
             cachedModeStatus?.installed === true;
           if (!modelInstalled && normalizedOcrMode !== "fast") {
             try {
-              const latestStatus = await api.getOcrModelStatus();
-              setOcrModelStatus(latestStatus);
-              const latestModeStatus = latestStatus.modes.find(
+              const latestStatus = await refreshOcrModels();
+              const latestModeStatus = latestStatus?.modes.find(
                 (mode) => mode.id === normalizedOcrMode,
               );
               modelInstallKnown = latestModeStatus !== undefined;
@@ -1644,6 +1650,7 @@ export function ImageOcrView({
           const paddle =
             paddleOcrRef.current ??
             (paddleOcrRef.current = new LocalPaddleOcr(normalizedOcrMode));
+          taskPaddle = paddle;
           const result = await withTimeout(
             paddle.recognize(file),
             240_000,
@@ -1671,18 +1678,26 @@ export function ImageOcrView({
             const manga =
               mangaOcrRef.current ??
               (mangaOcrRef.current = new LocalMangaOcr());
+            taskManga = manga;
             const recognized: BBoxLine[] = [];
-            for (let index = 0; index < regions.length; index += 1) {
-              const progressText = `正在识别漫画气泡 ${index + 1}/${regions.length}…`;
-              patchPage(pageId, { statusText: progressText });
-              setStatus(progressText);
-              const crop = await cropMangaRegion(file, regions[index], iw, ih);
-              const text = await withTimeout(
-                manga.recognize(crop),
-                300_000,
-                "Manga OCR 识别超时，请重新识别",
-              );
-              if (text) recognized.push({ ...regions[index], text });
+            const bitmap = await createImageBitmap(file);
+            try {
+              for (let index = 0; index < regions.length; index += 1) {
+                if (!pagesRef.current.some((p) => p.id === pageId) || mangaOcrRef.current !== manga)
+                  throw new Error("识别已取消");
+                const progressText = `正在识别漫画气泡 ${index + 1}/${regions.length}…`;
+                patchPage(pageId, { statusText: progressText });
+                setStatus(progressText);
+                const crop = await cropMangaRegion(bitmap, regions[index], iw, ih);
+                const text = await withTimeout(
+                  manga.recognize(crop),
+                  300_000,
+                  "Manga OCR 识别超时，请重新识别",
+                );
+                if (text) recognized.push({ ...regions[index], text });
+              }
+            } finally {
+              bitmap.close();
             }
             if (!recognized.length) throw new Error("Manga OCR 没有返回日文文本");
             lineBoxes = recognized;
@@ -1694,12 +1709,10 @@ export function ImageOcrView({
             lineBoxes = repairPaddleLines(rawLines);
           }
         } catch (paddleError) {
-          const failedPaddle = paddleOcrRef.current;
-          const failedManga = mangaOcrRef.current;
-          paddleOcrRef.current = null;
-          mangaOcrRef.current = null;
-          void failedPaddle?.dispose();
-          void failedManga?.dispose();
+          if (paddleOcrRef.current === taskPaddle) paddleOcrRef.current = null;
+          if (mangaOcrRef.current === taskManga) mangaOcrRef.current = null;
+          void taskPaddle?.dispose();
+          void taskManga?.dispose();
           throw new Error(
             `${normalizedOcrMode === "manga" ? "漫画 OCR" : "PaddleOCR"} 识别失败：${toFriendlyError(paddleError, "初始化失败")}`,
           );
@@ -1745,6 +1758,7 @@ export function ImageOcrView({
           });
           setStatus(`正在翻译 0/${list.length}…`);
           list = await translateBlocks(pageId, list, (done, total) => {
+            if (!pagesRef.current.some((p) => p.id === pageId)) return;
             const msg = `正在翻译 ${done}/${total}…`;
             patchPage(pageId, { statusText: msg });
             setStatus(msg);
@@ -1761,7 +1775,7 @@ export function ImageOcrView({
           patchPage(pageId, { busy: false });
         }
       } catch (e) {
-        if (!pagesRef.current.some((p) => p.id === pageId)) return;
+        if (isAbortError(e) || !pagesRef.current.some((p) => p.id === pageId)) return;
         const msg = toFriendlyError(e, "识别失败，请重试");
         if (!/识别已取消/.test(msg)) {
           patchPage(pageId, {
@@ -1776,15 +1790,16 @@ export function ImageOcrView({
         setStatus(null);
       }
     },
-    [normalizedOcrMode, ocrModelStatus, patchPage, translateBlocks],
+    [normalizedOcrMode, ocrModelStatus, refreshOcrModels, patchPage, translateBlocks],
   );
 
   const drainQueue = useCallback(async () => {
     if (drainingRef.current) return;
     drainingRef.current = true;
+    const generation = sessionGenRef.current;
     setBusy(true);
     try {
-      while (queueRef.current.length) {
+      while (generation === sessionGenRef.current && queueRef.current.length) {
         const job = queueRef.current.shift();
         if (!job) break;
         // Prefer pagesRef, but also accept jobs whose page was just enqueued
@@ -1796,9 +1811,11 @@ export function ImageOcrView({
         await runOcrForPage(job.pageId, job.file);
       }
     } catch (e) {
+      if (generation !== sessionGenRef.current) return;
       setError(toFriendlyError(e, "识别队列异常，请重试"));
       setStatus(null);
     } finally {
+      if (generation !== sessionGenRef.current) return;
       drainingRef.current = false;
       const remaining = queueRef.current.length > 0;
       if (remaining) {
@@ -1817,6 +1834,7 @@ export function ImageOcrView({
       const page = pagesRef.current.find((item) => item.id === pageId);
       if (!page || page.busy) return;
 
+      translationTasksRef.current.cancel(pageId);
       queueRef.current = queueRef.current.filter((job) => job.pageId !== pageId);
       queueRef.current.push({ pageId, file: page.file });
       patchPage(pageId, {
@@ -1864,13 +1882,10 @@ export function ImageOcrView({
         });
         queueRef.current.push({ pageId: id, file });
       }
-      // Sync pagesRef immediately so drainQueue does not skip brand-new jobs
-      // before React commits setPages / the useEffect mirror.
-      setPages((prev) => {
-        const next = [...prev, ...created];
-        pagesRef.current = next;
-        return next;
-      });
+      // Publish before starting the queue; React may defer state updaters.
+      const next = [...pagesRef.current, ...created];
+      pagesRef.current = next;
+      setPages(next);
       const last = created[created.length - 1];
       if (last) {
         setSelectedPageId(last.id);
@@ -1887,21 +1902,6 @@ export function ImageOcrView({
     },
     [drainQueue],
   );
-
-  // Recover pages stuck on "排队等待识别…" (e.g. older race emptied the queue).
-  useEffect(() => {
-    let requeued = false;
-    for (const p of pages) {
-      if (!p.busy) continue;
-      if (p.statusText !== "排队等待识别…") continue;
-      if (queueRef.current.some((j) => j.pageId === p.id)) continue;
-      queueRef.current.push({ pageId: p.id, file: p.file });
-      requeued = true;
-    }
-    if (requeued || (queueRef.current.length > 0 && !drainingRef.current)) {
-      void drainQueue();
-    }
-  }, [pages, drainQueue]);
 
   const handledIncomingIdRef = useRef<number | null>(null);
   useEffect(() => {
@@ -2059,6 +2059,7 @@ export function ImageOcrView({
   }, [ctxMenu]);
 
   const removePage = useCallback((pageId: string) => {
+    translationTasksRef.current.cancel(pageId);
     queueRef.current = queueRef.current.filter((j) => j.pageId !== pageId);
     setPages((prev) => {
       const target = prev.find((p) => p.id === pageId);
@@ -2082,8 +2083,11 @@ export function ImageOcrView({
     setBusy(true);
     setError(null);
     let donePages = 0;
+    const generation = sessionGenRef.current;
     try {
       for (const page of targets) {
+        if (generation !== sessionGenRef.current) return;
+        if (!pagesRef.current.some((p) => p.id === page.id)) continue;
         setStatus(
           `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1}（${donePages + 1}/${targets.length}）…`,
         );
@@ -2100,6 +2104,7 @@ export function ImageOcrView({
             });
           },
         );
+        if (generation !== sessionGenRef.current) return;
         patchPage(page.id, {
           blocks: list,
           statusText: summarizeTranslateStatus(list),
@@ -2107,12 +2112,17 @@ export function ImageOcrView({
         });
         donePages += 1;
       }
-      setStatus(`已重新翻译 ${targets.length} 张图片`);
+      setStatus(`已重新翻译 ${donePages} 张图片`);
     } catch (e) {
+      if (generation !== sessionGenRef.current) return;
+      if (isAbortError(e)) {
+        if (!drainingRef.current && !translationTasksRef.current.active) setStatus(null);
+        return;
+      }
       setError(toFriendlyError(e, "翻译失败，请稍后重试"));
       setStatus(null);
     } finally {
-      setBusy(false);
+      if (generation === sessionGenRef.current && !drainingRef.current && !translationTasksRef.current.active) setBusy(false);
     }
   };
 
@@ -2131,7 +2141,7 @@ export function ImageOcrView({
       return;
     }
     sessionGenRef.current += 1;
-    translateGenRef.current += 1;
+    translationTasksRef.current.cancelAll();
     pasteLockRef.current = 0;
     queueRef.current = [];
     drainingRef.current = false;

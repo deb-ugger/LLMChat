@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -66,7 +67,8 @@ public:
         const std::string& okFilter,
         int page,
         int pageSize,
-        int& totalRows) const;
+        int& totalRows,
+        const std::function<bool(const nlohmann::json&)>& matches = {}) const;
 
     /** Database-aggregated minute buckets used by charts and summaries. */
     std::vector<nlohmann::json> chartBuckets(

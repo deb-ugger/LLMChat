@@ -1,3 +1,4 @@
+import { memo, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -38,20 +39,25 @@ const components: Components = {
   ),
 };
 
-export function RichText({ content, variant = "ai" }: Props) {
+const remarkPlugins: NonNullable<ComponentProps<typeof ReactMarkdown>["remarkPlugins"]> =
+  [remarkGfm, [remarkMath, { singleDollarTextMath: true }]];
+const rehypePlugins: NonNullable<ComponentProps<typeof ReactMarkdown>["rehypePlugins"]> =
+  [[rehypeKatex, { throwOnError: false, strict: "ignore" }]];
+
+export const RichText = memo(function RichText({ content, variant = "ai" }: Props) {
   const source = preprocessRichText(content);
 
   return (
     <div className={`bubble-md bubble-md-${variant}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
         components={components}
       >
         {source}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 export { preprocessRichText } from "../latexToMarkdown";

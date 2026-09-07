@@ -661,7 +661,7 @@ export default function App() {
           }
           aria-hidden={page !== "text"}
         >
-          <TextTranslateView settings={settings} />
+          <TextTranslateView settings={settings} active={page === "text"} />
         </div>
         <div
           className={

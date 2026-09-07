@@ -583,12 +583,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ conversationId, content }),
     }),
-  translate: (text: string, init?: RequestInit, opts?: TranslateOptions) =>
-    request<TranslateResponse>("/api/translate", {
-      method: "POST",
-      body: JSON.stringify({ text, ...opts }),
-      ...init,
-    }),
+  translate: async (text: string, init?: RequestInit, opts?: TranslateOptions) => {
+    const signal = init?.signal;
+    signal?.throwIfAborted();
+    const taskId = crypto.randomUUID();
+    let cancellationSent = false;
+    const cancel = () => {
+      if (cancellationSent) return;
+      cancellationSent = true;
+      void request("/api/translate/cancel", {
+        method: "POST",
+        body: JSON.stringify({ taskId }),
+      }, 5000).catch(() => {});
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      return await request<TranslateResponse>("/api/translate", {
+        ...init,
+        method: "POST",
+        body: JSON.stringify({ text, ...opts, taskId }),
+      });
+    } catch (error) {
+      // Includes timeout and a disconnected client: no orphaned backend task.
+      cancel();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+  },
   usageEvents: (params?: {
     from?: string;
     to?: string;
@@ -647,8 +669,10 @@ export const api = {
     band?: "idle" | "peak" | "flat" | "";
     page?: number;
     pageSize?: number;
-  }) => {
+    detailsOnly?: boolean;
+  }, init?: RequestInit) => {
     const q = new URLSearchParams();
+    if (params.detailsOnly) q.set("detailsOnly", "1");
     q.set("from", params.from);
     q.set("to", params.to);
     if (params.feature) q.set("feature", params.feature);
@@ -671,7 +695,7 @@ export const api = {
         total: number;
         pages: number;
       };
-    }>(`/api/usage/report?${q.toString()}`);
+    }>(`/api/usage/report?${q.toString()}`, init);
   },
   clearUsage: () =>
     request<{ ok: boolean }>("/api/usage", { method: "DELETE" }),

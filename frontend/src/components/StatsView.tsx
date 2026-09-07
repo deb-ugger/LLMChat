@@ -2094,8 +2094,17 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [detailTotal, setDetailTotal] = useState(0);
   const [detailPages, setDetailPages] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [pricingReady, setPricingReady] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const requestVersionRef = useRef(0);
+  const loadedReportKeyRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dateRangeOpen, setDateRangeOpen] = useState(false);
+
+  useEffect(() => {
+    if (!active) loadedReportKeyRef.current = null;
+  }, [active]);
 
   useEffect(() => {
     saveStatsFilters({
@@ -2120,18 +2129,24 @@ export function StatsView({ active = true }: { active?: boolean }) {
   ]);
 
   useEffect(() => {
+    if (!active || pricingReady) return;
+    let cancelled = false;
     void (async () => {
       try {
-        const p = await api.getPricing();
-        if (p.displayCurrency === "USD" || p.displayCurrency === "CNY") {
-          setCurrency(p.displayCurrency);
+        const pricing = await api.getPricing();
+        if (cancelled) return;
+        if (pricing.displayCurrency === "USD" || pricing.displayCurrency === "CNY") {
+          setCurrency(pricing.displayCurrency);
         }
-        setPricingRules(p.rules ?? []);
+        setPricingRules(pricing.rules ?? []);
       } catch {
-        /* keep CNY */
+        // Reports still work with the default currency if pricing is unavailable.
+      } finally {
+        if (!cancelled) setPricingReady(true);
       }
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [active, pricingReady]);
 
   const range = useMemo(() => {
     if (rangePreset === "custom") {
@@ -2173,8 +2188,18 @@ export function StatsView({ active = true }: { active?: boolean }) {
     setDateRangeOpen(nextOpen);
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const reportKey = JSON.stringify([
+    bandFilter, currency, feature, groupBy, okFilter, range.from, range.to,
+  ]);
+  const load = useCallback(async (forceFull = false) => {
+    if (!active || !pricingReady) return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const version = ++requestVersionRef.current;
+    const detailsOnly = !forceFull && loadedReportKeyRef.current === reportKey;
+    setLoading(!detailsOnly);
+    setDetailsLoading(true);
     setError(null);
     try {
       if (!range.from || !range.to) {
@@ -2183,6 +2208,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         setDetailEvents([]);
         setDetailTotal(0);
         setDetailPages(0);
+        loadedReportKeyRef.current = null;
         return;
       }
       const report = await api.usageReport({
@@ -2195,35 +2221,47 @@ export function StatsView({ active = true }: { active?: boolean }) {
         band: bandFilter || undefined,
         page: detailPage,
         pageSize: DETAIL_PAGE_SIZE,
-      });
-      setSummary((report.summary ?? []).filter(hasConsumption));
-      setEvents(report.chart ?? []);
+        detailsOnly,
+      }, { signal: controller.signal });
+      if (controller.signal.aborted || version !== requestVersionRef.current) return;
+      if (!detailsOnly) {
+        setSummary((report.summary ?? []).filter(hasConsumption));
+        setEvents(report.chart ?? []);
+        loadedReportKeyRef.current = reportKey;
+      }
       setDetailEvents(report.events ?? []);
       setDetailTotal(report.pagination?.total ?? 0);
       setDetailPages(report.pagination?.pages ?? 0);
-    } catch (e) {
-      setError(toFriendlyError(e, "加载统计失败"));
-      setSummary([]);
-      setEvents([]);
+    } catch (error) {
+      if (controller.signal.aborted || version !== requestVersionRef.current) return;
+      setError(toFriendlyError(error, "加载统计失败"));
+      if (!detailsOnly) {
+        setSummary([]);
+        setEvents([]);
+        loadedReportKeyRef.current = null;
+      }
       setDetailEvents([]);
       setDetailTotal(0);
       setDetailPages(0);
     } finally {
-      setLoading(false);
+      if (version === requestVersionRef.current) {
+        setLoading(false);
+        setDetailsLoading(false);
+        requestRef.current = null;
+      }
     }
   }, [
-    bandFilter,
-    currency,
-    detailPage,
-    feature,
-    groupBy,
-    okFilter,
-    range.from,
-    range.to,
+    active, pricingReady, reportKey, bandFilter, currency, detailPage, feature,
+    groupBy, okFilter, range.from, range.to,
   ]);
 
   useEffect(() => {
     void load();
+    return () => {
+      requestVersionRef.current++;
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
   }, [load]);
 
   const totals = useMemo(() => {
@@ -2277,8 +2315,8 @@ export function StatsView({ active = true }: { active?: boolean }) {
           <button
             type="button"
             className="stats-btn"
-            onClick={() => void load()}
-            disabled={loading}
+            onClick={() => void load(true)}
+            disabled={loading || detailsLoading}
           >
             刷新
           </button>
@@ -2543,7 +2581,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
             </button>
           </div>
         </div>
-        {loading ? (
+        {loading && summary.length === 0 && events.length === 0 ? (
           <div className="stats-empty">加载中…</div>
         ) : (
           <>
@@ -2568,14 +2606,14 @@ export function StatsView({ active = true }: { active?: boolean }) {
           <h2 className="stats-section-title">明细</h2>
           <div className="stats-pagination" aria-label="明细分页">
             <span>
-              共 {detailTotal.toLocaleString("zh-CN")} 条
+              {detailsLoading ? "加载中… · " : ""}共 {detailTotal.toLocaleString("zh-CN")} 条
               {detailPages > 0 ? ` · 第 ${detailPage} / ${detailPages} 页` : ""}
             </span>
             <div className="stats-pagination-actions">
               <button
                 type="button"
                 className="stats-btn"
-                disabled={loading || detailPage <= 1}
+                disabled={detailsLoading || detailPage <= 1}
                 onClick={() => setDetailPage((page) => Math.max(1, page - 1))}
               >
                 上一页
@@ -2583,7 +2621,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
               <button
                 type="button"
                 className="stats-btn"
-                disabled={loading || detailPages <= 0 || detailPage >= detailPages}
+                disabled={detailsLoading || detailPages <= 0 || detailPage >= detailPages}
                 onClick={() =>
                   setDetailPage((page) => Math.min(detailPages, page + 1))
                 }

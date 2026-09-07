@@ -19,7 +19,6 @@ export function ChatView({
   onSend,
   onLoadEarlier,
 }: Props) {
-  const [text, setText] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -28,12 +27,6 @@ export function ChatView({
   }, [messages.length, sending]);
 
   const empty = !conversation || conversation.messages.length === 0;
-
-  const submit = () => {
-    if (!text.trim() || sending) return;
-    onSend(text);
-    setText("");
-  };
 
   return (
     <section className="chat-panel">
@@ -70,7 +63,7 @@ export function ChatView({
           )}
           {messages.map((m, i) => (
             <div
-              key={`${i}-${m.role}-${m.content.slice(0, 12)}`}
+              key={`${conversation?.id}-${hiddenCount + i}-${m.role}`}
               className={m.role === "user" ? "bubble user" : "bubble ai"}
             >
               <RichText
@@ -84,31 +77,44 @@ export function ChatView({
         </div>
       )}
 
-      <div className="input-panel">
-        <textarea
-          className="input-box"
-          placeholder="支持 Markdown / LaTeX；$公式$、$$公式$$、Enter 发送"
-          value={text}
-          disabled={sending}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          rows={3}
-        />
-        <div className="input-actions">
-          <button
-            className="send-btn"
-            disabled={sending || !text.trim()}
-            onClick={submit}
-          >
-            发送
-          </button>
-        </div>
-      </div>
+      <ChatComposer sending={sending} onSend={onSend} />
     </section>
+  );
+}
+function ChatComposer({ sending, onSend }: Pick<Props, "sending" | "onSend">) {
+  const [text, setText] = useState("");
+
+  const submit = () => {
+    if (!text.trim() || sending) return;
+    onSend(text);
+    setText("");
+  };
+
+  return (
+    <div className="input-panel">
+      <textarea
+        className="input-box"
+        placeholder="支持 Markdown / LaTeX；$公式$、$$公式$$、Enter 发送"
+        value={text}
+        disabled={sending}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        rows={3}
+      />
+      <div className="input-actions">
+        <button
+          className="send-btn"
+          disabled={sending || !text.trim()}
+          onClick={submit}
+        >
+          发送
+        </button>
+      </div>
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -33,7 +34,10 @@ public:
         const std::string& okFilter,
         std::vector<nlohmann::json>& rows) const;
 
-    /** Query one detail page in newest-first order without loading all events. */
+    /**
+     * Query one newest-first detail page. An optional predicate filters and counts
+     * in one ordered stream, retaining only the requested page in memory.
+     */
     bool queryPage(
         const std::string& fromDate,
         const std::string& toDate,
@@ -42,7 +46,8 @@ public:
         int page,
         int pageSize,
         std::vector<nlohmann::json>& rows,
-        int& totalRows) const;
+        int& totalRows,
+        const std::function<bool(const nlohmann::json&)>& matches = {}) const;
 
     /**
      * Aggregate chart input in SQLite by minute, actor and result. Pricing is

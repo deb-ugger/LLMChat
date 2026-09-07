@@ -1,4 +1,6 @@
 #include "LlmClient.h"
+#include "CancellableWinHttp.h"
+#include "RequestCancellation.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -81,6 +83,7 @@ bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_
 LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body)
 {
     LlmResponse result;
+    if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
 
     bool https = true;
     std::wstring host;
@@ -97,13 +100,14 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
-        0);
+        WINHTTP_FLAG_ASYNC);
     if (!session)
     {
         result.error = "WinHttpOpen failed";
         return result;
     }
 
+    WinHttpSetTimeouts(session, 5000, 10000, 30000, 100000);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect)
     {
@@ -129,6 +133,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
+    CancellableWinHttp operation(request);
     std::wstring headers = L"Content-Type: application/json\r\n";
     if (!bearer.empty())
     {
@@ -136,19 +141,12 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     }
 
     result.externalCall = true;
-    const BOOL sent = WinHttpSendRequest(
-        request,
-        headers.c_str(),
-        static_cast<DWORD>(-1),
-        (LPVOID)body.data(),
-        static_cast<DWORD>(body.size()),
-        static_cast<DWORD>(body.size()),
-        0);
+    const bool sent = operation.send(headers.c_str(), (LPVOID)body.data(), static_cast<DWORD>(body.size()));
 
-    if (!sent || !WinHttpReceiveResponse(request, nullptr))
+    if (!sent || !operation.receive())
     {
         result.error = "HTTP request failed";
-        WinHttpCloseHandle(request);
+        operation.close();
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
         return result;
@@ -169,7 +167,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     for (;;)
     {
         DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available))
+        if (!operation.available(available))
         {
             break;
         }
@@ -179,14 +177,14 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         }
         std::vector<char> buffer(available);
         DWORD read = 0;
-        if (!WinHttpReadData(request, buffer.data(), available, &read))
+        if (!operation.read(buffer.data(), available, read))
         {
             break;
         }
         responseBody.append(buffer.data(), read);
     }
 
-    WinHttpCloseHandle(request);
+    operation.close();
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
 

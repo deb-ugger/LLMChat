@@ -1,4 +1,5 @@
 #include "SqliteUsageDb.h"
+#include "SqliteSupport.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -20,133 +21,7 @@ namespace {
 
 #ifdef _WIN32
 
-struct sqlite3;
-struct sqlite3_stmt;
-using SqliteDestructor = void (*)(void*);
-
-constexpr int kSqliteOk = 0;
-constexpr int kSqliteRow = 100;
-constexpr int kSqliteDone = 101;
-constexpr int kSqliteOpenReadWrite = 0x00000002;
-constexpr int kSqliteOpenCreate = 0x00000004;
-constexpr int kSqliteOpenFullMutex = 0x00010000;
-
-struct SqliteApi {
-    HMODULE module = nullptr;
-
-    int (*openV2)(const char*, sqlite3**, int, const char*) = nullptr;
-    int (*close)(sqlite3*) = nullptr;
-    const char* (*errorMessage)(sqlite3*) = nullptr;
-    int (*exec)(sqlite3*, const char*, int (*)(void*, int, char**, char**), void*, char**) = nullptr;
-    int (*prepareV2)(sqlite3*, const char*, int, sqlite3_stmt**, const char**) = nullptr;
-    int (*step)(sqlite3_stmt*) = nullptr;
-    int (*finalize)(sqlite3_stmt*) = nullptr;
-    int (*bindText)(sqlite3_stmt*, int, const char*, int, SqliteDestructor) = nullptr;
-    int (*bindNull)(sqlite3_stmt*, int) = nullptr;
-    int (*bindInt64)(sqlite3_stmt*, int, long long) = nullptr;
-    const unsigned char* (*columnText)(sqlite3_stmt*, int) = nullptr;
-    long long (*columnInt64)(sqlite3_stmt*, int) = nullptr;
-    int (*busyTimeout)(sqlite3*, int) = nullptr;
-
-    SqliteApi()
-    {
-        module = LoadLibraryW(L"winsqlite3.dll");
-        if (!module)
-            return;
-
-        openV2 = load<decltype(openV2)>("sqlite3_open_v2");
-        close = load<decltype(close)>("sqlite3_close");
-        errorMessage = load<decltype(errorMessage)>("sqlite3_errmsg");
-        exec = load<decltype(exec)>("sqlite3_exec");
-        prepareV2 = load<decltype(prepareV2)>("sqlite3_prepare_v2");
-        step = load<decltype(step)>("sqlite3_step");
-        finalize = load<decltype(finalize)>("sqlite3_finalize");
-        bindText = load<decltype(bindText)>("sqlite3_bind_text");
-        bindNull = load<decltype(bindNull)>("sqlite3_bind_null");
-        bindInt64 = load<decltype(bindInt64)>("sqlite3_bind_int64");
-        columnText = load<decltype(columnText)>("sqlite3_column_text");
-        columnInt64 = load<decltype(columnInt64)>("sqlite3_column_int64");
-        busyTimeout = load<decltype(busyTimeout)>("sqlite3_busy_timeout");
-
-        if (!ready())
-        {
-            FreeLibrary(module);
-            module = nullptr;
-        }
-    }
-
-    ~SqliteApi()
-    {
-        if (module)
-            FreeLibrary(module);
-    }
-
-    bool ready() const
-    {
-        return module && openV2 && close && errorMessage && exec && prepareV2 && step
-            && finalize && bindText && bindNull && bindInt64 && columnText
-            && columnInt64 && busyTimeout;
-    }
-
-private:
-    template <typename T>
-    T load(const char* name)
-    {
-        return reinterpret_cast<T>(GetProcAddress(module, name));
-    }
-};
-
-SqliteApi& sqliteApi()
-{
-    static SqliteApi api;
-    return api;
-}
-
-class Statement {
-public:
-    Statement(SqliteApi& api, sqlite3* db, const std::string& sql)
-        : api_(api)
-    {
-        if (api_.prepareV2(db, sql.c_str(), -1, &statement_, nullptr) != kSqliteOk)
-            statement_ = nullptr;
-    }
-
-    ~Statement()
-    {
-        if (statement_)
-            api_.finalize(statement_);
-    }
-
-    bool valid() const { return statement_ != nullptr; }
-    sqlite3_stmt* get() const { return statement_; }
-
-private:
-    SqliteApi& api_;
-    sqlite3_stmt* statement_ = nullptr;
-};
-
-bool execute(SqliteApi& api, sqlite3* db, const char* sql)
-{
-    return api.exec(db, sql, nullptr, nullptr, nullptr) == kSqliteOk;
-}
-
-bool bindText(SqliteApi& api, sqlite3_stmt* statement, int index, const std::string& value)
-{
-    const auto transient = reinterpret_cast<SqliteDestructor>(-1);
-    return api.bindText(statement, index, value.c_str(), static_cast<int>(value.size()), transient)
-        == kSqliteOk;
-}
-
-bool bindInt(SqliteApi& api, sqlite3_stmt* statement, int index, long long value)
-{
-    return api.bindInt64(statement, index, value) == kSqliteOk;
-}
-
-std::string columnText(SqliteApi& api, sqlite3_stmt* statement, int index)
-{
-    const auto* value = api.columnText(statement, index);
-    return value ? reinterpret_cast<const char*>(value) : "";
-}
+using namespace sqlite_support;
 
 void appendFilters(
     std::string& sql,
@@ -211,7 +86,7 @@ struct SqliteUsageDb::Impl {
 
     bool execute(const char* sql) const
     {
-        return db && ::execute(*api, db, sql);
+        return db && sqlite_support::execute(*api, db, sql);
     }
 
     bool writeRow(const json& row)
@@ -479,7 +354,10 @@ SqliteUsageDb::SqliteUsageDb(const std::string& legacyJsonlPath)
             "ON usage_events(date,request_type)")
         && impl_->execute(
             "CREATE INDEX IF NOT EXISTS usage_events_date_model_time_idx "
-            "ON usage_events(date,model,time)");
+            "ON usage_events(date,model,time)")
+        && impl_->execute(
+            "CREATE INDEX IF NOT EXISTS usage_events_newest_idx "
+            "ON usage_events(ts DESC,seq DESC)");
     if (!ready)
     {
         impl_->api->close(impl_->db);
@@ -577,7 +455,8 @@ bool SqliteUsageDb::queryPage(
     int page,
     int pageSize,
     std::vector<json>& rows,
-    int& totalRows) const
+    int& totalRows,
+    const std::function<bool(const json&)>& matches) const
 {
     rows.clear();
     totalRows = 0;
@@ -590,6 +469,42 @@ bool SqliteUsageDb::queryPage(
     std::vector<std::string> parameters;
     std::string where = " WHERE 1=1";
     appendFilters(where, parameters, fromDate, toDate, feature, okFilter);
+
+    // One ordered statement is also the cursor: each source row is read once.
+    // Pricing remains a caller predicate so changed rules apply to history.
+    if (matches)
+    {
+        Statement statement(
+            *impl_->api, impl_->db,
+            "SELECT payload FROM usage_events" + where + " ORDER BY ts DESC,seq DESC");
+        if (!statement.valid()
+            || !bindParameters(*impl_->api, statement.get(), parameters))
+            return false;
+        const auto begin = static_cast<long long>(page - 1) * pageSize;
+        rows.reserve(pageSize);
+        while (true)
+        {
+            const int result = impl_->api->step(statement.get());
+            if (result == kSqliteDone)
+                return true;
+            if (result != kSqliteRow)
+                return false;
+            json row;
+            try
+            {
+                row = json::parse(columnText(*impl_->api, statement.get(), 0));
+            }
+            catch (const json::parse_error&)
+            {
+                continue;
+            }
+            if (!matches(row))
+                continue;
+            if (totalRows >= begin && rows.size() < static_cast<size_t>(pageSize))
+                rows.push_back(std::move(row));
+            ++totalRows;
+        }
+    }
 
     Statement countStatement(
         *impl_->api,
@@ -639,6 +554,7 @@ bool SqliteUsageDb::queryPage(
     (void)okFilter;
     (void)page;
     (void)pageSize;
+    (void)matches;
     return false;
 #endif
 }

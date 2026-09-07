@@ -3,12 +3,14 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   type OcrMode,
-  type OcrModelStatus,
-  type Settings,
+    type Settings,
   type TranslateOptions,
   type TranslateProvider,
 } from "../api";
 import { toFriendlyError } from "../friendlyError";
+import { OCR_MODE_OPTIONS, OCR_MODE_LABELS } from "../ocr/modes";
+import { OcrModeTable } from "./OcrModeTable";
+import { useOcrModels } from "../ocr/useOcrModels";
 import {
   DEFAULT_MTOOL_PROMPT,
   DEFAULT_SUBTITLE_PROMPT,
@@ -83,54 +85,9 @@ function settingsTranslate(
   return api.translate(text, init, { feature: "settings_test", ...opts });
 }
 
-function formatModelBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MiB";
-  return `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MiB`;
-}
 
-const OCR_MODE_OPTIONS: Array<{
-  id: OcrMode;
-  title: string;
-  detectionModel: string;
-  recognitionModel: string;
-  description: string;
-  warning?: string;
-}> = [
-  {
-    id: "fast",
-    title: "快速",
-    detectionModel: "PP-OCRv6 small det",
-    recognitionModel: "PP-OCRv6 small rec",
-    description:
-      "普通 PDF、截图、常规中英日内容，以及流程图、架构图和稀疏标签图；启动最快、资源占用最低。",
-  },
-  {
-    id: "precise",
-    title: "精确",
-    detectionModel: "PP-OCRv6 medium det",
-    recognitionModel: "PP-OCRv6 medium rec",
-    description: "密集排版、小字号、复杂表格、公式周边文字及质量较差的扫描件。",
-    warning:
-      "并不是越“精确”越好：流程图、架构图和稀疏标签图可能因相邻文字框被合并，效果反而不如快速模式。",
-  },
-  {
-    id: "english",
-    title: "英文增强",
-    detectionModel: "PP-OCRv6 medium det",
-    recognitionModel: "en_PP-OCRv5 mobile rec",
-    description:
-      "英文论文、英文技术文档、代码说明及英文缩写较多的页面；流程图仍建议先与快速模式比较。",
-  },
-  {
-    id: "manga",
-    title: "漫画增强",
-    detectionModel: "PP-OCRv6 medium det",
-    recognitionModel: "Manga OCR base INT8",
-    description:
-      "日文漫画、竖排气泡、振假名、艺术字体及图片背景上的文字；会按气泡合并并使用日文阅读顺序。",
-    warning: "仅用于图片文字识别，不用于文献 PDF。",
-  },
-];
+
+
 
 type FeaturePage = "chat" | "literature" | "image" | "text" | "unity";
 
@@ -1132,7 +1089,7 @@ export function SettingsView({
   const [expandedVendor, setExpandedVendor] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState({ apiUrl: "", apiKey: "" });
   const [saving, setSaving] = useState(false);
-  const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
+  const { status: ocrModelStatus, error: ocrStatusError, refresh: refreshOcrModelStatus, ensure: ensureOcrMode, remove: removeOcrMode } = useOcrModels();
   const [ocrModelBusy, setOcrModelBusy] = useState<
     OcrMode | `remove-${Exclude<OcrMode, "fast">}` | null
   >(null);
@@ -1143,7 +1100,6 @@ export function SettingsView({
     title: string;
     message: string;
   } | null>(null);
-  const ocrProgressPollRef = useRef<number | null>(null);
   const prevModelRef = useRef(form.model);
   const customInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef(form);
@@ -1315,15 +1271,6 @@ export function SettingsView({
     void reloadVendorModels();
   }, []);
 
-  useEffect(() => {
-    void refreshOcrModelStatus();
-    return () => {
-      if (ocrProgressPollRef.current !== null) {
-        window.clearInterval(ocrProgressPollRef.current);
-        ocrProgressPollRef.current = null;
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (persistLockRef.current) return;
@@ -1556,13 +1503,6 @@ export function SettingsView({
     }
   };
 
-  const refreshOcrModelStatus = async () => {
-    try {
-      setOcrModelStatus(await api.getOcrModelStatus());
-    } catch {
-      // Settings remain usable with an older/offline backend.
-    }
-  };
 
   const chooseOcrMode = async (
     mode: OcrMode,
@@ -1578,28 +1518,13 @@ export function SettingsView({
     if (!installed) {
       setOcrModelBusy(mode);
       try {
-        const downloadPromise = api.ensureOcrMode(mode);
-        const poll = async () => {
-          try {
-            setOcrModelStatus(await api.getOcrModelStatus());
-          } catch {
-            // The download request remains authoritative; retry on the next tick.
-          }
-        };
-        void poll();
-        ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
-        const nextStatus = await downloadPromise;
-        setOcrModelStatus(nextStatus);
-        const label = OCR_MODE_OPTIONS.find((option) => option.id === mode)?.title ?? mode;
+        await ensureOcrMode(mode);
+        const label = OCR_MODE_LABELS[mode];
         notify(`${label}模型已下载并缓存`);
       } catch (e) {
         notify(toFriendlyError(e, "扩展 OCR 模型下载失败"), false);
         return;
       } finally {
-        if (ocrProgressPollRef.current !== null) {
-          window.clearInterval(ocrProgressPollRef.current);
-          ocrProgressPollRef.current = null;
-        }
         void refreshOcrModelStatus();
         setOcrModelBusy(null);
       }
@@ -1609,12 +1534,11 @@ export function SettingsView({
 
   const uninstallOcrMode = async (mode: Exclude<OcrMode, "fast">) => {
     if (ocrModelBusy) return;
-    const label = OCR_MODE_OPTIONS.find((option) => option.id === mode)?.title ?? mode;
+    const label = OCR_MODE_LABELS[mode];
     setOcrUninstallConfirm(null);
     setOcrModelBusy(`remove-${mode}`);
     try {
-      const nextStatus = await api.removeOcrMode(mode);
-      setOcrModelStatus(nextStatus);
+      const nextStatus = await removeOcrMode(mode);
       if (formRef.current.ocrMode === mode) {
         commitForm({ ...formRef.current, ocrMode: "fast" });
       }
@@ -1644,227 +1568,6 @@ export function SettingsView({
     }
   };
 
-  const renderOcrModeTable = (context: "literature" | "image") => {
-    const progress = ocrModelStatus?.download;
-    const progressTotal = Math.max(0, progress?.totalBytes ?? 0);
-    const progressDone = Math.max(0, progress?.downloadedBytes ?? 0);
-    const progressPercent = progressTotal
-      ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
-      : 0;
-    const modeDisabled =
-      ocrModelBusy !== null || ocrModelStatus?.download?.active === true;
-    const visibleOptions = OCR_MODE_OPTIONS.filter(
-      (option) => context === "image" || option.id !== "manga",
-    );
-    const selectedMode =
-      context === "literature" ? form.ocrMode : form.imageOcrMode;
-
-    return (
-      <div className="ocr-mode-settings">
-        <div className="ocr-mode-table-heading">
-          <div>
-            <h3 className="ocr-mode-title">识别模式</h3>
-            <p className="hint">
-              {context === "literature"
-                ? "仅在扫描版 PDF 或手动启用 OCR 时生效；原生 PDF 的框选与复制格式不受这些模型影响。"
-                : "选择适合图片内容的识别模型。"}
-              检测模型可由多个模式共用，状态列会分别检查前置模型与识别模型。
-            </p>
-          </div>
-        </div>
-        <div className="ocr-mode-table-wrap">
-          <table className="ocr-mode-table">
-            <thead>
-              <tr>
-                <th>模式</th>
-                <th>状态</th>
-                <th>前置检测模型</th>
-                <th>文字识别模型</th>
-                <th>作用与适用场景</th>
-                <th>空间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody role="radiogroup" aria-label="识别模式">
-              {visibleOptions.map((option) => {
-                const statusItem = ocrModelStatus?.modes.find(
-                  (item) => item.id === option.id,
-                );
-                const selected = selectedMode === option.id;
-                const downloading =
-                  ocrModelBusy === option.id ||
-                  (progress?.active === true && progress.mode === option.id);
-                const removing = ocrModelBusy === `remove-${option.id}`;
-                const installed = option.id === "fast" || statusItem?.installed === true;
-                const prerequisiteInstalled =
-                  option.id === "fast" ||
-                  statusItem?.installed === true ||
-                  statusItem?.prerequisiteInstalled === true;
-                const recognitionInstalled =
-                  option.id === "fast" ||
-                  statusItem?.installed === true ||
-                  statusItem?.recognitionInstalled === true;
-                const installationState = installed
-                  ? option.id === "fast"
-                    ? { label: "内置可用", tone: "ready" }
-                    : { label: "已安装", tone: "ready" }
-                  : !statusItem
-                    ? { label: "状态读取中", tone: "pending" }
-                    : { label: "", tone: "missing" };
-                const missingModelLabels = statusItem && !installed
-                  ? [
-                      !prerequisiteInstalled ? "缺少前置检测模型" : null,
-                      !recognitionInstalled ? "缺少文字识别模型" : null,
-                    ].filter((label): label is string => Boolean(label))
-                  : [];
-                const spaceText =
-                  option.id === "fast"
-                    ? `无需下载 · 内置 ${formatModelBytes(statusItem?.sizeBytes ?? 0)}`
-                    : downloading
-                      ? `正在下载 ${progressPercent}%`
-                      : installed
-                        ? `无需下载 · 已占用 ${formatModelBytes(
-                            statusItem?.cachedBytes || statusItem?.sizeBytes || 0,
-                          )}`
-                        : statusItem
-                          ? `还需 ${formatModelBytes(statusItem.downloadBytes)}`
-                          : "状态读取中";
-                return (
-                  <tr
-                    key={option.id}
-                    className={`${installed ? "is-installed" : ""}${modeDisabled ? " is-disabled" : ""}`.trim() || undefined}
-                  >
-                    <td>
-                      <button
-                        type="button"
-                        role="radio"
-                        className={`ocr-mode-select${selected ? " is-selected" : ""}`}
-                        aria-checked={selected}
-                        disabled={modeDisabled}
-                        onClick={() => void chooseOcrMode(option.id, context)}
-                      >
-                        <span className="ocr-mode-select-mark" aria-hidden />
-                        <strong>{option.title}</strong>
-                      </button>
-                    </td>
-                    <td className="ocr-mode-status-cell">
-                      {missingModelLabels.length ? (
-                        <span className="ocr-mode-status-list">
-                          {missingModelLabels.map((label) => (
-                            <span key={label} className="ocr-mode-status is-missing">
-                              {label}
-                            </span>
-                          ))}
-                        </span>
-                      ) : (
-                        <span className={`ocr-mode-status is-${installationState.tone}`}>
-                          {installationState.tone === "ready" ? "✓ " : ""}
-                          {installationState.label}
-                        </span>
-                      )}
-                    </td>
-                    <td className="ocr-mode-model-cell">
-                      <code>{option.detectionModel}</code>
-                      <span className="ocr-model-file-meta">
-                        <span className={`ocr-model-file-status ${prerequisiteInstalled ? "is-ready" : "is-missing"}`}>
-                          {prerequisiteInstalled ? "✓ 已下载" : "未下载"}
-                        </span>
-                        <span className="ocr-model-file-size">
-                          {statusItem
-                            ? formatModelBytes(statusItem.prerequisiteSizeBytes)
-                            : "读取中"}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="ocr-mode-model-cell">
-                      <code>{option.recognitionModel}</code>
-                      <span className="ocr-model-file-meta">
-                        <span className={`ocr-model-file-status ${recognitionInstalled ? "is-ready" : "is-missing"}`}>
-                          {recognitionInstalled ? "✓ 已下载" : "未下载"}
-                        </span>
-                        <span className="ocr-model-file-size">
-                          {statusItem
-                            ? formatModelBytes(statusItem.recognitionSizeBytes)
-                            : "读取中"}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="ocr-mode-purpose">
-                      <span>{option.description}</span>
-                      {option.warning ? (
-                        <>
-                          <br />
-                          <strong>{option.warning}</strong>
-                        </>
-                      ) : null}
-                    </td>
-                    <td className="ocr-mode-space">
-                      <strong>{spaceText}</strong>
-                      {downloading ? (
-                        <span className="ocr-download-progress" aria-live="polite">
-                          <span className="ocr-download-progress-head">
-                            <span>{progress?.model || "正在建立下载连接"}</span>
-                            <strong>{progressPercent}%</strong>
-                          </span>
-                          <span
-                            className="ocr-download-progress-track"
-                            role="progressbar"
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={progressPercent}
-                          >
-                            <span
-                              className="ocr-download-progress-fill"
-                              style={{ width: `${progressPercent}%` }}
-                            />
-                          </span>
-                          <span className="ocr-download-progress-bytes">
-                            {formatModelBytes(progressDone)} / {formatModelBytes(progressTotal)}
-                          </span>
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="ocr-mode-action">
-                      {option.id === "fast" ? (
-                        <span>软件内置</span>
-                      ) : installed ? (
-                        <button
-                          type="button"
-                          className="ocr-mode-uninstall"
-                          disabled={modeDisabled}
-                          onClick={() =>
-                            setOcrUninstallConfirm({
-                              mode: option.id as Exclude<OcrMode, "fast">,
-                            })
-                          }
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden>
-                            <path
-                              fill="currentColor"
-                              d="M9 3h6l1 2h4v2H4V5h4l1-2zm-2 6h10l-.7 11H7.7L7 9zm3 2v7h2v-7h-2zm4 0v7h2v-7h-2z"
-                            />
-                          </svg>
-                          {removing ? "正在卸载…" : "卸载"}
-                        </button>
-                      ) : (
-                        <span>选择后下载</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div className="ocr-model-cache-row">
-          <span className="hint">
-            扩展模型实际缓存：{formatModelBytes(ocrModelStatus?.cachedBytes ?? 0)}
-            {ocrModelStatus?.cacheDir ? ` · ${ocrModelStatus.cacheDir}` : ""}
-          </span>
-        </div>
-      </div>
-    );
-  };
 
   const selectTab = (next: SettingsTab) => {
     if (next === tab) return;
@@ -4438,7 +4141,11 @@ export function SettingsView({
         {tab === "image" && (
           <>
             <section className="settings-card">
-              {renderOcrModeTable("image")}
+              <OcrModeTable context="image" selectedMode={form.imageOcrMode}
+                status={ocrModelStatus} busy={ocrModelBusy} error={ocrStatusError}
+                onRetry={() => void refreshOcrModelStatus()}
+                onChoose={(mode) => void chooseOcrMode(mode, "image")}
+                onUninstall={(mode) => setOcrUninstallConfirm({ mode })} />
               <h2 className="ocr-image-settings-title">图片文字识别</h2>
               <p className="hint">
                 在此选择识别语言与长度；下方点击区块选用「翻译引擎」或「大模型翻译」。API /

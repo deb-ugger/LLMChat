@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { IndexedTextEntries } from "../text-entry-state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, type Settings, type TextProjectListItem } from "../api";
@@ -55,7 +56,7 @@ import {
   type PipelineState,
 } from "./RetimeProgressPanel";
 
-type Props = { settings: Settings };
+type Props = { settings: Settings; active?: boolean };
 type Phase = "home" | "workbench";
 
 type RecentItem = {
@@ -233,7 +234,26 @@ const STATUS_COLORS = {
   待翻译: "#5470c6",
 } as const;
 
-export function TextTranslateView({ settings }: Props) {
+const ENTRY_PAGE_SIZE = 100;
+const EMPTY_ENTRIES: TransEntry[] = [];
+
+const ElapsedTime = memo(function ElapsedTime({
+  elapsedMs, baseMs, startedAt,
+}: { elapsedMs: number; baseMs: number; startedAt: number | null }) {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    if (startedAt === null) return;
+    setNow(performance.now());
+    const timer = window.setInterval(() => setNow(performance.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const elapsed = startedAt === null
+    ? elapsedMs
+    : baseMs + Math.max(0, Math.round(now - startedAt));
+  return <div className="text-timer-display">{formatDuration(elapsed)}</div>;
+});
+
+export function TextTranslateView({ settings, active = true }: Props) {
   const textLlm = useMemo(
     () => resolveFeatureLlm(settings, settings.textTranslateModel),
     [settings],
@@ -267,6 +287,7 @@ export function TextTranslateView({ settings }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [onlyUntranslated, setOnlyUntranslated] = useState(true);
   const [filter, setFilter] = useState("");
+  const [entryPage, setEntryPage] = useState(1);
   const [dragOver, setDragOver] = useState<"new" | "open" | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [entriesPanelOpen, setEntriesPanelOpen] = useState(false);
@@ -287,7 +308,7 @@ export function TextTranslateView({ settings }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const newDropRef = useRef<HTMLDivElement | null>(null);
   const openDropRef = useRef<HTMLDivElement | null>(null);
-  const tickRef = useRef<number | null>(null);
+  const flushProgressRef = useRef<(() => void) | null>(null);
   const elapsedBaseRef = useRef(0);
   const runStartedAtRef = useRef<number | null>(null);
   const projectRef = useRef(project);
@@ -307,14 +328,15 @@ export function TextTranslateView({ settings }: Props) {
     900,
   );
 
-  const entries = project?.entries ?? [];
+  const entries = project?.entries ?? EMPTY_ENTRIES;
   const stats = useMemo(() => {
-    const done = entries.filter((e) => e.status === "done").length;
-    const failed = entries.filter((e) => e.status === "error").length;
-    const skipped = entries.filter((e) => e.status === "skipped").length;
-    const pending = entries.filter(
-      (e) => e.status === "pending" || e.status === "running",
-    ).length;
+    let done = 0, failed = 0, skipped = 0, pending = 0;
+    for (const entry of entries) {
+      if (entry.status === "done") done++;
+      else if (entry.status === "error") failed++;
+      else if (entry.status === "skipped") skipped++;
+      else pending++;
+    }
     return {
       total: entries.length,
       done,
@@ -392,6 +414,24 @@ export function TextTranslateView({ settings }: Props) {
     );
   }, [entries, filter]);
 
+  const entryPages = Math.max(1, Math.ceil(filteredEntries.length / ENTRY_PAGE_SIZE));
+  const visibleEntryPage = Math.min(entryPage, entryPages);
+  const entryOffset = (visibleEntryPage - 1) * ENTRY_PAGE_SIZE;
+  const pageEntries = useMemo(
+    () => active && entriesPanelOpen ? filteredEntries.slice(entryOffset, entryOffset + ENTRY_PAGE_SIZE) : EMPTY_ENTRIES,
+    [active, entriesPanelOpen, filteredEntries, entryOffset],
+  );
+  const plainText = useMemo(() => {
+    if (!active || !entriesPanelOpen || project?.format !== "plain" || entries.length > 1) {
+      return { src: "", dst: "" };
+    }
+    return {
+      src: entries.map((entry) => entry.src).join("\n\n"),
+      dst: entries.map((entry) => entry.dst || "").join("\n\n"),
+    };
+  }, [active, entriesPanelOpen, project?.format, entries]);
+  useEffect(() => setEntryPage(1), [filter, project?.createdAt, project?.folder]);
+
   const glossaryFromSettings = useMemo(
     () =>
       parseJsonArray<GlossaryEntry>(settings.textGlossary, []).filter(
@@ -464,13 +504,10 @@ export function TextTranslateView({ settings }: Props) {
 
   const stop = useCallback(
     async (opts?: { silent?: boolean }) => {
+      flushProgressRef.current?.();
       abortRef.current?.abort();
       abortRef.current = null;
-      genRef.current += 1;
-      if (tickRef.current != null) {
-        window.clearInterval(tickRef.current);
-        tickRef.current = null;
-      }
+      const stoppedGeneration = ++genRef.current;
       setBusy(false);
       busyRef.current = false;
       if (pipelineActiveRef.current) {
@@ -485,8 +522,10 @@ export function TextTranslateView({ settings }: Props) {
         );
       }
       await persistFullSnapshot({ resetRunning: true });
-      runStartedAtRef.current = null;
-      if (!opts?.silent) setStatusLine("已停止，进度已保存");
+      if (genRef.current === stoppedGeneration) {
+        runStartedAtRef.current = null;
+        if (!opts?.silent) setStatusLine("已停止，进度已保存");
+      }
     },
     [persistFullSnapshot],
   );
@@ -496,6 +535,15 @@ export function TextTranslateView({ settings }: Props) {
   persistFullSnapshotRef.current = persistFullSnapshot;
   stopRef.current = stop;
   const closingRef = useRef(false);
+
+  useEffect(() => () => {
+    genRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    // Invalidating the generation lets the flush clear its timer without publishing.
+    flushProgressRef.current?.();
+    flushProgressRef.current = null;
+  }, []);
 
   /** Close app: save text project if needed; if translating, confirm stop first. */
   useEffect(() => {
@@ -603,10 +651,6 @@ export function TextTranslateView({ settings }: Props) {
     setElapsedMs(p.elapsedMs || 0);
     elapsedBaseRef.current = p.elapsedMs || 0;
     runStartedAtRef.current = null;
-    if (tickRef.current != null) {
-      window.clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
   };
 
   const openWorkbench = (
@@ -779,7 +823,7 @@ export function TextTranslateView({ settings }: Props) {
   }, []);
 
   useEffect(() => {
-    if (phase !== "home") {
+    if (!active || phase !== "home") {
       setDragOver(null);
       return;
     }
@@ -851,7 +895,7 @@ export function TextTranslateView({ settings }: Props) {
       setDragOver(null);
       for (const u of unsubs) u();
     };
-  }, [fileFromDroppedPath, phase]);
+  }, [active, fileFromDroppedPath, phase]);
 
   const buildFromSourceFile = async (
     file: File,
@@ -1362,22 +1406,6 @@ export function TextTranslateView({ settings }: Props) {
             : `（${workUnits.length} 句组）`
           : ""),
     );
-    if (tickRef.current != null) window.clearInterval(tickRef.current);
-    tickRef.current = window.setInterval(() => {
-      setElapsedMs(elapsedBase + Math.round(performance.now() - t0));
-    }, 250);
-
-    const workIdSet = new Set(workUnits.flatMap((u) => u.entryIds));
-    patchProject((p) => ({
-      ...p,
-      prompt,
-      entries: p.entries.map((e) =>
-        workIdSet.has(e.id)
-          ? { ...e, status: "pending", error: undefined }
-          : e,
-      ),
-    }));
-
     let finished = 0;
     let okCount = 0;
     let failCount = 0;
@@ -1385,10 +1413,32 @@ export function TextTranslateView({ settings }: Props) {
     let tokenAcc = emptyTokenStats();
     const tokensAtStart = { ...active.tokens };
     const skippedAtStart = active.entries.filter(
-      (e) => e.status === "skipped",
+      (entry) => entry.status === "skipped",
     ).length;
-    let liveEntries = active.entries.map((e) => ({ ...e }));
+    const liveEntries = new IndexedTextEntries(active.entries);
+    liveEntries.update(workUnits.flatMap((unit) => unit.entryIds), (entry) => ({
+      ...entry, status: "pending", error: undefined,
+    }));
     const folder = active.folder || projectFolderRef.current || undefined;
+    let publishTimer: number | null = null;
+    const flushProgress = () => {
+      if (publishTimer !== null) window.clearTimeout(publishTimer);
+      publishTimer = null;
+      if (gen !== genRef.current) return;
+      const next: TextProject = {
+        ...active,
+        prompt,
+        folder,
+        entries: liveEntries.snapshot(),
+        tokens: addTokens(tokensAtStart, tokenAcc),
+      };
+      projectRef.current = next;
+      setProject(next);
+    };
+    const publishProgress = () => {
+      if (publishTimer === null) publishTimer = window.setTimeout(flushProgress, 100);
+    };
+    flushProgressRef.current = flushProgress;
 
     const worker = async () => {
       while (true) {
@@ -1396,17 +1446,8 @@ export function TextTranslateView({ settings }: Props) {
         const idx = cursor++;
         if (idx >= workUnits.length) return;
         const unit = workUnits[idx];
-        const idSet = new Set(unit.entryIds);
-
-        liveEntries = liveEntries.map((e) =>
-          idSet.has(e.id) ? { ...e, status: "running" as const } : e,
-        );
-        patchProject((p) => ({
-          ...p,
-          entries: p.entries.map((e) =>
-            idSet.has(e.id) ? { ...e, status: "running" } : e,
-          ),
-        }));
+        liveEntries.update(unit.entryIds, (entry) => ({ ...entry, status: "running" }));
+        publishProgress();
 
         try {
           const preparedSources = unit.sources.map((s) =>
@@ -1414,29 +1455,10 @@ export function TextTranslateView({ settings }: Props) {
           );
           if (preparedSources.every((s) => !s.trim())) {
             okCount += unit.entryIds.length;
-            liveEntries = liveEntries.map((e) =>
-              idSet.has(e.id)
-                ? {
-                    ...e,
-                    dst: e.src,
-                    status: "skipped" as const,
-                    error: undefined,
-                  }
-                : e,
-            );
-            patchProject((p) => ({
-              ...p,
-              entries: p.entries.map((e) =>
-                idSet.has(e.id)
-                  ? {
-                      ...e,
-                      dst: e.src,
-                      status: "skipped",
-                      error: undefined,
-                    }
-                  : e,
-              ),
+            liveEntries.update(unit.entryIds, (entry) => ({
+              ...entry, dst: entry.src, status: "skipped", error: undefined,
             }));
+            publishProgress();
             continue;
           }
 
@@ -1486,47 +1508,21 @@ export function TextTranslateView({ settings }: Props) {
           const dstById = new Map(
             unit.entryIds.map((id, i) => [id, parts[i] ?? ""]),
           );
-          liveEntries = liveEntries.map((e) =>
-            dstById.has(e.id)
-              ? {
-                  ...e,
-                  dst: dstById.get(e.id) || "",
-                  status: "done" as const,
-                  error: undefined,
-                }
-              : e,
-          );
-          patchProject((p) => ({
-            ...p,
-            tokens: addTokens(p.tokens, tok),
-            entries: p.entries.map((e) =>
-              dstById.has(e.id)
-                ? {
-                    ...e,
-                    dst: dstById.get(e.id) || "",
-                    status: "done",
-                    error: undefined,
-                  }
-                : e,
-            ),
+          liveEntries.update(unit.entryIds, (entry) => ({
+            ...entry, dst: dstById.get(entry.id) || "", status: "done", error: undefined,
           }));
+          publishProgress();
         } catch (e) {
           if (ac.signal.aborted || gen !== genRef.current) return;
           const msg = toFriendlyError(e);
           failCount += unit.entryIds.length;
-          liveEntries = liveEntries.map((x) =>
-            idSet.has(x.id)
-              ? { ...x, status: "error" as const, error: msg }
-              : x,
-          );
-          patchProject((p) => ({
-            ...p,
-            entries: p.entries.map((x) =>
-              idSet.has(x.id) ? { ...x, status: "error", error: msg } : x,
-            ),
+          liveEntries.update(unit.entryIds, (entry) => ({
+            ...entry, status: "error", error: msg,
           }));
+          publishProgress();
           setError(msg);
         } finally {
+          if (gen !== genRef.current) return;
           finished += unit.entryIds.length;
           setSessionDone(finished);
           setStatusLine(
@@ -1557,12 +1553,14 @@ export function TextTranslateView({ settings }: Props) {
           ratio: 0.95,
         });
       }
+      if (publishTimer !== null) window.clearTimeout(publishTimer);
+      publishTimer = null;
       const finalElapsed = elapsedBase + Math.round(performance.now() - t0);
       const finalProject: TextProject = {
         ...active,
         prompt,
         folder,
-        entries: liveEntries,
+        entries: liveEntries.snapshot(),
         tokens: addTokens(tokensAtStart, tokenAcc),
         elapsedMs: finalElapsed,
       };
@@ -1608,11 +1606,9 @@ export function TextTranslateView({ settings }: Props) {
         });
       }
     } finally {
-      if (tickRef.current != null) {
-        window.clearInterval(tickRef.current);
-        tickRef.current = null;
-      }
-      if (runStartedAtRef.current != null) {
+      if (publishTimer !== null) window.clearTimeout(publishTimer);
+      if (flushProgressRef.current === flushProgress) flushProgressRef.current = null;
+      if (gen === genRef.current && runStartedAtRef.current != null) {
         const endElapsed =
           elapsedBaseRef.current +
           Math.round(performance.now() - runStartedAtRef.current);
@@ -1949,15 +1945,6 @@ export function TextTranslateView({ settings }: Props) {
 
   if (!project) return null;
 
-  const plainJoinedSrc =
-    project.format === "plain"
-      ? project.entries.map((e) => e.src).join("\n\n")
-      : "";
-  const plainJoinedDst =
-    project.format === "plain"
-      ? project.entries.map((e) => e.dst || "").join("\n\n")
-      : "";
-
   return (
     <div className="text-layout">
       <div className="text-toolbar">
@@ -2144,7 +2131,11 @@ export function TextTranslateView({ settings }: Props) {
             <header className="text-stats-card-head">
               <strong>用时</strong>
             </header>
-            <div className="text-timer-display">{formatDuration(elapsedMs)}</div>
+            <ElapsedTime
+              elapsedMs={elapsedMs}
+              baseMs={elapsedBaseRef.current}
+              startedAt={active && busy ? runStartedAtRef.current : null}
+            />
           </section>
           <section className="text-stats-card text-stats-timer">
             <header className="text-stats-card-head">
@@ -2271,7 +2262,7 @@ export function TextTranslateView({ settings }: Props) {
                   </div>
                   <textarea
                     className="text-pane-area"
-                    value={plainJoinedSrc}
+                    value={plainText.src}
                     disabled={busy}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -2304,7 +2295,8 @@ export function TextTranslateView({ settings }: Props) {
                   </div>
                   <textarea
                     className="text-pane-area"
-                    value={plainJoinedDst}
+                    value={plainText.dst}
+                    disabled={busy}
                     onChange={(e) => {
                       const v = e.target.value;
                       patchProject((p) => ({
@@ -2327,6 +2319,13 @@ export function TextTranslateView({ settings }: Props) {
               </div>
             ) : (
               <div className="text-entry-wrap entries-modal-body">
+                <div className="stats-pagination" aria-label="翻译条目分页">
+                  <span>共 {filteredEntries.length.toLocaleString()} 条 · 第 {visibleEntryPage} / {entryPages} 页</span>
+                  <div className="stats-pagination-actions">
+                    <button className="text-tool-btn" disabled={visibleEntryPage <= 1} onClick={() => setEntryPage(visibleEntryPage - 1)}>上一页</button>
+                    <button className="text-tool-btn" disabled={visibleEntryPage >= entryPages} onClick={() => setEntryPage(visibleEntryPage + 1)}>下一页</button>
+                  </div>
+                </div>
                 <div className="text-entry-table">
                   <div className="text-entry-row is-head">
                     <span>#</span>
@@ -2334,13 +2333,13 @@ export function TextTranslateView({ settings }: Props) {
                     <span>译文</span>
                     <span>状态</span>
                   </div>
-                  {filteredEntries.map((e, i) => (
+                  {pageEntries.map((e, i) => (
                     <div
                       key={e.id}
                       className={`text-entry-row status-${e.status}`}
                       title={e.error || undefined}
                     >
-                      <span className="text-entry-idx">{i + 1}</span>
+                      <span className="text-entry-idx">{entryOffset + i + 1}</span>
                       <span className="text-entry-src">
                         {e.src || "（空）"}
                       </span>

@@ -379,7 +379,8 @@ std::vector<json> UsageStore::eventPage(
     const std::string& okFilter,
     int page,
     int pageSize,
-    int& totalRows) const
+    int& totalRows,
+    const std::function<bool(const json&)>& matches) const
 {
     page = std::max(1, page);
     pageSize = std::max(1, std::min(200, pageSize));
@@ -395,14 +396,18 @@ std::vector<json> UsageStore::eventPage(
                 page,
                 pageSize,
                 rows,
-                totalRows))
+                totalRows,
+                matches))
             return rows;
     }
 
     auto rows = events(fromDate, toDate, feature, okFilter);
-    std::sort(rows.begin(), rows.end(), [](const json& a, const json& b) {
+    std::reverse(rows.begin(), rows.end());
+    std::stable_sort(rows.begin(), rows.end(), [](const json& a, const json& b) {
         return a.value("ts", "") > b.value("ts", "");
     });
+    if (matches)
+        std::erase_if(rows, [&](const json& row) { return !matches(row); });
     totalRows = static_cast<int>(rows.size());
     const size_t begin = std::min(
         rows.size(),

@@ -110,14 +110,16 @@ fn read_clipboard_file_image() -> Result<Vec<u8>, String> {
 
 /// Read clipboard image as PNG bytes (bitmap first, then copied image file).
 #[tauri::command]
-fn clipboard_read_image_png() -> Result<Vec<u8>, String> {
+async fn clipboard_read_image_png() -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(|| {
     match read_clipboard_bitmap_png() {
         Ok(png) => Ok(png),
         Err(bitmap_err) => match read_clipboard_file_image() {
             Ok(bytes) => Ok(bytes),
             Err(file_err) => Err(format!("{bitmap_err}；{file_err}")),
         },
-    }
+    }.map(tauri::ipc::Response::new)
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// Write raw bytes to an absolute path chosen via the save dialog.
@@ -137,11 +139,14 @@ fn write_file_bytes(path: String, contents: Vec<u8>) -> Result<(), String> {
 
 /// Read raw bytes from an absolute path chosen via the open dialog.
 #[tauri::command]
-fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+async fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     if path.trim().is_empty() {
         return Err("路径为空".to_string());
     }
-    std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path).map(tauri::ipc::Response::new)
+            .map_err(|e| format!("读取文件失败: {e}"))
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// File metadata for path-based document sessions (size + mtime ms).

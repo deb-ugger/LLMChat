@@ -55,8 +55,7 @@ export async function pickDocumentPath(
 }
 
 export async function readFileBytes(path: string): Promise<ArrayBuffer> {
-  const bytes = await invoke<number[]>("read_file_bytes", { path });
-  return new Uint8Array(bytes).buffer;
+  return invoke<ArrayBuffer>("read_file_bytes", { path });
 }
 
 export async function fileStat(

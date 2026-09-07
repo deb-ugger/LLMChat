@@ -3,6 +3,7 @@ import type {
   OcrResultItem,
 } from "@paddleocr/paddleocr-js";
 import { API_BASE, api, type OcrMode } from "../api";
+import { OcrRuntime } from "./runtime";
 
 type ModelPair = {
   detName: string;
@@ -19,51 +20,23 @@ function backendModelUrl(fileName: string): string {
   return `${API_BASE}/api/ocr/model-files/${encodeURIComponent(fileName)}`;
 }
 
-export function normalizeOcrMode(value: string): OcrMode {
-  return value === "precise" || value === "english" || value === "manga"
-    ? value
-    : "fast";
-}
-
-export const OCR_MODE_LABELS: Record<OcrMode, string> = {
-  fast: "快速",
-  precise: "精确",
-  english: "英文增强",
-  manga: "漫画增强",
-};
+export { normalizeOcrMode, OCR_MODE_LABELS } from "./modes";
 
 function modelPair(mode: OcrMode): ModelPair {
-  if (mode === "precise") {
-    return {
-      detName: "PP-OCRv6_medium_det",
-      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
-      recName: "PP-OCRv6_medium_rec",
-      recUrl: backendModelUrl("PP-OCRv6_medium_rec_onnx_infer.tar"),
-    };
-  }
-  if (mode === "english") {
-    return {
-      detName: "PP-OCRv6_medium_det",
-      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
-      recName: "en_PP-OCRv5_mobile_rec",
-      recUrl: backendModelUrl("en_PP-OCRv5_mobile_rec_onnx_infer.tar"),
-    };
-  }
-  if (mode === "manga") {
-    return {
-      // Manga OCR is recognition-only. Reuse the accurate shared detector;
-      // the bundled small recognizer supplies proposal text that is discarded.
-      detName: "PP-OCRv6_medium_det",
-      detUrl: backendModelUrl("PP-OCRv6_medium_det_onnx_infer.tar"),
-      recName: "PP-OCRv6_small_rec",
-      recUrl: localAssetUrl("./ocr/PP-OCRv6_small_rec_onnx_infer.tar"),
-    };
-  }
+  const detName = mode === "fast" ? "PP-OCRv6_small_det" : "PP-OCRv6_medium_det";
+  // Manga OCR replaces proposal text, so its Paddle stage uses the bundled recognizer.
+  const recName = mode === "precise"
+    ? "PP-OCRv6_medium_rec"
+    : mode === "english" ? "en_PP-OCRv5_mobile_rec" : "PP-OCRv6_small_rec";
+  const assetUrl = (name: string, bundled: boolean) => {
+    const file = `${name}_onnx_infer.tar`;
+    return bundled ? localAssetUrl(`./ocr/${file}`) : backendModelUrl(file);
+  };
   return {
-    detName: "PP-OCRv6_small_det",
-    detUrl: localAssetUrl("./ocr/PP-OCRv6_small_det_onnx_infer.tar"),
-    recName: "PP-OCRv6_small_rec",
-    recUrl: localAssetUrl("./ocr/PP-OCRv6_small_rec_onnx_infer.tar"),
+    detName,
+    detUrl: assetUrl(detName, mode === "fast"),
+    recName,
+    recUrl: assetUrl(recName, mode === "fast" || mode === "manga"),
   };
 }
 
@@ -147,16 +120,15 @@ async function prepareRecognitionImage(
  * English-enhanced archives are downloaded once by the backend and reused.
  */
 export class LocalPaddleOcr {
-  private instance: PaddleOcrInstance | null = null;
-  private initializing: Promise<PaddleOcrInstance> | null = null;
+  private runtime: OcrRuntime<PaddleOcrInstance>;
 
-  constructor(private readonly mode: OcrMode = "fast") {}
+  constructor(private readonly mode: OcrMode = "fast") {
+    this.runtime = new OcrRuntime(() => this.initialize(), (instance) => instance.dispose());
+  }
 
-  private async create(): Promise<PaddleOcrInstance> {
-    if (this.instance) return this.instance;
-    if (!this.initializing) {
+  private async initialize(): Promise<PaddleOcrInstance> {
       const models = modelPair(this.mode);
-      this.initializing = (this.mode === "fast"
+      return (this.mode === "fast"
         ? Promise.resolve()
         : api.ensureOcrMode(this.mode).then(() => undefined))
         .then(() => import("@paddleocr/paddleocr-js"))
@@ -188,21 +160,13 @@ export class LocalPaddleOcr {
               simd: true,
             },
           }),
-        )
-        .then((instance) => {
-          this.instance = instance;
-          return instance;
-        })
-        .finally(() => {
-          this.initializing = null;
-        });
-    }
-    return this.initializing;
+        );
   }
 
   async recognize(image: Blob): Promise<PaddleOcrRecognition> {
-    const runner = await this.create();
+    return this.runtime.run(async (runner, signal) => {
     const prepared = await prepareRecognitionImage(image);
+    if (signal.aborted) throw new Error("识别已取消");
     const [result] = await runner.predict(prepared.image, {
       textDetMaxSideLimit: 4000,
       textDetBoxThresh: 0.3,
@@ -220,21 +184,10 @@ export class LocalPaddleOcr {
       initialization: runner.getInitializationSummary(),
       elapsedMs: result.metrics.totalMs,
     };
+    });
   }
 
-  async dispose(): Promise<void> {
-    const pending = this.initializing;
-    this.initializing = null;
-    let instance = this.instance;
-    this.instance = null;
-    if (!instance && pending) {
-      try {
-        instance = await pending;
-      } catch {
-        return;
-      }
-    }
-    this.instance = null;
-    await instance?.dispose();
+  dispose(): Promise<void> {
+    return this.runtime.dispose();
   }
 }

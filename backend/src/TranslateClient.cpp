@@ -1,4 +1,6 @@
 #include "TranslateClient.h"
+#include "CancellableWinHttp.h"
+#include "RequestCancellation.h"
 #include "LlmClient.h"
 
 #include <nlohmann/json.hpp>
@@ -632,6 +634,7 @@ HttpResult winHttpRequest(
     const std::wstring& extraHeaders)
 {
     HttpResult result;
+    if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
     bool https = true;
     std::wstring host;
     INTERNET_PORT port = INTERNET_DEFAULT_HTTPS_PORT;
@@ -667,7 +670,7 @@ HttpResult winHttpRequest(
         accessType,
         proxyName,
         WINHTTP_NO_PROXY_BYPASS,
-        0);
+        WINHTTP_FLAG_ASYNC);
     // AUTOMATIC_PROXY unsupported on some builds → fall back
     if (!session && accessType == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)
     {
@@ -676,7 +679,7 @@ HttpResult winHttpRequest(
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS,
-            0);
+            WINHTTP_FLAG_ASYNC);
     }
     if (!session)
     {
@@ -717,6 +720,7 @@ HttpResult winHttpRequest(
         return result;
     }
 
+    CancellableWinHttp operation(request);
     // For HTTPS through named proxy, ensure CONNECT works
     if (https && accessType == WINHTTP_ACCESS_TYPE_NAMED_PROXY)
     {
@@ -731,20 +735,13 @@ HttpResult winHttpRequest(
         L"Accept: application/json,text/plain,*/*\r\n";
     if (!extraHeaders.empty()) headers += extraHeaders;
 
-    const BOOL sent = WinHttpSendRequest(
-        request,
-        headers.c_str(),
-        static_cast<DWORD>(-1),
-        body.empty() ? WINHTTP_NO_REQUEST_DATA : (LPVOID)body.data(),
-        static_cast<DWORD>(body.size()),
-        static_cast<DWORD>(body.size()),
-        0);
+    const bool sent = operation.send(headers.c_str(), body.empty() ? WINHTTP_NO_REQUEST_DATA : (LPVOID)body.data(), static_cast<DWORD>(body.size()));
 
-    if (!sent || !WinHttpReceiveResponse(request, nullptr))
+    if (!sent || !operation.receive())
     {
         const DWORD err = GetLastError();
         result.error = winHttpErrMessage(err, host);
-        WinHttpCloseHandle(request);
+        operation.close();
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
         return result;
@@ -762,16 +759,16 @@ HttpResult winHttpRequest(
     for (;;)
     {
         DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+        if (!operation.available(available) || available == 0) break;
         std::vector<char> buffer(available);
         DWORD read = 0;
-        if (!WinHttpReadData(request, buffer.data(), available, &read)) break;
+        if (!operation.read(buffer.data(), available, read)) break;
         result.body.append(buffer.data(), read);
     }
 
-    collectSetCookies(request, result.cookies);
+    if (operation.isOpen()) collectSetCookies(request, result.cookies);
 
-    WinHttpCloseHandle(request);
+    operation.close();
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
 
@@ -887,6 +884,9 @@ TranslateResult joinChunkTranslations(
     std::ostringstream joined;
     for (size_t i = 0; i < chunks.size(); ++i)
     {
+        if (request_cancel::stopped()) {
+            result.code = "CANCELLED"; result.error = "翻译已取消"; return result;
+        }
         const TranslateResult part = fn(chunks[i]);
         if (part.externalCall)
             result.externalCall = true;

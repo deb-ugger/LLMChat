@@ -6,6 +6,7 @@
 #include "PricingStore.h"
 #include "UsageStore.h"
 #include "Utf8Path.h"
+#include "RequestCancellation.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -281,7 +282,10 @@ HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
 
 int HttpServer::run()
 {
+    request_cancel::Registry translationTasks;
+    std::atomic<unsigned long long> nextTask{0};
     httplib::Server svr;
+    svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
 
     svr.Options(R"(.*)", [](const httplib::Request& req, httplib::Response& res) {
         if (!isAllowedBrowserOrigin(req))
@@ -458,6 +462,7 @@ int HttpServer::run()
         };
         const int page = intParam("page", 1, 1, 1000000);
         const int pageSize = intParam("pageSize", 100, 20, 200);
+        const bool detailsOnly = req.has_param("detailsOnly") && req.get_param_value("detailsOnly") == "1";
 
         if (!usage_)
         {
@@ -514,16 +519,14 @@ int HttpServer::run()
                 *it->second.rates);
         };
 
-        auto chartRows = usage_->chartBuckets(from, to, feature, okFilter);
+        auto chartRows = detailsOnly ? std::vector<json>{} : usage_->chartBuckets(from, to, feature, okFilter);
         std::vector<json> filteredChart;
         filteredChart.reserve(chartRows.size());
-        int filteredTotal = 0;
         for (auto& row : chartRows)
         {
             decorate(row);
             if (!bandFilter.empty() && row.value("pricingBand", "flat") != bandFilter)
                 continue;
-            filteredTotal += std::max(1, row.value("requests", 1));
             filteredChart.push_back(std::move(row));
         }
 
@@ -544,38 +547,18 @@ int HttpServer::run()
         }
         else
         {
-            totalRows = filteredTotal;
-            const int wantedBegin = (page - 1) * pageSize;
-            const int wantedEnd = wantedBegin + pageSize;
-            int matched = 0;
-            int sourcePage = 1;
-            int sourceTotal = 0;
-            while (matched < wantedEnd)
-            {
-                auto chunk = usage_->eventPage(
-                    from,
-                    to,
-                    feature,
-                    okFilter,
-                    sourcePage++,
-                    200,
-                    sourceTotal);
-                if (chunk.empty())
-                    break;
-                for (auto& row : chunk)
-                {
-                    decorate(row);
-                    if (row.value("pricingBand", "flat") != bandFilter)
-                        continue;
-                    if (matched >= wantedBegin && matched < wantedEnd)
-                        pageRows.push_back(std::move(row));
-                    ++matched;
-                    if (matched >= wantedEnd)
-                        break;
-                }
-                if ((sourcePage - 1) * 200 >= sourceTotal)
-                    break;
-            }
+            pageRows = usage_->eventPage(
+                from, to, feature, okFilter, page, pageSize, totalRows,
+                [&](const json& row) {
+                    std::string band = "flat";
+                    if (pricing_ && row.value("channel", "") == "llm") {
+                        band = pricing_->bandFor(row.value("model", ""),
+                            row.value("date", ""), row.value("time", ""));
+                        if (band.empty()) band = "flat";
+                    }
+                    return band == bandFilter;
+                });
+            for (auto& row : pageRows) decorate(row);
         }
 
         json summaryBody = UsageStore::summaryFromEvents(filteredChart, groupBy);
@@ -1392,15 +1375,7 @@ int HttpServer::run()
     }));
 
     svr.Get("/api/conversations", withCors([this](const httplib::Request&, httplib::Response& res) {
-        json arr = json::array();
-        for (const auto& conv : conversations_.conversations())
-        {
-            if (conv.messages.empty())
-            {
-                continue;
-            }
-            arr.push_back(conversations_.toJson(conv, false));
-        }
+        json arr = conversations_.summaries();
         json body{
             {"items", arr},
             {"currentId", conversations_.currentConversationId()},
@@ -1887,10 +1862,37 @@ int HttpServer::run()
             }
         }));
 
-    svr.Post("/api/translate", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/translate/cancel", withCors([&translationTasks](const httplib::Request& req, httplib::Response& res) {
+        const auto body = json::parse(req.body, nullptr, false);
+        const auto id = body.is_object() ? body.value("taskId", std::string{}) : std::string{};
+        if (id.empty() || id.size() > 96) {
+            res.status = 400;
+            res.set_content(errorJson("invalid taskId").dump(), "application/json");
+            return;
+        }
+        translationTasks.cancel(id);
+        res.set_content(json{{"ok", true}}.dump(), "application/json");
+    }));
+
+    svr.Post("/api/translate", withCors([this, &translationTasks, &nextTask](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body);
+            std::string taskId = body.value("taskId", "");
+            if (taskId.empty()) taskId = "server-" + std::to_string(++nextTask);
+            if (taskId.size() > 96) throw std::runtime_error("invalid taskId");
+            auto task = translationTasks.begin(taskId);
+            if (!task) {
+                res.status = 429;
+                res.set_content(json{{"error", "翻译任务较多，请稍后重试"}, {"code", "BUSY"}}.dump(), "application/json");
+                return;
+            }
+            request_cancel::Scope cancellation(translationTasks, taskId, task);
+            if (task->stopped()) {
+                res.status = 499;
+                res.set_content(json{{"error", "翻译已取消"}, {"code", "CANCELLED"}}.dump(), "application/json");
+                return;
+            }
             const std::string text = body.value("text", "");
             if (text.empty())
             {
@@ -1978,6 +1980,15 @@ int HttpServer::run()
                     usageLog.ev().engineId = tr.provider;
             }
 
+            if (!tr.ok && task->stopped()) {
+                tr.code = "CANCELLED";
+                tr.error = "翻译已取消或超过整体时限";
+                if (provider == "llm" && tr.externalCall && tr.totalTokens <= 0) {
+                    // Sent upstream, but cancelled before usage arrived: never count as free.
+                    tr.promptTokens = tr.completionTokens = tr.totalTokens = kUsageTokensUnknown;
+                    tr.cacheReadTokens = tr.cacheWriteTokens = kUsageTokensUnknown;
+                }
+            }
             usageLog.ev().ok = tr.ok;
             usageLog.ev().errorCode = tr.ok ? "" : (tr.code.empty() ? "ERROR" : tr.code);
             usageLog.ev().errorMessage = tr.ok ? "" : tr.error;
@@ -1992,7 +2003,7 @@ int HttpServer::run()
 
             if (!tr.ok)
             {
-                res.status = tr.code == "LENGTH_LIMIT" ? 400
+                res.status = tr.code == "CANCELLED" ? 499 : tr.code == "LENGTH_LIMIT" ? 400
                     : (tr.code == "CONFIG_ERROR" ? 400 : 502);
                 res.set_content(json{
                     {"ok", false},
