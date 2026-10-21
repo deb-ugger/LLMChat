@@ -373,8 +373,8 @@ json modeStatus(const char* id, const char* label, bool builtIn, bool installed,
 
 } // namespace
 
-OcrModelStore::OcrModelStore(fs::path dataDir)
-    : root_(std::move(dataDir) / "ocr-models")
+OcrModelStore::OcrModelStore(fs::path modelRoot)
+    : root_(std::move(modelRoot))
 {
     // Releases before the browser ONNX runner used Paddle-native archives.
     // They can never initialize in paddleocr-js, so remove only those exact

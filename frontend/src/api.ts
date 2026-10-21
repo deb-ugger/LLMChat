@@ -436,7 +436,35 @@ export type UnitySelfCheckResult = {
   notes?: string[];
 };
 
+export type StorageEntry = {
+  id: string;
+  label: string;
+  path: string;
+  description: string;
+  bytes: number;
+  exists: boolean;
+  files: { path: string; bytes: number; exists: boolean }[];
+};
+export type StorageStatus = {
+  ok: boolean;
+  entries: StorageEntry[];
+  cleanupOptions: { id: string; label: string; bytes: number; paths: string[]; destructive: boolean }[];
+  pending: Record<string, string> | null;
+  cleanup: string[];
+  error: string;
+  locator: string;
+  programDir: string;
+  retained: { id: string; path: string }[];
+};
+
 export const api = {
+  getStorage: () => request<StorageStatus>("/api/storage", undefined, 120_000),
+  saveStoragePaths: (paths: Record<string, string>) => request<StorageStatus>("/api/storage/paths", {
+    method: "PUT", body: JSON.stringify({ paths }),
+  }, 120_000),
+  scheduleStorageCleanup: (ids: string[]) => request<StorageStatus>("/api/storage/cleanup", {
+    method: "PUT", body: JSON.stringify({ ids }),
+  }, 120_000),
   health: () => request<{ ok: boolean }>("/api/health"),
   getOcrModelStatus: () => request<OcrModelStatus>("/api/ocr/models"),
   ensureOcrMode: (mode: OcrMode) =>

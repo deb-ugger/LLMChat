@@ -10,7 +10,7 @@
 
 class OcrModelStore {
 public:
-    explicit OcrModelStore(std::filesystem::path dataDir);
+    explicit OcrModelStore(std::filesystem::path modelRoot);
 
     nlohmann::json status() const;
     nlohmann::json ensureMode(const std::string& mode, const AppConfig& config);

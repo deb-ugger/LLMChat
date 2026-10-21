@@ -1,5 +1,6 @@
 #include "UnityAutoTranslator.h"
 #include "Utf8Path.h"
+#include "StoragePaths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1011,13 +1012,6 @@ std::vector<fs::path> listBepInExLoaderTargets(const fs::path& gameDir)
 }
 
 #ifdef _WIN32
-fs::path backendModuleDir()
-{
-    wchar_t buffer[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-    return fs::path(buffer).parent_path();
-}
-
 bool downloadFile(const std::string& url, const fs::path& dest, std::string& error);
 bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& error);
 struct CjkFontSettings
@@ -1030,13 +1024,13 @@ std::string buildConfigIni(const UnityInstallRequest& req, const CjkFontSettings
 /** Local cache dir next to backend: resources/bepinex/ */
 fs::path bepinexCacheDir()
 {
-    return backendModuleDir() / "resources" / "bepinex";
+    return storage::get("unity") / "bepinex";
 }
 
 /** Local cache dir next to backend: resources/fonts/ */
 fs::path fontsCacheDir()
 {
-    return backendModuleDir() / "resources" / "fonts";
+    return storage::get("unity") / "fonts";
 }
 
 constexpr const char* kNotoScFileName = "NotoSansSC-Regular.otf";
@@ -1057,7 +1051,7 @@ constexpr const char* kSevenZrUrl = "https://www.7-zip.org/a/7zr.exe";
 
 fs::path toolsCacheDir()
 {
-    return backendModuleDir() / "resources" / "tools";
+    return storage::get("unity") / "tools";
 }
 
 fs::path tmpFontBundlesCacheDir()
@@ -1164,7 +1158,7 @@ bool downloadNotoFontToCache(std::vector<std::string>& steps, std::string& error
     }
 
     // Fallback: language zip from GitHub Releases, extract Regular OTF
-    const fs::path tempDir = fs::temp_directory_path() / "llmchat-noto-sc";
+    const fs::path tempDir = storage::get("temp") / "llmchat-noto-sc";
     fs::create_directories(tempDir);
     const fs::path zipPath = tempDir / L"NotoSansCJKsc.zip";
     steps.push_back("回退：下载 Noto Sans CJK SC 压缩包");
@@ -2235,7 +2229,7 @@ bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& e
     // Extract to a short ASCII temp path first. Windows tar often fails on
     // sync folders (BaiduNetdisk) or non-ASCII game paths; copy afterward.
     const fs::path stagingRoot =
-        fs::temp_directory_path() / "llmchat-xunity-extract"
+        storage::get("temp") / "llmchat-xunity-extract"
         / (std::to_wstring(GetCurrentProcessId()) + L"-"
            + std::to_wstring(GetTickCount64()));
     std::error_code ec;
@@ -3644,7 +3638,7 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
         result.package = pkg;
         const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
 
-        const fs::path tempDir = fs::temp_directory_path() / "llmchat-xunity";
+        const fs::path tempDir = storage::get("temp") / "llmchat-xunity";
         fs::create_directories(tempDir);
         const fs::path zipPath = tempDir / pathFromUtf8(pkg);
 
@@ -4058,7 +4052,7 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             const std::string pkg = packageFileName("ReiPatcher");
             result.package = pkg;
             const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
-            const fs::path tempDir = fs::temp_directory_path() / "llmchat-xunity";
+            const fs::path tempDir = storage::get("temp") / "llmchat-xunity";
             fs::create_directories(tempDir);
             const fs::path zipPath = tempDir / pathFromUtf8(pkg);
 

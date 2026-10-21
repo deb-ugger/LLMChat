@@ -10,7 +10,8 @@ fn start_backend(app: &AppHandle) -> Result<(), String> {
     let sidecar = app
         .shell()
         .sidecar("llmchat-backend")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .args(["--serve"]);
 
     let (mut rx, child) = sidecar.spawn().map_err(|e| e.to_string())?;
 
@@ -168,6 +169,10 @@ fn file_stat(path: String) -> Result<(u64, u64), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    let window_config = context.config().app.windows[0].clone();
+    // Construct the WebView only after its profile is migrated/cleaned.
+    context.config_mut().app.windows[0].create = false;
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -179,13 +184,25 @@ pub fn run() {
             read_file_bytes,
             file_stat
         ])
-        .setup(|app| {
-            if let Err(err) = start_backend(app.handle()) {
-                eprintln!("Failed to start backend sidecar: {err}");
+        .setup(move |app| {
+            let profile = app.path().app_local_data_dir()?;
+            let command = app.shell().sidecar("llmchat-backend")?
+                .args(["--prepare-storage", &profile.to_string_lossy()]);
+            let output = tauri::async_runtime::block_on(command.output())?;
+            if !output.status.success() {
+                return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()).into());
             }
+            let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
+            start_backend(app.handle()).map_err(std::io::Error::other)?;
+            let mut config = window_config.clone();
+            config.create = true;
+            tauri::WebviewWindowBuilder::from_config(app, &config)?
+                .data_directory(std::path::PathBuf::from(profile))
+                .build()?;
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {

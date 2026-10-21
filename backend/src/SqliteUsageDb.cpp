@@ -1,5 +1,6 @@
 #include "SqliteUsageDb.h"
 #include "SqliteSupport.h"
+#include "Utf8Path.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -291,7 +292,7 @@ SqliteUsageDb::SqliteUsageDb(const std::string& legacyJsonlPath)
     std::error_code ec;
     fs::create_directories(fs::path(impl_->dbPath).parent_path(), ec);
     const int flags = kSqliteOpenReadWrite | kSqliteOpenCreate | kSqliteOpenFullMutex;
-    if (impl_->api->openV2(impl_->dbPath.c_str(), &impl_->db, flags, nullptr) != kSqliteOk)
+    if (impl_->api->openV2(utf8path::pathUtf8(fs::path(impl_->dbPath)).c_str(), &impl_->db, flags, nullptr) != kSqliteOk)
     {
         if (impl_->db)
             impl_->api->close(impl_->db);

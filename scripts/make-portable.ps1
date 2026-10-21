@@ -15,10 +15,27 @@ if (-not (Test-Path $exe)) {
 }
 Write-Output "Using release binary: $exe ($(Get-Item $exe | Select-Object -ExpandProperty LastWriteTime))"
 
-# Free locks if the portable app is still running
-Get-Process -Name "llmchat", "llmchat-backend" -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 400
+# Close only this portable checkout, allowing the app to stop its own sidecar.
+$portableRoot = [IO.Path]::GetFullPath($out).TrimEnd('\') + '\'
+$portableProcesses = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -in @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe') -and
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($portableRoot, [StringComparison]::OrdinalIgnoreCase)
+})
+foreach ($appProcess in @($portableProcesses | Where-Object Name -eq 'llmchat.exe')) {
+    $process = Get-Process -Id $appProcess.ProcessId -ErrorAction SilentlyContinue
+    if ($process) { $null = $process.CloseMainWindow() }
+}
+$exitDeadline = [DateTime]::UtcNow.AddSeconds(20)
+do {
+    $remaining = @($portableProcesses | Where-Object {
+        Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+    })
+    if ($remaining.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $exitDeadline)
+if ($remaining.Count -gt 0) {
+    throw '本仓库便携版未正常退出，已停止更新。请处理未保存提示或退出对应主程序/后端后重试。'
+}
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -26,6 +43,8 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # usage-events.jsonl, conversations.json, config.ini, vendor-models.json, text-projects/, etc.
 $preserveHint = @(
     "usage.db",
+    "conversations.sqlite3",
+    "storage-paths.json",
     "usage-events.jsonl",
     "conversations.json",
     "config.ini",

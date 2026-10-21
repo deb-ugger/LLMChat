@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FocusEvent, type ReactNode } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   type OcrMode,
@@ -29,6 +28,7 @@ import {
 } from "../literaturePrompt";
 import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
 import { PROJECT_FILENAME } from "../transProject";
+import { StoragePanel } from "./StoragePanel";
 import { LangCombobox } from "./LangCombobox";
 import {
   UnitySettingsPanel,
@@ -98,7 +98,8 @@ type SettingsTab =
   | "image"
   | "text"
   | "unity"
-  | "pricing";
+  | "pricing"
+  | "storage";
 
 type Props = {
   settings: Settings;
@@ -117,6 +118,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   text: "翻译工程",
   unity: "Unity",
   pricing: "计费",
+  storage: "存储",
 };
 
 const TAB_NAV: Partial<
@@ -182,6 +184,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
   ],
   unity: [],
   pricing: [],
+  storage: [],
 };
 
 type TestResult = {
@@ -1590,7 +1593,7 @@ export function SettingsView({
     e: ChangeEvent<HTMLElement> | FocusEvent<HTMLElement>,
   ) => {
     const el = e.target as HTMLElement;
-    if (el.closest(".settings-engine-panel")) return;
+    if (el.closest(".settings-engine-panel, .storage-panel")) return;
     if (e.type === "change") {
       if (el.tagName !== "SELECT") return;
       window.requestAnimationFrame(() => {
@@ -2850,6 +2853,7 @@ export function SettingsView({
     { id: "text", label: "翻译工程" },
     { id: "unity", label: "Unity" },
     { id: "pricing", label: "计费" },
+    { id: "storage", label: "存储" },
   ];
 
   useEffect(() => {
@@ -4366,61 +4370,8 @@ export function SettingsView({
                 新建/保存工程会写入此目录；「打开工程列表」也扫描此目录。每个工程一个子文件夹，内含{" "}
                 <code>{PROJECT_FILENAME}</code>。
               </p>
-              <label>
-                工程根目录（绝对路径）
-                <div className="settings-path-row">
-                  <input
-                    type="text"
-                    value={
-                      form.textProjectsDir ||
-                      form.textProjectsDirResolved ||
-                      (form.dataDir
-                        ? `${form.dataDir}\\text-projects`
-                        : "")
-                    }
-                    onChange={(e) =>
-                      setForm({ ...form, textProjectsDir: e.target.value })
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="settings-path-browse"
-                    onClick={() => {
-                      void (async () => {
-                        const current =
-                          formRef.current.textProjectsDir.trim() ||
-                          formRef.current.textProjectsDirResolved ||
-                          (formRef.current.dataDir
-                            ? `${formRef.current.dataDir}\\text-projects`
-                            : undefined);
-                        try {
-                          const selected = await openDialog({
-                            directory: true,
-                            multiple: false,
-                            title: "选择工程保存路径",
-                            defaultPath: current || undefined,
-                          });
-                          if (typeof selected !== "string" || !selected) return;
-                          commitForm(
-                            {
-                              ...formRef.current,
-                              textProjectsDir: selected,
-                            },
-                            true,
-                            "保存路径已更新",
-                          );
-                        } catch (e) {
-                          window.alert(
-                            toFriendlyError(e, "无法打开目录选择对话框"),
-                          );
-                        }
-                      })();
-                    }}
-                  >
-                    浏览
-                  </button>
-                </div>
-              </label>
+              <p className="hint">当前目录：<code>{form.textProjectsDirResolved || form.textProjectsDir}</code></p>
+              <button type="button" onClick={() => selectTab("storage")}>前往「存储」修改路径或清理工程</button>
             </section>
 
             <section className="settings-card">
@@ -4755,6 +4706,7 @@ export function SettingsView({
             onDirtyChange={setPricingDirty}
           />
         )}
+        <StoragePanel active={tab === "storage"} />
       </div>
 
       {tab === "pricing" ? (
@@ -4764,7 +4716,7 @@ export function SettingsView({
         />
       ) : null}
 
-      <div className="settings-save-bar">
+      {tab !== "storage" && <div className="settings-save-bar">
         <div className="settings-save-bar-text">
           <strong>保存当前页</strong>
           <span>
@@ -4825,7 +4777,7 @@ export function SettingsView({
                   : `保存「${TAB_LABELS[tab]}」设置`}
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

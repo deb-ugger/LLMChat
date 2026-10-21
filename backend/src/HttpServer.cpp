@@ -7,6 +7,7 @@
 #include "UsageStore.h"
 #include "Utf8Path.h"
 #include "RequestCancellation.h"
+#include "StoragePaths.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -131,27 +132,12 @@ fs::path dataDirectory(const ConfigStore& config)
     return fs::path(config.path()).parent_path();
 }
 
-fs::path resolveTextProjectsRoot(const ConfigStore& config)
-{
-    const std::string raw = config.snapshot().textProjectsDir;
-    if (raw.empty())
-    {
-        return dataDirectory(config) / "text-projects";
-    }
-    fs::path p(raw);
-    if (p.is_absolute())
-    {
-        return p;
-    }
-    return dataDirectory(config) / p;
-}
-
 std::string sanitizeFolderName(std::string name)
 {
     for (char& c : name)
     {
         if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' ||
-            c == '>' || c == '|' || c < 32)
+            c == '>' || c == '|' || static_cast<unsigned char>(c) < 32)
         {
             c = '_';
         }
@@ -276,7 +262,7 @@ HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
     , pricing_(std::make_unique<PricingStore>(
           (fs::path(config.path()).parent_path() / "pricing.json").string()))
     , ocrModels_(std::make_unique<OcrModelStore>(
-          fs::path(config.path()).parent_path()))
+          storage::get("ocr")))
 {
 }
 
@@ -316,6 +302,23 @@ int HttpServer::run()
             }
         };
     };
+
+    svr.Get("/api/storage", withCors([](const httplib::Request&, httplib::Response& res) {
+        try { res.set_content(storage::status().dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Put("/api/storage/paths", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try {
+            storage::schedulePaths(json::parse(req.body).at("paths"));
+            res.set_content(storage::status().dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Put("/api/storage/cleanup", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try {
+            storage::scheduleCleanup(json::parse(req.body).at("ids"));
+            res.set_content(storage::status().dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
 
     svr.Get("/api/usage/events", withCors([this](const httplib::Request& req, httplib::Response& res) {
         const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
@@ -725,8 +728,8 @@ int HttpServer::run()
             {"textPreReplace", c.textPreReplace},
             {"textPostReplace", c.textPostReplace},
             {"textProjectsDir", c.textProjectsDir},
-            {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
-            {"dataDir", dataDirectory(config_).string()},
+            {"textProjectsDirResolved", utf8path::pathUtf8(storage::get("projects"))},
+            {"dataDir", utf8path::pathUtf8(dataDirectory(config_))},
             {"translateEngineKeys", c.translateEngineKeys},
         };
         res.set_content(body.dump(), "application/json");
@@ -928,8 +931,8 @@ int HttpServer::run()
             }
             res.set_content(json{
                 {"ok", true},
-                {"textProjectsDirResolved", resolveTextProjectsRoot(config_).string()},
-                {"dataDir", dataDirectory(config_).string()},
+                {"textProjectsDirResolved", utf8path::pathUtf8(storage::get("projects"))},
+                {"dataDir", utf8path::pathUtf8(dataDirectory(config_))},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -942,7 +945,7 @@ int HttpServer::run()
     svr.Get("/api/text-projects", withCors([this](const httplib::Request&, httplib::Response& res) {
         try
         {
-            const fs::path root = resolveTextProjectsRoot(config_);
+            const fs::path root = storage::get("projects");
             fs::create_directories(root);
             json items = json::array();
             for (const auto& entry : fs::directory_iterator(root))
@@ -956,7 +959,7 @@ int HttpServer::run()
                 {
                     continue;
                 }
-                std::string name = entry.path().filename().string();
+                std::string name = utf8path::pathUtf8(entry.path().filename());
                 std::string updatedAt;
                 try
                 {
@@ -975,16 +978,16 @@ int HttpServer::run()
                 {
                 }
                 items.push_back(json{
-                    {"folder", entry.path().filename().string()},
+                    {"folder", utf8path::pathUtf8(entry.path().filename())},
                     {"name", name},
-                    {"path", projectFile.string()},
-                    {"folderPath", entry.path().string()},
+                    {"path", utf8path::pathUtf8(projectFile)},
+                    {"folderPath", utf8path::pathUtf8(entry.path())},
                     {"updatedAt", updatedAt},
                 });
             }
             res.set_content(json{
                 {"ok", true},
-                {"root", root.string()},
+                {"root", utf8path::pathUtf8(root)},
                 {"items", items},
             }.dump(), "application/json");
         }
@@ -998,16 +1001,16 @@ int HttpServer::run()
     svr.Get("/api/text-projects/load", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
-            const fs::path root = resolveTextProjectsRoot(config_);
+            const fs::path root = storage::get("projects");
             fs::path projectFile;
             if (req.has_param("folder"))
             {
                 const std::string folder = sanitizeFolderName(req.get_param_value("folder"));
-                projectFile = findProjectFile(root / folder);
+                projectFile = findProjectFile(root / utf8path::pathFromUtf8(folder));
             }
             else if (req.has_param("path"))
             {
-                projectFile = fs::path(req.get_param_value("path"));
+                projectFile = utf8path::pathFromUtf8(req.get_param_value("path"));
                 // Migrate legacy filename if a path still points at it
                 if (projectFile.filename() == kProjectFileNameLegacy)
                 {
@@ -1048,9 +1051,9 @@ int HttpServer::run()
             res.set_content(json{
                 {"ok", true},
                 {"project", doc},
-                {"folder", projectFile.parent_path().filename().string()},
-                {"folderPath", projectFile.parent_path().string()},
-                {"path", projectFile.string()},
+                {"folder", utf8path::pathUtf8(projectFile.parent_path().filename())},
+                {"folderPath", utf8path::pathUtf8(projectFile.parent_path())},
+                {"path", utf8path::pathUtf8(projectFile)},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -1097,9 +1100,9 @@ int HttpServer::run()
                 folderName = "untitled";
             }
 
-            const fs::path root = resolveTextProjectsRoot(config_);
+            const fs::path root = storage::get("projects");
             fs::create_directories(root);
-            fs::path folderPath = root / folderName;
+            fs::path folderPath = root / utf8path::pathFromUtf8(folderName);
 
             // Reject duplicate folder when creating fresh without overwrite
             if (!body.value("overwrite", true) && !findProjectFile(folderPath).empty())
@@ -1125,16 +1128,16 @@ int HttpServer::run()
                     pos == std::string::npos ? srcName : srcName.substr(pos + 1);
                 if (!base.empty() && base.find("..") == std::string::npos)
                 {
-                    writeFileUtf8(folderPath / base, body["sourceContent"].get<std::string>());
+                    writeFileUtf8(folderPath / utf8path::pathFromUtf8(base), body["sourceContent"].get<std::string>());
                 }
             }
 
             res.set_content(json{
                 {"ok", true},
                 {"folder", folderName},
-                {"folderPath", folderPath.string()},
-                {"path", projectFile.string()},
-                {"root", root.string()},
+                {"folderPath", utf8path::pathUtf8(folderPath)},
+                {"path", utf8path::pathUtf8(projectFile)},
+                {"root", utf8path::pathUtf8(root)},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -1322,15 +1325,15 @@ int HttpServer::run()
                     c = '_';
                 }
             }
-            const fs::path root = resolveTextProjectsRoot(config_);
-            const fs::path folderPath = root / folder;
+            const fs::path root = storage::get("projects");
+            const fs::path folderPath = root / utf8path::pathFromUtf8(folder);
             fs::create_directories(folderPath);
-            const fs::path outPath = folderPath / fileName;
+            const fs::path outPath = folderPath / utf8path::pathFromUtf8(fileName);
             writeFileUtf8(outPath, body["content"].get<std::string>());
             res.set_content(json{
                 {"ok", true},
-                {"path", outPath.string()},
-                {"folderPath", folderPath.string()},
+                {"path", utf8path::pathUtf8(outPath)},
+                {"folderPath", utf8path::pathUtf8(folderPath)},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -1364,7 +1367,7 @@ int HttpServer::run()
             writeFileUtf8(outPath, body["content"].get<std::string>());
             res.set_content(json{
                 {"ok", true},
-                {"path", outPath.string()},
+                {"path", utf8path::pathUtf8(outPath)},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -2425,7 +2428,7 @@ int HttpServer::run()
             if (!text.empty() && text.back() != '\n')
                 appendFileUtf8(logPath, "\n");
             res.set_content(
-                json{{"ok", true}, {"logPath", logPath.string()}}.dump(),
+                json{{"ok", true}, {"logPath", utf8path::pathUtf8(logPath)}}.dump(),
                 "application/json");
         }
         catch (const std::exception& ex)
@@ -2461,7 +2464,7 @@ int HttpServer::run()
             res.set_content(
                 json{
                     {"ok", true},
-                    {"logPath", logPath.string()},
+                    {"logPath", utf8path::pathUtf8(logPath)},
                     {"exists", exists},
                     {"text", text},
                 }
