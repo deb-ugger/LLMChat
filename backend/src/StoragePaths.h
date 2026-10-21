@@ -290,18 +290,10 @@ inline json status()
         "WebView2 的 EBWebView：界面偏好、模型连接档案（可能含密钥）、PDF/EPUB 阅读记录（IndexedDB）、网络/图形缓存，以及通过浏览器下载的语音模型（Service Worker/CacheStorage）。迁移时完整保留，仅缓存清理不会删除档案。"};
     for (size_t i = 0; i < keys.size(); ++i) {
         auto key = keys[i]; auto p = get(key); std::uintmax_t size = 0;
-        json files = json::array();
-        auto addFile = [&](const fs::path& file) {
-            files.push_back({{"path", utf8path::pathUtf8(file)}, {"bytes", bytes(file)}, {"exists", fs::exists(file)}});
-        };
         if (key == "data") for (const auto& f : dataFiles(p)) size += bytes(f);
         else size = bytes(p);
-        if (key == "data") for (const auto& f : dataFiles(p)) {
-            if (fs::exists(f) || std::find(dataNames.begin(), dataNames.end(), utf8path::pathUtf8(f.filename())) != dataNames.end()) addFile(f);
-        }
-        else if (fs::is_directory(p)) for (const auto& e : fs::directory_iterator(p)) addFile(e.path());
         entries.push_back({{"id", key}, {"label", labels[i]}, {"path", utf8path::pathUtf8(p)},
-            {"description", descriptions[i]}, {"bytes", size}, {"exists", fs::exists(p)}, {"files", files}});
+            {"description", descriptions[i]}, {"bytes", size}, {"exists", fs::exists(p)}});
     }
     return {{"ok", true}, {"entries", entries}, {"cleanupOptions", cleanupInfo()},
         {"pending", manifest.value("pending", json(nullptr))}, {"cleanup", manifest.value("cleanup", json::array())},

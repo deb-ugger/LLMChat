@@ -4,6 +4,48 @@ import { api, type StorageStatus } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import "./StoragePanel.css";
 
+const ICONS = {
+  drive: ["M5 8h14l2 8H3l2-8Z", "M3 16v4h18v-4M7 18h.01M11 18h.01M7 8V4h10v4"],
+  data: ["M20 6c0 2-4 3-8 3S4 8 4 6s4-3 8-3 8 1 8 3Z", "M4 6v12c0 2 4 3 8 3s8-1 8-3V6M4 12c0 2 4 3 8 3s8-1 8-3"],
+  folder: ["M3 7V5h6l2 2h10v13H3V7Z", "M3 11h18"],
+  scan: ["M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 12h10M8 8h8M8 16h8"],
+  cube: ["m12 3 9 5v9l-9 5-9-5V8l9-5Z", "m3 8 9 5 9-5M12 13v9M7.5 5.5l9 5"],
+  clock: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 7v5l3 2"],
+  globe: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"],
+  file: ["M14 3H5v18h14V8l-5-5Z", "M14 3v5h5M8 12h8M8 16h5"],
+  chat: ["M21 11a8 8 0 0 1-8 8H7l-4 3V5a2 2 0 0 1 2-2h8a8 8 0 0 1 8 8Z", "M7 8h10M7 12h7"],
+  chart: ["M4 3v18h17M8 16v-4M13 16V7M18 16v-6"],
+  refresh: ["M20 8a8 8 0 1 0 0 8M20 3v5h-5"],
+  trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
+  warning: ["m12 3 10 18H2L12 3Z", "M12 9v5M12 17h.01"],
+  arrow: ["M5 12h14M14 7l5 5-5 5"],
+  check: ["m5 12 4 4L19 6"],
+  close: ["m6 6 12 12M6 18 18 6"],
+} as const;
+type IconName = keyof typeof ICONS;
+function StorageIcon({ name }: { name: IconName }) {
+  return <svg className="storage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {ICONS[name].map((d, i) => <path key={i} d={d} />)}
+  </svg>;
+}
+const PATH_COPY: Record<string, { icon: IconName; description: string }> = {
+  data: { icon: "data", description: "配置、聊天、用量与计费数据" },
+  projects: { icon: "folder", description: "工程文件、原文与译文" },
+  ocr: { icon: "scan", description: "识别模型、分词器及下载文件" },
+  unity: { icon: "cube", description: "安装包、字体与辅助工具" },
+  temp: { icon: "clock", description: "下载、解压和处理临时文件" },
+  webview: { icon: "globe", description: "界面偏好、阅读记录与浏览器缓存" },
+};
+const CLEANUP_COPY: Record<string, { title: string; description: string; icon: IconName }> = {
+  logs: { title: "运行日志", description: "Unity 输出日志与日志备份。", icon: "file" },
+  temp: { title: "临时文件", description: "下载和解压留下的文件，包含旧版临时目录。", icon: "clock" },
+  webcache: { title: "浏览器缓存", description: "网络、渲染及语音模型缓存。清理后模型需重新下载，账号、设置和阅读记录保留。", icon: "globe" },
+  ocr: { title: "OCR 模型", description: "已下载的识别模型，使用对应模式时需重新下载。", icon: "scan" },
+  unity: { title: "Unity 资源缓存", description: "安装包、字体与工具，可在使用时重新下载。", icon: "cube" },
+  chats: { title: "聊天记录", description: "全部对话内容与历史备份。", icon: "chat" },
+  usage: { title: "用量记录", description: "全部请求明细、用量统计与历史备份。", icon: "chart" },
+  projects: { title: "翻译工程", description: "全部托管工程，包括工程内的原文和译文。", icon: "folder" },
+};
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -15,22 +57,21 @@ function formatBytes(bytes: number) {
 export function StoragePanel({ active }: { active: boolean }) {
   const [status, setStatus] = useState<StorageStatus>();
   const [paths, setPaths] = useState<Record<string, string>>({});
-  const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [confirm, setConfirm] = useState<"paths" | "cleanup" | null>(null);
-  const [acknowledged, setAcknowledged] = useState(false);
+  const [confirm, setConfirm] = useState<{ kind: "paths" } | { kind: "cleanup"; id: string } | null>(null);
   const current = status ? Object.fromEntries(status.entries.map(e => [e.id, e.path])) : {};
   const saved = status?.pending ?? current;
   const dirty = status?.entries.some(e => paths[e.id] !== saved[e.id]);
-  const chosen = status?.cleanupOptions.filter(e => selected.includes(e.id)) ?? [];
-  const destructive = chosen.some(e => e.destructive);
+  const changed = status?.entries.filter(e => paths[e.id] !== e.path) ?? [];
+  const cleanupTarget = confirm?.kind === "cleanup" ? status?.cleanupOptions.find(e => e.id === confirm.id) : undefined;
+  const cacheOptions = status?.cleanupOptions.filter(e => !e.destructive) ?? [];
+  const dataOptions = status?.cleanupOptions.filter(e => e.destructive) ?? [];
 
   function accept(next: StorageStatus) {
     setStatus(next);
     setPaths(next.pending ?? Object.fromEntries(next.entries.map(e => [e.id, e.path])));
-    setSelected(next.cleanup);
   }
   async function refresh() {
     setBusy(true); setError("");
@@ -38,87 +79,113 @@ export function StoragePanel({ active }: { active: boolean }) {
     catch (e) { setError(toFriendlyError(e, "无法读取存储信息")); }
     finally { setBusy(false); }
   }
-  useEffect(() => { if (active && !status && !busy) void refresh(); }, [active]); // Fetch on first visit; keep drafts when switching tabs.
+  useEffect(() => { if (active && !status && !busy) void refresh(); }, [active]);
 
-  async function perform(kind: "paths" | "cleanup" | "cancelPaths" | "cancelCleanup") {
+  async function savePaths(cancel = false) {
     setBusy(true); setError(""); setMessage(""); setConfirm(null);
     try {
-      accept(kind === "paths" || kind === "cancelPaths"
-        ? await api.saveStoragePaths(kind === "paths" ? paths : current)
-        : await api.scheduleStorageCleanup(kind === "cleanup" ? selected : []));
-      setMessage(kind.startsWith("cancel") ? "已取消待执行操作。" : "已保存，完全退出软件并重新启动后执行。迁移会保留原位置文件作为备份。");
-    } catch (e) { setError(toFriendlyError(e, "存储操作失败")); }
+      accept(await api.saveStoragePaths(cancel ? current : paths));
+      setMessage(cancel ? "已取消路径迁移。" : "路径已保存，下次启动时迁移。原位置文件会保留为备份。");
+    } catch (e) { setError(toFriendlyError(e, "保存存储路径失败")); }
+    finally { setBusy(false); }
+  }
+  async function scheduleCleanup(id: string, queue: boolean) {
+    setBusy(true); setError(""); setMessage(""); setConfirm(null);
+    try {
+      const ids = queue ? [...new Set([...status!.cleanup, id])] : status!.cleanup.filter(e => e !== id);
+      accept(await api.scheduleStorageCleanup(ids));
+      setMessage(queue ? `已安排清理${CLEANUP_COPY[id].title}，完全退出软件并重新启动后执行。` : `已取消${CLEANUP_COPY[id].title}清理。`);
+    } catch (e) { setError(toFriendlyError(e, "设置清理计划失败")); }
     finally { setBusy(false); }
   }
 
   return <div className="storage-panel" hidden={!active}>
-    <section className="settings-card storage-intro">
-      <div className="storage-heading"><div><h2>存储</h2><p className="hint">查看软件文件的实际位置、修改存储目录，或按类别清理文件与缓存。</p></div>
-        <button type="button" disabled={busy || !!dirty} onClick={() => void refresh()}>{busy ? "正在读取…" : "刷新占用"}</button></div>
-      <p className="hint">路径修改和文件清理在下次启动、数据库与浏览器尚未打开时执行。迁移只复制软件数据并保留原件，新目录必须为空；迁移失败时继续使用原路径，并显示原因。</p>
-      {status && <p className="storage-total">当前管理的文件约 <strong>{formatBytes(status.entries.reduce((sum, e) => sum + e.bytes, 0))}</strong></p>}
-      {message && <p role="status" className="storage-success">{message}</p>}
-      {(error || status?.error) && <p role="alert" className="storage-error">{error || status?.error}</p>}
-      {!status && !busy && <button type="button" onClick={() => void refresh()}>重试</button>}
-    </section>
+    <header className="storage-hero">
+      <span className="storage-hero-icon"><StorageIcon name="drive" /></span>
+      <div><h1>存储</h1><p>管理本地文件的位置与空间</p></div>
+      <button className="storage-button storage-refresh" type="button" disabled={busy || !!dirty} onClick={() => void refresh()}><StorageIcon name="refresh" />{busy ? "正在读取…" : "刷新占用"}</button>
+    </header>
+    <div className="storage-overview">
+      <div><span>当前占用</span><strong>{status ? formatBytes(status.entries.reduce((sum, e) => sum + e.bytes, 0)) : "—"}</strong><small>软件管理的本地文件</small></div>
+      <div><span>可清理缓存</span><strong>{status ? formatBytes(cacheOptions.reduce((sum, e) => sum + e.bytes, 0)) : "—"}</strong><small>不包含聊天、用量和工程</small></div>
+      <div><span>清理计划</span><strong>{status ? status.cleanup.length : "—"}<em>项</em></strong><small>{status?.cleanup.length ? "下次启动时执行" : "暂无待执行清理"}</small></div>
+    </div>
+    <div className="storage-timing-note"><StorageIcon name="clock" /><span>路径迁移与文件清理均在<strong>下次启动</strong>时执行，执行前可以取消。</span></div>
+    {message && <div role="status" className="storage-notice is-success"><StorageIcon name="check" /><span>{message}</span></div>}
+    {(error || status?.error) && <div role="alert" className="storage-notice is-error"><StorageIcon name="warning" /><span>{error || status?.error}</span></div>}
+    {!status && !busy && <button className="storage-button" type="button" onClick={() => void refresh()}>重新读取</button>}
 
     {status && <>
-      <section className="settings-card">
-        <div className="storage-heading"><h2>文件路径</h2><span className="hint">按用途分别设置目录</span></div>
-        <div className="storage-paths">{status.entries.map(entry => <article className="storage-path" key={entry.id}>
-          <div className="storage-heading"><label htmlFor={`storage-${entry.id}`}>{entry.label}</label><span>{formatBytes(entry.bytes)}{!entry.exists ? " · 尚未生成" : ""}</span></div>
-          <p className="hint">{entry.description}</p>
-          <div className="storage-path-input"><input id={`storage-${entry.id}`} value={paths[entry.id] ?? ""} disabled={busy} spellCheck={false}
-            onChange={e => setPaths(p => ({ ...p, [entry.id]: e.target.value }))} />
-            <button type="button" disabled={busy} onClick={() => { void (async () => {
-              try {
-                const value = await open({ directory: true, multiple: false, title: `选择${entry.label}目录`, defaultPath: paths[entry.id] || undefined });
-                if (typeof value === "string") setPaths(p => ({ ...p, [entry.id]: value }));
-              } catch (e) { setError(toFriendlyError(e, "无法选择目录")); }
-            })(); }}>选择目录</button>
-            <button type="button" disabled={busy || !entry.exists} onClick={() => { void api.openPath(entry.path).catch(e => setError(toFriendlyError(e))); }}>打开</button>
+      <section className="storage-section">
+        <div className="storage-section-heading"><div><h2>存储位置</h2><p>选择空目录作为新位置，迁移时保留原文件。</p></div><span className="storage-count">{status.entries.length} 个目录</span></div>
+        <div className="storage-locations">
+          {status.entries.map(entry => <article className="storage-location" key={entry.id}>
+            <span className="storage-item-icon"><StorageIcon name={PATH_COPY[entry.id].icon} /></span>
+            <div className="storage-location-copy"><label htmlFor={`storage-${entry.id}`}>{entry.label}</label><p>{PATH_COPY[entry.id].description}</p><span>{entry.exists ? formatBytes(entry.bytes) : "尚未生成"}</span></div>
+            <div className="storage-location-path"><input id={`storage-${entry.id}`} value={paths[entry.id] ?? ""} disabled={busy} spellCheck={false} aria-label={`${entry.label}路径`} onChange={e => setPaths(p => ({ ...p, [entry.id]: e.target.value }))} />
+              {paths[entry.id] !== entry.path && <p className="storage-current-path">当前：{entry.path}</p>}
+            </div>
+            <div className="storage-location-actions">
+              <button className="storage-button is-small" type="button" disabled={busy} onClick={() => { void (async () => {
+                try {
+                  const value = await open({ directory: true, multiple: false, title: `选择${entry.label}目录`, defaultPath: paths[entry.id] || undefined });
+                  if (typeof value === "string") setPaths(p => ({ ...p, [entry.id]: value }));
+                } catch (e) { setError(toFriendlyError(e, "无法选择目录")); }
+              })(); }}>更改</button>
+              <button className="storage-button is-small is-icon" type="button" title={`打开当前${entry.label}目录`} aria-label={`打开当前${entry.label}目录`} disabled={busy || !entry.exists} onClick={() => { void api.openPath(entry.path).catch(e => setError(toFriendlyError(e))); }}><StorageIcon name="folder" /></button>
+            </div>
+          </article>)}
+          <div className="storage-location-footer"><span>{dirty ? "有未保存的路径修改" : status.pending ? "路径迁移已安排，等待下次启动" : "所有位置均为当前生效目录"}</span>
+            <div className="storage-actions">
+              {dirty && <button className="storage-button is-quiet" type="button" disabled={busy} onClick={() => setPaths(saved)}>撤销修改</button>}
+              {status.pending && <button className="storage-button" type="button" disabled={busy} onClick={() => void savePaths(true)}>取消迁移</button>}
+              <button className="storage-button is-primary" type="button" disabled={busy || !dirty} onClick={() => setConfirm({ kind: "paths" })}>保存路径</button>
+            </div>
           </div>
-          {paths[entry.id] !== entry.path && <p className="storage-current">当前仍使用：<code>{entry.path}</code></p>}
-          {entry.files.length > 0 && <details className="storage-file-list"><summary>查看文件与子目录位置（{entry.files.length}）</summary>{entry.files.map(f => <div key={f.path}><code>{f.path}</code><span>{f.exists ? formatBytes(f.bytes) : "尚未生成"}</span></div>)}</details>}
-        </article>)}</div>
-        <div className="storage-actions">
-          <button type="button" className="settings-save-current" disabled={busy || !dirty} onClick={() => { setAcknowledged(false); setConfirm("paths"); }}>保存路径修改</button>
-          {dirty && <button type="button" disabled={busy} onClick={() => setPaths(saved)}>撤销未保存修改</button>}
-          {status.pending && <button type="button" disabled={busy} onClick={() => void perform("cancelPaths")}>取消待执行迁移</button>}
         </div>
-        {status.pending && <p role="status" className="hint">已有路径迁移等待下次启动执行。旧位置文件会保留，迁移后请确认数据完整再自行删除备份。</p>}
       </section>
-
-      <section className="settings-card">
-        <h2>文件与缓存清理</h2><p className="hint">勾选后查看清理范围。聊天记录、用量记录和翻译工程会永久删除；模型、安装包等缓存可重新下载。已排队的类别会在下次启动时清理当时的全部对应内容。</p>
-        <div className="storage-cleanup">{status.cleanupOptions.map(option => <label key={option.id} className={`storage-cleanup-row${option.destructive ? " is-destructive" : ""}`}>
-          <input type="checkbox" checked={selected.includes(option.id)} disabled={busy} onChange={e => setSelected(ids => e.target.checked ? [...ids, option.id] : ids.filter(id => id !== option.id))} />
-          <span>{option.label}{status.cleanup.includes(option.id) && <small>已排队</small>}</span><span>{formatBytes(option.bytes)}</span>
-        </label>)}</div>
-        <div className="storage-actions"><button type="button" disabled={busy || !!dirty || !selected.length} onClick={() => { setAcknowledged(false); setConfirm("cleanup"); }}>清理所选项目（{formatBytes(chosen.reduce((sum, e) => sum + e.bytes, 0))}）</button>
-          {!!status.cleanup.length && <button type="button" disabled={busy || !!dirty} onClick={() => void perform("cancelCleanup")}>取消全部待执行清理</button>}</div>
-        {dirty && <p className="hint">请先保存或撤销路径修改，再安排清理。</p>}
+      <section className="storage-section">
+        <div className="storage-section-heading"><div><h2>缓存清理</h2><p>按类别独立清理，需要时可重新生成或下载。</p></div><span className="storage-section-symbol"><StorageIcon name="trash" /></span></div>
+        {dirty && <p className="storage-inline-hint">请先保存或撤销路径修改，再安排清理。</p>}
+        <div className="storage-cache-grid">{cacheOptions.map(option => {
+          const copy = CLEANUP_COPY[option.id], queued = status.cleanup.includes(option.id);
+          return <article key={option.id} className={`storage-cache-card${option.id === "webcache" ? " is-wide" : ""}${queued ? " is-queued" : ""}`}>
+            <div className="storage-cache-heading"><span className="storage-item-icon"><StorageIcon name={copy.icon} /></span><div><h3>{copy.title}</h3><p>{copy.description}</p></div></div>
+            <div className="storage-cache-footer"><strong>{formatBytes(option.bytes)}</strong><div className="storage-actions">
+              {queued && <span className="storage-queued"><StorageIcon name="clock" />下次启动清理</span>}
+              <button className={`storage-button${queued ? " is-quiet" : " is-cleanup"}`} type="button" disabled={busy || !!dirty} aria-label={`${queued ? "取消清理" : "清理"}${copy.title}`} onClick={() => queued ? void scheduleCleanup(option.id, false) : setConfirm({ kind: "cleanup", id: option.id })}>{queued ? "取消清理" : "清理"}{!queued && <StorageIcon name="arrow" />}</button>
+            </div></div>
+          </article>;
+        })}</div>
       </section>
-
-      <section className="settings-card storage-other"><h2>其他文件位置</h2>
-        <p>程序与内置资源：<code>{status.programDir}</code>。内置 OCR、WASM 和页面资源随程序更新，不能作为缓存单独删除。</p>
-        <p>存储路径索引：<code>{status.locator}</code>（及其 .bak/.tmp），必须留在程序旁，用于下次启动定位数据。</p>
-        <p>用户另存的译文、导出文件和选择打开的原始文档：位于保存/打开时选择的位置；Unity 补丁、游戏翻译文本、配置及日志位于对应游戏目录。请在翻译工程或 Unity 页面管理这些文件。</p>
-        {status.retained.length > 0 && <details><summary>迁移后保留的原位置备份（不计入当前占用）</summary>{status.retained.map((e, i) => <p key={i}><code>{e.path}</code>（{e.id}）</p>)}<p className="hint">软件数据目录仅备份其中的软件数据文件；其他类别保留原目录。确认新位置数据完整后可自行删除原件。</p></details>}
+      <section className="storage-section storage-data-section">
+        <div className="storage-section-heading"><div><h2>数据清理 <span className="storage-danger-tag">不可恢复</span></h2><p>这些是你的使用数据，删除前请确认已完成备份。</p></div></div>
+        <div className="storage-data-list">{dataOptions.map(option => {
+          const copy = CLEANUP_COPY[option.id], queued = status.cleanup.includes(option.id);
+          return <article className="storage-data-row" key={option.id}>
+            <span className="storage-item-icon is-muted"><StorageIcon name={copy.icon} /></span>
+            <div className="storage-data-copy"><h3>{copy.title}</h3><p>{copy.description}</p></div>
+            <span className="storage-data-size">{formatBytes(option.bytes)}</span>
+            {queued && <span className="storage-queued"><StorageIcon name="clock" />下次启动删除</span>}
+            <button className={`storage-button ${queued ? "is-quiet" : "is-danger"}`} type="button" disabled={busy || !!dirty} aria-label={`${queued ? "取消删除" : "删除"}${copy.title}`} onClick={() => queued ? void scheduleCleanup(option.id, false) : setConfirm({ kind: "cleanup", id: option.id })}>{queued ? "取消删除" : "删除"}</button>
+          </article>;
+        })}</div>
       </section>
+      <footer className="storage-footnote"><p>程序目录 <code>{status.programDir}</code></p><p>路径配置 <code>{status.locator}</code></p><p>另存的文件由保存位置管理；游戏目录内的补丁、配置和日志请在 Unity 页面管理。</p>
+        {status.retained.length > 0 && <div className="storage-retained"><p>迁移后保留的原位置备份：</p>{status.retained.map((e, i) => <code key={i}>{e.path}</code>)}</div>}
+      </footer>
     </>}
-
-    {confirm && <div className="ocr-confirm-backdrop" role="presentation"><div className="ocr-confirm-dialog storage-confirm" role="alertdialog" aria-modal="true" aria-labelledby="storage-confirm-title" onKeyDown={e => { if (e.key === "Escape") setConfirm(null); }}>
-      <h3 id="storage-confirm-title">{confirm === "paths" ? "确认修改存储路径" : "确认清理所选文件"}</h3>
-      <div className="storage-confirm-body">{confirm === "paths" ? <>
-        <p>下次启动将复制以下类别的数据到新目录，保留原件；不会覆盖新位置已有文件。</p>
-        {status?.entries.filter(e => paths[e.id] !== e.path).map(e => <p key={e.id}><strong>{e.label}</strong><br /><code>{e.path}</code><br />→ <code>{paths[e.id]}</code></p>)}
-      </> : <>
-        <p>下次启动将删除以下类别当时的全部内容。若同时迁移路径，会先完成迁移，再清理新位置。请在退出前完成需要的备份。</p>
-        {chosen.map(e => <details key={e.id}><summary>{e.label} · {formatBytes(e.bytes)}</summary>{e.paths.length ? e.paths.map(p => <p key={p}><code>{p}</code></p>) : <p className="hint">当前没有文件；仍会清理下次启动时对应类别的内容。</p>}</details>)}
-        {destructive && <label className="storage-ack"><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />我已备份需要的数据，理解聊天记录、用量或工程删除后不可恢复。</label>}
+    {confirm && <div className="storage-modal-backdrop" role="presentation"><div className="storage-modal" role="alertdialog" aria-modal="true" aria-labelledby="storage-confirm-title" aria-describedby="storage-confirm-description" onKeyDown={e => { if (e.key === "Escape") setConfirm(null); }}>
+      <div className="storage-modal-heading"><span className={`storage-modal-icon${cleanupTarget?.destructive ? " is-danger" : ""}`}><StorageIcon name={confirm.kind === "paths" ? "folder" : cleanupTarget?.destructive ? "warning" : "trash"} /></span>
+        <button className="storage-button is-quiet is-icon" type="button" aria-label="关闭确认窗口" onClick={() => setConfirm(null)}><StorageIcon name="close" /></button></div>
+      <h2 id="storage-confirm-title">{confirm.kind === "paths" ? "更改存储位置？" : `${cleanupTarget?.destructive ? "删除" : "清理"}${CLEANUP_COPY[confirm.id].title}？`}</h2>
+      <p id="storage-confirm-description">{confirm.kind === "paths" ? "下次启动将复制到新目录，并保留原位置的文件作为备份。" : "完全退出软件并重新启动后执行，重启前可随时取消。"}</p>
+      <div className="storage-modal-body">{confirm.kind === "paths" ? changed.map(entry => <div className="storage-migration-row" key={entry.id}><strong>{entry.label}</strong><code>{entry.path}</code><StorageIcon name="arrow" /><code>{paths[entry.id]}</code></div>) : cleanupTarget && <>
+        <div className="storage-modal-summary"><span>{CLEANUP_COPY[cleanupTarget.id].title}</span><strong>{formatBytes(cleanupTarget.bytes)}</strong></div>
+        <div className={`storage-modal-explanation${cleanupTarget.destructive ? " is-danger" : ""}`}><StorageIcon name={cleanupTarget.destructive ? "warning" : "clock"} /><p>{cleanupTarget.destructive ? `${CLEANUP_COPY[cleanupTarget.id].description}将被永久删除，包含历史备份，无法恢复。请先备份需要的数据。` : CLEANUP_COPY[cleanupTarget.id].description}</p></div>
+        {status?.pending && <p className="storage-inline-hint">已安排路径迁移，将先迁移，再清理新位置。</p>}
       </>}</div>
-      <div className="ocr-confirm-actions"><button type="button" autoFocus onClick={() => setConfirm(null)}>取消</button><button type="button" disabled={confirm === "cleanup" && destructive && !acknowledged} onClick={() => void perform(confirm)}>确认并在下次启动执行</button></div>
+      <div className="storage-modal-actions"><button className="storage-button" type="button" autoFocus onClick={() => setConfirm(null)}>取消</button><button className={`storage-button ${cleanupTarget?.destructive ? "is-danger-filled" : "is-primary"}`} type="button" onClick={() => confirm.kind === "paths" ? void savePaths() : void scheduleCleanup(confirm.id, true)}>{confirm.kind === "paths" ? "确认更改" : cleanupTarget?.destructive ? "确认删除" : "确认清理"}</button></div>
     </div></div>}
   </div>;
 }

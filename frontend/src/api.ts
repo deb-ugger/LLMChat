@@ -443,7 +443,6 @@ export type StorageEntry = {
   description: string;
   bytes: number;
   exists: boolean;
-  files: { path: string; bytes: number; exists: boolean }[];
 };
 export type StorageStatus = {
   ok: boolean;
