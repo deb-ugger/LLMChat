@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm as confirmDialog, message as messageDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Settings, type TextProjectListItem } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import {
@@ -460,7 +461,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
 
   /** Persist full project snapshot (entries/tokens/elapsed/prompt). */
   const persistFullSnapshot = useCallback(
-    async (opts?: { resetRunning?: boolean; project?: TextProject | null }) => {
+    async (opts?: { resetRunning?: boolean; project?: TextProject | null; requireSave?: boolean }) => {
       const base = opts?.project ?? projectRef.current;
       if (!base) return null;
       const nextElapsed = computeElapsedNow();
@@ -495,6 +496,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
         if (saved.folderPath) setProjectFolderPath(saved.folderPath);
         return next;
       } catch (e) {
+        if (opts?.requireSave) throw e;
         setError(toFriendlyError(e, "保存工程失败"));
         return next;
       }
@@ -503,7 +505,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
   );
 
   const stop = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; requireSave?: boolean }) => {
       flushProgressRef.current?.();
       abortRef.current?.abort();
       abortRef.current = null;
@@ -521,7 +523,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
             : p,
         );
       }
-      await persistFullSnapshot({ resetRunning: true });
+      await persistFullSnapshot({ resetRunning: true, requireSave: opts?.requireSave });
       if (genRef.current === stoppedGeneration) {
         runStartedAtRef.current = null;
         if (!opts?.silent) setStatusLine("已停止，进度已保存");
@@ -545,88 +547,65 @@ export function TextTranslateView({ settings, active = true }: Props) {
     flushProgressRef.current = null;
   }, []);
 
-  /** Close app: save text project if needed; if translating, confirm stop first. */
+  // A Tauri close listener itself disables native closing, even if its callback
+  // returns without preventDefault. Do not register one on the project home page.
+  const hasProjectToClose = phase === "workbench" && project !== null;
   useEffect(() => {
+    if (!hasProjectToClose) return;
+
+    if (!isTauri()) {
+      const onBeforeUnload = (event: BeforeUnloadEvent) => {
+        if (busyRef.current) {
+          event.preventDefault();
+          event.returnValue = "";
+        } else {
+          void persistFullSnapshotRef.current();
+        }
+      };
+      window.addEventListener("beforeunload", onBeforeUnload);
+      return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    }
+
     let unlisten: (() => void) | undefined;
     let disposed = false;
-
-    const withTimeout = async (
-      work: () => Promise<unknown>,
-      ms: number,
-    ): Promise<void> => {
-      await Promise.race([
-        work().then(() => undefined).catch(() => undefined),
-        new Promise<void>((resolve) => {
-          window.setTimeout(resolve, ms);
-        }),
-      ]);
-    };
 
     void (async () => {
       try {
         const win = getCurrentWindow();
         const fn = await win.onCloseRequested(async (event) => {
-          // Re-entry while a previous close is still finishing.
-          if (closingRef.current) {
-            event.preventDefault();
-            return;
-          }
-
-          const inWorkbench =
-            phaseRef.current === "workbench" && !!projectRef.current;
-          const translating = !!busyRef.current;
-
-          // No text-project cleanup needed → allow default close.
-          if (!inWorkbench) {
-            return;
-          }
-
-          // Need async confirm / save: block default close, then destroy.
           event.preventDefault();
+          if (disposed || closingRef.current) return;
           closingRef.current = true;
           try {
-            if (translating) {
-              const ok = window.confirm(
-                "正在翻译，是否停止并退出？\n点击「确定」将中断翻译，进行中的条目恢复为未翻译，并保存后退出。\n点击「取消」则继续翻译，不关闭。",
+            if (busyRef.current) {
+              const ok = await confirmDialog(
+                "正在翻译。停止后会将进行中的条目恢复为未翻译，保存工程并退出。",
+                { title: "退出 LLMChat", kind: "warning", okLabel: "停止并退出", cancelLabel: "取消" },
               );
-              if (!ok) {
-                closingRef.current = false;
-                return;
-              }
-              await withTimeout(
-                () => stopRef.current({ silent: true }),
-                5000,
-              );
+              if (!ok || disposed) return;
+              setStatusLine("正在停止翻译、保存工程并退出…");
+              await stopRef.current({ silent: true, requireSave: true });
             } else {
-              await withTimeout(
-                () => persistFullSnapshotRef.current(),
-                5000,
-              );
+              setStatusLine("正在保存工程并退出…");
+              await persistFullSnapshotRef.current({ requireSave: true });
             }
-            await win.destroy();
-          } catch {
+            if (!disposed) await win.destroy();
+          } catch (error) {
+            const detail = "退出失败，窗口已保留：" + toFriendlyError(error, "保存工程或关闭窗口失败");
+            setError(detail);
+            setStatusLine("未退出，请处理错误后重试");
+            await messageDialog(detail, { title: "无法退出 LLMChat", kind: "error" });
+          } finally {
             closingRef.current = false;
-            try {
-              await win.destroy();
-            } catch {
-              /* keep open if destroy still fails */
-            }
           }
         });
         if (disposed) fn();
         else unlisten = fn;
-      } catch {
-        const onBeforeUnload = (e: BeforeUnloadEvent) => {
-          if (busyRef.current) {
-            e.preventDefault();
-            e.returnValue = "";
-          } else if (phaseRef.current === "workbench" && projectRef.current) {
-            void persistFullSnapshotRef.current();
-          }
-        };
-        window.addEventListener("beforeunload", onBeforeUnload);
-        unlisten = () =>
-          window.removeEventListener("beforeunload", onBeforeUnload);
+      } catch (error) {
+        if (disposed) return;
+        const detail = "无法设置工程退出处理，请先手动保存工程：" + toFriendlyError(error);
+        setError(detail);
+        await messageDialog(detail, { title: "退出处理异常", kind: "error" });
       }
     })();
 
@@ -634,7 +613,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [hasProjectToClose]);
 
   const patchProject = useCallback((fn: (p: TextProject) => TextProject) => {
     setProject((p) => {
