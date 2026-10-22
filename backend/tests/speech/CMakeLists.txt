@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(llmchat_speech_tests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+add_executable(speech-tests main.cpp ../../src/LlmClient.cpp)
+target_include_directories(speech-tests PRIVATE ../../src ../../third_party)
+target_compile_definitions(speech-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(speech-tests PRIVATE /utf-8 /EHsc)
+target_link_libraries(speech-tests PRIVATE winhttp ws2_32)

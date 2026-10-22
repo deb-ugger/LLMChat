@@ -36,7 +36,7 @@ export const OCR_MODE_OPTIONS: Array<{
     recognitionModel: "PP-OCRv6 medium rec",
     description: "密集排版、小字号、复杂表格、公式周边文字及质量较差的扫描件。",
     warning:
-      "并不是越“精确”越好：流程图、架构图和稀疏标签图可能因相邻文字框被合并，效果反而不如快速模式。",
+      "相邻标签可能合并，稀疏流程图适合快速模式。",
   },
   {
     id: "english",
@@ -44,7 +44,7 @@ export const OCR_MODE_OPTIONS: Array<{
     detectionModel: "PP-OCRv6 medium det",
     recognitionModel: "en_PP-OCRv5 mobile rec",
     description:
-      "英文论文、英文技术文档、代码说明及英文缩写较多的页面；流程图仍建议先与快速模式比较。",
+      "英文论文、技术文档、代码说明及英文缩写较多的页面。",
   },
   {
     id: "manga",
@@ -53,6 +53,5 @@ export const OCR_MODE_OPTIONS: Array<{
     recognitionModel: "Manga OCR base INT8",
     description:
       "日文漫画、竖排气泡、振假名、艺术字体及图片背景上的文字；会按气泡合并并使用日文阅读顺序。",
-    warning: "仅用于图片文字识别，不用于文献 PDF。",
   },
 ];

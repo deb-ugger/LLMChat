@@ -44,7 +44,21 @@ export type OcrBlock = {
   vertical?: boolean;
 };
 
+function OcrMetrics({ count, milliseconds, text, busy, failed, total = false }: {
+  count: number; milliseconds: number; text: string; busy: boolean; failed: boolean; total?: boolean;
+}) {
+  return <span className={`ocr-metrics${total ? " is-total" : ""}`}>
+    <span className="ocr-metric"><span>{total ? "累计段数" : "识别段数"}</span><strong>{count}</strong><small>段</small></span>
+    <span className="ocr-metric"><span>{total ? "累计用时" : "本次用时"}</span><strong>{(milliseconds / 1000).toFixed(1)}</strong><small>秒</small></span>
+    <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} title={text}>
+      <i aria-hidden="true" />{text}
+    </span>
+  </span>;
+}
+
 type OcrPage = {
+  elapsedMs?: number;
+  recognitionMs?: number;
   id: string;
   imageUrl: string;
   label: string;
@@ -75,6 +89,7 @@ type Props = {
   onOcrModeChange?: (mode: OcrMode) => void | Promise<void>;
   onTranslateSourceChange?: (source: string) => void | Promise<void>;
   onTranslateTargetChange?: (target: string) => void | Promise<void>;
+  onAutoTranslateChange?: (value: boolean) => void | Promise<void>;
 };
 
 const IMAGE_OCR_MODES: Array<{
@@ -89,7 +104,7 @@ const IMAGE_OCR_MODES: Array<{
   {
     id: "precise",
     description: "密集排版、小字、复杂表格和低质量扫描件",
-    warning: "并不是越“精确”越好；流程图和稀疏标签图可能不如快速模式",
+    warning: "相邻标签可能合并，稀疏流程图适合快速模式",
   },
   {
     id: "english",
@@ -98,7 +113,7 @@ const IMAGE_OCR_MODES: Array<{
   {
     id: "manga",
     description: "日文漫画、竖排气泡、振假名和复杂漫画字体",
-    warning: "约 111 MiB；首次使用需下载，识别速度慢于精确模式",
+    warning: "识别速度慢于精确模式",
   },
 ];
 
@@ -912,16 +927,9 @@ function OcrPageCard({
           <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
             缩放 {Math.round(imageScale * 100)}%
           </span>
-          <span className="ocr-page-status">
-            {page.busy
-              ? page.statusText || "处理中…"
-              : page.error
-                ? page.error
-                : page.statusText ||
-                  (page.blocks.length
-                    ? `${page.blocks.length} 段`
-                    : "等待识别")}
-          </span>
+          <OcrMetrics count={page.blocks.length} milliseconds={page.elapsedMs ?? 0}
+            text={(page.error || page.statusText || "等待识别").replace(/^识别 \d+ 段 · /, "")}
+            busy={page.busy} failed={!!page.error || /失败/.test(page.statusText ?? "")} />
           <button
             type="button"
             className="ocr-copy-btn ocr-rerun-btn"
@@ -1046,8 +1054,12 @@ export function ImageOcrView({
   onOcrModeChange,
   onTranslateSourceChange,
   onTranslateTargetChange,
+  onAutoTranslateChange,
 }: Props) {
   const [pages, setPages] = useState<OcrPage[]>([]);
+  // Session work counters intentionally survive clearing/removing image cards.
+  const [totalSegments, setTotalSegments] = useState(0);
+  const [totalElapsedMs, setTotalElapsedMs] = useState(0);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [selectedField, setSelectedField] = useState<OcrSelectionField | null>(null);
@@ -1589,7 +1601,18 @@ export function ImageOcrView({
   const runOcrForPage = useCallback(
     async (pageId: string, file: File) => {
       if (!pagesRef.current.some((p) => p.id === pageId)) return;
+      const startedAt = performance.now();
+      let accountedUntil = startedAt;
+      const accountTime = () => {
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
+        const now = performance.now();
+        const elapsed = now - accountedUntil;
+        setTotalElapsedMs((total) => total + elapsed);
+        accountedUntil = now;
+      };
       patchPage(pageId, {
+        elapsedMs: 0,
+        recognitionMs: 0,
         busy: true,
         error: null,
         statusText: "正在加载本地 PaddleOCR 识别模型…",
@@ -1598,6 +1621,23 @@ export function ImageOcrView({
       setError(null);
       let taskPaddle: LocalPaddleOcr | null = null;
       let taskManga: LocalMangaOcr | null = null;
+      let stage = "";
+      let stageStarted = performance.now();
+      const publishStage = () => {
+        if (!pagesRef.current.some((p) => p.id === pageId)) return;
+        accountTime();
+        patchPage(pageId, { elapsedMs: performance.now() - startedAt });
+        if (!stage) return;
+        const text = `${stage} · ${( (performance.now() - stageStarted) / 1000).toFixed(1)} 秒`;
+        patchPage(pageId, { statusText: text });
+        setStatus(text);
+      };
+      const reportStage = (text: string, resetClock = true) => {
+        stage = text;
+        if (resetClock) stageStarted = performance.now();
+        publishStage();
+      };
+      const stageTimer = window.setInterval(publishStage, 100);
       try {
         const page = pagesRef.current.find((p) => p.id === pageId);
         if (!page) return;
@@ -1637,22 +1677,19 @@ export function ImageOcrView({
             normalizedOcrMode === "fast"
               ? "正在加载本地 PP-OCRv6 快速模型…"
               : normalizedOcrMode === "manga" && modelInstalled
-                ? "正在加载本地 Manga OCR 漫画增强模型…"
+                ? "正在准备漫画前置 PaddleOCR 模型…"
               : modelInstalled
                 ? `正在加载本地 PaddleOCR ${modeLabel}模型…`
                 : modelInstallKnown
                   ? `正在下载并准备 PaddleOCR ${modeLabel}模型（首次使用，完成后会缓存）…`
                   : `正在准备 PaddleOCR ${modeLabel}模型…`;
-          patchPage(pageId, {
-            statusText: loadingText,
-          });
-          setStatus(loadingText);
+          reportStage(loadingText);
           const paddle =
             paddleOcrRef.current ??
             (paddleOcrRef.current = new LocalPaddleOcr(normalizedOcrMode));
           taskPaddle = paddle;
           const result = await withTimeout(
-            paddle.recognize(file),
+            paddle.recognize(file, reportStage),
             240_000,
             "PaddleOCR 识别超时，请重新识别",
           );
@@ -1686,11 +1723,11 @@ export function ImageOcrView({
                 if (!pagesRef.current.some((p) => p.id === pageId) || mangaOcrRef.current !== manga)
                   throw new Error("识别已取消");
                 const progressText = `正在识别漫画气泡 ${index + 1}/${regions.length}…`;
-                patchPage(pageId, { statusText: progressText });
-                setStatus(progressText);
+                if (index === 0) reportStage("正在准备本地 Manga OCR 模型");
+                else reportStage(`${progressText}（气泡阶段累计）`, false);
                 const crop = await cropMangaRegion(bitmap, regions[index], iw, ih);
                 const text = await withTimeout(
-                  manga.recognize(crop),
+                  manga.recognize(crop, () => reportStage(`${progressText}（气泡阶段累计）`, index === 0)),
                   300_000,
                   "Manga OCR 识别超时，请重新识别",
                 );
@@ -1718,6 +1755,8 @@ export function ImageOcrView({
           );
         }
 
+        stage = "";
+        patchPage(pageId, { recognitionMs: performance.now() - startedAt });
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
         const paras = lineBoxes.filter(
@@ -1744,6 +1783,7 @@ export function ImageOcrView({
         });
 
         list = list.filter((b) => b.x < 0.98 && b.y < 0.98 && b.w > 0 && b.h > 0);
+        setTotalSegments((total) => total + list.length);
 
         patchPage(pageId, {
           blocks: list,
@@ -1788,6 +1828,11 @@ export function ImageOcrView({
           patchPage(pageId, { busy: false, statusText: null });
         }
         setStatus(null);
+      } finally {
+        window.clearInterval(stageTimer);
+        accountTime();
+        stage = "";
+        patchPage(pageId, { elapsedMs: performance.now() - startedAt });
       }
     },
     [normalizedOcrMode, ocrModelStatus, refreshOcrModels, patchPage, translateBlocks],
@@ -1838,9 +1883,10 @@ export function ImageOcrView({
       queueRef.current = queueRef.current.filter((job) => job.pageId !== pageId);
       queueRef.current.push({ pageId, file: page.file });
       patchPage(pageId, {
-        blocks: [],
         error: null,
         statusText: "排队等待重新识别…",
+        elapsedMs: undefined,
+        recognitionMs: undefined,
         busy: true,
       });
       setSelectedPageId(pageId);
@@ -2091,23 +2137,36 @@ export function ImageOcrView({
         setStatus(
           `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1}（${donePages + 1}/${targets.length}）…`,
         );
-        patchPage(page.id, { busy: true });
+        const translationStarted = performance.now();
+        let translationAccountedUntil = translationStarted;
+        const accountTranslation = () => {
+          if (generation !== sessionGenRef.current || !pagesRef.current.some((p) => p.id === page.id)) return;
+          const now = performance.now();
+          const elapsed = now - translationAccountedUntil;
+          setTotalElapsedMs((total) => total + elapsed);
+          translationAccountedUntil = now;
+        };
+        patchPage(page.id, { busy: true, elapsedMs: page.recognitionMs ?? 0 });
         const list = await translateBlocks(
           page.id,
           page.blocks,
           (done, total) => {
+            accountTranslation();
             setStatus(
               `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1} ${done}/${total}…`,
             );
             patchPage(page.id, {
               statusText: `正在翻译 ${done}/${total}…`,
+              elapsedMs: (page.recognitionMs ?? 0) + performance.now() - translationStarted,
             });
           },
         );
         if (generation !== sessionGenRef.current) return;
+        accountTranslation();
         patchPage(page.id, {
           blocks: list,
           statusText: summarizeTranslateStatus(list),
+          elapsedMs: (page.recognitionMs ?? 0) + performance.now() - translationStarted,
           busy: false,
         });
         donePages += 1;
@@ -2276,6 +2335,9 @@ export function ImageOcrView({
           >
             清除全部
           </button>
+          <label className="ocr-toggle"><input type="checkbox" checked={autoTranslate} disabled={busy} onChange={event => {
+            void Promise.resolve(onAutoTranslateChange?.(event.target.checked)).catch(cause => setError(toFriendlyError(cause)));
+          }} />识别后自动翻译</label>
           <label className="ocr-toggle">
             <input
               type="checkbox"
@@ -2304,7 +2366,9 @@ export function ImageOcrView({
               compact
             />
           </div>
-          {status && <span className="hint">{status}</span>}
+          <OcrMetrics total count={totalSegments} milliseconds={totalElapsedMs} busy={busy}
+            failed={!!error || allBlocks.some((block) => block.status === "error")}
+            text={(error || status || (busy ? "处理中" : allBlocks.some((block) => block.status === "error") ? "部分翻译失败" : allBlocks.length && allBlocks.every((block) => block.status === "done") ? "翻译完成" : pages.length ? "识别完成" : "本次会话累计 · 清除后保留")).replace(/^识别 \d+ 段 · /, "")} />
           <span className="ocr-toolbar-engine" title={engineBadge}>
             {engineBadge}
           </span>

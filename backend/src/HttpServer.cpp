@@ -1,6 +1,7 @@
 #include "HttpServer.h"
 #include "AtomicFile.h"
 #include "LlmClient.h"
+#include "SpeechOnline.h"
 #include "TranslateClient.h"
 #include "UnityAutoTranslator.h"
 #include "PricingStore.h"
@@ -1875,6 +1876,38 @@ int HttpServer::run()
         }
         translationTasks.cancel(id);
         res.set_content(json{{"ok", true}}.dump(), "application/json");
+    }));
+
+    svr.Post("/api/speech/process", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = json::parse(req.body);
+            const auto id = body.at("taskId").get<std::string>();
+            if (id.empty() || id.size() > 96) throw std::runtime_error("invalid taskId");
+            const auto request = speech_online::buildRequest(body, config_.snapshot());
+            const auto task = translationTasks.begin(id);
+            if (!task) { res.status = 429; res.set_content(errorJson("在线任务较多，请稍后重试").dump(), "application/json"); return; }
+            request_cancel::Scope cancellation(translationTasks, id, task);
+            if (task->stopped()) { res.status = 499; res.set_content(errorJson("任务已取消").dump(), "application/json"); return; }
+            auto event = UsageStore::makeEventSkeleton();
+            event.feature = body.value("operation", "") == "recognize" ? "speech_recognition" : "speech_proofread";
+            event.endpoint = "speech/process"; event.channel = "llm"; event.model = request.model;
+            event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
+            event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
+            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            const auto response = LlmClient::chat(request);
+            auto& ev = usageLog.ev();
+            ev.ok = response.ok && !task->stopped();
+            ev.promptTokens = response.promptTokens; ev.completionTokens = response.completionTokens;
+            ev.totalTokens = response.totalTokens; ev.cacheReadTokens = response.cacheReadTokens; ev.cacheWriteTokens = response.cacheWriteTokens;
+            if (response.externalCall && response.totalTokens <= 0) {
+                ev.promptTokens = ev.completionTokens = ev.totalTokens = kUsageTokensUnknown;
+                ev.cacheReadTokens = ev.cacheWriteTokens = kUsageTokensUnknown;
+            }
+            ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
+            ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
+            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(errorJson(ev.errorMessage).dump(), "application/json"); return; }
+            res.set_content(json{{"ok", true}, {"content", response.content}}.dump(), "application/json");
+        } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
 
     svr.Post("/api/translate", withCors([this, &translationTasks, &nextTask](const httplib::Request& req, httplib::Response& res) {

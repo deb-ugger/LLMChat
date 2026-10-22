@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-speech-jobs"
+description = "Allow local audio probing, bounded decoding and persistent transcription jobs"
+commands.allow = ["speech_environment", "speech_probe", "speech_create_job", "speech_list_jobs", "speech_resume_job", "speech_decode_chunk", "speech_commit_chunk", "speech_cancel_job", "speech_read_result"]

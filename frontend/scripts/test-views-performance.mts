@@ -149,6 +149,12 @@ function load(path: string, hooks: any, imports: Record<string, any> = {}) {
   h.unmount();
 }
 
+if (process.argv.includes("--stats-only")) {
+  assert.equal(timers.size, 0, "statistics tests leave no timers");
+  console.log("statistics: lazy reports, pagination, cancellation and stale-response isolation passed");
+  process.exit(0);
+}
+
 function textHarness(format: string, entries: any[], apiOverrides: Record<string, any> = {}) {
   const project = {
     name: "fixture", createdAt: "2026-09-07", format, entries,
@@ -182,6 +188,7 @@ function textHarness(format: string, entries: any[], apiOverrides: Record<string
       splitGroupTranslation: (text: string) => [text],
     },
     "../hooks/usePersistedWidth": { usePersistedWidth: () => ({ width: 420, beginResize() {} }) },
+    "@tauri-apps/api/core": { isTauri: () => false },
     "@tauri-apps/api/window": { getCurrentWindow: () => ({ onCloseRequested: async () => () => {} }) },
   });
   h.mount(TextTranslateView, { settings: { textTranslateProvider: "llm" } });

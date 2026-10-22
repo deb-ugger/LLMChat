@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
+import { saveOutputFile } from "../outputFiles";
+import { LangCombobox } from "./LangCombobox";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm as confirmDialog, message as messageDialog } from "@tauri-apps/plugin-dialog";
@@ -57,7 +59,7 @@ import {
   type PipelineState,
 } from "./RetimeProgressPanel";
 
-type Props = { settings: Settings; active?: boolean };
+type Props = { settings: Settings; active?: boolean; onLanguageChange?: (field: "source" | "target", code: string) => void | Promise<void> };
 type Phase = "home" | "workbench";
 
 type RecentItem = {
@@ -134,6 +136,9 @@ async function saveExportWithPathDialog(
   content: string,
   ext: string,
 ): Promise<string | null> {
+  if (isTauri()) {
+    return saveOutputFile(fileName, new TextEncoder().encode(content), [ext.replace(/^\./, "")], ext.toUpperCase(), "text");
+  }
   const mime =
     ext === "json"
       ? "application/json"
@@ -254,7 +259,7 @@ const ElapsedTime = memo(function ElapsedTime({
   return <div className="text-timer-display">{formatDuration(elapsed)}</div>;
 });
 
-export function TextTranslateView({ settings, active = true }: Props) {
+export function TextTranslateView({ settings, active = true, onLanguageChange }: Props) {
   const textLlm = useMemo(
     () => resolveFeatureLlm(settings, settings.textTranslateModel),
     [settings],
@@ -1671,6 +1676,21 @@ export function TextTranslateView({ settings, active = true }: Props) {
     };
   }, [recentMenu]);
 
+  const changeLanguage = async (field: "source" | "target", code: string) => {
+    if (phase === "workbench" && project) {
+      const next = { ...project, [field === "source" ? "sourceLang" : "targetLang"]: code };
+      setProject(next);
+      projectRef.current = next;
+      await persistFullSnapshot({ project: next });
+    } else {
+      await onLanguageChange?.(field, code);
+    }
+  };
+  const languageControls = <fieldset className="text-run-languages" disabled={phase === "workbench" && (busy || !notStarted)}>
+    <LangCombobox label="源语言" value={phase === "workbench" ? project?.sourceLang || "en" : settings.textTranslateSource || "en"} onChange={code => changeLanguage("source", code)} compact />
+    <LangCombobox label="目标语言" value={phase === "workbench" ? project?.targetLang || "zh-CN" : settings.textTranslateTarget || "zh-CN"} onChange={code => changeLanguage("target", code)} allowAuto={false} compact />
+  </fieldset>;
+
   if (phase === "home") {
     return (
       <div className="text-home">
@@ -1739,6 +1759,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
               ))}
             </div>
             <div className="text-home-actions">
+              {languageControls}
               <button
                 type="button"
                 className="send-btn"
@@ -1927,6 +1948,7 @@ export function TextTranslateView({ settings, active = true }: Props) {
   return (
     <div className="text-layout">
       <div className="text-toolbar">
+        {languageControls}
         <button
           type="button"
           className="text-tool-btn"

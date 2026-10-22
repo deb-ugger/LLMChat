@@ -1,6 +1,6 @@
 import { ImageKind, OPS, Util, type PDFPageProxy } from "pdfjs-dist";
-import { save } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { saveOutputFile } from "./outputFiles";
 
 export type PdfImageHit = {
   pageNumber: number;
@@ -552,17 +552,9 @@ export async function saveImageBlob(
   blob: Blob,
   fileName: string,
 ): Promise<void> {
-  try {
-    const path = await save({
-      defaultPath: fileName,
-      filters: [{ name: "PNG 图片", extensions: ["png"] }],
-    });
-    if (!path) return;
-    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
-    await invoke("write_file_bytes", { path, contents: bytes });
+  if (isTauri()) {
+    await saveOutputFile(fileName, new Uint8Array(await blob.arrayBuffer()), ["png"], "PNG 图片", "literature");
     return;
-  } catch {
-    /* fall through to anchor download */
   }
   downloadImageBlob(blob, fileName);
 }

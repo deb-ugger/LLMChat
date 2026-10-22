@@ -234,8 +234,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
             <h2>翻译引擎参数</h2>
           </div>
           <p className="hint">
-            对应游戏内各引擎分区（Key / Url
-            等）。卡片样式与「通用」中的在线引擎配置一致；展开后填写，底部统一保存。
+            配置游戏翻译引擎的 Key、URL 等参数。
           </p>
           <div className="settings-engine-catalog">
             {engines.map((sec) => {

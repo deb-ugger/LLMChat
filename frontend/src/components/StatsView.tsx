@@ -116,6 +116,8 @@ const FEATURE_OPTIONS: { value: string; label: string }[] = [
   { value: "literature", label: "文献翻译" },
   { value: "ocr", label: "图片 OCR" },
   { value: "text", label: "文本翻译" },
+  { value: "speech_recognition", label: "在线语音识别" },
+  { value: "speech_proofread", label: "字幕校对" },
   { value: "unity", label: "在线翻译" },
   { value: "settings_test", label: "设置测试" },
   { value: "vendor_models", label: "刷新模型" },
@@ -2097,7 +2099,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [pricingReady, setPricingReady] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
-  const requestVersionRef = useRef(0);
   const loadedReportKeyRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dateRangeOpen, setDateRangeOpen] = useState(false);
@@ -2196,7 +2197,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
-    const version = ++requestVersionRef.current;
     const detailsOnly = !forceFull && loadedReportKeyRef.current === reportKey;
     setLoading(!detailsOnly);
     setDetailsLoading(true);
@@ -2223,7 +2223,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         pageSize: DETAIL_PAGE_SIZE,
         detailsOnly,
       }, { signal: controller.signal });
-      if (controller.signal.aborted || version !== requestVersionRef.current) return;
+      if (controller.signal.aborted) return;
       if (!detailsOnly) {
         setSummary((report.summary ?? []).filter(hasConsumption));
         setEvents(report.chart ?? []);
@@ -2233,7 +2233,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
       setDetailTotal(report.pagination?.total ?? 0);
       setDetailPages(report.pagination?.pages ?? 0);
     } catch (error) {
-      if (controller.signal.aborted || version !== requestVersionRef.current) return;
+      if (controller.signal.aborted) return;
       setError(toFriendlyError(error, "加载统计失败"));
       if (!detailsOnly) {
         setSummary([]);
@@ -2244,7 +2244,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
       setDetailTotal(0);
       setDetailPages(0);
     } finally {
-      if (version === requestVersionRef.current) {
+      if (requestRef.current === controller) {
         setLoading(false);
         setDetailsLoading(false);
         requestRef.current = null;
@@ -2258,7 +2258,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
   useEffect(() => {
     void load();
     return () => {
-      requestVersionRef.current++;
       requestRef.current?.abort();
       requestRef.current = null;
     };

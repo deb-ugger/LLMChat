@@ -13,6 +13,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StatsView } from "./components/StatsView";
 import { TextTranslateView } from "./components/TextTranslateView";
 import { UnityTranslateView } from "./components/UnityTranslateView";
+import { SpeechView } from "./components/SpeechView";
 import { toFriendlyError } from "./friendlyError";
 import {
   DEFAULT_MTOOL_PROMPT,
@@ -31,6 +32,7 @@ type Page =
   | "chat"
   | "literature"
   | "image"
+  | "speech"
   | "text"
   | "unity"
   | "stats"
@@ -478,6 +480,16 @@ export default function App() {
           <span>图片文字识别</span>
         </button>
         <button
+          className={page === "speech" ? "nav-item active" : "nav-item"}
+          onClick={() => setPage("speech")}
+          title="语音转文字"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+          </svg>
+          <span>语音转文字</span>
+        </button>
+        <button
           className={page === "text" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("text")}
           title="文本翻译工程"
@@ -609,6 +621,9 @@ export default function App() {
             onTranslateTargetChange={async (translateTarget) => {
               await onSaveSettings({ ...settings, translateTarget });
             }}
+            onClearLineBreaksChange={async (translateClearLineBreaks) => {
+              await onSaveSettings({ ...settings, translateClearLineBreaks });
+            }}
             onPromptCatalogChange={async ({ catalog, activeId, prompt }) => {
               await onSaveSettings({
                 ...settings,
@@ -631,6 +646,9 @@ export default function App() {
             active={page === "image"}
             ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
+            onAutoTranslateChange={async (ocrAutoTranslate) => {
+              await onSaveSettings({ ...settings, ocrAutoTranslate });
+            }}
             translateProvider={settings.ocrTranslateProvider}
             translateSource={settings.ocrTranslateSource}
             translateTarget={settings.ocrTranslateTarget}
@@ -661,7 +679,12 @@ export default function App() {
           }
           aria-hidden={page !== "text"}
         >
-          <TextTranslateView settings={settings} active={page === "text"} />
+          <TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
+            await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
+          }} />
+        </div>
+        <div className={page === "speech" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "speech"}>
+          <SpeechView active={page === "speech"} />
         </div>
         <div
           className={

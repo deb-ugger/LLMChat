@@ -67,7 +67,14 @@ private:
     void loadUnlocked();
     void rebuildRuleIndexUnlocked();
     bool saveUnlocked() const;
-    static bool dateInHalfOpen(
+    const nlohmann::json* findRuleUnlocked(
+        const std::string& model,
+        const std::string& date) const;
+    static const nlohmann::json* selectSubRule(
+        const nlohmann::json& rule,
+        const std::string& date,
+        bool clockPeak);
+    static bool dateInRange(
         const std::string& date,
         const std::string& from,
         const std::string& to);

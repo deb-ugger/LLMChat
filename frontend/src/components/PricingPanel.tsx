@@ -1710,10 +1710,9 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     return (
       <div ref={panelRef} className="pricing-panel">
         <div className="pricing-sync-banner" role="note">
-          <strong>模型列表与「通用」同步（只增不减）</strong>
+          <strong>模型列表与「通用」同步</strong>
           <span>
-            主表显示此刻生效的四列单价。点「修改规则」编辑日期区间；高峰时段与价格规则在第二层弹窗中修改。未配置高峰时段时按列表从上到下取第一条适用星期，不强制高峰。通用里新出现的模型会自动加入；已下架的模型不删除，固定排在该厂商列表底部，避免历史用量无法计价。模型
-            ID 旁为一级锁；弹窗内为二级锁。改价需两级都解锁。保存后才会写入磁盘。
+            已下架模型保留在列表底部，用于历史计费。修改价格需解锁模型与规则，并保存生效。
           </span>
         </div>
 

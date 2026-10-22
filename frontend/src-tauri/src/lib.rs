@@ -1,4 +1,5 @@
 use std::io::Cursor;
+mod speech;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -182,7 +183,16 @@ pub fn run() {
             clipboard_read_image_png,
             write_file_bytes,
             read_file_bytes,
-            file_stat
+            file_stat,
+            speech::speech_environment,
+            speech::speech_probe,
+            speech::speech_create_job,
+            speech::speech_list_jobs,
+            speech::speech_resume_job,
+            speech::speech_decode_chunk,
+            speech::speech_commit_chunk,
+            speech::speech_cancel_job,
+            speech::speech_read_result
         ])
         .setup(move |app| {
             let profile = app.path().app_local_data_dir()?;

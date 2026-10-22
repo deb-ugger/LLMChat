@@ -9,6 +9,9 @@ struct LlmRequest {
     std::string apiKey;
     std::string model;
     nlohmann::json messages;
+    nlohmann::json options = nlohmann::json::object();
+    std::string proxyMode;
+    std::string httpProxy;
 };
 
 struct LlmResponse {

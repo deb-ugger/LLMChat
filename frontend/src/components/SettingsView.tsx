@@ -27,9 +27,10 @@ import {
   stringifyLiteraturePromptCatalog,
 } from "../literaturePrompt";
 import { LiteraturePromptPanel } from "./LiteraturePromptPanel";
-import { PROJECT_FILENAME } from "../transProject";
+import { OutputDirectoryField } from "./OutputDirectoryField";
+import { TextOutputSettings } from "./TextOutputSettings";
 import { StoragePanel } from "./StoragePanel";
-import { LangCombobox } from "./LangCombobox";
+import { SpeechModelPanel } from "./SpeechModelPanel";
 import {
   UnitySettingsPanel,
   type UnitySettingsPanelHandle,
@@ -89,13 +90,14 @@ function settingsTranslate(
 
 
 
-type FeaturePage = "chat" | "literature" | "image" | "text" | "unity";
+type FeaturePage = "chat" | "literature" | "image" | "speech" | "text" | "unity";
 
 type SettingsTab =
   | "general"
   | "chat"
   | "literature"
   | "image"
+  | "speech"
   | "text"
   | "unity"
   | "pricing"
@@ -115,6 +117,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   chat: "对话",
   literature: "文献翻译",
   image: "图片文字识别",
+  speech: "语音转文字",
   text: "翻译工程",
   unity: "Unity",
   pricing: "计费",
@@ -127,6 +130,7 @@ const TAB_NAV: Partial<
   chat: { page: "chat", label: "前往对话" },
   literature: { page: "literature", label: "前往文献翻译" },
   image: { page: "image", label: "前往图片识别" },
+  speech: { page: "speech", label: "前往语音转文字" },
   text: { page: "text", label: "前往翻译工程" },
   unity: { page: "unity", label: "前往 Unity 翻译" },
 };
@@ -183,6 +187,7 @@ const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {
     "textProjectsDir",
   ],
   unity: [],
+  speech: [],
   pricing: [],
   storage: [],
 };
@@ -274,24 +279,6 @@ function ocrLangToTranslateSource(ocrLang: string): string {
     case "eng":
     default:
       return "en";
-  }
-}
-
-function translateSourceToOcrLang(source: string): string {
-  switch (source) {
-    case "zh-CN":
-      return "chi_sim";
-    case "zh-TW":
-      return "chi_tra";
-    case "ja":
-      return "jpn";
-    case "ko":
-      return "kor";
-    case "en":
-      return "eng";
-    case "auto":
-    default:
-      return "eng+chi_sim";
   }
 }
 
@@ -1807,73 +1794,6 @@ export function SettingsView({
     });
   };
 
-  const setLitLang = (which: "source" | "target", code: string) => {
-    const source = which === "source" ? code : form.translateSource;
-    const target = which === "target" ? code : form.translateTarget;
-    if (form.translateProvider === "llm") {
-      commitForm({
-        ...form,
-        translateSource: source,
-        translateTarget: target,
-      });
-      return;
-    }
-    const best =
-      sortedClassicEngines(source, target, engineKeys)[0]?.id ??
-      form.translateProvider;
-    setLitClassicProvider(best);
-    commitForm({
-      ...form,
-      translateSource: source,
-      translateTarget: target,
-      translateProvider: best,
-    });
-  };
-
-  const setOcrSource = (source: string) => {
-    const ocrLang = translateSourceToOcrLang(source);
-    if (form.ocrTranslateProvider === "llm") {
-      commitForm({
-        ...form,
-        ocrLang,
-        ocrTranslateSource: source,
-      });
-      return;
-    }
-    const best =
-      sortedClassicEngines(source, form.ocrTranslateTarget, engineKeys)[0]?.id ??
-      form.ocrTranslateProvider;
-    setOcrClassicProvider(best);
-    commitForm({
-      ...form,
-      ocrLang,
-      ocrTranslateSource: source,
-      ocrTranslateProvider: best,
-    });
-  };
-
-  const setOcrTarget = (code: string) => {
-    const source = form.ocrTranslateSource || "en";
-    if (form.ocrTranslateProvider === "llm") {
-      commitForm({
-        ...form,
-        ocrTranslateTarget: code,
-        ocrTranslateSource: source,
-      });
-      return;
-    }
-    const best =
-      sortedClassicEngines(source, code, engineKeys)[0]?.id ??
-      form.ocrTranslateProvider;
-    setOcrClassicProvider(best);
-    commitForm({
-      ...form,
-      ocrTranslateTarget: code,
-      ocrTranslateSource: source,
-      ocrTranslateProvider: best,
-    });
-  };
-
   const savePanel = async () => {
     const snapModel = expandedModel;
     const snapVendor = expandedVendor;
@@ -2097,29 +2017,6 @@ export function SettingsView({
     } catch (e) {
       notify(e instanceof Error ? e.message : "删除失败", false);
     }
-  };
-
-  const setTextLang = (field: "source" | "target", code: string) => {
-    const source = field === "source" ? code : form.textTranslateSource;
-    const target = field === "target" ? code : form.textTranslateTarget;
-    if (form.textTranslateProvider === "llm") {
-      commitForm({
-        ...form,
-        textTranslateSource: source,
-        textTranslateTarget: target,
-      });
-      return;
-    }
-    const best =
-      sortedClassicEngines(source, target, engineKeys)[0]?.id ??
-      form.textTranslateProvider;
-    setTextClassicProvider(best);
-    commitForm({
-      ...form,
-      textTranslateSource: source,
-      textTranslateTarget: target,
-      textTranslateProvider: best,
-    });
   };
 
   const runTest = async (
@@ -2850,6 +2747,7 @@ export function SettingsView({
     { id: "chat", label: "对话" },
     { id: "literature", label: "文献翻译" },
     { id: "image", label: "图片文字识别" },
+    { id: "speech", label: "语音转文字" },
     { id: "text", label: "翻译工程" },
     { id: "unity", label: "Unity" },
     { id: "pricing", label: "计费" },
@@ -3635,8 +3533,7 @@ export function SettingsView({
                 </p>
               )}
               <p className="hint">
-                仅用于配置各在线翻译引擎凭证。彩色标签显示当前被哪些功能选用；文献 / 图片 / 文本在各自页选择引擎。免
-                Key 引擎走上方网络代理。
+                配置翻译引擎凭证；文献、图片和文本翻译在各自页面选择引擎。
               </p>
               <div className="settings-engine-catalog">
                 {catalogEngines.map((e) => {
@@ -3834,27 +3731,10 @@ export function SettingsView({
           <>
             <section className="settings-card">
               <h2>文献翻译</h2>
+              <OutputDirectoryField module="literature" label="图片导出目录" />
               <p className="hint">
-                在此选择语言与长度；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
-                代理请在「通用」配置。
+                API 凭证和网络代理在「通用」配置。
               </p>
-              <div className="settings-row settings-row-half">
-                <div className="settings-half">
-                  <LangCombobox
-                    label="源语言"
-                    value={form.translateSource}
-                    onChange={(code) => setLitLang("source", code)}
-                  />
-                </div>
-                <div className="settings-half">
-                  <LangCombobox
-                    label="目标语言"
-                    value={form.translateTarget}
-                    onChange={(code) => setLitLang("target", code)}
-                    allowAuto={false}
-                  />
-                </div>
-              </div>
               <div className="settings-field">
                 <span className="settings-field-label">
                   每次翻译最大长度（字符，0=
@@ -3887,21 +3767,6 @@ export function SettingsView({
                   )}
                 </div>
               </div>
-              <div className="settings-field">
-                <SettingToggle
-                  checked={form.translateClearLineBreaks}
-                  onChange={(value) =>
-                    commitForm({
-                      ...form,
-                      translateClearLineBreaks: value,
-                    })
-                  }
-                  label="清除原文换行符（替换为空格）"
-                />
-                <p className="hint" style={{ marginTop: 6 }}>
-                  开启时便于复制普通段落；关闭时保留原文换行与代码缩进，适合 Python 等代码内容。
-                </p>
-              </div>
               <p className="hint" style={{ marginTop: 8 }}>
                 当前文献翻译方式：
                 <strong>
@@ -3917,7 +3782,7 @@ export function SettingsView({
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
                   <p className="hint">
-                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                    凭证在「通用」配置。
                   </p>
                 </div>
 
@@ -4151,27 +4016,7 @@ export function SettingsView({
                 onChoose={(mode) => void chooseOcrMode(mode, "image")}
                 onUninstall={(mode) => setOcrUninstallConfirm({ mode })} />
               <h2 className="ocr-image-settings-title">图片文字识别</h2>
-              <p className="hint">
-                在此选择识别语言与长度；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
-                代理请在「通用」配置。
-              </p>
-              <div className="settings-row settings-row-half">
-                <div className="settings-half">
-                  <LangCombobox
-                    label="源语言"
-                    value={form.ocrTranslateSource}
-                    onChange={setOcrSource}
-                  />
-                </div>
-                <div className="settings-half">
-                  <LangCombobox
-                    label="目标语言"
-                    value={form.ocrTranslateTarget}
-                    onChange={setOcrTarget}
-                    allowAuto={false}
-                  />
-                </div>
-              </div>
+              <p className="hint">API 凭证与代理在「通用」配置。</p>
               <div className="settings-field">
                 <span className="settings-field-label">
                   每次翻译最大长度（字符，0=
@@ -4202,13 +4047,6 @@ export function SettingsView({
                   ) : (
                     <div />
                   )}
-                  <SettingToggle
-                    checked={form.ocrAutoTranslate}
-                    onChange={(v) =>
-                      commitForm({ ...form, ocrAutoTranslate: v })
-                    }
-                    label="识别后自动翻译并叠字显示"
-                  />
                 </div>
               </div>
               <p className="hint" style={{ marginTop: 8 }}>
@@ -4220,7 +4058,7 @@ export function SettingsView({
                 </strong>
               </p>
               <p className="hint">
-                PaddleOCR 自动检测图片中的文字区域；这里的源语言与目标语言用于翻译，并与页面工具栏保持同步。
+                源语言与目标语言用于翻译。
               </p>
             </section>
 
@@ -4229,7 +4067,7 @@ export function SettingsView({
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
                   <p className="hint">
-                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                    凭证在「通用」配置。
                   </p>
                 </div>
 
@@ -4364,39 +4202,13 @@ export function SettingsView({
 
         {tab === "text" && (
           <>
-            <section className="settings-card">
-              <h2>保存路径</h2>
-              <p className="hint">
-                新建/保存工程会写入此目录；「打开工程列表」也扫描此目录。每个工程一个子文件夹，内含{" "}
-                <code>{PROJECT_FILENAME}</code>。
-              </p>
-              <p className="hint">当前目录：<code>{form.textProjectsDirResolved || form.textProjectsDir}</code></p>
-              <button type="button" onClick={() => selectTab("storage")}>前往「存储」修改路径或清理工程</button>
-            </section>
+            <TextOutputSettings />
 
             <section className="settings-card">
               <h2>文本翻译</h2>
               <p className="hint">
-                在此选择语言；下方点击区块选用「翻译引擎」或「大模型翻译」。API /
-                代理请在「通用」配置。
+                API 凭证和网络代理在「通用」配置。
               </p>
-              <div className="settings-row settings-row-half">
-                <div className="settings-half">
-                  <LangCombobox
-                    label="源语言"
-                    value={form.textTranslateSource}
-                    onChange={(code) => setTextLang("source", code)}
-                  />
-                </div>
-                <div className="settings-half">
-                  <LangCombobox
-                    label="目标语言"
-                    value={form.textTranslateTarget}
-                    onChange={(code) => setTextLang("target", code)}
-                    allowAuto={false}
-                  />
-                </div>
-              </div>
               <p className="hint" style={{ marginTop: 8 }}>
                 当前文本翻译方式：
                 <strong>
@@ -4412,7 +4224,7 @@ export function SettingsView({
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
                   <p className="hint">
-                    二选一：点击下方选项切换。凭证在「通用」配置，此处选择具体引擎或模型。
+                    凭证在「通用」配置。
                   </p>
                 </div>
 
@@ -4706,6 +4518,7 @@ export function SettingsView({
             onDirtyChange={setPricingDirty}
           />
         )}
+        {tab === "speech" && <SpeechModelPanel />}
         <StoragePanel active={tab === "storage"} />
       </div>
 
@@ -4716,7 +4529,8 @@ export function SettingsView({
         />
       ) : null}
 
-      {tab !== "storage" && <div className="settings-save-bar">
+      {tab === "speech" && TAB_NAV.speech && onNavigate && <div className="settings-save-bar"><button className="settings-goto-page" onClick={() => onNavigate("speech")}>前往语音转文字</button></div>}
+      {tab !== "storage" && tab !== "speech" && <div className="settings-save-bar">
         <div className="settings-save-bar-text">
           <strong>保存当前页</strong>
           <span>

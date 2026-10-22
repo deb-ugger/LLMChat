@@ -28,6 +28,7 @@
     }
   },
   "bundle": {
+    "resources": ["resources/ffmpeg/*"],
     "active": true,
     "targets": [],
     "icon": [

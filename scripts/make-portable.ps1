@@ -63,6 +63,14 @@ foreach ($name in $preserveHint) {
 
 Copy-Item $exe $out -Force
 
+$speechTools = Join-Path $root 'frontend\src-tauri\resources\ffmpeg'
+if (!(Test-Path -LiteralPath (Join-Path $speechTools 'ffmpeg.exe'))) {
+    throw 'Run scripts/prepare-speech-tools.ps1 before packaging the speech feature.'
+}
+$speechToolsOutput = Join-Path $out 'resources\ffmpeg'
+New-Item -ItemType Directory -Force -Path $speechToolsOutput | Out-Null
+Copy-Item (Join-Path $speechTools '*') $speechToolsOutput -Force
+
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
 

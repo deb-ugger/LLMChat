@@ -163,10 +163,16 @@ export class LocalPaddleOcr {
         );
   }
 
-  async recognize(image: Blob): Promise<PaddleOcrRecognition> {
+  async recognize(image: Blob, onStage?: (stage: string) => void): Promise<PaddleOcrRecognition> {
     return this.runtime.run(async (runner, signal) => {
-    const prepared = await prepareRecognitionImage(image);
+    onStage?.("正在预处理图片");
+    // Manga crops are recognized separately at source resolution. Do not apply
+    // the small-diagram upscaling policy to the full manga page.
+    const prepared = this.mode === "manga"
+      ? { image, scale: 1 }
+      : await prepareRecognitionImage(image);
     if (signal.aborted) throw new Error("识别已取消");
+    onStage?.(this.mode === "manga" ? "正在检测漫画文字区域（前置 OCR）" : "正在检测并识别文字");
     const [result] = await runner.predict(prepared.image, {
       textDetMaxSideLimit: 4000,
       textDetBoxThresh: 0.3,

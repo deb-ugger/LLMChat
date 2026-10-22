@@ -70,15 +70,18 @@ npm run dev
 
 ### 一键更新便携版
 
-关闭正在运行的便携版程序，在仓库根目录打开 PowerShell，然后复制并粘贴下面整段命令。它会依次构建后端、构建 Release 桌面程序，并将最新文件更新到 `dist-portable/`：
+先保存软件中尚未保存的内容，在仓库根目录打开 PowerShell，然后运行下面的命令。它会依次构建后端、准备语音解码工具、构建 Release 桌面程序，并将最新文件更新到 `dist-portable/`。打包脚本会尝试正常关闭本仓库便携版，若主程序或后端未退出则停止更新，不会强制结束进程。
 
 ```powershell
 powershell -File scripts/prepare-sidecar.ps1
-npm --prefix frontend run tauri -- build
+powershell -File scripts/prepare-speech-tools.ps1
+npm --prefix frontend run tauri -- build --no-bundle
 powershell -File scripts/make-portable.ps1
 ```
 
-更新过程中会保留 `dist-portable/` 中已有的配置、会话、统计数据、文本工程和 OCR 模型。
+首次准备语音解码工具需要联网下载 FFmpeg；工具版本未变化时复用已有文件。自动化代理执行构建和更新前，须遵守 [AGENTS.md](AGENTS.md) 的全局构建锁规则。
+
+更新只替换程序和资源，保留已有的配置、会话、统计数据、翻译工程、语音任务输出和模型缓存。
 
 ### 分步构建
 
@@ -88,11 +91,12 @@ powershell -File scripts/make-portable.ps1
 powershell -File scripts/prepare-sidecar.ps1
 ```
 
-构建桌面程序：
+准备语音解码工具并构建桌面程序：
 
 ```powershell
+powershell -File scripts/prepare-speech-tools.ps1
 cd frontend
-npm run tauri -- build
+npm run tauri -- build --no-bundle
 ```
 
 桌面程序生成在：

@@ -10,6 +10,7 @@ frontend/tsconfig.tsbuildinfo
 
 # Tauri / Rust build
 frontend/src-tauri/target/
+frontend/src-tauri/resources/ffmpeg/
 frontend/src-tauri/tauri.conf.build.json
 frontend/src-tauri/binaries/*.exe
 frontend/src-tauri/binaries/config.ini

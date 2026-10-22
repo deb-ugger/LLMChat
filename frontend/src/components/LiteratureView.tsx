@@ -124,6 +124,7 @@ type Props = {
   onOcrModeChange?: (mode: OcrMode) => void | Promise<void>;
   onTranslateSourceChange?: (source: string) => void | Promise<void>;
   onTranslateTargetChange?: (target: string) => void | Promise<void>;
+  onClearLineBreaksChange?: (value: boolean) => void | Promise<void>;
   onPromptCatalogChange?: (next: {
     catalog: LiteraturePromptEntry[];
     activeId: string;
@@ -153,6 +154,7 @@ export function LiteratureView({
   onOcrModeChange,
   onTranslateSourceChange,
   onTranslateTargetChange,
+  onClearLineBreaksChange,
   onPromptCatalogChange,
 }: Props) {
   const [source, setSource] = useState("");
@@ -629,7 +631,7 @@ export function LiteratureView({
             }}
           >
             <strong>作用范围：</strong>
-            只影响扫描页、智能提取的 OCR 回退及 Shift+提取本页。普通原生文字层框选不使用此模型。
+            扫描页、智能提取的 OCR 回退及 Shift+提取本页。
           </p>
           <div className="literature-ocr-options">
             {LITERATURE_OCR_MODES.map((option) => {
@@ -745,6 +747,9 @@ export function LiteratureView({
         allowAuto={false}
         compact
       />
+      <label className="ocr-toggle"><input type="checkbox" checked={translateClearLineBreaks} onChange={event => {
+        void Promise.resolve(onClearLineBreaksChange?.(event.target.checked)).catch(cause => setError(toFriendlyError(cause)));
+      }} />清除换行</label>
     </div>
   );
 

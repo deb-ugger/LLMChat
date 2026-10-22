@@ -37,9 +37,8 @@ export function OcrModeTable({ context, selectedMode, status: ocrModelStatus, bu
             <h3 className="ocr-mode-title">识别模式</h3>
             <p className="hint">
               {context === "literature"
-                ? "仅在扫描版 PDF 或手动启用 OCR 时生效；原生 PDF 的框选与复制格式不受这些模型影响。"
-                : "选择适合图片内容的识别模型。"}
-              检测模型可由多个模式共用，状态列会分别检查前置模型与识别模型。
+                ? "用于扫描页文字识别。检测模型可由多个模式共用。"
+                : "检测模型可由多个模式共用。"}
             </p>
           </div>
         </div>

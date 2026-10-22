@@ -80,7 +80,8 @@ bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_
     return true;
 }
 
-LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body)
+LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body,
+                        const std::string& proxyMode, std::string proxy)
 {
     LlmResponse result;
     if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
@@ -134,6 +135,19 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     }
 
     CancellableWinHttp operation(request);
+    if (proxyMode == "direct" || proxyMode == "custom") {
+        if (proxy.rfind("http://", 0) == 0) proxy.erase(0, 7);
+        else if (proxy.rfind("https://", 0) == 0) proxy.erase(0, 8);
+        const auto wideProxy = toWide(proxy);
+        WINHTTP_PROXY_INFO info{};
+        info.dwAccessType = proxyMode == "direct" ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+        info.lpszProxy = proxyMode == "direct" ? nullptr : const_cast<wchar_t*>(wideProxy.c_str());
+        if ((proxyMode == "custom" && proxy.empty()) || !WinHttpSetOption(request, WINHTTP_OPTION_PROXY, &info, sizeof(info))) {
+            result.error = "网络代理配置无效";
+            operation.close(); WinHttpCloseHandle(connect); WinHttpCloseHandle(session);
+            return result;
+        }
+    }
     std::wstring headers = L"Content-Type: application/json\r\n";
     if (!bearer.empty())
     {
@@ -351,13 +365,13 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
         return early;
     }
 
-    json body;
+    json body = request.options;
     body["model"] = request.model;
     body["messages"] = request.messages;
     body["stream"] = false;
 
 #ifdef _WIN32
-    return winHttpPost(request.apiUrl, request.apiKey, body.dump());
+    return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy);
 #else
     early.error = "LLM client is only implemented for Windows in this build";
     return early;

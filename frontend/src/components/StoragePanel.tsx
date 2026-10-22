@@ -5,7 +5,6 @@ import { toFriendlyError } from "../friendlyError";
 import "./StoragePanel.css";
 
 const ICONS = {
-  drive: ["M5 8h14l2 8H3l2-8Z", "M3 16v4h18v-4M7 18h.01M11 18h.01M7 8V4h10v4"],
   data: ["M20 6c0 2-4 3-8 3S4 8 4 6s4-3 8-3 8 1 8 3Z", "M4 6v12c0 2 4 3 8 3s8-1 8-3V6M4 12c0 2 4 3 8 3s8-1 8-3"],
   folder: ["M3 7V5h6l2 2h10v13H3V7Z", "M3 11h18"],
   scan: ["M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 12h10M8 8h8M8 16h8"],
@@ -68,6 +67,7 @@ export function StoragePanel({ active }: { active: boolean }) {
   const cleanupTarget = confirm?.kind === "cleanup" ? status?.cleanupOptions.find(e => e.id === confirm.id) : undefined;
   const cacheOptions = status?.cleanupOptions.filter(e => !e.destructive) ?? [];
   const dataOptions = status?.cleanupOptions.filter(e => e.destructive) ?? [];
+  const locations = status?.entries.filter(entry => entry.id !== "projects") ?? [];
 
   function accept(next: StorageStatus) {
     setStatus(next);
@@ -100,11 +100,9 @@ export function StoragePanel({ active }: { active: boolean }) {
   }
 
   return <div className="storage-panel" hidden={!active}>
-    <header className="storage-hero">
-      <span className="storage-hero-icon"><StorageIcon name="drive" /></span>
-      <div><h1>存储</h1><p>管理本地文件的位置与空间</p></div>
-      <button className="storage-button storage-refresh" type="button" disabled={busy || !!dirty} onClick={() => void refresh()}><StorageIcon name="refresh" />{busy ? "正在读取…" : "刷新占用"}</button>
-    </header>
+    <div className="storage-toolbar">
+      <button className="storage-button" type="button" disabled={busy || !!dirty} onClick={() => void refresh()}><StorageIcon name="refresh" />{busy ? "正在读取…" : "刷新占用"}</button>
+    </div>
     <div className="storage-overview">
       <div><span>当前占用</span><strong>{status ? formatBytes(status.entries.reduce((sum, e) => sum + e.bytes, 0)) : "—"}</strong><small>软件管理的本地文件</small></div>
       <div><span>可清理缓存</span><strong>{status ? formatBytes(cacheOptions.reduce((sum, e) => sum + e.bytes, 0)) : "—"}</strong><small>不包含聊天、用量和工程</small></div>
@@ -117,9 +115,9 @@ export function StoragePanel({ active }: { active: boolean }) {
 
     {status && <>
       <section className="storage-section">
-        <div className="storage-section-heading"><div><h2>存储位置</h2><p>选择空目录作为新位置，迁移时保留原文件。</p></div><span className="storage-count">{status.entries.length} 个目录</span></div>
+        <div className="storage-section-heading"><div><h2>存储位置</h2><p>选择空目录作为新位置，迁移时保留原文件。</p></div><span className="storage-count">{locations.length} 个目录</span></div>
         <div className="storage-locations">
-          {status.entries.map(entry => <article className="storage-location" key={entry.id}>
+          {locations.map(entry => <article className="storage-location" key={entry.id}>
             <span className="storage-item-icon"><StorageIcon name={PATH_COPY[entry.id].icon} /></span>
             <div className="storage-location-copy"><label htmlFor={`storage-${entry.id}`}>{entry.label}</label><p>{PATH_COPY[entry.id].description}</p><span>{entry.exists ? formatBytes(entry.bytes) : "尚未生成"}</span></div>
             <div className="storage-location-path"><input id={`storage-${entry.id}`} value={paths[entry.id] ?? ""} disabled={busy} spellCheck={false} aria-label={`${entry.label}路径`} onChange={e => setPaths(p => ({ ...p, [entry.id]: e.target.value }))} />

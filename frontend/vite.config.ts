@@ -61,6 +61,7 @@ function copyPdfjsAssets(): Plugin {
 }
 
 export default defineConfig(async () => ({
+  worker: { format: "es" },
   plugins: [react(), copyPdfjsAssets()],
   clearScreen: false,
   resolve: {
