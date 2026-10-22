@@ -43,7 +43,10 @@ export function OcrModeTable({ context, selectedMode, status: ocrModelStatus, bu
             </p>
           </div>
         </div>
-        {error && <p role="alert" className="hint">{error} <button type="button" onClick={onRetry}>重试</button></p>}
+        {error && <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap", padding: "10px 12px", marginBottom: 12, border: "1px solid color-mix(in srgb, var(--danger) 25%, var(--border))", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13, lineHeight: 1.65 }}>
+          <span style={{ flex: "1 1 300px" }}>{error}</span>
+          <button type="button" onClick={onRetry}>刷新状态</button>
+        </div>}
         <div className="ocr-mode-table-wrap">
           <table className="ocr-mode-table">
             <thead>

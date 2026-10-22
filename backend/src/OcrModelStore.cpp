@@ -221,6 +221,23 @@ std::wstring normalizeProxy(const std::string& value)
     return utf8path::toWide(proxy);
 }
 
+std::string downloadNetworkHint(const AppConfig& config)
+{
+    const std::string prefix = "请检查网络连接和“设置 → 通用 → 代理”配置。";
+    if (config.proxyMode == "auto")
+        return prefix + "当前使用系统代理，请确认代理已开启且能够访问模型下载站点，然后重新选择该模式重试。";
+    if (config.proxyMode == "custom")
+        return prefix + "当前使用自定义代理，请检查代理地址、端口和代理服务是否可用，然后重新选择该模式重试。";
+    return prefix + "当前为直连，不会使用已开启的系统代理；若无法直连下载站点，请改为系统代理或配置可用的自定义代理后重试。";
+}
+
+std::string downloadNetworkError(DWORD error, const AppConfig& config, const std::wstring& host)
+{
+    return std::string(error == ERROR_WINHTTP_TIMEOUT ? "模型下载超时：" : "模型下载连接失败：")
+        + utf8path::toUtf8(host) + "（WinHTTP 错误码 " + std::to_string(error) + "）。"
+        + downloadNetworkHint(config);
+}
+
 void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppConfig& config,
                   const std::function<void(std::uintmax_t, std::uintmax_t)>& onProgress)
 {
@@ -267,7 +284,7 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
     WinHttpHandle connection;
     connection.value = WinHttpConnect(session.value, host.c_str(), parts.nPort, 0);
     if (!connection.value)
-        throw std::runtime_error("无法连接模型下载服务器");
+        throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
 
     WinHttpHandle request;
     request.value = WinHttpOpenRequest(
@@ -280,7 +297,7 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
     if (!WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
         || !WinHttpReceiveResponse(request.value, nullptr))
-        throw std::runtime_error("扩展 OCR 模型下载失败，请检查网络或代理设置");
+        throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
 
     DWORD status = 0;
     DWORD statusSize = sizeof(status);
@@ -288,6 +305,8 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
                         WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
                         WINHTTP_NO_HEADER_INDEX);
+    if (status == 408 || status == 504)
+        throw std::runtime_error("模型下载超时（HTTP " + std::to_string(status) + "）。" + downloadNetworkHint(config));
     if (status != 200)
         throw std::runtime_error("模型下载服务器返回 HTTP " + std::to_string(status));
 
@@ -308,13 +327,13 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
         {
             DWORD available = 0;
             if (!WinHttpQueryDataAvailable(request.value, &available))
-                throw std::runtime_error("读取模型下载响应失败");
+                throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
             if (available == 0)
                 break;
             std::vector<char> buffer(available);
             DWORD received = 0;
             if (!WinHttpReadData(request.value, buffer.data(), available, &received))
-                throw std::runtime_error("读取模型数据失败");
+                throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
             out.write(buffer.data(), received);
             if (!out)
                 throw std::runtime_error("写入模型缓存失败，请检查磁盘空间");
@@ -325,7 +344,7 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
         }
         out.close();
         if (written != spec.bytes)
-            throw std::runtime_error("模型下载不完整，请重试");
+            throw std::runtime_error("模型下载不完整。" + downloadNetworkHint(config));
         if (spec.onnxTar && !hasOnnxTarEntries(partial))
             throw std::runtime_error("模型格式无效：缺少 inference.onnx 或 inference.yml");
         fs::remove(destination, ec);

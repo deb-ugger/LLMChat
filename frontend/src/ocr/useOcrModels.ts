@@ -5,7 +5,7 @@ import { toFriendlyError } from "../friendlyError";
 /** Model status and download polling shared by settings and image OCR. */
 export function useOcrModels() {
   const [status, setStatus] = useState<OcrModelStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ source: "status" | "download"; message: string } | null>(null);
   const mounted = useRef(false);
   const revision = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -26,12 +26,13 @@ export function useOcrModels() {
       const next = await api.getOcrModelStatus();
       if (mounted.current && request === revision.current) {
         setStatus(next);
-        setError(null);
+        // Status polling succeeding does not mean a failed download recovered.
+        setError(previous => previous?.source === "download" ? previous : null);
       }
       return next;
     } catch (cause) {
       if (mounted.current && request === revision.current)
-        setError(toFriendlyError(cause, "模型状态读取失败"));
+        setError({ source: "status", message: toFriendlyError(cause, "模型状态读取失败") });
       return null;
     }
   }, []);
@@ -49,6 +50,7 @@ export function useOcrModels() {
   const ensure = useCallback(async (mode: OcrMode) => {
     if (operation.current) throw new Error("模型操作正在进行，请稍候");
     operation.current = true;
+    if (mounted.current) setError(null);
     let polling = true;
     const poll = async () => {
       await refresh();
@@ -57,6 +59,10 @@ export function useOcrModels() {
     void poll();
     try {
       return publish(await api.ensureOcrMode(mode));
+    } catch (cause) {
+      if (mounted.current)
+        setError({ source: "download", message: toFriendlyError(cause, "模型下载失败，请检查网络和代理设置后重试") });
+      throw cause;
     } finally {
       polling = false;
       operation.current = false;
@@ -76,5 +82,5 @@ export function useOcrModels() {
     }
   }, [publish]);
 
-  return { status, error, refresh, ensure, remove };
+  return { status, error: error?.message ?? null, refresh, ensure, remove };
 }
