@@ -287,15 +287,22 @@ pub async fn speech_commit_chunk(folder: String, chunk: Chunk) -> Result<Job> {
 pub async fn speech_cancel_job(folder: String) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || cancel_job(Path::new(&folder))).await.map_err(err)?
 }
+fn read_preview(folder: &Path, page: usize, query: &str) -> Result<Preview> {
+    load_job(folder)?;
+    let needle = query.trim().to_lowercase();
+    let start = page.saturating_mul(100);
+    let mut total = 0;
+    let mut cues = Vec::new();
+    for cue in read_chunks(folder, false)?.into_iter().flat_map(|chunk| chunk.cues) {
+        if !needle.is_empty() && !cue.text.to_lowercase().contains(&needle) { continue; }
+        if total >= start && cues.len() < 100 { cues.push(cue); }
+        total += 1;
+    }
+    Ok(Preview { cues, total })
+}
 #[tauri::command]
-pub async fn speech_read_result(folder: String, page: usize) -> Result<Preview> {
-    tauri::async_runtime::spawn_blocking(move || {
-        load_job(Path::new(&folder))?;
-        let chunks = read_chunks(Path::new(&folder), false)?;
-        let total = chunks.iter().map(|c| c.cues.len()).sum();
-        let cues = chunks.into_iter().flat_map(|c| c.cues).skip(page.saturating_mul(100)).take(100).collect();
-        Ok(Preview { cues, total })
-    }).await.map_err(err)?
+pub async fn speech_read_result(folder: String, page: usize, query: Option<String>) -> Result<Preview> {
+    tauri::async_runtime::spawn_blocking(move || read_preview(Path::new(&folder), page, query.as_deref().unwrap_or(""))).await.map_err(err)?
 }
 
 #[cfg(test)]
@@ -314,6 +321,23 @@ mod tests {
         assert_eq!(resolved.parent().unwrap(), std::env::temp_dir().canonicalize().unwrap());
         assert!(resolved.file_name().unwrap().to_string_lossy().starts_with("llmchat-speech-rust-"));
         fs::remove_dir_all(resolved).unwrap();
+    }
+    #[test]
+    fn preview_search_matches_all_pages() {
+        let (root, job) = fixture();
+        let folder = Path::new(&job.folder);
+        let cues = (0..205).map(|index| Cue { start: index as f64 * 0.2, end: index as f64 * 0.2 + 0.1,
+            text: format!("测试 {} {index}", if index % 2 == 0 { "KEYWORD" } else { "普通字幕" }) }).collect();
+        commit(folder, Chunk { from: 0.0, to: 60.0, cues, text: "fixture".into() }).unwrap();
+        let first = read_preview(folder, 0, " keyword ").unwrap();
+        assert_eq!(first.total, 103); assert_eq!(first.cues.len(), 100);
+        let last = read_preview(folder, 1, "kEyWoRd").unwrap();
+        assert_eq!(last.total, 103); assert_eq!(last.cues.len(), 3);
+        assert_eq!(last.cues[0].text, "测试 KEYWORD 200");
+        assert_eq!(read_preview(folder, 2, "").unwrap().cues.len(), 5);
+        assert_eq!(read_preview(folder, 0, "普通字幕").unwrap().total, 102);
+        assert_eq!(read_preview(folder, 0, "不存在").unwrap().total, 0);
+        cleanup(root);
     }
     #[test]
     fn processing_options_roundtrip_and_legacy() {

@@ -21,5 +21,5 @@ export const speechNative = {
   decode: async (folder: string, offset: number) => new Float32Array(await invoke<ArrayBuffer>("speech_decode_chunk", { folder, offset })),
   commit: (folder: string, chunk: SpeechChunk) => invoke<SpeechJob>("speech_commit_chunk", { folder, chunk }),
   cancel: (folder: string) => invoke<void>("speech_cancel_job", { folder }),
-  preview: (folder: string, page: number) => invoke<{ cues: SpeechCue[]; total: number }>("speech_read_result", { folder, page }),
+  preview: (folder: string, page: number, query = "") => invoke<{ cues: SpeechCue[]; total: number }>("speech_read_result", { folder, page, query }),
 };

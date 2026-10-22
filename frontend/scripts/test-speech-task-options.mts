@@ -93,7 +93,7 @@ for (const status of ["queued", "running", "pausing", "paused", "error", "done"]
   assert.equal(format(current, "SRT").props.checked, true);
   assert.equal(format(current, "VTT").props.checked, false);
   assert.equal(format(current, "TXT").props.checked, true);
-  assert.equal(script(current), "中文简繁转换：不转换");
+  assert.equal(script(current), "中文简繁转换不转换");
   assert.equal(control(current, "中文简繁转换"), undefined, "操作页仅展示简繁设置，不提供编辑控件");
 }
 
@@ -107,7 +107,7 @@ let next = section(tree, "新任务选项");
 assert.equal(next.props.disabled, false, "切换到未开始任务后恢复编辑");
 assert.equal(control(next, "识别模型").props.value, nextModel.id);
 assert.equal(control(next, "录音语言").props.value, "english");
-assert.equal(script(next), "中文简繁转换：转为繁体");
+assert.equal(script(next), "中文简繁转换转为繁体");
 format(next, "SRT").props.onChange({ target: { checked: true } });
 control(next, "识别模型").props.onChange({ target: { value: chineseModel.id } });
 assert.deepEqual(Array.from(pref.formats), ["vtt", "srt"]);
