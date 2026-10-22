@@ -90,6 +90,8 @@ for (const status of ["queued", "running", "pausing", "paused", "error", "done"]
   assert.equal(control(current, "录音语言").props.value, "japanese");
   assert.equal(control(current, "识别方式").props.value, "local");
   assert.equal(control(current, "大模型校对").props.checked, false);
+  assert.equal(control(current, "校对模型").props.value, "未开启大模型校对");
+  assert.equal(control(current, "校对模型").props.disabled, true);
   assert.equal(format(current, "SRT").props.checked, true);
   assert.equal(format(current, "VTT").props.checked, false);
   assert.equal(format(current, "TXT").props.checked, true);
@@ -108,6 +110,13 @@ assert.equal(next.props.disabled, false, "切换到未开始任务后恢复编�
 assert.equal(control(next, "识别模型").props.value, nextModel.id);
 assert.equal(control(next, "录音语言").props.value, "english");
 assert.equal(script(next), "中文简繁转换转为繁体");
+assert.equal(control(next, "校对模型").props.disabled, true);
+control(next, "大模型校对").props.onChange({ target: { checked: true } }); tree = render(false);
+next = section(tree, "新任务选项");
+assert.equal(control(next, "校对模型").props.disabled, false, "开启大模型校对后才允许编辑模型");
+assert.equal(control(next, "校对模型").props.value, "new-proofreader", "关闭时不丢失原来选择的校对模型");
+control(next, "大模型校对").props.onChange({ target: { checked: false } }); tree = render(false);
+next = section(tree, "新任务选项");
 format(next, "SRT").props.onChange({ target: { checked: true } });
 control(next, "识别模型").props.onChange({ target: { value: chineseModel.id } });
 assert.deepEqual(Array.from(pref.formats), ["vtt", "srt"]);

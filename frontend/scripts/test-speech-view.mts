@@ -10,7 +10,7 @@ const model = { id: "test", label: "Whisper", description: "识别录音", sizeM
 const sourceAudio = { path: "D:\\录音.wav", name: "录音.wav", duration: 60 };
 const exports: any = {}, resets: string[] = [];
 const cancelled: string[] = [], confirmations: string[] = [];
-const openedFolders: string[] = [];
+const openedFolders: string[] = [], resized: Array<{ key: string; axis: string }> = [];
 let confirmResult = false;
 let items: any[] = [];
 let states: any[] = [], stateCursor = 0;
@@ -28,7 +28,7 @@ const mocks: Record<string, any> = {
   "@tauri-apps/api/core": { isTauri: () => false },
   "@tauri-apps/plugin-dialog": { confirm: async (message: string) => { confirmations.push(message); return confirmResult; } },
   "../speech/native": { speechNative: {} },
-  "../hooks/usePersistedSize": { usePersistedSize: (_key: string, size: number) => ({ size, beginResize() {} }) },
+  "../hooks/usePersistedSize": { usePersistedSize: (key: string, size: number, _min: number, _max: number, axis: string) => ({ size, beginResize() { resized.push({ key, axis }); } }) },
   "../speech/models": { useSpeechModels: () => ({ preferences: pref, selected: model.id, rows: [], download: null }) },
   "../speech/queue": { useSpeechQueue: () => ({ items }), speechQueue: {
     reset: async (id: string) => { resets.push(id); return "fresh"; },
@@ -69,7 +69,13 @@ for (const status of [null, "ready", "running", "pausing", "paused", "resetting"
   const locations = all(main).filter(node => node.props.className === "speech-output-location");
   assert.equal(locations.length, 1, "output path appears once in the right result area");
   assert.match(text(locations[0]), /输出到：E:\\LLMChat\\speech-output/);
-  const openFolder = all(locations[0]).find(node => node.type === "button" && text(node) === "打开输出目录");
+  const header = all(main).find(node => node.props.className === "speech-results-header");
+  assert.ok(all(header).includes(locations[0]), "输出位置与结果标题位于同一标题行");
+  assert.equal(all(header).filter(node => node.type === "input" && node.props.type === "search").length, 0, "标题区不放全局搜索");
+  assert.equal(all(main).filter(node => ["speech-progress", "speech-result-top", "speech-task-summary"].includes(node.props.className)).length, 0, "结果区移除重复任务信息和大进度卡");
+  all(main).find(node => node.props["aria-label"] === "调整参数与结果区域高度").props.onMouseDown({});
+  assert.deepEqual(resized.at(-1), { key: "llmchat-speech-options-height", axis: "y" });
+  const openFolder = all(locations[0]).find(node => node.props["aria-label"] === "打开输出目录");
   if (status && !["ready", "resetting"].includes(status)) {
     assert.ok(openFolder);
     openFolder.props.onClick();
@@ -83,7 +89,7 @@ for (const status of [null, "ready", "running", "pausing", "paused", "resetting"
   if (status === "resetting") assert.equal(all(aside).find(node => node.props["aria-label"] === "取消并清理").props.disabled, true);
   if (status === "running") {
     assert.equal(all(aside).filter(node => node.props["aria-label"] === "暂停转写").length, 1);
-    assert.equal(text(all(main).filter(node => node.props.className === "speech-stat")[1]), "0s本次处理用时", "processing time uses integer seconds");
+    assert.match(text(all(aside).find(node => node.props.className === "speech-job-timing")), /已用 0s.*预计剩余：首段完成后估算/, "用时与预计剩余放在队列中");
   }
   if (status === "paused") {
     const trash = all(aside).find(node => node.props["aria-label"] === "取消并清理");
@@ -115,7 +121,7 @@ items = [task("first", true), task("waiting", false), task("second", true)];
 states = [];
 let tree = renderEffects();
 const tabs = () => all(tree).filter(node => node.props.role === "tab");
-const title = () => text(all(all(tree).find(node => node.props.className === "speech-result-top")).find(node => node.type === "h3"));
+const title = () => text(tabs().find(node => node.props["aria-selected"]));
 assert.equal(tabs().length, 2, "仅开始后的文件出现结果标签页");
 assert.equal(title(), "first.wav");
 pending.at(-1).resolve({ cues: [{ start: 0, end: 1, text: "FIRST-CONTENT" }], total: 1 });
@@ -127,6 +133,11 @@ const firstRow = () => all(tree).find(node => node.type === "article" && text(no
 assert.match(firstRow().props.className, /is-playing/, "只为实际试听的音频启用渐变背景");
 assert.equal(all(firstRow()).filter(node => node.type === "progress").length, 0, "播放时用频谱替换细进度条");
 assert.doesNotMatch(all(tree).find(node => node.type === "article" && text(node).includes("second.wav")).props.className, /is-playing/);
+all(tree).find(node => node.type === "article" && text(node).includes("waiting.wav")).props.onClick(); tree = renderEffects();
+assert.equal(player().props.path, items[0].source.path, "切换任务不替换正在播放的媒体元素路径");
+assert.match(firstRow().props.className, /is-playing/, "切换到其他任务时原音频继续播放");
+assert.equal(title(), "");
+firstRow().props.onClick(); tree = renderEffects();
 player().props.onPlaybackChange(null); tree = renderEffects();
 assert.doesNotMatch(firstRow().props.className, /is-playing/);
 assert.equal(all(firstRow()).filter(node => node.type === "progress").length, 1, "暂停试听恢复转写进度条");
@@ -137,7 +148,16 @@ assert.doesNotMatch(text(tree), /FIRST-CONTENT/, "切页后不显示上一文件
 pending.at(-1).resolve({ cues: [{ start: 0, end: 1, text: "SECOND-CONTENT" }], total: 1 });
 await Promise.resolve(); tree = renderEffects();
 assert.match(text(tree), /SECOND-CONTENT/);
-const search = () => all(tree).find(node => node.props["aria-label"] === "搜索全部转写结果");
+const search = () => all(tree).find(node => node.props["aria-label"] === "搜索");
+const filePage = all(tree).find(node => node.props.role === "tabpanel");
+assert.ok(all(filePage).includes(search()), "搜索位于当前音频结果页内");
+assert.equal(search().props.placeholder, "搜索");
+assert.ok(all(all(filePage).find(node => node.props.role === "search")).some(node => node.type === "svg"), "搜索框包含搜索图标");
+const viewSwitch = all(tree).find(node => node.props.role === "radiogroup");
+all(viewSwitch).find(node => node.props.role === "radio" && text(node) === "纯文本").props.onClick(); tree = renderEffects();
+assert.equal(all(tree).find(node => node.props.role === "radio" && text(node) === "纯文本").props["aria-checked"], true);
+assert.ok(all(tree).find(node => node.props.className === "speech-preview"));
+all(tree).find(node => node.props.role === "radio" && text(node) === "时间轴").props.onClick(); tree = renderEffects();
 search().props.onChange({ target: { value: "CONTENT" } }); tree = renderEffects();
 assert.equal(pending.at(-1).query, "CONTENT");
 assert.equal(pending.at(-1).page, 0);

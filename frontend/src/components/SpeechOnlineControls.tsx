@@ -34,7 +34,7 @@ export function SpeechOnlineRunControls({ options }: { options?: SpeechJobOption
       <label>音频模型<input value={model} onChange={event => setSpeechPreferences({ onlineModel: event.target.value })} placeholder={SPEECH_ONLINE_PROVIDERS[provider].model || "支持 input_audio 的模型 ID"} /></label>
     </>}
     <label className="speech-preview-option"><input type="checkbox" checked={proofread} onChange={event => setSpeechPreferences({ proofread: event.target.checked })} />大模型校对</label>
-    {proofread && <label>校对模型<input list="speech-proofread-models" value={proofreadModel} onChange={event => setSpeechPreferences({ proofreadModel: event.target.value })} placeholder="通用中已配置的模型 ID" /><datalist id="speech-proofread-models">{models.map(model => <option key={model} value={model} />)}</datalist></label>}
+    <label>校对模型<input list="speech-proofread-models" disabled={!proofread} value={proofread ? proofreadModel : "未开启大模型校对"} title={proofread ? proofreadModel : "未开启大模型校对"} onChange={event => setSpeechPreferences({ proofreadModel: event.target.value })} placeholder="通用中已配置的模型 ID" /><datalist id="speech-proofread-models">{models.map(model => <option key={model} value={model} />)}</datalist></label>
     {(mode === "online" || proofread) && <p className="hint">在线识别上传音频，校对上传字幕，可能产生费用。{mode === "online" && "在线时间戳由模型估计。"}</p>}
     {!readOnly && error && <p className="speech-error">{error}</p>}
   </div>;
