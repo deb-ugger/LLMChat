@@ -151,16 +151,19 @@
 .speech-range-dialog-footer > div { display: flex; justify-content: flex-end; gap: 8px; margin-left: auto; }
 .speech-range-editor { font-size: 15px; }
 .speech-range-timeline { position: sticky; top: 0; z-index: 2; padding-top: 1px; background: white; }
-.speech-range-bar { position: relative; height: 10px; margin: 18px 4px 8px; border: 1px solid #819fc7; border-radius: 3px; background: #d1dff1; cursor: crosshair; touch-action: none; }
+.speech-range-bar { position: relative; height: 10px; margin: 30px 4px 8px; border: 1px solid #819fc7; border-radius: 3px; background: #d1dff1; cursor: crosshair; touch-action: none; }
 .speech-range-bar::before { content: ""; position: absolute; inset: -8px 0; }
 .speech-range-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .speech-range-bar.is-readonly { cursor: default; }
 .speech-range-segment { position: absolute; top: 1px; bottom: 1px; min-width: 2px; background: #709ad7; cursor: pointer; }
 .speech-range-segment.is-active { background: #245ba8; box-shadow: 0 0 0 2px #245ba82b; }
+.speech-range-indicator { position: absolute; top: -29px; left: 50%; transform: translateX(-50%); color: #bc421d; pointer-events: none; }
 .speech-view .speech-range-handle { position: absolute; top: -5px; width: 6px; height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent; touch-action: none; cursor: ew-resize; }
-.speech-range-handle::after { content: ""; position: absolute; top: 0; bottom: 0; width: 6px; border-color: #b34c23; border-style: solid; border-width: 0; }
-.speech-range-handle.is-start::after { left: 2px; border-left-width: 1.5px; border-top-width: 1.5px; }
-.speech-range-handle.is-end::after { right: 2px; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+.speech-view button.speech-range-handle:is(:hover, :focus, :focus-visible, :active) { background: transparent; border: 0; outline: none; box-shadow: none; }
+.speech-range-handle::after { --range-stroke: 2.55px; content: ""; position: absolute; top: 0; bottom: 0; width: 6px; border-color: #b34c23; border-style: solid; border-width: 0; transition: transform 120ms, border-color 120ms; }
+.speech-range-handle.is-start::after { left: 2px; border-left-width: var(--range-stroke); border-top-width: var(--range-stroke); }
+.speech-range-handle.is-end::after { right: 2px; border-right-width: var(--range-stroke); border-bottom-width: var(--range-stroke); }
+.speech-range-segment.is-active .speech-range-handle::after { --range-stroke: 3.25px; border-color: #bc421d; transform: scale(1.12); }
 .speech-range-handle[aria-disabled="true"] { cursor: pointer; }
 .speech-range-handle.is-start { left: -3px; }
 .speech-range-handle.is-end { right: -3px; }

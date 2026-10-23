@@ -151,6 +151,7 @@ export function SpeechRangeEditor({ duration, ranges = [], disabled, onChange }:
         {ranges.map((range, index) => <div key={index} className={`speech-range-segment${highlighted === index ? " is-active" : ""}`} title={rangeLabel(index)} style={{ left: `${range.start / duration * 100}%`, width: `${(range.end - range.start) / duration * 100}%` }}
           onMouseEnter={() => { setHovered(index); list.current?.children[index]?.scrollIntoView({ block: "nearest" }); }} onMouseLeave={() => setHovered(null)}
           onContextMenu={event => context(event, index)} onClick={event => { event.stopPropagation(); setMenu(null); select(index); bar.current?.focus(); }}>
+          {highlighted === index && <svg className="speech-range-indicator" width="16" height="22" viewBox="0 0 16 22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 2v16M3 13l5 5 5-5" /></svg>}
           {(["start", "end"] as const).map(edge => <button type="button" role="slider" className={`speech-range-handle is-${edge}`} key={edge} aria-disabled={disabled}
             aria-label={`片段 ${index + 1} ${edge === "start" ? "开始" : "结束"}`} aria-valuemin={0} aria-valuemax={duration} aria-valuenow={range[edge]} aria-valuetext={time(range[edge])}
             onClick={event => event.stopPropagation()} onFocus={() => { setActive({ index, edge }); setHovered(null); }} onKeyDown={event => nudge(event, index, edge)}
