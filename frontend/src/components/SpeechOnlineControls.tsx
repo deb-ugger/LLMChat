@@ -16,8 +16,8 @@ export function SpeechOnlineRunControls({ options }: { options?: SpeechJobOption
         const provider = event.target.value as SpeechOnlineProvider;
         setSpeechPreferences({ onlineProvider: provider, onlineModel: SPEECH_ONLINE_PROVIDERS[provider].model });
       }}>{Object.entries(SPEECH_ONLINE_PROVIDERS).map(([id, provider]) => <option key={id} value={id}>{provider.label}</option>)}</select></label>
-      <label>音频模型<input value={model} onChange={event => setSpeechPreferences({ onlineModel: event.target.value })} placeholder={SPEECH_ONLINE_PROVIDERS[provider].model || "支持 input_audio 的模型 ID"} /></label>
-      <p className="hint">在线识别上传音频，时间戳由模型估计，可能产生费用。</p>
+      <div className="speech-online-model"><label>音频模型<input value={model} title={model} onChange={event => setSpeechPreferences({ onlineModel: event.target.value })} placeholder={SPEECH_ONLINE_PROVIDERS[provider].model || "支持 input_audio 的模型 ID"} /></label>
+      <p className="hint">音频将上传；时间戳由模型估计，可能产生费用。</p></div>
     </>}
   </div>;
 }
