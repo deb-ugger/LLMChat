@@ -46,6 +46,8 @@
 .speech-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .speech-settings { flex-shrink: 0; height: var(--speech-options-height, 150px); min-height: 96px; max-height: calc(100% - 240px); overflow: auto; padding: 12px 16px; container: speech-options / inline-size; }
 .speech-settings h3 { margin: 0 0 8px; font-size: 14px; }
+.speech-task-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 8px; }
+.speech-task-heading h3 { margin: 0; }
 .speech-task-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); align-items: start; gap: 10px 16px; min-width: 0; }
 .speech-task-fields { display: contents; border: 0; padding: 0; margin: 0; min-width: 0; }
 .speech-recognition-group, .speech-output-group, .speech-option-group > .speech-processing-options { display: contents; }
@@ -120,38 +122,54 @@
 .speech-volume-popup input { writing-mode: vertical-lr; direction: rtl; height: 108px; width: 22px; accent-color: var(--accent); }
 .speech-volume-popup span, .speech-player-error { color: var(--text-muted); font-size: 13px; }
 .speech-player-error { flex-basis: 100%; }
-.speech-range-editor { flex-shrink: 0; padding: 0 20px 12px; max-height: 280px; overflow: auto; font-size: 12px; }
-.speech-range-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
-.speech-range-heading strong { font-size: 13px; }
-.speech-range-heading > span { color: var(--text-muted); }
-.speech-range-heading > div { display: flex; gap: 4px; }
-.speech-range-heading button { padding: 3px 7px; border: 0; font-size: 12px; background: #f1f4f8; }
-.speech-range-heading button[aria-pressed="true"] { color: var(--accent-ink); background: #e6efff; }
-.speech-range-bar { position: relative; height: 24px; margin: 9px 4px 3px; border-radius: 4px; background: #e7edf5; cursor: crosshair; touch-action: none; }
+.speech-range-option { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
+.speech-range-option-label { font-weight: 600; }
+.speech-range-option-summary { color: var(--text-muted); }
+.speech-range-option > button { height: 30px; padding: 4px 9px; border-radius: 7px; font-size: 13px; }
+.speech-range-dialog { width: min(900px, calc(100vw - 40px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border); border-radius: 14px; background: white; color: var(--text); box-shadow: var(--shadow-md); }
+.speech-range-dialog[open] { display: flex; flex-direction: column; }
+.speech-range-confirm { width: min(420px, calc(100vw - 40px)); }
+.speech-range-confirm .speech-range-dialog-body p { margin: 8px 0 0; font-size: 14px; line-height: 1.6; }
+.speech-view .speech-range-discard { color: var(--danger); }
+.speech-range-dialog::backdrop { background: #16223966; }
+.speech-range-dialog-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+.speech-range-dialog-header > div { min-width: 0; }
+.speech-range-dialog-header h2 { margin: 0; font-size: 18px; }
+.speech-range-dialog-header h2 span { margin-left: 10px; padding: 2px 7px; border-radius: 5px; background: var(--bg-muted); color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.speech-range-dialog-header p { margin: 4px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-muted); }
+.speech-range-dialog-header > button { flex-shrink: 0; width: 30px; height: 30px; padding: 0; border: 0; font-size: 24px; }
+.speech-range-dialog-body { overflow: auto; padding: 8px 20px 18px; }
+.speech-range-dialog-footer { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); }
+.speech-range-dialog-footer > span { font-size: 12px; color: var(--text-muted); }
+.speech-range-dialog-footer > div { display: flex; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.speech-range-editor { font-size: 13px; }
+.speech-range-bar { position: relative; height: 10px; margin: 18px 4px 8px; border: 1px solid #819fc7; border-radius: 3px; background: #d1dff1; cursor: crosshair; touch-action: none; }
+.speech-range-bar::before { content: ""; position: absolute; inset: -8px 0; }
 .speech-range-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .speech-range-bar.is-readonly { cursor: default; }
-.speech-range-segment { position: absolute; top: 0; bottom: 0; min-width: 2px; background: #b8d0f8; }
-.speech-range-segment.is-active { background: #7ca8ee; }
-.speech-view .speech-range-handle { position: absolute; top: -4px; width: 8px; height: 32px; padding: 0; border: 0; border-radius: 3px; background: #356ac1; touch-action: none; cursor: ew-resize; }
-.speech-range-handle.is-start { left: -4px; }
-.speech-range-handle.is-end { right: -4px; }
+.speech-range-segment { position: absolute; top: 0; bottom: 0; min-width: 2px; background: #4c86dc; }
+.speech-range-segment.is-active { background: #205fc2; }
+.speech-view .speech-range-handle { position: absolute; top: -5px; width: 6px; height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent; touch-action: none; cursor: ew-resize; }
+.speech-range-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: #153f84; }
+.speech-range-handle.is-start { left: -3px; }
+.speech-range-handle.is-end { right: -3px; }
 .speech-range-handle:focus { z-index: 1; }
 .speech-range-anchor { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #ce6f25; pointer-events: none; }
 .speech-range-scale { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-muted); }
-.speech-controls .speech-range-hint { min-height: 36px; margin: 6px 0; font-size: 12px; line-height: 1.5; }
-.speech-range-step { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.speech-range-editor .speech-range-hint { min-height: 36px; margin: 6px 0; font-size: 12px; line-height: 1.5; }
+.speech-range-dialog .speech-range-step { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
 .speech-range-step input { width: 60px; height: 26px; padding: 3px 6px; }
 .speech-range-editor input { border: 1px solid #d4deef; border-radius: 6px; font: inherit; color: #355381; background: white; }
 .speech-range-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; margin: 6px 0; }
 .speech-range-summary { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.speech-range-list { max-height: 140px; overflow: auto; }
+.speech-range-list { margin-top: 12px; }
 .speech-range-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) minmax(0, 1fr) 24px; align-items: center; gap: 5px; margin-top: 6px; }
 .speech-range-row > span { color: var(--text-muted); }
-.speech-range-row label { min-width: 0; color: var(--text-muted); }
+.speech-range-dialog .speech-range-row label { display: block; min-width: 0; color: var(--text-muted); font-weight: 400; }
 .speech-range-row input { display: block; width: 100%; height: 28px; margin-top: 3px; padding: 4px; font-variant-numeric: tabular-nums; }
 .speech-range-row button { align-self: end; height: 28px; padding: 2px; border: 0; color: var(--danger); font-size: 18px; }
 .speech-range-row input:disabled { background: #f5f7fa; }
-.speech-controls .speech-range-error { color: var(--danger); }
+.speech-range-editor .speech-range-error { color: var(--danger); }
 .speech-processing-options label { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
 .speech-processing-options select { max-width: 100%; width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: white; font: inherit; }
 .speech-processing-options input:not([type="checkbox"]) { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: white; color: var(--text); font: inherit; }

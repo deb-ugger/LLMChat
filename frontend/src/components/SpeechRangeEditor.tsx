@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { formatSpeechTime, speechRangeProgress, validateSpeechRanges, type SpeechRange } from "../speech/transcription";
 
 function parseTime(text: string) {
@@ -9,9 +9,65 @@ function parseTime(text: string) {
   return Math.round(values.reduce((sum, value) => sum * 60 + value, 0) * 1000) / 1000;
 }
 type Edge = "start" | "end";
-export function SpeechRangeEditor({ duration, ranges, disabled, onChange }: {
+type RangeProps = {
   duration: number; ranges?: SpeechRange[]; disabled: boolean; onChange: (ranges: SpeechRange[] | undefined) => void;
-}) {
+};
+export function SpeechRangePicker({ name, duration, ranges, disabled, onChange }: RangeProps & { name: string }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const confirmation = useRef<HTMLDialogElement>(null);
+  const latestDraft = useRef<SpeechRange[]>([]);
+  const titleId = useId();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<SpeechRange[]>([]);
+  useEffect(() => {
+    const element = dialog.current;
+    if (open && element && !element.open) element.showModal();
+  }, [open]);
+  const changeDraft = (next: SpeechRange[]) => { latestDraft.current = next; setDraft(next); };
+  const finishTyping = () => {
+    const focused = document.activeElement as HTMLElement | null;
+    if (focused && dialog.current?.contains(focused)) focused.blur();
+  };
+  const close = () => {
+    finishTyping();
+    const saved = ranges ?? [];
+    const changed = !disabled && (latestDraft.current.length !== saved.length || latestDraft.current.some((range, index) => range.start !== saved[index]?.start || range.end !== saved[index]?.end));
+    if (changed) confirmation.current?.showModal();
+    else dialog.current?.close();
+  };
+  const save = () => {
+    finishTyping();
+    onChange(latestDraft.current.length ? latestDraft.current : undefined);
+    confirmation.current?.close(); dialog.current?.close();
+  };
+  return <div className="speech-range-option">
+    <span className="speech-range-option-label">识别范围</span><span className="speech-range-option-summary">{ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段"}</span>
+    <button type="button" aria-haspopup="dialog" onClick={() => {
+      changeDraft(ranges?.map(range => ({ ...range })) ?? (disabled ? [{ start: 0, end: duration }] : []));
+      setOpen(true);
+    }}>选取片段</button>
+    <dialog ref={dialog} className="speech-range-dialog" aria-labelledby={titleId} onClose={() => setOpen(false)} onCancel={event => { event.preventDefault(); close(); }} onClick={event => {
+      if (event.target !== event.currentTarget) return;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) close();
+    }}>
+      <div className="speech-range-dialog-header"><div><h2 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h2><p title={name}>{name}</p></div><button type="button" aria-label="关闭选段窗口" onClick={close}>×</button></div>
+      <div className="speech-range-dialog-body">{open && <SpeechRangeEditor duration={duration} ranges={draft} disabled={disabled} onChange={next => changeDraft(next ?? [])} />}</div>
+      <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={close}>{disabled ? "关闭" : "取消"}</button>
+        {!disabled && <button type="button" className="speech-primary" onClick={save}>保存选段</button>}</div></div>
+    </dialog>
+    <dialog ref={confirmation} className="speech-range-dialog speech-range-confirm" role="alertdialog" aria-labelledby={`${titleId}-unsaved`}>
+      <div className="speech-range-dialog-header"><div><h2 id={`${titleId}-unsaved`}>选段尚未保存</h2></div></div>
+      <div className="speech-range-dialog-body"><p>已修改的片段尚未保存，是否保存后关闭？</p></div>
+      <div className="speech-range-dialog-footer"><div>
+        <button type="button" onClick={() => confirmation.current?.close()}>继续编辑</button>
+        <button type="button" className="speech-range-discard" onClick={() => { confirmation.current?.close(); dialog.current?.close(); }}>放弃修改</button>
+        <button type="button" className="speech-primary" onClick={save}>保存并关闭</button>
+      </div></div>
+    </dialog>
+  </div>;
+}
+export function SpeechRangeEditor({ duration, ranges = [], disabled, onChange }: RangeProps) {
   const bar = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<number | null>(null);
   const [active, setActive] = useState<{ index: number; edge: Edge }>({ index: 0, edge: "start" });
@@ -47,11 +103,6 @@ export function SpeechRangeEditor({ duration, ranges, disabled, onChange }: {
     if (!disabled && event.currentTarget.hasPointerCapture(event.pointerId)) move(index, edge, point(event.clientX));
   };
   return <section className="speech-range-editor" aria-label="音频识别范围">
-    <div className="speech-range-heading"><strong>识别范围</strong>{disabled ? <span>{ranges ? "所选片段" : "整段音频"}</span> : <div>
-      <button type="button" aria-pressed={ranges === undefined} onClick={() => { onChange(undefined); setAnchor(null); setError(""); }}>整段</button>
-      <button type="button" aria-pressed={ranges !== undefined} onClick={() => { if (!ranges) onChange([]); setAnchor(null); setError(""); }}>选取片段</button>
-    </div>}</div>
-    {ranges !== undefined && <>
       <div ref={bar} className={`speech-range-bar${disabled ? " is-readonly" : ""}`} role="group" aria-label="音频选段时间轴" tabIndex={disabled ? -1 : 0}
         onKeyDown={event => nudge(event, active.index, active.edge)} onClick={event => {
           if (disabled) return;
@@ -82,6 +133,5 @@ export function SpeechRangeEditor({ duration, ranges, disabled, onChange }: {
           }} /></label>)}
         {!disabled && <button type="button" aria-label={`删除片段 ${index + 1}`} onClick={() => { apply(ranges.filter((_, i) => i !== index)); setActive({ index: 0, edge: "start" }); }}>×</button>}
       </div>)}</div>
-    </>}
   </section>;
 }

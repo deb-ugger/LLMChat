@@ -11,7 +11,7 @@ import { speechNative, type SpeechJobOptions } from "../speech/native";
 import { SPEECH_MODELS, estimateSpeechProgress, formatSpeechTime, speechRangeProgress, type SpeechCue, type SpeechModel, type SpeechFormat, type ChineseScript } from "../speech/transcription";
 import { DownloadProgress } from "../speech/DownloadProgress";
 import { SpeechAudioPlayer, SpeechWaveform, type SpeechPlayback } from "./SpeechAudioPlayer";
-import { SpeechRangeEditor } from "./SpeechRangeEditor";
+import { SpeechRangePicker } from "./SpeechRangeEditor";
 import { SpeechOnlineRunControls, SpeechProofreadControls } from "./SpeechOnlineControls";
 
 const labels: Record<SpeechQueueItem["status"], string> = { ready: "等待开始", queued: "排队中", running: "识别中", pausing: "暂停中", paused: "已暂停", resetting: "清理中", done: "已完成", error: "失败", cancelling: "取消中" };
@@ -214,14 +214,15 @@ export function SpeechView({ active }: { active: boolean }) {
             {visibleItems.length === 0 && queue.items.length > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
           </div>
           {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
-          {selected && <SpeechRangeEditor key={`ranges-${selected.id}`} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
           <div className="speech-actions"><button className="speech-primary" disabled={queueTab === "completed" || !toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={queueTab === "completed" || !running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
         </section>
       </aside>
       <div className="speech-splitter is-vertical" role="separator" aria-label="调整左右布局" aria-orientation="vertical" onMouseDown={event => left.beginResize(event, 1)} />
       <main className="speech-right">
         <section className="speech-settings">
-          <h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
+          <div className="speech-task-heading"><h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
+            {selected && <SpeechRangePicker key={`ranges-${selected.id}`} name={selected.source.name} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
+          </div>
           <div className="speech-task-layout">
           <fieldset className="speech-task-fields" aria-label={taskOptions ? "当前任务参数" : "新任务选项"} disabled={!!taskOptions}>
           <div className="speech-option-group speech-recognition-group" role="group" aria-label="识别设置">
