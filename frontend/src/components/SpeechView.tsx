@@ -11,7 +11,7 @@ import { speechNative, type SpeechJobOptions } from "../speech/native";
 import { SPEECH_MODELS, estimateSpeechProgress, formatSpeechTime, speechRangeProgress, type SpeechCue, type SpeechModel, type SpeechFormat, type ChineseScript } from "../speech/transcription";
 import { DownloadProgress } from "../speech/DownloadProgress";
 import { SpeechAudioPlayer, SpeechWaveform, type SpeechPlayback } from "./SpeechAudioPlayer";
-import { SpeechRangePicker } from "./SpeechRangeEditor";
+import { SpeechRangePicker, SpeechRangePage } from "./SpeechRangeEditor";
 import { SpeechOnlineRunControls, SpeechProofreadControls } from "./SpeechOnlineControls";
 
 const labels: Record<SpeechQueueItem["status"], string> = { ready: "等待开始", queued: "排队中", running: "识别中", pausing: "暂停中", paused: "已暂停", resetting: "清理中", done: "已完成", error: "失败", cancelling: "取消中" };
@@ -82,6 +82,8 @@ export function SpeechView({ active }: { active: boolean }) {
   const [width, setWidth] = useState(window.innerWidth - 124);
   const [height, setHeight] = useState(window.innerHeight - 36);
   const [queueTab, setQueueTab] = useState<"unfinished" | "completed">("unfinished");
+  const [rangeTabs, setRangeTabs] = useState<string[]>([]);
+  const [activeRangeId, setActiveRangeId] = useState<string | null>(null);
   const left = usePersistedSize("llmchat-speech-left", 340, 260, Math.max(260, width * .6), "x");
   const upper = usePersistedSize("llmchat-speech-options-height", 150, 96, Math.max(96, height - 240), "y");
   const currentItems = queue.items.filter(item => !item.fromHistory);
@@ -94,6 +96,8 @@ export function SpeechView({ active }: { active: boolean }) {
   const online = (taskOptions ? taskOptions.processing?.mode : pref.mode) === "online";
   const resultItems = visibleItems.filter(item => item.folder && item.showOutput && !["cancelling", "resetting"].includes(item.status));
   const result = resultItems.find(item => item.id === selected?.id);
+  const rangeItems = rangeTabs.flatMap(id => { const item = queue.items.find(item => item.id === id); return item ? [item] : []; });
+  const showingRange = rangeItems.some(item => item.id === activeRangeId);
   const matchingPreview = preview?.id === result?.id && preview?.query === query ? preview : null;
   const resultPreview = matchingPreview?.page === page ? matchingPreview : null;
   const modelInfo = SPEECH_MODELS.find(model => model.id === selectedModel)!;
@@ -176,6 +180,7 @@ export function SpeechView({ active }: { active: boolean }) {
   const outputFolder = outputItem?.folder || pref.outputRoot;
   const selectFile = (item: SpeechQueueItem) => {
     setSelectedId(item.id);
+    setActiveRangeId(null);
     setPage(0); setSearch("");
   };
   const cancelFile = async (item: SpeechQueueItem) => {
@@ -229,7 +234,7 @@ export function SpeechView({ active }: { active: boolean }) {
           <SpeechLanguageOption options={taskOptions} />
           </div>
           </fieldset>
-          {selected && <SpeechRangePicker key={`ranges-${selected.id}`} name={selected.source.name} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
+          {selected && <SpeechRangePicker ranges={selected.options.ranges} onOpen={() => { setRangeTabs(tabs => tabs.includes(selected.id) ? tabs : [...tabs, selected.id]); setActiveRangeId(selected.id); }} />}
           <fieldset className="speech-task-fields" aria-label="校对与输出设置" disabled={!!taskOptions}>
           <SpeechProofreadControls options={taskOptions} />
           <div className="speech-option-group speech-output-group" role="group" aria-label="输出设置"><SpeechRunOptions options={taskOptions} /></div>
@@ -240,22 +245,25 @@ export function SpeechView({ active }: { active: boolean }) {
         <div className="speech-splitter is-horizontal" role="separator" aria-label="调整参数与结果区域高度" aria-orientation="horizontal" onMouseDown={event => upper.beginResize(event, 1)} />
       <section className="speech-results">
         <div className="speech-results-header"><h2 className="speech-results-heading">转写结果</h2></div>
-        {result && <div className="speech-result-tabs" role="tablist" aria-label="转写结果文件">{resultItems.map((item, index) => <button type="button" role="tab" id={`speech-tab-${item.id}`} aria-controls="speech-result-page" aria-selected={item.id === result.id} tabIndex={item.id === result.id ? 0 : -1} title={item.source.name} key={item.id} onClick={() => { selectFile(item); setNotice(""); }} onKeyDown={event => {
+        {(result || rangeItems.length > 0) && <div className="speech-result-tabs" role="tablist" aria-label="转写结果文件">{resultItems.map((item, index) => <button type="button" role="tab" id={`speech-tab-${item.id}`} aria-controls="speech-result-page" aria-selected={!showingRange && item.id === result?.id} tabIndex={!showingRange && item.id === result?.id ? 0 : -1} title={item.source.name} key={item.id} onClick={() => { selectFile(item); setNotice(""); }} onKeyDown={event => {
           const next = event.key === "ArrowRight" ? (index + 1) % resultItems.length : event.key === "ArrowLeft" ? (index + resultItems.length - 1) % resultItems.length : event.key === "Home" ? 0 : event.key === "End" ? resultItems.length - 1 : -1;
           if (next < 0) return;
           event.preventDefault(); selectFile(resultItems[next]); setNotice("");
           event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
-        }}>{item.source.name}</button>)}</div>}
+        }}>{item.source.name}</button>)}{rangeItems.map(item => <button type="button" role="tab" id={`speech-range-tab-${item.id}`} aria-controls={`speech-range-page-${item.id}`} aria-selected={showingRange && activeRangeId === item.id} key={`range-${item.id}`} title={`识别范围 · ${item.source.name}`} onClick={() => { setQueueTab(item.status === "done" ? "completed" : "unfinished"); selectFile(item); setActiveRangeId(item.id); }}>识别范围 · {item.source.name}</button>)}</div>}
         <DownloadProgress download={models.download} />
         {(error || queue.error || models.error) && <div className="speech-error" role="alert">{error || queue.error || models.error}<button onClick={() => { setError(""); speechQueue.clearError(); if (models.error) void refreshSpeechModels(); }}>关闭</button></div>}
         {notice && <div className="speech-notice" role="status">{notice}</div>}
-        {result ? <div className="speech-result-page" id="speech-result-page" role="tabpanel" aria-labelledby={`speech-tab-${result.id}`}>
+        {rangeItems.map(item => <div key={item.id} id={`speech-range-page-${item.id}`} role="tabpanel" aria-labelledby={`speech-range-tab-${item.id}`} className="speech-range-tab-page" hidden={!showingRange || activeRangeId !== item.id}>
+          <SpeechRangePage name={item.source.name} duration={item.source.duration} ranges={item.options.ranges} disabled={!!item.folder || ["queued", "running", "pausing", "resetting", "cancelling"].includes(item.status)} onChange={ranges => speechQueue.setRanges(item.id, ranges)} onClose={() => { setRangeTabs(tabs => tabs.filter(id => id !== item.id)); setActiveRangeId(null); }} />
+        </div>)}
+        {!showingRange && (result ? <div className="speech-result-page" id="speech-result-page" role="tabpanel" aria-labelledby={`speech-tab-${result.id}`}>
           <div className="speech-result-tools"><div className="speech-display-switch" role="radiogroup" aria-label="结果显示方式"><button role="radio" aria-checked={view === "cues"} onClick={() => setView("cues")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M9 5h12M9 12h12M9 19h12"/><circle cx="3" cy="5" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="19" r="1"/></svg>时间轴</button><button role="radio" aria-checked={view === "text"} onClick={() => setView("text")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h16M4 20h10"/></svg>纯文本</button></div>
           <div className="speech-search" role="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" aria-label="搜索" title="搜索当前音频转写结果" placeholder="搜索" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} />{query && <><span role="status">{resultPreview ? `找到 ${resultPreview.total} 段` : "搜索中…"}</span><button aria-label="清除搜索" onClick={() => { setSearch(""); setPage(0); }}>×</button></>}</div>
           <button disabled={!pageText} onClick={() => void copyText(pageText).then(ok => setNotice(ok ? "已复制本页文本" : "复制失败"))}>复制本页文本</button></div>
           {!resultPreview?.cues.length ? <div className="speech-empty">{query ? resultPreview ? "未找到匹配内容。" : "正在搜索…" : "每段识别完成并写入文件后，结果会显示在这里。"}</div> : view === "text" ? <pre className="speech-preview">{highlight(pageText, query)}</pre> : <div className="speech-cues">{resultPreview.cues.map((cue, index) => <div className="speech-cue" key={page * 100 + index}><span><b>{page * 100 + index + 1}</b><time>{formatSpeechTime(cue.start, ".")}<br />{formatSpeechTime(cue.end, ".")}</time></span><p>{highlight(cue.text, query)}</p></div>)}</div>}
           {pages > 1 && <div className="speech-pagination"><button disabled={!page} onClick={() => setPage(value => value - 1)}>上一页</button><span>{page + 1} / {pages}</span><button disabled={page + 1 >= pages} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
-        </div> : <div className="speech-empty">开始处理并开启文件的结果显示后，可在这里切换查看转写结果。</div>}
+        </div> : <div className="speech-empty">开始处理并开启文件的结果显示后，可在这里切换查看转写结果。</div>)}
       </section>
       </main>
     </div>
