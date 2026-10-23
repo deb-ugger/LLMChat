@@ -13,12 +13,13 @@ const cancelled: string[] = [], confirmations: string[] = [];
 const openedFolders: string[] = [], resized: Array<{ key: string; axis: string }> = [];
 let confirmResult = false;
 let items: any[] = [];
-let states: any[] = [], stateCursor = 0;
+let states: any[] = [], stateCursor = 0, refCursor = 0;
+const refs: any[] = [];
 const helpers: any = {};
 vm.runInNewContext(compile(readFileSync(new URL("../src/speech/transcription.ts", import.meta.url), "utf8")), { exports: helpers });
-const jsx = (type: any, props: any) => ({ type, props });
+const jsx = (type: any, props: any, key: any) => ({ type, props, key });
 const mocks: Record<string, any> = {
-  react: { useEffect() {}, useRef: (current: any) => ({ current }), useState: (initial: any) => {
+  react: { useEffect() {}, useRef: (current: any) => refs[refCursor++] ??= { current }, useState: (initial: any) => {
     const index = stateCursor++;
     if (!(index in states)) states[index] = initial;
     return [states[index], (value: any) => { states[index] = typeof value === "function" ? value(states[index]) : value; }];
@@ -49,8 +50,8 @@ function text(node: any): string {
   return node?.props ? text(node.props.children) : typeof node === "string" || typeof node === "number" ? String(node) : "";
 }
 function render(reset = false) {
-  if (reset) states = [];
-  stateCursor = 0;
+  if (reset) { states = []; refs.length = 0; }
+  stateCursor = 0; refCursor = 0;
   return exports.SpeechView({ active: true });
 }
 for (const status of [null, "ready", "running", "pausing", "paused", "resetting"]) {
@@ -128,16 +129,20 @@ pending.at(-1).resolve({ cues: [{ start: 0, end: 1, text: "FIRST-CONTENT" }], to
 await Promise.resolve(); tree = renderEffects();
 assert.match(text(tree), /FIRST-CONTENT/);
 const player = () => all(tree).find(node => node.props.onPlaybackChange);
+const positions = player().props.positions;
+positions.set(items[0].source.path, 17.25);
 player().props.onPlaybackChange({ path: items[0].source.path, analyser: { fixture: true } }); tree = renderEffects();
 const firstRow = () => all(tree).find(node => node.type === "article" && text(node).includes("first.wav"));
 assert.match(firstRow().props.className, /is-playing/, "只为实际试听的音频启用渐变背景");
 assert.equal(all(firstRow()).filter(node => node.type === "progress").length, 0, "播放时用频谱替换细进度条");
 assert.doesNotMatch(all(tree).find(node => node.type === "article" && text(node).includes("second.wav")).props.className, /is-playing/);
 all(tree).find(node => node.type === "article" && text(node).includes("waiting.wav")).props.onClick(); tree = renderEffects();
-assert.equal(player().props.path, items[0].source.path, "切换任务不替换正在播放的媒体元素路径");
-assert.match(firstRow().props.className, /is-playing/, "切换到其他任务时原音频继续播放");
+assert.equal(player().props.path, items[1].source.path, "切换任务后切换试听源");
+assert.equal(player().key, items[1].source.path, "切换文件时卸载旧播放器以中断试听");
+assert.equal(player().props.positions, positions, "各文件共用稳定的位置表");
 assert.equal(title(), "");
 firstRow().props.onClick(); tree = renderEffects();
+assert.equal(player().props.positions.get(items[0].source.path), 17.25, "切回音频后仍保留该文件试听位置");
 player().props.onPlaybackChange(null); tree = renderEffects();
 assert.doesNotMatch(firstRow().props.className, /is-playing/);
 assert.equal(all(firstRow()).filter(node => node.type === "progress").length, 1, "暂停试听恢复转写进度条");
@@ -188,14 +193,28 @@ all(waitingCard).find(node => node.props["aria-label"] === "开始转写").props
 assert.equal(tabs().length, 1); assert.equal(title(), "waiting.wav", "开始后新增对应文件页面");
 
 items.push({ ...task("history", true), status: "paused", fromHistory: true }); tree = renderEffects();
-assert.equal(tabs().length, 1, "history does not create a result page before explicit resume");
+assert.equal(tabs().length, 2, "恢复的历史任务无需重新识别就能显示结果标签");
 const historySection = all(tree).find(node => node.props["aria-label"] === "未完成任务");
 assert.match(text(historySection), /history.wav/);
+all(historySection).find(node => node.type === "article").props.onClick(); tree = renderEffects();
+assert.equal(title(), "history.wav");
+assert.equal(pending.at(-1).folder, items.at(-1).folder);
+pending.at(-1).resolve({ cues: [{ start: 0, end: 1, text: "SAVED-HISTORY-PREVIEW" }], total: 1 });
+await Promise.resolve(); tree = renderEffects();
+assert.match(text(tree), /SAVED-HISTORY-PREVIEW/, "历史任务直接读取已保存的转写结果");
+assert.equal(items.at(-1).fromHistory, true, "查看结果不启动任务或改写恢复状态");
 all(historySection).find(node => node.props["aria-label"] === "继续转写").props.onClick({ stopPropagation() {} }); tree = renderEffects();
 assert.equal(tabs().length, 2); assert.equal(title(), "history.wav");
 assert.equal(all(tree).filter(node => node.props["aria-label"] === "未完成任务").length, 0);
 let focused = false;
 tabs()[1].props.onKeyDown({ key: "Home", preventDefault() {}, currentTarget: { parentElement: { querySelectorAll: () => [{ focus() { focused = true; } }] } } }); tree = renderEffects();
 assert.equal(title(), "waiting.wav"); assert.equal(focused, true, "tab keyboard navigation focuses the selected tab");
+
+items = [{ ...task("only-history", true), status: "paused", fromHistory: true }]; states = []; refs.length = 0;
+tree = renderEffects();
+assert.equal(title(), "only-history.wav", "只有历史任务时自动选中并显示结果页");
+pending.at(-1).resolve({ cues: [{ start: 0, end: 1, text: "AUTO-HISTORY-PREVIEW" }], total: 1 });
+await Promise.resolve(); tree = renderEffects();
+assert.match(text(tree), /AUTO-HISTORY-PREVIEW/);
 effects.forEach(effect => effect?.cleanup?.());
-console.log("PASS: 队列布局、拖放提示、百分比、禁用清理、任务切换空态、结果搜索与分页、过期响应隔离");
+console.log("PASS: 任务切换中断试听并保留位置表、历史结果直接预览、布局、搜索分页与异步隔离");

@@ -34,7 +34,7 @@ const mocks: Record<string, any> = {
   "../hooks/usePersistedSize": { usePersistedSize: (_key: string, size: number) => ({ size, beginResize() {} }) },
   "../speech/transcription": helpers,
   "../speech/models": {
-    useSpeechModels: () => ({ preferences: pref, selected: pref.model, rows: [], download: null }),
+    useSpeechModels: () => ({ preferences: pref, selected: pref.model, rows: helpers.SPEECH_MODELS.map((model: any) => ({ model: model.id, installed: true, bytes: 1048576 })), download: null }),
     setSpeechPreferences: (patch: any) => Object.assign(pref, patch),
     selectSpeechModel: (model: string) => { pref.model = model; },
     SPEECH_ONLINE_PROVIDERS: { google: { label: "Gemini" }, qwen: { label: "通义 Omni" }, custom: { label: "自定义音频接口" } },
@@ -97,6 +97,13 @@ for (const status of ["queued", "running", "pausing", "paused", "error", "done"]
   assert.equal(format(current, "TXT").props.checked, true);
   assert.equal(script(current), "中文简繁转换不转换");
   assert.equal(control(current, "中文简繁转换"), undefined, "操作页仅展示简繁设置，不提供编辑控件");
+  const recognition = section(current, "识别设置"), proofread = section(current, "校对设置"), output = section(current, "输出设置");
+  assert.ok(control(recognition, "录音语言")); assert.ok(control(proofread, "校对模型")); assert.ok(format(output, "SRT"));
+  const modelField = all(recognition).find(node => node.props.className === "speech-local-model");
+  assert.ok(control(modelField, "识别模型"));
+  assert.match(text(modelField), /已下载.*1\.0 MiB/);
+  assert.ok(text(modelField).includes(localModel.description), "模型状态、大小和说明绑定在同一模型区域");
+  assert.doesNotMatch(text(output), /已下载/, "下载状态不散落到输出设置中");
 }
 
 items = [task("saved"), task("ready", savedOptions, { folder: "", status: "ready" })];

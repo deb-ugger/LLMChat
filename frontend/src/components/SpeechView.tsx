@@ -11,7 +11,7 @@ import { speechNative, type SpeechJobOptions } from "../speech/native";
 import { SPEECH_MODELS, estimateSpeechProgress, formatSpeechTime, type SpeechCue, type SpeechModel, type SpeechFormat, type ChineseScript } from "../speech/transcription";
 import { DownloadProgress } from "../speech/DownloadProgress";
 import { SpeechAudioPlayer, SpeechWaveform, type SpeechPlayback } from "./SpeechAudioPlayer";
-import { SpeechOnlineRunControls } from "./SpeechOnlineControls";
+import { SpeechOnlineRunControls, SpeechProofreadControls } from "./SpeechOnlineControls";
 
 const labels: Record<SpeechQueueItem["status"], string> = { ready: "等待开始", queued: "排队中", running: "识别中", pausing: "暂停中", paused: "已暂停", resetting: "清理中", done: "已完成", error: "失败", cancelling: "取消中" };
 const friendly = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -38,16 +38,20 @@ function TaskIcon({ action }: { action: "play" | "pause" | "trash" }) {
   </svg>;
 }
 
-export function SpeechRunOptions({ options }: { options?: SpeechJobOptions } = {}) {
+function SpeechLanguageOption({ options }: { options?: SpeechJobOptions }) {
   const { preferences: pref, selected } = useSpeechModels(false);
   const model = SPEECH_MODELS.find(model => model.id === (options?.model ?? selected))!;
   const online = (options ? options.processing?.mode : pref.mode) === "online";
   const language = !online && model.language !== "auto" ? model.language : options?.language ?? pref.language;
+  return <label>录音语言<select title="录音中说的语言" disabled={!online && model.language !== "auto"} value={language} onChange={event => setSpeechPreferences({ language: event.target.value })}>
+      {speechLanguages.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+    </select></label>;
+}
+
+export function SpeechRunOptions({ options }: { options?: SpeechJobOptions } = {}) {
+  const { preferences: pref } = useSpeechModels(false);
   const formats = options?.formats ?? pref.formats;
   return <div className="speech-processing-options">
-    <label>录音语言<select title="录音中说的语言" disabled={!online && model.language !== "auto"} value={language} onChange={event => setSpeechPreferences({ language: event.target.value })}>
-      {speechLanguages.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
-    </select></label>
     <label className="speech-chinese-script">中文简繁转换<output>{chineseScripts[options?.chineseScript ?? pref.chineseScript]}</output></label>
     <fieldset className="speech-format-options"><legend>输出文件</legend>{(["srt", "vtt", "txt"] as SpeechFormat[]).map(format => <label key={format}><input type="checkbox" checked={formats.includes(format)} onChange={event => setSpeechPreferences({ formats: event.target.checked ? [...pref.formats, format] : pref.formats.filter(item => item !== format) })} />{format.toUpperCase()}</label>)}</fieldset>
     {!formats.length && <p className="speech-error">至少选择一种输出格式。</p>}
@@ -73,18 +77,18 @@ export function SpeechView({ active }: { active: boolean }) {
   const initialized = useRef(false);
   const restored = useRef(new Set<string>());
   const workspace = useRef<HTMLDivElement>(null);
+  const listenPositions = useRef(new Map<string, number>());
   const [width, setWidth] = useState(window.innerWidth - 124);
   const [height, setHeight] = useState(window.innerHeight - 36);
   const left = usePersistedSize("llmchat-speech-left", 340, 260, Math.max(260, width * .6), "x");
   const upper = usePersistedSize("llmchat-speech-options-height", 150, 96, Math.max(96, height - 240), "y");
   const currentItems = queue.items.filter(item => !item.fromHistory);
   const unfinishedItems = queue.items.filter(item => item.fromHistory);
-  const selected = queue.items.find(item => item.id === selectedId) ?? currentItems[0];
-  const playerItem = queue.items.find(item => item.source.path === playback?.path) ?? selected;
+  const selected = queue.items.find(item => item.id === selectedId) ?? currentItems[0] ?? unfinishedItems[0];
   const taskOptions = selected && (selected.folder || ["queued", "running", "pausing"].includes(selected.status)) ? selected.options : undefined;
   const selectedModel = taskOptions?.model ?? models.selected;
   const online = (taskOptions ? taskOptions.processing?.mode : pref.mode) === "online";
-  const resultItems = currentItems.filter(item => item.folder && item.showOutput && !["cancelling", "resetting"].includes(item.status));
+  const resultItems = queue.items.filter(item => item.folder && item.showOutput && !["cancelling", "resetting"].includes(item.status));
   const result = resultItems.find(item => item.id === selected?.id);
   const matchingPreview = preview?.id === result?.id && preview?.query === query ? preview : null;
   const resultPreview = matchingPreview?.page === page ? matchingPreview : null;
@@ -199,8 +203,7 @@ export function SpeechView({ active }: { active: boolean }) {
           <div className="speech-job-list">{currentItems.map(renderJob)}
             {unfinishedItems.length > 0 && <section className="speech-unfinished" aria-label="未完成任务"><h3>未完成任务 · {unfinishedItems.length}</h3>{unfinishedItems.map(renderJob)}</section>}
           </div>
-          {playback && playerItem && playerItem.id !== selected?.id && <div className="speech-playing-name" title={playerItem.source.name}>正在试听：{playerItem.source.name}</div>}
-          {playerItem && <SpeechAudioPlayer path={playerItem.source.path} onPlaybackChange={setPlayback} />}
+          {selected && <SpeechAudioPlayer key={selected.source.path} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
           <div className="speech-actions"><button className="speech-primary" disabled={!toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={!running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
         </section>
       </aside>
@@ -209,10 +212,14 @@ export function SpeechView({ active }: { active: boolean }) {
         <section className="speech-settings">
           <h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
           <fieldset className="speech-task-fields" aria-label={taskOptions ? "当前任务参数" : "新任务选项"} disabled={!!taskOptions}>
+          <div className="speech-option-group speech-recognition-group" role="group" aria-label="识别设置">
           <SpeechOnlineRunControls options={taskOptions} />
-          {!online && <><label>识别模型<select title={modelInfo.label} value={selectedModel} disabled={!!models.inUse || !!models.download} onChange={event => selectSpeechModel(event.target.value as SpeechModel)}>{SPEECH_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-          <div className="speech-model-info"><span className={`speech-model-status ${status?.installed ? "is-installed" : ""}`}>{!status ? "检查中" : status.installed ? "已下载" : status.files ? "部分下载" : "未下载"}</span><span>{status?.bytes ? `${(status.bytes / 1048576).toFixed(1)} MiB` : `约 ${modelInfo.sizeMiB} MiB`}</span><span>{modelInfo.description}</span></div></>}
-          <SpeechRunOptions options={taskOptions} />
+          {!online && <div className="speech-local-model"><div className="speech-model-line"><label>识别模型<select title={modelInfo.label} value={selectedModel} disabled={!!models.inUse || !!models.download} onChange={event => selectSpeechModel(event.target.value as SpeechModel)}>{SPEECH_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
+          <span className={`speech-model-status ${status?.installed ? "is-installed" : ""}`}>{!status ? "检查中" : status.installed ? "已下载" : status.files ? "部分下载" : "未下载"}</span><span className="speech-model-size">{status?.bytes ? `${(status.bytes / 1048576).toFixed(1)} MiB` : `约 ${modelInfo.sizeMiB} MiB`}</span></div><p className="speech-model-description">{modelInfo.description}</p></div>}
+          <SpeechLanguageOption options={taskOptions} />
+          </div>
+          <SpeechProofreadControls options={taskOptions} />
+          <div className="speech-option-group speech-output-group" role="group" aria-label="输出设置"><SpeechRunOptions options={taskOptions} /></div>
           </fieldset>
         </section>
         <div className="speech-splitter is-horizontal" role="separator" aria-label="调整参数与结果区域高度" aria-orientation="horizontal" onMouseDown={event => upper.beginResize(event, 1)} />
