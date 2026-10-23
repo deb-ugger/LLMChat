@@ -220,9 +220,7 @@ export function SpeechView({ active }: { active: boolean }) {
       <div className="speech-splitter is-vertical" role="separator" aria-label="调整左右布局" aria-orientation="vertical" onMouseDown={event => left.beginResize(event, 1)} />
       <main className="speech-right">
         <section className="speech-settings">
-          <div className="speech-task-heading"><h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
-            {selected && <SpeechRangePicker key={`ranges-${selected.id}`} name={selected.source.name} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
-          </div>
+          <h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
           <div className="speech-task-layout">
           <fieldset className="speech-task-fields" aria-label={taskOptions ? "当前任务参数" : "新任务选项"} disabled={!!taskOptions}>
           <div className="speech-option-group speech-recognition-group" role="group" aria-label="识别设置">
@@ -230,6 +228,9 @@ export function SpeechView({ active }: { active: boolean }) {
           {!online && <div className="speech-local-model"><label><span className="speech-model-heading">识别模型<span className="speech-model-meta"><span className={`speech-model-status ${status?.installed ? "is-installed" : ""}`}>{!status ? "检查中" : status.installed ? "已下载" : status.files ? "部分下载" : "未下载"}</span><span className="speech-model-size">{status?.bytes ? `${(status.bytes / 1048576).toFixed(1)} MiB` : `约 ${modelInfo.sizeMiB} MiB`}</span></span></span><select title={modelInfo.label} value={selectedModel} disabled={!!models.inUse || !!models.download} onChange={event => selectSpeechModel(event.target.value as SpeechModel)}>{SPEECH_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label><p className="speech-model-description">{modelInfo.description}</p></div>}
           <SpeechLanguageOption options={taskOptions} />
           </div>
+          </fieldset>
+          {selected && <SpeechRangePicker key={`ranges-${selected.id}`} name={selected.source.name} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
+          <fieldset className="speech-task-fields" aria-label="校对与输出设置" disabled={!!taskOptions}>
           <SpeechProofreadControls options={taskOptions} />
           <div className="speech-option-group speech-output-group" role="group" aria-label="输出设置"><SpeechRunOptions options={taskOptions} /></div>
           </fieldset>

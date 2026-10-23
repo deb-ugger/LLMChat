@@ -46,8 +46,6 @@
 .speech-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .speech-settings { flex-shrink: 0; height: var(--speech-options-height, 150px); min-height: 96px; max-height: calc(100% - 240px); overflow: auto; padding: 12px 16px; container: speech-options / inline-size; }
 .speech-settings h3 { margin: 0 0 8px; font-size: 14px; }
-.speech-task-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 8px; }
-.speech-task-heading h3 { margin: 0; }
 .speech-task-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); align-items: start; gap: 10px 16px; min-width: 0; }
 .speech-task-fields { display: contents; border: 0; padding: 0; margin: 0; min-width: 0; }
 .speech-recognition-group, .speech-output-group, .speech-option-group > .speech-processing-options { display: contents; }
@@ -122,10 +120,11 @@
 .speech-volume-popup input { writing-mode: vertical-lr; direction: rtl; height: 108px; width: 22px; accent-color: var(--accent); }
 .speech-volume-popup span, .speech-player-error { color: var(--text-muted); font-size: 13px; }
 .speech-player-error { flex-basis: 100%; }
-.speech-range-option { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
-.speech-range-option-label { font-weight: 600; }
-.speech-range-option-summary { color: var(--text-muted); }
-.speech-range-option > button { height: 30px; padding: 4px 9px; border-radius: 7px; font-size: 13px; }
+.speech-range-option { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 13px; }
+.speech-range-option-label { font-weight: 600; line-height: 20px; }
+.speech-range-option-control { display: flex; align-items: center; gap: 4px; height: 30px; min-width: 0; padding-left: 8px; border: 1px solid #d4deef; border-radius: 7px; background: #f5f7fa; }
+.speech-range-option-summary { flex: 1; min-width: 0; color: #355381; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speech-range-option-control > button { flex-shrink: 0; height: 28px; padding: 4px 6px; border: 0; border-left: 1px solid #d4deef; border-radius: 0 6px 6px 0; font-size: 13px; }
 .speech-range-dialog { width: min(900px, calc(100vw - 40px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border); border-radius: 14px; background: white; color: var(--text); box-shadow: var(--shadow-md); }
 .speech-range-dialog[open] { display: flex; flex-direction: column; }
 .speech-range-confirm { width: min(420px, calc(100vw - 40px)); }
@@ -198,7 +197,7 @@
 .speech-task-fields .speech-format-options legend { float: none; margin: 0 0 5px; padding: 0; font-size: 13px; font-weight: 600; line-height: 20px; color: var(--text); }
 .speech-task-fields .speech-format-options label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; height: 30px; margin-right: 8px; font-weight: 400; }
 @container speech-options (min-width: 1216px) {
-  .speech-task-layout { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .speech-task-layout { grid-template-columns: repeat(8, minmax(0, 1fr)); }
 }
 @container speech-options (max-width: 350px) {
   .speech-local-model, .speech-online-model, .speech-proofread-controls { grid-column: span 1; }

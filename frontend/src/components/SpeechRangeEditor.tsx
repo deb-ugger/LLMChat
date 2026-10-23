@@ -41,11 +41,11 @@ export function SpeechRangePicker({ name, duration, ranges, disabled, onChange }
     confirmation.current?.close(); dialog.current?.close();
   };
   return <div className="speech-range-option">
-    <span className="speech-range-option-label">识别范围</span><span className="speech-range-option-summary">{ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段"}</span>
+    <span className="speech-range-option-label">识别范围</span><div className="speech-range-option-control"><span className="speech-range-option-summary">{ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段"}</span>
     <button type="button" aria-haspopup="dialog" onClick={() => {
       changeDraft(ranges?.map(range => ({ ...range })) ?? (disabled ? [{ start: 0, end: duration }] : []));
       setOpen(true);
-    }}>选取片段</button>
+    }}>选取片段</button></div>
     <dialog ref={dialog} className="speech-range-dialog" aria-labelledby={titleId} onClose={() => setOpen(false)} onCancel={event => { event.preventDefault(); close(); }} onClick={event => {
       if (event.target !== event.currentTarget) return;
       const bounds = event.currentTarget.getBoundingClientRect();
