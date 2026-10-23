@@ -1,7 +1,7 @@
 use std::io::Cursor;
 mod speech;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -52,7 +52,10 @@ fn stop_backend(app: &AppHandle) {
         guard.take()
     };
     if let Some(child) = child {
-        let _ = child.kill();
+        let pid = child.pid();
+        if let Err(error) = child.kill() {
+            eprintln!("[backend] failed to stop process {pid}: {error}");
+        }
     }
 }
 
@@ -215,8 +218,17 @@ pub fn run() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            if let RunEvent::Exit = event {
-                stop_backend(app_handle);
+            match event {
+                RunEvent::WindowEvent { event: WindowEvent::Destroyed, .. }
+                    if app_handle.webview_windows().is_empty() =>
+                {
+                    // A closed window must not leave a headless event loop and sidecar.
+                    // Destroyed runs only after the frontend's save/cancel close handler.
+                    stop_backend(app_handle);
+                    app_handle.exit(0);
+                }
+                RunEvent::Exit => stop_backend(app_handle),
+                _ => {}
             }
         });
 }
