@@ -62,7 +62,11 @@ pub struct Options {
     pub model: String, pub language: String, pub chinese_script: String, pub formats: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub processing: Option<Processing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranges: Option<Vec<AudioRange>>,
 }
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct AudioRange { pub start: f64, pub end: f64 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Processing {
@@ -115,9 +119,19 @@ fn probe(tool_dir: &Path, source: &Path) -> Result<Source> {
     if data["streams"].as_array().is_none_or(|streams| streams.is_empty()) { return Err("文件中没有音轨".into()); }
     Ok(Source { path: source.to_string_lossy().into_owned(), name: source.file_name().ok_or("无效文件名")?.to_string_lossy().into_owned(), size, modified: time, duration })
 }
-fn validate_options(options: &Options) -> Result<()> {
+fn validate_options(options: &Options, duration: f64) -> Result<()> {
     if options.formats.is_empty() || options.formats.iter().any(|f| !["srt", "vtt", "txt"].contains(&f.as_str())) {
         return Err("至少选择一种有效输出格式".into());
+    }
+    if let Some(ranges) = &options.ranges {
+        if ranges.is_empty() { return Err("请先选取音频片段".into()); }
+        let mut previous = 0.0;
+        for range in ranges {
+            if !range.start.is_finite() || !range.end.is_finite() || range.start < previous || range.end > duration || range.end <= range.start {
+                return Err("音频选段无效、重叠或超出原音频范围".into());
+            }
+            previous = range.end;
+        }
     }
     Ok(())
 }
@@ -127,7 +141,7 @@ fn load_job(folder: &Path) -> Result<Job> {
     if folder.file_name().and_then(|n| n.to_str()) != Some(job.output_stem.as_deref().unwrap_or(&legacy_folder)) {
         return Err("不是有效的语音任务目录".into());
     }
-    validate_options(&job.options)?;
+    validate_options(&job.options, job.source.duration)?;
     Ok(Job { folder: folder.to_string_lossy().into_owned(), ..job })
 }
 fn read_chunks(folder: &Path, repair: bool) -> Result<Vec<Chunk>> {
@@ -193,7 +207,7 @@ fn rebuild(job: &mut Job) -> Result<()> {
 }
 fn create_job(root: &Path, id: String, source: Source, options: Options, output_date: &str) -> Result<Job> {
     if id.len() > 64 || id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { return Err("无效任务 ID".into()); }
-    validate_options(&options)?;
+    validate_options(&options, source.duration)?;
     if output_date.len() != 10 || !output_date.bytes().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() }) {
         return Err("无效输出日期".into());
     }
@@ -234,7 +248,8 @@ fn commit(folder: &Path, chunk: Chunk) -> Result<Job> {
     if (chunk.from - offset).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= offset || chunk.to > job.source.duration + 0.1 {
         return Err("保存位置与任务断点不一致".into());
     }
-    if chunk.cues.iter().any(|cue| !cue.start.is_finite() || !cue.end.is_finite() || cue.start < chunk.from - 0.001 || cue.end > chunk.to + 0.001 || cue.end <= cue.start) {
+    if chunk.cues.iter().any(|cue| !cue.start.is_finite() || !cue.end.is_finite() || cue.start < chunk.from - 0.001 || cue.end > chunk.to + 0.001 || cue.end <= cue.start
+        || job.options.ranges.as_ref().is_some_and(|ranges| !ranges.iter().any(|range| cue.start >= range.start - 0.001 && cue.end <= range.end + 0.001))) {
         return Err("字幕时间超出当前音频片段".into());
     }
     let mut record = serde_json::to_vec(&chunk).map_err(err)?; record.push(b'\n');
@@ -262,12 +277,19 @@ fn cancel_job(folder: &Path) -> Result<()> {
     // Do not recursively delete unexpected/user-added files.
     match fs::remove_dir(folder) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()), Err(e) => Err(err(e)) }
 }
+fn decode_duration(job: &Job, offset: f64) -> Result<f64> {
+    if !offset.is_finite() || offset < 0.0 || offset >= job.source.duration { return Err("无效解码位置".into()); }
+    let end = if let Some(ranges) = &job.options.ranges {
+        ranges.iter().find(|range| offset >= range.start && offset < range.end).ok_or("解码位置不在所选音频片段内")?.end
+    } else { job.source.duration };
+    Ok((end - offset).min(30.0))
+}
 fn decode_chunk(dir: &Path, folder: &Path, offset: f64) -> Result<Vec<u8>> {
     let job = load_job(folder)?;
-    if !offset.is_finite() || offset < 0.0 || offset >= job.source.duration { return Err("无效解码位置".into()); }
+    let duration = decode_duration(&job, offset)?;
     let output = quiet_command(&dir.join("ffmpeg.exe"))
         .args(["-nostdin", "-v", "error", "-ss", &format!("{offset:.6}"), "-i"]).arg(&job.source.path)
-        .args(["-t", "30", "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-threads", "1", "-f", "f32le", "pipe:1"])
+        .args(["-t", &format!("{duration:.6}"), "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-threads", "1", "-f", "f32le", "pipe:1"])
         .output().map_err(err)?;
     if !output.status.success() { return Err(format!("音频解码失败：{}", String::from_utf8_lossy(&output.stderr))); }
     if output.stdout.is_empty() { return Err("当前断点没有可解码的音频".into()); }
@@ -361,7 +383,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap(); let source_path = root.join("原音频.wav"); fs::write(&source_path, b"fixture").unwrap();
         let (size, time) = modified(&source_path).unwrap();
         let source = Source { path: source_path.to_string_lossy().into(), name: "原音频.wav".into(), size, modified: time, duration: 60.0 };
-        let options = Options { model: "fixture".into(), language: "chinese".into(), chinese_script: "simplified".into(), formats: vec!["srt".into(), "vtt".into(), "txt".into()], processing: None };
+        let options = Options { model: "fixture".into(), language: "chinese".into(), chinese_script: "simplified".into(), formats: vec!["srt".into(), "vtt".into(), "txt".into()], processing: None, ranges: None };
         let job = create_job(&root, "test-id".into(), source, options, "2026-10-22").unwrap(); (root, job)
     }
     fn cleanup(root: PathBuf) {

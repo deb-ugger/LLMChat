@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChineseScript, SpeechCue, SpeechFormat, SpeechModel } from "./transcription";
+import type { ChineseScript, SpeechCue, SpeechFormat, SpeechModel, SpeechRange } from "./transcription";
 
 export type SpeechSource = { path: string; name: string; size: number; modified: number; duration: number };
 export type SpeechOnlineProvider = "google" | "qwen" | "custom";
 export type SpeechProcessing = { mode: "local" | "online"; provider: SpeechOnlineProvider; model: string; proofread: boolean; proofreadModel: string };
-export type SpeechJobOptions = { model: SpeechModel; language: string; chineseScript: ChineseScript; formats: SpeechFormat[]; processing?: SpeechProcessing };
+export type SpeechJobOptions = { model: SpeechModel; language: string; chineseScript: ChineseScript; formats: SpeechFormat[]; processing?: SpeechProcessing; ranges?: SpeechRange[] };
 export type SpeechJob = { id: string; folder: string; source: SpeechSource; options: SpeechJobOptions; offset: number; cueCount: number; outputStem?: string };
 export type SpeechChunk = { from: number; to: number; cues: SpeechCue[]; text: string };
 

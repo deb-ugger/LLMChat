@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { SpeechClient } from "./client";
 import { speechNative, type SpeechJob, type SpeechJobOptions } from "./native";
 import { getSpeechPreferences, downloadSpeechModel, cancelSpeechModelDownload, setSpeechModelInUse, refreshSpeechModels } from "./models";
-import { planSpeechCommit, type SpeechResult } from "./transcription";
+import { planSpeechCommit, nextSpeechWindow, validateSpeechRanges, type SpeechRange, type SpeechResult } from "./transcription";
 import { createSpeechOnline } from "./online";
 
 export type SpeechQueueItem = SpeechJob & { root: string; fromHistory: boolean; showOutput: boolean; status: "ready" | "queued" | "running" | "pausing" | "paused" | "resetting" | "done" | "error" | "cancelling"; message: string; elapsedMs: number; runningSince?: number; processingStartedAt?: number; startedOffset?: number; revision: number };
@@ -38,6 +38,11 @@ export class SpeechQueue {
   private patch(id: string, patch: Partial<SpeechQueueItem>) { this.publish({ items: this.state.items.map(item => item.id === id ? { ...item, ...patch } : item) }); }
   clearError() { this.publish({ error: "" }); }
   setShowOutput(id: string, showOutput: boolean) { this.patch(id, { showOutput }); }
+  setRanges(id: string, ranges: SpeechRange[] | undefined) {
+    const item = this.state.items.find(item => item.id === id);
+    if (!item || item.folder || !["ready", "error"].includes(item.status)) return;
+    this.patch(id, { options: { ...item.options, ranges: ranges?.map(range => ({ ...range })) } });
+  }
 
   add(paths: string[]): Promise<void> {
     const run = async () => {
@@ -72,6 +77,8 @@ export class SpeechQueue {
     const pref = getSpeechPreferences();
     const eligible = (item: SpeechQueueItem) => (id ? item.id === id : !item.fromHistory) && ["ready", "paused", "error"].includes(item.status);
     const createsNew = this.state.items.some(item => eligible(item) && !item.folder);
+    try { for (const item of this.state.items.filter(item => eligible(item) && !item.folder)) validateSpeechRanges(item.options.ranges, item.source.duration); }
+    catch (error) { this.publish({ error: message(error) }); return; }
     if (createsNew && !pref.formats.length) { this.publish({ error: "至少选择一种输出格式" }); return; }
     if (createsNew && !pref.outputRoot) { this.publish({ error: "请选择输出目录" }); return; }
     if (createsNew && pref.mode === "online" && !pref.onlineModel.trim()) { this.publish({ error: "请选择在线识别模型" }); return; }
@@ -79,7 +86,7 @@ export class SpeechQueue {
     this.publish({ error: "", items: this.state.items.map(item => {
       if (!eligible(item)) return item;
       return { ...item, fromHistory: false, status: "queued", message: "排队等待",
-        ...(!item.folder ? { root: pref.outputRoot, options: jobOptions() } : {}) };
+        ...(!item.folder ? { root: pref.outputRoot, options: { ...jobOptions(), ranges: item.options.ranges } } : {}) };
     }) });
     for (const item of this.state.items.filter(job => job.status === "queued" && !job.folder && !this.staging.has(job.id))) {
       const staged = speechNative.create(item.root, item.id, item.source, item.options)
@@ -126,8 +133,9 @@ export class SpeechQueue {
       }
       this.patch(item.id, { processingStartedAt: performance.now(), startedOffset: item.offset });
       while (item.offset < item.source.duration - 0.01) {
-        this.patch(item.id, { message: `解码 ${item.offset.toFixed(1)} 秒处的音频` });
-        const pcm = await speechNative.decode(item.folder, item.offset); check();
+        const window = nextSpeechWindow(item.options.ranges, item.source.duration, item.offset);
+        this.patch(item.id, { message: `解码 ${window.start.toFixed(1)} 秒处的音频` });
+        const pcm = await speechNative.decode(item.folder, window.start); check();
         const length = pcm.length / 16000;
         this.patch(item.id, { message: processing?.mode === "online" ? "正在在线识别音频" : "正在识别音频" });
         let output = processing?.mode === "online" ? await online!.recognize(pcm) : await run.client.transcribe(pcm, item.options.model, item.options.language,
@@ -139,10 +147,11 @@ export class SpeechQueue {
           output = await online!.proofread(output); check();
         }
         const converted = await convertChinese(output, item.options.chineseScript, item.options.language); check();
-        const final = item.offset + length >= item.source.duration - 0.1;
-        const chunk = planSpeechCommit(converted, item.offset, Math.min(length, item.source.duration - item.offset), final);
-        // Container duration can include AAC encoder padding absent from decoded PCM.
-        if (final) chunk.to = item.source.duration;
+        const final = window.start + length >= window.rangeEnd - 0.1;
+        const chunk = planSpeechCommit(converted, window.start, Math.min(length, window.end - window.start), final);
+        // Checkpoints span skipped gaps; cue timestamps stay on the original timeline.
+        chunk.from = item.offset;
+        if (final) chunk.to = window.lastRange ? item.source.duration : window.rangeEnd;
         const committed = await speechNative.commit(item.folder, chunk);
         item = { ...item, ...committed };
         this.patch(item.id, { ...committed, revision: (this.state.items.find(job => job.id === item.id)?.revision ?? 0) + 1 });

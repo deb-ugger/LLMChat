@@ -20,6 +20,32 @@ export type SpeechResponse =
 
 export type SpeechFormat = "srt" | "vtt" | "txt";
 export type ChineseScript = "simplified" | "traditional" | "original";
+export type SpeechRange = { start: number; end: number };
+
+export function validateSpeechRanges(ranges: SpeechRange[] | undefined, duration: number) {
+  if (ranges === undefined) return;
+  if (!ranges.length) throw new Error("请先在时间轴上选取音频片段");
+  let previous = 0;
+  for (const range of ranges) {
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.start < 0 || range.end > duration || range.end <= range.start) throw new Error("片段开始时间必须小于结束时间，且不能超出音频时长");
+    if (range.start < previous) throw new Error("音频片段不能重叠，请按时间顺序调整");
+    previous = range.end;
+  }
+}
+
+export function speechRangeProgress(ranges: SpeechRange[] | undefined, duration: number, offset: number) {
+  const selection = ranges ?? [{ start: 0, end: duration }];
+  return { duration: selection.reduce((sum, r) => sum + r.end - r.start, 0),
+    processed: selection.reduce((sum, r) => sum + Math.max(0, Math.min(offset, r.end) - r.start), 0) };
+}
+
+export function nextSpeechWindow(ranges: SpeechRange[] | undefined, duration: number, offset: number) {
+  const selection = ranges ?? [{ start: 0, end: duration }];
+  const index = selection.findIndex(range => range.end > offset + 0.000001);
+  if (index < 0) throw new Error("当前断点超出所选音频片段");
+  const start = Math.max(offset, selection[index].start);
+  return { start, end: Math.min(start + 30, selection[index].end), rangeEnd: selection[index].end, lastRange: index === selection.length - 1 };
+}
 
 export function estimateSpeechProgress(duration: number, offset: number, startedOffset: number, processingMs: number) {
   const percent = duration > 0 ? Math.min(100, Math.max(0, offset / duration * 100)) : 0;

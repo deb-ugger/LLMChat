@@ -8,9 +8,10 @@ import { usePersistedSize } from "../hooks/usePersistedSize";
 import { useSpeechModels, selectSpeechModel, setSpeechPreferences, getSpeechPreferences, refreshSpeechModels } from "../speech/models";
 import { speechQueue, useSpeechQueue, type SpeechQueueItem } from "../speech/queue";
 import { speechNative, type SpeechJobOptions } from "../speech/native";
-import { SPEECH_MODELS, estimateSpeechProgress, formatSpeechTime, type SpeechCue, type SpeechModel, type SpeechFormat, type ChineseScript } from "../speech/transcription";
+import { SPEECH_MODELS, estimateSpeechProgress, formatSpeechTime, speechRangeProgress, type SpeechCue, type SpeechModel, type SpeechFormat, type ChineseScript } from "../speech/transcription";
 import { DownloadProgress } from "../speech/DownloadProgress";
 import { SpeechAudioPlayer, SpeechWaveform, type SpeechPlayback } from "./SpeechAudioPlayer";
+import { SpeechRangeEditor } from "./SpeechRangeEditor";
 import { SpeechOnlineRunControls, SpeechProofreadControls } from "./SpeechOnlineControls";
 
 const labels: Record<SpeechQueueItem["status"], string> = { ready: "等待开始", queued: "排队中", running: "识别中", pausing: "暂停中", paused: "已暂停", resetting: "清理中", done: "已完成", error: "失败", cancelling: "取消中" };
@@ -98,11 +99,13 @@ export function SpeechView({ active }: { active: boolean }) {
   const modelInfo = SPEECH_MODELS.find(model => model.id === selectedModel)!;
   const status = models.rows?.find(row => row.model === selectedModel);
   const running = queue.items.filter(item => item.status === "running" || item.status === "queued").length;
-  const canStart = currentItems.some(item => ["ready", "paused", "error"].includes(item.status) && (item.folder || (pref.formats.length && pref.outputRoot)));
+  const canStart = currentItems.some(item => ["ready", "paused", "error"].includes(item.status) && item.options.ranges?.length !== 0 && (item.folder || (pref.formats.length && pref.outputRoot)));
   const timing = queue.items.some(item => item.runningSince !== undefined);
   const elapsed = (item: SpeechQueueItem) => item.elapsedMs + (item.runningSince !== undefined ? Math.max(0, clock - item.runningSince) : 0);
   const remaining = (item: SpeechQueueItem) => {
-    const progress = estimateSpeechProgress(item.source.duration, item.offset, item.startedOffset ?? item.offset,
+    const work = speechRangeProgress(item.options.ranges, item.source.duration, item.offset);
+    const started = speechRangeProgress(item.options.ranges, item.source.duration, item.startedOffset ?? item.offset);
+    const progress = estimateSpeechProgress(work.duration, work.processed, started.processed,
       item.processingStartedAt === undefined ? 0 : Math.max(0, clock - item.processingStartedAt));
     return progress.remainingSeconds === null ? "首段完成后估算" : formatSpeechTime(progress.remainingSeconds, ".").slice(0, -4);
   };
@@ -180,14 +183,16 @@ export function SpeechView({ active }: { active: boolean }) {
       if (await confirmDialog(`确定取消“${item.source.name}”并清理生成的字幕和断点？原音频文件将保留。`, { title: "取消并清理", kind: "warning", okLabel: "确认清理", cancelLabel: "取消" })) await speechQueue.cancel(item.id);
     } catch (cause) { setError(friendly(cause)); }
   };
-  const renderJob = (item: SpeechQueueItem) => <article key={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.taskId === item.id ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
+  const renderJob = (item: SpeechQueueItem) => {
+    const work = speechRangeProgress(item.options.ranges, item.source.duration, item.offset);
+    return <article key={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.taskId === item.id ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
     <div><strong title={item.source.path}>{item.source.name}</strong><label className="speech-job-preview" onClick={event => event.stopPropagation()}><input type="checkbox" checked={item.showOutput} onChange={event => {
       speechQueue.setShowOutput(item.id, event.target.checked);
       if (event.target.checked) selectFile(item);
     }} />显示转写结果</label></div>
-    <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(item.offset, ".")} / {formatSpeechTime(item.source.duration, ".")}</span><span>· {item.cueCount} 段</span></small><strong className="speech-job-percent">{(item.source.duration ? Math.min(100, item.offset / item.source.duration * 100) : 0).toFixed(1)}%</strong></div>
+    <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(work.processed, ".")} / {formatSpeechTime(work.duration, ".")}</span><span>· {item.cueCount} 段字幕</span></small><strong className="speech-job-percent">{(work.duration ? Math.min(100, work.processed / work.duration * 100) : 0).toFixed(1)}%</strong></div>
     {(elapsed(item) > 0 || item.status === "running") && <div className="speech-job-timing"><span>已用 {Math.floor(elapsed(item) / 1000)}s</span>{item.status === "running" && <span>预计剩余：{remaining(item)}</span>}</div>}
-    <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={item.offset} max={item.source.duration} />}</div>
+    <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={work.processed} max={work.duration} />}</div>
     {item.status === "error" && <p className="speech-error">{item.message}</p>}
     <div className="speech-job-actions">{["ready", "paused", "error"].includes(item.status) && <button className="speech-icon-button" aria-label={item.status === "ready" ? "开始转写" : "继续转写"} title={item.status === "ready" ? "开始转写" : "从已保存断点继续"} onClick={event => { event.stopPropagation(); selectFile(item); speechQueue.start(item.id); }}><TaskIcon action="play" /></button>}
       {["queued", "running"].includes(item.status) && <button className="speech-icon-button" aria-label="暂停转写" title="暂停并保留断点" onClick={event => { event.stopPropagation(); speechQueue.pause(item.id); }}><TaskIcon action="pause" /></button>}
@@ -195,6 +200,7 @@ export function SpeechView({ active }: { active: boolean }) {
       <button className="speech-stop speech-icon-button" disabled={["cancelling", "resetting"].includes(item.status)} aria-label="取消并清理" title="取消并清理字幕和断点" onClick={event => { event.stopPropagation(); void cancelFile(item); }}><TaskIcon action="trash" /></button></div>
     </div>
   </article>;
+  };
   const styles = { "--speech-left-width": `${left.size}px`, "--speech-options-height": `${upper.size}px` } as CSSProperties;
 
   return <section className={`speech-view${dragging ? " is-file-dragging" : ""}`} style={styles} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
@@ -208,6 +214,7 @@ export function SpeechView({ active }: { active: boolean }) {
             {visibleItems.length === 0 && queue.items.length > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
           </div>
           {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
+          {selected && <SpeechRangeEditor key={`ranges-${selected.id}`} duration={selected.source.duration} ranges={selected.options.ranges} disabled={!!taskOptions} onChange={ranges => speechQueue.setRanges(selected.id, ranges)} />}
           <div className="speech-actions"><button className="speech-primary" disabled={queueTab === "completed" || !toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={queueTab === "completed" || !running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
         </section>
       </aside>
