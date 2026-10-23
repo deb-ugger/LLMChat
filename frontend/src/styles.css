@@ -122,9 +122,12 @@
 .speech-player-error { flex-basis: 100%; }
 .speech-range-option { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 13px; }
 .speech-range-option-label { font-weight: 600; line-height: 20px; }
-.speech-range-option-control { display: flex; align-items: center; gap: 4px; height: 30px; min-width: 0; padding-left: 8px; border: 1px solid #d4deef; border-radius: 7px; background: #f5f7fa; }
-.speech-range-option-summary { flex: 1; min-width: 0; color: #355381; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.speech-range-option-control > button { flex-shrink: 0; height: 28px; padding: 4px 6px; border: 0; border-left: 1px solid #d4deef; border-radius: 0 6px 6px 0; font-size: 13px; }
+.speech-range-option-control { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; height: 30px; min-width: 0; border: 1px solid #d4deef; border-radius: 7px; background: #f5f7fa; }
+.speech-range-option-summary { min-width: 0; padding: 0 4px; color: #355381; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speech-range-option-control > button { min-width: 0; height: 28px; padding: 4px; border: 0; border-left: 1px solid #d4deef; border-radius: 0 6px 6px 0; font-size: 13px; white-space: nowrap; }
+.speech-view .speech-range-view { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 30px; padding: 4px 8px; border: 1px solid #d4deef; border-radius: 7px; background: #f5f7fa; color: #355381; font-size: 13px; }
+.speech-range-view span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speech-range-view svg { flex-shrink: 0; }
 .speech-range-tab-page:not([hidden]), .speech-range-page { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .speech-range-page-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 0; }
 .speech-range-page-header h3 { margin: 0; font-size: 16px; }
@@ -195,6 +198,14 @@
 .speech-model-panel .speech-processing-title { margin-top: 24px; }
 .speech-settings label { display: flex; flex-direction: column; align-items: stretch; gap: 5px; margin: 0; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; line-height: 20px; }
 .speech-settings .speech-preview-option { flex-direction: row; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; }
+.speech-settings .speech-proofread-toggle { gap: 7px; padding: 0 6px; border-radius: 5px; background: #edf2fa; color: #355381; font-size: 13px; font-weight: 600; cursor: pointer; }
+.speech-settings .speech-proofread-toggle.is-enabled { background: #e5eeff; color: var(--accent-ink); }
+.speech-proofread-toggle input[type="checkbox"] { appearance: none; position: relative; width: 27px; height: 15px; margin: 0; border: 1px solid #94a4bc; border-radius: 9px; background: #b4bfd0; cursor: pointer; }
+.speech-proofread-toggle input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 9px; height: 9px; border-radius: 50%; background: white; transition: transform 120ms; }
+.speech-proofread-toggle input:checked { background: var(--accent); border-color: var(--accent); }
+.speech-proofread-toggle input:checked::before { transform: translateX(12px); }
+.speech-proofread-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.speech-proofread-toggle input:disabled { cursor: default; opacity: .65; }
 .speech-settings select, .speech-settings .speech-processing-options input:not([type="checkbox"]) { width: 100%; min-width: 0; height: 30px; padding: 4px 8px; border-radius: 7px; font-size: 13px; font-weight: 400; }
 .speech-settings select:disabled, .speech-settings input:not([type="checkbox"]):disabled { background: #f5f7fa; color: #71819b; opacity: 1; cursor: default; }
 .speech-chinese-script output { display: flex; align-items: center; height: 30px; padding: 4px 8px; border: 1px solid #d4deef; border-radius: 7px; background: #f5f7fa; color: #355381; font-size: 13px; font-weight: 400; }

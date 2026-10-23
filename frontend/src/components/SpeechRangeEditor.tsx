@@ -12,10 +12,11 @@ type Edge = "start" | "end";
 type RangeProps = {
   duration: number; ranges?: SpeechRange[]; disabled: boolean; onChange: (ranges: SpeechRange[] | undefined) => void;
 };
-export function SpeechRangePicker({ ranges, onOpen }: { ranges?: SpeechRange[]; onOpen: () => void }) {
+export function SpeechRangePicker({ ranges, readOnly, onOpen }: { ranges?: SpeechRange[]; readOnly: boolean; onOpen: () => void }) {
+  const summary = ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段";
   return <div className="speech-range-option">
-    <span className="speech-range-option-label">识别范围</span><div className="speech-range-option-control"><span className="speech-range-option-summary">{ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段"}</span>
-    <button type="button" onClick={onOpen}>选取片段</button></div>
+    <span className="speech-range-option-label">识别范围</span>{readOnly ? <button type="button" className="speech-range-view" title="查看识别范围" aria-label={`查看识别范围：${summary}`} onClick={onOpen}><span>{summary}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button> : <div className="speech-range-option-control"><span className="speech-range-option-summary">{summary}</span>
+    <button type="button" onClick={onOpen}>选取片段</button></div>}
   </div>;
 }
 export function SpeechRangePage({ name, duration, ranges, disabled, onChange, onClose }: RangeProps & { name: string; onClose: () => void }) {

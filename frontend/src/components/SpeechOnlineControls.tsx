@@ -40,7 +40,7 @@ export function SpeechProofreadControls({ options }: { options?: SpeechJobOption
     return () => { disposed = true; };
   }, [readOnly]);
   return <div className="speech-option-group speech-processing-options speech-proofread-controls" role="group" aria-label="校对设置">
-    <label className="speech-preview-option"><input type="checkbox" checked={proofread} onChange={event => setSpeechPreferences({ proofread: event.target.checked })} />大模型校对</label>
+    <label className={`speech-preview-option speech-proofread-toggle${proofread ? " is-enabled" : ""}`}><input type="checkbox" role="switch" checked={proofread} onChange={event => setSpeechPreferences({ proofread: event.target.checked })} />大模型校对</label>
     <label>校对模型<input list="speech-proofread-models" disabled={!proofread} value={proofread ? proofreadModel : "未开启大模型校对"} title={proofread ? proofreadModel : "未开启大模型校对"} onChange={event => setSpeechPreferences({ proofreadModel: event.target.value })} placeholder="通用中已配置的模型 ID" /><datalist id="speech-proofread-models">{models.map(model => <option key={model} value={model} />)}</datalist></label>
     {proofread && <p className="hint">校对上传字幕，可能产生费用。</p>}
     {!readOnly && error && <p className="speech-error">{error}</p>}

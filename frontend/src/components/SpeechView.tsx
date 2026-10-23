@@ -234,7 +234,7 @@ export function SpeechView({ active }: { active: boolean }) {
           <SpeechLanguageOption options={taskOptions} />
           </div>
           </fieldset>
-          {selected && <SpeechRangePicker ranges={selected.options.ranges} onOpen={() => { setRangeTabs(tabs => tabs.includes(selected.id) ? tabs : [...tabs, selected.id]); setActiveRangeId(selected.id); }} />}
+          {selected && <SpeechRangePicker ranges={selected.options.ranges} readOnly={!!taskOptions} onOpen={() => { setRangeTabs(tabs => tabs.includes(selected.id) ? tabs : [...tabs, selected.id]); setActiveRangeId(selected.id); }} />}
           <fieldset className="speech-task-fields" aria-label="校对与输出设置" disabled={!!taskOptions}>
           <SpeechProofreadControls options={taskOptions} />
           <div className="speech-option-group speech-output-group" role="group" aria-label="输出设置"><SpeechRunOptions options={taskOptions} /></div>
