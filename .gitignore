@@ -1,6 +1,18 @@
 # Backend build
 backend/build/
+backend/build-*/
 backend/out/
+
+# Local test code and reports
+**/tests/
+**/__tests__/
+**/test-*
+**/test_*
+**/*.test.*
+**/*.spec.*
+**/*_test.*
+**/*_tests.*
+**/coverage/
 
 # Frontend deps & build
 frontend/node_modules/
