@@ -177,14 +177,14 @@ export function SpeechView({ active }: { active: boolean }) {
       if (await confirmDialog(`确定取消“${item.source.name}”并清理生成的字幕和断点？原音频文件将保留。`, { title: "取消并清理", kind: "warning", okLabel: "确认清理", cancelLabel: "取消" })) await speechQueue.cancel(item.id);
     } catch (cause) { setError(friendly(cause)); }
   };
-  const renderJob = (item: SpeechQueueItem) => <article key={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.path === item.source.path ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
+  const renderJob = (item: SpeechQueueItem) => <article key={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.taskId === item.id ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
     <div><strong title={item.source.path}>{item.source.name}</strong><label className="speech-job-preview" onClick={event => event.stopPropagation()}><input type="checkbox" checked={item.showOutput} onChange={event => {
       speechQueue.setShowOutput(item.id, event.target.checked);
       if (event.target.checked) selectFile(item);
     }} />显示转写结果</label></div>
     <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(item.offset, ".")} / {formatSpeechTime(item.source.duration, ".")}</span><span>· {item.cueCount} 段</span></small><strong className="speech-job-percent">{(item.source.duration ? Math.min(100, item.offset / item.source.duration * 100) : 0).toFixed(1)}%</strong></div>
     {(elapsed(item) > 0 || item.status === "running") && <div className="speech-job-timing"><span>已用 {Math.floor(elapsed(item) / 1000)}s</span>{item.status === "running" && <span>预计剩余：{remaining(item)}</span>}</div>}
-    <div className="speech-job-meter">{playback?.path === item.source.path ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={item.offset} max={item.source.duration} />}</div>
+    <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={item.offset} max={item.source.duration} />}</div>
     {item.status === "error" && <p className="speech-error">{item.message}</p>}
     <div className="speech-job-actions">{["ready", "paused", "error"].includes(item.status) && <button className="speech-icon-button" aria-label={item.status === "ready" ? "开始转写" : "继续转写"} title={item.status === "ready" ? "开始转写" : "从已保存断点继续"} onClick={event => { event.stopPropagation(); selectFile(item); speechQueue.start(item.id); }}><TaskIcon action="play" /></button>}
       {["queued", "running"].includes(item.status) && <button className="speech-icon-button" aria-label="暂停转写" title="暂停并保留断点" onClick={event => { event.stopPropagation(); speechQueue.pause(item.id); }}><TaskIcon action="pause" /></button>}
@@ -203,14 +203,15 @@ export function SpeechView({ active }: { active: boolean }) {
           <div className="speech-job-list">{currentItems.map(renderJob)}
             {unfinishedItems.length > 0 && <section className="speech-unfinished" aria-label="未完成任务"><h3>未完成任务 · {unfinishedItems.length}</h3>{unfinishedItems.map(renderJob)}</section>}
           </div>
-          {selected && <SpeechAudioPlayer key={selected.source.path} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
+          {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
           <div className="speech-actions"><button className="speech-primary" disabled={!toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={!running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
         </section>
       </aside>
       <div className="speech-splitter is-vertical" role="separator" aria-label="调整左右布局" aria-orientation="vertical" onMouseDown={event => left.beginResize(event, 1)} />
       <main className="speech-right">
         <section className="speech-settings">
-          <h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
+          <div className="speech-settings-heading"><h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
+          <div className="speech-output-location"><span className="speech-output-label">输出文件夹</span><div className="speech-output-path"><output title={outputFolder}>{outputFolder || "请在设置 → 语音转文字中选择目录"}</output>{outputItem?.folder && outputItem.status !== "resetting" && <button aria-label="打开输出目录" title="打开输出目录" onClick={() => void api.openPath(outputItem.folder).catch(cause => setError(friendly(cause)))}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h7l2 3h9l-3 10H3V7Z"/><path d="M3 7V4h7l2 3h8v3"/></svg></button>}</div></div></div>
           <fieldset className="speech-task-fields" aria-label={taskOptions ? "当前任务参数" : "新任务选项"} disabled={!!taskOptions}>
           <div className="speech-option-group speech-recognition-group" role="group" aria-label="识别设置">
           <SpeechOnlineRunControls options={taskOptions} />
@@ -223,8 +224,7 @@ export function SpeechView({ active }: { active: boolean }) {
         </section>
         <div className="speech-splitter is-horizontal" role="separator" aria-label="调整参数与结果区域高度" aria-orientation="horizontal" onMouseDown={event => upper.beginResize(event, 1)} />
       <section className="speech-results">
-        <div className="speech-results-header"><h2 className="speech-results-heading">转写结果</h2>
-        <div className="speech-output-location"><span title={outputFolder}>输出到：{outputFolder || "请在设置 → 语音转文字中选择目录"}</span>{outputItem?.folder && outputItem.status !== "resetting" && <button aria-label="打开输出目录" title="打开输出目录" onClick={() => void api.openPath(outputItem.folder).catch(cause => setError(friendly(cause)))}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h7l2 3h9l-3 10H3V7Z"/><path d="M3 7V4h7l2 3h8v3"/></svg></button>}</div></div>
+        <div className="speech-results-header"><h2 className="speech-results-heading">转写结果</h2></div>
         {result && <div className="speech-result-tabs" role="tablist" aria-label="转写结果文件">{resultItems.map((item, index) => <button type="button" role="tab" id={`speech-tab-${item.id}`} aria-controls="speech-result-page" aria-selected={item.id === result.id} tabIndex={item.id === result.id ? 0 : -1} title={item.source.name} key={item.id} onClick={() => { selectFile(item); setNotice(""); }} onKeyDown={event => {
           const next = event.key === "ArrowRight" ? (index + 1) % resultItems.length : event.key === "ArrowLeft" ? (index + resultItems.length - 1) % resultItems.length : event.key === "Home" ? 0 : event.key === "End" ? resultItems.length - 1 : -1;
           if (next < 0) return;

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { formatSpeechTime } from "../speech/transcription";
 
-export type SpeechPlayback = { path: string; analyser: AnalyserNode };
+export type SpeechPlayback = { taskId: string; analyser: AnalyserNode };
 
 export function SpeechWaveform({ analyser }: { analyser: AnalyserNode }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -41,7 +41,7 @@ export function SpeechWaveform({ analyser }: { analyser: AnalyserNode }) {
   return <canvas ref={ref} className="speech-waveform" role="img" aria-label="试听音频实时频谱" />;
 }
 
-export function SpeechAudioPlayer({ path, positions: savedPositions, onPlaybackChange }: { path: string; positions?: Map<string, number>; onPlaybackChange?: (playback: SpeechPlayback | null) => void }) {
+export function SpeechAudioPlayer({ taskId, path, positions: savedPositions, onPlaybackChange }: { taskId: string; path: string; positions?: Map<string, number>; onPlaybackChange?: (playback: SpeechPlayback | null) => void }) {
   const audio = useRef<HTMLAudioElement>(null);
   const graph = useRef<{ context: AudioContext; analyser: AnalyserNode } | null>(null);
   const ownPositions = useRef(new Map<string, number>());
@@ -54,23 +54,23 @@ export function SpeechAudioPlayer({ path, positions: savedPositions, onPlaybackC
   const [error, setError] = useState("");
   useEffect(() => {
     const element = audio.current;
-    setPosition(positions.get(path) ?? 0); setPlaying(false); setDuration(0); setError("");
+    setPosition(positions.get(taskId) ?? 0); setPlaying(false); setDuration(0); setError("");
     return () => {
       if (element) {
-        if (element.readyState >= 1) positions.set(path, element.currentTime);
+        if (element.readyState >= 1) positions.set(taskId, element.currentTime);
         element.pause();
       }
       onPlaybackChange?.(null);
     };
-  }, [path, positions, onPlaybackChange]);
+  }, [taskId, path, positions, onPlaybackChange]);
   useEffect(() => () => { const context = graph.current?.context; graph.current = null; void context?.close(); }, []);
   useEffect(() => { if (audio.current) audio.current.volume = volume; localStorage.setItem("llmchat-speech-volume", String(volume)); }, [volume, path]);
-  const savePosition = () => { const element = audio.current; if (element && element.readyState >= 1) positions.set(path, element.currentTime); };
+  const savePosition = () => { const element = audio.current; if (element && element.readyState >= 1) positions.set(taskId, element.currentTime); };
   const loadPosition = () => {
     const element = audio.current;
     if (!element) return;
     const duration = element.duration || 0;
-    const position = Math.min(positions.get(path) ?? 0, duration);
+    const position = Math.min(positions.get(taskId) ?? 0, duration);
     element.currentTime = position;
     setDuration(duration); setPosition(position);
   };
@@ -95,10 +95,10 @@ export function SpeechAudioPlayer({ path, positions: savedPositions, onPlaybackC
   const time = (seconds: number) => formatSpeechTime(seconds, ".").slice(0, -4);
   return <div className="speech-player">
     <audio ref={audio} crossOrigin="anonymous" src={convertFileSrc(path)} preload="metadata" onLoadedMetadata={loadPosition}
-      onTimeUpdate={() => { savePosition(); setPosition(audio.current?.currentTime || 0); }} onPlay={() => { setPlaying(true); if (graph.current) onPlaybackChange?.({ path, analyser: graph.current.analyser }); }} onPause={stopPlayback} onEnded={stopPlayback} onError={() => { stopPlayback(); setError("此音频无法直接试听，仍可尝试分段识别。"); }} />
+      onTimeUpdate={() => { savePosition(); setPosition(audio.current?.currentTime || 0); }} onPlay={() => { setPlaying(true); if (graph.current) onPlaybackChange?.({ taskId, analyser: graph.current.analyser }); }} onPause={stopPlayback} onEnded={stopPlayback} onError={() => { stopPlayback(); setError("此音频无法直接试听，仍可尝试分段识别。"); }} />
     <button type="button" aria-label={playing ? "暂停试听" : "播放音频"} onClick={() => void togglePlayback()}>{playing ? "Ⅱ" : "▶"}</button>
     <span className="speech-player-time">{time(position)} / {time(duration)}</span>
-    <input className="speech-player-seek" aria-label="播放位置" type="range" min="0" max={duration || 0} step="0.1" value={position} onChange={event => { const value = Number(event.target.value); if (audio.current) audio.current.currentTime = value; positions.set(path, value); setPosition(value); }} />
+    <input className="speech-player-seek" aria-label="播放位置" type="range" min="0" max={duration || 0} step="0.1" value={position} onChange={event => { const value = Number(event.target.value); if (audio.current) audio.current.currentTime = value; positions.set(taskId, value); setPosition(value); }} />
     <div className={`speech-volume${volumeOpen ? " is-open" : ""}`} onPointerEnter={() => setVolumeOpen(true)} onPointerLeave={() => setVolumeOpen(false)} onFocus={() => setVolumeOpen(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setVolumeOpen(false); }}>
       <button type="button" aria-label="调整音量" aria-expanded={volumeOpen} onClick={() => setVolumeOpen(true)}>
         <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden><path fill="currentColor" d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" fill="none" stroke="currentColor" strokeWidth="2"/></svg>
