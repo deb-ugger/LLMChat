@@ -206,6 +206,7 @@ pub fn run() {
                 return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()).into());
             }
             let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            app.manage(speech::SpeechStorage(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?)));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
             start_backend(app.handle()).map_err(std::io::Error::other)?;
             let mut config = window_config.clone();

@@ -1158,8 +1158,8 @@ bool downloadNotoFontToCache(std::vector<std::string>& steps, std::string& error
     }
 
     // Fallback: language zip from GitHub Releases, extract Regular OTF
-    const fs::path tempDir = storage::get("temp") / "llmchat-noto-sc";
-    fs::create_directories(tempDir);
+    storage::TemporaryDirectory temporary("noto-sc");
+    const fs::path& tempDir = temporary.path;
     const fs::path zipPath = tempDir / L"NotoSansCJKsc.zip";
     steps.push_back("回退：下载 Noto Sans CJK SC 压缩包");
     std::string zipErr;
@@ -2228,25 +2228,9 @@ bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& e
 
     // Extract to a short ASCII temp path first. Windows tar often fails on
     // sync folders (BaiduNetdisk) or non-ASCII game paths; copy afterward.
-    const fs::path stagingRoot =
-        storage::get("temp") / "llmchat-xunity-extract"
-        / (std::to_wstring(GetCurrentProcessId()) + L"-"
-           + std::to_wstring(GetTickCount64()));
+    storage::TemporaryDirectory staging("xunity-extract");
+    const fs::path& stagingRoot = staging.path;
     std::error_code ec;
-    fs::create_directories(stagingRoot, ec);
-    if (ec)
-    {
-        error = "无法创建临时解压目录";
-        return false;
-    }
-    struct StagingGuard {
-        fs::path path;
-        ~StagingGuard()
-        {
-            std::error_code ignore;
-            fs::remove_all(path, ignore);
-        }
-    } guard{stagingRoot};
 
     const fs::path tarExe = fs::path(L"C:\\Windows\\System32\\tar.exe");
     const bool hasTar = fs::is_regular_file(tarExe, ec);
@@ -3638,8 +3622,8 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
         result.package = pkg;
         const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
 
-        const fs::path tempDir = storage::get("temp") / "llmchat-xunity";
-        fs::create_directories(tempDir);
+        storage::TemporaryDirectory temporary("xunity");
+        const fs::path& tempDir = temporary.path;
         const fs::path zipPath = tempDir / pathFromUtf8(pkg);
 
         result.steps.push_back("下载 " + pkg);
@@ -4052,8 +4036,8 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             const std::string pkg = packageFileName("ReiPatcher");
             result.package = pkg;
             const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
-            const fs::path tempDir = storage::get("temp") / "llmchat-xunity";
-            fs::create_directories(tempDir);
+            storage::TemporaryDirectory temporary("xunity");
+            const fs::path& tempDir = temporary.path;
             const fs::path zipPath = tempDir / pathFromUtf8(pkg);
 
             result.steps.push_back("下载 " + pkg);

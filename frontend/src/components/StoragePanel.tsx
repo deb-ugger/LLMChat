@@ -37,7 +37,7 @@ const PATH_COPY: Record<string, { icon: IconName; description: string }> = {
 };
 const CLEANUP_COPY: Record<string, { title: string; description: string; icon: IconName }> = {
   logs: { title: "运行日志", description: "Unity 输出日志与日志备份。", icon: "file" },
-  temp: { title: "临时文件", description: "下载和解压留下的文件，包含旧版临时目录。", icon: "clock" },
+  temp: { title: "临时文件与中断残留", description: "下载、解压、未完成创建的语音任务及临时写入文件；保留原文件、正式输出和有效断点。任务临时文件自动回收，意外中断残留下次启动清理。", icon: "clock" },
   webcache: { title: "浏览器缓存", description: "网络、渲染及语音模型缓存。清理后模型需重新下载，账号、设置和阅读记录保留。", icon: "globe" },
   ocr: { title: "OCR 模型", description: "已下载的识别模型，使用对应模式时需重新下载。", icon: "scan" },
   unity: { title: "Unity 资源缓存", description: "安装包、字体与工具，可在使用时重新下载。", icon: "cube" },

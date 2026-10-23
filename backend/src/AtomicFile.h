@@ -34,6 +34,10 @@ inline bool writeText(
 
         fs::path temporary = target;
         temporary += ".tmp";
+        struct TemporaryGuard {
+            fs::path path;
+            ~TemporaryGuard() { std::error_code ignored; fs::remove(path, ignored); }
+        } guard{temporary};
         {
             std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
             if (!out)
@@ -47,7 +51,6 @@ inline bool writeText(
             {
                 if (error) *error = "写入临时文件失败";
                 out.close();
-                fs::remove(temporary, ec);
                 return false;
             }
         }
@@ -67,7 +70,6 @@ inline bool writeText(
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         {
             if (error) *error = "替换文件失败，Windows 错误码 " + std::to_string(GetLastError());
-            fs::remove(temporary, ec);
             return false;
         }
 #else
@@ -75,7 +77,6 @@ inline bool writeText(
         if (ec)
         {
             if (error) *error = "替换文件失败: " + ec.message();
-            fs::remove(temporary, ec);
             return false;
         }
 #endif

@@ -54,7 +54,8 @@ int runApp(int argc, char* argv[])
 #endif
     storage::initialize(base, prepare && argc > 2 ? utf8path::pathFromUtf8(argv[2]) : fs::path{}, !serve);
     if (prepare) {
-        std::cout << nlohmann::json{{"webview", utf8path::pathUtf8(storage::get("webview"))}}.dump();
+        std::cout << nlohmann::json{{"webview", utf8path::pathUtf8(storage::get("webview"))},
+            {"data", utf8path::pathUtf8(storage::get("data"))}}.dump();
         return 0;
     }
     const fs::path configPath = storage::get("data") / "config.ini";

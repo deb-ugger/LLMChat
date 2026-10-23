@@ -57,6 +57,11 @@
 .speech-queue-heading h2 span { font-size: 14px; font-weight: 500; color: var(--text-muted); }
 .speech-queue-heading button { font-size: 14px; font-weight: 600; padding: 7px 11px; color: var(--accent-ink); border-color: #a9c1ed; background: #eef4ff; }
 .speech-job-list { flex: 1; min-height: 0; overflow: auto; }
+.speech-queue-tabs { display: flex; flex-shrink: 0; gap: 6px; padding: 0 20px 12px; border-bottom: 1px solid var(--border); }
+.speech-queue-tabs button { display: inline-flex; align-items: center; justify-content: center; flex: 1; gap: 8px; padding: 7px 10px; border-color: transparent; background: #f1f4f8; font-size: 14px; }
+.speech-queue-tabs button[aria-selected="true"] { border-color: #a9c1ed; background: #e8f0ff; color: var(--accent-ink); font-weight: 600; }
+.speech-queue-tabs span { font-size: 12px; font-variant-numeric: tabular-nums; }
+.speech-queue-empty { margin: 0; padding: 20px; color: var(--text-muted); font-size: 14px; }
 .speech-job { padding: 16px 20px; cursor: pointer; transition: background 140ms; }
 .speech-job + .speech-job { border-top: 1px solid var(--border); }
 .speech-job:hover { background: #f0f4fa; }
@@ -81,7 +86,6 @@
 .speech-job-cleanup { display: flex; gap: 6px; margin-left: auto; }
 .speech-job-actions button { height: 32px; font-size: 14px; line-height: 1; padding: 3px 7px; }
 .speech-job-actions .speech-icon-button { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 6px; }
-.speech-unfinished h3 { margin: 0; padding: 14px 20px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-muted); }
 .speech-job-status { white-space: nowrap; font-size: 13px; color: #61728e; padding: 3px 7px; border-radius: 8px; background: #edf1f7; }
 .speech-job-status.is-running { color: #345fb9; background: #e7eeff; }
 .speech-job-status.is-done { color: #217253; background: #e5f5ed; }

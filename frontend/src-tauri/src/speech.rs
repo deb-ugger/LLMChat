@@ -9,8 +9,49 @@ use tauri::{AppHandle, Manager};
 
 // Only small commit positions are retained; transcript bodies stay on disk.
 static POSITIONS: LazyLock<Mutex<HashMap<PathBuf, (f64, usize)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static ROOTS_LOCK: Mutex<()> = Mutex::new(());
+pub struct SpeechStorage(pub PathBuf);
+const PENDING_MARKER: &str = ".llmchat-speech-pending";
+const PENDING_SIGNATURE: &[u8] = b"llmchat-speech-pending-v1\n";
 type Result<T> = std::result::Result<T, String>;
 fn err(error: impl std::fmt::Display) -> String { error.to_string() }
+
+fn register_output_root(app: &AppHandle, root: &Path) -> Result<()> {
+    if !root.is_absolute() { return Err("语音输出目录必须是绝对路径".into()); }
+    let _lock = ROOTS_LOCK.lock().unwrap();
+    let registry = app.state::<SpeechStorage>().0.join("speech-output-roots.json");
+    let mut roots: Vec<PathBuf> = if registry.exists() { serde_json::from_slice(&fs::read(&registry).map_err(err)?).map_err(err)? } else { Vec::new() };
+    let root = if root.exists() { fs::canonicalize(root).map_err(err)? } else { root.to_path_buf() };
+    if roots.contains(&root) { return Ok(()); }
+    roots.push(root);
+    let temporary = registry.with_extension("json.tmp");
+    let saved = (|| {
+        let mut file = File::create(&temporary).map_err(err)?;
+        file.write_all(&serde_json::to_vec(&roots).map_err(err)?).map_err(err)?;
+        file.sync_data().map_err(err)?; drop(file);
+        fs::rename(&temporary, &registry).map_err(err)
+    })();
+    if saved.is_err() { let _ = fs::remove_file(temporary); }
+    saved
+}
+
+struct UnpublishedJob { folder: PathBuf, published: bool }
+impl Drop for UnpublishedJob {
+    fn drop(&mut self) {
+        if self.published { return; }
+        POSITIONS.lock().unwrap().remove(&self.folder);
+        let stem = self.folder.file_name().unwrap().to_string_lossy();
+        for name in [PENDING_MARKER.to_string(), "job.json.tmp".into(), "progress.jsonl".into(), format!("{stem}.srt"), format!("{stem}.vtt"), format!("{stem}.txt")] {
+            let path = self.folder.join(name);
+            if path.is_file() { if let Err(error) = fs::remove_file(&path) { eprintln!("Speech temporary cleanup failed: {}: {error}", path.display()); } }
+        }
+        match fs::remove_dir(&self.folder) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => (),
+            Err(error) => eprintln!("Speech temporary cleanup failed: {}: {error}", self.folder.display()),
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +211,9 @@ fn create_job(root: &Path, id: String, source: Source, options: Options, output_
             Err(e) => return Err(err(e)),
         }
     };
+    let mut pending = UnpublishedJob { folder: folder.clone(), published: false };
+    let mut marker = File::create(folder.join(PENDING_MARKER)).map_err(err)?;
+    marker.write_all(PENDING_SIGNATURE).map_err(err)?; marker.sync_data().map_err(err)?; drop(marker);
     let mut job = Job { id, folder: folder.to_string_lossy().into_owned(), source, options, offset: 0.0, cue_count: 0, output_stem: Some(output_stem) };
     File::create(folder.join("progress.jsonl")).map_err(err)?.sync_data().map_err(err)?;
     rebuild(&mut job)?;
@@ -178,6 +222,8 @@ fn create_job(root: &Path, id: String, source: Source, options: Options, output_
     metadata.write_all(&serde_json::to_vec_pretty(&job).map_err(err)?).map_err(err)?; metadata.sync_data().map_err(err)?;
     drop(metadata);
     fs::rename(folder.join("job.json.tmp"), folder.join("job.json")).map_err(err)?;
+    pending.published = true;
+    if let Err(error) = fs::remove_file(folder.join(PENDING_MARKER)) { eprintln!("Speech pending marker cleanup failed: {error}"); }
     Ok(job)
 }
 fn commit(folder: &Path, chunk: Chunk) -> Result<Job> {
@@ -244,7 +290,8 @@ pub async fn speech_probe(app: AppHandle, path: String) -> Result<Source> {
     tauri::async_runtime::spawn_blocking(move || probe(&dir, Path::new(&path))).await.map_err(err)?
 }
 #[tauri::command]
-pub async fn speech_create_job(root: String, id: String, source: Source, options: Options, output_date: String) -> Result<Job> {
+pub async fn speech_create_job(app: AppHandle, root: String, id: String, source: Source, options: Options, output_date: String) -> Result<Job> {
+    register_output_root(&app, Path::new(&root))?;
     tauri::async_runtime::spawn_blocking(move || create_job(Path::new(&root), id, source, options, &output_date)).await.map_err(err)?
 }
 fn list_jobs(root: &Path) -> Result<Vec<Job>> {
@@ -262,7 +309,8 @@ fn list_jobs(root: &Path) -> Result<Vec<Job>> {
     Ok(jobs)
 }
 #[tauri::command]
-pub async fn speech_list_jobs(root: String) -> Result<Vec<Job>> {
+pub async fn speech_list_jobs(app: AppHandle, root: String) -> Result<Vec<Job>> {
+    register_output_root(&app, Path::new(&root))?;
     tauri::async_runtime::spawn_blocking(move || list_jobs(Path::new(&root))).await.map_err(err)?
 }
 #[tauri::command]

@@ -62,8 +62,11 @@ export class SpeechQueue {
     if (!root) return;
     const jobs = await speechNative.list(root);
     const known = new Set(this.state.items.map(item => item.id));
-    this.publish({ items: [...this.state.items, ...jobs.filter(job => !known.has(job.id) && job.offset < job.source.duration - 0.01).map(job => ({ ...job, root, status: "paused" as const,
-      fromHistory: true, showOutput: true, message: "可从已保存断点继续", elapsedMs: 0, revision: 0 }))] });
+    this.publish({ items: [...this.state.items, ...jobs.filter(job => !known.has(job.id)).map(job => {
+      const done = job.offset >= job.source.duration - 0.01;
+      return { ...job, root, status: done ? "done" as const : "paused" as const,
+        fromHistory: true, showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: 0, revision: 0 };
+    })] });
   }
   start(id?: string) {
     const pref = getSpeechPreferences();

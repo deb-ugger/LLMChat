@@ -80,15 +80,18 @@ export function SpeechView({ active }: { active: boolean }) {
   const listenPositions = useRef(new Map<string, number>());
   const [width, setWidth] = useState(window.innerWidth - 124);
   const [height, setHeight] = useState(window.innerHeight - 36);
+  const [queueTab, setQueueTab] = useState<"unfinished" | "completed">("unfinished");
   const left = usePersistedSize("llmchat-speech-left", 340, 260, Math.max(260, width * .6), "x");
   const upper = usePersistedSize("llmchat-speech-options-height", 150, 96, Math.max(96, height - 240), "y");
   const currentItems = queue.items.filter(item => !item.fromHistory);
-  const unfinishedItems = queue.items.filter(item => item.fromHistory);
-  const selected = queue.items.find(item => item.id === selectedId) ?? currentItems[0] ?? unfinishedItems[0];
+  const unfinishedItems = queue.items.filter(item => item.status !== "done");
+  const completedItems = queue.items.filter(item => item.status === "done");
+  const visibleItems = queueTab === "unfinished" ? unfinishedItems : completedItems;
+  const selected = visibleItems.find(item => item.id === selectedId) ?? visibleItems[0];
   const taskOptions = selected && (selected.folder || ["queued", "running", "pausing"].includes(selected.status)) ? selected.options : undefined;
   const selectedModel = taskOptions?.model ?? models.selected;
   const online = (taskOptions ? taskOptions.processing?.mode : pref.mode) === "online";
-  const resultItems = queue.items.filter(item => item.folder && item.showOutput && !["cancelling", "resetting"].includes(item.status));
+  const resultItems = visibleItems.filter(item => item.folder && item.showOutput && !["cancelling", "resetting"].includes(item.status));
   const result = resultItems.find(item => item.id === selected?.id);
   const matchingPreview = preview?.id === result?.id && preview?.query === query ? preview : null;
   const resultPreview = matchingPreview?.page === page ? matchingPreview : null;
@@ -145,7 +148,7 @@ export function SpeechView({ active }: { active: boolean }) {
     void getCurrentWindow().onDragDropEvent(event => {
       if (event.payload.type === "enter" || event.payload.type === "over") setDragging(true);
       else setDragging(false);
-      if (event.payload.type === "drop") void speechQueue.add(event.payload.paths);
+      if (event.payload.type === "drop") { setQueueTab("unfinished"); void speechQueue.add(event.payload.paths); }
     }).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(cause => setError(friendly(cause)));
     return () => { disposed = true; unlisten?.(); };
   }, [active]);
@@ -161,7 +164,7 @@ export function SpeechView({ active }: { active: boolean }) {
   const pickFiles = async () => {
     try {
       const paths = await openDialog({ multiple: true, directory: false, title: "添加音频文件", filters: [{ name: "音频", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "webm", "wma", "aiff", "m4b"] }] });
-      if (paths) await speechQueue.add(Array.isArray(paths) ? paths : [paths]);
+      if (paths) { setQueueTab("unfinished"); await speechQueue.add(Array.isArray(paths) ? paths : [paths]); }
     } catch (cause) { setError(friendly(cause)); }
   };
   const pages = Math.max(1, Math.ceil((matchingPreview?.total ?? 0) / 100));
@@ -199,12 +202,13 @@ export function SpeechView({ active }: { active: boolean }) {
       <aside className="speech-controls">
         <section className="speech-file-card speech-input-pane">
           <div className="speech-queue-heading"><h2>音频队列 <span>· {queue.items.length} 个文件</span></h2><button disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>添加文件</button></div>
+          <div className="speech-queue-tabs" role="tablist" aria-label="音频任务状态">{(["unfinished", "completed"] as const).map(tab => <button key={tab} role="tab" aria-selected={queueTab === tab} aria-controls="speech-queue-items" onClick={() => setQueueTab(tab)}>{tab === "unfinished" ? "未完成" : "已完成"}<span>{tab === "unfinished" ? unfinishedItems.length : completedItems.length}</span></button>)}</div>
           {queue.items.length === 0 && <button className="speech-file-picker" disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>{queue.importing ? "正在读取音频信息…" : "拖放音频到此处，或点击添加多个文件"}</button>}
-          <div className="speech-job-list">{currentItems.map(renderJob)}
-            {unfinishedItems.length > 0 && <section className="speech-unfinished" aria-label="未完成任务"><h3>未完成任务 · {unfinishedItems.length}</h3>{unfinishedItems.map(renderJob)}</section>}
+          <div className="speech-job-list" id="speech-queue-items">{visibleItems.map(renderJob)}
+            {visibleItems.length === 0 && queue.items.length > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
           </div>
           {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
-          <div className="speech-actions"><button className="speech-primary" disabled={!toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={!running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
+          <div className="speech-actions"><button className="speech-primary" disabled={queueTab === "completed" || !toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={queueTab === "completed" || !running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
         </section>
       </aside>
       <div className="speech-splitter is-vertical" role="separator" aria-label="调整左右布局" aria-orientation="vertical" onMouseDown={event => left.beginResize(event, 1)} />

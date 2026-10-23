@@ -12,6 +12,10 @@
 #include <set>
 #include <stdexcept>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <iostream>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -28,7 +32,7 @@ inline std::string startupError;
 inline const std::vector<std::string> keys{"data", "projects", "ocr", "unity", "temp", "webview"};
 inline const std::vector<std::string> dataNames{
     "config.ini", "conversations.json", "conversations.sqlite3", "usage.db",
-    "usage-events.jsonl", "pricing.json", "vendor-models.json", "unity-output.log"};
+    "usage-events.jsonl", "pricing.json", "vendor-models.json", "unity-output.log", "speech-output-roots.json"};
 
 inline fs::path normalized(const fs::path& p) { return fs::weakly_canonical(fs::absolute(p)); }
 inline std::string pathKey(const fs::path& p)
@@ -159,6 +163,106 @@ inline void validate(const json& paths, const json& current)
         }
     }
 }
+inline fs::path taskTempRoot()
+{
+    return get("temp") / ("tasks-" + std::to_string(std::hash<std::string>{}(pathKey(base))));
+}
+struct TemporaryDirectory {
+    fs::path path;
+    explicit TemporaryDirectory(const std::string& purpose) {
+        static std::atomic<unsigned long long> serial{0};
+        auto root = taskTempRoot();
+        fs::create_directories(root);
+        do {
+            path = root / (purpose + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(++serial));
+        } while (!fs::create_directory(path));
+    }
+    TemporaryDirectory(const TemporaryDirectory&) = delete;
+    TemporaryDirectory& operator=(const TemporaryDirectory&) = delete;
+    ~TemporaryDirectory() {
+        try { removeTree(path); }
+        catch (const std::exception& e) { std::cerr << "Temporary cleanup failed: " << e.what() << std::endl; }
+    }
+};
+struct PendingSpeechJob { fs::path folder; std::vector<fs::path> files; };
+inline std::vector<PendingSpeechJob> pendingSpeechJobs()
+{
+    std::set<fs::path> roots{base / "speech-output"};
+    auto registry = get("data") / "speech-output-roots.json";
+    if (fs::exists(registry)) {
+        std::ifstream in(registry, std::ios::binary);
+        for (const auto& root : json::parse(in).get<std::vector<std::string>>()) roots.insert(utf8path::pathFromUtf8(root));
+    }
+    std::vector<PendingSpeechJob> jobs;
+    for (const auto& root : roots) {
+        rejectLinks(root);
+        if (!fs::is_directory(root)) continue;
+        for (const auto& entry : fs::directory_iterator(root)) {
+            const auto folder = entry.path();
+            if (linked(folder) || !entry.is_directory()) continue;
+            const auto marker = folder / ".llmchat-speech-pending";
+            const auto temporary = folder / "job.json.tmp";
+            bool marked = false;
+            if (fs::is_regular_file(marker) && !linked(marker)) {
+                std::ifstream in(marker, std::ios::binary);
+                marked = std::string(std::istreambuf_iterator<char>(in), {}) == "llmchat-speech-pending-v1\n";
+            }
+            if (fs::exists(folder / "job.json")) {
+                if (marked) jobs.push_back({folder, {marker}});
+                continue; // Never remove a published task's outputs or recovery journal.
+            }
+            const auto stem = utf8path::pathUtf8(folder.filename());
+            if (!marked && fs::is_regular_file(temporary) && !linked(temporary)) {
+                std::ifstream in(temporary, std::ios::binary);
+                const auto job = json::parse(in, nullptr, false);
+                marked = job.is_object() && job.contains("id") && job["id"].is_string()
+                    && job.contains("options") && job["options"].is_object()
+                    && job.contains("outputStem") && job["outputStem"].is_string()
+                    && job["outputStem"].get<std::string>() == stem;
+            }
+            if (!marked) continue;
+            const auto journal = folder / "progress.jsonl";
+            if (fs::exists(journal) && (linked(journal) || !fs::is_regular_file(journal) || fs::file_size(journal) != 0)) continue;
+            PendingSpeechJob pending{folder, {marker, temporary, journal}};
+            for (const auto& format : {"srt", "vtt", "txt"}) {
+                auto file = folder / utf8path::pathFromUtf8(stem + "." + format);
+                if (!fs::is_regular_file(file) || linked(file)) continue;
+                const auto size = fs::file_size(file);
+                if (size == 0) pending.files.push_back(file);
+                else if (std::string(format) == "vtt" && size == 8) {
+                    std::ifstream in(file, std::ios::binary);
+                    if (std::string(std::istreambuf_iterator<char>(in), {}) == "WEBVTT\n\n") pending.files.push_back(file);
+                }
+            }
+            jobs.push_back(std::move(pending));
+        }
+    }
+    return jobs;
+}
+inline std::vector<fs::path> temporaryFiles()
+{
+    std::vector<fs::path> out{taskTempRoot(), locator().wstring() + L".tmp"};
+    for (const auto& name : dataNames) out.push_back(get("data") / (name + ".tmp"));
+    auto root = get("ocr");
+    rejectLinks(root);
+    if (fs::is_directory(root)) {
+        for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it) {
+            if (linked(it->path())) { it.disable_recursion_pending(); continue; }
+            if (it->is_regular_file() && it->path().extension() == ".part") out.push_back(it->path());
+        }
+    }
+    return out;
+}
+inline void recoverTemporaryFiles()
+{
+    for (const auto& p : temporaryFiles()) removeTree(p);
+    for (const auto& job : pendingSpeechJobs()) {
+        for (const auto& p : job.files) removeTree(p);
+        std::error_code ec;
+        fs::remove(job.folder, ec);
+        if (ec && ec != std::errc::directory_not_empty) throw fs::filesystem_error("清理语音残留目录失败", job.folder, ec);
+    }
+}
 inline std::vector<fs::path> cleanTargets(const std::string& id)
 {
     std::vector<fs::path> out;
@@ -183,17 +287,23 @@ inline std::vector<fs::path> cleanTargets(const std::string& id)
         if (fs::is_directory(root)) for (const auto& e : fs::directory_iterator(root)) out.push_back(e.path());
         if (id == "temp") for (const auto& name : {"llmchat-xunity", "llmchat-xunity-extract", "llmchat-noto-sc"})
             out.push_back(fs::temp_directory_path() / name);
+        if (id == "temp") {
+            auto extra = temporaryFiles(); out.insert(out.end(), extra.begin(), extra.end());
+            for (const auto& job : pendingSpeechJobs()) out.insert(out.end(), job.files.begin(), job.files.end());
+        }
     } else if (id == "webcache") {
         for (const auto& name : {"Cache", "Code Cache", "GPUCache", "DawnCache", "GrShaderCache", "Service Worker/CacheStorage"})
             out.push_back(get("webview") / "EBWebView" / "Default" / name);
     } else throw std::runtime_error("未知清理类别");
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
 inline json cleanupInfo()
 {
     json rows = json::array();
     for (const auto& item : std::vector<std::pair<std::string, std::string>>{
-        {"logs", "Unity 输出日志及备份"}, {"temp", "Unity 下载与解压临时文件（含旧版临时目录）"},
+        {"logs", "Unity 输出日志及备份"}, {"temp", "临时文件与异常中断残留"},
         {"webcache", "WebView 渲染、网络及浏览器下载的模型缓存（模型需重新下载；保留账号、设置和阅读记录）"},
         {"ocr", "已下载 OCR 模型（使用时需要重新下载）"}, {"unity", "Unity 安装包、字体和工具缓存"},
         {"chats", "全部聊天记录及历史备份（不可恢复）"}, {"usage", "全部用量记录及历史备份（不可恢复）"},
@@ -261,6 +371,10 @@ inline void initialize(const fs::path& programBase, const fs::path& profile = {}
             persist(manifest);
         }
     }
+    if (applyChanges && !manifest.contains("pending")) {
+        try { recoverTemporaryFiles(); }
+        catch (const std::exception& e) { startupError += "临时文件回收失败：" + std::string(e.what()) + "；"; }
+    }
     if (applyChanges && !manifest.contains("pending") && manifest.contains("cleanup")) {
         json remaining = json::array();
         for (const auto& id : manifest.at("cleanup")) {
@@ -268,10 +382,12 @@ inline void initialize(const fs::path& programBase, const fs::path& profile = {}
             catch (const std::exception& e) { remaining.push_back(id); startupError += std::string(e.what()) + "；"; }
         }
         manifest["cleanup"] = remaining;
-        if (!startupError.empty()) manifest["error"] = startupError;
-        else manifest.erase("error");
     }
     manifest["active"] = active;
+    if (applyChanges) {
+        if (startupError.empty()) manifest.erase("error");
+        else manifest["error"] = startupError;
+    }
     // Do not create a locator just by running an unconfigured standalone backend.
     if (fs::exists(locator()) || !profile.empty()) persist(manifest);
 }
@@ -282,7 +398,7 @@ inline json status()
     json entries = json::array();
     const std::vector<std::string> labels{"软件数据", "翻译工程", "OCR 模型", "Unity 资源缓存", "临时文件", "WebView 用户数据"};
     const std::vector<std::string> descriptions{
-        "config.ini（含 API 配置）、conversations.sqlite3、usage.db、旧版 JSON/JSONL、pricing.json、vendor-models.json、unity-output.log，以及 .bak/.tmp 和 SQLite 辅助文件。仅迁移这些软件数据文件。",
+        "config.ini（含 API 配置）、conversations.sqlite3、usage.db、旧版 JSON/JSONL、pricing.json、vendor-models.json、unity-output.log、语音输出目录索引，以及 .bak/.tmp 和 SQLite 辅助文件。仅迁移这些软件数据文件。",
         "每个工程的 project.lcproj、原文、译文和导出文件。可清理带工程标识的子目录；用户在其他位置另存的文件不会被清理。",
         "下载的 PaddleOCR / Manga OCR 模型、分词器与下载中 .part 文件。内置快速模型打包在程序中。",
         "resources 下的 bepinex 安装包、fonts 字体 / TMP 资源包、tools 工具。游戏目录内的补丁和配置由 Unity 页面管理。",

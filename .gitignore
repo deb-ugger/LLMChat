@@ -53,6 +53,7 @@ config.ini
 conversations.json
 **/config.ini
 **/conversations.json
+**/speech-output-roots.json*
 conversations.sqlite3
 conversations.sqlite3-wal
 conversations.sqlite3-shm
