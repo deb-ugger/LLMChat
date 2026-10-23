@@ -210,8 +210,8 @@ export function SpeechView({ active }: { active: boolean }) {
       <div className="speech-splitter is-vertical" role="separator" aria-label="调整左右布局" aria-orientation="vertical" onMouseDown={event => left.beginResize(event, 1)} />
       <main className="speech-right">
         <section className="speech-settings">
-          <div className="speech-settings-heading"><h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
-          <div className="speech-output-location"><span className="speech-output-label">输出文件夹</span><div className="speech-output-path"><output title={outputFolder}>{outputFolder || "请在设置 → 语音转文字中选择目录"}</output>{outputItem?.folder && outputItem.status !== "resetting" && <button aria-label="打开输出目录" title="打开输出目录" onClick={() => void api.openPath(outputItem.folder).catch(cause => setError(friendly(cause)))}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h7l2 3h9l-3 10H3V7Z"/><path d="M3 7V4h7l2 3h8v3"/></svg></button>}</div></div></div>
+          <h3>{taskOptions ? "当前任务参数" : "新任务选项"}</h3>
+          <div className="speech-task-layout">
           <fieldset className="speech-task-fields" aria-label={taskOptions ? "当前任务参数" : "新任务选项"} disabled={!!taskOptions}>
           <div className="speech-option-group speech-recognition-group" role="group" aria-label="识别设置">
           <SpeechOnlineRunControls options={taskOptions} />
@@ -221,6 +221,8 @@ export function SpeechView({ active }: { active: boolean }) {
           <SpeechProofreadControls options={taskOptions} />
           <div className="speech-option-group speech-output-group" role="group" aria-label="输出设置"><SpeechRunOptions options={taskOptions} /></div>
           </fieldset>
+          <div className="speech-output-location"><span className="speech-output-label">输出文件夹</span><div className="speech-output-path"><output title={outputFolder}>{outputFolder || "请在设置 → 语音转文字中选择目录"}</output>{outputItem?.folder && outputItem.status !== "resetting" && <button aria-label="打开输出目录" title="打开输出目录" onClick={() => void api.openPath(outputItem.folder).catch(cause => setError(friendly(cause)))}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h7l2 3h9l-3 10H3V7Z"/><path d="M3 7V4h7l2 3h8v3"/></svg></button>}</div></div>
+          </div>
         </section>
         <div className="speech-splitter is-horizontal" role="separator" aria-label="调整参数与结果区域高度" aria-orientation="horizontal" onMouseDown={event => upper.beginResize(event, 1)} />
       <section className="speech-results">
