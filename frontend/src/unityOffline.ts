@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { join, resourceDir } from "@tauri-apps/api/path";
 
 export const UNITY_OUTPUT_KEY = "llmchat-unity-output-directory";
@@ -12,7 +12,22 @@ export type UnityProject = {
   fonts: UnityFont[]; warnings: string[]; hashes: Record<string, string>;
 };
 export type UnityPatch = { folder: string; files: number; entries: number; fontReplacements: number };
-export const unityRun = <T>(action: string, request: object) => invoke<T>("unity_offline_run", { action, request });
+export type UnityProgress = { detail: string; completed: number; total: number | null; folder?: string };
+export class UnityPaused extends Error { constructor(public folder: string) { super("任务已中止，进度已保存"); } }
+export const unityRun = async <T>(action: string, request: object, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal): Promise<T> => {
+  if (signal?.aborted) throw new UnityPaused("");
+  const channel = new Channel<UnityProgress>(onProgress);
+  const operationId = signal ? crypto.randomUUID() : undefined;
+  let stopRequest: Promise<void> | undefined;
+  const stop = () => { stopRequest = invoke<void>("unity_offline_stop", { operationId }); void stopRequest.catch(() => {}); };
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    const result = await invoke<T | { paused: true; folder: string }>("unity_offline_run", { action, request, onProgress: channel, operationId });
+    await stopRequest;
+    if (result && typeof result === "object" && "paused" in result) throw new UnityPaused(result.folder);
+    return result as T;
+  } finally { signal?.removeEventListener("abort", stop); }
+};
 export async function unityOutputDirectory() {
   return localStorage.getItem(UNITY_OUTPUT_KEY)?.trim() || await join(await resourceDir(), "unity-output");
 }

@@ -189,6 +189,7 @@ pub fn run() {
             read_file_bytes,
             file_stat,
             unity_offline::unity_offline_run,
+            unity_offline::unity_offline_stop,
             speech::speech_environment,
             speech::speech_probe,
             speech::speech_create_job,
