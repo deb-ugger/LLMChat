@@ -18,6 +18,7 @@
 #include <iostream>
 #ifdef _WIN32
 #include <windows.h>
+#include <pathcch.h>
 #endif
 
 // The locator stays beside the executable. All moves and removals happen before
@@ -58,11 +59,27 @@ inline bool linked(const fs::path& p)
 #endif
     return fs::is_symlink(fs::symlink_status(p));
 }
+inline bool isVolumeRoot(const fs::path& p)
+{
+#ifdef _WIN32
+    auto value = p.native();
+    if (PathCchIsRoot(value.c_str())) return true;
+    while (!value.empty() && (value.back() == L'\\' || value.back() == L'/')) value.pop_back();
+    return !value.empty() && (PathCchIsRoot(value.c_str()) || PathCchIsRoot((value + L"\\").c_str()));
+#else
+    return p == p.root_path();
+#endif
+}
 inline void rejectLinks(const fs::path& p)
 {
     for (auto part = fs::absolute(p); !part.empty(); part = part.parent_path()) {
+#ifdef _WIN32
+        // parent_path() drops the final slash of an extended drive root.
+        // Restore the valid volume path before checking its attributes.
+        if (PathCchIsRoot((part.native() + L"\\").c_str())) part += L"\\";
+#endif
         if (linked(part)) throw std::runtime_error("路径包含符号链接或目录联接，无法管理: " + utf8path::pathUtf8(part));
-        if (part == part.root_path()) break;
+        if (isVolumeRoot(part)) break;
     }
 }
 inline fs::path locator() { return base / "storage-paths.json"; }
@@ -150,7 +167,7 @@ inline void validate(const json& paths, const json& current)
         if (raw.empty() || !p.is_absolute()) throw std::runtime_error("请选择绝对路径");
         rejectLinks(p);
         p = normalized(p);
-        if (p == p.root_path()) throw std::runtime_error("不能使用磁盘根目录");
+        if (isVolumeRoot(p)) throw std::runtime_error("不能使用磁盘根目录");
         if (pathKey(p) == pathKey(utf8path::pathFromUtf8(current.at(key).get<std::string>()))) continue;
         if (within(base, p)) throw std::runtime_error("目标不能是程序目录或其父目录");
         if (fs::exists(p) && (!fs::is_directory(p) || !fs::is_empty(p)))
@@ -344,7 +361,7 @@ inline void initialize(const fs::path& programBase, const fs::path& profile = {}
     def("webview", defaultProfile);
     for (const auto& key : keys) {
         auto p = get(key);
-        if (!p.is_absolute() || normalized(p) == p.root_path()) throw std::runtime_error("存储索引含无效路径");
+        if (!p.is_absolute() || isVolumeRoot(normalized(p))) throw std::runtime_error("存储索引含无效路径");
         rejectLinks(p);
     }
     // Failure leaves the old active paths in service and preserves all originals.

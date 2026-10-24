@@ -306,19 +306,28 @@ int HttpServer::run()
 
     svr.Get("/api/storage", withCors([](const httplib::Request&, httplib::Response& res) {
         try { res.set_content(storage::status().dump(), "application/json"); }
-        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+        catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(errorJson("无法读取存储信息：" + std::string(e.what())).dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
+        }
     }));
     svr.Put("/api/storage/paths", withCors([](const httplib::Request& req, httplib::Response& res) {
         try {
             storage::schedulePaths(json::parse(req.body).at("paths"));
             res.set_content(storage::status().dump(), "application/json");
-        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(errorJson(e.what()).dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
+        }
     }));
     svr.Put("/api/storage/cleanup", withCors([](const httplib::Request& req, httplib::Response& res) {
         try {
             storage::scheduleCleanup(json::parse(req.body).at("ids"));
             res.set_content(storage::status().dump(), "application/json");
-        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(errorJson(e.what()).dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
+        }
     }));
 
     svr.Get("/api/usage/events", withCors([this](const httplib::Request& req, httplib::Response& res) {

@@ -162,9 +162,9 @@ function classifyChineseHint(s: string): string | null {
     const code = s.match(/HTTP\s*(\d{3})/i)?.[1];
     if (code === "429") return "请求过于频繁或额度不足";
     if (code === "502" || code === "503" || code === "504") {
-      return "翻译服务暂时不可用";
+      return "服务暂时不可用，请稍后重试";
     }
-    return "翻译请求失败，请稍后重试或更换引擎";
+    return "请求处理失败，请查看具体错误信息";
   }
   return null;
 }

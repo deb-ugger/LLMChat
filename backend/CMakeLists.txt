@@ -30,7 +30,7 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
     )
     target_compile_options(llmchat-backend PRIVATE /utf-8)
-    target_link_libraries(llmchat-backend PRIVATE winhttp ws2_32)
+    target_link_libraries(llmchat-backend PRIVATE winhttp ws2_32 pathcch)
 endif()
 
 install(TARGETS llmchat-backend RUNTIME DESTINATION bin)
