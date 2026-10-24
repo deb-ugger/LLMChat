@@ -100,7 +100,7 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
   return (
       <div className="speech-pane-content">
         <div className="speech-results-header"><div className="speech-workspace-switch" role="group" aria-label="工作区切换">
-          <button className="speech-results-heading" aria-pressed={workspaceMode === "results"} onClick={() => { setWorkspaceMode("results"); setTabMenu(null); }}>转写结果</button>
+          <button className="speech-results-heading" aria-pressed={workspaceMode === "results"} onClick={() => { setWorkspaceMode("results"); setTabMenu(null); if (selected) onSelect(selected); }}>转写结果</button>
           <button className="speech-results-heading" aria-pressed={workspaceMode === "ranges"} onClick={() => { const item = activeRange ?? rangeItems[0] ?? selected; if (item) openRange(item); else { setWorkspaceMode("ranges"); setTabMenu(null); } }}>识别范围</button>
         </div>{layoutControl}</div>
         {fileTabs.length > 0 && <div className="speech-result-tabs" role="tablist" aria-label={workspaceMode === "ranges" ? "识别范围文件" : "转写结果文件"}>{fileTabs.map((item, index) => <div className="speech-file-tab" key={item.id}>
@@ -160,7 +160,7 @@ export function SpeechWorkspace({ active, items, initialItem, onSelect, children
   const columns = layout === "columns";
   const splitStyle = layout === "single" ? undefined : { [columns ? "gridTemplateColumns" : "gridTemplateRows"]: `minmax(0, ${ratio}fr) 8px minmax(0, ${1 - ratio}fr)` } as CSSProperties;
   return <section className="speech-results">{children}<div className={`speech-result-panes is-${layout}`} ref={container} style={splitStyle}>
-    {[0, 1].filter(index => index === 0 || hasSplit).map(index => <div key={index} className={`speech-result-pane${layout !== "single" && activePane === index ? " is-active-pane" : ""}`} hidden={index === 1 && layout === "single"} role="region" aria-label={`工作区 ${index + 1}`} onPointerDownCapture={() => activate(index)} onFocusCapture={() => activate(index)}>
+    {[0, 1].filter(index => index === 0 || hasSplit).map(index => <div key={index} className={`speech-result-pane${layout !== "single" && activePane === index ? " is-active-pane" : ""}`} hidden={index === 1 && layout === "single"} role="region" aria-label={`工作区 ${index + 1}`} onPointerDownCapture={() => activate(index)} onClickCapture={() => activate(index)} onFocusCapture={() => activate(index)}>
       <SpeechPane id={`${rootId}-pane-${index}`} ref={pane => { if (pane) panes.current.set(index, pane); else panes.current.delete(index); }} active={active && (index === 0 || layout !== "single")} items={items} initialItem={index === 0 ? initialItem : items.find(item => item.folder && item.showOutput && item.id !== initialItem?.id) ?? initialItem} onSelect={onSelect} drafts={drafts} changeDraft={changeDraft} layoutControl={index === (columns ? 1 : 0) ? layoutControl : undefined}/>
     </div>)}
     {layout !== "single" && <div className={`speech-pane-splitter ${columns ? "is-vertical" : "is-horizontal"}`} role="separator" tabIndex={0} aria-label="调整分屏比例" aria-orientation={columns ? "vertical" : "horizontal"} aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(ratio * 100)} style={columns ? { gridColumn: 2, gridRow: 1 } : { gridRow: 2, gridColumn: 1 }}

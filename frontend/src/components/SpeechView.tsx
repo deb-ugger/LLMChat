@@ -58,6 +58,7 @@ export function SpeechView({ active }: { active: boolean }) {
   const initialized = useRef(false);
   const restored = useRef(new Set<string>());
   const workspace = useRef<HTMLDivElement>(null);
+  const queueList = useRef<HTMLDivElement>(null);
   const listenPositions = useRef(new Map<string, number>());
   const [width, setWidth] = useState(window.innerWidth - 124);
   const [height, setHeight] = useState(window.innerHeight - 36);
@@ -70,6 +71,10 @@ export function SpeechView({ active }: { active: boolean }) {
   const completedItems = queue.items.filter(item => item.status === "done");
   const visibleItems = queueTab === "unfinished" ? unfinishedItems : completedItems;
   const selected = visibleItems.find(item => item.id === selectedId) ?? visibleItems[0];
+  useEffect(() => {
+    const row = Array.from(queueList.current?.children ?? []).find(element => (element as HTMLElement).dataset.speechTaskId === selected?.id);
+    row?.scrollIntoView({ block: "nearest" });
+  }, [selected?.id, queueTab]);
   const taskOptions = selected && (selected.folder || ["queued", "running", "pausing"].includes(selected.status)) ? selected.options : undefined;
   const selectedModel = taskOptions?.model ?? models.selected;
   const online = (taskOptions ? taskOptions.processing?.mode : pref.mode) === "online";
@@ -149,7 +154,7 @@ export function SpeechView({ active }: { active: boolean }) {
   };
   const renderJob = (item: SpeechQueueItem) => {
     const work = speechRangeProgress(item.options.ranges, item.source.duration, item.offset);
-    return <article key={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.taskId === item.id ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
+    return <article key={item.id} data-speech-task-id={item.id} className={`speech-job${selected?.id === item.id ? " is-selected" : ""}${playback?.taskId === item.id ? " is-playing" : ""}`} onClick={() => selectFile(item)}>
     <div><strong title={item.source.path}>{item.source.name}</strong><label className="speech-job-preview" onClick={event => event.stopPropagation()}><input type="checkbox" checked={item.showOutput} onChange={event => {
       speechQueue.setShowOutput(item.id, event.target.checked);
       if (event.target.checked) selectFile(item);
@@ -174,7 +179,7 @@ export function SpeechView({ active }: { active: boolean }) {
           <div className="speech-queue-heading"><h2>音频队列 <span>· {queue.items.length} 个文件</span></h2><button disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>添加文件</button></div>
           <div className="speech-queue-tabs" role="tablist" aria-label="音频任务状态">{(["unfinished", "completed"] as const).map(tab => <button key={tab} role="tab" aria-selected={queueTab === tab} aria-controls="speech-queue-items" onClick={() => { setQueueTab(tab); const item = (tab === "completed" ? completedItems : unfinishedItems)[0]; if (item) selectFile(item); }}>{tab === "unfinished" ? "未完成" : "已完成"}<span>{tab === "unfinished" ? unfinishedItems.length : completedItems.length}</span></button>)}</div>
           {queue.items.length === 0 && <button className="speech-file-picker" disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>{queue.importing ? "正在读取音频信息…" : "拖放音频到此处，或点击添加多个文件"}</button>}
-          <div className="speech-job-list" id="speech-queue-items">{visibleItems.map(renderJob)}
+          <div className="speech-job-list" id="speech-queue-items" ref={queueList}>{visibleItems.map(renderJob)}
             {visibleItems.length === 0 && queue.items.length > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
           </div>
           {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
