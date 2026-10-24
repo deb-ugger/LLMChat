@@ -1,8 +1,8 @@
-.unity-module { display: flex; flex-direction: column; min-height: 0; height: 100%; min-width: 0; }
+.unity-module { display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 0; height: 100%; min-width: 0; }
 .unity-module-tabs { display: flex; gap: 20px; padding: 8px 22px 0; border-bottom: 1px solid var(--border, #d6dfe9); background: var(--panel, #fff); flex-shrink: 0; }
 .unity-module-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 10px 2px; font-size: 16px; color: var(--muted, #667589); border-radius: 0; cursor: pointer; }
 .unity-module-tabs button[aria-selected=true] { border-bottom-color: #326df0; color: #265bc4; font-weight: 600; }
-.unity-module-page { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.unity-module-page { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .unity-module-page[hidden] { display: none; }
 .unity-offline { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; gap: 12px; padding: 16px 20px; background: var(--bg, #f1f5fa); font-size: 14px; overflow: auto; }
 .unity-offline-options, .unity-offline-workbench, .unity-offline-footer { border: 1px solid var(--border, #d6dfe9); border-radius: 12px; background: var(--panel, #fff); padding: 14px; min-width: 0; }
