@@ -1,5 +1,6 @@
 use std::io::Cursor;
 mod speech;
+mod unity_offline;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -187,6 +188,7 @@ pub fn run() {
             write_file_bytes,
             read_file_bytes,
             file_stat,
+            unity_offline::unity_offline_run,
             speech::speech_environment,
             speech::speech_probe,
             speech::speech_create_job,

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare-unity-tools.ps1 && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,7 +28,7 @@
     }
   },
   "bundle": {
-    "resources": ["resources/ffmpeg/*"],
+    "resources": ["resources/ffmpeg/*", "resources/unity/*"],
     "active": true,
     "targets": [],
     "icon": [

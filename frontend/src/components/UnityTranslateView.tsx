@@ -27,6 +27,7 @@ import {
   removeRecentUnityGame,
   type RecentUnityGame,
 } from "../unityLastGame";
+import { UnityOfflineView } from "./UnityOfflineView";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -268,7 +269,19 @@ function runtimeLabel(n: string, e?: boolean) {
   return n === "il2cpp" || e ? "IL2CPP" : n === "mono" ? "Mono" : "运行时未知";
 }
 
-export function UnityTranslateView({
+export function UnityTranslateView(props: { active?: boolean; onOpenUnitySettings?: () => void }) {
+  const [mode, setMode] = useState<"runtime" | "offline">("offline");
+  return <div className="unity-module">
+    <nav className="unity-module-tabs" aria-label="Unity 翻译方式">
+      <button role="tab" aria-selected={mode === "offline"} onClick={() => setMode("offline")}>嵌字翻译</button>
+      <button role="tab" aria-selected={mode === "runtime"} onClick={() => setMode("runtime")}>运行时翻译</button>
+    </nav>
+    <div className="unity-module-page" hidden={mode !== "offline"}><UnityOfflineView active={props.active !== false && mode === "offline"} onOpenUnitySettings={props.onOpenUnitySettings} /></div>
+    <div className="unity-module-page" hidden={mode !== "runtime"}><RuntimeUnityTranslateView {...props} active={props.active !== false && mode === "runtime"} /></div>
+  </div>;
+}
+
+function RuntimeUnityTranslateView({
   active = true,
   onOpenUnitySettings,
 }: {

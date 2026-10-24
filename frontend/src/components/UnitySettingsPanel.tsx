@@ -23,6 +23,8 @@ import {
   saveUnityConfigDraft,
 } from "../unityConfigDraft";
 import { lastUnityGameDir } from "../unityLastGame";
+import { open } from "@tauri-apps/plugin-dialog";
+import { UNITY_OUTPUT_KEY } from "../unityOffline";
 
 export type UnitySettingsPanelHandle = {
   save: () => Promise<void>;
@@ -56,6 +58,10 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
     ref,
   ) {
     const [gameDir, setGameDir] = useState(() => lastUnityGameDir());
+    const [outputDirectory, setOutputDirectory] = useState(() => localStorage.getItem(UNITY_OUTPUT_KEY) || "");
+    const savedOutputRef = useRef(outputDirectory);
+    const outputRef = useRef(outputDirectory);
+    outputRef.current = outputDirectory;
     const [sections, setSections] = useState<UnityIniSection[]>([]);
     const [configPath, setConfigPath] = useState("");
     const [configExists, setConfigExists] = useState(false);
@@ -82,7 +88,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
       (next: UnityIniSection[]) => {
         savedSectionsRef.current = next;
         setSections(next);
-        setDirty(false);
+        setDirty(outputRef.current !== savedOutputRef.current);
       },
       [setDirty],
     );
@@ -151,9 +157,18 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
       ref,
       () => ({
         save: async () => {
+          if (outputDirectory !== savedOutputRef.current && JSON.stringify(sections) === JSON.stringify(savedSectionsRef.current)) {
+            localStorage.setItem(UNITY_OUTPUT_KEY, outputDirectory.trim());
+            savedOutputRef.current = outputDirectory;
+            setDirty(false);
+            notifyRef.current("已保存嵌字翻译输出目录");
+            return;
+          }
           const dir = lastUnityGameDir();
           saveUnityConfigDraft(sections);
           if (!dir) {
+            localStorage.setItem(UNITY_OUTPUT_KEY, outputDirectory.trim());
+            savedOutputRef.current = outputDirectory;
             savedSectionsRef.current = sections;
             setDirty(false);
             notifyRef.current(
@@ -170,13 +185,15 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
             throw new Error(res.error || "save failed");
           }
           setConfigPath(res.path || configPath);
+          localStorage.setItem(UNITY_OUTPUT_KEY, outputDirectory.trim());
+          savedOutputRef.current = outputDirectory;
           setConfigExists(true);
           savedSectionsRef.current = sections;
           setDirty(false);
           notifyRef.current("已写入当前游戏 Config.ini，并更新通用模板");
         },
       }),
-      [sections, configPath, setDirty],
+      [sections, configPath, setDirty, outputDirectory],
     );
 
     const engines = engineConfigSections(sections);
@@ -186,12 +203,27 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
       const next = setIniValue(sections, section, key, value);
       setSections(next);
       setDirty(
-        JSON.stringify(next) !== JSON.stringify(savedSectionsRef.current),
+        JSON.stringify(next) !== JSON.stringify(savedSectionsRef.current) || outputDirectory !== savedOutputRef.current,
       );
     };
 
     return (
       <>
+        <section className="settings-card">
+          <div className="settings-card-head"><h2>嵌字翻译输出目录</h2></div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input style={{ flex: 1, minWidth: 0 }} aria-label="嵌字翻译输出目录" value={outputDirectory} placeholder="默认：软件目录下的 unity-output" onChange={e => {
+              setOutputDirectory(e.target.value);
+              setDirty(e.target.value !== savedOutputRef.current || JSON.stringify(sections) !== JSON.stringify(savedSectionsRef.current));
+            }} />
+            <button type="button" onClick={() => void open({ directory: true, defaultPath: outputDirectory || undefined }).then(path => {
+              if (typeof path !== "string") return;
+              setOutputDirectory(path);
+              setDirty(path !== savedOutputRef.current || JSON.stringify(sections) !== JSON.stringify(savedSectionsRef.current));
+            }).catch(e => notifyRef.current(String(e), false))}>浏览</button>
+          </div>
+          <p className="hint">保存嵌字工程、译文及独立补丁，不直接修改游戏目录。翻译模型的地址与凭证沿用模型设置。</p>
+        </section>
         <div className="settings-priority-banner">
           <strong>Unity</strong>
           <span>

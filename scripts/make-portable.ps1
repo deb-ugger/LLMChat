@@ -71,6 +71,14 @@ $speechToolsOutput = Join-Path $out 'resources\ffmpeg'
 New-Item -ItemType Directory -Force -Path $speechToolsOutput | Out-Null
 Copy-Item (Join-Path $speechTools '*') $speechToolsOutput -Force
 
+$unityTools = Join-Path $root 'frontend\src-tauri\resources\unity'
+if (!(Test-Path -LiteralPath (Join-Path $unityTools 'llmchat-unity.exe'))) {
+    throw 'Run scripts/prepare-unity-tools.ps1 before packaging the Unity embedding feature.'
+}
+$unityToolsOutput = Join-Path $out 'resources\unity'
+New-Item -ItemType Directory -Force -Path $unityToolsOutput | Out-Null
+Copy-Item (Join-Path $unityTools '*') $unityToolsOutput -Force
+
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
 
