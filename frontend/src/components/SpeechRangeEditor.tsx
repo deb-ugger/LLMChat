@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { formatSpeechTime, speechRangeProgress, validateSpeechRanges, type SpeechRange } from "../speech/transcription";
 
 function parseTime(text: string) {
@@ -19,11 +19,13 @@ export function SpeechRangePicker({ ranges, readOnly, onOpen }: { ranges?: Speec
     <button type="button" onClick={onOpen}>选取片段</button></div>}
   </div>;
 }
-export function SpeechRangePage({ name, duration, ranges, disabled, onChange, onClose }: RangeProps & { name: string; onClose: () => void }) {
+export type SpeechRangePageHandle = { requestClose: (beforePrompt?: () => void) => Promise<boolean> };
+export function SpeechRangePage({ name, duration, ranges, disabled, onChange, onClose, ref }: RangeProps & { name: string; onClose: () => void; ref?: Ref<SpeechRangePageHandle> }) {
   const panel = useRef<HTMLDivElement>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const initial = () => ranges?.map(range => ({ ...range })) ?? (disabled ? [{ start: 0, end: duration }] : []);
   const latestDraft = useRef<SpeechRange[]>(initial());
+  const pendingClose = useRef<{ promise: Promise<boolean>; resolve: (closed: boolean) => void } | null>(null);
   const titleId = useId();
   const [draft, setDraft] = useState<SpeechRange[]>(initial);
   useEffect(() => {
@@ -34,29 +36,39 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
     const focused = document.activeElement as HTMLElement | null;
     if (focused && panel.current?.contains(focused)) focused.blur();
   };
-  const close = () => {
+  const finishClose = () => { confirmation.current?.close(); onClose(); pendingClose.current?.resolve(true); pendingClose.current = null; };
+  const cancelClose = () => { confirmation.current?.close(); pendingClose.current?.resolve(false); pendingClose.current = null; };
+  const close = (beforePrompt?: () => void) => {
+    if (pendingClose.current) return pendingClose.current.promise;
     finishTyping();
     const saved = ranges ?? [];
     const changed = !disabled && (latestDraft.current.length !== saved.length || latestDraft.current.some((range, index) => range.start !== saved[index]?.start || range.end !== saved[index]?.end));
-    if (changed) confirmation.current?.showModal();
-    else onClose();
+    if (changed) {
+      let resolve!: (closed: boolean) => void;
+      const promise = new Promise<boolean>(done => { resolve = done; });
+      pendingClose.current = { promise, resolve };
+      beforePrompt?.(); confirmation.current?.showModal();
+      return promise;
+    }
+    finishClose(); return Promise.resolve(true);
   };
+  useImperativeHandle(ref, () => ({ requestClose: close }));
   const save = () => {
     finishTyping();
     onChange(latestDraft.current.length ? latestDraft.current : undefined);
-    confirmation.current?.close(); onClose();
+    finishClose();
   };
   return <div ref={panel} className="speech-range-page" onKeyDown={event => { if (event.key === "Escape" && !confirmation.current?.open) { event.preventDefault(); close(); } }}>
       <div className="speech-range-page-header"><h3 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h3><span title={name}>{name}</span></div>
       <div className="speech-range-page-body"><SpeechRangeEditor key={String(disabled)} duration={duration} ranges={draft} disabled={disabled} onChange={next => changeDraft(next ?? [])} /></div>
-      <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={close}>{disabled ? "关闭" : "取消"}</button>
+      <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={() => void close()}>{disabled ? "关闭" : "取消"}</button>
         {!disabled && <button type="button" className="speech-primary" onClick={save}>保存选段</button>}</div></div>
-    <dialog ref={confirmation} className="speech-range-dialog speech-range-confirm" role="alertdialog" aria-labelledby={`${titleId}-unsaved`}>
+    <dialog ref={confirmation} className="speech-range-dialog speech-range-confirm" role="alertdialog" aria-labelledby={`${titleId}-unsaved`} onCancel={event => { event.preventDefault(); cancelClose(); }}>
       <div className="speech-range-dialog-header"><div><h2 id={`${titleId}-unsaved`}>选段尚未保存</h2></div></div>
       <div className="speech-range-dialog-body"><p>已修改的片段尚未保存，是否保存后关闭？</p></div>
       <div className="speech-range-dialog-footer"><div>
-        <button type="button" onClick={() => confirmation.current?.close()}>继续编辑</button>
-        <button type="button" className="speech-range-discard" onClick={() => { confirmation.current?.close(); onClose(); }}>放弃修改</button>
+        <button type="button" onClick={cancelClose}>继续编辑</button>
+        <button type="button" className="speech-range-discard" onClick={finishClose}>放弃修改</button>
         <button type="button" className="speech-primary" onClick={save}>保存并关闭</button>
       </div></div>
     </dialog>
