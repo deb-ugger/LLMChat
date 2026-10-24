@@ -87,7 +87,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("chat");
   const [navRailHidden, setNavRailHidden] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
-    "unity" | undefined
+    "unity" | "general" | undefined
   >(undefined);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -505,15 +505,13 @@ export default function App() {
         <button
           className={page === "unity" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("unity")}
-          title="在线翻译"
+          title="Unity 翻译"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.5 9h-3.1a13.7 13.7 0 0 0-1.2-4.6A8 8 0 0 1 18.5 11zM12 4a12 12 0 0 1 1.7 5H10.3A12 12 0 0 1 12 4zM5.6 6.4A13.7 13.7 0 0 0 4.4 11H1.5a8 8 0 0 1 4.1-4.6zM4.4 13a13.7 13.7 0 0 0 1.2 4.6A8 8 0 0 1 1.5 13zm5.9 0h3.4A12 12 0 0 1 12 20a12 12 0 0 1-1.7-7zm5.1 4.6A13.7 13.7 0 0 0 16.6 13h3a8 8 0 0 1-4.2 4.6z"
-            />
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="m8 2 6 3.5v7L8 16l-6-3.5v-7L8 2ZM2 5.5 8 9l6-3.5M8 9v7" />
+            <path d="M14 16h8m-4-3v3m-3 0c.5 2 2.5 4 6.5 6m0-6c-.5 2-2.5 4-6.5 6" />
           </svg>
-          <span>在线翻译</span>
+          <span>Unity 翻译</span>
         </button>
         <button
           className={page === "stats" ? "nav-item active" : "nav-item"}
@@ -694,6 +692,11 @@ export default function App() {
         >
           <UnityTranslateView
             active={page === "unity"}
+            settings={settings}
+            onOpenGeneralSettings={() => {
+              setSettingsInitialTab("general");
+              setPage("settings");
+            }}
             onOpenUnitySettings={() => {
               setSettingsInitialTab("unity");
               setPage("settings");

@@ -263,10 +263,10 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
 
         <section className="settings-card">
           <div className="settings-card-head">
-            <h2>翻译引擎参数</h2>
+            <h2>运行时插件引擎参数</h2>
           </div>
           <p className="hint">
-            配置游戏翻译引擎的 Key、URL 等参数。
+            这些参数写入游戏的 AutoTranslator 配置。嵌字翻译的模型、API 和引擎凭证使用「设置 → 通用」；运行时选择 LLMChat 大模型桥接也使用通用配置。
           </p>
           <div className="settings-engine-catalog">
             {engines.map((sec) => {

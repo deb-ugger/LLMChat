@@ -7,7 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, API_BASE, type UnityGameInfo, type UnityIniSection } from "../api";
+import { api, API_BASE, type Settings, type UnityGameInfo, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { isBoolIniValue, setIniValue } from "../unityIni";
 import { usePersistedHeight } from "../hooks/usePersistedHeight";
@@ -27,7 +27,7 @@ import {
   removeRecentUnityGame,
   type RecentUnityGame,
 } from "../unityLastGame";
-import { UnityOfflineView } from "./UnityOfflineView";
+import { UnityOfflineView, type UnityOfflineHandle } from "./UnityOfflineView";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -269,25 +269,20 @@ function runtimeLabel(n: string, e?: boolean) {
   return n === "il2cpp" || e ? "IL2CPP" : n === "mono" ? "Mono" : "运行时未知";
 }
 
-export function UnityTranslateView(props: { active?: boolean; onOpenUnitySettings?: () => void }) {
-  const [mode, setMode] = useState<"runtime" | "offline">("offline");
-  return <div className="unity-module">
-    <nav className="unity-module-tabs" aria-label="Unity 翻译方式">
-      <button role="tab" aria-selected={mode === "offline"} onClick={() => setMode("offline")}>嵌字翻译</button>
-      <button role="tab" aria-selected={mode === "runtime"} onClick={() => setMode("runtime")}>运行时翻译</button>
-    </nav>
-    <div className="unity-module-page" hidden={mode !== "offline"}><UnityOfflineView active={props.active !== false && mode === "offline"} onOpenUnitySettings={props.onOpenUnitySettings} /></div>
-    <div className="unity-module-page" hidden={mode !== "runtime"}><RuntimeUnityTranslateView {...props} active={props.active !== false && mode === "runtime"} /></div>
-  </div>;
-}
-
-function RuntimeUnityTranslateView({
+export function UnityTranslateView({
   active = true,
+  settings,
   onOpenUnitySettings,
+  onOpenGeneralSettings,
 }: {
   active?: boolean;
+  settings: Settings;
   onOpenUnitySettings?: () => void;
+  onOpenGeneralSettings?: () => void;
 }) {
+  const [mode, setMode] = useState<"runtime" | "offline" | null>(null);
+  const [offlineBusy, setOfflineBusy] = useState(false);
+  const offlineRef = useRef<UnityOfflineHandle>(null);
   const [pathInput, setPathInput] = useState("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [endpoint, setEndpoint] = useState("GoogleTranslate");
@@ -311,6 +306,12 @@ function RuntimeUnityTranslateView({
     const dir = lastUnityGameDir();
     return dir ? rememberRecentUnityGame({ gameDir: dir }) : [];
   });
+  const openGameDetail = useCallback((gameDir: string, displayName?: string) => {
+    setSelectedGameDir(gameDir);
+    setViewMode("detail");
+    setMode(null);
+    setRecentGames(rememberRecentUnityGame({ gameDir, name: displayName }));
+  }, []);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -719,6 +720,7 @@ function RuntimeUnityTranslateView({
     setScanState(null);
     setSelectedGameDir(null);
     setViewMode("list");
+    setMode(null);
     setSearchQuery("");
     setError(null);
   }, []);
@@ -733,6 +735,7 @@ function RuntimeUnityTranslateView({
     setScanState(null);
     setSelectedGameDir(null);
     setViewMode("list");
+    setMode(null);
     setSearchQuery("");
     setError(null);
     setActiveBottomTab("output");
@@ -768,6 +771,7 @@ function RuntimeUnityTranslateView({
     setScanning(true);
     setError(null);
     setViewMode("list");
+    setMode(null);
     setSelectedGameDir(null);
     setScanState(emptyScanState(trimmed));
     detectGamesAccRef.current = [];
@@ -820,6 +824,10 @@ function RuntimeUnityTranslateView({
               reportError(result.error || "未找到 Unity 游戏");
             } else {
               pushOutput(`检测完成，找到 ${found} 个游戏`, "ok");
+              if (detectGamesAccRef.current.length === 1) {
+                const game = detectGamesAccRef.current[0];
+                openGameDetail(game.gameDir, gameTitle(game));
+              }
             }
           },
         },
@@ -837,7 +845,7 @@ function RuntimeUnityTranslateView({
         setScanning(false);
       }
     }
-  }, [focusOutputTab, pushOutput, reportError]);
+  }, [focusOutputTab, pushOutput, reportError, openGameDetail]);
 
   useEffect(() => {
     return () => {
@@ -871,7 +879,7 @@ function RuntimeUnityTranslateView({
   );
 
   useEffect(() => {
-    if (!active) {
+    if (!active || viewMode !== "list") {
       setDragOver(false);
       return;
     }
@@ -926,7 +934,7 @@ function RuntimeUnityTranslateView({
       setDragOver(false);
       for (const u of unsubs) u();
     };
-  }, [active, pointInDropzone, resetPath, runDetect]);
+  }, [active, viewMode, pointInDropzone, resetPath, runDetect]);
 
   const openHelpMenu = () => {
     if (helpOpen) {
@@ -1266,17 +1274,6 @@ function RuntimeUnityTranslateView({
     }
   };
 
-  const openGameDetail = (gameDir: string, displayName?: string) => {
-    setSelectedGameDir(gameDir);
-    setViewMode("detail");
-    setRecentGames(
-      rememberRecentUnityGame({
-        gameDir,
-        name: displayName,
-      }),
-    );
-  };
-
   const openRecentGame = async (entry: RecentUnityGame) => {
     const gameDir = entry.gameDir;
     setPathInput(gameDir);
@@ -1314,8 +1311,15 @@ function RuntimeUnityTranslateView({
     }
   };
 
-  const backToList = () => {
+  const backToList = async () => {
+    if (mode === "offline" && offlineRef.current && !(await offlineRef.current.prepareToLeave())) return;
     setViewMode("list");
+    setMode(null);
+  };
+  const changeMode = async (next: "offline" | "runtime") => {
+    if (next === mode) return;
+    if (mode === "offline" && offlineRef.current && !(await offlineRef.current.prepareToLeave())) return;
+    setMode(next);
   };
 
   const runSelfCheck = async () => {
@@ -1499,7 +1503,7 @@ function RuntimeUnityTranslateView({
       setConfigExists(true);
       showConfigToast("已切换为 LLMChat 大模型翻译（需保持本软件运行）", true);
       reportSuccess(
-        `已设置 Endpoint=CustomTranslate，Url=${bridgeUrl}；模型请在「设置」页配置`,
+        `已设置 Endpoint=CustomTranslate，Url=${bridgeUrl}；模型使用「设置 → 通用」的当前配置`,
       );
     } catch (e) {
       reportError(toFriendlyError(e, "写入大模型端点失败"));
@@ -1694,7 +1698,7 @@ function RuntimeUnityTranslateView({
   };
 
   return (
-    <div className="unity-shell" aria-hidden={!active}>
+    <div className="unity-shell" aria-hidden={!active} data-unity-mode={showDetail ? mode || "choose" : "games"}>
       {configToast
         ? createPortal(
             <div
@@ -1715,19 +1719,25 @@ function RuntimeUnityTranslateView({
             <button
               type="button"
               className="unity-btn unity-back"
+              disabled={busy || offlineBusy}
               onClick={backToList}
             >
               ← 返回游戏列表
             </button>
             {helpButton}
           </div>
+          {mode && <nav className="unity-mode-nav" aria-label="Unity 翻译模式">
+            <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
+            <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
+          </nav>}
           {onOpenUnitySettings ? (
             <div className="unity-top-actions">
               <button
                 type="button"
                 className="unity-btn"
+                disabled={busy || offlineBusy}
                 onClick={onOpenUnitySettings}
-                title="打开设置中的 Unity 版块（引擎 Key 与低频选项）"
+                title="打开输出目录与运行时插件设置"
               >
                 Unity 设置
               </button>
@@ -2113,8 +2123,22 @@ function RuntimeUnityTranslateView({
         </div>
       )}
 
+      {showDetail && selected && mode !== "runtime" && <div className="unity-selected-game">
+        <strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code title={selected.gameDir}>{selected.gameDir}</code>
+      </div>}
+      {showDetail && mode === null && <section className="unity-mode-choice" aria-label="选择翻译模式">
+        <h2>选择翻译模式</h2>
+        <div className="unity-mode-choice-grid">
+          <button className="unity-mode-card" onClick={() => void changeMode("offline")}><strong>嵌字翻译</strong><span>提取文字，使用大模型或翻译引擎翻译，再生成独立资源补丁。</span></button>
+          <button className="unity-mode-card" onClick={() => void changeMode("runtime")}><strong>运行时翻译</strong><span>使用 AutoTranslator 插件，在游戏运行时翻译文字。</span></button>
+        </div>
+      </section>}
+      <div className="unity-offline-host" hidden={!showDetail || mode !== "offline"}>
+        <UnityOfflineView ref={offlineRef} active={active && showDetail && mode === "offline"} game={selected} settings={settings} onBusyChange={setOfflineBusy} onOpenGeneralSettings={onOpenGeneralSettings} />
+      </div>
       <div
         ref={workspaceRef}
+        hidden={showDetail && mode !== "runtime"}
         className={
           "unity-workspace" +
           (showDetail ? "" : " unity-workspace-list") +
@@ -2391,7 +2415,7 @@ function RuntimeUnityTranslateView({
                 >
                   <div className="unity-recent-games-head">
                     <strong>最近打开</strong>
-                    <span>点击直接进入详情</span>
+                    <span>点击识别并选择翻译模式</span>
                   </div>
                   <ul className="unity-recent-games-list">
                     {recentGames.map((r) => (
@@ -2623,7 +2647,7 @@ function RuntimeUnityTranslateView({
               </div>
               <div className="unity-llm-bridge">
                 <p className="unity-llm-bridge-hint">
-                  需保持 LLMChat 运行；大模型在「设置」页配置。一键写入后 Endpoint 为
+                  使用设置 → 通用中的当前模型（{settings.model || "未配置"}）、API 与密钥，需保持 LLMChat 运行。启用后 Endpoint 为
                   CustomTranslate，Url 为：
                   <code>{llmBridgeUrl}</code>
                 </p>
@@ -2644,13 +2668,13 @@ function RuntimeUnityTranslateView({
                   >
                     {actionLabel("test-llm", "测试一条")}
                   </button>
-                  {onOpenUnitySettings ? (
+                  {onOpenGeneralSettings ? (
                     <button
                       type="button"
                       className="unity-btn"
-                      onClick={onOpenUnitySettings}
+                      onClick={onOpenGeneralSettings}
                     >
-                      更多设置…
+                      通用模型设置
                     </button>
                   ) : null}
                 </div>
@@ -2774,6 +2798,7 @@ function RuntimeUnityTranslateView({
       </div>
 
       <div
+        hidden={showDetail && mode !== "runtime"}
         className={
           "unity-bottom-dock" + (statusCollapsed ? " is-collapsed" : "")
         }
