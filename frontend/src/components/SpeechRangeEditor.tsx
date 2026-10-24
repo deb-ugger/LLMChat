@@ -1,4 +1,4 @@
-import { useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type Ref } from "react";
+import { useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { formatSpeechTime, speechRangeProgress, validateSpeechRanges, type SpeechRange } from "../speech/transcription";
 
 function parseTime(text: string) {
@@ -20,23 +20,20 @@ export function SpeechRangePicker({ ranges, readOnly, onOpen }: { ranges?: Speec
   </div>;
 }
 export type SpeechRangePageHandle = { requestClose: (beforePrompt?: () => void) => Promise<boolean> };
-export function SpeechRangePage({ name, duration, ranges, disabled, onChange, onClose, ref }: RangeProps & { name: string; onClose: () => void; ref?: Ref<SpeechRangePageHandle> }) {
+export function SpeechRangePage({ name, duration, ranges, disabled, onChange, onClose, ref, sharedDraft, onDraftChange, onDiscard }: RangeProps & { name: string; onClose: () => void; ref?: Ref<SpeechRangePageHandle>; sharedDraft?: SpeechRange[]; onDraftChange: (ranges: SpeechRange[]) => void; onDiscard: () => void }) {
   const panel = useRef<HTMLDivElement>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
-  const initial = () => ranges?.map(range => ({ ...range })) ?? (disabled ? [{ start: 0, end: duration }] : []);
-  const latestDraft = useRef<SpeechRange[]>(initial());
+  const displayedDraft = disabled ? ranges ?? [{ start: 0, end: duration }] : sharedDraft ?? ranges ?? [];
+  const latestDraft = useRef<SpeechRange[]>(displayedDraft);
   const pendingClose = useRef<{ promise: Promise<boolean>; resolve: (closed: boolean) => void } | null>(null);
   const titleId = useId();
-  const [draft, setDraft] = useState<SpeechRange[]>(initial);
-  useEffect(() => {
-    if (disabled) { const next = initial(); latestDraft.current = next; setDraft(next); }
-  }, [disabled, ranges, duration]);
-  const changeDraft = (next: SpeechRange[]) => { latestDraft.current = next; setDraft(next); };
+  latestDraft.current = displayedDraft;
+  const changeDraft = (next: SpeechRange[]) => { latestDraft.current = next; onDraftChange(next); };
   const finishTyping = () => {
     const focused = document.activeElement as HTMLElement | null;
     if (focused && panel.current?.contains(focused)) focused.blur();
   };
-  const finishClose = () => { confirmation.current?.close(); onClose(); pendingClose.current?.resolve(true); pendingClose.current = null; };
+  const finishClose = () => { confirmation.current?.close(); onDiscard(); onClose(); pendingClose.current?.resolve(true); pendingClose.current = null; };
   const cancelClose = () => { confirmation.current?.close(); pendingClose.current?.resolve(false); pendingClose.current = null; };
   const close = (beforePrompt?: () => void) => {
     if (pendingClose.current) return pendingClose.current.promise;
@@ -60,7 +57,7 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
   };
   return <div ref={panel} className="speech-range-page" onKeyDown={event => { if (event.key === "Escape" && !confirmation.current?.open) { event.preventDefault(); close(); } }}>
       <div className="speech-range-page-header"><h3 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h3><span title={name}>{name}</span></div>
-      <div className="speech-range-page-body"><SpeechRangeEditor key={String(disabled)} duration={duration} ranges={draft} disabled={disabled} onChange={next => changeDraft(next ?? [])} /></div>
+      <div className="speech-range-page-body"><SpeechRangeEditor key={String(disabled)} duration={duration} ranges={displayedDraft} disabled={disabled} onChange={next => changeDraft(next ?? [])} /></div>
       <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={() => void close()}>{disabled ? "关闭" : "取消"}</button>
         {!disabled && <button type="button" className="speech-primary" onClick={save}>保存选段</button>}</div></div>
     <dialog ref={confirmation} className="speech-range-dialog speech-range-confirm" role="alertdialog" aria-labelledby={`${titleId}-unsaved`} onCancel={event => { event.preventDefault(); cancelClose(); }}>
