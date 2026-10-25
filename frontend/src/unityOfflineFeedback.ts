@@ -8,7 +8,7 @@ export function explainUnityFailure(error: unknown): UnityFailure {
     return result("软件的桌面权限配置拦截了 Unity 处理命令，操作未能启动。这不是游戏资源损坏，也与翻译引擎无关。", "更新并重启软件后重试；若仍出现，请反馈下方技术详情，无需更换引擎或以管理员身份运行。");
   if (/缺少嵌字组件|无法启动嵌字组件|0xc0000135/i.test(technical))
     return result("Unity 资源处理组件缺失或无法启动，尚未开始处理游戏资源。", "使用完整便携版更新程序及 resources/unity 目录，再重新启动软件。");
-  if (/工程读取失败|检查点不属于|恢复检查点失败|工程版本|工程无效|could not find|cannot find|找不到|不存在|ENOENT/i.test(technical))
+  if (/工程读取失败|检查点不属于|工程版本|工程无效|could not find|cannot find|找不到|不存在|ENOENT/i.test(technical))
     return result("保存工程或所需文件无法读取，可能已被移动、删除或格式不受支持。已有文件不会被自动删除。", "检查游戏内 LLMChat-Unity 工作文件夹及文件权限，保留原工程和备份后重试。");
   if (/拒绝访问|access.*denied|UnauthorizedAccess|EACCES|being used by another process|另一个进程/i.test(technical))
     return result("系统拒绝了文件读取或写入，当前目录权限或文件占用阻止了处理。", "关闭占用文件的程序，确认游戏及 LLMChat-Unity 工作目录可写；软件不会静默把工程改存到其他目录。");
@@ -26,9 +26,15 @@ export function explainUnityFailure(error: unknown): UnityFailure {
   if (/[一-鿿]/.test(technical)) return result(technical, "根据提示检查后重试或恢复；若原因仍不明确，请反馈技术详情，保留工程和原件备份。");
   return result("资源处理组件返回了无法识别的错误，暂时不能确定具体原因。", "先保留当前工程并重试；若仍失败，请反馈下方技术详情，以便定位，不要重复覆盖游戏文件。");
 }
-export function explainUnityWarning(warning: string) {
+export function explainUnityWarning(warning: string): { reason: string; technical: string; category?: "stream"; location?: string; impact?: string } {
   const boundary = warning.indexOf("：");
   const file = boundary >= 0 ? warning.slice(0, boundary) : "资源文件";
+  if (/Unable to read beyond the end of the stream|EndOfStreamException/i.test(warning)) return {
+    category: "stream", location: file,
+    reason: "读取对象时已到数据末尾，当前解析结构预期的长度超过了该对象实际数据范围，已跳过此对象。",
+    impact: "该对象内的文本或字体未被提取，补丁会保留其原内容。可能是自定义脚本或 Unity 版本的类型结构不匹配，也可能是资源截断；仅凭此日志不能判定游戏文件损坏。需要对应脚本结构才能进一步确认。",
+    technical: warning,
+  };
   if (/未内嵌类型树/.test(warning)) return { reason: `${file}：此资源缺少解析自定义组件所需的结构信息，暂时无法提取其中的界面文字或字体。其他可读取的资源仍会继续扫描。`, technical: warning };
   if (/Addressables/.test(warning)) return { reason: "游戏使用了额外的资源目录索引。替换资源后可能需要同步更新索引，当前不自动处理；生成补丁后仍需确认游戏能正常加载。", technical: warning };
   if (/图片文字、加密资源/.test(warning)) return { reason: warning, technical: "" };

@@ -15,7 +15,7 @@ public static class GameWorkspace
     static bool Inside(string root, string path) => Full(path).StartsWith(Full(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     public static string WorkRoot(string root) => Program.Within(root, FolderName);
     public static bool IsProjectsRoot(string root, string path) => Same(path, Program.Within(WorkRoot(root), "projects"));
-    static string Ensure(string root)
+    internal static string Ensure(string root)
     {
         if (!Directory.Exists(root)) throw new Exception("游戏目录不存在");
         var work = WorkRoot(root); var marker = Path.Combine(work, "workspace.json");
@@ -28,12 +28,13 @@ public static class GameWorkspace
         var metadata = JsonNode.Parse(File.ReadAllText(marker))!;
         if (metadata["version"]?.GetValue<int>() != 1) throw new Exception("游戏工作目录版本不受支持");
         Directory.CreateDirectory(Path.Combine(work, "projects"));
+        if ((File.GetAttributes(Path.Combine(work, "projects")) & FileAttributes.ReparsePoint) != 0) throw new Exception("工程目录不能是目录联接或符号链接");
         return work;
     }
     static JsonNode CopyTask(JsonNode task)
     {
         var result = new JsonObject();
-        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "progress", "patch" })
+        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         return result;
     }
@@ -46,13 +47,17 @@ public static class GameWorkspace
     public static void SaveTask(Request request)
     {
         var work = Ensure(request.Root);
-        var task = CopyTask(request.Task ?? throw new Exception("缺少任务检查点"));
+        Program.WriteJson(Path.Combine(work, "task-state.json"), PackTask(request.Root, request.Task ?? throw new Exception("缺少任务检查点")));
+    }
+    internal static JsonNode PackTask(string root, JsonNode value)
+    {
+        var work = WorkRoot(root); var task = CopyTask(value);
         MapPaths(task, path => {
             if (!Path.IsPathRooted(path)) { _ = Program.Within(work, path); return path; }
             if (!Inside(work, path)) throw new Exception("检查点路径不在当前游戏工作目录中");
             return Path.GetRelativePath(work, path);
         });
-        Program.WriteJson(Path.Combine(work, "task-state.json"), task);
+        return task;
     }
     static void CopyDirectory(string source, string destination)
     {
@@ -122,6 +127,7 @@ public static class GameWorkspace
         if (!Same(marker["root"]!.GetValue<string>(), root)) {
             BindMovedGame(root, projects, marker["root"]!.GetValue<string>()); marker["root"] = root; Program.WriteJson(markerPath, marker);
         }
+        WorkflowReset.ResumePending(root);
         var taskPath = Path.Combine(work, "task-state.json");
         if (!File.Exists(taskPath) && marker["legacyChecked"]?.GetValue<bool>() != true) {
             var legacy = request.Task == null ? null : CopyTask(request.Task);

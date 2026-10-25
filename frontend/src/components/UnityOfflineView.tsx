@@ -13,6 +13,7 @@ import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedbac
 import { UNITY_STEPS, unityLanguageScope, unityStageState } from "../unityWorkflow";
 import { translateUnitySession } from "../unityTranslationSession";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import { usePersistedSize } from "../hooks/usePersistedSize";
 import "../unityOffline.css";
 
 export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean> };
@@ -22,6 +23,7 @@ type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
   projectFolder: string; scanFolder: string; patchFolder: string; patch: UnityPatch | null;
   previousProjectFolder?: string; scopeVersion?: number;
+  partial?: boolean;
   translationKind: "llm" | "engine"; llmModel?: string; engine: TranslateProvider; source: string; target: string; includeCode: boolean; fontPath: string;
   progress: GenerationProgress;
 };
@@ -60,6 +62,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [workRoot, setWorkRoot] = useState("");
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
   const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, 900);
+  const configRef = useRef<HTMLElement>(null);
+  const workflowRef = useRef<HTMLElement>(null);
+  const [configHeight, setConfigHeight] = useState(window.innerHeight - 100);
+  const upper = usePersistedSize("unity-offline-upper-height", 320, 160, Math.max(160, configHeight - 180), "y");
   const sourceWidth = usePersistedWidth("unity-offline-source-width", 112, 80, 280);
   const [originalRatio, setOriginalRatio] = useState(() => Math.min(70, Math.max(20, Number(localStorage.getItem("unity-offline-original-ratio")) || 45)));
   const tableRef = useRef<HTMLTableElement>(null);
@@ -87,6 +93,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const needsRescan = !!project && (project.scanRevision || 0) < 2;
   const scanSettingsChanged = !!project && checkpoint?.projectFolder === project.folder && checkpoint.includeCode !== includeCode;
   const needsScan = needsRescan || scanSettingsChanged;
+  useEffect(() => { workflowRef.current?.scrollTo({ top: 0 }); }, [activeStep]);
+  useEffect(() => {
+    const element = configRef.current; if (!element) return;
+    const observer = new ResizeObserver(([entry]) => setConfigHeight(entry.contentRect.height));
+    observer.observe(element); return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     setProject(null); setPatch(null); setDirty(false); setPage(0); setSearch("");
@@ -224,10 +236,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }
     return p;
   }
-  async function rescan() {
-    if (project && !window.confirm("重新扫描会建立新工程，并保留原工程。原文和位置未变化的译文及选取会保留；已改变或新增的文本需要重新翻译。继续？")) return;
-    if (dirty) await save();
-    await runWorkflow(1, 1);
+  async function restartStage(step: number) {
+    if (busy || restoring) return;
+    const from = Math.min(step, 3);
+    if (!await confirm(`重做“${GENERATION_STEPS[step - 1]}”？将清除${from === 1 ? "当前游戏的工程、译文和补丁" : from === 2 ? "当前工程的译文和补丁" : "当前工程的补丁及应用记录"}。已应用的文件会先从校验通过的原件备份恢复；清理后可调整参数重新开始。`, { title: "重做步骤", kind: "warning", okLabel: "清理并重新设置", cancelLabel: "取消" })) return;
+    await operation("清理旧产物", async () => {
+      if (dirty) await save(); await taskWrites.current;
+      const task = checkpointRef.current || (project && projectCheckpoint(project));
+      const applyWorkspace = (workspace: UnityWorkspace<RunCheckpoint>) => {
+        const p = workspace.saved.project; latest.current = p; setProject(p);
+        checkpointRef.current = workspace.task; setCheckpoint(workspace.task); queuedSignature.current = "";
+        setPatch(null); setApplied(false); setGeneration(null); setDirty(false); setPage(0); setRowIssue(null);
+        setRestoreNotices(workspace.saved.notices);
+      };
+      try {
+        const result = await unityRun<{ step: number; workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step, path: project?.folder || "", task: task && { ...task, translationKind, llmModel, engine, source, target, includeCode, fontPath } }, progress => setMessage(progress.detail));
+        applyWorkspace(result.workspace); setActiveStep(result.step); followProgress.current = false;
+        setMessage(step === 4 ? "旧补丁已清理，可重新生成补丁后应用。" : "可调整本步参数后重新开始，后续步骤需重新执行。");
+      } catch (error) {
+        // The native reset checkpoint finishes any interrupted cleanup before loading results.
+        try { applyWorkspace(await unityRun<UnityWorkspace<RunCheckpoint>>("workspace", { root })); } catch { /* Keep the original cleanup failure visible. */ }
+        throw error;
+      }
+    }, false);
   }
   async function save(p = latest.current) {
     if (!p) return;
@@ -280,8 +311,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
     setBusy("生成补丁");
-    const selectedIds = [...unityLanguageScope(p.entries, run?.source || source).ids];
-    const result = await unityRun<UnityPatch>("export", { project: p, selectedIds, fontPath: run?.fontPath ?? fontPath, path: run?.patchFolder || "" }, onProgress, signal);
+    const ids = unityLanguageScope(p.entries, run?.source || source).ids;
+    const selectedIds = run?.partial ? p.entries.filter(e => e.selected && ids.has(e.id) && e.translation && !unityTranslationError(e.source, e.translation)).map(e => e.id) : [...ids];
+    const fontSourceIds = run?.partial ? p.entries.filter(e => e.selected && ids.has(e.id)).map(e => e.id) : undefined;
+    const result = await unityRun<UnityPatch>("export", { project: p, selectedIds, fontPath: run?.fontPath ?? fontPath, fontSourceIds, path: run?.patchFolder || "" }, onProgress, signal);
     setPatch(result); setDirty(false);
     setMessage(`已生成 ${result.files} 个补丁文件，回写 ${result.entries} 条译文、替换 ${result.fontReplacements} 个 UGUI 字体；尚未验证游戏显示。`);
     return result;
@@ -292,15 +325,17 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setApplied(true);
     setMessage(`已将 ${result.files} 个补丁文件应用到游戏。原件保存在补丁目录的 original 文件夹，实际显示请启动游戏检查。`);
   }
-  async function runWorkflow(startStep: number, endStep: number, resume = false) {
+  async function runWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep) {
     const controller = new AbortController(); abort.current = controller;
     let run: RunCheckpoint = resume && checkpointRef.current ? { ...checkpointRef.current, endStep } : {
-      step: startStep, endStep, automatic: startStep === 1 && endStep === 4, finished: false,
+      step: startStep, endStep, automatic, finished: false,
       projectFolder: startStep === 1 && endStep === 1 ? "" : project?.folder || "", scanFolder: "", patchFolder: "", patch: startStep === 4 ? patch : null,
       previousProjectFolder: startStep === 1 && endStep === 1 ? project?.folder : undefined,
       translationKind, llmModel, engine, source, target, includeCode, fontPath, scopeVersion: 1,
+      partial: startStep >= 3 && !!checkpointRef.current?.partial,
       progress: { step: startStep, state: "running", detail: "准备处理", completed: 0, total: null },
     };
+    if (automatic) run.automatic = true;
     if (needsScan && run.step < 3) {
       run = { ...run, step: 1, projectFolder: "", scanFolder: "", previousProjectFolder: project?.folder,
         progress: { step: 1, state: "running", detail: "重新提取游戏组件文本，已有工程和译文保留", completed: 0, total: null } };
@@ -356,10 +391,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       }
       run.finished = true; run.progress = { ...run.progress, state: "done" }; remember(run);
     } catch (e) {
-      if (e instanceof UnityPaused) {
-        if (e.folder) {
-          if (run.step === 1) { run.scanFolder = e.folder; run.projectFolder = e.folder; }
-          if (run.step === 3) run.patchFolder = e.folder;
+      const paused = e instanceof UnityPaused ? e : null;
+      if (paused || controller.signal.aborted) {
+        if (paused?.folder) {
+          if (run.step === 1) { run.scanFolder = paused.folder; run.projectFolder = paused.folder; }
+          if (run.step === 3) run.patchFolder = paused.folder;
         }
         run.progress = { ...run.progress, state: "stopped" }; remember(run);
         if (run.step === 1 && run.scanFolder) publish(await loadProject(run.scanFolder, run.previousProjectFolder));
@@ -377,7 +413,16 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const locked = !!busy || restoring || resumable;
   const entriesLocked = !!busy || restoring || resumable && checkpoint.step !== 2;
   const resumeTask = () => checkpoint && void operation("恢复任务", () => runWorkflow(checkpoint.step, checkpoint.endStep, true), true);
-  const taskAction = busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}{checkpoint.automatic ? "一键流程" : GENERATION_STEPS[checkpoint.step - 1]}</button>;
+  async function skipRemaining() {
+    if (!checkpoint || busy || !done) return;
+    if (!await confirm(`仅用已完成的 ${done} 条译文生成补丁？其余 ${selected.length - done} 条保持游戏原文，不再继续翻译。本次只生成补丁，之后可单独应用。`, { title: "跳过剩余翻译", okLabel: "生成补丁", cancelLabel: "取消" })) return;
+    await operation("生成部分补丁", async () => {
+      if (dirty) await save();
+      remember({ ...checkpoint, step: 3, endStep: 3, automatic: false, finished: false, partial: true, patch: null, patchFolder: "", progress: { step: 3, state: "running", completed: 0, total: null, detail: "仅使用已完成译文生成补丁" } });
+      await taskWrites.current; await runWorkflow(3, 3, true);
+    }, true);
+  }
+  const taskAction = <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}{checkpoint.automatic ? "一键流程" : GENERATION_STEPS[checkpoint.step - 1]}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn" disabled={restoring || !done} title={!done ? "至少需要一条可回写译文" : "未完成的文本保持原文"} onClick={() => void skipRemaining()}>跳过剩余并生成补丁</button>}</>;
   const finishTask = () => {
     if (!checkpoint || !window.confirm("结束本次流程？已保存的工程、译文和补丁仍保留，但不再自动继续后续步骤。")) return;
     remember({ ...checkpoint, finished: true, endStep: generation?.step || checkpoint.step });
@@ -389,11 +434,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   </div>;
   const progressRunning = !!busy && generation?.state === "running";
   const scanWarnings = [...(project?.warnings || []), ...restoreNotices];
+  const warningDetails = scanWarnings.map(explainUnityWarning);
+  const streamWarnings = warningDetails.filter(w => w.category === "stream");
   const scanReady = !!project && !needsScan && !(resumable && checkpoint.step === 1);
-  const translationReady = scanReady && selected.length > 0 && done === selected.length;
+  const translationReady = scanReady && selected.length > 0 && (done === selected.length || !!checkpoint?.partial && done > 0);
   const completedThrough = applied ? 4 : patch ? 3 : translationReady ? 2 : scanReady ? 1 : 0;
   const executingStep = generation && generation.state !== "done" ? generation.step : completedThrough < 4 ? completedThrough + 1 : undefined;
-  const parametersLocked = locked || applied;
+  const parametersLocked = locked || applied || activeStep <= completedThrough;
   const invalidatePatch = () => {
     setPatch(null); setGeneration(null);
     const saved = checkpointRef.current;
@@ -402,11 +449,17 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       remember(value); setGeneration(null);
     }
   };
-  const projectDetails = <section className="unity-offline-footer">
-    {(project || scanWarnings.length > 0) && <details><summary>字体与扫描提示 · {project?.fonts.length || 0} 个字体 / {scanWarnings.length} 条提示</summary><div className="unity-offline-report">{project?.fonts.map((f, i) => <p key={i}>{f.name} · {f.kind} · {f.file}</p>)}{scanWarnings.map((w, i) => { const info = explainUnityWarning(w); return <div key={`w${i}`}><p>{info.reason}</p>{info.technical && <details><summary>技术详情</summary><pre>{info.technical}</pre></details>}</div>; })}</div></details>}
-    {!generation && busy && <p role="status">{busy}…</p>}{!error && message && <p role="status">{message}</p>}
+  const projectDetails = <section className="unity-offline-footer" aria-label="任务输出">
     {workRoot && <div className="unity-offline-output"><span>工作目录</span><code title={workRoot}>{workRoot}</code><button className="unity-btn" onClick={() => void openPath(workRoot).catch(e => setError(String(e)))}>打开</button></div>}
-    {patch && <button className="unity-btn" onClick={() => void openPath(patch.folder).catch(e => setError(String(e)))}>打开补丁目录</button>}
+    <div className="unity-output-heading"><strong>输出</strong><span>{project?.fonts.length || 0} 个字体 · {scanWarnings.length} 条提示</span>{patch && <button className="unity-btn" onClick={() => void openPath(patch.folder).catch(e => setError(String(e)))}>补丁目录</button>}</div>
+    <div className="unity-offline-log">
+      <p role="status">{busy ? generation?.state === "running" ? generation.detail : message || `${busy}…` : error ? "本次处理未完成，请查看下面的失败原因。" : message || "等待操作"}</p>
+      {errorPanel}
+      {checkpoint?.partial && <p className="hint">仅回写 {done} 条有效译文，其余 {selected.length - done} 条保持原文。</p>}
+      {!!project?.fonts.length && <details><summary>已识别字体 · {project.fonts.length} 个</summary>{project.fonts.map((f, i) => <p key={i}>{f.name} · {f.kind} · {f.file}</p>)}</details>}
+      {!!streamWarnings.length && <details open><summary>对象读取范围不足 · {streamWarnings.length} 项</summary><p>{streamWarnings[0].reason}</p><p className="hint">{streamWarnings[0].impact}</p>{streamWarnings.map((info, i) => <details className="unity-warning-item" key={`stream${i}`}><summary>{info.location}</summary><pre>{info.technical}</pre></details>)}</details>}
+      {warningDetails.filter(w => w.category !== "stream").map((info, i) => <div className="unity-warning-item" key={`w${i}`}><p>{info.reason}</p>{info.technical && <details><summary>技术详情</summary><pre>{info.technical}</pre></details>}</div>)}
+    </div>
   </section>;
   const finishColumnDrag = () => {
     if (!columnDrag.current) return;
@@ -414,20 +467,22 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio));
   };
   return <div className="unity-offline">
-    {toolbarTarget && createPortal(<button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || !root || !output || (!resumable || checkpoint.step <= 2) && !connectionReady || applied} onClick={() => void operation("一键生成", () => runWorkflow(1, 4, resumable), true)}>{applied ? "已应用到游戏" : resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"}</button>, toolbarTarget)}
-    <aside className="unity-offline-config" style={{ width: panelWidth.width }}>
-    <section className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与任务进度">
+    {toolbarTarget && createPortal(<button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || !root || !output || (!resumable || checkpoint.step <= 2) && completedThrough < 2 && !connectionReady || applied} onClick={() => void operation("一键生成", () => runWorkflow(needsScan ? 1 : Math.min(4, completedThrough + 1), 4, resumable, true), true)}>{applied ? "已应用到游戏" : resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"}</button>, toolbarTarget)}
+    <aside ref={configRef} className="unity-offline-config" style={{ width: panelWidth.width }}>
+    <div className="unity-offline-upper" style={{ height: Math.min(upper.size, Math.max(160, configHeight - 180)) }}>
+    <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.step === activeStep ? generation.state : "idle"}`} aria-label="分步设置与任务进度">
       <nav className="unity-step-tabs" role="tablist" aria-label="处理步骤">{GENERATION_STEPS.map((label, index) => {
         const step = index + 1;
-        const state = unityStageState(step, completedThrough, executingStep);
+        const state = unityStageState(step, completedThrough, executingStep, generation?.state === "error" ? generation.step : undefined);
         return <button key={label} id={`unity-step-${step}`} role="tab" aria-selected={activeStep === step} aria-controls="unity-step-panel" aria-current={executingStep === step ? "step" : undefined} className={`unity-step-tab ${state}${activeStep === step ? " is-selected" : ""}`} onClick={() => { followProgress.current = false; setActiveStep(step); }}><span className="unity-step-number" aria-hidden="true">{step}</span>{label}</button>;
       })}</nav>
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${activeStep}`} className="unity-step-panel">
+        {(activeStep <= completedThrough || generation?.state === "error" && activeStep === generation.step) && <div className="unity-redo-action"><button className="unity-btn" disabled={!!busy || restoring} onClick={() => void restartStage(activeStep)}>重做此步</button></div>}
         {activeStep === 1 && <>
           <div className="unity-offline-fields">
-            <label>原文语言<select value={source} disabled={parametersLocked} onChange={e => { setSource(e.target.value); setPage(0); invalidatePatch(); }}><option value="auto">自动（主语言）</option><option value="ja">日语</option><option value="en">英语</option><option value="ko">韩语</option><option value="zh">中文</option><option value="ru">俄语</option><option value="all">全部语言</option></select></label>
+            <label>原文语言<select value={source} disabled={locked || applied || !!patch} onChange={e => { setSource(e.target.value); setPage(0); invalidatePatch(); }}><option value="auto">自动（主语言）</option><option value="ja">日语</option><option value="en">英语</option><option value="ko">韩语</option><option value="zh">中文</option><option value="ru">俄语</option><option value="all">全部语言</option></select></label>
             <label className="unity-offline-check"><input type="checkbox" disabled={parametersLocked} checked={includeCode} onChange={e => { setIncludeCode(e.target.checked); invalidatePatch(); }} />扫描代码字面量</label>
-            <button className="unity-btn" disabled={locked || !root || !output} onClick={() => void operation("扫描资源", rescan)}>{project ? "重新扫描" : "扫描资源"}</button>
+            <button className="unity-btn" disabled={locked || !root || !output || scanReady} onClick={() => void operation("扫描资源", () => runWorkflow(1, 1))}>扫描资源</button>
           </div>
           <p className="hint">{project ? `当前范围：${scope.label} ${scope.count} / ${scope.total} 条。其他语言保留在工程中，不参与本次翻译和补丁。` : "扫描后按数量最多的主语言显示，也可指定原文语言或查看全部语言。"}</p>
           {project && source !== "all" && <p className="hint">按文字特征筛选；纯汉字可能同时用于中文和日文。切换语言不会删除提取结果或译文。</p>}
@@ -440,16 +495,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             {translationKind === "llm" ? <label>翻译模型<select value={llmModel} disabled={parametersLocked} onChange={e => setLlmModel(e.target.value)}><option value="">跟随通用（{settings.model || "未配置"}）</option>{llmModel && !modelChoices.some(p => p.model === llmModel) && <option value={llmModel}>{llmModel}（未配置）</option>}{[...new Set(modelChoices.map(p => p.group))].map(group => <optgroup key={group} label={group}>{modelChoices.filter(p => p.group === group).map(p => <option key={p.model} value={p.model}>{p.label}</option>)}</optgroup>)}</select></label> : <label>翻译引擎<select value={engine} disabled={parametersLocked} onChange={e => setEngine(e.target.value as TranslateProvider)}>{classicEngines(TRANSLATE_ENGINES).map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>}
             <label>目标语言<select value={target} disabled={parametersLocked} onChange={e => { setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></label>
             {onOpenGeneralSettings && <button className="unity-btn" disabled={!!busy} onClick={onOpenGeneralSettings}>通用设置</button>}
-            <button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !selected.length || !connectionReady || applied} onClick={() => void operation("翻译中", () => runWorkflow(2, 2), true)}>翻译所选 / 继续</button>
+            <button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !selected.length || !connectionReady || applied || completedThrough >= 2} onClick={() => void operation("翻译中", () => runWorkflow(2, 2), true)}>翻译所选 / 继续</button>
           </div>
           <p className={connectionReady ? "hint" : "unity-offline-error"}>{translationKind === "llm" ? connectionReady ? "使用通用中保存的模型连接；本机服务需先启动，允许不填写 Key。" : "所选模型尚未配置 API 地址，请前往通用设置配置。" : engineConfigured ? "引擎凭证与代理使用设置 → 通用中的配置。" : "所选引擎尚未配置凭证，请前往通用设置配置。"}</p>
           <p className="hint">{scanReady ? `原文范围：${scope.label}，已选 ${selected.length} 条。仅处理未完成文本，已有译文保留。` : "请先完成扫描，再执行此步；可以提前配置翻译参数。"}</p>
         </>}
         {activeStep === 3 && <>
           <div className="unity-offline-font"><label>UGUI 替换字体<input value={fontPath} readOnly placeholder="可选 TTF / OTF；生成时检查缺字" /></label><button className="unity-btn" disabled={parametersLocked} onClick={() => void operation("选择字体", async () => { const path = await open({ filters: [{ name: "字体", extensions: ["ttf", "otf"] }] }); if (typeof path === "string") { setFontPath(path); invalidatePatch(); } })}>选择字体</button>{fontPath && <button className="unity-btn" disabled={parametersLocked} onClick={() => { setFontPath(""); invalidatePatch(); }}>取消替换</button>}
-            <button className="unity-btn unity-btn-primary" disabled={locked || !translationReady || applied} onClick={() => void operation("生成补丁", () => runWorkflow(3, 3), true)}>生成补丁</button>
+            <button className="unity-btn unity-btn-primary" disabled={locked || !translationReady || applied || !!patch} onClick={() => void operation("生成补丁", () => runWorkflow(3, 3), true)}>生成补丁</button>
           </div>
-          <div className="unity-offline-output"><span>工作目录</span><code title={workRoot}>{workRoot || "正在加载游戏工作目录"}</code></div>
           <p className="hint">{translationReady ? `为当前 ${scope.label} 范围生成资源补丁，并保留对应原件备份。` : "请先完成所选文本的翻译，再执行此步；可以提前选择字体。"} 字体替换仅支持已识别的 UGUI 字体，不自动生成 TMP / NGUI 图集。</p>
         </>}
         {activeStep === 4 && <>
@@ -462,13 +516,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <div key={generation.step} className={`unity-progress-track${progressRunning ? " is-running" : ""}${progressPercent === null ? " is-indeterminate" : ""}`} role="progressbar" aria-label="当前步骤进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent ?? undefined} aria-valuetext={progressPercent === null ? progressRunning ? "正在准备，暂未取得总量" : "未获得进度" : `${progressPercent}%`}>
         <div className="unity-progress-fill" style={{ width: `${progressPercent ?? 0}%` }} />
       </div>
-      {generation.state === "error" ? errorPanel : <p title={generation.detail}>{generation.detail}</p>}
+      <p title={generation.detail}>{generation.state === "error" ? "处理失败，原因及处理建议见下方输出。" : generation.detail}</p>
       {!busy && resumable && generation.step < 4 && <button className="unity-btn" onClick={finishTask}>结束本次流程</button>}
       </div>}
     </section>
-    {generation && activeStep !== generation.step && <section className="unity-generation unity-background-task" aria-label="任务状态"><span>第 {generation.step} 步 · {GENERATION_STEPS[generation.step - 1]}{generation.state === "done" ? " · 已完成" : generation.state === "error" ? " · 失败" : generation.state === "stopped" ? " · 已中止" : " · 正在处理"}</span>{taskAction}<button className="unity-btn" onClick={() => { followProgress.current = true; setActiveStep(generation.step); }}>查看进度</button></section>}
+    {generation && activeStep !== generation.step && <section className={`unity-generation unity-background-task is-${generation.state}`} aria-label="任务状态"><span className="unity-task-dot" aria-hidden="true" /><strong>{generation.state === "running" ? "正在执行：" : "任务："}第 {generation.step} 步 · {GENERATION_STEPS[generation.step - 1]}{generation.state === "done" ? " · 已完成" : generation.state === "error" ? " · 失败" : generation.state === "stopped" ? " · 已中止" : ""}</strong>{taskAction}<button className="unity-btn" onClick={() => { followProgress.current = true; setActiveStep(generation.step); }}>查看进度</button></section>}
     {generation?.step === 4 && generation.state !== "done" && <p className="unity-offline-error">应用尚未完成，请勿启动游戏。恢复后继续写入，原件保存在补丁目录的 original 文件夹。</p>}
-    {generation?.state !== "error" && errorPanel}
+    </div>
+    <button className="unity-output-divider" role="separator" aria-orientation="horizontal" aria-label="调整步骤和输出区域高度" aria-valuenow={Math.round(upper.size)} onMouseDown={e => upper.beginResize(e, 1)} onKeyDown={e => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); upper.setSize(Math.max(160, Math.min(configHeight - 180, upper.size + (e.key === "ArrowDown" ? 16 : -16)))); } }} />
     {projectDetails}
     </aside>
     <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />

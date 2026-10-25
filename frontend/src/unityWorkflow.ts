@@ -19,6 +19,6 @@ export function unityLanguageScope(entries: UnityEntry[], source: string) {
   const ids = new Set(entries.filter((_, i) => language === "all" || language !== "und" && (languages[i] === language || languages[i] === "cjk" && (language === "ja" || language === "zh"))).map(e => e.id));
   return { language, label: LANGUAGE_LABELS[language] || "未确定", ids, total: entries.length, count: ids.size };
 }
-export function unityStageState(step: number, completedThrough: number, runningStep?: number) {
-  return step === runningStep ? "current" : step <= completedThrough ? "complete" : "pending";
+export function unityStageState(step: number, completedThrough: number, runningStep?: number, failedStep?: number) {
+  return step === failedStep ? "error" : step === runningStep ? "current" : step <= completedThrough ? "complete" : "pending";
 }

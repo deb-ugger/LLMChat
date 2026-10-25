@@ -39,7 +39,9 @@ public sealed class Request
     public string Path { get; set; } = "";
     public string FontPath { get; set; } = "";
     public bool IncludeCode { get; set; }
+    public int Step { get; set; }
     public string[]? SelectedIds { get; set; }
+    public string[]? FontSourceIds { get; set; }
     public JsonNode? Task { get; set; }
     public Project? Project { get; set; }
 }
@@ -56,7 +58,7 @@ public static class Program
     static readonly UTF8Encoding Utf8 = new(false, true);
     static bool ReportProgress;
     static readonly JsonSerializerOptions ProgressJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-    static void Progress(string detail, int completed = 0, int? total = null, string? folder = null) {
+    internal static void Progress(string detail, int completed = 0, int? total = null, string? folder = null) {
         if (ReportProgress) Console.Error.WriteLine("LLMCHAT_PROGRESS " + JsonSerializer.Serialize(new { detail, completed, total, folder }, ProgressJson));
     }
     static void CheckStop(Request request, string folder) { if (request.StopFile.Length > 0 && File.Exists(request.StopFile)) throw new PausedException(folder); }
@@ -86,6 +88,7 @@ public static class Program
                 "find" => FindSaved(request),
                 "workspace" => GameWorkspace.Open(request),
                 "save-task" => SaveTask(request),
+                "reset-step" => WorkflowReset.Start(request),
                 "load" => Load(request.Path),
                 "save" => Save(request.Project ?? throw new Exception("缺少工程")),
                 "export" => Export(request),
@@ -412,7 +415,9 @@ public static class Program
         if (request.FontPath.Length > 0)
         {
             font = File.ReadAllBytes(request.FontPath);
-            var missing = FontCoverage.Missing(font, string.Concat(selected.Select(e => e.Source)) + string.Concat(selected.Select(e => e.Translation)));
+            var sourceIds = request.FontSourceIds?.ToHashSet(StringComparer.Ordinal);
+            var sourceEntries = sourceIds == null ? selected : project.Entries.Where(e => sourceIds.Contains(e.Id)).ToArray();
+            var missing = FontCoverage.Missing(font, string.Concat(sourceEntries.Select(e => e.Source)) + string.Concat(selected.Select(e => e.Translation)));
             if (missing.Count > 0) throw new Exception($"所选字体缺少 {missing.Count} 个字符：{string.Concat(missing.Take(24).Select(char.ConvertFromUtf32))}");
         }
         var fonts = font == null ? [] : project.Fonts.Where(f => f.Kind == "UGUI").ToArray();
@@ -540,6 +545,31 @@ public static class Program
         var temp = target + ".llmchat-" + Guid.NewGuid().ToString("N") + ".tmp";
         try { File.Copy(source, temp); File.Move(temp, target, true); }
         finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    internal static void RestorePatch(string root, string folder)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, "manifest.json"), Utf8));
+        var manifest = document.RootElement;
+        if (!string.Equals(Path.GetFullPath(manifest.GetProperty("root").GetString()!).TrimEnd('\\', '/'), Path.GetFullPath(root).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            throw new Exception("旧补丁不属于当前游戏，未清理");
+        CheckGameClosed(root);
+        var restore = new List<(string Original, string Target, string Hash)>();
+        foreach (var file in manifest.GetProperty("files").EnumerateArray()) {
+            var relative = file.GetProperty("file").GetString()!;
+            var target = ApplyPath(root, relative); var original = ApplyPath(Path.Combine(folder, "original"), relative);
+            var originalHash = file.GetProperty("originalSha256").GetString()!; var patchedHash = file.GetProperty("patchSha256").GetString()!;
+            if (Hash(original) != originalHash) throw new Exception("原件备份校验失败，未清理：" + relative);
+            var current = Hash(target);
+            if (current != originalHash && current != patchedHash) throw new Exception("游戏文件已被其他程序修改，未清理原件备份：" + relative);
+            if (current != originalHash) restore.Add((original, target, originalHash));
+        }
+        foreach (var file in restore) {
+            Progress("恢复游戏原件：" + Path.GetRelativePath(root, file.Target));
+            ReplaceFile(file.Original, file.Target);
+            if (Hash(file.Target) != file.Hash) throw new Exception("游戏原件恢复后校验失败，旧补丁仍保留");
+        }
+        WriteJson(Path.Combine(folder, "application-state.json"), new { manifestHash = Hash(Path.Combine(folder, "manifest.json")), completed = Array.Empty<string>(), done = false });
     }
 
     public static object Apply(Request request)

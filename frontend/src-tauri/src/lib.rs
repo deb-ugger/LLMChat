@@ -197,6 +197,7 @@ pub fn run() {
             speech::speech_resume_job,
             speech::speech_decode_chunk,
             speech::speech_commit_chunk,
+            speech::speech_save_elapsed,
             speech::speech_cancel_job,
             speech::speech_read_result
         ])

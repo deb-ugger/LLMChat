@@ -70,7 +70,7 @@ export class SpeechQueue {
     this.publish({ items: [...this.state.items, ...jobs.filter(job => !known.has(job.id)).map(job => {
       const done = job.offset >= job.source.duration - 0.01;
       return { ...job, root, status: done ? "done" as const : "paused" as const,
-        showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: 0, revision: 0 };
+        showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: job.elapsedMs ?? 0, revision: 0 };
     })] });
   }
   start(id?: string) {
@@ -116,10 +116,13 @@ export class SpeechQueue {
   private async execute(original: SpeechQueueItem, run: Running) {
     let item = original;
     const started = run.started;
+    let elapsedBase = original.elapsedMs;
+    let terminal: Pick<SpeechQueueItem, "status" | "message"> | undefined;
     const check = () => { if (run.reason) throw abort(); };
     try {
       const saved = await speechNative.resume(item.folder);
-      item = { ...item, ...saved }; this.patch(item.id, saved); check();
+      elapsedBase = Math.max(elapsedBase, saved.elapsedMs ?? 0);
+      item = { ...item, ...saved, elapsedMs: elapsedBase }; this.patch(item.id, { ...saved, elapsedMs: elapsedBase }); check();
       const processing = item.options.processing;
       const online = processing?.mode === "online" || processing?.proofread ? await createSpeechOnline(item.options, run.controller.signal) : null;
       check();
@@ -152,17 +155,22 @@ export class SpeechQueue {
         // Checkpoints span skipped gaps; cue timestamps stay on the original timeline.
         chunk.from = item.offset;
         if (final) chunk.to = window.lastRange ? item.source.duration : window.rangeEnd;
-        const committed = await speechNative.commit(item.folder, chunk);
+        const committed = await speechNative.commit(item.folder, chunk, Math.round(elapsedBase + performance.now() - started));
         item = { ...item, ...committed };
-        this.patch(item.id, { ...committed, revision: (this.state.items.find(job => job.id === item.id)?.revision ?? 0) + 1 });
+        this.patch(item.id, { ...committed, elapsedMs: elapsedBase, revision: (this.state.items.find(job => job.id === item.id)?.revision ?? 0) + 1 });
         check();
       }
-      this.patch(item.id, { status: "done", message: "识别完成，输出文件已保存" });
+      terminal = { status: "done", message: "识别完成，输出文件已保存" };
     } catch (error) {
-      if (run.reason === "pause") this.patch(item.id, { status: "paused", message: "已暂停，断点已保留" });
-      else if (run.reason !== "cancel") this.patch(item.id, { status: "error", message: message(error) });
+      if (run.reason === "pause") terminal = { status: "paused", message: "已暂停，断点已保留" };
+      else if (run.reason !== "cancel") terminal = { status: "error", message: message(error) };
     } finally {
-      this.patch(item.id, { elapsedMs: original.elapsedMs + performance.now() - started, runningSince: undefined, processingStartedAt: undefined, startedOffset: undefined });
+      const elapsedMs = Math.round(elapsedBase + performance.now() - started);
+      if (run.reason !== "cancel") {
+        try { await speechNative.saveElapsed(item.folder, elapsedMs); }
+        catch (error) { terminal = { status: "error", message: `累计用时保存失败：${message(error)}` }; }
+      }
+      this.patch(item.id, { ...terminal, elapsedMs, runningSince: undefined, processingStartedAt: undefined, startedOffset: undefined });
       void refreshSpeechModels();
     }
   }

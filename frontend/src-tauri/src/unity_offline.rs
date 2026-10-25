@@ -14,7 +14,7 @@ pub fn unity_offline_stop(operation_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn unity_offline_run(app: AppHandle, action: String, mut request: serde_json::Value, on_progress: tauri::ipc::Channel<serde_json::Value>, operation_id: Option<String>) -> Result<serde_json::Value, String> {
-    if !["workspace", "save-task", "find", "scan", "load", "save", "export", "apply"].contains(&action.as_str()) {
+    if !["workspace", "save-task", "reset-step", "find", "scan", "load", "save", "export", "apply"].contains(&action.as_str()) {
         return Err("未知嵌字操作".into());
     }
     let helper = app.path().resource_dir().map_err(|e| e.to_string())?

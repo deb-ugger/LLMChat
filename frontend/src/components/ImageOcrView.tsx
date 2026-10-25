@@ -49,7 +49,7 @@ function OcrMetrics({ count, milliseconds, text, busy, failed, total = false }: 
 }) {
   return <span className={`ocr-metrics${total ? " is-total" : ""}`}>
     <span className="ocr-metric"><span>{total ? "累计段数" : "识别段数"}</span><strong>{count}</strong><small>段</small></span>
-    <span className="ocr-metric"><span>{total ? "累计用时" : "本次用时"}</span><strong>{(milliseconds / 1000).toFixed(1)}</strong><small>秒</small></span>
+    <span className="ocr-metric"><span>{total ? "累计用时" : "页面用时"}</span><strong>{(milliseconds / 1000).toFixed(1)}</strong><small>秒</small></span>
     <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} title={text}>
       <i aria-hidden="true" />{text}
     </span>
@@ -2138,6 +2138,7 @@ export function ImageOcrView({
           `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1}（${donePages + 1}/${targets.length}）…`,
         );
         const translationStarted = performance.now();
+        const translationBase = page.elapsedMs ?? page.recognitionMs ?? 0;
         let translationAccountedUntil = translationStarted;
         const accountTranslation = () => {
           if (generation !== sessionGenRef.current || !pagesRef.current.some((p) => p.id === page.id)) return;
@@ -2146,29 +2147,30 @@ export function ImageOcrView({
           setTotalElapsedMs((total) => total + elapsed);
           translationAccountedUntil = now;
         };
-        patchPage(page.id, { busy: true, elapsedMs: page.recognitionMs ?? 0 });
-        const list = await translateBlocks(
-          page.id,
-          page.blocks,
-          (done, total) => {
+        patchPage(page.id, { busy: true, elapsedMs: translationBase });
+        try {
+          const list = await translateBlocks(
+            page.id,
+            page.blocks,
+            (done, total) => {
+              accountTranslation();
+              setStatus(
+                `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1} ${done}/${total}…`,
+              );
+              patchPage(page.id, {
+                statusText: `正在翻译 ${done}/${total}…`,
+                elapsedMs: translationBase + performance.now() - translationStarted,
+              });
+            },
+          );
+          if (generation !== sessionGenRef.current) return;
+          patchPage(page.id, { blocks: list, statusText: summarizeTranslateStatus(list), busy: false });
+        } finally {
+          if (generation === sessionGenRef.current && pagesRef.current.some(p => p.id === page.id)) {
             accountTranslation();
-            setStatus(
-              `正在重新翻译 图${pages.findIndex((p) => p.id === page.id) + 1} ${done}/${total}…`,
-            );
-            patchPage(page.id, {
-              statusText: `正在翻译 ${done}/${total}…`,
-              elapsedMs: (page.recognitionMs ?? 0) + performance.now() - translationStarted,
-            });
-          },
-        );
-        if (generation !== sessionGenRef.current) return;
-        accountTranslation();
-        patchPage(page.id, {
-          blocks: list,
-          statusText: summarizeTranslateStatus(list),
-          elapsedMs: (page.recognitionMs ?? 0) + performance.now() - translationStarted,
-          busy: false,
-        });
+            patchPage(page.id, { elapsedMs: translationBase + performance.now() - translationStarted, busy: false });
+          }
+        }
         donePages += 1;
       }
       setStatus(`已重新翻译 ${donePages} 张图片`);

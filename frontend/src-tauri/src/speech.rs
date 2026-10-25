@@ -80,6 +80,8 @@ pub struct Source { pub path: String, pub name: String, pub size: u64, pub modif
 pub struct Job {
     pub id: String, pub folder: String, pub source: Source, pub options: Options,
     pub offset: f64, pub cue_count: usize,
+    #[serde(default)]
+    pub elapsed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_stem: Option<String>,
 }
@@ -228,7 +230,7 @@ fn create_job(root: &Path, id: String, source: Source, options: Options, output_
     let mut pending = UnpublishedJob { folder: folder.clone(), published: false };
     let mut marker = File::create(folder.join(PENDING_MARKER)).map_err(err)?;
     marker.write_all(PENDING_SIGNATURE).map_err(err)?; marker.sync_data().map_err(err)?; drop(marker);
-    let mut job = Job { id, folder: folder.to_string_lossy().into_owned(), source, options, offset: 0.0, cue_count: 0, output_stem: Some(output_stem) };
+    let mut job = Job { id, folder: folder.to_string_lossy().into_owned(), source, options, offset: 0.0, cue_count: 0, elapsed_ms: 0, output_stem: Some(output_stem) };
     File::create(folder.join("progress.jsonl")).map_err(err)?.sync_data().map_err(err)?;
     rebuild(&mut job)?;
     // Publish the task only after its journal and output headers exist.
@@ -263,6 +265,20 @@ fn commit(folder: &Path, chunk: Chunk) -> Result<Job> {
     if job.offset >= job.source.duration - 0.01 { positions.remove(folder); }
     else { positions.insert(folder.to_path_buf(), (job.offset, job.cue_count)); }
     Ok(job)
+}
+fn save_elapsed(folder: &Path, elapsed_ms: u64) -> Result<u64> {
+    let _positions = POSITIONS.lock().unwrap();
+    let mut job = load_job(folder)?;
+    job.elapsed_ms = job.elapsed_ms.max(elapsed_ms);
+    let temporary = folder.join("job.json.tmp");
+    let saved = (|| {
+        let mut file = File::create(&temporary).map_err(err)?;
+        file.write_all(&serde_json::to_vec_pretty(&job).map_err(err)?).map_err(err)?;
+        file.sync_data().map_err(err)?; drop(file);
+        fs::rename(&temporary, folder.join("job.json")).map_err(err)
+    })();
+    if saved.is_err() { let _ = fs::remove_file(temporary); }
+    saved?; Ok(job.elapsed_ms)
 }
 fn cancel_job(folder: &Path) -> Result<()> {
     let job = load_job(folder)?;
@@ -350,8 +366,16 @@ pub async fn speech_decode_chunk(app: AppHandle, folder: String, offset: f64) ->
     tauri::async_runtime::spawn_blocking(move || decode_chunk(&dir, Path::new(&folder), offset).map(tauri::ipc::Response::new)).await.map_err(err)?
 }
 #[tauri::command]
-pub async fn speech_commit_chunk(folder: String, chunk: Chunk) -> Result<Job> {
-    tauri::async_runtime::spawn_blocking(move || commit(Path::new(&folder), chunk)).await.map_err(err)?
+pub async fn speech_commit_chunk(folder: String, chunk: Chunk, elapsed_ms: Option<u64>) -> Result<Job> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut job = commit(Path::new(&folder), chunk)?;
+        if let Some(elapsed) = elapsed_ms { job.elapsed_ms = save_elapsed(Path::new(&folder), elapsed)?; }
+        Ok(job)
+    }).await.map_err(err)?
+}
+#[tauri::command]
+pub async fn speech_save_elapsed(folder: String, elapsed_ms: u64) -> Result<u64> {
+    tauri::async_runtime::spawn_blocking(move || save_elapsed(Path::new(&folder), elapsed_ms)).await.map_err(err)?
 }
 #[tauri::command]
 pub async fn speech_cancel_job(folder: String) -> Result<()> {

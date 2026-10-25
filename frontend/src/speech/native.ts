@@ -5,7 +5,7 @@ export type SpeechSource = { path: string; name: string; size: number; modified:
 export type SpeechOnlineProvider = "google" | "qwen" | "custom";
 export type SpeechProcessing = { mode: "local" | "online"; provider: SpeechOnlineProvider; model: string; proofread: boolean; proofreadModel: string };
 export type SpeechJobOptions = { model: SpeechModel; language: string; chineseScript: ChineseScript; formats: SpeechFormat[]; processing?: SpeechProcessing; ranges?: SpeechRange[] };
-export type SpeechJob = { id: string; folder: string; source: SpeechSource; options: SpeechJobOptions; offset: number; cueCount: number; outputStem?: string };
+export type SpeechJob = { id: string; folder: string; source: SpeechSource; options: SpeechJobOptions; offset: number; cueCount: number; outputStem?: string; elapsedMs?: number };
 export type SpeechChunk = { from: number; to: number; cues: SpeechCue[]; text: string };
 
 export const speechNative = {
@@ -19,7 +19,8 @@ export const speechNative = {
   list: (root: string) => invoke<SpeechJob[]>("speech_list_jobs", { root }),
   resume: (folder: string) => invoke<SpeechJob>("speech_resume_job", { folder }),
   decode: async (folder: string, offset: number) => new Float32Array(await invoke<ArrayBuffer>("speech_decode_chunk", { folder, offset })),
-  commit: (folder: string, chunk: SpeechChunk) => invoke<SpeechJob>("speech_commit_chunk", { folder, chunk }),
+  commit: (folder: string, chunk: SpeechChunk, elapsedMs?: number) => invoke<SpeechJob>("speech_commit_chunk", { folder, chunk, elapsedMs }),
+  saveElapsed: (folder: string, elapsedMs: number) => invoke<number>("speech_save_elapsed", { folder, elapsedMs }),
   cancel: (folder: string) => invoke<void>("speech_cancel_job", { folder }),
   preview: (folder: string, page: number, query = "") => invoke<{ cues: SpeechCue[]; total: number }>("speech_read_result", { folder, page, query }),
 };
