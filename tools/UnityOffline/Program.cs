@@ -40,12 +40,13 @@ public sealed class Request
     public string FontPath { get; set; } = "";
     public bool IncludeCode { get; set; }
     public string[]? SelectedIds { get; set; }
+    public JsonNode? Task { get; set; }
     public Project? Project { get; set; }
 }
 public sealed class PausedException(string folder) : Exception("任务已中止，检查点已保存") { public string Folder { get; } = folder; }
 public sealed record PatchFile(string File, string OriginalSha256, string PatchSha256, int Entries);
 public sealed record ScanCheckpoint(int Next, bool IncludeCode);
-public sealed record ExportCheckpoint(string Signature, List<PatchFile> Files);
+public sealed record ExportCheckpoint(string Signature, List<PatchFile> Files) { public int TotalFiles { get; init; } }
 public sealed record SavedProject(Project? Project, int? ScanCompleted, int? ScanTotal, List<string> Notices) { public bool? IncludeCode { get; init; } }
 
 public static class Program
@@ -59,7 +60,7 @@ public static class Program
         if (ReportProgress) Console.Error.WriteLine("LLMCHAT_PROGRESS " + JsonSerializer.Serialize(new { detail, completed, total, folder }, ProgressJson));
     }
     static void CheckStop(Request request, string folder) { if (request.StopFile.Length > 0 && File.Exists(request.StopFile)) throw new PausedException(folder); }
-    static void WriteJson(string path, object value) {
+    internal static void WriteJson(string path, object value) {
         var temp = path + ".tmp";
         try { File.WriteAllText(temp, JsonSerializer.Serialize(value, Json), Utf8); File.Move(temp, path, true); }
         finally { if (File.Exists(temp)) File.Delete(temp); }
@@ -83,6 +84,8 @@ public static class Program
             {
                 "scan" => Scan(request),
                 "find" => FindSaved(request),
+                "workspace" => GameWorkspace.Open(request),
+                "save-task" => SaveTask(request),
                 "load" => Load(request.Path),
                 "save" => Save(request.Project ?? throw new Exception("缺少工程")),
                 "export" => Export(request),
@@ -95,6 +98,8 @@ public static class Program
         catch (PausedException e) { Console.Out.Write(JsonSerializer.Serialize(new { paused = true, folder = e.Folder }, Json)); return 0; }
         catch (Exception e) { Console.Error.Write(e.Message); return 1; }
     }
+
+    static object SaveTask(Request request) { GameWorkspace.SaveTask(request); return new { ok = true }; }
 
     public static string Within(string root, string relative)
     {
@@ -213,8 +218,8 @@ public static class Program
         var root = System.IO.Path.GetFullPath(request.Root);
         if (!Directory.Exists(root)) throw new Exception("游戏目录不存在");
         var output = System.IO.Path.GetFullPath(request.OutputRoot);
-        if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
-            throw new Exception("输出目录不能位于游戏目录中，请在 Unity 设置中调整输出目录");
+        if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase) && !GameWorkspace.IsProjectsRoot(root, output))
+            throw new Exception("游戏内工程只能保存在 LLMChat-Unity 工作文件夹中");
         var project = request.Path.Length > 0 ? Load(System.IO.Path.Combine(request.Path, "unity-project.json")) : new Project { Root = root, ScanRevision = CurrentScanRevision, Folder = NewFolder(output, "unity-project") };
         if (!string.Equals(project.Root, root, StringComparison.OrdinalIgnoreCase)) throw new Exception("扫描检查点不属于当前游戏");
         if (project.ScanRevision != CurrentScanRevision) throw new Exception("扫描检查点使用旧提取方式，请重新扫描；原工程和译文会保留");
@@ -226,7 +231,8 @@ public static class Program
         Progress("正在列出游戏资源文件", folder: project.Folder);
         var state = File.Exists(statePath) ? JsonSerializer.Deserialize<ScanCheckpoint>(File.ReadAllText(statePath, Utf8), Json)! : new ScanCheckpoint(0, request.IncludeCode);
         if (state.IncludeCode != request.IncludeCode) throw new Exception("代码扫描选项已变化，请重新扫描或恢复原选项");
-        var paths = File.Exists(pathsPath) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)! : Directory.EnumerateFiles(root, "*", options).ToArray();
+        var workPrefix = Path.GetFullPath(GameWorkspace.WorkRoot(root)).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        var paths = File.Exists(pathsPath) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)! : Directory.EnumerateFiles(root, "*", options).Where(path => !Path.GetFullPath(path).StartsWith(workPrefix, StringComparison.OrdinalIgnoreCase)).ToArray();
         WriteJson(pathsPath, paths); WriteJson(statePath, state);
         foreach (var file in project.Hashes) if (Hash(Within(root, file.Key)) != file.Value) throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
         for (var index = state.Next; index < paths.Length; index++)
@@ -415,7 +421,7 @@ public static class Program
         var signature = Convert.ToHexString(SHA256.HashData(Utf8.GetBytes(JsonSerializer.Serialize(new { selected, fonts, font = font == null ? "" : Convert.ToHexString(SHA256.HashData(font)) }, Json))));
         var folder = request.Path.Length > 0 ? Within(project.Folder, System.IO.Path.GetRelativePath(project.Folder, request.Path)) : NewFolder(project.Folder, "patch");
         var checkpointPath = System.IO.Path.Combine(folder, "export-state.json");
-        var checkpoint = File.Exists(checkpointPath) ? JsonSerializer.Deserialize<ExportCheckpoint>(File.ReadAllText(checkpointPath, Utf8), Json)! : new ExportCheckpoint(signature, []);
+        var checkpoint = File.Exists(checkpointPath) ? JsonSerializer.Deserialize<ExportCheckpoint>(File.ReadAllText(checkpointPath, Utf8), Json)! : new ExportCheckpoint(signature, []) { TotalFiles = files.Length };
         if (checkpoint.Signature != signature) throw new Exception("译文、选取或字体已变化，请重新生成补丁");
         WriteJson(checkpointPath, checkpoint);
         Progress("准备生成资源补丁", checkpoint.Files.Count, files.Length, folder);
@@ -596,6 +602,8 @@ public static class Program
             foreach (var file in applied.AsEnumerable().Reverse())
                 try { ReplaceFile(Within(System.IO.Path.Combine(folder, "original"), file), Within(root, file)); }
                 catch (Exception rollback) { failed.Add(file + "：" + rollback.Message); }
+            try { WriteJson(applicationPath, new { manifestHash, completed = Array.Empty<string>(), done = false }); }
+            catch (Exception checkpointError) { failed.Add("回滚状态保存失败：" + checkpointError.Message); }
             throw new Exception(e.Message + (failed.Count == 0 ? "；已回滚本次写入，原游戏文件已保留" : "；部分文件回滚失败，请从原件备份恢复：" + string.Join("；", failed)));
         }
         WriteJson(applicationPath, new { manifestHash, completed = applied, done = true });

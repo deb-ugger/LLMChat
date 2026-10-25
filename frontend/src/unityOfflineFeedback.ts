@@ -2,14 +2,16 @@ export type UnityFailure = { reason: string; action: string; technical: string }
 export function explainUnityFailure(error: unknown): UnityFailure {
   const technical = error instanceof Error ? error.message : String(error);
   const result = (reason: string, action: string) => ({ reason, action, technical });
+  if (/^翻译服务预检失败|^翻译已自动停止/.test(technical))
+    return result(technical, "检查当前引擎或模型的网络、代理与凭证后再恢复。不会继续逐条失败重试，已保存译文会复用。");
   if (/not allowed by ACL|permission .*not found|command .*not allowed/i.test(technical))
     return result("软件的桌面权限配置拦截了 Unity 处理命令，操作未能启动。这不是游戏资源损坏，也与翻译引擎无关。", "更新并重启软件后重试；若仍出现，请反馈下方技术详情，无需更换引擎或以管理员身份运行。");
   if (/缺少嵌字组件|无法启动嵌字组件|0xc0000135/i.test(technical))
     return result("Unity 资源处理组件缺失或无法启动，尚未开始处理游戏资源。", "使用完整便携版更新程序及 resources/unity 目录，再重新启动软件。");
   if (/工程读取失败|检查点不属于|恢复检查点失败|工程版本|工程无效|could not find|cannot find|找不到|不存在|ENOENT/i.test(technical))
-    return result("保存工程或所需文件无法读取，可能已被移动、删除或格式不受支持。已有文件不会被自动删除。", "检查游戏和输出目录是否仍在原位置；工程移到其他位置时可通过‘更多 → 导入其他工程’重新关联。");
+    return result("保存工程或所需文件无法读取，可能已被移动、删除或格式不受支持。已有文件不会被自动删除。", "检查游戏内 LLMChat-Unity 工作文件夹及文件权限，保留原工程和备份后重试。");
   if (/拒绝访问|access.*denied|UnauthorizedAccess|EACCES|being used by another process|另一个进程/i.test(technical))
-    return result("系统拒绝了文件读取或写入，当前目录权限或文件占用阻止了处理。", "关闭占用文件的程序，检查游戏与输出目录权限；输出目录只读时，在 Unity 设置中选择可写目录后重试。");
+    return result("系统拒绝了文件读取或写入，当前目录权限或文件占用阻止了处理。", "关闭占用文件的程序，确认游戏及 LLMChat-Unity 工作目录可写；软件不会静默把工程改存到其他目录。");
   if (/disk.*full|磁盘.*满|空间不足|ENOSPC/i.test(technical))
     return result("磁盘剩余空间不足，无法保存工程或资源备份。", "释放输出盘与游戏盘空间后恢复任务，不要删除未完成工程和 original 原件备份。");
   if (/游戏仍在运行/.test(technical)) return result("游戏仍在运行，不能安全替换资源。", "正常关闭当前游戏，再点击恢复继续应用；软件不会强制结束游戏。");

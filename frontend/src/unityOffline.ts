@@ -14,6 +14,7 @@ export type UnityProject = {
 };
 export type UnityPatch = { folder: string; files: number; entries: number; fontReplacements: number };
 export type UnitySavedProject = { project: UnityProject | null; scanCompleted: number | null; scanTotal: number | null; includeCode: boolean | null; notices: string[] };
+export type UnityWorkspace<T> = { workRoot: string; projectsRoot: string; saved: UnitySavedProject; task: T | null };
 export function mergeUnityProject(previous: UnityProject, scanned: UnityProject) {
   const key = (e: UnityEntry) => JSON.stringify([e.file, e.container, e.objectId, e.kind === "UI 文本" && e.locator === "m_Text" ? "/m_Text" : e.locator, e.kind === "UI 文本" ? "游戏文本" : e.kind, e.source]);
   const entries = new Map(previous.entries.map(e => [key(e), e]));
@@ -38,7 +39,7 @@ export const unityRun = async <T>(action: string, request: object, onProgress?: 
     return result as T;
   } finally { signal?.removeEventListener("abort", stop); }
 };
-export async function unityOutputDirectory() {
+export async function legacyUnityOutputDirectory() {
   return localStorage.getItem(UNITY_OUTPUT_KEY)?.trim() || await join(await resourceDir(), "unity-output");
 }
 
