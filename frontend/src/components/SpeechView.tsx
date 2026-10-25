@@ -66,7 +66,6 @@ export function SpeechView({ active }: { active: boolean }) {
   const resultsWorkspace = useRef<SpeechWorkspaceHandle>(null);
   const left = usePersistedSize("llmchat-speech-left", 340, 260, Math.max(260, width * .6), "x");
   const upper = usePersistedSize("llmchat-speech-options-height", 150, 96, Math.max(96, height - 240), "y");
-  const currentItems = queue.items.filter(item => !item.fromHistory);
   const unfinishedItems = queue.items.filter(item => item.status !== "done");
   const completedItems = queue.items.filter(item => item.status === "done");
   const visibleItems = queueTab === "unfinished" ? unfinishedItems : completedItems;
@@ -81,7 +80,7 @@ export function SpeechView({ active }: { active: boolean }) {
   const modelInfo = SPEECH_MODELS.find(model => model.id === selectedModel)!;
   const status = models.rows?.find(row => row.model === selectedModel);
   const running = queue.items.filter(item => item.status === "running" || item.status === "queued").length;
-  const canStart = currentItems.some(item => ["ready", "paused", "error"].includes(item.status) && item.options.ranges?.length !== 0 && (item.folder || (pref.formats.length && pref.outputRoot)));
+  const canStart = queue.items.some(item => ["ready", "paused", "error"].includes(item.status) && item.options.ranges?.length !== 0 && (item.folder || (pref.formats.length && pref.outputRoot)));
   const timing = queue.items.some(item => item.runningSince !== undefined);
   const elapsed = (item: SpeechQueueItem) => item.elapsedMs + (item.runningSince !== undefined ? Math.max(0, clock - item.runningSince) : 0);
   const remaining = (item: SpeechQueueItem) => {

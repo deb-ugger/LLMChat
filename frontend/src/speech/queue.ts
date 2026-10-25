@@ -5,7 +5,7 @@ import { getSpeechPreferences, downloadSpeechModel, cancelSpeechModelDownload, s
 import { planSpeechCommit, nextSpeechWindow, validateSpeechRanges, type SpeechRange, type SpeechResult } from "./transcription";
 import { createSpeechOnline } from "./online";
 
-export type SpeechQueueItem = SpeechJob & { root: string; fromHistory: boolean; showOutput: boolean; status: "ready" | "queued" | "running" | "pausing" | "paused" | "resetting" | "done" | "error" | "cancelling"; message: string; elapsedMs: number; runningSince?: number; processingStartedAt?: number; startedOffset?: number; revision: number };
+export type SpeechQueueItem = SpeechJob & { root: string; showOutput: boolean; status: "ready" | "queued" | "running" | "pausing" | "paused" | "resetting" | "done" | "error" | "cancelling"; message: string; elapsedMs: number; runningSince?: number; processingStartedAt?: number; startedOffset?: number; revision: number };
 type Snapshot = { items: SpeechQueueItem[]; importing: boolean; error: string };
 type Running = { client: SpeechClient; controller: AbortController; reason: "pause" | "cancel" | null; settled: Promise<void>; started: number };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -54,7 +54,7 @@ export class SpeechQueue {
           const pref = getSpeechPreferences();
           const item: SpeechQueueItem = { id: crypto.randomUUID(), source, root: pref.outputRoot, folder: "", offset: 0, cueCount: 0,
             options: jobOptions(),
-            status: "ready", fromHistory: false, showOutput: true, message: "等待开始", elapsedMs: 0, revision: 0 };
+            status: "ready", showOutput: true, message: "等待开始", elapsedMs: 0, revision: 0 };
           this.publish({ items: [...this.state.items, item] });
         } catch (error) { errors.push(`${path.split(/[\\/]/).at(-1)}：${message(error)}`); }
       }
@@ -70,12 +70,12 @@ export class SpeechQueue {
     this.publish({ items: [...this.state.items, ...jobs.filter(job => !known.has(job.id)).map(job => {
       const done = job.offset >= job.source.duration - 0.01;
       return { ...job, root, status: done ? "done" as const : "paused" as const,
-        fromHistory: true, showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: 0, revision: 0 };
+        showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: 0, revision: 0 };
     })] });
   }
   start(id?: string) {
     const pref = getSpeechPreferences();
-    const eligible = (item: SpeechQueueItem) => (id ? item.id === id : !item.fromHistory) && ["ready", "paused", "error"].includes(item.status);
+    const eligible = (item: SpeechQueueItem) => (!id || item.id === id) && ["ready", "paused", "error"].includes(item.status);
     const createsNew = this.state.items.some(item => eligible(item) && !item.folder);
     try { for (const item of this.state.items.filter(item => eligible(item) && !item.folder)) validateSpeechRanges(item.options.ranges, item.source.duration); }
     catch (error) { this.publish({ error: message(error) }); return; }
@@ -85,7 +85,7 @@ export class SpeechQueue {
     if (createsNew && pref.proofread && !pref.proofreadModel.trim()) { this.publish({ error: "请选择校对模型" }); return; }
     this.publish({ error: "", items: this.state.items.map(item => {
       if (!eligible(item)) return item;
-      return { ...item, fromHistory: false, status: "queued", message: "排队等待",
+      return { ...item, status: "queued", message: "排队等待",
         ...(!item.folder ? { root: pref.outputRoot, options: { ...jobOptions(), ranges: item.options.ranges } } : {}) };
     }) });
     for (const item of this.state.items.filter(job => job.status === "queued" && !job.folder && !this.staging.has(job.id))) {
@@ -186,7 +186,7 @@ export class SpeechQueue {
       if (current.folder) await speechNative.cancel(current.folder);
       // A fresh ID avoids reusing a folder that contains user-added files.
       const nextId = crypto.randomUUID();
-      this.patch(id, { id: nextId, fromHistory: false, folder: "", offset: 0, cueCount: 0, status: "ready", message: "等待开始",
+      this.patch(id, { id: nextId, folder: "", offset: 0, cueCount: 0, status: "ready", message: "等待开始",
         elapsedMs: 0, runningSince: undefined, processingStartedAt: undefined, startedOffset: undefined, revision: current.revision + 1 });
       return nextId;
     } catch (error) { this.patch(id, { status: "paused", message: `清除进度失败：${message(error)}` }); }
