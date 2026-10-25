@@ -39,6 +39,7 @@ public sealed class Request
     public string Path { get; set; } = "";
     public string FontPath { get; set; } = "";
     public bool IncludeCode { get; set; }
+    public string[]? SelectedIds { get; set; }
     public Project? Project { get; set; }
 }
 public sealed class PausedException(string folder) : Exception("任务已中止，检查点已保存") { public string Folder { get; } = folder; }
@@ -397,14 +398,15 @@ public static class Program
         Progress("校验译文、占位符与字体");
         var project = request.Project ?? throw new Exception("缺少工程");
         using var types = new GameTypes(project.Root);
-        var selected = project.Entries.Where(e => e.Selected).ToArray();
+        var ids = request.SelectedIds?.ToHashSet(StringComparer.Ordinal);
+        var selected = project.Entries.Where(e => e.Selected && (ids == null || ids.Contains(e.Id))).ToArray();
         if (selected.Length == 0) throw new Exception("请先选择需要回写的文本");
         foreach (var entry in selected) ValidateTranslation(entry.Source, entry.Translation);
         byte[]? font = null;
         if (request.FontPath.Length > 0)
         {
             font = File.ReadAllBytes(request.FontPath);
-            var missing = FontCoverage.Missing(font, string.Concat(project.Entries.Select(e => e.Source)) + string.Concat(selected.Select(e => e.Translation)));
+            var missing = FontCoverage.Missing(font, string.Concat(selected.Select(e => e.Source)) + string.Concat(selected.Select(e => e.Translation)));
             if (missing.Count > 0) throw new Exception($"所选字体缺少 {missing.Count} 个字符：{string.Concat(missing.Take(24).Select(char.ConvertFromUtf32))}");
         }
         var fonts = font == null ? [] : project.Fonts.Where(f => f.Kind == "UGUI").ToArray();
