@@ -159,7 +159,7 @@ export function SpeechView({ active }: { active: boolean }) {
       if (event.target.checked) selectFile(item);
     }} />显示转写结果</label></div>
     <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(work.processed, ".")} / {formatSpeechTime(work.duration, ".")}</span><span>· {item.cueCount} 段字幕</span></small><strong className="speech-job-percent">{(work.duration ? Math.min(100, work.processed / work.duration * 100) : 0).toFixed(1)}%</strong></div>
-    {(elapsed(item) > 0 || item.status === "running") && <div className="speech-job-timing"><span>已用 {Math.floor(elapsed(item) / 1000)}s</span>{item.status === "running" && <span>预计剩余：{remaining(item)}</span>}</div>}
+    {(elapsed(item) > 0 || item.status === "running") && <div className="speech-job-timing"><span>已用 {formatSpeechTime(elapsed(item) / 1000, ".").slice(0, -4)}</span>{item.status === "running" && <span>预计剩余：{remaining(item)}</span>}</div>}
     <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={work.processed} max={work.duration} />}</div>
     {item.status === "error" && <p className="speech-error">{item.message}</p>}
     <div className="speech-job-actions">{["ready", "paused", "error"].includes(item.status) && <button className="speech-icon-button" aria-label={item.status === "ready" ? "开始转写" : "继续转写"} title={item.status === "ready" ? "开始转写" : "从已保存断点继续"} onClick={event => { event.stopPropagation(); selectFile(item); speechQueue.start(item.id); }}><TaskIcon action="play" /></button>}

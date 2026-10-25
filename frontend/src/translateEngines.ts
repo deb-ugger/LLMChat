@@ -69,7 +69,7 @@ export const TRANSLATE_ENGINES: EngineInfo[] = [
     id: "mymemory",
     label: "MyMemory（免 Key）",
     strongLangs: ["en", "zh", "fr", "de", "es", "it", "pt", "ru"],
-    hint: "有每日免费额度；超额后需换引擎。",
+    hint: "匿名使用有每日免费额度；单次最多 500 个 UTF-8 字节，长文本需开启自动分段。",
     defaultMaxChars: 450,
     supportsChunk: true,
     credentialFields: [

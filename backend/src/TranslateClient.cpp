@@ -11,6 +11,7 @@
 #include <cctype>
 #include <map>
 #include <functional>
+#include <atomic>
 #include <random>
 #include <chrono>
 #include <mutex>
@@ -269,11 +270,11 @@ bool isBreakChar(char c)
         || c == ';' || c == ':' || c == ' ' || c == '\t';
 }
 
-std::vector<std::string> splitChunks(const std::string& text, size_t maxChars)
+std::vector<std::string> splitChunks(const std::string& text, size_t maxChars, size_t maxWireBytes = std::string::npos)
 {
     std::vector<std::string> chunks;
     if (text.empty()) return chunks;
-    if (utf8CodepointCount(text) <= maxChars)
+    if (utf8CodepointCount(text) <= maxChars && (maxWireBytes == std::string::npos || protectCodeTokens(text).size() <= maxWireBytes))
     {
         chunks.push_back(text);
         return chunks;
@@ -288,6 +289,7 @@ std::vector<std::string> splitChunks(const std::string& text, size_t maxChars)
         {
             const size_t n = utf8CharLen(static_cast<unsigned char>(text[j]));
             if (j + n > text.size()) break;
+            if (maxWireBytes != std::string::npos && protectCodeTokens(text.substr(i, j + n - i)).size() > maxWireBytes) break;
             if (isBreakChar(text[j])) lastBreak = j + n;
             j += n;
             ++cps;
@@ -412,6 +414,7 @@ std::string mapLangSimple(std::string lang)
 std::string normalizeLangPair(const std::string& source, const std::string& target)
 {
     std::string src = source.empty() ? "en" : source;
+    if (toLower(src) == "auto") src = "autodetect";
     std::string dst = target.empty() ? "zh-CN" : target;
     if (dst == "zh" || dst == "zh_CN") dst = "zh-CN";
     return src + "|" + dst;
@@ -549,7 +552,22 @@ struct HttpResult {
     std::string error;
     /** Cookie request header value collected from Set-Cookie (name=value; …). */
     std::string cookies;
+    std::string finalUrl;
 };
+
+std::string bingPageOrigin(const HttpResult& page, const std::string& fallback)
+{
+    bool https; std::wstring host, path; INTERNET_PORT port;
+    if (!parseUrl(page.finalUrl, https, host, port, path)) return fallback;
+    const bool standardPort = port == (https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
+    return std::string(https ? "https://" : "http://") + fromWide(host) + (standardPort ? "" : ":" + std::to_string(port));
+}
+
+std::string bingInstanceId(const std::string& html)
+{
+    std::smatch match;
+    return std::regex_search(html, match, std::regex(R"regex(data-iid\s*=\s*"(translator\.[^"]+)")regex")) ? match[1].str() : "";
+}
 
 std::string winHttpErrMessage(DWORD err, const std::wstring& host = L"")
 {
@@ -755,6 +773,12 @@ HttpResult winHttpRequest(
         WINHTTP_HEADER_NAME_BY_INDEX,
         &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
     result.status = static_cast<int>(status);
+    DWORD urlBytes = 0;
+    WinHttpQueryOption(request, WINHTTP_OPTION_URL, nullptr, &urlBytes);
+    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && urlBytes) {
+        std::wstring effective(urlBytes / sizeof(wchar_t), L'\0');
+        if (WinHttpQueryOption(request, WINHTTP_OPTION_URL, effective.data(), &urlBytes)) result.finalUrl = fromWide(effective);
+    }
 
     for (;;)
     {
@@ -823,7 +847,7 @@ bool looksLikeNetworkError(const std::string& err)
         || e.find("timeout") != std::string::npos
         || e.find("连接超时") != std::string::npos
         || e.find("无法连接") != std::string::npos
-        || e.find("无法解析") != std::string::npos
+        || e.find("无法解析域名") != std::string::npos
         || e.find("网络请求失败") != std::string::npos
         || e.find("网络连接中断") != std::string::npos;
 }
@@ -908,39 +932,35 @@ TranslateResult joinChunkTranslations(
     return result;
 }
 
-TranslateResult translateMyMemoryChunk(const std::string& text, const std::string& pair)
+TranslateResult parseMyMemoryResponse(const std::string& body)
 {
     TranslateResult result;
     result.provider = "mymemory";
-    const std::string url =
-        "https://api.mymemory.translated.net/get?q=" + urlEncode(text)
-        + "&langpair=" + urlEncode(pair);
-    result.externalCall = true;
-    const HttpResult http = winHttpGet(url);
-    if (!http.ok)
-    {
-        const std::string raw = http.error.empty()
-            ? (http.body.empty() ? "MyMemory request failed" : http.body)
-            : http.error;
-        result.error = friendlyMyMemoryError(raw);
-        return result;
-    }
     try
     {
-        const json root = json::parse(http.body);
-        const int status = root.value("responseStatus", 200);
+        const json root = json::parse(body);
+        const json rawStatus = root.value("responseStatus", json(200));
+        const int status = rawStatus.is_string() ? std::stoi(rawStatus.get<std::string>()) : rawStatus.get<int>();
         result.translation = root.at("responseData").value("translatedText", "");
         if (status != 200 || isMyMemoryLimitError(result.translation))
         {
-            const std::string raw = result.translation.empty()
+            std::string raw = root.value("responseDetails", "");
+            if (raw.empty()) raw = result.translation.empty()
                 ? ("MyMemory status " + std::to_string(status))
                 : result.translation;
-            result.error = friendlyMyMemoryError(raw);
+            if (toLower(raw).find("invalid source language") != std::string::npos || toLower(raw).find("invalid target language") != std::string::npos) {
+                result.code = "CONFIG_ERROR";
+                result.error = withZhHint(raw, "MyMemory 不支持所选语言，请调整原文或目标语言");
+            } else {
+                result.code = isMyMemoryLimitError(raw) ? "RATE_LIMIT" : "UPSTREAM_ERROR";
+                result.error = friendlyMyMemoryError(raw);
+            }
             result.translation.clear();
             return result;
         }
         if (result.translation.empty())
         {
+            result.code = "EMPTY_RESPONSE";
             result.error = withZhHint(
                 "Empty translation from MyMemory",
                 "翻译结果为空，请换引擎或稍后重试");
@@ -950,10 +970,21 @@ TranslateResult translateMyMemoryChunk(const std::string& text, const std::strin
     }
     catch (const std::exception& ex)
     {
+        result.code = "RESPONSE_FORMAT";
         result.error = withZhHint(
             std::string("Parse MyMemory failed: ") + ex.what(),
             "返回内容无法解析，请换引擎或稍后重试");
     }
+    return result;
+}
+
+TranslateResult translateMyMemoryChunk(const std::string& text, const std::string& pair)
+{
+    const std::string url = "https://api.mymemory.translated.net/get?q=" + urlEncode(text) + "&langpair=" + urlEncode(pair);
+    const HttpResult http = winHttpGet(url);
+    if (http.ok) { auto result = parseMyMemoryResponse(http.body); result.externalCall = true; return result; }
+    TranslateResult result; result.provider = "mymemory"; result.externalCall = true;
+    result.error = friendlyMyMemoryError(http.error.empty() ? (http.body.empty() ? "MyMemory request failed" : http.body) : http.error);
     return result;
 }
 
@@ -1053,6 +1084,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
 
     struct BingCred {
         std::string host;
+        std::string iid;
         std::string ig;
         std::string key;
         std::string token;
@@ -1061,8 +1093,10 @@ TranslateResult translateBing(const std::string& text, const std::string& source
     };
     static std::mutex mu;
     static BingCred cache;
+    static std::atomic<unsigned long long> sequence{0};
 
     auto parseCreds = [](const std::string& html, BingCred& out) -> bool {
+        out.iid = bingInstanceId(html);
         std::smatch m;
         if (!std::regex_search(html, m, std::regex(R"regex(IG:"([^"]+)")regex")))
             return false;
@@ -1077,7 +1111,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
         }
         out.key = m[1].str();
         out.token = m[2].str();
-        return !out.ig.empty() && !out.key.empty() && !out.token.empty();
+        return !out.iid.empty() && !out.ig.empty() && !out.key.empty() && !out.token.empty();
     };
 
     auto ensureCreds = [&](BingCred& cred) -> std::string {
@@ -1110,7 +1144,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
                 continue;
             }
             BingCred next;
-            next.host = host;
+            next.host = bingPageOrigin(page, host);
             next.cookies = page.cookies;
             if (!parseCreds(page.body, next))
             {
@@ -1138,7 +1172,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
     {
         result.error = withZhHint(
             credErr,
-            "Bing 鉴权失败（旧 Edge 接口已失效）。请检查网络后重试，或换有道/大模型");
+            "无法取得 Bing 网页翻译凭证，请检查网络或代理后重试");
         return result;
     }
 
@@ -1156,7 +1190,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
 
     const std::string url =
         cred.host + "/ttranslatev3?isVertical=1&IG=" + urlEncode(cred.ig)
-        + "&IID=translator.5026";
+        + "&IID=" + urlEncode(cred.iid + "." + std::to_string(++sequence));
 
     std::wstring headers =
         L"Content-Type: application/x-www-form-urlencoded\r\n"
@@ -1167,9 +1201,8 @@ TranslateResult translateBing(const std::string& text, const std::string& source
 
     HttpResult http = winHttpPost(url, form, headers);
     // Token expired / challenge → refresh once
-    if ((!http.ok || http.body.empty() || looksLikeHtml(http.body))
-        && (http.status == 401 || http.status == 403 || http.status == 404
-            || http.body.find("\"statusCode\":") != std::string::npos))
+    if (http.status == 401 || http.status == 403 || http.status == 404
+        || http.body.find("\"statusCode\":") != std::string::npos || (http.ok && http.body.empty()))
     {
         {
             std::lock_guard<std::mutex> lock(mu);
@@ -1187,7 +1220,7 @@ TranslateResult translateBing(const std::string& text, const std::string& source
                 + "&tryFetchingGenderDebiasedTranslations=true";
             const std::string url2 =
                 cred.host + "/ttranslatev3?isVertical=1&IG=" + urlEncode(cred.ig)
-                + "&IID=translator.5026";
+                + "&IID=" + urlEncode(cred.iid + "." + std::to_string(++sequence));
             std::wstring headers2 =
                 L"Content-Type: application/x-www-form-urlencoded\r\n"
                 L"Origin: " + toWide(cred.host) + L"\r\n"
@@ -1198,14 +1231,15 @@ TranslateResult translateBing(const std::string& text, const std::string& source
         }
     }
 
-    if (!http.ok || looksLikeHtml(http.body))
+    if (!http.ok || looksLikeHtml(http.body) || http.body.empty())
     {
         const std::string raw = http.error.empty()
-            ? ("HTTP " + std::to_string(http.status) + " from Bing webpage API")
+            ? (http.body.empty() ? "Empty response from Bing webpage API" : "HTTP " + std::to_string(http.status) + " from Bing webpage API")
             : http.error;
         result.error = withZhHint(
             raw,
             "Bing 翻译请求失败，请稍后重试、检查代理，或换有道/大模型");
+        if (http.ok && http.body.empty()) result.code = "EMPTY_RESPONSE";
         return result;
     }
 
@@ -1599,6 +1633,7 @@ json lookupBingDictionaryJson(
     // Reuse translateBing credential fetch by duplicating the light path
     struct BingCred {
         std::string host;
+        std::string iid;
         std::string ig;
         std::string key;
         std::string token;
@@ -1606,6 +1641,7 @@ json lookupBingDictionaryJson(
     };
 
     auto parseCreds = [](const std::string& html, BingCred& outCred) -> bool {
+        outCred.iid = bingInstanceId(html);
         std::smatch m;
         if (!std::regex_search(html, m, std::regex(R"regex(IG:"([^"]+)")regex")))
             return false;
@@ -1620,7 +1656,7 @@ json lookupBingDictionaryJson(
         }
         outCred.key = m[1].str();
         outCred.token = m[2].str();
-        return true;
+        return !outCred.iid.empty();
     };
 
     BingCred cred;
@@ -1635,7 +1671,7 @@ json lookupBingDictionaryJson(
                 : page.error;
             continue;
         }
-        cred.host = host;
+        cred.host = bingPageOrigin(page, host);
         cred.cookies = page.cookies;
         if (parseCreds(page.body, cred)) break;
         lastErr = "Cannot parse Bing tokens";
@@ -1659,7 +1695,7 @@ json lookupBingDictionaryJson(
         + "&key=" + urlEncode(cred.key);
     const std::string url =
         cred.host + "/tlookupv3?isVertical=1&IG=" + urlEncode(cred.ig)
-        + "&IID=translator.5026";
+        + "&IID=" + urlEncode(cred.iid + ".1");
     std::wstring headers =
         L"Content-Type: application/x-www-form-urlencoded\r\n"
         L"Origin: " + toWide(cred.host) + L"\r\n"
@@ -2174,15 +2210,15 @@ TranslateResult TranslateClient::translateFree(
         limit = static_cast<size_t>(maxLength);
 
     const size_t cps = utf8CodepointCount(text);
-    if (limit > 0 && cps > limit)
+    const bool byteLimit = p == "mymemory" && protectCodeTokens(text).size() > 500;
+    if ((limit > 0 && cps > limit) || byteLimit)
     {
         if (!autoChunk)
         {
             result.code = "LENGTH_LIMIT";
             result.error = withZhHint(
-                "Text exceeds max length (" + std::to_string(cps)
-                    + " > " + std::to_string(limit) + ")",
-                "文本过长，请增大最大长度或开启自动分段");
+                byteLimit ? "MyMemory request exceeds 500 UTF-8 bytes" : "Text exceeds max length (" + std::to_string(cps) + " > " + std::to_string(limit) + ")",
+                byteLimit ? "MyMemory 单次最多 500 字节，请开启自动分段" : "文本过长，请增大最大长度或开启自动分段");
             return result;
         }
     }
@@ -2194,8 +2230,8 @@ TranslateResult TranslateClient::translateFree(
         auto wrapped = [&](const std::string& chunk) {
             return restoreCodeTokensResult(fn(protectCodeTokens(chunk)));
         };
-        if (limit > 0 && autoChunk && cps > limit)
-            return markNetworkIfNeeded(joinChunkTranslations(splitChunks(text, chunkSize), wrapped));
+        if (autoChunk && ((limit > 0 && cps > limit) || byteLimit))
+            return markNetworkIfNeeded(joinChunkTranslations(splitChunks(text, chunkSize, p == "mymemory" ? 500 : std::string::npos), wrapped));
         return markNetworkIfNeeded(wrapped(text));
     };
 
