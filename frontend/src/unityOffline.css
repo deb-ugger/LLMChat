@@ -11,8 +11,8 @@
 .unity-game-heading span { color: var(--unity-muted); font-size: 12px; }
 .unity-game-heading code { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--unity-muted); font: inherit; font-size: 11px; }
 .unity-header-primary[hidden] { display: none; }
-.unity-offline-model { display: flex; align-items: center; gap: 8px; color: var(--unity-muted); }
-.unity-offline-model strong { color: var(--unity-ink); }
+.unity-background-task { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.unity-background-task > span { flex: 1; }
 .unity-offline { display: flex; flex: 1; min-width: 0; min-height: 0; gap: 0; padding: 10px 12px; background: var(--bg, #f1f5fa); font-size: 14px; overflow: hidden; }
 .unity-offline-config { min-width: 300px; max-width: 58%; flex-shrink: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; container-type: inline-size; }
 .unity-workspace-divider { width: 10px; flex-shrink: 0; border: 0; background: transparent; cursor: col-resize; position: relative; padding: 0; }

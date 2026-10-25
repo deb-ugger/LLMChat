@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { open as openPath } from "@tauri-apps/plugin-shell";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo } from "../api";
+import { currentEffectivePresets, loadLocalModelProfiles, loadVendorProfiles, resolveFeatureLlm } from "../modelPresets";
 import { TRANSLATE_ENGINES, classicEngines, engineReady, parseEngineKeys } from "../translateEngines";
 import { buildUnityTranslateOptions, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace } from "../unityOffline";
@@ -21,7 +22,7 @@ type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
   projectFolder: string; scanFolder: string; patchFolder: string; patch: UnityPatch | null;
   previousProjectFolder?: string; scopeVersion?: number;
-  translationKind: "llm" | "engine"; engine: TranslateProvider; source: string; target: string; includeCode: boolean; fontPath: string;
+  translationKind: "llm" | "engine"; llmModel?: string; engine: TranslateProvider; source: string; target: string; includeCode: boolean; fontPath: string;
   progress: GenerationProgress;
 };
 type Props = {
@@ -35,11 +36,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
   const [translationKind, setTranslationKind] = useState<"llm" | "engine">("llm");
+  const [llmModel, setLlmModel] = useState("");
   const [engine, setEngine] = useState<TranslateProvider>("bing");
   const [source, setSource] = useState("auto");
   const [target, setTarget] = useState("zh-CN");
   const [includeCode, setIncludeCode] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
+  const followProgress = useRef(true);
   const [fontPath, setFontPath] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -87,9 +90,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
   useEffect(() => {
     setProject(null); setPatch(null); setDirty(false); setPage(0); setSearch("");
-    setError(""); setMessage(""); setFontPath("");
+    setError(""); setMessage(""); setFontPath(""); setLlmModel("");
     setGeneration(null); setApplied(false);
-    setActiveStep(1);
+    setActiveStep(1); followProgress.current = true;
     setRestoreNotices([]);
     setWorkRoot(""); setOutput(""); setRowIssue(null); queuedSignature.current = "";
     setCheckpoint(null); checkpointRef.current = null;
@@ -123,7 +126,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (value) {
           if (value.scopeVersion !== 1) value = { ...value, source: value.finished && !value.patch && value.endStep < 3 ? value.source : "all", scopeVersion: 1 };
           setPatch(value.patch); setApplied(value.finished && value.endStep === 4);
-          setTranslationKind(value.translationKind); setEngine(value.engine); setSource(value.source); setTarget(value.target); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
+          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
           if (!value.finished && value.step === 2 && p) {
             const ids = unityLanguageScope(p.entries, value.source).ids;
             const rows = p.entries.filter(e => e.selected && ids.has(e.id));
@@ -179,8 +182,16 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
   const scope = useMemo(() => unityLanguageScope(project?.entries || [], source), [project, source]);
   const selected = project?.entries.filter(e => e.selected && scope.ids.has(e.id)) || [];
+  const modelChoices = useMemo(() => {
+    const presets = currentEffectivePresets(), locals = loadLocalModelProfiles(), vendors = loadVendorProfiles();
+    return [...new Set([settings.model, ...Object.keys(locals)])].filter(Boolean).map(model => {
+      const preset = presets.find(p => p.model === model);
+      return { model, label: preset?.label || model, group: preset?.group || "本地模型", connection: resolveFeatureLlm(settings, model, locals, vendors, presets) };
+    }).filter(p => p.connection.apiUrl.trim()).map(({ connection: _, ...choice }) => choice);
+  }, [settings, active]);
+  const modelConnection = resolveFeatureLlm(settings, llmModel);
   const engineConfigured = engineReady(parseEngineKeys(settings.translateEngineKeys), engine);
-  const connectionReady = translationKind === "llm" ? !!settings.model.trim() && !!settings.apiUrl.trim() : engineConfigured;
+  const connectionReady = translationKind === "llm" ? !!modelConnection.model.trim() && !!modelConnection.apiUrl.trim() : engineConfigured;
   const done = selected.filter(e => e.translation && !unityTranslationError(e.source, e.translation)).length;
   const filtered = useMemo(() => project?.entries.filter(e => scope.ids.has(e.id) && (!search || `${e.source}\n${e.translation}\n${e.file}`.toLowerCase().includes(search.toLowerCase()))) || [], [project, search, scope]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / 40));
@@ -199,7 +210,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   function projectCheckpoint(p: UnityProject, incomplete = false, completed: number | null = 1, total: number | null = 1): RunCheckpoint {
     return { step: 1, endStep: 1, automatic: false, finished: !incomplete, projectFolder: p.folder, scanFolder: incomplete ? p.folder : "", patchFolder: "", patch: null,
-      translationKind, engine, source, target, includeCode, fontPath, scopeVersion: 1,
+      translationKind, llmModel, engine, source, target, includeCode, fontPath, scopeVersion: 1,
       progress: { step: 1, state: incomplete ? "stopped" : "done", detail: incomplete ? "已加载扫描检查点" : "已加载保存工程", completed: completed || 0, total } };
   }
   async function loadProject(folder: string, previousFolder?: string) {
@@ -229,7 +240,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (provider !== "llm" && !engineReady(parseEngineKeys(general.translateEngineKeys), provider))
       throw new Error("请先在设置 → 通用 → 翻译引擎中配置所选引擎的凭证");
     const language = unityLanguageScope(latest.current?.entries || [], run?.source || source).language;
-    return buildUnityTranslateOptions(general, provider, language === "all" || language === "und" ? "auto" : language, run?.target || target);
+    return buildUnityTranslateOptions(general, provider, language === "all" || language === "und" ? "auto" : language, run?.target || target, run?.llmModel ?? llmModel);
   }
   async function scan(onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
     let p = await unityRun<UnityProject>("scan", { root, outputRoot: output, includeCode: run?.includeCode ?? includeCode, path: run?.scanFolder || "" }, onProgress, signal);
@@ -287,7 +298,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       step: startStep, endStep, automatic: startStep === 1 && endStep === 4, finished: false,
       projectFolder: startStep === 1 && endStep === 1 ? "" : project?.folder || "", scanFolder: "", patchFolder: "", patch: startStep === 4 ? patch : null,
       previousProjectFolder: startStep === 1 && endStep === 1 ? project?.folder : undefined,
-      translationKind, engine, source, target, includeCode, fontPath, scopeVersion: 1,
+      translationKind, llmModel, engine, source, target, includeCode, fontPath, scopeVersion: 1,
       progress: { step: startStep, state: "running", detail: "准备处理", completed: 0, total: null },
     };
     if (needsScan && run.step < 3) {
@@ -308,10 +319,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if (urgent || performance.now() - lastReported >= 100) { remember(run); lastReported = performance.now(); }
     };
     try {
+      followProgress.current = true;
       remember(run);
       let p = project;
       for (let index = run.step; index <= endStep; index++) {
-        setActiveStep(index);
+        if (followProgress.current) setActiveStep(index);
         run.step = index; setBusy(GENERATION_STEPS[index - 1]);
         const onProgress = (progress: UnityProgress) => { if (run.step === index && !run.finished) report(progress); };
         report({ detail: `准备${GENERATION_STEPS[index - 1]}`, completed: 0, total: null });
@@ -365,6 +377,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const locked = !!busy || restoring || resumable;
   const entriesLocked = !!busy || restoring || resumable && checkpoint.step !== 2;
   const resumeTask = () => checkpoint && void operation("恢复任务", () => runWorkflow(checkpoint.step, checkpoint.endStep, true), true);
+  const taskAction = busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}{checkpoint.automatic ? "一键流程" : GENERATION_STEPS[checkpoint.step - 1]}</button>;
   const finishTask = () => {
     if (!checkpoint || !window.confirm("结束本次流程？已保存的工程、译文和补丁仍保留，但不再自动继续后续步骤。")) return;
     remember({ ...checkpoint, finished: true, endStep: generation?.step || checkpoint.step });
@@ -407,7 +420,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <nav className="unity-step-tabs" role="tablist" aria-label="处理步骤">{GENERATION_STEPS.map((label, index) => {
         const step = index + 1;
         const state = unityStageState(step, completedThrough, executingStep);
-        return <button key={label} id={`unity-step-${step}`} role="tab" aria-selected={activeStep === step} aria-controls="unity-step-panel" aria-current={executingStep === step ? "step" : undefined} className={`unity-step-tab ${state}${activeStep === step ? " is-selected" : ""}`} onClick={() => setActiveStep(step)}><span className="unity-step-number" aria-hidden="true">{step}</span>{label}</button>;
+        return <button key={label} id={`unity-step-${step}`} role="tab" aria-selected={activeStep === step} aria-controls="unity-step-panel" aria-current={executingStep === step ? "step" : undefined} className={`unity-step-tab ${state}${activeStep === step ? " is-selected" : ""}`} onClick={() => { followProgress.current = false; setActiveStep(step); }}><span className="unity-step-number" aria-hidden="true">{step}</span>{label}</button>;
       })}</nav>
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${activeStep}`} className="unity-step-panel">
         {activeStep === 1 && <>
@@ -424,12 +437,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         {activeStep === 2 && <>
           <div className="unity-offline-fields">
             <label>翻译方式<select value={translationKind} disabled={parametersLocked} onChange={e => setTranslationKind(e.target.value as "llm" | "engine")}><option value="llm">大模型</option><option value="engine">翻译引擎</option></select></label>
-            {translationKind === "llm" ? <span className="unity-offline-model">通用模型 <strong>{settings.model || "未配置"}</strong></span> : <label>翻译引擎<select value={engine} disabled={parametersLocked} onChange={e => setEngine(e.target.value as TranslateProvider)}>{classicEngines(TRANSLATE_ENGINES).map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>}
+            {translationKind === "llm" ? <label>翻译模型<select value={llmModel} disabled={parametersLocked} onChange={e => setLlmModel(e.target.value)}><option value="">跟随通用（{settings.model || "未配置"}）</option>{llmModel && !modelChoices.some(p => p.model === llmModel) && <option value={llmModel}>{llmModel}（未配置）</option>}{[...new Set(modelChoices.map(p => p.group))].map(group => <optgroup key={group} label={group}>{modelChoices.filter(p => p.group === group).map(p => <option key={p.model} value={p.model}>{p.label}</option>)}</optgroup>)}</select></label> : <label>翻译引擎<select value={engine} disabled={parametersLocked} onChange={e => setEngine(e.target.value as TranslateProvider)}>{classicEngines(TRANSLATE_ENGINES).map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>}
             <label>目标语言<select value={target} disabled={parametersLocked} onChange={e => { setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></label>
             {onOpenGeneralSettings && <button className="unity-btn" disabled={!!busy} onClick={onOpenGeneralSettings}>通用设置</button>}
             <button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !selected.length || !connectionReady || applied} onClick={() => void operation("翻译中", () => runWorkflow(2, 2), true)}>翻译所选 / 继续</button>
           </div>
-          <p className={connectionReady ? "hint" : "unity-offline-error"}>{translationKind === "llm" ? "模型、API 地址与密钥使用设置 → 通用中的当前配置。" : engineConfigured ? "引擎凭证与代理使用设置 → 通用中的配置。" : "所选引擎尚未配置凭证，请前往通用设置配置。"}</p>
+          <p className={connectionReady ? "hint" : "unity-offline-error"}>{translationKind === "llm" ? connectionReady ? "使用通用中保存的模型连接；本机服务需先启动，允许不填写 Key。" : "所选模型尚未配置 API 地址，请前往通用设置配置。" : engineConfigured ? "引擎凭证与代理使用设置 → 通用中的配置。" : "所选引擎尚未配置凭证，请前往通用设置配置。"}</p>
           <p className="hint">{scanReady ? `原文范围：${scope.label}，已选 ${selected.length} 条。仅处理未完成文本，已有译文保留。` : "请先完成扫描，再执行此步；可以提前配置翻译参数。"}</p>
         </>}
         {activeStep === 3 && <>
@@ -444,16 +457,17 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <p className="hint">{patch ? "请先关闭游戏。应用前检查进程及原件、补丁哈希，保留备份；写入失败时回滚。" : "请先生成补丁，再执行此步。应用前会检查游戏进程和文件变化，并保留原件备份。"}</p>
         </>}
       </div>
-      {generation && <div className="unity-step-progress">
-      <div className="unity-generation-status" role="status"><strong>第 {generation.step} / 4 步 · {GENERATION_STEPS[generation.step - 1]}{generation.state === "done" ? " · 已完成" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : ""}</strong><span>{progressPercent === null ? busy ? "正在准备…" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}`}</span>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{generation.state === "error" && progressPercent === null ? "重试" : "恢复"}{checkpoint.automatic ? "一键流程" : GENERATION_STEPS[checkpoint.step - 1]}</button>}</div>
+      {generation && activeStep === generation.step && <div className="unity-step-progress">
+      <div className="unity-generation-status" role="status"><strong>第 {generation.step} / 4 步 · {GENERATION_STEPS[generation.step - 1]}{generation.state === "done" ? " · 已完成" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : ""}</strong><span>{progressPercent === null ? busy ? "正在准备…" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}`}</span>{taskAction}</div>
       <div key={generation.step} className={`unity-progress-track${progressRunning ? " is-running" : ""}${progressPercent === null ? " is-indeterminate" : ""}`} role="progressbar" aria-label="当前步骤进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent ?? undefined} aria-valuetext={progressPercent === null ? progressRunning ? "正在准备，暂未取得总量" : "未获得进度" : `${progressPercent}%`}>
         <div className="unity-progress-fill" style={{ width: `${progressPercent ?? 0}%` }} />
       </div>
       {generation.state === "error" ? errorPanel : <p title={generation.detail}>{generation.detail}</p>}
       {!busy && resumable && generation.step < 4 && <button className="unity-btn" onClick={finishTask}>结束本次流程</button>}
-      {generation.step === 4 && generation.state !== "done" && <p className="unity-offline-error">应用尚未完成，请勿启动游戏。恢复后继续写入，原件保存在补丁目录的 original 文件夹。</p>}
       </div>}
     </section>
+    {generation && activeStep !== generation.step && <section className="unity-generation unity-background-task" aria-label="任务状态"><span>第 {generation.step} 步 · {GENERATION_STEPS[generation.step - 1]}{generation.state === "done" ? " · 已完成" : generation.state === "error" ? " · 失败" : generation.state === "stopped" ? " · 已中止" : " · 正在处理"}</span>{taskAction}<button className="unity-btn" onClick={() => { followProgress.current = true; setActiveStep(generation.step); }}>查看进度</button></section>}
+    {generation?.step === 4 && generation.state !== "done" && <p className="unity-offline-error">应用尚未完成，请勿启动游戏。恢复后继续写入，原件保存在补丁目录的 original 文件夹。</p>}
     {generation?.state !== "error" && errorPanel}
     {projectDetails}
     </aside>

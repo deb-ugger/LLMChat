@@ -33,7 +33,7 @@ public static class GameWorkspace
     static JsonNode CopyTask(JsonNode task)
     {
         var result = new JsonObject();
-        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "engine", "source", "target", "includeCode", "fontPath", "progress", "patch" })
+        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         return result;
     }
