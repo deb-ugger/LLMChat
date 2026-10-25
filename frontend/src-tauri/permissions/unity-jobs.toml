@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-unity-jobs"
+description = "Allow Unity project discovery, resource processing and checkpoint cancellation from the main window"
+commands.allow = ["unity_offline_run", "unity_offline_stop"]

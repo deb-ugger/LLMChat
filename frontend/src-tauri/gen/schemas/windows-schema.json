@@ -405,6 +405,12 @@
           "markdownDescription": "Allow local audio probing, bounded decoding and persistent transcription jobs"
         },
         {
+          "description": "Allow Unity project discovery, resource processing and checkpoint cancellation from the main window",
+          "type": "string",
+          "const": "allow-unity-jobs",
+          "markdownDescription": "Allow Unity project discovery, resource processing and checkpoint cancellation from the main window"
+        },
+        {
           "description": "Allow writing binary file contents to a user-chosen path",
           "type": "string",
           "const": "allow-write-file-bytes",

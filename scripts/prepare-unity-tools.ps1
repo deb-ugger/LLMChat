@@ -19,6 +19,7 @@ if (!(Test-Path -LiteralPath $database)) {
 }
 $notice = @'
 AssetsTools.NET 3.0.5 - Copyright (c) 2020 nesrak1
+AssetsTools.NET.MonoCecil 3.0.4 - Copyright (c) 2020 nesrak1
 https://github.com/nesrak1/AssetsTools.NET
 Mono.Cecil 0.11.6 - Copyright (c) 2008 - 2015 Jb Evain; Copyright (c) 2008 - 2011 Novell, Inc.
 https://github.com/jbevain/cecil

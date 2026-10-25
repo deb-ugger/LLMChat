@@ -9,9 +9,19 @@ export type UnityEntry = {
 export type UnityFont = { file: string; container: string; objectId: string; name: string; kind: string };
 export type UnityProject = {
   version: number; root: string; folder: string; entries: UnityEntry[];
+  scanRevision?: number;
   fonts: UnityFont[]; warnings: string[]; hashes: Record<string, string>;
 };
 export type UnityPatch = { folder: string; files: number; entries: number; fontReplacements: number };
+export type UnitySavedProject = { project: UnityProject | null; scanCompleted: number | null; scanTotal: number | null; includeCode: boolean | null; notices: string[] };
+export function mergeUnityProject(previous: UnityProject, scanned: UnityProject) {
+  const key = (e: UnityEntry) => JSON.stringify([e.file, e.container, e.objectId, e.kind === "UI 文本" && e.locator === "m_Text" ? "/m_Text" : e.locator, e.kind === "UI 文本" ? "游戏文本" : e.kind, e.source]);
+  const entries = new Map(previous.entries.map(e => [key(e), e]));
+  return { ...scanned, entries: scanned.entries.map(e => {
+    const saved = entries.get(key(e));
+    return saved ? { ...e, translation: saved.translation, selected: saved.selected, error: saved.error } : e;
+  }) };
+}
 export type UnityProgress = { detail: string; completed: number; total: number | null; folder?: string };
 export class UnityPaused extends Error { constructor(public folder: string) { super("任务已中止，进度已保存"); } }
 export const unityRun = async <T>(action: string, request: object, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal): Promise<T> => {

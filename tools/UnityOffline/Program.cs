@@ -23,6 +23,7 @@ public sealed record FontInfo(string File, string Container, string ObjectId, st
 public sealed class Project
 {
     public int Version { get; set; } = 1;
+    public int ScanRevision { get; set; }
     public string Root { get; set; } = "";
     public string Folder { get; set; } = "";
     public List<Entry> Entries { get; set; } = [];
@@ -44,9 +45,11 @@ public sealed class PausedException(string folder) : Exception("任务已中止�
 public sealed record PatchFile(string File, string OriginalSha256, string PatchSha256, int Entries);
 public sealed record ScanCheckpoint(int Next, bool IncludeCode);
 public sealed record ExportCheckpoint(string Signature, List<PatchFile> Files);
+public sealed record SavedProject(Project? Project, int? ScanCompleted, int? ScanTotal, List<string> Notices) { public bool? IncludeCode { get; init; } }
 
 public static class Program
 {
+    public const int CurrentScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
     static bool ReportProgress;
@@ -78,6 +81,7 @@ public static class Program
             object result = args[0] switch
             {
                 "scan" => Scan(request),
+                "find" => FindSaved(request),
                 "load" => Load(request.Path),
                 "save" => Save(request.Project ?? throw new Exception("缺少工程")),
                 "export" => Export(request),
@@ -121,6 +125,35 @@ public static class Program
         if (project.Version != 1) throw new Exception("不支持此工程版本");
         foreach (var e in project.Entries) _ = Within(project.Root, e.File);
         return project;
+    }
+    public static SavedProject FindSaved(Request request)
+    {
+        var notices = new List<string>();
+        if (!Directory.Exists(request.OutputRoot)) return new(null, null, null, notices);
+        var root = System.IO.Path.GetFullPath(request.Root).TrimEnd('\\', '/');
+        var options = new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint };
+        var candidates = Directory.EnumerateDirectories(request.OutputRoot, "unity-project-*", options)
+            .Select(folder => System.IO.Path.Combine(folder, "unity-project.json")).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc);
+        foreach (var path in candidates)
+        {
+            try {
+                using var input = File.OpenRead(path);
+                using var document = JsonDocument.Parse(input);
+                if (!document.RootElement.TryGetProperty("root", out var savedRoot) || !string.Equals(System.IO.Path.GetFullPath(savedRoot.GetString()!).TrimEnd('\\', '/'), root, StringComparison.OrdinalIgnoreCase)) continue;
+                var project = Load(path);
+                var statePath = System.IO.Path.Combine(project.Folder, "scan-state.json");
+                if (File.Exists(statePath)) {
+                    var state = JsonSerializer.Deserialize<ScanCheckpoint>(File.ReadAllText(statePath, Utf8), Json)!;
+                    var paths = JsonSerializer.Deserialize<string[]>(File.ReadAllText(System.IO.Path.Combine(project.Folder, "scan-files.json"), Utf8), Json)!;
+                    if (state.Next < paths.Length) return new(project, state.Next, paths.Length, notices) { IncludeCode = state.IncludeCode };
+                    return new(project, null, null, notices) { IncludeCode = state.IncludeCode };
+                }
+                return new(project, null, null, notices);
+            } catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
+                notices.Add($"工程读取失败：{path}：{e.Message}");
+            }
+        }
+        return new(null, null, null, notices);
     }
     public static bool TextCandidate(string text) => text.Length is > 1 and <= 16000 &&
         !text.Any(c => char.IsControl(c) && c is not '\r' and not '\n' and not '\t') &&
@@ -181,8 +214,10 @@ public static class Program
         var output = System.IO.Path.GetFullPath(request.OutputRoot);
         if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
             throw new Exception("输出目录不能位于游戏目录中，请在 Unity 设置中调整输出目录");
-        var project = request.Path.Length > 0 ? Load(System.IO.Path.Combine(request.Path, "unity-project.json")) : new Project { Root = root, Folder = NewFolder(output, "unity-project") };
+        var project = request.Path.Length > 0 ? Load(System.IO.Path.Combine(request.Path, "unity-project.json")) : new Project { Root = root, ScanRevision = CurrentScanRevision, Folder = NewFolder(output, "unity-project") };
         if (!string.Equals(project.Root, root, StringComparison.OrdinalIgnoreCase)) throw new Exception("扫描检查点不属于当前游戏");
+        if (project.ScanRevision != CurrentScanRevision) throw new Exception("扫描检查点使用旧提取方式，请重新扫描；原工程和译文会保留");
+        using var types = new GameTypes(root);
         Save(project);
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
         var statePath = System.IO.Path.Combine(project.Folder, "scan-state.json");
@@ -203,7 +238,7 @@ public static class Program
             var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
             var isCode = request.IncludeCode && (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Assembly-CSharp", StringComparison.OrdinalIgnoreCase) && ext == ".dll");
             var asset = ext is ".assets" or ".bundle" or ".unity3d" or ".ab" || name is "resources.assets" or "globalgamemanagers" || Regex.IsMatch(name, @"^(level\d+|CAB-[0-9a-f]+)$", RegexOptions.IgnoreCase);
-            var plain = ext is ".txt" or ".json" && !rel.Split(System.IO.Path.DirectorySeparatorChar).Any(p => p is "MonoBleedingEdge" or "BepInEx" or "MelonLoader");
+            var plain = ext is ".txt" or ".json" && GameText.PlainFile(root, rel);
             if (!isCode && !asset && !plain) { WriteJson(statePath, new ScanCheckpoint(index + 1, request.IncludeCode)); continue; }
             // A crash between project and checkpoint saves replays only the current file.
             project.Entries.RemoveAll(e => e.File == rel); project.Fonts.RemoveAll(f => f.File == rel); project.Hashes.Remove(rel);
@@ -213,8 +248,8 @@ public static class Program
             {
                 if (isCode && ext == ".dll") ScanAssembly(path, rel, project);
                 else if (isCode) VisitMetadata(File.ReadAllBytes(path), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
-                else if (asset) VisitResource(path, (am, inst, container) => ScanAssets(am, inst, rel, container, project));
-                else TextDocument(File.ReadAllText(path, Utf8), (loc, text, _) => Add(project, rel, "", 0, loc, "文本文件", text));
+                else if (asset) VisitResource(path, (am, inst, container) => ScanAssets(am, inst, rel, container, project), types, rel);
+                else TextDocument(File.ReadAllText(path, Utf8), (loc, text, _) => { if (GameText.Visible(loc.Split('/').Last(), text)) Add(project, rel, "", 0, loc, "文本文件", text); });
                 if (project.Entries.Count > before || project.Fonts.Count > fonts) project.Hashes[rel] = Hash(path);
             }
             catch (Exception e)
@@ -279,9 +314,10 @@ public static class Program
         return result;
     }
 
-    static void VisitResource(string path, Action<AssetsManager, AssetsFileInstance, string> visit, string? destination = null)
+    static void VisitResource(string path, Action<AssetsManager, AssetsFileInstance, string> visit, GameTypes types, string relative, string? destination = null)
     {
         var am = new AssetsManager();
+        types.Configure(am, relative);
         try
         {
             var tpk = System.IO.Path.Combine(AppContext.BaseDirectory, "classdata.tpk");
@@ -336,16 +372,15 @@ public static class Program
             if (type is not (49 or 128 or 114)) continue;
             try
             {
-                if (type == 114 && !inst.file.Metadata.TypeTreeEnabled) continue;
+                if (type == 114 && !inst.file.Metadata.TypeTreeEnabled && am.MonoTempGenerator == null) continue;
                 var field = am.GetBaseField(inst, info);
                 var name = field["m_Name"].IsDummy ? info.PathId.ToString() : field["m_Name"].AsString;
                 if (type == 128) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "UGUI"));
-                if (type == 49)
-                    TextDocument(Utf8.GetString(field["m_Script"].AsByteArray), (loc, text, _) => Add(project, rel, container, info.PathId, loc, "TextAsset", text));
+                if (type == 49 && GameText.TextAsset(name))
+                    TextDocument(Utf8.GetString(field["m_Script"].AsByteArray), (loc, text, _) => { if (GameText.Visible(name, text)) Add(project, rel, container, info.PathId, loc, "TextAsset", text); });
                 if (type == 114)
                 {
-                    if (!field["m_Text"].IsDummy && field["m_Text"].Value?.ValueType == AssetValueType.String)
-                        Add(project, rel, container, info.PathId, "m_Text", "UI 文本", field["m_Text"].AsString);
+                    GameText.VisitStrings(field, (loc, text, _) => Add(project, rel, container, info.PathId, loc, "游戏文本", text));
                     if (!field["m_CharacterTable"].IsDummy || !field["m_glyphInfoList"].IsDummy)
                         project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "TMP（需兼容图集）"));
                     else if (!field["mFont"].IsDummy) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "NGUI（需兼容图集）"));
@@ -353,7 +388,7 @@ public static class Program
             }
             catch (Exception e) { project.Warnings.Add($"{rel} / {container} / {info.PathId}：{e.Message}"); }
         }
-        if (!inst.file.Metadata.TypeTreeEnabled && inst.file.GetAssetsOfType(AssetClassID.MonoBehaviour).Count > 0)
+        if (!inst.file.Metadata.TypeTreeEnabled && am.MonoTempGenerator == null && inst.file.GetAssetsOfType(AssetClassID.MonoBehaviour).Count > 0)
             project.Warnings.Add($"{rel} / {container}：MonoBehaviour 未内嵌类型树，首版未解析其 UI 文本和 TMP / NGUI 字体。");
     }
 
@@ -361,6 +396,7 @@ public static class Program
     {
         Progress("校验译文、占位符与字体");
         var project = request.Project ?? throw new Exception("缺少工程");
+        using var types = new GameTypes(project.Root);
         var selected = project.Entries.Where(e => e.Selected).ToArray();
         if (selected.Length == 0) throw new Exception("请先选择需要回写的文本");
         foreach (var entry in selected) ValidateTranslation(entry.Source, entry.Translation);
@@ -431,6 +467,7 @@ public static class Program
                         if (relevant.Length == 0 && !replaceFont) continue;
                         var field = am.GetBaseField(inst, info);
                         if (relevant.Any(e => e.Kind == "TextAsset")) field["m_Script"].AsString = TextDocument(field["m_Script"].AsString, (loc, text, set) => Change(container, info.PathId, loc, text, set));
+                        else if (relevant.Any(e => e.Locator.StartsWith('/'))) GameText.VisitStrings(field, (loc, text, set) => Change(container, info.PathId, loc, text, set));
                         else if (relevant.Length > 0) Change(container, info.PathId, "m_Text", field["m_Text"].AsString, s => field["m_Text"].AsString = s);
                         if (replaceFont)
                         {
@@ -442,7 +479,7 @@ public static class Program
                         }
                         info.SetNewData(field);
                     }
-                }, destination);
+                }, types, file, destination);
                 if (edits.Count != 0) throw new Exception($"部分文本未能回写：{file}");
                 manifest.Add(new PatchFile(file, originalHash, Hash(destination), entries.Length));
                 WriteJson(checkpointPath, checkpoint);
