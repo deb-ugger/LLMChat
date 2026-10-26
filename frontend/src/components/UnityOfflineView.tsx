@@ -473,7 +473,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   return <div className="unity-offline">
     {toolbarTarget && createPortal(<button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || !root || !output || (!resumable || checkpoint.step <= 2) && completedThrough < 2 && !connectionReady || applied} onClick={() => void operation("一键生成", () => runWorkflow(needsScan ? 1 : Math.min(4, completedThrough + 1), 4, resumable, true), true)}>{applied ? "已应用到游戏" : resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"}</button>, toolbarTarget)}
     <aside ref={configRef} className="unity-offline-config" style={{ width: panelWidth.width }}>
-    <div className="unity-offline-upper" style={{ height: Math.min(upper.size, Math.max(160, configHeight - 180)) }}>
+    <div className="unity-offline-upper" style={{ maxHeight: Math.min(upper.size, Math.max(160, configHeight - 180)) }}>
     <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.step === activeStep ? generation.state : "idle"}`} aria-label="分步设置与任务进度">
       <nav className="unity-step-tabs" role="tablist" aria-label="处理步骤">{GENERATION_STEPS.map((label, index) => {
         const step = index + 1;
