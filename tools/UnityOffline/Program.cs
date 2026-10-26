@@ -24,6 +24,9 @@ public sealed class Project
 {
     public int Version { get; set; } = 1;
     public int ScanRevision { get; set; }
+    public int TextSafetyRevision { get; set; }
+    public int ExcludedMetadataCount { get; set; }
+    public int NextEntryId { get; set; } = 1;
     public string Root { get; set; } = "";
     public string Folder { get; set; } = "";
     public List<Entry> Entries { get; set; } = [];
@@ -87,6 +90,7 @@ public static class Program
                 "scan" => Scan(request),
                 "find" => FindSaved(request),
                 "workspace" => GameWorkspace.Open(request),
+                "resume-info" => GameWorkspace.ResumeInfo(request),
                 "save-task" => SaveTask(request),
                 "reset-step" => WorkflowReset.Start(request),
                 "load" => Load(request.Path),
@@ -121,6 +125,7 @@ public static class Program
     public static Project Save(Project project)
     {
         if (project.Version != 1 || !Directory.Exists(project.Folder)) throw new Exception("工程版本或目录无效");
+        GameText.ProtectProject(project);
         var path = System.IO.Path.Combine(project.Folder, "unity-project.json");
         var temp = path + ".tmp";
         try { File.WriteAllText(temp, JsonSerializer.Serialize(project, Json), Utf8); File.Move(temp, path, true); }
@@ -133,6 +138,7 @@ public static class Program
         project.Folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))!;
         if (project.Version != 1) throw new Exception("不支持此工程版本");
         foreach (var e in project.Entries) _ = Within(project.Root, e.File);
+        GameText.ProtectProject(project);
         return project;
     }
     public static SavedProject FindSaved(Request request)
@@ -176,7 +182,10 @@ public static class Program
     }
     static void Add(Project project, string file, string container, long objectId, string locator, string kind, string text)
     {
-        if (TextCandidate(text)) project.Entries.Add(new Entry($"{project.Entries.Count + 1}", file, container, objectId.ToString(), locator, kind, text));
+        if (TextCandidate(text)) {
+            var entry = new Entry($"{project.NextEntryId}", file, container, objectId.ToString(), locator, kind, text);
+            if (!GameText.Protected(entry)) { project.Entries.Add(entry); project.NextEntryId++; }
+        }
     }
     // JSON keys and identifier/path fields are never translated. Locators remain structural, not text-based.
     static void JsonStrings(JsonNode? node, string path, Action<string, string, Action<string>> visit)
@@ -184,7 +193,7 @@ public static class Program
         if (node is JsonObject obj)
             foreach (var kv in obj.ToArray())
             {
-                if (Regex.IsMatch(kv.Key, @"^(?:id|key|nameId|path|asset|guid|type|url|file|sprite|font)$", RegexOptions.IgnoreCase)) continue;
+                if (GameText.IsTechnicalField(kv.Key) || Regex.IsMatch(kv.Key, @"^(?:id|key|nameId|path|asset|guid|type|url|file|sprite|font)$", RegexOptions.IgnoreCase)) continue;
                 var key = kv.Key;
                 if (kv.Value is JsonValue v && v.TryGetValue<string>(out var s)) visit(path + "/" + key.Replace("~", "~0").Replace("/", "~1"), s, next => obj[key] = next);
                 else JsonStrings(kv.Value, path + "/" + key.Replace("~", "~0").Replace("/", "~1"), visit);
@@ -410,6 +419,7 @@ public static class Program
         var ids = request.SelectedIds?.ToHashSet(StringComparer.Ordinal);
         var selected = project.Entries.Where(e => e.Selected && (ids == null || ids.Contains(e.Id))).ToArray();
         if (selected.Length == 0) throw new Exception("请先选择需要回写的文本");
+        if (selected.Any(GameText.Protected)) throw new Exception("发现程序类型或事件绑定标识，已阻止生成补丁。请重新打开工程剔除程序标识后再生成");
         foreach (var entry in selected) ValidateTranslation(entry.Source, entry.Translation);
         byte[]? font = null;
         if (request.FontPath.Length > 0)
@@ -500,7 +510,7 @@ public static class Program
             }
             CheckStop(request, folder);
             Save(project);
-            File.WriteAllText(System.IO.Path.Combine(folder, "manifest.json"), JsonSerializer.Serialize(new { version = 1, project.Root, files = manifest, warnings = project.Warnings, fontReplacements = fonts.Length }, Json), Utf8);
+            File.WriteAllText(System.IO.Path.Combine(folder, "manifest.json"), JsonSerializer.Serialize(new { version = 1, textSafetyRevision = GameText.SafetyRevision, project.Root, files = manifest, warnings = project.Warnings, fontReplacements = fonts.Length }, Json), Utf8);
             File.WriteAllText(System.IO.Path.Combine(folder, "使用说明.txt"), "先关闭游戏。patch 目录内是按游戏相对路径排列的补丁文件；确认备份后复制到游戏目录。original 目录保存本次修改文件的原件，按相同相对路径复制回去可恢复。manifest.json 记录原件及补丁哈希。\n补丁生成成功不代表已完成游戏加载或显示验证；TMP / NGUI、图片文字、加密资源及 Addressables Catalog 未自动处理。\n", Utf8);
             File.Delete(marker);
             Progress("补丁与原件备份已生成", files.Length, files.Length, folder);
@@ -580,6 +590,8 @@ public static class Program
         if (File.Exists(System.IO.Path.Combine(folder, "INCOMPLETE.txt"))) throw new Exception("补丁未完整生成，不能应用");
         using var document = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(folder, "manifest.json"), Utf8));
         var manifest = document.RootElement;
+        if (!manifest.TryGetProperty("textSafetyRevision", out var safety) || safety.GetInt32() < GameText.SafetyRevision)
+            throw new Exception("旧版补丁缺少程序标识保护校验，已阻止应用。请重做生成补丁后再应用");
         if (manifest.GetProperty("version").GetInt32() != 1 || !string.Equals(System.IO.Path.GetFullPath(manifest.GetProperty("root").GetString()!), root, StringComparison.OrdinalIgnoreCase))
             throw new Exception("补丁不属于当前游戏");
         CheckGameClosed(root);

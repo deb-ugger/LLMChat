@@ -15,6 +15,17 @@ public static class GameWorkspace
     static bool Inside(string root, string path) => Full(path).StartsWith(Full(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     public static string WorkRoot(string root) => Program.Within(root, FolderName);
     public static bool IsProjectsRoot(string root, string path) => Same(path, Program.Within(WorkRoot(root), "projects"));
+    public static object ResumeInfo(Request request)
+    {
+        if (!Directory.Exists(request.Root)) return new { unfinished = false };
+        var work = WorkRoot(request.Root); var marker = Path.Combine(work, "workspace.json");
+        if (!File.Exists(marker)) return new { unfinished = false };
+        if ((File.GetAttributes(work) & FileAttributes.ReparsePoint) != 0) throw new Exception("游戏工作目录不能是目录联接或符号链接");
+        if (File.Exists(Path.Combine(work, "reset-state.json"))) return new { unfinished = true };
+        var path = Path.Combine(work, "task-state.json"); if (!File.Exists(path)) return new { unfinished = false };
+        var task = JsonNode.Parse(File.ReadAllText(path))!;
+        return new { unfinished = task["finished"]?.GetValue<bool>() != true || (task["endStep"]?.GetValue<int>() ?? 0) < 4 };
+    }
     internal static string Ensure(string root)
     {
         if (!Directory.Exists(root)) throw new Exception("游戏目录不存在");
@@ -106,6 +117,7 @@ public static class GameWorkspace
             var newProject = Program.Load(Path.Combine(destination, "unity-project.json"));
             var original = JsonSerializer.Deserialize<Project>(oldBytes, Program.Json)!;
             original.Folder = destination;
+            GameText.ProtectProject(original);
             if (JsonSerializer.Serialize(original, Program.Json) != JsonSerializer.Serialize(newProject, Program.Json)) throw new Exception("游戏工作目录已有同名工程且内容不同，已保留双方数据");
             return destination;
         }

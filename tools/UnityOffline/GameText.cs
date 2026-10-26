@@ -6,14 +6,38 @@ namespace LLMChat.UnityOffline;
 
 public static class GameText
 {
-    static readonly Regex TechnicalField = new(@"^(?:m_Name|m_EditorClassIdentifier|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id))$", RegexOptions.IgnoreCase);
+    public const int SafetyRevision = 1;
+    static readonly Regex TechnicalField = new(@"^(?:\$type|type|assembly|class|method|member|field|event|function|m_Name|m_EditorClassIdentifier|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id|AssemblyTypeName|AssemblyQualifiedName|AssemblyName|TypeName|MethodName|MemberName|PropertyName|EventName|FieldName|ClassName|ScriptName|Namespace))$", RegexOptions.IgnoreCase);
+    static readonly Regex TypeIdentity = new(@"^(?:UnityEngine\.|UnityEditor\.|System\.|TMPro\.|Unity\.)[^\r\n,]+,\s*[A-Za-z_][\w.\-]*(?:\s*,\s*(?:Version|Culture|PublicKeyToken|ProcessorArchitecture)\s*=\s*[^,\r\n]+)*$|^[\w.+`\[\], ]+,\s*Assembly-CSharp(?:-firstpass)?(?:,.*)?$|^(?:UnityEngine|UnityEditor|System|TMPro|Unity)\.[A-Za-z_][\w.+`\[\],]*$", RegexOptions.IgnoreCase);
     static readonly Regex TextField = new(@"text|message|dialog|sentence|description|caption|title|displayName|speakerName|characterName|label|content|body|choice|prompt", RegexOptions.IgnoreCase);
     public static bool Visible(string field, string value)
     {
-        if (!Program.TextCandidate(value) || TechnicalField.IsMatch(field)) return false;
+        if (!Program.TextCandidate(value) || TechnicalField.IsMatch(field) || IsTypeIdentity(value)) return false;
         if (Regex.IsMatch(value.Trim(), @"^(?:[\w.-]+[/\\])+[\w .-]+$|^\d+(?:\.\d+)*[abfp]\d+$")) return false;
         if (Regex.IsMatch(value, "[ぁ-ゖァ-ヺ一-鿿가-힣]")) return true;
         return TextField.IsMatch(field) || !Regex.IsMatch(value.Trim(), @"^[a-zA-Z0-9_.$+:/\\-]+$");
+    }
+    public static bool IsTechnicalField(string field) => TechnicalField.IsMatch(field);
+    public static bool IsTypeIdentity(string value) => TypeIdentity.IsMatch(value.Trim());
+    public static bool Protected(Entry entry)
+    {
+        if (IsTypeIdentity(entry.Source)) return true;
+        if (!entry.Locator.StartsWith('/')) return false;
+        var field = entry.Locator.Split('/').Last().Replace("~1", "/").Replace("~0", "~");
+        return TechnicalField.IsMatch(field);
+    }
+    public static int ProtectProject(Project project)
+    {
+        var lastId = project.Entries.Select(e => int.TryParse(e.Id, out var id) ? id : 0).DefaultIfEmpty(0).Max();
+        project.NextEntryId = Math.Max(project.NextEntryId, lastId + 1);
+        var removed = project.Entries.RemoveAll(Protected);
+        project.TextSafetyRevision = SafetyRevision;
+        if (removed > 0) {
+            project.ExcludedMetadataCount += removed;
+            project.Warnings.RemoveAll(w => w.StartsWith("已排除 ", StringComparison.Ordinal) && w.Contains("程序标识"));
+            project.Warnings.Add($"已排除 {project.ExcludedMetadataCount} 条程序标识（类型、程序集及事件绑定字段），正常译文已保留；旧规则生成的补丁需重新生成后应用。");
+        }
+        return removed;
     }
     public static bool PlainFile(string root, string relative)
     {

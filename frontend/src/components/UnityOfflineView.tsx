@@ -11,7 +11,7 @@ import { buildUnityTranslateOptions, sameUnityGamePath, UNITY_LANGUAGES } from "
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
 import { UNITY_STEPS, unityLanguageScope, unityStageState } from "../unityWorkflow";
-import { translateUnitySession } from "../unityTranslationSession";
+import { translateUnitySession, unityTranslationStats } from "../unityTranslationSession";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { usePersistedSize } from "../hooks/usePersistedSize";
 import "../unityOffline.css";
@@ -48,6 +48,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [fontPath, setFontPath] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [jumpPage, setJumpPage] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -101,7 +102,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }, []);
 
   useEffect(() => {
-    setProject(null); setPatch(null); setDirty(false); setPage(0); setSearch("");
+    setProject(null); setPatch(null); setDirty(false); setPage(0); setJumpPage(""); setSearch("");
     setError(""); setMessage(""); setFontPath(""); setLlmModel("");
     setGeneration(null); setApplied(false);
     setActiveStep(1); followProgress.current = true;
@@ -142,7 +143,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           if (!value.finished && value.step === 2 && p) {
             const ids = unityLanguageScope(p.entries, value.source).ids;
             const rows = p.entries.filter(e => e.selected && ids.has(e.id));
-            value.progress = { ...value.progress, completed: rows.filter(e => e.translation && !unityTranslationError(e.source, e.translation)).length, total: rows.length, detail: "已恢复保存的译文；失败或未完成条目可重试" };
+            value.progress = { ...value.progress, ...unityTranslationStats(rows, unityTranslationError), detail: "已恢复有效译文；主进度按去重后的原文计算，未完成项可继续" };
           }
           if (!value.finished && value.progress.state !== "error") value.progress.state = "stopped";
           remember(value);
@@ -397,7 +398,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           if (run.step === 1) { run.scanFolder = paused.folder; run.projectFolder = paused.folder; }
           if (run.step === 3) run.patchFolder = paused.folder;
         }
-        run.progress = { ...run.progress, state: "stopped" }; remember(run);
+        run.progress = { ...run.progress, state: "stopped", detail: "处理已中止，检查点已保存" }; remember(run);
         if (run.step === 1 && run.scanFolder) publish(await loadProject(run.scanFolder, run.previousProjectFolder));
         setMessage(run.step === 4 ? "应用已中止，部分文件可能已写入。请勿启动游戏，恢复后继续应用。原件备份已保留。" : "任务已中止，检查点已保存，点击恢复继续未完成部分。");
       } else { run.progress = { ...run.progress, state: "error", failure: e instanceof Error ? e.message : String(e) }; remember(run); throw e; }
@@ -408,7 +409,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setMessage("正在中止，完成当前文件的安全写入并保存检查点后停止，请勿退出或启动游戏。");
   };
   const progressPercent = generation?.total ? Math.floor(generation.completed / generation.total * 100) : null;
-  const progressUnit = generation?.step === 2 ? "条" : "个文件";
+  const progressUnit = generation?.step === 2 ? "种原文" : "个文件";
   const resumable = !!checkpoint && !checkpoint.finished;
   const locked = !!busy || restoring || resumable;
   const entriesLocked = !!busy || restoring || resumable && checkpoint.step !== 2;
@@ -545,7 +546,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <td className="unity-offline-source"><div className="unity-source-text" title={entry.source}>{entry.source}</div></td>
           <td><div className="unity-entry-editor"><textarea aria-label={`第 ${entry.id} 条译文`} value={entry.translation} disabled={entriesLocked || applied} rows={1} onChange={e => update(entry.id, { translation: e.target.value })} />{(entry.error || entry.translation && unityTranslationError(entry.source, entry.translation)) && <button className="unity-row-error" title={entry.error ? explainUnityFailure(entry.error).reason : unityTranslationError(entry.source, entry.translation)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => setRowIssue({ ...entry, error: entry.error || unityTranslationError(entry.source, entry.translation) })}>!</button>}</div></td>
         </tr>)}</tbody></table>{!filtered.length && <p className="hint">当前语言或搜索范围内没有文本，可在扫描步骤切换原文语言或选择全部语言查看。</p>}</div>
-        <div className="unity-offline-pagination"><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>上一页</button><span>{Math.min(page + 1, pageCount)} / {pageCount}</span><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => p + 1)}>下一页</button></div>
+        <div className="unity-offline-pagination"><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => Math.max(0, p - 10))}>-10 页</button><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>上一页</button><span>{Math.min(page + 1, pageCount)} / {pageCount}</span><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => p + 1)}>下一页</button><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => Math.min(pageCount - 1, p + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pageCount} placeholder="页码" value={jumpPage} onChange={e => setJumpPage(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && Number.isInteger(Number(jumpPage)) && jumpPage.trim()) { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={() => { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); }}>跳转</button></div>
       </>}
       {rowIssue && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button><strong>第 {rowIssue.id} 条处理失败</strong><p>{explainUnityFailure(rowIssue.error).reason}</p><p>{explainUnityFailure(rowIssue.error).action}</p><details><summary>技术详情</summary><pre>{rowIssue.error}</pre></details></div>}
     </section>

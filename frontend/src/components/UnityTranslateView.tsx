@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauri } from "@tauri-apps/api/core";
 import { api, API_BASE, type Settings, type UnityGameInfo, type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { isBoolIniValue, setIniValue } from "../unityIni";
@@ -28,6 +29,7 @@ import {
   type RecentUnityGame,
 } from "../unityLastGame";
 import { UnityOfflineView, type UnityOfflineHandle } from "./UnityOfflineView";
+import { unityRun } from "../unityOffline";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -274,11 +276,13 @@ export function UnityTranslateView({
   settings,
   onOpenUnitySettings,
   onOpenGeneralSettings,
+  onRestoreWorkspace,
 }: {
   active?: boolean;
   settings: Settings;
   onOpenUnitySettings?: () => void;
   onOpenGeneralSettings?: () => void;
+  onRestoreWorkspace?: () => void;
 }) {
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
   const [offlineToolbar, setOfflineToolbar] = useState<HTMLDivElement | null>(null);
@@ -345,6 +349,14 @@ export function UnityTranslateView({
   } | null>(null);
   const configToastTimerRef = useRef<number | null>(null);
   const detectAbortRef = useRef<AbortController | null>(null);
+  const interactionRef = useRef(0);
+  const stopDetection = useCallback(() => {
+    interactionRef.current++;
+    const controller = detectAbortRef.current;
+    detectAbortRef.current = null;
+    controller?.abort();
+    setScanning(false);
+  }, []);
   const helpBtnRef = useRef<HTMLButtonElement>(null);
   const dropzoneRef = useRef<HTMLDivElement | null>(null);
   const outputEndRef = useRef<HTMLLIElement | null>(null);
@@ -716,6 +728,7 @@ export function UnityTranslateView({
   };
 
   const resetPath = useCallback((path: string) => {
+    interactionRef.current++;
     setPathInput(path);
     rememberLastPickDir(path);
     setScanState(null);
@@ -727,8 +740,7 @@ export function UnityTranslateView({
   }, []);
 
   const clearPath = useCallback(() => {
-    detectAbortRef.current?.abort();
-    detectAbortRef.current = null;
+    stopDetection();
     detectGamesAccRef.current = [];
     setBusyAction(null);
     setScanning(false);
@@ -742,7 +754,7 @@ export function UnityTranslateView({
     setActiveBottomTab("output");
     setSelfCheckTabs([]);
     setSelfCheckTabMenu(null);
-  }, []);
+  }, [stopDetection]);
 
   const refreshGame = useCallback(async (gameDir: string) => {
     const res = await api.unityDetect(gameDir);
@@ -765,10 +777,9 @@ export function UnityTranslateView({
       reportError("请先选择或拖入游戏目录 / 主程序");
       return;
     }
-    detectAbortRef.current?.abort();
+    stopDetection();
     const ac = new AbortController();
     detectAbortRef.current = ac;
-    setBusyAction("detect");
     setScanning(true);
     setError(null);
     setViewMode("list");
@@ -842,11 +853,10 @@ export function UnityTranslateView({
     } finally {
       if (detectAbortRef.current === ac) {
         detectAbortRef.current = null;
-        setBusyAction(null);
         setScanning(false);
       }
     }
-  }, [focusOutputTab, pushOutput, reportError, openGameDetail]);
+  }, [focusOutputTab, pushOutput, reportError, openGameDetail, stopDetection]);
 
   useEffect(() => {
     return () => {
@@ -855,6 +865,7 @@ export function UnityTranslateView({
   }, []);
 
   const browsePath = async () => {
+    interactionRef.current++;
     try {
       const defaultPath =
         browseDirFromPath(pathInput) || lastPickDir();
@@ -1275,14 +1286,17 @@ export function UnityTranslateView({
     }
   };
 
-  const openRecentGame = async (entry: RecentUnityGame) => {
+  const openRecentGame = async (entry: RecentUnityGame, restore = false) => {
+    stopDetection();
+    const ac = new AbortController(); detectAbortRef.current = ac;
     const gameDir = entry.gameDir;
     setPathInput(gameDir);
     rememberLastPickDir(gameDir);
-    setBusyAction("detect");
+    setBusyAction("open-recent");
     setError(null);
     try {
-      const res = await api.unityDetect(gameDir);
+      const res = await api.unityDetect(gameDir, { signal: ac.signal, directOnly: true });
+      if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       const list = res.games || [];
       const game = list[0];
       if (!res.ok || !game) {
@@ -1305,12 +1319,26 @@ export function UnityTranslateView({
         isIl2Cpp: !!game.isIl2Cpp,
       });
       openGameDetail(game.gameDir, gameTitle(game));
+      if (restore) onRestoreWorkspace?.();
     } catch (e) {
+      if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       reportError(toFriendlyError(e, "打开最近游戏失败"));
     } finally {
-      setBusyAction(null);
+      if (detectAbortRef.current === ac) { detectAbortRef.current = null; setBusyAction(null); }
     }
   };
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const gameDir = lastUnityGameDir(); if (!gameDir) return;
+    const epoch = interactionRef.current; let disposed = false;
+    void unityRun<{ unfinished: boolean }>("resume-info", { root: gameDir }).then(async info => {
+      if (disposed || epoch !== interactionRef.current || !info.unfinished) return;
+      const entry = loadRecentUnityGames().find(item => item.gameDir.toLowerCase() === gameDir.toLowerCase());
+      await openRecentGame(entry || { gameDir, name: "", openedAt: 0 }, true);
+    }).catch(error => { if (!disposed && epoch === interactionRef.current) reportError(toFriendlyError(error, "恢复上次 Unity 工程失败")); });
+    return () => { disposed = true; };
+  }, []);
 
   const backToList = async () => {
     if (mode === "offline" && offlineRef.current && !(await offlineRef.current.prepareToLeave())) return;

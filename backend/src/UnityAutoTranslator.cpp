@@ -1884,7 +1884,7 @@ std::string checkOverrideFontStatus(const fs::path& gameDir, const std::string& 
 bool shouldSkipScanDir(const std::string& name)
 {
     return iequals(name, ".git") || iequals(name, "node_modules") || iequals(name, "Windows")
-           || iequals(name, "$RECYCLE.BIN") || iequals(name, "System Volume Information");
+           || iequals(name, "$RECYCLE.BIN") || iequals(name, "System Volume Information") || iequals(name, "LLMChat-Unity");
 }
 
 void applyGameToDetectInfo(UnityDetectInfo& info, const UnityGameItem& g)
@@ -1932,13 +1932,15 @@ void scanUnityGamesRecursive(
     int maxDepth,
     std::unordered_set<std::string>& seen,
     std::vector<UnityGameItem>& games,
-    const std::function<void(const UnityGameItem&)>& onGame)
+    const std::function<void(const UnityGameItem&)>& onGame,
+    const std::function<bool()>& shouldStop = {})
 {
     std::deque<std::pair<fs::path, int>> queue;
     queue.emplace_back(dir, depth);
 
     while (!queue.empty())
     {
+        if (shouldStop && shouldStop()) return;
         const auto [current, d] = queue.front();
         queue.pop_front();
         if (d > maxDepth)
@@ -1951,6 +1953,7 @@ void scanUnityGamesRecursive(
         try
         {
             const UnityGameItem here = inspectGameDir(current);
+            if (shouldStop && shouldStop()) return;
             if (here.isUnity)
             {
                 if (seen.insert(here.gameDir).second)
@@ -1964,6 +1967,7 @@ void scanUnityGamesRecursive(
 
             for (fs::directory_iterator it(current, ec), end; !ec && it != end; it.increment(ec))
             {
+                if (shouldStop && shouldStop()) return;
                 if (ec || !it->is_directory(ec))
                     continue;
                 const std::string name = pathUtf8(it->path().filename());
@@ -2885,7 +2889,7 @@ bool ensurePatchAndRunShortcut(
 
 } // namespace
 
-UnityDetectInfo UnityAutoTranslator::detect(const std::string& gamePath)
+UnityDetectInfo UnityAutoTranslator::detect(const std::string& gamePath, bool recursive)
 {
     UnityDetectInfo info;
     const std::string path = trimCopy(gamePath);
@@ -2933,6 +2937,7 @@ UnityDetectInfo UnityAutoTranslator::detect(const std::string& gamePath)
         return info;
     }
 
+    if (!recursive) { info.error = "所选目录不是可识别的 Unity 游戏，请重新选择游戏目录或主程序"; return info; }
     std::unordered_set<std::string> seen;
     scanUnityGamesRecursive(root, 0, 16, seen, info.games, nullptr);
     info.count = static_cast<int>(info.games.size());
@@ -2951,8 +2956,11 @@ UnityDetectInfo UnityAutoTranslator::detect(const std::string& gamePath)
 
 void UnityAutoTranslator::detectStream(
     const std::string& gamePath,
-    const std::function<void(const std::string&)>& emitLine)
+    const std::function<void(const std::string&)>& emitLine,
+    const std::function<bool()>& shouldStop)
 {
+    const auto stopped = [&] { return shouldStop && shouldStop(); };
+    if (stopped()) return;
     const auto emit = [&](const std::string& line) {
         if (emitLine)
             emitLine(line);
@@ -2960,6 +2968,7 @@ void UnityAutoTranslator::detectStream(
 
     const std::string path = trimCopy(gamePath);
     emit("{\"type\":\"start\",\"path\":\"" + jsonEscape(path) + "\"}\n");
+    if (stopped()) return;
 
     if (path.empty())
     {
@@ -2988,6 +2997,7 @@ void UnityAutoTranslator::detectStream(
     if (fs::is_regular_file(root, ec) && looksLikeExe(root))
     {
         const UnityGameItem direct = inspectGameDir(root);
+        if (stopped()) return;
         if (direct.isUnity)
         {
             if (seen.insert(direct.gameDir).second)
@@ -3007,6 +3017,7 @@ void UnityAutoTranslator::detectStream(
     else
     {
         const UnityGameItem direct = inspectGameDir(root);
+        if (stopped()) return;
         if (direct.isUnity)
         {
             if (seen.insert(direct.gameDir).second)
@@ -3017,10 +3028,11 @@ void UnityAutoTranslator::detectStream(
         }
         else
         {
-            scanUnityGamesRecursive(root, 0, 16, seen, games, onGame);
+            scanUnityGamesRecursive(root, 0, 16, seen, games, onGame, shouldStop);
         }
     }
 
+    if (stopped()) return;
     const int count = static_cast<int>(games.size());
     if (games.empty())
     {

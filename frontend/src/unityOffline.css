@@ -105,7 +105,8 @@
 .unity-row-error-panel p { line-height: 1.6; }
 .unity-offline-table .has-error { background: rgba(220, 65, 65, .05); }
 .unity-offline-error, .unity-offline-table .unity-offline-error { color: #b93636; white-space: normal; }
-.unity-offline-pagination { justify-content: center; padding-top: 10px; }
+.unity-offline-pagination { justify-content: center; flex-wrap: wrap; gap: 6px; padding-top: 10px; }
+.unity-offline-pagination input { width: 70px; min-width: 0; padding: 7px 6px !important; }
 .unity-offline-empty { padding: 40px 12px; color: var(--muted, #667589); }
 .unity-offline-font { flex-wrap: wrap; }
 .unity-offline-font label { flex: 1; min-width: 240px; }

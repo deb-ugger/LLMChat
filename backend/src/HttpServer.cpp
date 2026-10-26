@@ -2304,7 +2304,7 @@ int HttpServer::run()
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             const std::string path = body.value("path", "");
-            const auto info = UnityAutoTranslator::detect(path);
+            const auto info = UnityAutoTranslator::detect(path, !body.value("directOnly", false));
             json games = json::array();
             for (const auto& g : info.games)
             {
@@ -2360,9 +2360,11 @@ int HttpServer::run()
                         sink.done();
                         return true;
                     }
+                    bool connected = true;
                     UnityAutoTranslator::detectStream(path, [&](const std::string& line) {
-                        sink.write(line.data(), line.size());
-                    });
+                        connected = sink.write(line.data(), line.size());
+                    }, [&] { return !connected || !sink.is_writable(); });
+                    if (!connected || !sink.is_writable()) return false;
                     sink.done();
                     return true;
                 });

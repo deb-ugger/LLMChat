@@ -85,6 +85,7 @@ const defaultSettings: Settings = {
 
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
+  const startupInteracted = useRef(false);
   const [navRailHidden, setNavRailHidden] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
     "unity" | "general" | undefined
@@ -430,7 +431,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         <div className="nav-brand" title="LLMChat">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
@@ -693,6 +694,7 @@ export default function App() {
           <UnityTranslateView
             active={page === "unity"}
             settings={settings}
+            onRestoreWorkspace={() => { if (!startupInteracted.current) setPage("unity"); }}
             onOpenGeneralSettings={() => {
               setSettingsInitialTab("general");
               setPage("settings");

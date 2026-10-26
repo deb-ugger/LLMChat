@@ -757,7 +757,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ defaultPath: defaultPath ?? "" }),
     }),
-  unityDetect: (path: string) =>
+  unityDetect: (path: string, options?: { signal?: AbortSignal; directOnly?: boolean }) =>
     request<{
       ok: boolean;
       error?: string;
@@ -775,7 +775,8 @@ export const api = {
       games?: UnityGameInfo[];
     }>("/api/unity/detect", {
       method: "POST",
-      body: JSON.stringify({ path }),
+      signal: options?.signal,
+      body: JSON.stringify({ path, directOnly: options?.directOnly ?? false }),
     }),
   unityDetectStream: async (
     path: string,

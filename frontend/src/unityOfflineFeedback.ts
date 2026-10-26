@@ -8,6 +8,8 @@ export function explainUnityFailure(error: unknown): UnityFailure {
     return result("软件的桌面权限配置拦截了 Unity 处理命令，操作未能启动。这不是游戏资源损坏，也与翻译引擎无关。", "更新并重启软件后重试；若仍出现，请反馈下方技术详情，无需更换引擎或以管理员身份运行。");
   if (/缺少嵌字组件|无法启动嵌字组件|0xc0000135/i.test(technical))
     return result("Unity 资源处理组件缺失或无法启动，尚未开始处理游戏资源。", "使用完整便携版更新程序及 resources/unity 目录，再重新启动软件。");
+  if (/程序标识|程序类型或事件绑定|旧版补丁缺少/.test(technical))
+    return result(technical, "重新打开工程，确认已剔除程序元数据，再重做生成补丁。保留原件备份；已应用的旧补丁可通过重做先恢复原件。");
   if (/工程读取失败|检查点不属于|工程版本|工程无效|could not find|cannot find|找不到|不存在|ENOENT/i.test(technical))
     return result("保存工程或所需文件无法读取，可能已被移动、删除或格式不受支持。已有文件不会被自动删除。", "检查游戏内 LLMChat-Unity 工作文件夹及文件权限，保留原工程和备份后重试。");
   if (/拒绝访问|access.*denied|UnauthorizedAccess|EACCES|being used by another process|另一个进程/i.test(technical))
@@ -27,6 +29,7 @@ export function explainUnityFailure(error: unknown): UnityFailure {
   return result("资源处理组件返回了无法识别的错误，暂时不能确定具体原因。", "先保留当前工程并重试；若仍失败，请反馈下方技术详情，以便定位，不要重复覆盖游戏文件。");
 }
 export function explainUnityWarning(warning: string): { reason: string; technical: string; category?: "stream"; location?: string; impact?: string } {
+  if (/^已排除 \d+ 条程序标识/.test(warning)) return { reason: warning, technical: "" };
   const boundary = warning.indexOf("：");
   const file = boundary >= 0 ? warning.slice(0, boundary) : "资源文件";
   if (/Unable to read beyond the end of the stream|EndOfStreamException/i.test(warning)) return {

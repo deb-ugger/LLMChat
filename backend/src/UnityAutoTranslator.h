@@ -158,9 +158,9 @@ struct UnityFixFontRequest
 class UnityAutoTranslator
 {
 public:
-    static UnityDetectInfo detect(const std::string& gamePath);
+    static UnityDetectInfo detect(const std::string& gamePath, bool recursive = true);
     /** Emit NDJSON lines: start / game / done (one line each). */
-    static void detectStream(const std::string& gamePath, const std::function<void(const std::string&)>& emitLine);
+    static void detectStream(const std::string& gamePath, const std::function<void(const std::string&)>& emitLine, const std::function<bool()>& shouldStop = {});
     static UnityLaunchResult launch(const std::string& gamePath);
     /**
      * Launch via ReiPatcher "Patch and Run" shortcut (requires translator installed).

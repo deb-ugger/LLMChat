@@ -23,7 +23,7 @@ export function mergeUnityProject(previous: UnityProject, scanned: UnityProject)
     return saved ? { ...e, translation: saved.translation, selected: saved.selected, error: saved.error } : e;
   }) };
 }
-export type UnityProgress = { detail: string; completed: number; total: number | null; folder?: string };
+export type UnityProgress = { detail: string; completed: number; total: number | null; folder?: string; coverageCompleted?: number; coverageTotal?: number; requests?: number; reused?: number };
 export class UnityPaused extends Error { constructor(public folder: string) { super("任务已中止，进度已保存"); } }
 export const unityRun = async <T>(action: string, request: object, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal): Promise<T> => {
   if (signal?.aborted) throw new UnityPaused("");
