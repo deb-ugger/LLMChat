@@ -388,6 +388,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           await applyPatch(run.patch, onProgress, controller.signal);
         }
         if (controller.signal.aborted) throw new UnityPaused("");
+        setActiveStep(Math.min(index + 1, GENERATION_STEPS.length));
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
       }
       run.finished = true; run.progress = { ...run.progress, state: "done" }; remember(run);

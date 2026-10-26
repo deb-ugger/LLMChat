@@ -54,6 +54,9 @@
 .unity-step-tab:focus-visible { outline: 2px solid #86abf5; outline-offset: 2px; }
 .unity-step-panel { padding: 10px; min-width: 0; }
 .unity-redo-action { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.unity-offline .unity-redo-action .unity-btn { color: #805400; background: #fff0b3; border-color: #dfae32; font-weight: 600; }
+.unity-offline .unity-redo-action .unity-btn:hover:not(:disabled) { background: #ffe39a; border-color: #c89218; }
+.unity-offline .unity-redo-action .unity-btn:focus-visible { outline: 2px solid #c89218; outline-offset: 2px; }
 .unity-step-panel .unity-offline-fields { margin-top: 0; }
 .unity-step-panel .hint { margin: 8px 0 0; }
 .unity-step-progress { padding: 10px; border-top: 1px solid var(--border,#d6dfe9); }
