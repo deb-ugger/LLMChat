@@ -3,6 +3,7 @@ import type { UnityEntry, UnityProgress } from "./unityOffline";
 type Session = {
   signal: AbortSignal;
   translate: (source: string) => Promise<string>;
+  format?: (source: string, translated: string) => string;
   validate: (source: string, translated: string) => string;
   formatFailure: (error: unknown) => string;
   persist: () => Promise<void>;
@@ -39,11 +40,14 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const cached = reused.get(key);
       if (!cached) { requests++; report(`正在发送本轮第 ${requests} 次请求 · 此原文覆盖 ${group.length} 处引用`); }
       const translated = cached || await session.translate(entry.source);
-      for (const item of group) { const problem = session.validate(item.source, translated); if (problem) throw new Error(problem); }
-      for (const item of group) {
+      const formatted = group.map(item => {
         const leading = item.source.match(/^\s*/)?.[0] || "", trailing = item.source.match(/\s*$/)?.[0] || "";
-        item.translation = leading + translated.trim() + trailing; item.error = "";
-      }
+        const body = session.format ? session.format(item.source.trim(), translated.trim()) : translated.trim();
+        const value = leading + body + trailing;
+        const problem = session.validate(item.source, value); if (problem) throw new Error(problem);
+        return value;
+      });
+      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; });
       reused.set(key, translated); cache.set(key, translated); consecutive = 0; completed++; covered += group.length;
       if (cached) reusedGroups++;
     } catch (error) {

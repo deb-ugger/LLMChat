@@ -7,7 +7,7 @@ import { open as openPath } from "@tauri-apps/plugin-shell";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo } from "../api";
 import { currentEffectivePresets, loadLocalModelProfiles, loadVendorProfiles, resolveFeatureLlm } from "../modelPresets";
 import { TRANSLATE_ENGINES, classicEngines, engineReady, parseEngineKeys } from "../translateEngines";
-import { buildUnityTranslateOptions, prepareUnityTranslationText, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
+import { buildUnityTranslateOptions, prepareUnityTranslationText, restoreUnityTranslationLines, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
 import { UNITY_STEPS, unityLanguageScope, unityStageState } from "../unityWorkflow";
@@ -273,7 +273,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (provider !== "llm" && !engineReady(parseEngineKeys(general.translateEngineKeys), provider))
       throw new Error("请先在设置 → 通用 → 翻译引擎中配置所选引擎的凭证");
     const language = unityLanguageScope(latest.current?.entries || [], run?.source || source).language;
-    return buildUnityTranslateOptions(general, provider, language === "all" || language === "und" ? "auto" : language, run?.target || target, run?.llmModel ?? llmModel);
+    return buildUnityTranslateOptions(general, provider, language === "all" || language === "und" ? "auto" : language, run?.target || target, run?.llmModel ?? llmModel, run?.joinLines ?? joinLines);
   }
   async function scan(onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
     let p = await unityRun<UnityProject>("scan", { root, outputRoot: output, includeCode: run?.includeCode ?? includeCode, path: run?.scanFolder || "" }, onProgress, signal);
@@ -295,6 +295,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     try {
       await translateUnitySession(selectedEntries, cache, {
         signal: controller.signal, validate: unityTranslationError, formatFailure: error => explainUnityFailure(error).reason, progress: onProgress,
+        format: mergeLines ? restoreUnityTranslationLines : undefined,
         translate: async text => {
           const seconds = options.provider === "llm" ? 120 : 30;
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
@@ -497,7 +498,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             <label>翻译方式<select value={translationKind} disabled={parametersLocked} onChange={e => setTranslationKind(e.target.value as "llm" | "engine")}><option value="llm">大模型</option><option value="engine">翻译引擎</option></select></label>
             {translationKind === "llm" ? <label>翻译模型<select value={llmModel} disabled={parametersLocked} onChange={e => setLlmModel(e.target.value)}><option value="">跟随通用（{settings.model || "未配置"}）</option>{llmModel && !modelChoices.some(p => p.model === llmModel) && <option value={llmModel}>{llmModel}（未配置）</option>}{[...new Set(modelChoices.map(p => p.group))].map(group => <optgroup key={group} label={group}>{modelChoices.filter(p => p.group === group).map(p => <option key={p.model} value={p.model}>{p.label}</option>)}</optgroup>)}</select></label> : <label>翻译引擎<select value={engine} disabled={parametersLocked} onChange={e => setEngine(e.target.value as TranslateProvider)}>{classicEngines(TRANSLATE_ENGINES).map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>}
             <label>目标语言<select value={target} disabled={parametersLocked} onChange={e => { setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></label>
-            <label>换行处理<select value={joinLines ? "join" : "keep"} disabled={parametersLocked} onChange={e => setJoinLines(e.target.value === "join")} title="合并段内单次换行后整条翻译；保留空行和程序转义。合并后的译文不会强制按原行数排版。"><option value="join">合并段内换行</option><option value="keep">保留换行</option></select></label>
+            <label>换行处理<select value={joinLines ? "join" : "keep"} disabled={parametersLocked} onChange={e => setJoinLines(e.target.value === "join")} title="先取消换行并整条翻译，再按原行长度比例恢复行数、空行和换行符格式；不拆开占位符和富文本标签。"><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option></select></label>
             {onOpenGeneralSettings && <button className="unity-btn" disabled={!!busy} onClick={onOpenGeneralSettings}>通用设置</button>}
             <button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !selected.length || !connectionReady || applied || completedThrough >= 2} onClick={() => void operation("翻译中", () => runWorkflow(2, 2), true)}>翻译所选 / 继续</button>
           </div>
