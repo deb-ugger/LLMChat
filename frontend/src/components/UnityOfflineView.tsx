@@ -7,7 +7,7 @@ import { open as openPath } from "@tauri-apps/plugin-shell";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo } from "../api";
 import { currentEffectivePresets, loadLocalModelProfiles, loadVendorProfiles, resolveFeatureLlm } from "../modelPresets";
 import { TRANSLATE_ENGINES, classicEngines, engineReady, parseEngineKeys } from "../translateEngines";
-import { buildUnityTranslateOptions, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
+import { buildUnityTranslateOptions, prepareUnityTranslationText, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
 import { UNITY_STEPS, unityLanguageScope, unityStageState } from "../unityWorkflow";
@@ -23,7 +23,7 @@ type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
   projectFolder: string; scanFolder: string; patchFolder: string; patch: UnityPatch | null;
   previousProjectFolder?: string; scopeVersion?: number;
-  partial?: boolean;
+  partial?: boolean; joinLines?: boolean;
   translationKind: "llm" | "engine"; llmModel?: string; engine: TranslateProvider; source: string; target: string; includeCode: boolean; fontPath: string;
   progress: GenerationProgress;
 };
@@ -42,6 +42,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [engine, setEngine] = useState<TranslateProvider>("bing");
   const [source, setSource] = useState("auto");
   const [target, setTarget] = useState("zh-CN");
+  const [joinLines, setJoinLines] = useState(true);
   const [includeCode, setIncludeCode] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const followProgress = useRef(true);
@@ -103,7 +104,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
   useEffect(() => {
     setProject(null); setPatch(null); setDirty(false); setPage(0); setJumpPage(""); setSearch("");
-    setError(""); setMessage(""); setFontPath(""); setLlmModel("");
+    setError(""); setMessage(""); setFontPath(""); setLlmModel(""); setJoinLines(true);
     setGeneration(null); setApplied(false);
     setActiveStep(1); followProgress.current = true;
     setRestoreNotices([]);
@@ -139,7 +140,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (value) {
           if (value.scopeVersion !== 1) value = { ...value, source: value.finished && !value.patch && value.endStep < 3 ? value.source : "all", scopeVersion: 1 };
           setPatch(value.patch); setApplied(value.finished && value.endStep === 4);
-          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
+          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setJoinLines(value.joinLines ?? true); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
           if (!value.finished && value.step === 2 && p) {
             const ids = unityLanguageScope(p.entries, value.source).ids;
             const rows = p.entries.filter(e => e.selected && ids.has(e.id));
@@ -223,7 +224,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   function projectCheckpoint(p: UnityProject, incomplete = false, completed: number | null = 1, total: number | null = 1): RunCheckpoint {
     return { step: 1, endStep: 1, automatic: false, finished: !incomplete, projectFolder: p.folder, scanFolder: incomplete ? p.folder : "", patchFolder: "", patch: null,
-      translationKind, llmModel, engine, source, target, includeCode, fontPath, scopeVersion: 1,
+      translationKind, llmModel, engine, source, target, joinLines, includeCode, fontPath, scopeVersion: 1,
       progress: { step: 1, state: incomplete ? "stopped" : "done", detail: incomplete ? "已加载扫描检查点" : "已加载保存工程", completed: completed || 0, total } };
   }
   async function loadProject(folder: string, previousFolder?: string) {
@@ -251,7 +252,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         setRestoreNotices(workspace.saved.notices);
       };
       try {
-        const result = await unityRun<{ step: number; workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step, path: project?.folder || "", task: task && { ...task, translationKind, llmModel, engine, source, target, includeCode, fontPath } }, progress => setMessage(progress.detail));
+        const result = await unityRun<{ step: number; workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step, path: project?.folder || "", task: task && { ...task, translationKind, llmModel, engine, source, target, joinLines, includeCode, fontPath } }, progress => setMessage(progress.detail));
         applyWorkspace(result.workspace); setActiveStep(result.step); followProgress.current = false;
         setMessage(step === 4 ? "旧补丁已清理，可重新生成补丁后应用。" : "可调整本步参数后重新开始，后续步骤需重新执行。");
       } catch (error) {
@@ -284,7 +285,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setMessage(p.entries.length ? `扫描完成：${p.entries.length} 条文本，${p.fonts.length} 个字体` : "未找到可处理的文本，请查看扫描提示中的跳过原因。");
     return p;
   }
-  async function translateProject(p: UnityProject, controller: AbortController, options: Awaited<ReturnType<typeof translationOptions>>, onProgress?: (value: UnityProgress) => void, languageSource = source) {
+  async function translateProject(p: UnityProject, controller: AbortController, options: Awaited<ReturnType<typeof translationOptions>>, onProgress?: (value: UnityProgress) => void, languageSource = source, mergeLines = joinLines) {
     const next = structuredClone(p);
     setDirty(true);
     const cache = new Map<string, string>();
@@ -297,7 +298,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         translate: async text => {
           const seconds = options.provider === "llm" ? 120 : 30;
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
-          try { const response = await api.translate(text, { signal }, options); if (!response.ok) throw new Error(response.code || "翻译请求失败"); return response.translation; }
+          try { const response = await api.translate(prepareUnityTranslationText(text, mergeLines), { signal }, options); if (!response.ok) throw new Error(response.code || "翻译请求失败"); return response.translation; }
           catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`翻译请求超过 ${seconds} 秒未响应`); throw error; }
         },
         persist: async () => { await unityRun("save", { project: next }); publish({ ...next, entries: [...next.entries] }); },
@@ -332,7 +333,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       step: startStep, endStep, automatic, finished: false,
       projectFolder: startStep === 1 && endStep === 1 ? "" : project?.folder || "", scanFolder: "", patchFolder: "", patch: startStep === 4 ? patch : null,
       previousProjectFolder: startStep === 1 && endStep === 1 ? project?.folder : undefined,
-      translationKind, llmModel, engine, source, target, includeCode, fontPath, scopeVersion: 1,
+      translationKind, llmModel, engine, source, target, joinLines, includeCode, fontPath, scopeVersion: 1,
       partial: startStep >= 3 && !!checkpointRef.current?.partial,
       progress: { step: startStep, state: "running", detail: "准备处理", completed: 0, total: null },
     };
@@ -374,7 +375,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           if (!p) throw new Error("请先扫描当前游戏资源");
           const selectedIds = unityLanguageScope(p.entries, run.source).ids;
           if (!p.entries.some(e => e.selected && selectedIds.has(e.id))) throw new Error("当前原文语言范围内没有所选文本，请调整原文语言或选取文本");
-          p = await translateProject(p, controller, await translationOptions(run), onProgress, run.source);
+          p = await translateProject(p, controller, await translationOptions(run), onProgress, run.source, run.joinLines ?? true);
           if (controller.signal.aborted) throw new UnityPaused("");
           const ids = unityLanguageScope(p.entries, run.source).ids;
           const failed = p.entries.filter(e => e.selected && ids.has(e.id) && unityTranslationError(e.source, e.translation));
@@ -496,6 +497,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             <label>翻译方式<select value={translationKind} disabled={parametersLocked} onChange={e => setTranslationKind(e.target.value as "llm" | "engine")}><option value="llm">大模型</option><option value="engine">翻译引擎</option></select></label>
             {translationKind === "llm" ? <label>翻译模型<select value={llmModel} disabled={parametersLocked} onChange={e => setLlmModel(e.target.value)}><option value="">跟随通用（{settings.model || "未配置"}）</option>{llmModel && !modelChoices.some(p => p.model === llmModel) && <option value={llmModel}>{llmModel}（未配置）</option>}{[...new Set(modelChoices.map(p => p.group))].map(group => <optgroup key={group} label={group}>{modelChoices.filter(p => p.group === group).map(p => <option key={p.model} value={p.model}>{p.label}</option>)}</optgroup>)}</select></label> : <label>翻译引擎<select value={engine} disabled={parametersLocked} onChange={e => setEngine(e.target.value as TranslateProvider)}>{classicEngines(TRANSLATE_ENGINES).map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>}
             <label>目标语言<select value={target} disabled={parametersLocked} onChange={e => { setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></label>
+            <label>换行处理<select value={joinLines ? "join" : "keep"} disabled={parametersLocked} onChange={e => setJoinLines(e.target.value === "join")} title="合并段内单次换行后整条翻译；保留空行和程序转义。合并后的译文不会强制按原行数排版。"><option value="join">合并段内换行</option><option value="keep">保留换行</option></select></label>
             {onOpenGeneralSettings && <button className="unity-btn" disabled={!!busy} onClick={onOpenGeneralSettings}>通用设置</button>}
             <button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !selected.length || !connectionReady || applied || completedThrough >= 2} onClick={() => void operation("翻译中", () => runWorkflow(2, 2), true)}>翻译所选 / 继续</button>
           </div>

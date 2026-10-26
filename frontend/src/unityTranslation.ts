@@ -6,6 +6,21 @@ export const UNITY_LANGUAGES = [
   { value: "en", label: "英语" }, { value: "ja", label: "日语" }, { value: "ko", label: "韩语" },
 ];
 
+/** Fold display wrapping within a paragraph; keep paragraph and program escapes. */
+export function prepareUnityTranslationText(text: string, joinLines = true) {
+  if (!joinLines) return text;
+  const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3000-\u303f]/u;
+  return text.replace(/\r\n?/g, "\n").split(/(\n[\t ]*\n(?:[\t ]*\n)*)/).map((part, index) => {
+    if (index % 2) return part;
+    return part.split("\n").reduce((joined, line) => {
+      const left = joined.trimEnd(), right = line.trimStart();
+      if (!left || !right) return joined + "\n" + line;
+      const separator = cjk.test([...left].at(-1)!) && cjk.test([...right][0]) ? "" : " ";
+      return left + separator + right;
+    });
+  }).join("");
+}
+
 export function buildUnityTranslateOptions(
   settings: Pick<Settings, "apiUrl" | "apiKey" | "model">,
   provider: TranslateProvider,
@@ -20,7 +35,7 @@ export function buildUnityTranslateOptions(
   return {
     provider: "llm", source, target, feature: "unity",
     ...connection,
-    prompt: `将游戏界面或对白翻译为${language}。仅返回译文，不要解释或代码围栏。保留所有格式占位符、富文本标签、反斜杠转义、换行及其数量，不翻译标识符和路径。`,
+    prompt: `将游戏界面或对白翻译为${language}。将整条文本作为一个完整的上下文理解，不把排版换行当作句子边界；结合前后文确定主语、指代和语气。仅返回译文，不要解释或代码围栏。保留所有格式占位符、富文本标签、反斜杠转义及段落，不翻译标识符和路径。`,
   };
 }
 
