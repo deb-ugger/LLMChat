@@ -60,8 +60,8 @@ export const CONFIG_SECTION_META: Record<string, ConfigSectionMeta> = {
     help: "使用 Azure Translator 时填写订阅密钥。",
   },
   Baidu: {
-    label: "百度翻译（需 Key）",
-    help: "使用百度翻译开放平台时填写 AppId 与密钥。",
+    label: "百度通用翻译（APP ID＋密钥）",
+    help: "填写百度翻译开放平台分配的应用 ID 与配套密钥。",
   },
   Yandex: {
     label: "Yandex（需 Key）",
@@ -470,12 +470,12 @@ export const CONFIG_FIELD_META: Record<string, ConfigFieldMeta> = {
     help: "BingTranslateLegitimate / Azure 所需。",
   },
   BaiduAppId: {
-    label: "百度 AppId",
-    help: "百度翻译开放平台应用 ID。",
+    label: "百度应用 ID（APP ID）",
+    help: "百度翻译开放平台分配的数字编号，不是应用名称。",
   },
   BaiduAppSecret: {
     label: "百度密钥",
-    help: "百度翻译开放平台密钥。",
+    help: "与百度 APP ID 配套的通用翻译密钥。",
   },
   YandexAPIKey: {
     label: "Yandex API Key",

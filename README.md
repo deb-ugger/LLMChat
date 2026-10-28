@@ -70,16 +70,15 @@ npm run dev
 
 ### 一键更新便携版
 
-先保存软件中尚未保存的内容，在仓库根目录打开 PowerShell，然后运行下面的命令。它会依次构建后端、准备语音解码工具、构建 Release 桌面程序，并将最新文件更新到 `dist-portable/`。打包脚本会尝试正常关闭本仓库便携版，若主程序或后端未退出则停止更新，不会强制结束进程。
+先保存软件中尚未保存的内容，然后双击仓库根目录的 `build.cmd`；也可以在仓库根目录运行一条命令：
 
 ```powershell
-powershell -File scripts/prepare-sidecar.ps1
-powershell -File scripts/prepare-speech-tools.ps1
-npm --prefix frontend run tauri -- build --no-bundle
-powershell -File scripts/make-portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
 
-首次准备语音解码工具需要联网下载 FFmpeg；工具版本未变化时复用已有文件。自动化代理执行构建和更新前，须遵守 [AGENTS.md](AGENTS.md) 的全局构建锁规则。
+脚本自动取得全局构建锁，依次关闭本仓库的主程序和后台、构建后端、准备语音解码工具、构建 Release 桌面程序、更新并校验便携版。优先正常关闭窗口，10 秒后仍未退出的已核实本仓库进程会被强制结束，因此运行前请保存内容；其他目录的同名程序不会结束。任何一步失败都会停止后续步骤，并释放构建锁。脚本不运行全量测试。
+
+首次准备语音解码工具需要联网下载 FFmpeg；工具版本未变化时复用已有文件。缺少前端依赖时自动运行 `npm ci`。可通过 `-Proxy http://127.0.0.1:7892` 指定 FFmpeg 下载代理。自动化代理调用时可传入自己的稳定 `-Owner`，但必须先释放文件锁。
 
 更新只替换程序和资源，保留已有的配置、会话、统计数据、翻译工程、语音任务输出和模型缓存。
 

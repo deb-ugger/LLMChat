@@ -141,16 +141,16 @@ TranslateResult restoreCodeTokensResult(TranslateResult r)
 }
 
 #ifdef _WIN32
-std::string md5Hex(const std::string& data)
+std::string hashHex(const std::string& data, ALG_ID algorithm)
 {
     HCRYPTPROV prov = 0;
     HCRYPTHASH hash = 0;
     std::string out;
-    if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+    if (!CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
     {
         return out;
     }
-    if (!CryptCreateHash(prov, CALG_MD5, 0, 0, &hash))
+    if (!CryptCreateHash(prov, algorithm, 0, 0, &hash))
     {
         CryptReleaseContext(prov, 0);
         return out;
@@ -162,8 +162,8 @@ std::string md5Hex(const std::string& data)
         CryptReleaseContext(prov, 0);
         return out;
     }
-    BYTE digest[16];
-    DWORD len = 16;
+    BYTE digest[32];
+    DWORD len = sizeof(digest);
     if (CryptGetHashParam(hash, HP_HASHVAL, digest, &len, 0))
     {
         std::ostringstream oss;
@@ -1810,6 +1810,57 @@ json lookupBingDictionaryJson(
     return out;
 }
 
+std::string youdaoSignInput(const std::string& text)
+{
+    const size_t length = utf8CodepointCount(text);
+    if (length <= 20) return text;
+    size_t firstTen = 0, tail = 0;
+    for (size_t count = 0; count < length - 10; ++count)
+    {
+        tail += utf8CharLen(static_cast<unsigned char>(text[tail]));
+        if (count == 9) firstTen = tail;
+    }
+    return text.substr(0, firstTen) + std::to_string(length) + text.substr(tail);
+}
+
+std::string youdaoSignature(const std::string& appKey, const std::string& text,
+    const std::string& salt, const std::string& curtime, const std::string& secret)
+{
+    return hashHex(appKey + youdaoSignInput(text) + salt + curtime + secret, CALG_SHA_256);
+}
+
+const char* youdaoErrorHint(const std::string& code)
+{
+    if (code == "101") return "请求缺少必填参数";
+    if (code == "102") return "不支持当前翻译语种";
+    if (code == "103") return "文本过长，请缩短文本或开启自动分段";
+    if (code == "108") return "应用 ID 无效，请填写有道智云分配的 App Key，不是应用名称";
+    if (code == "110") return "应用未绑定可用的文本翻译服务，请在有道智云控制台开通并绑定";
+    if (code == "111") return "开发者账号无效，请检查平台账号状态";
+    if (code == "202") return "签名校验失败，请检查应用 ID 与应用密钥是否配套";
+    if (code == "203") return "当前 IP 不在应用的允许列表中";
+    if (code == "206") return "请求时间戳无效，请校准电脑时间";
+    if (code == "207") return "请求被判定为重复，请重新发起";
+    if (code == "401") return "账户已欠费，请在有道智云控制台检查余额";
+    if (code == "411" || code == "412") return "请求频率受限，请降低并发或稍后重试";
+    return "请根据平台错误码检查服务状态";
+}
+
+const char* baiduErrorHint(const std::string& code)
+{
+    if (code == "52001") return "请求超时，请稍后重试";
+    if (code == "52002") return "百度服务异常，请稍后重试";
+    if (code == "52003") return "未授权用户，请检查平台分配的数字 APP ID，以及是否已开通通用文本翻译服务";
+    if (code == "54000") return "请求缺少必填参数";
+    if (code == "54001") return "签名校验失败，请检查 APP ID 与密钥是否配套";
+    if (code == "54003" || code == "54005") return "请求频率受限，请降低并发或稍后重试";
+    if (code == "54004") return "账户余额不足，请在百度翻译开放平台检查余额";
+    if (code == "58000") return "当前 IP 不在平台允许列表中，请检查开发者信息中的 IP 设置";
+    if (code == "58001") return "不支持当前翻译语种方向";
+    if (code == "58002") return "服务已关闭，请在百度翻译开放平台开启通用文本翻译服务";
+    return "请根据平台错误码检查服务状态";
+}
+
 TranslateResult translateYoudao(
     const std::string& text,
     const std::string& source,
@@ -1823,15 +1874,17 @@ TranslateResult translateYoudao(
     {
         result.error = withZhHint(
             "Youdao requires appId and secret",
-            "有道翻译需要填写 App Key 与 App Secret（在设置→翻译引擎中配置）");
+            "有道翻译需要填写平台分配的应用 ID（App Key）与应用密钥（App Secret）");
         result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string salt = randomSalt();
-    const std::string sign = md5Hex(appKey + text + salt + appSecret);
+    const std::string curtime = std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    const std::string sign = youdaoSignature(appKey, text, salt, curtime, appSecret);
     if (sign.empty())
     {
-        result.error = withZhHint("MD5 failed", "无法计算有道签名");
+        result.error = withZhHint("SHA-256 failed", "无法计算有道签名");
         result.code = "CONFIG_ERROR";
         return result;
     }
@@ -1841,6 +1894,8 @@ TranslateResult translateYoudao(
         + "&to=" + urlEncode(mapYoudaoLang(target))
         + "&appKey=" + urlEncode(appKey)
         + "&salt=" + urlEncode(salt)
+        + "&signType=v3"
+        + "&curtime=" + urlEncode(curtime)
         + "&sign=" + urlEncode(sign);
     result.externalCall = true;
     const HttpResult http = winHttpPost(
@@ -1863,7 +1918,7 @@ TranslateResult translateYoudao(
         {
             result.error = withZhHint(
                 "Youdao errorCode=" + err,
-                "有道翻译失败（错误码 " + err + "），请检查 App Key / Secret");
+                "有道翻译失败（错误码 " + err + "）：" + youdaoErrorHint(err));
             result.code = "ERROR";
             return result;
         }
@@ -1904,12 +1959,12 @@ TranslateResult translateBaidu(
     {
         result.error = withZhHint(
             "Baidu requires appId and secret",
-            "百度翻译需要填写 App ID 与密钥（在设置→翻译引擎中配置）");
+            "百度通用翻译需要填写平台分配的数字 APP ID 与配套密钥，APP ID 不是应用名称");
         result.code = "CONFIG_ERROR";
         return result;
     }
     const std::string salt = randomSalt();
-    const std::string sign = md5Hex(appId + text + salt + secret);
+    const std::string sign = hashHex(appId + text + salt + secret, CALG_MD5);
     if (sign.empty())
     {
         result.error = withZhHint("MD5 failed", "无法计算百度签名");
@@ -1944,7 +1999,7 @@ TranslateResult translateBaidu(
                 : std::to_string(j["error_code"].get<int>());
             result.error = withZhHint(
                 "Baidu error_code=" + code,
-                "百度翻译失败（错误码 " + code + "），请检查 App ID / 密钥");
+                "百度翻译失败（错误码 " + code + "）：" + baiduErrorHint(code));
             result.code = "ERROR";
             return result;
         }
@@ -1997,7 +2052,7 @@ TranslateResult translateSogou(
         return result;
     }
     const std::string salt = randomSalt();
-    const std::string sign = md5Hex(pid + text + salt + key);
+    const std::string sign = hashHex(pid + text + salt + key, CALG_MD5);
     if (sign.empty())
     {
         result.error = withZhHint("MD5 failed", "无法计算搜狗签名");
@@ -2033,7 +2088,7 @@ TranslateResult translateSogou(
             const std::string code = j["errorCode"].get<std::string>();
             result.error = withZhHint(
                 "Sogou errorCode=" + code,
-                "搜狗翻译失败（错误码 " + code + "），请检查 PID / Key");
+                "搜狗翻译失败（错误码 " + code + "），请根据平台错误码检查服务状态");
             result.code = "ERROR";
             return result;
         }
@@ -2106,7 +2161,7 @@ TranslateResult translateNiutrans(
                       : std::to_string(j["errorCode"].get<int>()));
             result.error = withZhHint(
                 "Niutrans error=" + code,
-                "小牛翻译失败（错误码 " + code + "），请检查 API Key");
+                "小牛翻译失败（错误码 " + code + "），请根据平台错误码检查服务状态");
             result.code = "ERROR";
             return result;
         }
@@ -2188,7 +2243,8 @@ TranslateResult TranslateClient::translateFree(
     bool autoChunk,
     const std::string& proxyMode,
     const std::string& httpProxy,
-    const std::string& engineKeysJson)
+    const std::string& engineKeysJson,
+    bool autoFallback)
 {
     TranslateResult result;
     const std::string p = normalizeProvider(provider);
@@ -2254,7 +2310,7 @@ TranslateResult TranslateClient::translateFree(
         // Free Google endpoint often hits CAPTCHA; fall back to Bing automatically.
         const bool captcha = google.code == "GOOGLE_CAPTCHA"
             || isGoogleCaptchaOrBlockPage(google.error);
-        if (captcha || looksLikeHtml(google.error))
+        if (autoFallback && (captcha || looksLikeHtml(google.error)))
         {
             TranslateResult bing = runLimited([&](const std::string& chunk) {
                 return translateBing(chunk, source, target);

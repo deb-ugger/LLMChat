@@ -27,6 +27,11 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
   const latestDraft = useRef<SpeechRange[]>(displayedDraft);
   const pendingClose = useRef<{ promise: Promise<boolean>; resolve: (closed: boolean) => void } | null>(null);
   const titleId = useId();
+  const [pendingInput, setPendingInput] = useState(false);
+  const rangesChanged = (draft: SpeechRange[]) => {
+    const saved = ranges ?? [];
+    return draft.length !== saved.length || draft.some((range, index) => range.start !== saved[index]?.start || range.end !== saved[index]?.end);
+  };
   latestDraft.current = displayedDraft;
   const changeDraft = (next: SpeechRange[]) => { latestDraft.current = next; onDraftChange(next); };
   const finishTyping = () => {
@@ -38,8 +43,7 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
   const close = (beforePrompt?: () => void) => {
     if (pendingClose.current) return pendingClose.current.promise;
     finishTyping();
-    const saved = ranges ?? [];
-    const changed = !disabled && (latestDraft.current.length !== saved.length || latestDraft.current.some((range, index) => range.start !== saved[index]?.start || range.end !== saved[index]?.end));
+    const changed = !disabled && rangesChanged(latestDraft.current);
     if (changed) {
       let resolve!: (closed: boolean) => void;
       const promise = new Promise<boolean>(done => { resolve = done; });
@@ -55,11 +59,11 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
     onChange(latestDraft.current.length ? latestDraft.current : undefined);
     finishClose();
   };
-  return <div ref={panel} className="speech-range-page" onKeyDown={event => { if (event.key === "Escape" && !confirmation.current?.open) { event.preventDefault(); close(); } }}>
+  return <div ref={panel} className="speech-range-page" onInputCapture={() => setPendingInput(Array.from(panel.current?.querySelectorAll<HTMLInputElement>('input[aria-label^="片段 "]') || []).some(input => input.value !== input.defaultValue))} onBlurCapture={() => setPendingInput(false)} onKeyDown={event => { if (event.key === "Escape" && !confirmation.current?.open) { event.preventDefault(); close(); } }}>
       <div className="speech-range-page-header"><h3 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h3><span title={name}>{name}</span></div>
       <div className="speech-range-page-body"><SpeechRangeEditor key={String(disabled)} duration={duration} ranges={displayedDraft} disabled={disabled} onChange={next => changeDraft(next ?? [])} /></div>
       <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={() => void close()}>{disabled ? "关闭" : "取消"}</button>
-        {!disabled && <button type="button" className="speech-primary" onClick={save}>保存选段</button>}</div></div>
+        {!disabled && <button type="button" className="speech-primary" disabled={!pendingInput && !rangesChanged(displayedDraft)} onClick={save}>保存选段</button>}</div></div>
     <dialog ref={confirmation} className="speech-range-dialog speech-range-confirm" role="alertdialog" aria-labelledby={`${titleId}-unsaved`} onCancel={event => { event.preventDefault(); cancelClose(); }}>
       <div className="speech-range-dialog-header"><div><h2 id={`${titleId}-unsaved`}>选段尚未保存</h2></div></div>
       <div className="speech-range-dialog-body"><p>已修改的片段尚未保存，是否保存后关闭？</p></div>

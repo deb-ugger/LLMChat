@@ -67,7 +67,6 @@ import {
   TRANSLATE_ENGINES,
   parseEngineKeys,
   stringifyEngineKeys,
-  engineHasCredentials,
   type EngineKeysMap,
 } from "../translateEngines";
 import {
@@ -526,7 +525,7 @@ function sortByConfigured<T>(
   });
 }
 
-type ConfigStatusKind = "ok" | "warn" | "free";
+type ConfigStatusKind = "ok" | "warn" | "free" | "pending";
 
 type StatusSelectOption = {
   value: string;
@@ -548,10 +547,12 @@ function statusBadgeClass(status: ConfigStatusKind): string {
 function engineStatusMeta(
   keys: EngineKeysMap,
   id: string,
+  result?: TestResult,
 ): { status: ConfigStatusKind; statusText: string } {
-  const statusText = engineConfigStatusLabel(keys, id);
+  const statusText = engineConfigStatusLabel(keys, id, result?.ok);
   if (statusText === "无需配置") return { status: "free", statusText };
-  if (statusText === "已配置") return { status: "ok", statusText };
+  if (statusText === "连接正常") return { status: "ok", statusText };
+  if (statusText === "已填写") return { status: "pending", statusText };
   return { status: "warn", statusText };
 }
 
@@ -1079,6 +1080,7 @@ export function SettingsView({
   const [expandedVendor, setExpandedVendor] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState({ apiUrl: "", apiKey: "" });
   const [saving, setSaving] = useState(false);
+  const [panelSaving, setPanelSaving] = useState(false);
   const { status: ocrModelStatus, error: ocrStatusError, refresh: refreshOcrModelStatus, ensure: ensureOcrMode, remove: removeOcrMode } = useOcrModels();
   const [ocrModelBusy, setOcrModelBusy] = useState<
     OcrMode | `remove-${Exclude<OcrMode, "fast">}` | null
@@ -1162,11 +1164,28 @@ export function SettingsView({
     () => parseEngineKeys(form.translateEngineKeys),
     [form.translateEngineKeys],
 );
+  const panelDirty = (() => {
+    if (pickingCustom || expandedModel === CUSTOM_MODEL) return !!customDraft.trim();
+    if (!panelSnap) return false;
+    if (panelSnap.kind === "engine") {
+      const saved = parseEngineKeys(settings.translateEngineKeys)[panelSnap.id] || {};
+      const draft = engineKeys[panelSnap.id] || {};
+      return (["appId", "secret", "apiKey", "note"] as const).some(key => (draft[key] || "") !== (saved[key] || ""));
+    }
+    return modelDraft.apiUrl !== (panelSnap.apiUrl || "") || modelDraft.apiKey !== (panelSnap.apiKey || "");
+  })();
   const setEngineKeyField = (
     engineId: string,
     field: "appId" | "secret" | "apiKey" | "note",
     value: string,
   ) => {
+    if (field !== "note" && value !== (engineKeys[engineId]?.[field] || "")) {
+      setCardTestMsg((previous) => {
+        const next = { ...previous };
+        delete next[`engine:${engineId}`];
+        return next;
+      });
+    }
     const next: EngineKeysMap = {
       ...engineKeys,
       [engineId]: { ...(engineKeys[engineId] || {}), [field]: value },
@@ -1795,6 +1814,7 @@ export function SettingsView({
   };
 
   const savePanel = async () => {
+    if (saving || panelSaving || !panelDirty) return;
     const snapModel = expandedModel;
     const snapVendor = expandedVendor;
     const snapEngine = expandedEngine;
@@ -1859,6 +1879,7 @@ export function SettingsView({
     saveVendorProfiles(nextVendors);
     setForm(nextForm);
 
+    setPanelSaving(true);
     try {
       await onSave(nextForm);
       notify(successMsg);
@@ -1896,6 +1917,8 @@ export function SettingsView({
       }
     } catch (e) {
       notify(e instanceof Error ? e.message : "保存失败", false);
+    } finally {
+      setPanelSaving(false);
     }
   };
 
@@ -3202,6 +3225,7 @@ export function SettingsView({
                                 <button
                                   type="button"
                                   className="settings-panel-save"
+                                  disabled={saving || panelSaving || !panelDirty}
                                   onClick={() => void savePanel()}
                                 >
                                   保存凭证
@@ -3325,6 +3349,7 @@ export function SettingsView({
                                     <button
                                       type="button"
                                       className="settings-panel-save"
+                                      disabled={saving || panelSaving || !panelDirty}
                                       onClick={() => void savePanel()}
                                     >
                                       保存
@@ -3468,6 +3493,7 @@ export function SettingsView({
                             <button
                               type="button"
                               className="settings-panel-save"
+                              disabled={saving || panelSaving || !panelDirty}
                               onClick={() => void savePanel()}
                             >
                               添加
@@ -3538,14 +3564,11 @@ export function SettingsView({
               <div className="settings-engine-catalog">
                 {catalogEngines.map((e) => {
                   const open = expandedEngine === e.id;
-                  const configured = engineHasCredentials(engineKeys, e.id);
                   const usage = engineUsageIds(form, e.id);
                   const testKey = `engine:${e.id}`;
                   const cardResult = cardTestMsg[testKey];
                   const busy = isCardTesting(testKey);
-                  const needsKey = e.credentialFields?.some(
-                    (f) => f.key !== "note",
-                  );
+                  const status = engineStatusMeta(engineKeys, e.id, cardResult);
                   return (
                     <div
                       key={e.id}
@@ -3562,21 +3585,9 @@ export function SettingsView({
                           onClick={() => onEngineCardClick(e.id)}
                         >
                           <span className="settings-engine-card-title">
-                            {needsKey ? (
-                              <em
-                                className={
-                                  configured
-                                    ? "settings-engine-badge is-ok"
-                                    : "settings-engine-badge is-warn"
-                                }
-                              >
-                                {configured ? "已配置" : "未配置"}
-                              </em>
-                            ) : (
-                              <em className="settings-engine-badge is-free">
-                                无需配置
-                              </em>
-                            )}
+                            <em className={statusBadgeClass(status.status)}>
+                              {status.statusText}
+                            </em>
                             <strong>{e.label}</strong>
                           </span>
                           <span className="settings-engine-card-hint">
@@ -3617,6 +3628,7 @@ export function SettingsView({
                               {field.label}
                               <input
                                 type={field.password ? "password" : "text"}
+                                disabled={busy}
                                 value={engineKeys[e.id]?.[field.key] || ""}
                                 placeholder={field.placeholder || ""}
                                 onChange={(ev) =>
@@ -3639,6 +3651,7 @@ export function SettingsView({
                             <button
                               type="button"
                               className="settings-panel-save"
+                              disabled={saving || panelSaving || !panelDirty}
                               onClick={() => void savePanel()}
                             >
                               保存
@@ -3767,23 +3780,12 @@ export function SettingsView({
                   )}
                 </div>
               </div>
-              <p className="hint" style={{ marginTop: 8 }}>
-                当前文献翻译方式：
-                <strong>
-                  {litUsesLlm
-                    ? `大模型（${form.translateModel || form.model || "未选模型"}）`
-                    : selectedEngine?.label || form.translateProvider}
-                </strong>
-              </p>
             </section>
 
             <section className="settings-card">
               <div className="settings-mode-choice">
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
-                  <p className="hint">
-                    凭证在「通用」配置。
-                  </p>
                 </div>
 
               <ModePanel
@@ -3818,9 +3820,6 @@ export function SettingsView({
                     {testMsg.lit.message}
                   </p>
                 )}
-                <p className="hint">
-                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
-                </p>
                 <div className="settings-field">
                   <span className="settings-field-label">选择引擎</span>
                   <div className="settings-engine-row">
@@ -3835,7 +3834,7 @@ export function SettingsView({
                         {
                           label: "翻译引擎（可用优先）",
                           options: litClassicEngines.map((p) => {
-                            const meta = engineStatusMeta(engineKeys, p.id);
+                            const meta = engineStatusMeta(engineKeys, p.id, cardTestMsg[`engine:${p.id}`]);
                             return {
                               value: p.id,
                               title: p.label,
@@ -4049,14 +4048,6 @@ export function SettingsView({
                   )}
                 </div>
               </div>
-              <p className="hint" style={{ marginTop: 8 }}>
-                当前图片翻译方式：
-                <strong>
-                  {ocrUsesLlm
-                    ? `大模型（${form.ocrTranslateModel || form.model || "未选模型"}）`
-                    : selectedOcrEngine?.label || form.ocrTranslateProvider}
-                </strong>
-              </p>
               <p className="hint">
                 源语言与目标语言用于翻译。
               </p>
@@ -4066,9 +4057,6 @@ export function SettingsView({
               <div className="settings-mode-choice">
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
-                  <p className="hint">
-                    凭证在「通用」配置。
-                  </p>
                 </div>
 
               <ModePanel
@@ -4103,9 +4091,6 @@ export function SettingsView({
                     {testMsg.ocr.message}
                   </p>
                 )}
-                <p className="hint">
-                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
-                </p>
                 <div className="settings-field">
                   <span className="settings-field-label">选择引擎</span>
                   <div className="settings-engine-row">
@@ -4120,7 +4105,7 @@ export function SettingsView({
                         {
                           label: "翻译引擎（可用优先）",
                           options: ocrClassicEngines.map((p) => {
-                            const meta = engineStatusMeta(engineKeys, p.id);
+                            const meta = engineStatusMeta(engineKeys, p.id, cardTestMsg[`engine:${p.id}`]);
                             return {
                               value: p.id,
                               title: p.label,
@@ -4205,27 +4190,10 @@ export function SettingsView({
             <TextOutputSettings />
 
             <section className="settings-card">
-              <h2>文本翻译</h2>
-              <p className="hint">
-                API 凭证和网络代理在「通用」配置。
-              </p>
-              <p className="hint" style={{ marginTop: 8 }}>
-                当前文本翻译方式：
-                <strong>
-                  {textUsesLlm
-                    ? `大模型（${form.textTranslateModel || form.model || "未选模型"}）`
-                    : selectedTextEngine?.label || form.textTranslateProvider}
-                </strong>
-              </p>
-            </section>
-
-            <section className="settings-card">
               <div className="settings-mode-choice">
                 <div className="settings-mode-choice-head">
                   <h2>翻译方式</h2>
-                  <p className="hint">
-                    凭证在「通用」配置。
-                  </p>
+                  <p className="hint">API 凭证和网络代理在「通用」配置。</p>
                 </div>
 
               <ModePanel
@@ -4260,9 +4228,6 @@ export function SettingsView({
                     {testMsg.text.message}
                   </p>
                 )}
-                <p className="hint">
-                  使用在线翻译引擎。引擎凭证请在「通用 → 翻译引擎」中配置。
-                </p>
                 <div className="settings-field">
                   <span className="settings-field-label">选择引擎</span>
                   <div className="settings-engine-row">
@@ -4277,7 +4242,7 @@ export function SettingsView({
                         {
                           label: "翻译引擎（可用优先）",
                           options: textClassicEngines.map((p) => {
-                            const meta = engineStatusMeta(engineKeys, p.id);
+                            const meta = engineStatusMeta(engineKeys, p.id, cardTestMsg[`engine:${p.id}`]);
                             return {
                               value: p.id,
                               title: p.label,

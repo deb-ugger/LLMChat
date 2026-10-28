@@ -2,6 +2,7 @@
 param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot 'prepare-unity-segmentation.ps1')
 $output = Join-Path $root 'frontend\src-tauri\resources\unity'
 $project = Join-Path $root 'tools\UnityOffline\UnityOffline.csproj'
 if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) { throw 'Install .NET SDK 8 or later to build the Unity embedding helper.' }
@@ -18,6 +19,12 @@ if (!(Test-Path -LiteralPath $database)) {
     } finally { if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download } }
 }
 $notice = @'
+ONNX Runtime 1.20.1 - Copyright (c) Microsoft Corporation
+https://github.com/microsoft/onnxruntime
+AssetsTools.NET.Texture 3.0.2 / AssetRipper.TextureDecoder / StbImageSharp / StbImageWriteSharp
+https://github.com/nesrak1/AssetsTools.NET
+https://github.com/AssetRipper/TextureDecoder
+https://github.com/StbSharp
 AssetsTools.NET 3.0.5 - Copyright (c) 2020 nesrak1
 AssetsTools.NET.MonoCecil 3.0.4 - Copyright (c) 2020 nesrak1
 https://github.com/nesrak1/AssetsTools.NET

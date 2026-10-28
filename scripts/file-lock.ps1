@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet("acquire", "release", "release-all", "renew", "status", "list", "cleanup", "diagnose")]

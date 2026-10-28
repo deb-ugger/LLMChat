@@ -32,6 +32,9 @@ frontend/src-tauri/binaries/config.ini
 
 # Portable / release packaging
 dist-portable/
+frontend/public/hanlp/
+frontend/public/wtp/
+tools/LineBreakPrototype/
 dist/
 release/
 **/bundle/

@@ -47,11 +47,12 @@ export type OcrBlock = {
 function OcrMetrics({ count, milliseconds, text, busy, failed, total = false }: {
   count: number; milliseconds: number; text: string; busy: boolean; failed: boolean; total?: boolean;
 }) {
+  const displayText = text.replace(/^(.+?) 识别到 \d+ 段文字$/, "$1 · 识别完成");
   return <span className={`ocr-metrics${total ? " is-total" : ""}`}>
     <span className="ocr-metric"><span>{total ? "累计段数" : "识别段数"}</span><strong>{count}</strong><small>段</small></span>
     <span className="ocr-metric"><span>{total ? "累计用时" : "页面用时"}</span><strong>{(milliseconds / 1000).toFixed(1)}</strong><small>秒</small></span>
-    <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} title={text}>
-      <i aria-hidden="true" />{text}
+    <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} title={displayText}>
+      <i aria-hidden="true" />{displayText}
     </span>
   </span>;
 }
@@ -928,7 +929,7 @@ function OcrPageCard({
             缩放 {Math.round(imageScale * 100)}%
           </span>
           <OcrMetrics count={page.blocks.length} milliseconds={page.elapsedMs ?? 0}
-            text={(page.error || page.statusText || "等待识别").replace(/^识别 \d+ 段 · /, "")}
+            text={page.error ? "识别失败" : (page.statusText || "等待识别").replace(/^识别 \d+ 段 · /, "")}
             busy={page.busy} failed={!!page.error || /失败/.test(page.statusText ?? "")} />
           <button
             type="button"
@@ -2370,7 +2371,7 @@ export function ImageOcrView({
           </div>
           <OcrMetrics total count={totalSegments} milliseconds={totalElapsedMs} busy={busy}
             failed={!!error || allBlocks.some((block) => block.status === "error")}
-            text={(error || status || (busy ? "处理中" : allBlocks.some((block) => block.status === "error") ? "部分翻译失败" : allBlocks.length && allBlocks.every((block) => block.status === "done") ? "翻译完成" : pages.length ? "识别完成" : "本次会话累计 · 清除后保留")).replace(/^识别 \d+ 段 · /, "")} />
+            text={error ? "处理失败" : (status || (busy ? "处理中" : allBlocks.some((block) => block.status === "error") ? "部分翻译失败" : allBlocks.length && allBlocks.every((block) => block.status === "done") ? "翻译完成" : pages.length ? "识别完成" : "本次会话累计 · 清除后保留")).replace(/^识别 \d+ 段 · /, "")} />
           <span className="ocr-toolbar-engine" title={engineBadge}>
             {engineBadge}
           </span>

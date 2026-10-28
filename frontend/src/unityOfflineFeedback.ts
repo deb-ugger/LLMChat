@@ -1,9 +1,19 @@
 export type UnityFailure = { reason: string; action: string; technical: string };
 export function explainUnityFailure(error: unknown): UnityFailure {
   const technical = error instanceof Error ? error.message : String(error);
-  const result = (reason: string, action: string) => ({ reason, action, technical });
-  if (/^翻译服务预检失败|^翻译已自动停止/.test(technical))
+  const result = (reason: string, action: string) => ({ reason, action, technical: technical.trim() === reason.trim() ? "" : technical });
+  if (/写回重读缺少|写回重读未找到字段/.test(technical))
+    return result("重新读取补丁时，未能找到应写入的文本或字体字段，补丁尚未通过完整性校验。", "保留已有译文，重新生成补丁；不要应用未完成的输出。若仍失败，请反馈技术详情中的资源、对象和字段位置以便定位。");
+  if (/写回重读不一致|字体数据重读不一致|字库、图集或材质重读不一致/.test(technical))
+    return result("保存后的补丁内容与预期不一致，软件已停止生成，尚不能应用到游戏。", "保留工程与原件备份，重新生成补丁；若仍失败，请反馈技术详情以检查对应资源的写入格式。");
+  if (/^翻译服务预检失败/.test(technical)) {
+    const cause = explainUnityFailure(technical.slice(technical.indexOf("：") + 1));
+    return result(`翻译服务检查失败：${cause.reason}`, cause.action);
+  }
+  if (/^翻译已自动停止/.test(technical))
     return result(technical, "检查当前引擎或模型的网络、代理与凭证后再恢复。不会继续逐条失败重试，已保存译文会复用。");
+  if (/captcha|unusual traffic|人机验证/i.test(technical))
+    return result("谷歌翻译触发了人机验证，当前请求未能获得译文。", "更换翻译引擎，或检查代理出口后恢复翻译；浏览器能访问网站不代表翻译接口允许批量请求。已保存译文会复用。");
   if (/not allowed by ACL|permission .*not found|command .*not allowed/i.test(technical))
     return result("软件的桌面权限配置拦截了 Unity 处理命令，操作未能启动。这不是游戏资源损坏，也与翻译引擎无关。", "更新并重启软件后重试；若仍出现，请反馈下方技术详情，无需更换引擎或以管理员身份运行。");
   if (/缺少嵌字组件|无法启动嵌字组件|0xc0000135/i.test(technical))
@@ -18,14 +28,14 @@ export function explainUnityFailure(error: unknown): UnityFailure {
     return result("磁盘剩余空间不足，无法保存工程或资源备份。", "释放输出盘与游戏盘空间后恢复任务，不要删除未完成工程和 original 原件备份。");
   if (/游戏仍在运行/.test(technical)) return result("游戏仍在运行，不能安全替换资源。", "正常关闭当前游戏，再点击恢复继续应用；软件不会强制结束游戏。");
   if (/已变化|发生变化|校验失败|不一致|不属于当前游戏/.test(technical))
-    return result(technical, "不要强行覆盖游戏文件。确认游戏版本与工程一致；需要重新提取文本时，先结束当前流程，再重新扫描，未变化文本的译文会保留。");
+    return result("工程、补丁或游戏资源与记录的内容不一致，当前操作已停止。", "确认游戏版本与工程一致，并保留原件备份。查看技术详情确定发生变化的文件；重新扫描会清理现有工程与后续产物，请先确认清理范围。");
   if (/HTTP\s*(401|403)|api.?key|凭证|密钥/i.test(technical)) return result("所选翻译服务的凭证未配置或未被服务接受。", "检查通用设置中对应模型或翻译引擎的凭证，再恢复翻译；已保存译文不会重复处理。");
   if (/HTTP\s*429|rate.limit/i.test(technical)) return result("翻译服务暂时限制了请求频率。", "稍后恢复翻译，或调整通用设置中的请求限制；已完成译文会保留。");
   if (/HTTP\s*5\d\d/i.test(technical)) return result("服务端处理失败，资源提取结果和已保存译文仍保留。", "稍后恢复任务；若持续失败，请检查对应服务配置并反馈技术详情，不必重复扫描资源。");
   if (/fetch|network|timeout|timed out|网络|超时/i.test(technical)) return result("翻译服务连接失败或请求超时。", "检查当前引擎、网络和代理配置后恢复；此前已完成的扫描与译文会保留。");
   if (/class.?data|type.?tree|assets file|bundle|compression|序列化|类型树/i.test(technical))
     return result("资源组件无法解析当前文件格式、压缩方式或 Unity 类型数据。", "查看扫描提示中受影响的文件；可继续检查已成功提取的文本，不要将未完整生成的补丁应用到游戏。");
-  if (/[一-鿿]/.test(technical)) return result(technical, "根据提示检查后重试或恢复；若原因仍不明确，请反馈技术详情，保留工程和原件备份。");
+  if (/[一-鿿]/.test(technical)) return result(technical, "请保留工程和原件备份，按提示检查后重试；若仍失败，请反馈此错误。");
   return result("资源处理组件返回了无法识别的错误，暂时不能确定具体原因。", "先保留当前工程并重试；若仍失败，请反馈下方技术详情，以便定位，不要重复覆盖游戏文件。");
 }
 export function explainUnityWarning(warning: string): { reason: string; technical: string; category?: "stream"; location?: string; impact?: string } {

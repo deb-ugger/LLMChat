@@ -6,13 +6,15 @@ namespace LLMChat.UnityOffline;
 
 public static class GameText
 {
-    public const int SafetyRevision = 1;
+    public const int SafetyRevision = 2;
+    static readonly Regex BindingField = new(@"^(?:m_)?blendshapes?(?:For\w+|Names)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    static bool BindingPath(string path) => path.Split('/').Any(BindingField.IsMatch);
     static readonly Regex TechnicalField = new(@"^(?:\$type|type|assembly|class|method|member|field|event|function|m_Name|m_EditorClassIdentifier|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id|AssemblyTypeName|AssemblyQualifiedName|AssemblyName|TypeName|MethodName|MemberName|PropertyName|EventName|FieldName|ClassName|ScriptName|Namespace))$", RegexOptions.IgnoreCase);
     static readonly Regex TypeIdentity = new(@"^(?:UnityEngine\.|UnityEditor\.|System\.|TMPro\.|Unity\.)[^\r\n,]+,\s*[A-Za-z_][\w.\-]*(?:\s*,\s*(?:Version|Culture|PublicKeyToken|ProcessorArchitecture)\s*=\s*[^,\r\n]+)*$|^[\w.+`\[\], ]+,\s*Assembly-CSharp(?:-firstpass)?(?:,.*)?$|^(?:UnityEngine|UnityEditor|System|TMPro|Unity)\.[A-Za-z_][\w.+`\[\],]*$", RegexOptions.IgnoreCase);
     static readonly Regex TextField = new(@"text|message|dialog|sentence|description|caption|title|displayName|speakerName|characterName|label|content|body|choice|prompt", RegexOptions.IgnoreCase);
-    public static bool Visible(string field, string value)
+    public static bool Visible(string field, string value, int maximum = 16000)
     {
-        if (!Program.TextCandidate(value) || TechnicalField.IsMatch(field) || IsTypeIdentity(value)) return false;
+        if (!Program.TextCandidate(value, maximum) || TechnicalField.IsMatch(field) || IsTypeIdentity(value)) return false;
         if (Regex.IsMatch(value.Trim(), @"^(?:[\w.-]+[/\\])+[\w .-]+$|^\d+(?:\.\d+)*[abfp]\d+$")) return false;
         if (Regex.IsMatch(value, "[ぁ-ゖァ-ヺ一-鿿가-힣]")) return true;
         return TextField.IsMatch(field) || !Regex.IsMatch(value.Trim(), @"^[a-zA-Z0-9_.$+:/\\-]+$");
@@ -21,9 +23,10 @@ public static class GameText
     public static bool IsTypeIdentity(string value) => TypeIdentity.IsMatch(value.Trim());
     public static bool Protected(Entry entry)
     {
-        if (IsTypeIdentity(entry.Source)) return true;
-        if (!entry.Locator.StartsWith('/')) return false;
-        var field = entry.Locator.Split('/').Last().Replace("~1", "/").Replace("~0", "~");
+        var locator = entry.ParentLocator ?? entry.Locator;
+        if (IsTypeIdentity(entry.Source) || BindingPath(locator)) return true;
+        if (!locator.StartsWith('/')) return false;
+        var field = locator.Split('/').Last().Replace("~1", "/").Replace("~0", "~");
         return TechnicalField.IsMatch(field);
     }
     public static int ProtectProject(Project project)
@@ -35,7 +38,7 @@ public static class GameText
         if (removed > 0) {
             project.ExcludedMetadataCount += removed;
             project.Warnings.RemoveAll(w => w.StartsWith("已排除 ", StringComparison.Ordinal) && w.Contains("程序标识"));
-            project.Warnings.Add($"已排除 {project.ExcludedMetadataCount} 条程序标识（类型、程序集及事件绑定字段），正常译文已保留；旧规则生成的补丁需重新生成后应用。");
+            project.Warnings.Add($"已排除 {project.ExcludedMetadataCount} 条程序标识（类型、事件和表情绑定），正常文本与译文已保留。");
         }
         return removed;
     }
@@ -51,6 +54,7 @@ public static class GameText
     public static bool TextAsset(string name) => !Regex.IsMatch(name, @"BuildReport|BuildInfo|ScriptingAssemblies|RuntimeInitializeOnLoads|UnityConnect|PackageInfo", RegexOptions.IgnoreCase);
     public static void VisitStrings(AssetTypeValueField field, Action<string, string, Action<string>> visit, string path = "")
     {
+        if (BindingPath(path)) return;
         if (field.TemplateField.ValueType == AssetValueType.String) {
             if (Visible(field.FieldName, field.AsString)) visit(path, field.AsString, text => field.AsString = text);
             return;
@@ -64,19 +68,20 @@ public static class GameText
     }
 }
 
-public sealed class GameTypes(string root) : IDisposable
+public sealed class GameTypes(string root, string definitions = "") : IDisposable
 {
-    readonly Dictionary<string, MonoCecilTempGenerator> generators = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, SerializationTemplates> generators = new(StringComparer.OrdinalIgnoreCase);
     public void Configure(AssetsManager manager, string relative)
     {
-        string? managed = null;
+        string? managed = definitions.Length > 0 ? definitions : null;
+        if (managed != null && !Directory.Exists(managed)) throw new Exception("类型定义目录不存在：" + managed);
         for (var folder = Path.GetDirectoryName(Program.Within(root, relative)); folder != null; folder = Path.GetDirectoryName(folder)) {
             var candidate = Path.Combine(folder, "Managed");
-            if (Directory.Exists(candidate)) { managed = candidate; break; }
+            if (managed == null && Directory.Exists(candidate)) { managed = candidate; break; }
             if (string.Equals(folder.TrimEnd('\\', '/'), Path.GetFullPath(root).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) break;
         }
         if (managed == null) return;
-        if (!generators.TryGetValue(managed, out var generator)) generators[managed] = generator = new MonoCecilTempGenerator(managed);
+        if (!generators.TryGetValue(managed, out var generator)) generators[managed] = generator = new SerializationTemplates(managed);
         manager.MonoTempGenerator = generator;
     }
     public void Dispose() { foreach (var generator in generators.Values) generator.Dispose(); }

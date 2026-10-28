@@ -192,14 +192,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
 
     return (
       <>
-        <p className="hint">嵌字工程、进度和补丁保存在所选游戏的 LLMChat-Unity 工作文件夹。翻译模型和引擎凭证使用通用设置。</p>
-        <div className="settings-priority-banner">
-          <strong>Unity</strong>
-          <span>
-            AutoTranslator 各游戏 Config.ini
-            格式相同。可先配置通用模板；选中游戏后保存会写入该游戏目录。
-          </span>
-        </div>
+        <p className="hint">嵌字工程、进度和补丁保存在所选游戏的 LLMChat-Unity 工作文件夹。</p>
 
         <section className="settings-card">
           <div className="settings-card-head">

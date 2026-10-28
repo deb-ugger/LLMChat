@@ -1,7 +1,28 @@
 use std::io::Cursor;
 mod speech;
 mod unity_offline;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::io::Write;
+
+static LOG_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
+static LOG_WRITE: Mutex<()> = Mutex::new(());
+
+fn runtime_log(kind: &str, message: &str) -> Result<(), String> {
+    let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
+    let directory = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?;
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let path = directory.join("runtime.log");
+    if std::fs::metadata(&path).map(|meta| meta.len() >= 1024 * 1024).unwrap_or(false) {
+        let backup = directory.join("runtime.previous.log");
+        if backup.exists() { std::fs::remove_file(&backup).map_err(|error| error.to_string())?; }
+        std::fs::rename(&path, backup).map_err(|error| error.to_string())?;
+    }
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|error| error.to_string())?;
+    writeln!(file, "{}", serde_json::json!({ "time": timestamp, "pid": std::process::id(), "kind": kind.chars().take(80).collect::<String>(), "message": message.chars().take(8000).collect::<String>() })).map_err(|error| error.to_string())
+}
+#[tauri::command]
+fn write_runtime_log(kind: String, message: String) -> Result<(), String> { runtime_log(&kind, &message) }
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -35,6 +56,7 @@ fn start_backend(app: &AppHandle) -> Result<(), String> {
                     eprintln!("[backend error] {err}");
                 }
                 CommandEvent::Terminated(payload) => {
+                    let _ = runtime_log("backend-terminated", &format!("{payload:?}"));
                     println!("[backend] terminated: {payload:?}");
                     break;
                 }
@@ -174,6 +196,8 @@ fn file_stat(path: String) -> Result<(u64, u64), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| { let _ = runtime_log("rust-panic", &info.to_string()); previous_hook(info); }));
     let mut context = tauri::generate_context!();
     let window_config = context.config().app.windows[0].clone();
     // Construct the WebView only after its profile is migrated/cleaned.
@@ -188,6 +212,7 @@ pub fn run() {
             write_file_bytes,
             read_file_bytes,
             file_stat,
+            write_runtime_log,
             unity_offline::unity_offline_run,
             unity_offline::unity_offline_stop,
             speech::speech_environment,
@@ -210,6 +235,8 @@ pub fn run() {
                 return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()).into());
             }
             let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            let _ = LOG_DIRECTORY.set(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?).join("logs"));
+            let _ = runtime_log("startup", "LLMChat started");
             app.manage(speech::SpeechStorage(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?)));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
             start_backend(app.handle()).map_err(std::io::Error::other)?;
@@ -232,7 +259,7 @@ pub fn run() {
                     stop_backend(app_handle);
                     app_handle.exit(0);
                 }
-                RunEvent::Exit => stop_backend(app_handle),
+                RunEvent::Exit => { let _ = runtime_log("shutdown", "Normal event-loop exit"); stop_backend(app_handle); },
                 _ => {}
             }
         });

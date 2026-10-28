@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-runtime-log"
+description = "Write bounded diagnostic messages to the application log."
+commands.allow = ["write_runtime_log"]

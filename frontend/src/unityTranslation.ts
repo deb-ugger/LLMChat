@@ -1,5 +1,6 @@
 import type { Settings, TranslateOptions, TranslateProvider } from "./api";
 import { resolveFeatureLlm } from "./modelPresets";
+import { prepareUnityStructuredText } from "./unityTextStructure";
 
 export const UNITY_LANGUAGES = [
   { value: "zh-CN", label: "简体中文" }, { value: "zh-TW", label: "繁体中文" },
@@ -15,6 +16,10 @@ export function prepareUnityTranslationText(text: string, joinLines = true) {
     const separator = cjk.test([...joined].at(-1)!) && cjk.test([...line][0]) ? "" : " ";
     return joined + separator + line;
   }, "").trim();
+}
+
+export function prepareUnityTranslationRequest(text: string, joinLines = true) {
+  return joinLines ? prepareUnityStructuredText(text, prepareUnityTranslationText) : text;
 }
 
 /** Reflow the full translation to the source layout without splitting tokens. */
@@ -38,7 +43,7 @@ export function restoreUnityTranslationLines(source: string, translation: string
   const positions = [0]; for (const unit of translated) positions.push(positions.at(-1)! + weight(unit));
   const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
   let start = 0, consumed = 0, remaining = lines.filter(line => line.trim()).length;
-  return layout.map((part, index) => {
+  const restored = layout.map((part, index) => {
     if (index % 2 || !part.trim()) return part;
     consumed += weights[index / 2]; remaining--;
     let end = translated.length;
@@ -56,7 +61,17 @@ export function restoreUnityTranslationLines(source: string, translation: string
     }
     const text = translated.slice(start, end).join("").trim(); start = end;
     return (part.match(/^[\t ]*/)?.[0] || "") + text + (part.match(/[\t ]*$/)?.[0] || "");
-  }).join("");
+  });
+  // Drop only empty rows created to fill the source quota, keeping actual paragraph gaps.
+  const removed = new Set<number>();
+  layout.forEach((part, index) => {
+    if (index % 2 === 0 && part.trim() && !restored[index].trim()) {
+      removed.add(index);
+      if (index + 1 < layout.length) removed.add(index + 1);
+      else if (index) removed.add(index - 1);
+    }
+  });
+  return restored.filter((_, index) => !removed.has(index)).join("");
 }
 
 export function buildUnityTranslateOptions(
@@ -74,7 +89,7 @@ export function buildUnityTranslateOptions(
   return {
     provider: "llm", source, target, feature: "unity",
     ...connection,
-    prompt: `将游戏界面或对白翻译为${language}。将整条文本作为一个完整的上下文理解，不把排版换行当作句子边界；结合前后文确定主语、指代和语气。仅返回译文，不要解释或代码围栏。${joinLines ? "输出连贯译文，不要自行分行，换行由程序恢复。" : "保留原换行和空行。"}保留所有格式占位符、富文本标签和反斜杠转义，不翻译标识符和路径。`,
+    prompt: `将游戏界面或对白翻译为${language}。将整条文本作为一个完整的上下文理解，结合前后文确定主语、指代和语气。仅返回译文，不要解释或代码围栏。${joinLines ? "保留段落、列表编号、项目符号及条目顺序，不合并不同条目；段落或条目内部输出连贯译文，显示折行由程序恢复。" : "保留原换行和空行。"}保留所有格式占位符、富文本标签和反斜杠转义，不翻译标识符和路径。`,
   };
 }
 

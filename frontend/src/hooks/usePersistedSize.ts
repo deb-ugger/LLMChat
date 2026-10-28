@@ -28,12 +28,12 @@ export function usePersistedSize(
   useEffect(() => { if (!dragging.current) save(size); }, [save, size]);
   useEffect(() => () => { cleanup.current?.(); }, []);
 
-  const beginResize = useCallback((event: MouseEvent, direction: 1 | -1) => {
+  const beginResize = useCallback((event: MouseEvent, direction: 1 | -1, fromSize?: number) => {
     event.preventDefault();
     event.stopPropagation();
     cleanup.current?.();
     const origin = axis === "x" ? event.clientX : event.clientY;
-    const initialSize = current.current;
+    const initialSize = fromSize ?? current.current;
     let latest = initialSize;
     let frame = 0;
     const className = axis === "x" ? "col-resizing" : "row-resizing";

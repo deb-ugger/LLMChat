@@ -268,6 +268,8 @@ export type TranslateOptions = {
   provider?: TranslateProvider | string;
   maxLength?: number;
   autoChunk?: boolean;
+  /** The Unity engine pool handles fallback and provider concurrency itself. */
+  autoFallback?: boolean;
   /** LLM overrides for connection test / per-request */
   apiUrl?: string;
   apiKey?: string;

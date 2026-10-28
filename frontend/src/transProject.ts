@@ -1,12 +1,13 @@
 import { DEFAULT_TEXT_PROMPT, type GlossaryEntry, type ReplaceRule, type TransEntry } from "./textTranslate";
 import type { AssDocument, SrtCue } from "./subtitle";
+import type { EpubSource, TextRanges } from "./textProjectFormats";
 
 export const PROJECT_KIND = "llmchat-text-project";
 export const PROJECT_VERSION = 1;
 export const PROJECT_EXT = ".lcproj";
 export const PROJECT_FILENAME = `project${PROJECT_EXT}`;
 
-export type ProjectFormat = "plain" | "json" | "srt" | "ass";
+export type ProjectFormat = "plain" | "json" | "srt" | "ass" | "vtt" | "markdown" | "epub";
 
 export type TokenStats = {
   promptTokens: number;
@@ -30,6 +31,7 @@ export type TextProject = {
   preReplace: ReplaceRule[];
   postReplace: ReplaceRule[];
   format: ProjectFormat;
+  translationOptions?: { concurrency: number; batchTokens: number; contextLines: number };
   entries: TransEntry[];
   /** Original filename if imported from source */
   sourceFileName?: string;
@@ -37,6 +39,8 @@ export type TextProject = {
     srtCues?: SrtCue[];
     assDoc?: AssDocument;
     plainText?: string;
+    textRanges?: TextRanges;
+    epub?: EpubSource;
     /** Backup before subtitleRetiming rewrite */
     originalSrtCues?: SrtCue[];
     originalAssDoc?: AssDocument;
@@ -78,6 +82,8 @@ export function isSupportedSourceFileName(name: string): boolean {
     lower.endsWith(".txt") ||
     lower.endsWith(".md") ||
     lower.endsWith(".srt") ||
+    lower.endsWith(".vtt") ||
+    lower.endsWith(".epub") ||
     lower.endsWith(".ass") ||
     lower.endsWith(".ssa")
   );

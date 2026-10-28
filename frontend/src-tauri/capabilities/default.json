@@ -13,6 +13,7 @@
     "allow-read-file-bytes",
     "allow-speech-jobs",
     "allow-unity-jobs",
+    "allow-runtime-log",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

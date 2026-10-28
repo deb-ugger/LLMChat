@@ -1,78 +1,152 @@
-import type { UnityEntry, UnityProgress } from "./unityOffline";
+import type { UnityEntry, UnityProgress, UnityTranslationActivity } from "./unityOffline";
+export type UnityTranslationQueue = {
+  status: (id: string) => "pending" | "active" | "failed" | "done" | "not-in-task";
+  retry: (id: string) => boolean;
+};
 
 type Session = {
+  key?: (entry: UnityEntry) => string;
   signal: AbortSignal;
-  translate: (source: string) => Promise<string>;
-  format?: (source: string, translated: string) => string;
+  concurrency?: number;
+  translate: (source: string, entry?: UnityEntry) => Promise<string>;
+  format?: (source: string, translated: string) => string | Promise<string>;
+  retainDraft?: boolean;
+  persistDraftBeforeFormat?: boolean;
+  canReuseDraft?: (source: string, translation: string) => boolean;
   validate: (source: string, translated: string) => string;
-  formatFailure: (error: unknown) => string;
   persist: () => Promise<void>;
   progress?: (value: UnityProgress) => void;
+  onQueue?: (queue: UnityTranslationQueue | null) => void;
 };
 const keyOf = (source: string) => source.replace(/\r\n?/g, "\n").normalize("NFC").trim();
-export function unityTranslationStats(entries: UnityEntry[], validate: Session["validate"]) {
+export const unityTranslationContextKey = (entry: UnityEntry) => JSON.stringify([entry.file, entry.container, entry.kind, entry.locale || "", (entry.parentLocator || entry.locator || "").replace(/\/\d+(?=\/|$)/g, "/#"), keyOf(entry.source)]);
+export function unityTranslationCharacters(selected: UnityEntry[], entries: UnityEntry[], validate: Session["validate"], prepare: (source: string) => string, canReuseDraft?: Session["canReuseDraft"], key = (entry: UnityEntry) => keyOf(entry.source)) {
+  const reusable = new Set(entries.filter(entry => entry.translation && !entry.error && !validate(entry.source, entry.translation) || entry.layoutDraft && !validate(entry.source, entry.layoutDraft) && (canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)).map(key));
+  const pending = new Set<string>();
+  let selectedCharacters = 0, pendingCharacters = 0;
+  for (const entry of selected) {
+    for (const _ of entry.source) selectedCharacters++;
+    const identity = key(entry);
+    if (reusable.has(identity) || pending.has(identity)) continue;
+    pending.add(identity);
+    for (const _ of prepare(entry.source)) pendingCharacters++;
+  }
+  return { selectedCharacters, pendingCharacters };
+}
+export function unityTranslationStats(entries: UnityEntry[], validate: Session["validate"], key = (entry: UnityEntry) => keyOf(entry.source)) {
   const groups = new Map<string, boolean>(); let coverageCompleted = 0;
   for (const entry of entries) {
-    const key = keyOf(entry.source), valid = !!entry.translation && !validate(entry.source, entry.translation);
+    const identity = key(entry), valid = !!entry.translation && !entry.error && !validate(entry.source, entry.translation);
     if (valid) coverageCompleted++;
-    groups.set(key, (groups.get(key) ?? true) && valid);
+    groups.set(identity, (groups.get(identity) ?? true) && valid);
   }
   return { completed: [...groups.values()].filter(Boolean).length, total: groups.size, coverageCompleted, coverageTotal: entries.length };
 }
 
-/** The first needed request is the probe and its valid translation is reused. */
+/** Save each result and collect item failures without stopping the remaining work. */
 export async function translateUnitySession(entries: UnityEntry[], cache: Map<string, string>, session: Session) {
-  const reused = new Map([...cache].map(([source, translation]) => [keyOf(source), translation]));
-  for (const entry of entries) if (entry.translation && !session.validate(entry.source, entry.translation)) reused.set(keyOf(entry.source), entry.translation);
+  const entryKey = session.key || ((entry: UnityEntry) => keyOf(entry.source));
+  const reused = session.key ? new Map(cache) : new Map([...cache].map(([source, translation]) => [keyOf(source), translation]));
+  for (const entry of entries) if (entry.translation && !entry.error && !session.validate(entry.source, entry.translation)) reused.set(entryKey(entry), entry.translation);
+  for (const entry of entries) if (entry.layoutDraft && !reused.has(entryKey(entry)) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(entryKey(entry), entry.layoutDraft);
   const groups = new Map<string, UnityEntry[]>();
-  for (const entry of entries) if (!entry.translation || session.validate(entry.source, entry.translation)) {
-    const key = keyOf(entry.source); const group = groups.get(key) || []; group.push(entry); groups.set(key, group);
+  for (const entry of entries) if (entry.error || !entry.translation || session.validate(entry.source, entry.translation)) {
+    const key = entryKey(entry); const group = groups.get(key) || []; group.push(entry); groups.set(key, group);
   }
   const pending = [...groups];
-  const initial = unityTranslationStats(entries, session.validate);
+  const states = new Map<string, "pending" | "active" | "failed" | "done">(pending.map(([key]) => [key, "pending"]));
+  const waitingWorkers = new Set<() => void>();
+  const wake = () => { const workers = [...waitingWorkers]; waitingWorkers.clear(); workers.forEach(resolve => resolve()); };
+  const initial = unityTranslationStats(entries, session.validate, entryKey);
   let completed = initial.completed, covered = initial.coverageCompleted, processed = 0, requests = 0, reusedGroups = initial.completed;
-  let consecutive = 0, failures = 0;
-  const report = (detail: string) => session.progress?.({ detail, completed, total: initial.total, coverageCompleted: covered, coverageTotal: entries.length, requests, reused: reusedGroups });
+  let failures = 0, failedEntries = 0;
+  const active = new Map<string, UnityTranslationActivity>();
+  let last: { id: string; failed: boolean } | undefined;
+  let saveFailure: unknown;
+  let closed = false;
+  let saveQueue = Promise.resolve();
+  const persist = () => {
+    const write = saveQueue.then(() => { if (saveFailure) throw saveFailure; return session.persist(); });
+    saveQueue = write.catch(error => { saveFailure = error; });
+    return write;
+  };
+  const report = (detail: string) => session.progress?.({ detail, completed: initial.completed + processed, total: initial.total, coverageCompleted: covered, coverageTotal: entries.length, requests, reused: reusedGroups,
+    translation: { processed, pending: groups.size, successful: completed, failed: failures, failedEntries, active: [...active.values()], last } });
+  const queue: UnityTranslationQueue = {
+    status(id) { const entry = entries.find(item => item.id === id); return entry ? states.get(entryKey(entry)) || "done" : "not-in-task"; },
+    retry(id) {
+      if (closed || session.signal.aborted || saveFailure) return false;
+      const entry = entries.find(item => item.id === id);
+      if (!entry) return false;
+      const key = entryKey(entry), group = groups.get(key);
+      if (!group || states.get(key) !== "failed") return false;
+      reused.delete(key); cache.delete(key);
+      const draft = group.find(item => item.layoutDraft && !session.validate(item.source, item.layoutDraft) && (session.canReuseDraft?.(item.source, item.layoutDraft) ?? true));
+      if (draft?.layoutDraft) reused.set(key, draft.layoutDraft);
+      states.set(key, "pending"); pending.push([key, group]); processed--; failures--; failedEntries -= group.length;
+      report(`条目 #${id} 已重新加入翻译队列`); wake(); return true;
+    },
+  };
   const commit = async ([key, group]: [string, UnityEntry[]]) => {
     const entry = group[0];
-    let failure: unknown;
+    let formatting = false, persistenceFailure = false;
+    let failed = false;
+    const phase = (value: UnityTranslationActivity["phase"]) => { active.set(key, { id: entry.id, references: group.length, phase: value }); report(`条目 #${entry.id} · 相同原文对应 ${group.length} 个条目`); };
     try {
       const cached = reused.get(key);
-      if (!cached) { requests++; report(`正在发送本轮第 ${requests} 次请求 · 此原文覆盖 ${group.length} 处引用`); }
-      const translated = cached || await session.translate(entry.source);
-      const formatted = group.map(item => {
-        const leading = item.source.match(/^\s*/)?.[0] || "", trailing = item.source.match(/\s*$/)?.[0] || "";
-        const body = session.format ? session.format(item.source.trim(), translated.trim()) : translated.trim();
+      if (!cached) requests++;
+      phase(cached ? "reusing" : "translating");
+      const translated = cached || await session.translate(entry.source, entry);
+      const translationProblem = session.validate(entry.source, translated);
+      if (translationProblem) throw new Error(translationProblem);
+      if (session.retainDraft && session.format && group.some(item => /[\r\n]/.test(item.source))) {
+        group.forEach(item => { item.layoutDraft = translated; });
+        if (session.persistDraftBeforeFormat) try { await persist(); } catch (error) { persistenceFailure = true; throw error; }
+      }
+      formatting = !!session.format;
+      if (formatting) phase("formatting");
+      const formatted: string[] = [];
+      for (const item of group) {
+        if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
+        const leading = item.source.match(session.format ? /^[\t \u3000]*/ : /^\s*/)?.[0] || "";
+        const trailing = session.format ? "" : item.source.match(/\s*$/)?.[0] || "";
+        const body = session.format ? await session.format(item.source.trim(), translated.trim()) : translated.trim();
         const value = leading + body + trailing;
         const problem = session.validate(item.source, value); if (problem) throw new Error(problem);
-        return value;
-      });
-      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; });
-      reused.set(key, translated); cache.set(key, translated); consecutive = 0; completed++; covered += group.length;
+        formatted.push(value);
+      }
+      if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
+      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; delete item.layoutDraft; });
+      reused.set(key, translated); cache.set(key, translated); completed++; covered += group.length;
       if (cached) reusedGroups++;
     } catch (error) {
-      if (session.signal.aborted) throw error;
-      for (const item of group) item.error = error instanceof Error ? error.message : String(error);
-      failure = error; consecutive++; failures++;
+      if (session.signal.aborted || persistenceFailure) throw error;
+      const message = (formatting ? "译文排版失败：" : "") + (error instanceof Error ? error.message : String(error));
+      for (const item of group) item.error = message;
+      failures++; failedEntries += group.length; failed = true;
     }
-    processed++;
-    await session.persist(); // Disk failures stop immediately, never become API failures.
-    report(`已完成 ${completed}/${initial.total} 种原文 · 覆盖 ${covered}/${entries.length} 处 · 本轮请求 ${requests} 次 · 复用 ${reusedGroups} 种${failures ? ` · 失败 ${failures} 种` : ""}`);
-    return failure;
+    phase("saving");
+    await persist(); // Serialize disk snapshots; never let an older write overwrite a newer result.
+    processed++; active.delete(key); states.set(key, failed ? "failed" : "done"); last = { id: entry.id, failed };
+    report(`本轮已检查 ${processed}/${groups.size} 种原文 · 右侧已有有效译文 ${covered}/${entries.length} 条 · 失败 ${failedEntries} 条`);
   };
-  const probe = pending.find(([key]) => !reused.has(key));
   report(`已完成 ${completed}/${initial.total} 种原文 · 已有有效译文覆盖 ${covered}/${entries.length} 处`);
-  if (probe && !session.signal.aborted) {
-    report("正在检查翻译服务可用性，成功结果将保存为首条译文");
-    const failure = await commit(probe);
-    if (failure) throw new Error(`翻译服务预检失败，未继续批量翻译：${session.formatFailure(failure)} 请检查服务或代理后恢复。`);
-  }
-  for (const group of pending) {
-    if (session.signal.aborted) break;
-    if (group === probe) continue;
-    report(`处理本轮第 ${processed + 1}/${pending.length} 种原文 · ${group[1].length} 处引用：${group[1][0].file}`);
-    const failure = await commit(group);
-    if (failure && (consecutive >= 3 || failures >= 5))
-      throw new Error(`翻译已自动停止：${consecutive >= 3 ? "连续 3 次" : "本轮累计 5 次"}请求失败。${session.formatFailure(failure)} 已保存 ${covered} 处译文，修正服务配置后可恢复。`);
-  }
+  let cursor = 0, inFlight = 0;
+  const worker = async () => {
+    while (!session.signal.aborted && !saveFailure) {
+      if (cursor >= pending.length) {
+        if (!inFlight) return;
+        await new Promise<void>(resolve => waitingWorkers.add(resolve)); continue;
+      }
+      const group = pending[cursor++]; states.set(group[0], "active"); inFlight++;
+      try { await commit(group); } finally { inFlight--; wake(); }
+    }
+  };
+  session.signal.addEventListener("abort", wake);
+  session.onQueue?.(queue);
+  try {
+    const results = await Promise.allSettled(Array.from({ length: Math.min(Math.max(1, session.concurrency || 1), pending.length) }, worker));
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) throw rejected.reason;
+  } finally { closed = true; session.signal.removeEventListener("abort", wake); session.onQueue?.(null); }
 }

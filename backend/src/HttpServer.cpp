@@ -2020,7 +2020,7 @@ int HttpServer::run()
                 usageLog.ev().engineKind = UsageStore::engineKindForProvider(provider);
                 tr = TranslateClient::translateFree(
                     text, source, target, provider, maxLength, autoChunk,
-                    cfg.proxyMode, cfg.httpProxy, cfg.translateEngineKeys);
+                    cfg.proxyMode, cfg.httpProxy, cfg.translateEngineKeys, body.value("autoFallback", true));
                 if (tr.provider.empty() == false)
                     usageLog.ev().engineId = tr.provider;
             }

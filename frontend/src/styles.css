@@ -9287,8 +9287,13 @@ body.row-resizing .textLayer {
   color: #fff;
 }
 
-.settings-panel-save:hover {
+.settings-panel-save:hover:not(:disabled) {
   filter: brightness(1.05);
+}
+
+.settings-panel-save:disabled {
+  opacity: .5;
+  cursor: default;
 }
 
 .settings-panel-cancel {

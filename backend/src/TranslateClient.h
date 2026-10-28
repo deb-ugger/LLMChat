@@ -34,7 +34,8 @@ public:
         bool autoChunk = true,
         const std::string& proxyMode = "auto",
         const std::string& httpProxy = "",
-        const std::string& engineKeysJson = "{}");
+        const std::string& engineKeysJson = "{}",
+        bool autoFallback = true);
 
     static TranslateResult translateWithLlm(
         const std::string& text,

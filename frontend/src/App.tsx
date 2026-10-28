@@ -472,11 +472,12 @@ export default function App() {
           onClick={() => setPage("image")}
           title="图片文字识别"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v8.5l3.5-3.5 2.5 2.5 4-4L19 14V6H5zm3.5 2.5A1.5 1.5 0 1 1 8.5 11a1.5 1.5 0 0 1 0-3z"
-            />
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="1.5" y="2" width="10" height="9" rx="1" />
+            <circle cx="4.3" cy="4.8" r=".7" fill="currentColor" stroke="none" />
+            <path d="m2 9 3-3 2.5 2L9 6.5l2.5 3.5" strokeWidth="1.4" />
+            <path d="M2 22 22 2" />
+            <path d="M13 15v-2h9v2M17.5 13v9M15 22h5" />
           </svg>
           <span>图片文字识别</span>
         </button>
@@ -485,8 +486,11 @@ export default function App() {
           onClick={() => setPage("speech")}
           title="语音转文字"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-            <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="4" y="1.5" width="4" height="7" rx="2" />
+            <path d="M1.5 6.5V8a4.5 4.5 0 0 0 9 0V6.5M6 12.5V14M4 14h4" />
+            <path d="M2 22 22 2" />
+            <path d="M13 15v-2h9v2M17.5 13v9M15 22h5" />
           </svg>
           <span>语音转文字</span>
         </button>

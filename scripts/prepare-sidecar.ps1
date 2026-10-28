@@ -5,13 +5,14 @@ $exe = Join-Path $buildDir "Release\llmchat-backend.exe"
 $binDir = Join-Path $root "frontend\src-tauri\binaries"
 $target = Join-Path $binDir "llmchat-backend-x86_64-pc-windows-msvc.exe"
 
-if (-not (Test-Path $buildDir)) {
-    New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
     cmake -S (Join-Path $root "backend") -B $buildDir | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Backend CMake configuration failed (exit $LASTEXITCODE)." }
 }
 
 Write-Output "Building backend..."
 cmake --build $buildDir --config Release
+if ($LASTEXITCODE -ne 0) { throw "Backend build failed (exit $LASTEXITCODE)." }
 if (-not (Test-Path $exe)) {
     Write-Error "Backend exe not found after build: $exe"
 }

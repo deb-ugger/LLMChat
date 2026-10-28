@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace LLMChat.UnityOffline;
 
-public sealed record WorkspaceResult(string WorkRoot, string ProjectsRoot, SavedProject Saved, JsonNode? Task);
+public sealed record WorkspaceResult(string WorkRoot, string ProjectsRoot, SavedProject Saved, JsonNode? Task, bool Installed);
 
 public static class GameWorkspace
 {
@@ -45,8 +45,14 @@ public static class GameWorkspace
     static JsonNode CopyTask(JsonNode task)
     {
         var result = new JsonObject();
-        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "progress", "patch" })
+        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
+        if (task["engines"] is JsonArray engines) {
+            var choices = new JsonArray();
+            foreach (var engine in engines) if (engine != null)
+                choices.Add(new JsonObject { ["id"] = engine["id"]?.DeepClone(), ["enabled"] = engine["enabled"]?.DeepClone() });
+            result["engines"] = choices;
+        }
         return result;
     }
     static void MapPaths(JsonNode task, Func<string, string> map)
@@ -204,6 +210,6 @@ public static class GameWorkspace
                 }
             }
         }
-        return new(work, projects, saved, task);
+        return new(work, projects, saved, task, PatchInstallation.Status(root).Installed);
     }
 }

@@ -287,6 +287,11 @@ export function UnityTranslateView({
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
   const [offlineToolbar, setOfflineToolbar] = useState<HTMLDivElement | null>(null);
   const [offlineBusy, setOfflineBusy] = useState(false);
+  const [embeddedInstalled, setEmbeddedInstalled] = useState<Record<string, boolean>>({});
+  const installKey = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const installationChanged = useCallback((root: string, installed: boolean) => {
+    setEmbeddedInstalled(previous => ({ ...previous, [root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()]: installed }));
+  }, []);
   const offlineRef = useRef<UnityOfflineHandle>(null);
   const [pathInput, setPathInput] = useState("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -295,8 +300,10 @@ export function UnityTranslateView({
   const [targetLang, setTargetLang] = useState("zh-CN");
   const [fromLang, setFromLang] = useState("ja");
   const [configSections, setConfigSections] = useState<UnityIniSection[]>([]);
+  const [savedConfig, setSavedConfig] = useState("");
   const [configPath, setConfigPath] = useState("");
   const [configExists, setConfigExists] = useState(false);
+  const configDirty = configSections.length > 0 && (!configExists || serializeIniSections(configSections) !== savedConfig);
   const [scanState, setScanState] = useState<ScanState | null>(null);
   const [selectedGameDir, setSelectedGameDir] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
@@ -569,6 +576,7 @@ export function UnityTranslateView({
         setConfigPath(res.path || "");
         setConfigExists(!!res.exists);
         applyConfigSections(res.sections || []);
+        setSavedConfig(serializeIniSections(res.sections || []));
       } catch (e) {
         reportError(toFriendlyError(e, "读取配置失败"));
       }
@@ -660,6 +668,17 @@ export function UnityTranslateView({
   }, [selfCheckTabMenu]);
 
   const games = scanState?.games ?? [];
+  const installationRoots = JSON.stringify([...new Set([...games.map(game => game.gameDir), ...recentGames.map(game => game.gameDir)])]);
+  useEffect(() => {
+    if (!active) return;
+    const roots: string[] = JSON.parse(installationRoots);
+    if (!roots.length) return;
+    let cancelled = false;
+    void unityRun<Array<{ root: string; installed: boolean }>>("installation-status", { roots }).then(statuses => {
+      if (!cancelled) setEmbeddedInstalled(previous => ({ ...previous, ...Object.fromEntries(statuses.map(status => [installKey(status.root), status.installed])) }));
+    }).catch(error => { if (!cancelled) reportError(`读取嵌字翻译安装状态失败：${String(error)}`); });
+    return () => { cancelled = true; };
+  }, [active, installationRoots, viewMode]);
 
   const filteredGames = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -686,7 +705,10 @@ export function UnityTranslateView({
       void api
         .unityGetConfig("")
         .then((res) => {
-          if (res.ok && res.sections) applyConfigSections(res.sections);
+          if (res.ok && res.sections) {
+            applyConfigSections(res.sections);
+            setSavedConfig(serializeIniSections(res.sections));
+          }
           setConfigPath(res.path || "");
           setConfigExists(!!res.exists);
         })
@@ -699,6 +721,7 @@ export function UnityTranslateView({
   }, [selected?.gameDir, loadConfigForGame, applyConfigSections]);
 
   const onSaveConfig = async () => {
+    if (busy || !configDirty) return;
     const gameDir = selected?.gameDir;
     if (!gameDir) {
       reportError("请先选择一个游戏");
@@ -718,6 +741,7 @@ export function UnityTranslateView({
       setConfigPath(res.path || configPath);
       setConfigExists(true);
       const savedPath = res.path || configPath;
+      setSavedConfig(serializeIniSections(configSections));
       reportSuccess(`配置已保存：${savedPath}`);
       showConfigToast("配置已保存", true);
     } catch (e) {
@@ -1215,6 +1239,7 @@ export function UnityTranslateView({
         setConfigPath(pathToOpen);
         setConfigExists(true);
         reportSuccess(`已写入配置：${pathToOpen}`);
+        setSavedConfig(serializeIniSections(configSections));
       }
       if (!pathToOpen) {
         reportError("无法确定配置文件路径");
@@ -1531,6 +1556,7 @@ export function UnityTranslateView({
       setConfigPath(res.path || configPath);
       setConfigExists(true);
       showConfigToast("已切换为 LLMChat 大模型翻译（需保持本软件运行）", true);
+      setSavedConfig(serializeIniSections(sections));
       reportSuccess(
         `已设置 Endpoint=CustomTranslate，Url=${bridgeUrl}；模型使用「设置 → 通用」的当前配置`,
       );
@@ -1756,11 +1782,11 @@ export function UnityTranslateView({
             {helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code title={selected.gameDir}>{selected.gameDir}</code></div>}
+          <div ref={setOfflineToolbar} className="unity-header-primary" hidden={mode !== "offline"} />
           <nav className="unity-mode-nav" aria-label="Unity 翻译模式">
             <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
           </nav>
-          <div ref={setOfflineToolbar} className="unity-header-primary" hidden={mode !== "offline"} />
           {onOpenUnitySettings ? (
             <div className="unity-top-actions">
               <button
@@ -2155,7 +2181,7 @@ export function UnityTranslateView({
       )}
 
       <div className="unity-offline-host" hidden={!showDetail || mode !== "offline"}>
-        <UnityOfflineView ref={offlineRef} active={active && showDetail && mode === "offline"} game={showDetail ? selected : null} settings={settings} toolbarTarget={offlineToolbar} onBusyChange={setOfflineBusy} onOpenGeneralSettings={onOpenGeneralSettings} />
+        <UnityOfflineView ref={offlineRef} active={active && showDetail && mode === "offline"} game={showDetail ? selected : null} settings={settings} toolbarTarget={offlineToolbar} onBusyChange={setOfflineBusy} onInstallationChange={installationChanged} onOpenGeneralSettings={onOpenGeneralSettings} />
       </div>
       <div
         ref={workspaceRef}
@@ -2480,22 +2506,14 @@ export function UnityTranslateView({
                 <div className="unity-section-head">
                   <h2>检测到的游戏</h2>
                   <div className="unity-section-head-aside">
-                    <span
-                      className={
-                        !scanning && games.length === 0
-                          ? "unity-games-status is-empty"
-                          : undefined
-                      }
-                    >
+                    {(scanning || games.length > 0) && <span role="status">
                       {scanning
                         ? `扫描中 · 已找到 ${games.length} 个`
-                        : games.length === 0
-                          ? "未找到游戏"
-                          : searchQuery.trim()
+                        : searchQuery.trim()
                             ? `${filteredGames.length} / ${games.length} 个`
                             : `${games.length} 个`}
                       {games.length > 0 ? " · 点选查看详情" : ""}
-                    </span>
+                    </span>}
                     {helpButton}
                   </div>
                 </div>
@@ -2529,7 +2547,7 @@ export function UnityTranslateView({
                       role="status"
                     >
                       {scanning ? (
-                        <p>正在扫描目录，发现游戏后会立即显示</p>
+                        <p>发现的游戏会显示在这里</p>
                       ) : (
                         <strong>未找到 Unity 游戏</strong>
                       )}
@@ -2558,6 +2576,7 @@ export function UnityTranslateView({
                                 {gameTitle(g)}
                               </div>
                               <div className="unity-game-meta">
+                                {embeddedInstalled[installKey(g.gameDir)] && <span>已安装嵌字翻译</span>}
                                 <span title="程序架构（主程序位数）">
                                   {archLabel(g.arch)}
                                 </span>
@@ -2721,7 +2740,7 @@ export function UnityTranslateView({
               <button
                 type="button"
                 className="unity-btn unity-btn-wide"
-                disabled={busy || !selected}
+                disabled={busy || !selected || !configDirty}
                 onClick={() => void onSaveConfig()}
                 title="将当前表单写入游戏目录 Config.ini"
               >

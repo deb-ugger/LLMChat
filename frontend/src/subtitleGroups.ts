@@ -6,7 +6,7 @@ export type SubtitleCueGroup = {
   id: string;
   entryIds: string[];
   sources: string[];
-  /** Relative lengths for proportional fallback split */
+  /** Original cue lengths retained with each subtitle group. */
   sourceLens: number[];
 };
 
@@ -158,11 +158,11 @@ export function buildSubtitleCueGroups(
   return groups;
 }
 
-/** Split model output into N cue lines; fall back to length-proportional cut. */
+/** Accept only an explicit one-to-one subtitle result. */
 export function splitGroupTranslation(
   raw: string,
   n: number,
-  sourceLens: number[],
+  _sourceLens: number[],
 ): string[] {
   const cleaned = raw.replace(/^\uFEFF/, "").trim();
   if (n <= 1) return [cleaned];
@@ -182,32 +182,7 @@ export function splitGroupTranslation(
     .filter((s) => s.length > 0);
   if (byLine.length === n) return byLine;
 
-  // Proportional character split on flattened text
-  const flat = byLine.join("") || cleaned.replace(/\s+/g, "");
-  const total = sourceLens.reduce((a, b) => a + b, 0) || n;
-  const parts: string[] = [];
-  let cursor = 0;
-  for (let i = 0; i < n; i++) {
-    if (i === n - 1) {
-      parts.push(flat.slice(cursor).trim() || flat.slice(cursor));
-      break;
-    }
-    const take = Math.max(
-      1,
-      Math.round((sourceLens[i] / total) * flat.length),
-    );
-    let end = Math.min(flat.length, cursor + take);
-    // Prefer break near punctuation
-    const window = flat.slice(cursor, Math.min(flat.length, end + 8));
-    const m = window.match(/^[\s\S]*?[，。！？、；：,.!?;]/);
-    if (m && m[0].length >= take * 0.5) {
-      end = cursor + m[0].length;
-    }
-    parts.push(flat.slice(cursor, end).trim());
-    cursor = end;
-  }
-  while (parts.length < n) parts.push("");
-  return parts.slice(0, n);
+  throw new Error(`字幕译文条数不匹配：需要 ${n} 条，收到 ${byLine.length} 条，请重新翻译该组`);
 }
 
 export function buildGroupTranslatePayload(

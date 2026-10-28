@@ -105,16 +105,16 @@ export const TRANSLATE_ENGINES: EngineInfo[] = [
   },
   {
     id: "youdao",
-    label: "有道翻译（需 Key）",
+    label: "有道翻译（应用 ID＋密钥）",
     strongLangs: ["en", "zh"],
-    hint: "使用有道智云 App Key / App Secret。",
+    hint: "在有道智云创建应用并绑定文本翻译服务，填写平台分配的应用凭证。",
     defaultMaxChars: 2000,
     supportsChunk: true,
     credentialFields: [
-      { key: "appId", label: "App Key", placeholder: "应用 ID" },
+      { key: "appId", label: "应用 ID（App Key）", placeholder: "平台分配的应用 ID，不是应用名称" },
       {
         key: "secret",
-        label: "App Secret",
+        label: "应用密钥（App Secret）",
         password: true,
         placeholder: "应用密钥",
       },
@@ -122,30 +122,30 @@ export const TRANSLATE_ENGINES: EngineInfo[] = [
   },
   {
     id: "baidu",
-    label: "百度翻译（需 Key）",
+    label: "百度通用翻译（APP ID＋密钥）",
     strongLangs: ["en", "zh"],
-    hint: "使用百度翻译开放平台 App ID / 密钥。",
+    hint: "使用百度翻译开放平台「通用文本翻译」凭证，APP ID 是平台分配的数字编号。",
     defaultMaxChars: 2000,
     supportsChunk: true,
     credentialFields: [
-      { key: "appId", label: "App ID", placeholder: "APP ID" },
+      { key: "appId", label: "应用 ID（APP ID）", placeholder: "从平台开发者信息中复制，不是应用名称" },
       {
         key: "secret",
-        label: "密钥",
+        label: "应用密钥",
         password: true,
-        placeholder: "密钥",
+        placeholder: "与 APP ID 配套的通用翻译密钥",
       },
     ],
   },
   {
     id: "sogou",
-    label: "搜狗翻译（需 Key）",
+    label: "搜狗翻译（PID＋Key）",
     strongLangs: ["en", "zh"],
     hint: "使用搜狗开放平台 PID / Key。",
     defaultMaxChars: 2000,
     supportsChunk: true,
     credentialFields: [
-      { key: "appId", label: "PID", placeholder: "应用 PID" },
+      { key: "appId", label: "服务 ID（PID）", placeholder: "平台分配的 PID，不是应用名称" },
       {
         key: "secret",
         label: "Key",
@@ -156,7 +156,7 @@ export const TRANSLATE_ENGINES: EngineInfo[] = [
   },
   {
     id: "niutrans",
-    label: "小牛翻译（需 Key）",
+    label: "小牛翻译（API Key）",
     strongLangs: ["en", "zh"],
     hint: "使用小牛翻译 API Key。",
     defaultMaxChars: 2000,
@@ -279,10 +279,14 @@ export function engineReady(map: EngineKeysMap, id: string): boolean {
 export function engineConfigStatusLabel(
   map: EngineKeysMap,
   id: string,
-): "无需配置" | "已配置" | "未配置" {
+  connectionOk?: boolean,
+): "无需配置" | "已填写" | "未填写" | "连接正常" | "连接失败" {
   const e = getEngineInfo(id);
-  if (!e || !engineRequiresKey(e)) return "无需配置";
-  return engineHasCredentials(map, id) ? "已配置" : "未配置";
+  if (!e) return "无需配置";
+  const needsKey = engineRequiresKey(e);
+  if (needsKey && !engineHasCredentials(map, id)) return "未填写";
+  if (connectionOk !== undefined) return connectionOk ? "连接正常" : "连接失败";
+  return needsKey ? "已填写" : "无需配置";
 }
 
 /**
