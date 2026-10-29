@@ -54,7 +54,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 '@
-[IO.File]::WriteAllText((Join-Path $output 'THIRD-PARTY.txt'), $notice, [Text.UTF8Encoding]::new($false))
+$noticePath = Join-Path $output 'THIRD-PARTY.txt'
+if (!(Test-Path -LiteralPath $noticePath) -or [IO.File]::ReadAllText($noticePath) -cne $notice) {
+    [IO.File]::WriteAllText($noticePath, $notice, [Text.UTF8Encoding]::new($false))
+}
 $runtimePackages = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.netcore.app.runtime.win-x64'
 $runtime = Get-ChildItem -LiteralPath $runtimePackages -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 foreach ($name in @('LICENSE.TXT', 'THIRD-PARTY-NOTICES.TXT')) {

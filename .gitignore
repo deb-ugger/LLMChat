@@ -17,6 +17,7 @@ backend/out/
 # Frontend deps & build
 frontend/node_modules/
 frontend/dist/
+frontend/dist-staging/
 frontend/tsconfig.tsbuildinfo
 **/*.tsbuildinfo
 

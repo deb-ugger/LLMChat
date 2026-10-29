@@ -3,17 +3,16 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { copyPublicAssets } from "./build/runtimeAssets.mjs";
+import { copyPublicAssets, syncDirectory } from "./build/runtimeAssets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const require = createRequire(import.meta.url);
 const pdfjsDistPath = path.dirname(require.resolve("pdfjs-dist/package.json"));
 
-/** Copy pdf.js cmaps/fonts into dist (and serve them in dev). */
-function copyPdfjsAssets(): Plugin {
+/** Serve pdf.js support files directly in dev. */
+function servePdfjsAssets(): Plugin {
   const cmapsSrc = path.join(pdfjsDistPath, "cmaps");
   const fontsSrc = path.join(pdfjsDistPath, "standard_fonts");
-  const outDir = path.resolve("dist");
 
   const mountStatic = (prefix: string, root: string) => {
     return (
@@ -40,7 +39,7 @@ function copyPdfjsAssets(): Plugin {
   };
 
   return {
-    name: "copy-pdfjs-assets",
+    name: "serve-pdfjs-assets",
     configureServer(server) {
       server.middlewares.use("/cmaps", mountStatic("/cmaps", cmapsSrc));
       server.middlewares.use(
@@ -48,27 +47,23 @@ function copyPdfjsAssets(): Plugin {
         mountStatic("/standard_fonts", fontsSrc),
       );
     },
-    closeBundle() {
-      for (const [src, name] of [
-        [cmapsSrc, "cmaps"],
-        [fontsSrc, "standard_fonts"],
-      ] as const) {
-        const dest = path.join(outDir, name);
-        fs.rmSync(dest, { recursive: true, force: true });
-        fs.cpSync(src, dest, { recursive: true });
-      }
-    },
   };
 }
 
 export default defineConfig(async () => ({
   worker: { format: "es" },
-  build: { copyPublicDir: false },
-  plugins: [react(), copyPdfjsAssets(), {
+  build: { copyPublicDir: false, outDir: "dist-staging" },
+  plugins: [react(), servePdfjsAssets(), {
     name: "external-runtime-assets",
     apply: "build",
     writeBundle(options) {
-      copyPublicAssets(path.resolve("."), path.resolve(options.dir ?? "dist"));
+      const staging = path.resolve(options.dir ?? "dist-staging");
+      copyPublicAssets(path.resolve("."), staging);
+      for (const name of ["cmaps", "standard_fonts"]) {
+        syncDirectory(path.join(pdfjsDistPath, name), path.join(staging, name));
+      }
+      // Tauri watches dist. Do not invalidate Rust for identical frontend output.
+      syncDirectory(staging, path.resolve("dist"));
     },
   }],
   clearScreen: false,

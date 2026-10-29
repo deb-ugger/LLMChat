@@ -62,10 +62,9 @@ try {
 
     Write-Output '[3/6] Building the backend and preparing its sidecar...'
     Invoke-BuildScript 'prepare-sidecar.ps1'
-    Write-Output '[4/6] Preparing speech decoding and Unity patch tools...'
+    Write-Output '[4/6] Preparing speech decoding tools...'
     $speechArguments = if ($Proxy) { @('-Proxy', $Proxy) } else { @() }
     Invoke-BuildScript 'prepare-speech-tools.ps1' $speechArguments
-    Invoke-BuildScript 'prepare-unity-tools.ps1'
     Write-Output '[5/6] Building the desktop application...'
     $frontend = Join-Path $projectRoot 'frontend'
     $cli = Join-Path $frontend 'node_modules\@tauri-apps\cli\tauri.js'
