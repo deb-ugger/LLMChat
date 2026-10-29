@@ -189,4 +189,26 @@ public static class ImageResources
             var path = Program.Within(project.Folder, "images/state/" + image.Id + ".json"); if (File.Exists(path)) File.Delete(path);
         }
     }
+    public static int Reuse(Project previous, Project scanned) {
+        var prior = previous.Images.Where(i => i.SourceFile.Length > 0).ToDictionary(i => (i.File, i.Container, i.ObjectId, i.SourceHash));
+        var count = 0;
+        foreach (var image in scanned.Images.Where(i => i.SourceFile.Length > 0)) {
+            if (!prior.TryGetValue((image.File, image.Container, image.ObjectId, image.SourceHash), out var saved)) continue;
+            image.Selected = saved.Selected; image.OcrCompleted = saved.OcrCompleted; image.Completed = saved.Completed; image.Error = saved.Error;
+            image.Regions = saved.Regions;
+            if (saved.RenderedFile.Length > 0) {
+                var source = Program.Within(previous.Folder, saved.RenderedFile);
+                if (File.Exists(source) && Program.Hash(source) == saved.RenderedHash) {
+                    image.RenderedFile = "images/rendered/" + image.Id + ".png";
+                    var target = Program.Within(scanned.Folder, image.RenderedFile); Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(source, target, true); image.RenderedHash = saved.RenderedHash;
+                } else {
+                    image.Completed = false;
+                    image.Error = "旧译图缺失或校验失败，已保留识别和翻译结果，可重新生成译图";
+                }
+            }
+            if (image.OcrCompleted || image.Regions.Count > 0 || image.Completed) count++;
+        }
+        return count;
+    }
 }

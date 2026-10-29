@@ -19,6 +19,7 @@ import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreak
 import { UnitySegmentation } from "../unitySegmentation";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
+import { createUnityTranslationJobs, mergeUnityTranslationProject, UnityTranslationStopped, type UnityTranslationPart } from "../unityTranslationJobs";
 import { createUnityImageOcr, processUnityImages, renderUnityImage } from "../unityImages";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UnityEngineList } from "./UnityEngineList";
@@ -32,12 +33,13 @@ import "../unityOffline.css";
 export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean> };
 const GENERATION_STEPS = UNITY_STEPS;
 type UnityTranslationOptions = ReturnType<typeof buildUnityTranslateOptions> & { engineIds?: TranslateProvider[] };
-type GenerationProgress = UnityProgress & { step: number; state: "running" | "done" | "stopped" | "error"; failure?: string };
+type GenerationProgress = UnityProgress & { step: number; state: "pending" | "running" | "done" | "stopped" | "error" | "skipped"; failure?: string };
 type TranslationFileStatus = { action: "download" | "import"; state: "working" | "checked" | "done" | "cancelled" | "error"; detail: string; path?: string; folder?: string };
 type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
   projectFolder: string; scanFolder: string; patchFolder: string; patch: UnityPatch | null;
   previousProjectFolder?: string; scopeVersion?: number; translationFailure?: string;
+  translationRuns?: Record<UnityTranslationPart, GenerationProgress>;
   imageOnly?: boolean; imageOcrMode?: OcrMode;
   partial?: boolean; joinLines?: boolean; lineMode?: UnityLineMode; lineModel?: string; layoutOnly?: boolean;
   textMode?: "lines" | "paragraphs" | "smart"; codeAssemblies?: string[] | null; typeDirectory?: string; extraCharacters?: string;
@@ -90,10 +92,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [message, setMessage] = useState("");
   const [patch, setPatch] = useState<UnityPatch | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [generation, setGeneration] = useState<GenerationProgress | null>(null);
+  const [generationState, setGeneration] = useState<GenerationProgress | null>(null);
   const [applied, setApplied] = useState(false);
   const [checkpoint, setCheckpoint] = useState<RunCheckpoint | null>(null);
   const checkpointRef = useRef<RunCheckpoint | null>(null);
+  const generation = activeStep === 2 && checkpoint?.translationRuns ? checkpoint.translationRuns[imagePart ? "images" : "text"] : generationState;
+  const translationJobs = useRef<ReturnType<typeof createUnityTranslationJobs> | null>(null);
+  const projectWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const imageMode = useRef(imageOcrMode); imageMode.current = imageOcrMode;
   const [restoring, setRestoring] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState("");
   const [restoreNotices, setRestoreNotices] = useState<string[]>([]);
@@ -135,8 +141,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const checkpointKey = "llmchat-unity-run:" + root.toLowerCase();
   const remember = (value: RunCheckpoint) => {
     checkpointRef.current = value; setCheckpoint(value); setGeneration(value.progress);
-    const { progress, ...fields } = value;
-    const signature = JSON.stringify({ root, ...fields, progress: { step: progress.step, state: progress.state, folder: progress.folder, total: progress.total, failure: progress.failure } });
+    const { progress, translationRuns, ...fields } = value;
+    const parts = translationRuns && Object.fromEntries(Object.entries(translationRuns).map(([part, value]) => [part, { state: value.state, total: value.total, failure: value.failure }]));
+    const signature = JSON.stringify({ root, ...fields, translationRuns: parts, progress: { step: progress.step, state: progress.state, folder: progress.folder, total: progress.total, failure: progress.failure } });
     if (signature !== queuedSignature.current) {
       queuedSignature.current = signature;
       const job = structuredClone(value);
@@ -222,6 +229,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             const ids = unityLanguageScope(p.entries, value.source).ids;
             const rows = p.entries.filter(e => e.selected && ids.has(e.id));
             value.progress = { ...value.progress, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined, engineStats: undefined, engineTargetCharacters: undefined, detail: "已恢复有效译文；主进度按语境内去重后的原文计算，未完成项可继续" };
+          }
+          if (value.translationRuns && p) {
+            const ids = unityLanguageScope(p.entries, value.source).ids;
+            const rows = p.entries.filter(entry => entry.selected && ids.has(entry.id));
+            value.translationRuns.text = { ...value.translationRuns.text, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined, engineStats: undefined };
+            const images = (p.images || []).filter(image => image.selected);
+            value.translationRuns.images = { ...value.translationRuns.images, completed: images.filter(image => image.completed).length, total: images.length };
+            if (!value.finished) for (const progress of Object.values(value.translationRuns)) if (progress.state === "running") progress.state = "stopped";
           }
           if (!value.finished && value.progress.state !== "error") value.progress.state = "stopped";
           remember(value);
@@ -309,7 +324,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     row?.focus({ preventScroll: true });
   }, [rowJump]);
   const update = (id: string, value: Partial<UnityProject["entries"][number]>) => {
-    setProject(p => p ? { ...p, entries: p.entries.map(e => e.id === id ? { ...e, ...value, error: "" } : e) } : p);
+    const p = latest.current;
+    if (p) publish({ ...p, entries: p.entries.map(e => e.id === id ? { ...e, ...value, error: "" } : e) });
     setDirty(true); invalidatePatch();
     setFontPlan(null);
   };
@@ -341,6 +357,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function restartStage(step: number) {
     if (busy || restoring) return;
+    if (step === 1) { await startWorkflow(1, 1, false, false, true); return; }
     const cleanup = step === 2 && imagePart ? "图片识别结果、图片译文和后续补丁，保留文本译文及原图" : step === 1 ? "当前游戏的扫描工程、译文、字库检查及补丁" : step === 2 ? "当前工程的译文、字库检查及补丁，保留扫描结果" : step === 3 ? "当前工程的字库检查、补丁及应用记录，保留扫描和译文" : "应用记录，恢复游戏原件，保留校验通过的补丁、扫描和译文";
     if (!await confirm(`重做“${step === 2 && imagePart ? "2.2 图片识别与翻译" : GENERATION_STEPS[step - 1]}”？将清除${cleanup}。已应用的文件会先从校验通过的原件备份恢复；清理完成后再重新开始。`, { title: "重做步骤", kind: "warning", okLabel: "清理并重新设置", cancelLabel: "取消" })) return;
     await operation("清理旧产物", async () => {
@@ -364,11 +381,19 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       }
     }, false);
   }
+  function queueProjectWrite<T>(job: () => Promise<T>): Promise<T> {
+    const next = projectWrites.current.catch(() => {}).then(job); projectWrites.current = next; return next;
+  }
   async function save(p = latest.current) {
     if (!p) return;
-    await unityRun("save", { project: p });
-    if (latest.current === p) setDirty(false);
+    await queueProjectWrite(() => unityRun("save", { project: latest.current?.folder === p.folder ? latest.current : p }));
+    setDirty(false);
   }
+  function publishTranslation(p: UnityProject, part: UnityTranslationPart) {
+    const merged = mergeUnityTranslationProject(latest.current || p, p, part); publish(merged); return merged;
+  }
+  async function saveTranslation(p: UnityProject, part: UnityTranslationPart) { publishTranslation(p, part); await save(); }
+
   async function translationOptions(run?: RunCheckpoint, forImages = false): Promise<UnityTranslationOptions> {
     const general = await api.getSettings();
     const engineIds = (run?.engines || engineChoices).filter(row => row.enabled && engineReady(parseEngineKeys(general.translateEngineKeys), row.id)).map(row => row.id);
@@ -480,7 +505,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             entry.error = `译文排版失败：${error instanceof Error ? error.message : String(error)}`;
             failures++;
           }
-          await unityRun("save", { project: next }); publish({ ...next, entries: [...next.entries] });
+          await saveTranslation({ ...next, entries: [...next.entries] }, "text");
           onProgress?.({ detail: `仅重新断行，未请求重新翻译${failures ? ` · ${failures} 条失败已记录，继续处理` : ""}`, completed: completed + failures, total });
         }
         return next;
@@ -493,14 +518,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         canReuseDraft: mergeLines ? canReuseUnityStructuredDraft : undefined,
         format: mergeLines ? queuedFormat : undefined, retainDraft: mergeLines, persistDraftBeforeFormat: breakMode === "model" || breakMode === "wtp",
         translate: pool ? (text, entry) => pool.translate(text, entry?.id) : (text, entry) => requestTranslation(text, options.provider, entry),
-        persist: async () => { await unityRun("save", { project: next }); publish({ ...next, entries: [...next.entries] }); },
+        persist: async () => { await saveTranslation({ ...next, entries: [...next.entries] }, "text"); },
       });
     } finally {
       pool?.dispose();
       segmenter.dispose();
       const final = { ...next, entries: [...next.entries] };
-      publish(final);
-      await save(final);
+      await saveTranslation(final, "text");
       setMessage(controller.signal.aborted ? "已停止，已保存译文和排版草稿" : layoutOnly ? "断行处理已保存，未重新翻译；检查排版后可生成补丁" : "本轮翻译已结束，可检查译文后生成补丁");
     }
     return next;
@@ -530,15 +554,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         read: async image => new Blob([await readFileBytes(p.folder + "/" + image.sourceFile)], { type: "image/png" }),
         recognize: ocr.recognize, translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: renderUnityImage,
         write: writeImage,
-        persist: async (next, image) => { current = next; publish({ ...next, images: [...(next.images || [])] }); await unityRun("save-image", { project: imageRequest(next, image), imageId: image.id }); },
+        persist: async (next, image) => { current = next; publishTranslation({ ...next, images: [...(next.images || [])] }, "images"); const snapshot = structuredClone(image); await queueProjectWrite(() => unityRun("save-image", { project: imageRequest(next, snapshot), imageId: snapshot.id })); },
         validate: unityTranslationError,
       }, onProgress);
       return current;
-    } finally { pool?.dispose(); controller.signal.removeEventListener("abort", cancelOcr); await ocr.dispose(); publish(current); await save(current); }
+    } finally { pool?.dispose(); controller.signal.removeEventListener("abort", cancelOcr); await ocr.dispose(); await saveTranslation(current, "images"); }
   }
   const editImage = (image: UnityImage) => {
-    if (!project) return;
-    const next = { ...project, imagesSkipped: false, images: (project.images || []).map(item => item.id === image.id ? image : item) };
+    const p = latest.current; if (!p) return;
+    const next = { ...p, imagesSkipped: false, images: (p.images || []).map(item => item.id === image.id ? image : item) };
     publish(next); setDirty(true); invalidatePatch();
   };
   const updateImagePreview = (image: UnityImage, imported = false) => operation(imported ? "替换译图" : "生成译图", async () => {
@@ -551,8 +575,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     publish(next); await save(next); invalidatePatch();
   });
   async function skipTranslationPart(images = imagePart) {
-    if (!project || busy || restoring) return;
+    if (!project || restoring || busy && !translationJobs.current) return;
     if (!await confirm(images ? "跳过尚未完成的图片？已完成的译图保留，其余图片保持原样。" : "跳过尚未完成的文本？已有有效译文保留，其余文本保持原文。", { title: images ? "跳过 2.2" : "跳过 2.1", okLabel: "跳过剩余", cancelLabel: "取消" })) return;
+    const jobs = translationJobs.current;
+    if (jobs) {
+      const p = latest.current!; publish({ ...p, ...(images ? { imagesSkipped: true } : { textSkipped: true }) });
+      const saved = save(); await Promise.all([saved, jobs.skip(images ? "images" : "text")]); return;
+    }
     await operation("保存跳过选择", async () => {
       const next = { ...project, ...(images ? { imagesSkipped: true } : { textSkipped: true }) }; publish(next); await save(next);
       const task = checkpointRef.current || projectCheckpoint(next);
@@ -576,25 +605,26 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setApplied(true); onInstallationChange?.(root, true);
     setMessage(`已将 ${result.files} 个补丁文件应用到游戏。原件保存在补丁目录的 original 文件夹，实际显示请启动游戏检查。`);
   }
-  async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false) {
+  async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false, part?: UnityTranslationPart) {
     if (busy || restoring || running.current) return;
     const rescan = (needsScan || updateScan) && (resume ? checkpointRef.current?.step ?? startStep : startStep) <= 2;
-    if (rescan && !await confirm(`重新扫描原因：\n${scanUpdate.reasons.join("\n")}\n\n将先清理失效补丁，再重新扫描并复用匹配译文；如已应用补丁，将先恢复游戏原件。新工程保存成功后清理旧工程。${endStep >= 2 ? "扫描完成后再继续翻译。" : ""}`, { title: needsScan ? "需要重新扫描" : "可选更新扫描", kind: "warning", okLabel: "重新扫描并继续", cancelLabel: "取消" })) return;
-    await operation("准备任务", () => runWorkflow(startStep, endStep, resume, automatic, rescan), true);
+    if (rescan && !await confirm(`重新扫描将保留旧工程，复用原文、原图及定位匹配的译文、图片识别结果和译图；仅补丁与字库检查会失效，如已应用补丁则先恢复游戏原件。新工程及复用结果保存完成后再清理旧工程。${scanUpdate.reasons.length ? "\n" + scanUpdate.reasons.join("\n") : ""}${endStep >= 2 ? "扫描完成后再继续翻译。" : ""}`, { title: needsScan ? "需要重新扫描" : "可选更新扫描", kind: "warning", okLabel: "重新扫描并继续", cancelLabel: "取消" })) return;
+    await operation("准备任务", () => runWorkflow(startStep, endStep, resume, automatic, rescan, part), true);
   }
-  async function runWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, rescan = false) {
+  async function runWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, rescan = false, part?: UnityTranslationPart) {
     const controller = new AbortController(); abort.current = controller;
     let run: RunCheckpoint = resume && checkpointRef.current ? { ...checkpointRef.current, endStep } : {
-      step: startStep, endStep, automatic, finished: false, imageOnly: startStep === 2 && (automatic ? textReady : imagePart), imageOcrMode,
+      step: startStep, endStep, automatic, finished: false, imageOnly: startStep === 2 && (part ? part === "images" : automatic ? textReady : imagePart), imageOcrMode,
       projectFolder: startStep === 1 && endStep === 1 ? "" : project?.folder || "", scanFolder: "", patchFolder: "", patch: startStep === 4 ? patch : null,
-      previousProjectFolder: startStep === 1 && endStep === 1 ? project?.folder : undefined,
+      previousProjectFolder: startStep === 1 && endStep === 1 ? checkpointRef.current?.previousProjectFolder || project?.folder : undefined,
       translationKind, llmModel, engine, engines: engineChoices, source, target, joinLines, lineMode, lineModel, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters, scopeVersion: 1,
       partial: !!project?.textSkipped || startStep >= 3 && !!checkpointRef.current?.partial,
       progress: { step: startStep, state: "running", detail: "准备处理", completed: 0, total: null },
     };
     if (automatic) run.automatic = true;
+    if (part) run.imageOnly = part === "images";
     if (rescan) {
-      run = { ...run, step: 1, imageOnly: false, projectFolder: "", scanFolder: "", previousProjectFolder: project?.folder, includeCode, textMode, codeAssemblies, typeDirectory,
+      run = { ...run, step: 1, imageOnly: false, projectFolder: "", scanFolder: "", previousProjectFolder: checkpointRef.current?.previousProjectFolder || project?.folder, includeCode, textMode, codeAssemblies, typeDirectory,
         translationFailure: run.progress.step === 2 && run.progress.state === "error" ? run.progress.failure : run.translationFailure,
         progress: { step: 1, state: "running", detail: "重新提取游戏组件文本，已有工程和译文保留", completed: 0, total: null } };
     }
@@ -616,7 +646,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if (rescan && project) {
         if (dirty) await save();
         await taskWrites.current;
-        await unityRun("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
+        await unityRun("reset-step", { root, step: 3, path: project.folder, task: { ...(checkpointRef.current || projectCheckpoint(project)), previousProjectFolder: undefined } });
         setPatch(null); setApplied(false); onInstallationChange?.(root, false); setFontPlan(null);
         run.patch = null; run.patchFolder = "";
       }
@@ -634,32 +664,55 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           const reuse = run.projectFolder && !run.scanFolder && p;
           p = reuse || await scan(onProgress, controller.signal, run);
           const previousFolder = run.previousProjectFolder;
-          run.projectFolder = p.folder; run.scanFolder = ""; run.previousProjectFolder = undefined;
+          run.projectFolder = p.folder; run.scanFolder = "";
           if (previousFolder && !sameUnityGamePath(previousFolder, p.folder)) {
             remember(run); await taskWrites.current;
-            await unityRun("finish-rescan", { root, path: previousFolder, task: run });
+            const reused = await unityRun<{ project: UnityProject; reusedText: number; reusedImages: number }>("finish-rescan", { root, path: previousFolder, task: { ...run, previousProjectFolder: undefined } });
+            p = reused.project; publish(p); setMessage(`扫描完成：复用 ${reused.reusedText} 条译文和 ${reused.reusedImages} 张图片的处理结果`);
           }
+          run.previousProjectFolder = undefined;
           if (reuse) report({ detail: `复用当前工程：${p.entries.length} 条文本，保留选取和已有译文`, completed: 1, total: 1 });
         } else if (index === 2) {
           if (!p) throw new Error("请先扫描当前游戏资源");
-          if (!run.imageOnly && (!p.textSkipped || run.layoutOnly)) {
-          const selectedIds = unityLanguageScope(p.entries, run.source).ids;
-          if (p.entries.length && !p.entries.some(e => e.selected && selectedIds.has(e.id))) throw new Error("当前原文语言范围内没有所选文本，请调整原文语言或选取文本");
-          if (p.entries.length) p = await translateProject(p, controller, run.layoutOnly ? { provider: "llm", source: run.source, target: run.target } : await translationOptions(run), onProgress, run.source, run.joinLines ?? true, run.lineMode || "local", run.lineModel || "", !!run.layoutOnly);
-          if (controller.signal.aborted) throw new UnityPaused("");
-          const ids = unityLanguageScope(p.entries, run.source).ids;
-          const failed = p.entries.filter(e => e.selected && ids.has(e.id) && (!run.layoutOnly || !!e.layoutDraft) && (e.error || unityTranslationError(e.source, e.translation)));
-          if (failed.length) {
-            setErrorsOnly(true); setPage(0);
-            throw new Error(`本轮已处理完全部文本，${failed.length} 条翻译或排版未完成。工程与译文草稿已保存，请在“仅看未完成 / 失败”中集中检查并重试；未完成项不会应用到游戏。`);
-          }
-
-          }
-          if (!run.layoutOnly && (run.imageOnly || automatic && !p.imagesSkipped)) {
-            run.imageOnly = true; run.progress = { step: 2, state: "running", completed: 0, total: null, detail: "准备 2.2 图片识别与翻译" }; remember(run);
-            if (followProgress.current) setImagePart(true);
-            p = await translateImages(p, controller, run, onProgress);
-          }
+          const rows = p.entries.filter(entry => entry.selected && unityLanguageScope(p!.entries, run.source).ids.has(entry.id));
+          const textComplete = !run.layoutOnly && (!!p.textSkipped || !p.entries.length || rows.length > 0 && rows.every(entry => entry.translation && !entry.error && !unityTranslationError(entry.source, entry.translation)));
+          const imageComplete = unityImagesReady(p);
+          const initial = { text: p.textSkipped && !run.layoutOnly ? "skipped" : textComplete ? "done" : "pending", images: p.imagesSkipped ? "skipped" : imageComplete ? "done" : "pending" } as const;
+          const oldParts = run.translationRuns;
+          run = { ...run, translationRuns: {
+            text: { ...(oldParts?.text || run.progress), step: 2, state: initial.text, detail: textComplete ? "文本结果已保留" : "等待开始翻译文本" },
+            images: { ...(oldParts?.images || { completed: 0, total: null }), step: 2, state: initial.images, detail: imageComplete ? "图片结果已保留" : "等待开始图片识别与翻译" },
+          }, progress: { step: 2, state: "running", completed: 0, total: null, detail: "文本和图片任务分别处理并保存" } };
+          const partReported = { text: 0, images: 0 };
+          const reportPart = (part: UnityTranslationPart, value: UnityProgress) => {
+            run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...value, step: 2, state: "running" } } };
+            checkpointRef.current = run;
+            if (value.total !== null && value.completed === value.total || performance.now() - partReported[part] >= 100) { remember(run); partReported[part] = performance.now(); }
+          };
+          const jobs = createUnityTranslationJobs({
+            signal: controller.signal, initial,
+            changed: (part, state, failure) => {
+              const previous = run.translationRuns![part];
+              run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...previous, state, failure, detail: state === "stopped" ? "已中止，进度已保存" : state === "skipped" ? "已跳过剩余内容，已完成结果保留" : previous.detail } } }; remember(run);
+            },
+            run: async (part, job) => {
+              const current = latest.current || p!;
+              if (part === "images") {
+                run.imageOcrMode = imageMode.current;
+                await translateImages(current, job, run, value => reportPart(part, value)); return;
+              }
+              const selectedIds = unityLanguageScope(current.entries, run.source).ids;
+              if (current.entries.length && !current.entries.some(entry => entry.selected && selectedIds.has(entry.id))) throw new Error("当前原文语言范围内没有所选文本，请调整语言或选取文本");
+              if (current.entries.length) await translateProject(current, job, run.layoutOnly ? { provider: "llm", source: run.source, target: run.target } : await translationOptions(run), value => reportPart(part, value), run.source, run.joinLines ?? true, run.lineMode || "local", run.lineModel || "", !!run.layoutOnly);
+              const final = latest.current || current;
+              const failed = final.entries.filter(entry => entry.selected && selectedIds.has(entry.id) && (!run.layoutOnly || !!entry.layoutDraft) && (entry.error || unityTranslationError(entry.source, entry.translation)));
+              if (failed.length) throw new Error(`${failed.length} 条文本翻译或排版未完成，已有译文和草稿已保存`);
+            },
+          });
+          translationJobs.current = jobs; remember(run);
+          try { await jobs.wait(automatic && !run.layoutOnly ? ["text", "images"] : [part || (run.imageOnly ? "images" : "text")]); }
+          finally { translationJobs.current = null; await projectWrites.current; }
+          p = latest.current || p;
         } else if (index === 3) {
           if (!p) throw new Error("请先扫描当前游戏资源");
           const result = await exportPatch(p, onProgress, controller.signal, run);
@@ -669,13 +722,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           await applyPatch(run.patch, onProgress, controller.signal);
         }
         if (controller.signal.aborted) throw new UnityPaused("");
-        if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic) { setActiveStep(2); setImagePart(true); }
+        if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p)) { setActiveStep(2); setImagePart(true); }
         else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
       }
       run.finished = true; run.progress = { ...run.progress, state: "done" }; remember(run);
     } catch (e) {
-      const paused = e instanceof UnityPaused ? e : null;
+      const paused = e instanceof UnityPaused ? e : e instanceof UnityTranslationStopped ? new UnityPaused("") : null;
       if (paused || controller.signal.aborted) {
         if (paused?.folder) {
           if (run.step === 1) { run.scanFolder = paused.folder; run.projectFolder = paused.folder; }
@@ -687,20 +740,32 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       } else { run.progress = { ...run.progress, state: "error", failure: e instanceof Error ? e.message : String(e) }; remember(run); throw e; }
     } finally { abort.current = null; await taskWrites.current; }
   }
+  const startTranslationPart = (part: UnityTranslationPart) => {
+    const jobs = translationJobs.current;
+    if (jobs) { jobs.start(part); return; }
+    void startWorkflow(2, checkpoint?.automatic && !checkpoint.finished ? checkpoint.endStep : 2, !!checkpoint && !checkpoint.finished, !!checkpoint?.automatic && !checkpoint.finished, false, part);
+  };
   const stop = () => {
     abort.current?.abort();
     setMessage("正在中止，完成当前文件的安全写入并保存检查点后停止，请勿退出或启动游戏。");
   };
   const progressPercent = generation?.total ? Math.floor(generation.completed / generation.total * 100) : generation?.state === "done" && generation.total === 0 ? 100 : null;
-  const progressUnit = generation?.step === 2 ? checkpoint?.imageOnly ? "张图片" : checkpoint?.layoutOnly ? "处文本" : generation.translation ? "种原文（已检查）" : "种原文（已有译文）" : "个文件";
+  const progressIsImage = generation?.step === 2 && (activeStep === 2 && checkpoint?.translationRuns ? imagePart : !!checkpoint?.imageOnly);
+  const progressUnit = generation?.step === 2 ? progressIsImage ? "张图片" : checkpoint?.layoutOnly ? "处文本" : generation.translation ? "种原文（已检查）" : "种原文（已有译文）" : "个文件";
   const resumable = !!checkpoint && !checkpoint.finished;
   const locked = !!busy || restoring || resumable;
   const entriesLocked = !!busy || restoring || resumable && (checkpoint.step !== 2 || !!checkpoint.imageOnly);
   const resumeTask = () => checkpoint && void startWorkflow(checkpoint.step, checkpoint.endStep, true, checkpoint.automatic);
   async function skipRemaining() { await skipTranslationPart(!!checkpoint?.imageOnly); }
 
-  const taskAction = <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片识别与翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn" disabled={restoring || needsScan} title={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
-  const failure = error ? explainUnityFailure(error) : null;
+  const currentPart: UnityTranslationPart = imagePart ? "images" : "text";
+  const selectedJob = checkpoint?.translationRuns?.[currentPart];
+  const taskAction = translationJobs.current ? <>
+    {selectedJob?.state === "running" && <button className="unity-btn" disabled={translationJobs.current.isStopping(currentPart)} onClick={() => { translationJobs.current?.stop(currentPart); setMessage("正在中止当前任务，另一任务继续处理"); }}>中止 {imagePart ? "2.2" : "2.1"}</button>}
+    {Object.values(checkpoint?.translationRuns || {}).filter(part => part.state === "running").length > 1 && <button className="unity-btn" onClick={stop}>中止全部</button>}
+  </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片识别与翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn" disabled={restoring || needsScan} title={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
+  const failureMessage = generation?.state === "error" ? generation.failure || error : error;
+  const failure = failureMessage ? explainUnityFailure(failureMessage) : null;
   const currentRowIssue = rowIssue && project?.entries.find(entry => entry.id === rowIssue.id);
   const rowFailure = rowIssue ? explainUnityFailure(currentRowIssue?.error || currentRowIssue && unityTranslationError(currentRowIssue.source, currentRowIssue.translation) || rowIssue.error) : null;
   const rowQueueStatus = rowIssue ? translationQueue.current?.status(rowIssue.id) : undefined;
@@ -734,12 +799,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const controller = new AbortController(); abort.current = controller;
       const previous = checkpointRef.current;
       const task = { ...(previous || projectCheckpoint(p)), step: 2, endStep: 2, automatic: false, finished: false, layoutOnly: false, imageOnly: false, patch: null, patchFolder: "" };
+      const rememberTextRetry = (value: RunCheckpoint) => remember({ ...value, translationRuns: value.translationRuns ? { ...value.translationRuns, text: value.progress } : undefined });
       let lastProgress: UnityProgress = { detail: `正在重试条目 #${id}`, completed: 0, total: null };
       const report = (progress: UnityProgress) => {
         const current = latest.current || p;
         const stats = unityTranslationStats(current.entries.filter(entry => entry.selected && scope.ids.has(entry.id)), unityTranslationError, unityTranslationContextKey);
         lastProgress = { ...progress, ...stats, completed: Math.min(stats.total, Math.max(stats.completed, previous?.step === 2 ? previous.progress.completed : 0)), translation: progress.translation && { ...progress.translation, successful: stats.completed } };
-        remember({ ...task, progress: { ...lastProgress, step: 2, state: "running" } });
+        rememberTextRetry({ ...task, progress: { ...lastProgress, step: 2, state: "running" } });
       };
       try {
         const next = await translateProject(p, controller, await translationOptions(), report, source, joinLines, lineMode, lineModel, false, new Set([id]));
@@ -748,12 +814,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const problem = retried.error || unityTranslationError(retried.source, retried.translation);
         const remaining = next.entries.filter(entry => entry.selected && scope.ids.has(entry.id) && (entry.error || unityTranslationError(entry.source, entry.translation))).length;
         const detail = problem ? `条目 #${id} 重试失败：${problem}` : `条目 #${id} 重试成功${remaining ? `，另有 ${remaining} 条未完成` : ""}`;
-        remember({ ...task, finished: !problem && !remaining, progress: { ...lastProgress, step: 2, state: problem ? "error" : remaining ? "stopped" : "done", failure: problem || undefined, detail } });
+        rememberTextRetry({ ...task, finished: !problem && !remaining, progress: { ...lastProgress, step: 2, state: problem ? "error" : remaining ? "stopped" : "done", failure: problem || undefined, detail } });
         if (problem) setError(detail); else { setRowIssue(null); setMessage(detail); }
       } catch (error) {
         if (!controller.signal.aborted) throw error;
         const detail = `已中止条目 #${id} 的重试，已有译文和草稿保留`;
-        remember({ ...task, progress: { ...lastProgress, step: 2, state: "stopped", detail } }); setMessage(detail);
+        rememberTextRetry({ ...task, progress: { ...lastProgress, step: 2, state: "stopped", detail } }); setMessage(detail);
       } finally { abort.current = null; }
     }, true, setActionError);
   };
@@ -768,7 +834,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const displayedCompletedThrough = Math.max(completedThrough, checkpoint?.step === 2 && !translationReady ? 1 : project && checkpoint && !checkpoint.layoutOnly ? checkpoint.finished && checkpoint.progress.state === "done" ? checkpoint.endStep : checkpoint.step - 1 : 0);
   const executingStep = generation && generation.state !== "done" ? generation.step : completedThrough < 4 ? completedThrough + 1 : undefined;
   const parametersLocked = locked || applied || activeStep <= completedThrough || activeStep === 2 && (imagePart ? imagesReady : textReady);
-  const viewingProgress = !!generation && activeStep === generation.step && (activeStep !== 2 || imagePart === !!checkpoint?.imageOnly);
+  const viewingProgress = !!generation && activeStep === generation.step && (activeStep !== 2 || (!!checkpoint?.translationRuns || imagePart === !!checkpoint?.imageOnly));
   const lineOptionsLocked = !!busy || restoring;
   const updateEngineChoices = (value: UnityEngineChoice[]) => {
     const engines = normalizeUnityEngines(value);
@@ -782,8 +848,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (saved && !saved.finished && saved.step === 2) remember({ ...saved, lineMode: mode, lineModel: model });
   };
   const invalidatePatch = () => {
-    setPatch(null); setGeneration(null);
+    setPatch(null); if (!translationJobs.current) setGeneration(null);
     const saved = checkpointRef.current;
+    if (!translationJobs.current && saved?.finished && saved.translationRuns) {
+      remember({ ...saved, translationRuns: undefined, patch: null, patchFolder: "" }); setGeneration(null); return;
+    }
     if (saved?.finished && saved.patch) {
       const value = { ...saved, patch: null, patchFolder: "" };
       remember(value); setGeneration(null);
@@ -897,8 +966,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {workRoot && <div className="unity-offline-output"><span>工作目录</span><code title={workRoot}>{workRoot}</code><button className="unity-btn" onClick={() => void openFolder(workRoot)}>打开</button></div>}
     <div className="unity-output-heading"><strong>输出</strong>{scanWarnings.length + (project?.diagnostics?.length || 0) > 0 && <span>{scanWarnings.length + (project?.diagnostics?.length || 0)} 条提示</span>}{patch && <button className="unity-btn" onClick={() => void openFolder(patch.folder)}>补丁目录</button>}</div>
     <div className="unity-offline-log">
-      {scanReady && translationFailures.length > 0 && <section className="unity-translation-failures" aria-label="翻译失败条目">
-        <strong>翻译 / 排版失败 · {translationFailures.length} 条</strong>
+      {scanReady && translationFailures.length > 0 && <details className="unity-translation-failures" aria-label="翻译失败条目">
+        <summary>翻译 / 排版失败 · {translationFailures.length} 条</summary>
         <ul>{translationFailures.slice(visibleFailurePage * 20, (visibleFailurePage + 1) * 20).map(entry => <li key={entry.id}>
           <button type="button" className="unity-error-locate" aria-label={`定位第 ${entry.id} 条错误`} onClick={() => locateTranslationFailure(entry.id)}>
             第 {entry.id} 条 · {entry.file}{entry.container ? ` / ${entry.container}` : ""} · 对象 {entry.objectId} · 字段 {entry.locator}
@@ -910,16 +979,16 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <span>{visibleFailurePage + 1} / {failurePageCount}</span>
           <button className="unity-btn" disabled={visibleFailurePage + 1 >= failurePageCount} onClick={() => setFailurePage(visibleFailurePage + 1)}>下一页</button>
         </div>}
-      </section>}
-      {fileStatus && <section className={`unity-transfer-output${fileStatus.state === "error" ? " unity-offline-error" : ""}`} aria-label="翻译文件处理结果">
-        <strong>{fileStatus.action === "download" ? "翻译文件下载" : "翻译文件导入"}</strong>
+      </details>}
+      {fileStatus && <details className={`unity-transfer-output${fileStatus.state === "error" ? " unity-offline-error" : ""}`} aria-label="翻译文件处理结果">
+        <summary>{fileStatus.action === "download" ? "翻译文件下载" : "翻译文件导入"} · {fileStatus.state === "working" ? "处理中" : fileStatus.state === "error" ? "失败" : "已完成"}</summary>
         {(fileStatus.state === "working" || fileStatus.state === "done") && <progress aria-label="翻译文件处理进度" max={1} value={fileStatus.state === "done" ? 1 : undefined} />}
         <p role={fileStatus.state === "error" ? "alert" : "status"}>{fileStatus.detail}</p>
         {fileStatus.state === "done" && fileStatus.path && <div className="unity-transfer-links">
           <a href="#" title={fileStatus.path} onClick={event => { event.preventDefault(); void openTranslationFile(fileStatus.path!); }}>文件：{fileStatus.path}</a>
           {fileStatus.folder && <a href="#" title={fileStatus.folder} onClick={event => { event.preventDefault(); void openFolder(fileStatus.folder!); }}>文件夹：{fileStatus.folder}</a>}
         </div>}
-      </section>}
+      </details>}
       {!error && (!generation || activeStep !== generation.step) && <p role="status">{busy ? generation?.state === "running" ? generation.detail : message || `${busy}…` : message || "等待操作"}</p>}
       {errorPanel}
       {checkpoint?.translationFailure && <p className="unity-offline-error" role="alert">待重试的翻译错误：{explainUnityFailure(checkpoint.translationFailure).reason} 重新扫描完成后将重试翻译。</p>}
@@ -928,8 +997,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {!!project?.diagnostics?.length && <details><summary>未提取的资源与原因 · {project.diagnostics.length} 项</summary>{project.diagnostics.map((issue, index) => <div key={index} className="unity-warning-item"><strong>{issue.file}{issue.container ? ` / ${issue.container}` : ""}{issue.objectId ? ` / 对象 ${issue.objectId}` : ""}</strong><p>{issue.reason}</p><p>{issue.action}</p></div>)}</details>}
       {checkpoint?.partial && <p className="hint">仅回写 {done} 条有效译文，其余 {selected.length - done} 条保持原文。</p>}
       {!!project?.fonts.length && <details><summary>已识别字体 · {project.fonts.length} 个</summary>{project.fonts.map((f, i) => <p key={i}>{f.name} · {f.kind} · {f.file}</p>)}</details>}
-      {!!streamWarnings.length && <details open><summary>对象读取范围不足 · {streamWarnings.length} 项</summary><p>{streamWarnings[0].reason}</p><p className="hint">{streamWarnings[0].impact}</p>{streamWarnings.map((info, i) => <details className="unity-warning-item" key={`stream${i}`}><summary>{info.location}</summary><pre>{info.technical}</pre></details>)}</details>}
-      {warningDetails.filter(w => w.category !== "stream").map((info, i) => <div className="unity-warning-item" key={`w${i}`}><p>{info.reason}</p>{info.technical && <details><summary>技术详情</summary><pre>{info.technical}</pre></details>}</div>)}
+      {!!streamWarnings.length && <details><summary>对象读取范围不足 · {streamWarnings.length} 项</summary><p>{streamWarnings[0].reason}</p><p className="hint">{streamWarnings[0].impact}</p>{streamWarnings.map((info, i) => <details className="unity-warning-item" key={`stream${i}`}><summary>{info.location}</summary><pre>{info.technical}</pre></details>)}</details>}
+      {warningDetails.some(w => w.category !== "stream") && <details aria-label="其他输出提示"><summary>其他提示 · {warningDetails.filter(w => w.category !== "stream").length} 项</summary>{warningDetails.filter(w => w.category !== "stream").map((info, i) => <div className="unity-warning-item" key={`w${i}`}><p>{info.reason}</p>{info.technical && <details><summary>技术详情</summary><pre>{info.technical}</pre></details>}</div>)}</details>}
     </div>
   </section>;
   const finishColumnDrag = () => {
@@ -937,12 +1006,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const ratio = columnDrag.current.latest; columnDrag.current = null;
     setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio));
   };
-  const scanUpdateNotice = !busy && scanUpdate.level !== "none" && <div className="unity-scan-update-details" aria-label="扫描更新说明">
-    <strong>{scanUpdate.label}</strong>
-    <ul aria-label="重新扫描原因">{scanUpdate.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
-    <p>{needsScan ? "当前扫描结果不能用于所选流程，需重新扫描后继续。" : "现有扫描结果可继续使用，不会自动重新扫描；可按需更新以采用新的提取规则。"}</p>
-    <button className="unity-btn" disabled={restoring || resumable} title={resumable ? "当前任务结束后可更新扫描" : "重新扫描并保留匹配译文"} onClick={() => void startWorkflow(1, 1, false, false, true)}>{needsScan ? "重新扫描" : "更新扫描"}</button>
-  </div>;
   return <div className="unity-offline">
     {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
     {toolbarTarget && createPortal(applied ? <button className="unity-btn unity-btn-danger" disabled={locked} onClick={() => void uninstallPatch()}>卸载补丁</button> : <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || !root || !output || (!resumable || checkpoint.step <= 2) && completedThrough < 2 && !connectionReady} onClick={() => void startWorkflow(needsScan ? 1 : Math.min(4, completedThrough + 1), 4, resumable, true)}>{resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"}</button>, toolbarTarget)}
@@ -952,10 +1015,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <nav className="unity-step-tabs" role="tablist" aria-label="处理步骤">{UNITY_STAGE_TABS.map(tab => {
         const { step, number, label } = tab;
         const subReady = tab.imageOnly ? imagesReady : textReady;
-        const runningHere = executingStep === step && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
-        const state = step === 2 ? generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly ? "error" : subReady ? "complete" : runningHere ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, needsScan ? 1 : undefined, scanUpdate.level === "optional" ? 1 : undefined);
+        const partProgress = step === 2 ? checkpoint?.translationRuns?.[tab.imageOnly ? "images" : "text"] : undefined;
+        const runningHere = step === 2 && partProgress ? partProgress.state === "running" : executingStep === step && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
+        const state = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, needsScan ? 1 : undefined, scanUpdate.level === "optional" ? 1 : undefined);
         const selectedTab = activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
-        return <button key={number} id={`unity-step-${number}`} role="tab" aria-selected={selectedTab} aria-controls="unity-step-panel" aria-current={runningHere ? "step" : undefined} className={`unity-step-tab ${state}${selectedTab ? " is-selected" : ""}`} onClick={() => { followProgress.current = false; setActiveStep(step); setImagePart(tab.imageOnly); }}><span className="unity-step-number" aria-hidden="true">{number}</span>{label}{(state === "outdated" || state === "optional-update") && ` · ${scanUpdate.label}`}</button>;
+        const parallelSelected = step === 2 && activeStep === 2 && (checkpoint?.translationRuns ? Object.values(checkpoint.translationRuns).every(progress => progress.state !== "error") : generation?.step !== 2 || generation.state !== "error");
+        return <button key={number} id={`unity-step-${number}`} role="tab" aria-selected={selectedTab} aria-controls="unity-step-panel" aria-current={runningHere ? "step" : undefined} className={`unity-step-tab ${state}${selectedTab ? " is-selected" : runningHere ? " is-active-task" : ""}${parallelSelected ? " is-parallel-selected" : ""}`} onClick={() => { followProgress.current = false; setActiveStep(step); setImagePart(tab.imageOnly); }}><span className="unity-step-number" aria-hidden="true">{number}</span>{label}{(state === "outdated" || state === "optional-update") && ` · ${scanUpdate.label}`}</button>;
       })}</nav>
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel">
         {activeStep === 1 && <>
@@ -987,7 +1052,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {!connectionReady && <p className="unity-offline-error unity-group-note">{translationKind === "llm" ? "所选模型尚未配置 API 地址，请前往通用设置配置。" : "请在下方列表中启用至少一个免 Key 或已配置凭证的引擎。"}</p>}
           </div>
           {translationKind === "engine" && <UnityEngineList choices={engineChoices} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={parametersLocked} expanded={engineListExpanded} onExpandedChange={setEngineListExpanded} onChange={updateEngineChoices} />}
-          {imagePart && <>{!textReady && <p className="hint">请先完成或跳过 2.1，再开始 2.2。</p>}<div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={parametersLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><span>底图处理：纯色覆盖后嵌字</span></div><p className="hint">复用图片文字识别模型。译图保持原尺寸；复杂背景请检查预览，必要时替换译图。回写纹理使用 RGBA32，资源体积可能增大。</p></>}
+          {imagePart && <><p className="hint">2.1 与 2.2 可同时处理，各自保存进度。</p><div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={restoring || applied || checkpoint?.translationRuns?.images.state === "running"} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><span>底图处理：纯色覆盖后嵌字</span></div><p className="hint">复用图片文字识别模型。译图保持原尺寸；复杂背景请检查预览，必要时替换译图。回写纹理使用 RGBA32，资源体积可能增大。</p></>}
           {!imagePart && <><div className="unity-control-group unity-line-group" role="group" aria-label="换行参数">
           <div className="unity-group-fields unity-line-fields">
             <label>换行处理<UnityDescriptionSelect label="换行处理" value={joinLines ? "join" : "keep"} choices={UNITY_WRAP_CHOICES} disabled={lineOptionsLocked} onChange={value => { const enabled = value === "join"; setJoinLines(enabled); const saved = checkpointRef.current; if (saved && !saved.finished && saved.step === 2 && !saved.layoutOnly) remember({ ...saved, joinLines: enabled }); }} /></label>
@@ -1022,12 +1087,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <div className="unity-task-actions" role="group" aria-label="当前步骤操作">
         {activeStep === 1 && <button className={`unity-btn ${scanStarted ? "unity-btn-warning" : "unity-btn-primary"}`} disabled={!!busy || restoring || !root || !output} onClick={() => void (scanStarted ? restartStage(1) : startWorkflow(1, 1))}>{scanStarted ? "重新扫描资源" : "扫描资源"}</button>}
         {activeStep === 2 && !imagePart && <>
-          {!(busy || resumable && checkpoint.step === 2) && <button className="unity-btn unity-btn-primary" title="使用上方翻译与换行参数，保留已有有效译文" disabled={locked || !scanReady || !selected.length || !connectionReady || applied || textReady} onClick={() => void startWorkflow(2, 2)}>翻译所选</button>}
+          {checkpoint?.translationRuns?.text.state !== "running" && <button className="unity-btn unity-btn-primary" title="使用上方翻译与换行参数，保留已有有效译文" disabled={restoring || !!busy && !translationJobs.current || !scanReady || !selected.length || !connectionReady || applied || textReady} onClick={() => startTranslationPart("text")}>{checkpoint?.translationRuns?.text.state === "stopped" || checkpoint?.translationRuns?.text.state === "error" ? "恢复翻译文本" : "翻译所选"}</button>}
             {(done > 0 || selected.some(e => e.layoutDraft) || checkpoint?.step === 2) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring || !scanReady} title="清除译文与后续产物，重新设置翻译参数" onClick={() => void restartStage(2)}>重做翻译</button>}
           <button className={`unity-btn${checkpoint?.layoutOnly ? " unity-btn-warning" : ""}`} disabled={!!busy || restoring || !scanReady || !joinLines || !selected.some(e => /[\r\n]/.test(e.source) && (e.translation || e.layoutDraft) && !unityTranslationError(e.source, e.translation || e.layoutDraft!))} title={applied ? "恢复游戏原件并保留译文，重新处理断行；之后需生成并应用新补丁" : "保留现有译文，仅重新处理换行；不会重新翻译"} onClick={() => void reflowExisting()}>{checkpoint?.layoutOnly ? "重做断行" : "仅重新断行"}</button>
         </>}
-        {activeStep === 2 && imagePart && <><button className="unity-btn unity-btn-primary" disabled={locked || !scanReady || !textReady || (project?.scanRevision || 0) < 5 || !connectionReady || applied || imagesReady} onClick={() => void startWorkflow(2, 2)}>识别并翻译图片</button><button className="unity-btn unity-btn-warning" disabled={!!busy || restoring || !scanReady} onClick={() => void restartStage(2)}>重做图片处理</button></>}
-        {activeStep === 2 && <button className="unity-btn" disabled={!!busy || restoring || !scanReady || applied || !!patch} onClick={() => void skipTranslationPart()}>跳过 {imagePart ? "2.2" : "2.1"} 剩余内容</button>}
+        {activeStep === 2 && imagePart && <><button className="unity-btn unity-btn-primary" disabled={restoring || !!busy && !translationJobs.current || checkpoint?.translationRuns?.images.state === "running" || !scanReady || (project?.scanRevision || 0) < 5 || !connectionReady || applied || imagesReady} onClick={() => startTranslationPart("images")}>{checkpoint?.translationRuns?.images.state === "stopped" || checkpoint?.translationRuns?.images.state === "error" ? "恢复图片处理" : "识别并翻译图片"}</button><button className="unity-btn unity-btn-warning" disabled={!!busy || restoring || !scanReady} onClick={() => void restartStage(2)}>重做图片处理</button></>}
+        {activeStep === 2 && <button className="unity-btn" disabled={!!busy && !translationJobs.current || restoring || !scanReady || applied || !!patch} onClick={() => void skipTranslationPart()}>跳过 {imagePart ? "2.2" : "2.1"} 剩余内容</button>}
         {activeStep === 3 && <button className="unity-btn unity-btn-primary" disabled={locked || !translationReady || applied || !!patch} onClick={() => void startWorkflow(3, 3)}>生成补丁</button>}
         {activeStep === 4 && (applied ? <button className="unity-btn unity-btn-primary" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button> : <button className="unity-btn unity-btn-primary" disabled={locked || !patch} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>)}
         {activeStep > 2 && (activeStep <= completedThrough || generation?.state === "error" && activeStep === generation.step) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(activeStep)}>重做此步</button>}
@@ -1035,15 +1100,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     <div className={`unity-current-task ${generation?.state || "idle"}${generation && !viewingProgress && progressRunning ? " unity-background-task is-running" : ""}`} aria-label="任务状态">
 
 
-      <div className="unity-generation-status" role="status"><strong>步骤 {(generation?.step || activeStep) === 2 ? (generation ? checkpoint?.imageOnly : imagePart) ? "2.2" : "2.1" : generation?.step || activeStep} · {(generation?.step || activeStep) === 2 && (generation ? checkpoint?.imageOnly : imagePart) ? "图片识别与翻译" : GENERATION_STEPS[(generation?.step || activeStep) - 1]}{generation ? generation.state === "done" ? " · 已完成" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : " · 正在处理" : activeStep <= completedThrough ? " · 已完成" : " · 待开始"}</strong><span>{generation ? progressPercent === null ? busy ? "正在准备…" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}` : ""}</span><div className="unity-status-actions">
+      <div className="unity-generation-status" role="status"><strong>步骤 {(generation?.step || activeStep) === 2 ? (generation ? progressIsImage : imagePart) ? "2.2" : "2.1" : generation?.step || activeStep} · {(generation?.step || activeStep) === 2 && (generation ? progressIsImage : imagePart) ? "图片识别与翻译" : GENERATION_STEPS[(generation?.step || activeStep) - 1]}{generation ? generation.state === "done" ? " · 已完成" : generation.state === "skipped" ? " · 已跳过" : generation.state === "pending" ? " · 待开始" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : " · 正在处理" : activeStep <= completedThrough ? " · 已完成" : " · 待开始"}</strong><span>{generation ? progressPercent === null ? generation.state === "pending" ? "等待开始" : generation.state === "skipped" ? "已跳过" : generation.state === "running" ? "正在准备…" : generation.state === "done" ? "已完成" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}` : ""}</span><div className="unity-status-actions">
         {taskAction}
         {generation && !viewingProgress && <button className="unity-btn" onClick={() => { followProgress.current = true; setActiveStep(generation.step); setImagePart(!!checkpoint?.imageOnly); }}>查看进度</button>}
       </div></div>
       <div key={generation?.step || activeStep} className={`unity-progress-track${progressRunning ? " is-running" : ""}`} role="progressbar" aria-label="当前步骤进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generation ? progressPercent ?? undefined : activeStep <= completedThrough ? 100 : 0} aria-valuetext={generation ? progressPercent === null ? progressRunning ? "正在准备，暂未取得总量" : "未获得进度" : `${progressPercent}%` : activeStep <= completedThrough ? "已完成" : "待开始"}>
         <div className="unity-progress-fill" style={{ width: `${generation ? progressPercent ?? 0 : activeStep <= completedThrough ? 100 : 0}%` }} />
       </div>
-      {generation?.step === 2 && !checkpoint?.layoutOnly && !checkpoint?.imageOnly ? <UnityTranslationProgress progress={generation} running={progressRunning} onLocate={locateTranslationFailure} /> : generation?.state !== "error" && <p className="unity-task-detail" title={generation?.detail}>{generation ? generation.detail : "确认上方参数后开始处理。"}</p>}
-      {scanUpdateNotice}
+      {generation?.step === 2 && !checkpoint?.layoutOnly && !progressIsImage ? <UnityTranslationProgress progress={generation} running={progressRunning} onLocate={locateTranslationFailure} /> : generation?.state !== "error" && <p className="unity-task-detail" title={generation?.detail}>{generation ? generation.detail : "确认上方参数后开始处理。"}</p>}
+      {activeStep === 2 && checkpoint?.translationRuns && checkpoint.translationRuns[imagePart ? "text" : "images"].state !== "pending" && <button className="unity-sibling-task" onClick={() => setImagePart(!imagePart)}>{imagePart ? "2.1 翻译文本" : "2.2 图片识别与翻译"} · {({ running: "正在处理", done: "已完成", stopped: "已中止", error: "失败", skipped: "已跳过", pending: "待开始" })[checkpoint.translationRuns[imagePart ? "text" : "images"].state]}</button>}
       {generation?.step === 4 && generation.state !== "done" && <p className="unity-offline-error">应用尚未完成，请勿启动游戏。恢复后继续写入，原件保存在补丁目录的 original 文件夹。</p>}
     </div>
     </section>
@@ -1052,7 +1117,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {projectDetails}
     </aside>
     <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />
-    {activeStep === 2 && imagePart ? <UnityImageWorkbench project={project} disabled={!!busy || restoring || applied || !!patch} onChange={editImage} onRender={image => void updateImagePreview(image)} onImport={image => void updateImagePreview(image, true)} onSave={() => void operation("保存工程", () => save())} /> : <section className="unity-offline-workbench">
+    {activeStep === 2 && imagePart ? <UnityImageWorkbench project={project} disabled={!!busy || restoring || applied || !!patch} onChange={editImage} onRender={image => void updateImagePreview(image)} onImport={image => void updateImagePreview(image, true)} onSave={() => void save().catch(error => setActionError(String(error)))} /> : <section className="unity-offline-workbench">
       <div className="unity-offline-toolbar">
         <strong>文本与译文</strong>
       <div className="unity-result-filters">
@@ -1060,12 +1125,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         {errorsOnly && <button className="unity-btn" disabled={!!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly)}>重试未完成项</button>}
         <input type="search" aria-label="搜索原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => { setSearch(e.target.value); setPage(0); }} />
       </div>
-        <button className="unity-btn" disabled={!scanReady || !!busy || !dirty} onClick={() => void operation("保存工程", async () => { await save(); setMessage("工程已保存"); })}>{scanReady && dirty ? "保存工程 *" : "保存工程"}</button>
+        <button className="unity-btn" disabled={!scanReady || !!busy && !translationJobs.current || !dirty} onClick={() => void save().then(() => setMessage("工程已保存"), error => setActionError(String(error)))}>{scanReady && dirty ? "保存工程 *" : "保存工程"}</button>
       </div>
       {scanReady && project ? <>
       <p className="hint" role="status" aria-label="翻译字符统计" title="已选原文包含空白、换行和标点；预计待请求按当前换行处理、原文去重及有效译文复用计算，不含失败重试。字符数不是大模型 Token 数，实际计费用量以翻译服务记录为准。">已选原文 {characters.selectedCharacters.toLocaleString("zh-CN")} 字符 · 预计待请求 {characters.pendingCharacters.toLocaleString("zh-CN")} 字符</p>
         <div className="unity-offline-table-scroll"><table ref={tableRef} className="unity-offline-table" style={{ minWidth: Math.max(560, (sourceWidth.width + 212) / (1 - originalRatio / 100)), "--unity-original-width": `${originalRatio}%` } as CSSProperties}><colgroup><col style={{ width: 32 }} /><col style={{ width: sourceWidth.width }} /><col style={{ width: "var(--unity-original-width)" }} /><col /></colgroup><thead><tr>
-          <th><input type="checkbox" aria-label="选取全部搜索结果" disabled={entriesLocked || applied || !filtered.length} checked={filtered.length > 0 && filtered.every(e => e.selected)} onChange={e => { const ids = new Set(filtered.map(r => r.id)); const checked = e.target.checked; setProject({ ...project, entries: project.entries.map(r => ids.has(r.id) ? { ...r, selected: checked } : r) }); setDirty(true); invalidatePatch(); }} /></th>
+          <th><input type="checkbox" aria-label="选取全部搜索结果" disabled={entriesLocked || applied || !filtered.length} checked={filtered.length > 0 && filtered.every(e => e.selected)} onChange={e => { const ids = new Set(filtered.map(r => r.id)); const checked = e.target.checked; publish({ ...(latest.current || project), entries: (latest.current || project).entries.map(r => ids.has(r.id) ? { ...r, selected: checked } : r) }); setDirty(true); invalidatePatch(); }} /></th>
           <th className="unity-resizable-column">来源<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整来源列宽" aria-valuenow={Math.round(sourceWidth.width)} onMouseDown={e => sourceWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sourceWidth.setWidth(sourceWidth.width + (e.key === "ArrowRight" ? 8 : -8)); } }} /></th>
           <th className="unity-resizable-column">原文<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整原文和译文列宽" aria-valuenow={Math.round(originalRatio)} onPointerDown={e => { e.preventDefault(); columnDrag.current = { x: e.clientX, ratio: originalRatio, latest: originalRatio, width: tableRef.current!.getBoundingClientRect().width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { const drag = columnDrag.current; if (!drag) return; drag.latest = Math.max(20, Math.min(70, drag.ratio + (e.clientX - drag.x) / drag.width * 100)); tableRef.current?.style.setProperty("--unity-original-width", `${drag.latest}%`); }} onPointerUp={finishColumnDrag} onPointerCancel={finishColumnDrag} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const ratio = Math.max(20, Math.min(70, originalRatio + (e.key === "ArrowRight" ? 2 : -2))); setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio)); } }} /></th><th>译文</th>
         </tr></thead><tbody>{rows.map(entry => <tr key={rowJump?.id === entry.id ? `${entry.id}:${rowJump.sequence}` : entry.id} data-entry-id={entry.id} tabIndex={-1} className={`${entry.error || entry.translation && unityTranslationError(entry.source, entry.translation) ? "has-error" : ""}${rowJump?.id === entry.id ? " unity-entry-target" : ""}`}>
@@ -1075,7 +1140,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <td><div className="unity-entry-editor"><textarea aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} disabled={entriesLocked || applied} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined })} />{(entry.error || entry.translation && unityTranslationError(entry.source, entry.translation)) && <button className="unity-row-error" title={entry.error ? explainUnityFailure(entry.error).reason : unityTranslationError(entry.source, entry.translation)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => setRowIssue({ ...entry, error: entry.error || unityTranslationError(entry.source, entry.translation) })}>!</button>}</div></td>
         </tr>)}</tbody></table>{!filtered.length && <p className="hint">当前语言或搜索范围内没有文本，可在扫描步骤切换原文语言或选择全部语言查看。</p>}</div>
         <div className="unity-results-footer">
-        {scanReady && <span aria-label="文本范围与选择统计">{scope.label} · 共 {scope.count} 条 · {selected.length ? selected.length === scope.count ? "全部已选" : `已选 ${selected.length} 条` : "未选择"}{selected.length > 0 && <> · {done === selected.length ? "全部可回写" : `可回写 ${done} 条`}</>}</span>}
+        {scanReady && <span aria-label="文本范围与选择统计">{scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}
         <div className="unity-offline-pagination"><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => Math.max(0, p - 10))}>-10 页</button><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>上一页</button><span>{Math.min(page + 1, pageCount)} / {pageCount}</span><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => p + 1)}>下一页</button><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => Math.min(pageCount - 1, p + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pageCount} placeholder="页码" value={jumpPage} onChange={e => setJumpPage(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && Number.isInteger(Number(jumpPage)) && jumpPage.trim()) { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={() => { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); }}>跳转</button></div>
         </div>
       {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions"><button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} disabled={rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} title={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button><button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}

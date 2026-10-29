@@ -95,10 +95,21 @@ public static class WorkflowReset
             var applied = JsonNode.Parse(File.ReadAllText(path))!;
             if (applied["done"]?.GetValue<bool>() == true || (applied["completed"]?.AsArray().Count ?? 0) > 0) throw new Exception("旧工程仍有已应用补丁，须先恢复游戏原件再清理");
         }
+        var old = Program.Load(Path.Combine(previous, "unity-project.json"));
+        static (string, string, string, string, string) Key(Entry e) => (e.File, e.Container, e.ObjectId, e.Locator == "m_Text" ? "/m_Text" : e.Locator, e.Source);
+        var translated = old.Entries.ToDictionary(Key);
+        var reusedText = 0;
+        foreach (var entry in project.Entries) if (translated.TryGetValue(Key(entry), out var saved)) {
+            entry.Selected = saved.Selected;
+            if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) { entry.Translation = saved.Translation; reusedText++; }
+            entry.LayoutDraft = saved.LayoutDraft; entry.Error = saved.Error;
+        }
+        var reusedImages = ImageResources.Reuse(old, project);
+        Program.Save(project);
         var plan = new ResetPlan(1, "", [Path.GetRelativePath(work, previous)], [], GameWorkspace.PackTask(root, task));
         Program.WriteJson(Path.Combine(work, "reset-state.json"), plan);
         ResumePending(root);
-        return new { ok = true };
+        return new { ok = true, project, reusedText, reusedImages };
     }
     public static void ResumePending(string root)
     {
