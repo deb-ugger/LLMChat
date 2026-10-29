@@ -459,8 +459,8 @@ export type StorageStatus = {
 };
 
 export const api = {
-  getStorage: () => request<StorageStatus>("/api/storage", undefined, 120_000),
-  saveStoragePaths: (paths: Record<string, string>) => request<StorageStatus>("/api/storage/paths", {
+  getStorage: (includeSizes = true) => request<StorageStatus>(`/api/storage${includeSizes ? "" : "?sizes=0"}`, undefined, 120_000),
+  saveStoragePaths: (paths: Record<string, string>, includeSizes = true) => request<StorageStatus>(`/api/storage/paths${includeSizes ? "" : "?sizes=0"}`, {
     method: "PUT", body: JSON.stringify({ paths }),
   }, 120_000),
   scheduleStorageCleanup: (ids: string[]) => request<StorageStatus>("/api/storage/cleanup", {

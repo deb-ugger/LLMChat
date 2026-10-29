@@ -1622,23 +1622,12 @@ export function ImageOcrView({
       setError(null);
       let taskPaddle: LocalPaddleOcr | null = null;
       let taskManga: LocalMangaOcr | null = null;
-      let stage = "";
-      let stageStarted = performance.now();
-      const publishStage = () => {
+      const reportStage = (text: string) => {
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
         accountTime();
-        patchPage(pageId, { elapsedMs: performance.now() - startedAt });
-        if (!stage) return;
-        const text = `${stage} · ${( (performance.now() - stageStarted) / 1000).toFixed(1)} 秒`;
-        patchPage(pageId, { statusText: text });
+        patchPage(pageId, { elapsedMs: performance.now() - startedAt, statusText: text });
         setStatus(text);
       };
-      const reportStage = (text: string, resetClock = true) => {
-        stage = text;
-        if (resetClock) stageStarted = performance.now();
-        publishStage();
-      };
-      const stageTimer = window.setInterval(publishStage, 100);
       try {
         const page = pagesRef.current.find((p) => p.id === pageId);
         if (!page) return;
@@ -1725,10 +1714,10 @@ export function ImageOcrView({
                   throw new Error("识别已取消");
                 const progressText = `正在识别漫画气泡 ${index + 1}/${regions.length}…`;
                 if (index === 0) reportStage("正在准备本地 Manga OCR 模型");
-                else reportStage(`${progressText}（气泡阶段累计）`, false);
+                else reportStage(progressText);
                 const crop = await cropMangaRegion(bitmap, regions[index], iw, ih);
                 const text = await withTimeout(
-                  manga.recognize(crop, () => reportStage(`${progressText}（气泡阶段累计）`, index === 0)),
+                  manga.recognize(crop, () => reportStage(progressText)),
                   300_000,
                   "Manga OCR 识别超时，请重新识别",
                 );
@@ -1756,7 +1745,6 @@ export function ImageOcrView({
           );
         }
 
-        stage = "";
         patchPage(pageId, { recognitionMs: performance.now() - startedAt });
         if (!pagesRef.current.some((p) => p.id === pageId)) return;
 
@@ -1830,9 +1818,7 @@ export function ImageOcrView({
         }
         setStatus(null);
       } finally {
-        window.clearInterval(stageTimer);
         accountTime();
-        stage = "";
         patchPage(pageId, { elapsedMs: performance.now() - startedAt });
       }
     },

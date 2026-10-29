@@ -43,6 +43,7 @@ public sealed class Project
     public bool ImagesSkipped { get; set; }
     public bool TextSkipped { get; set; }
     [JsonIgnore] public Action? CheckCancellation { get; set; }
+    [JsonIgnore] public Action<string>? ReportScanDetail { get; set; }
     public List<string> Warnings { get; set; } = [];
     public Dictionary<string, string> Hashes { get; set; } = [];
     public string TextMode { get; set; } = "lines";
@@ -124,6 +125,7 @@ public static class Program
                 "load" => Load(request.Path),
                 "save" => Save(request.Project ?? throw new Exception("缺少工程")),
                 "save-image" => ImageResources.SaveRendered(request),
+                "preview-image" => ImageResources.Preview(request),
                 "export" => Export(request),
                 "apply" => Apply(request),
                 "uninstall" => PatchInstallation.Uninstall(request),
@@ -296,7 +298,17 @@ public static class Program
         else ScanInspection.VerifyDefinitions(project);
         Save(project);
         var scanIndex = state.Next;
-        using var segmenter = project.TextMode == "smart" ? new SmartTextSegments(Path.Combine(AppContext.BaseDirectory, "wtp-model.onnx"), () => CheckStop(request, project.Folder), detail => Progress(detail, scanIndex, paths.Length, project.Folder)) : null;
+        long lastDetailReport = 0;
+        var loadingModel = false;
+        void ReportScanDetail(string detail) {
+            var now = Environment.TickCount64;
+            var loading = detail.StartsWith("加载分段模型：", StringComparison.Ordinal);
+            if (!loading && !loadingModel && now - lastDetailReport < 500) return;
+            loadingModel = loading; lastDetailReport = now;
+            Progress(detail, scanIndex, paths.Length, project.Folder);
+        }
+        project.ReportScanDetail = ReportScanDetail;
+        using var segmenter = project.TextMode == "smart" ? new SmartTextSegments(Path.Combine(AppContext.BaseDirectory, "wtp-model.onnx"), () => CheckStop(request, project.Folder), ReportScanDetail) : null;
         project.Segmenter = segmenter;
         project.CheckCancellation = () => CheckStop(request, project.Folder);
         using var types = new GameTypes(root, project.TypeDirectory);
@@ -465,11 +477,16 @@ public static class Program
     }
     static void ScanAssets(AssetsManager am, AssetsFileInstance inst, string rel, string container, Project project)
     {
+        project.ReportScanDetail?.Invoke($"读取类型与纹理索引：{rel} / {container}");
         PrepareTypes(am, inst);
         var fontTextures = ImageResources.FontTextures(am, inst);
+        var objectIndex = 0;
         foreach (var info in inst.file.Metadata.AssetInfos)
         {
             project.CheckCancellation?.Invoke();
+            objectIndex++;
+            if (objectIndex == 1 || objectIndex % 64 == 0)
+                project.ReportScanDetail?.Invoke($"读取资源对象：{rel} / {container} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count} · 已提取 {project.Entries.Count} 条文本");
             var type = info.TypeId;
             if (type is not (28 or 49 or 128 or 114)) continue;
             var textCount = project.Entries.Count; var fontCount = project.Fonts.Count;
@@ -509,9 +526,10 @@ public static class Program
         ScanInspection.VerifyDefinitions(project);
         using var types = new GameTypes(project.Root, project.TypeDirectory);
         var ids = request.SelectedIds?.ToHashSet(StringComparer.Ordinal);
-        var selected = project.Entries.Where(e => e.Selected && (ids == null || ids.Contains(e.Id))).ToArray();
+        var candidates = project.Entries.Where(e => e.Selected && (ids == null || ids.Contains(e.Id))).ToArray();
+        var selected = candidates.Where(e => e.Error.Length == 0 && TranslationIntegrity.Validate(e.Source, e.Translation).Length == 0).ToArray();
         var images = ImageResources.Ready(project);
-        if (selected.Length == 0 && images.Length == 0) throw new Exception("请先选择需要回写的文本或译图");
+        if (selected.Length == 0 && images.Length == 0) throw new Exception("没有可回写的有效译文或译图；出错和未完成的项目已跳过，游戏原文与原图保持不变");
         if (selected.Any(GameText.Protected)) throw new Exception("发现程序类型或事件绑定标识，已阻止生成补丁。请重新打开工程剔除程序标识后再生成");
         foreach (var entry in selected) ValidateTranslation(entry.Source, entry.Translation);
         var fontPlan = FontPreparation.Create(request, false);

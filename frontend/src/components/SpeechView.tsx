@@ -16,6 +16,26 @@ import { SpeechOnlineRunControls, SpeechProofreadControls } from "./SpeechOnline
 
 const labels: Record<SpeechQueueItem["status"], string> = { ready: "等待开始", queued: "排队中", running: "识别中", pausing: "暂停中", paused: "已暂停", resetting: "清理中", done: "已完成", error: "失败", cancelling: "取消中" };
 const friendly = (error: unknown) => error instanceof Error ? error.message : String(error);
+function SpeechJobTiming({ item, active }: { item: SpeechQueueItem; active: boolean }) {
+  const [clock, setClock] = useState(performance.now());
+  useEffect(() => {
+    if (!active || item.runningSince === undefined) return;
+    setClock(performance.now());
+    const timer = window.setInterval(() => setClock(performance.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active, item.runningSince]);
+  const elapsed = item.elapsedMs + (item.runningSince === undefined ? 0 : Math.max(0, clock - item.runningSince));
+  if (elapsed <= 0 && item.status !== "running") return null;
+  let remaining = "首段完成后估算";
+  if (item.status === "running") {
+    const work = speechRangeProgress(item.options.ranges, item.source.duration, item.offset);
+    const started = speechRangeProgress(item.options.ranges, item.source.duration, item.startedOffset ?? item.offset);
+    const progress = estimateSpeechProgress(work.duration, work.processed, started.processed,
+      item.processingStartedAt === undefined ? 0 : Math.max(0, clock - item.processingStartedAt));
+    if (progress.remainingSeconds !== null) remaining = formatSpeechTime(progress.remainingSeconds, ".").slice(0, -4);
+  }
+  return <div className="speech-job-timing"><span>已用 {formatSpeechTime(elapsed / 1000, ".").slice(0, -4)}</span>{item.status === "running" && <span>预计剩余：{remaining}</span>}</div>;
+}
 const speechLanguages = [["auto", "自动识别"], ["chinese", "中文"], ["english", "英语"], ["japanese", "日语"], ["korean", "韩语"], ["french", "法语"], ["german", "德语"], ["spanish", "西班牙语"], ["russian", "俄语"]];
 const chineseScripts: Record<ChineseScript, string> = { simplified: "转为简体", traditional: "转为繁体", original: "不转换" };
 
@@ -53,7 +73,6 @@ export function SpeechView({ active }: { active: boolean }) {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [toolsReady, setToolsReady] = useState(false);
-  const [clock, setClock] = useState(performance.now());
   const [playback, setPlayback] = useState<SpeechPlayback | null>(null);
   const initialized = useRef(false);
   const restored = useRef(new Set<string>());
@@ -81,15 +100,6 @@ export function SpeechView({ active }: { active: boolean }) {
   const status = models.rows?.find(row => row.model === selectedModel);
   const running = queue.items.filter(item => item.status === "running" || item.status === "queued").length;
   const canStart = queue.items.some(item => ["ready", "paused", "error"].includes(item.status) && item.options.ranges?.length !== 0 && (item.folder || (pref.formats.length && pref.outputRoot)));
-  const timing = queue.items.some(item => item.runningSince !== undefined);
-  const elapsed = (item: SpeechQueueItem) => item.elapsedMs + (item.runningSince !== undefined ? Math.max(0, clock - item.runningSince) : 0);
-  const remaining = (item: SpeechQueueItem) => {
-    const work = speechRangeProgress(item.options.ranges, item.source.duration, item.offset);
-    const started = speechRangeProgress(item.options.ranges, item.source.duration, item.startedOffset ?? item.offset);
-    const progress = estimateSpeechProgress(work.duration, work.processed, started.processed,
-      item.processingStartedAt === undefined ? 0 : Math.max(0, clock - item.processingStartedAt));
-    return progress.remainingSeconds === null ? "首段完成后估算" : formatSpeechTime(progress.remainingSeconds, ".").slice(0, -4);
-  };
 
   useEffect(() => {
     const element = workspace.current;
@@ -120,11 +130,6 @@ export function SpeechView({ active }: { active: boolean }) {
     void speechQueue.restore(pref.outputRoot).catch(cause => { restored.current.delete(pref.outputRoot); setError(friendly(cause)); });
   }, [active, pref.outputRoot]);
   useEffect(() => { speechQueue.pump(); }, [pref.concurrency]);
-  useEffect(() => {
-    if (!active || !timing) return;
-    const timer = window.setInterval(() => setClock(performance.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [active, timing]);
   useEffect(() => () => speechQueue.pause(), []);
   useEffect(() => {
     if (!active || !isTauri()) return;
@@ -159,7 +164,7 @@ export function SpeechView({ active }: { active: boolean }) {
       if (event.target.checked) selectFile(item);
     }} />显示转写结果</label></div>
     <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(work.processed, ".")} / {formatSpeechTime(work.duration, ".")}</span><span>· {item.cueCount} 段字幕</span></small><strong className="speech-job-percent">{(work.duration ? Math.min(100, work.processed / work.duration * 100) : 0).toFixed(1)}%</strong></div>
-    {(elapsed(item) > 0 || item.status === "running") && <div className="speech-job-timing"><span>已用 {formatSpeechTime(elapsed(item) / 1000, ".").slice(0, -4)}</span>{item.status === "running" && <span>预计剩余：{remaining(item)}</span>}</div>}
+    <SpeechJobTiming item={item} active={active} />
     <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={work.processed} max={work.duration} />}</div>
     {item.status === "error" && <p className="speech-error">{item.message}</p>}
     <div className="speech-job-actions">{["ready", "paused", "error"].includes(item.status) && <button className="speech-icon-button" aria-label={item.status === "ready" ? "开始转写" : "继续转写"} title={item.status === "ready" ? "开始转写" : "从已保存断点继续"} onClick={event => { event.stopPropagation(); selectFile(item); speechQueue.start(item.id); }}><TaskIcon action="play" /></button>}

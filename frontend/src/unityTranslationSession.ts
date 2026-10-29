@@ -5,6 +5,7 @@ export type UnityTranslationQueue = {
 };
 
 type Session = {
+  references?: UnityEntry[];
   key?: (entry: UnityEntry) => string;
   signal: AbortSignal;
   concurrency?: number;
@@ -19,6 +20,11 @@ type Session = {
   onQueue?: (queue: UnityTranslationQueue | null) => void;
 };
 const keyOf = (source: string) => source.replace(/\r\n?/g, "\n").normalize("NFC").trim();
+export async function yieldUnityPreparation(signal: AbortSignal) {
+  signal.throwIfAborted();
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  signal.throwIfAborted();
+}
 export const unityTranslationContextKey = (entry: UnityEntry) => JSON.stringify([entry.file, entry.container, entry.kind, entry.locale || "", (entry.parentLocator || entry.locator || "").replace(/\/\d+(?=\/|$)/g, "/#"), keyOf(entry.source)]);
 export function unityTranslationCharacters(selected: UnityEntry[], entries: UnityEntry[], validate: Session["validate"], prepare: (source: string) => string, canReuseDraft?: Session["canReuseDraft"], key = (entry: UnityEntry) => keyOf(entry.source)) {
   const reusable = new Set(entries.filter(entry => entry.translation && !entry.error && !validate(entry.source, entry.translation) || entry.layoutDraft && !validate(entry.source, entry.layoutDraft) && (canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)).map(key));
@@ -47,17 +53,28 @@ export function unityTranslationStats(entries: UnityEntry[], validate: Session["
 export async function translateUnitySession(entries: UnityEntry[], cache: Map<string, string>, session: Session) {
   const entryKey = session.key || ((entry: UnityEntry) => keyOf(entry.source));
   const reused = session.key ? new Map(cache) : new Map([...cache].map(([source, translation]) => [keyOf(source), translation]));
-  for (const entry of entries) if (entry.translation && !entry.error && !session.validate(entry.source, entry.translation)) reused.set(entryKey(entry), entry.translation);
-  for (const entry of entries) if (entry.layoutDraft && !reused.has(entryKey(entry)) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(entryKey(entry), entry.layoutDraft);
   const groups = new Map<string, UnityEntry[]>();
-  for (const entry of entries) if (entry.error || !entry.translation || session.validate(entry.source, entry.translation)) {
-    const key = entryKey(entry); const group = groups.get(key) || []; group.push(entry); groups.set(key, group);
+  const completion = new Map<string, boolean>();
+  const targets = session.references ? new Set(entries.map(entry => entry.id)) : null;
+  const references = session.references || entries;
+  let coverageCompleted = 0;
+  session.signal.throwIfAborted();
+  for (let index = 0; index < references.length; index++) {
+    if (index > 0 && index % 512 === 0) await yieldUnityPreparation(session.signal);
+    const entry = references[index], key = entryKey(entry);
+    const valid = !!entry.translation && !entry.error && !session.validate(entry.source, entry.translation);
+    if (valid) reused.set(key, entry.translation);
+    else if (entry.layoutDraft && !reused.has(key) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(key, entry.layoutDraft);
+    if (targets && !targets.has(entry.id)) continue;
+    if (valid) coverageCompleted++;
+    completion.set(key, (completion.get(key) ?? true) && valid);
+    if (!valid) { const group = groups.get(key) || []; group.push(entry); groups.set(key, group); }
   }
   const pending = [...groups];
   const states = new Map<string, "pending" | "active" | "failed" | "done">(pending.map(([key]) => [key, "pending"]));
   const waitingWorkers = new Set<() => void>();
   const wake = () => { const workers = [...waitingWorkers]; waitingWorkers.clear(); workers.forEach(resolve => resolve()); };
-  const initial = unityTranslationStats(entries, session.validate, entryKey);
+  const initial = { completed: [...completion.values()].filter(Boolean).length, total: completion.size, coverageCompleted };
   let completed = initial.completed, covered = initial.coverageCompleted, processed = 0, requests = 0, reusedGroups = initial.completed;
   let failures = 0, failedEntries = 0;
   const active = new Map<string, UnityTranslationActivity>();

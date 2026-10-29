@@ -24,6 +24,7 @@ frontend/tsconfig.tsbuildinfo
 frontend/src-tauri/target/
 frontend/src-tauri/resources/ffmpeg/
 frontend/src-tauri/resources/unity/
+frontend/src-tauri/resources/web-assets/
 tools/UnityOffline/bin/
 tools/UnityOffline/obj/
 frontend/src-tauri/tauri.conf.build.json

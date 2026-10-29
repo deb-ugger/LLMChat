@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type TranslateOptions } from "../api";
 import { type GlossaryEntry, type TransEntry } from "../textTranslate";
 
@@ -19,7 +19,6 @@ export function TextProjectGlossary({ entries, terms, disabled, options, onChang
 }) {
   const [candidates, setCandidates] = useState<GlossaryEntry[]>([]), [error, setError] = useState(""), [working, setWorking] = useState(false);
   const [draft, setDraft] = useState(terms);
-  const hits = useMemo(() => new Map(terms.map(term => [term.src, term.src ? entries.filter(item => item.src.includes(term.src)).length : 0])), [terms, disabled ? null : entries]);
   useEffect(() => setDraft(terms), [terms]);
   const controller = useRef<AbortController | null>(null);
   const file = useRef<HTMLInputElement>(null);
@@ -57,7 +56,7 @@ export function TextProjectGlossary({ entries, terms, disabled, options, onChang
     <div className="settings-rule-table-wrap"><table className="settings-rule-table"><thead><tr><th>启用</th><th>原词</th><th>译名</th><th>说明</th><th>出处</th><th aria-label="操作" /></tr></thead><tbody>
       {draft.map((term, index) => <tr key={index}><td><input type="checkbox" checked={term.enabled !== false} disabled={disabled || working} onChange={event => setDraft(draft.map((row, i) => i === index ? { ...row, enabled: event.target.checked } : row))} /></td>
         {(["src", "dst", "info"] as const).map(field => <td key={field}><input aria-label={field === "src" ? "原词" : field === "dst" ? "译名" : "术语说明"} disabled={disabled || working} value={term[field] || ""} onChange={event => setDraft(draft.map((row, i) => i === index ? { ...row, [field]: event.target.value } : row))} /></td>)}
-        <td><button type="button" disabled={!term.src} onClick={() => onInspect(term.src)}>{hits.has(term.src) ? `${hits.get(term.src)} 条` : "应用后统计"}</button></td>
+        <td><button type="button" disabled={!term.src} onClick={() => onInspect(term.src)}>查看出处</button></td>
         <td><button type="button" className="settings-rule-del" aria-label="删除术语" disabled={disabled || working} onClick={() => setDraft(draft.filter((_, i) => i !== index))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg></button></td></tr>)}
     </tbody></table></div>
     {!!candidates.length && <><h4>待确认候选（可编辑或删除）</h4>{candidates.map((term, i) => <div key={i} className="settings-row">{(["src", "dst", "info"] as const).map(field => <input key={field} aria-label={`候选${field}`} value={term[field] || ""} onChange={event => setCandidates(rows => rows.map((row, index) => index === i ? { ...row, [field]: event.target.value } : row))} />)}<button type="button" onClick={() => setCandidates(rows => rows.filter((_, index) => index !== i))}>移除候选</button></div>)}<button type="button" disabled={disabled || working} onClick={() => { try { if (save(mergeProjectGlossary(terms, candidates))) setCandidates([]); } catch (cause) { setError(String(cause)); } }}>确认加入工程</button></>}

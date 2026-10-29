@@ -1,4 +1,5 @@
 import { API_BASE, api } from "../api";
+import { runtimeAssetBase } from "../runtimeAssets";
 
 type Pending = { resolve: (text: string) => void; reject: (error: Error) => void; ready?: () => void };
 
@@ -42,7 +43,7 @@ export class LocalMangaOcr {
       });
       void this.prepared.then(() => {
         if (this.closed || !this.pending.has(id)) return;
-        this.getWorker().postMessage({ id, image, apiBase: API_BASE, assetBase: document.baseURI });
+        this.getWorker().postMessage({ id, image, apiBase: API_BASE, assetBase: runtimeAssetBase() });
       }).catch((error) => {
         this.pending.delete(id);
         reject(error);

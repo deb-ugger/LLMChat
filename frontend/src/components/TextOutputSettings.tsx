@@ -8,7 +8,7 @@ export function TextOutputSettings() {
   const [storage, setStorage] = useState<StorageStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { void api.getStorage().then(setStorage).catch(cause => setError(toFriendlyError(cause))); }, []);
+  useEffect(() => { void api.getStorage(false).then(setStorage).catch(cause => setError(toFriendlyError(cause))); }, []);
   const current = storage?.entries.find(entry => entry.id === "projects")?.path || "";
   const path = storage?.pending?.projects || current;
   const change = async () => {
@@ -16,9 +16,9 @@ export function TextOutputSettings() {
       const selected = await open({ directory: true, multiple: false, title: "工程保存目录", defaultPath: path || undefined });
       if (typeof selected !== "string") return;
       setBusy(true);
-      const latest = await api.getStorage();
+      const latest = await api.getStorage(false);
       const paths = latest.pending ?? Object.fromEntries(latest.entries.map(entry => [entry.id, entry.path]));
-      setStorage(await api.saveStoragePaths({ ...paths, projects: selected }));
+      setStorage(await api.saveStoragePaths({ ...paths, projects: selected }, false));
       setError("");
     } catch (cause) { setError(toFriendlyError(cause)); }
     finally { setBusy(false); }

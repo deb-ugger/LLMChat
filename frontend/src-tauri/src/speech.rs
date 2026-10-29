@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
@@ -10,6 +10,17 @@ use tauri::{AppHandle, Manager};
 // Only small commit positions are retained; transcript bodies stay on disk.
 static POSITIONS: LazyLock<Mutex<HashMap<PathBuf, (f64, usize)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static ROOTS_LOCK: Mutex<()> = Mutex::new(());
+// Keep only file positions, not transcript text. Each folder retains its latest search.
+#[derive(Default)]
+struct PreviewIndex {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    committed: u64,
+    end: f64,
+    query: String,
+    matches: Vec<(u64, usize)>,
+}
+static PREVIEW_INDEXES: LazyLock<Mutex<HashMap<PathBuf, PreviewIndex>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 pub struct SpeechStorage(pub PathBuf);
 const PENDING_MARKER: &str = ".llmchat-speech-pending";
 const PENDING_SIGNATURE: &[u8] = b"llmchat-speech-pending-v1\n";
@@ -290,6 +301,7 @@ fn cancel_job(folder: &Path) -> Result<()> {
     fs::remove_file(folder.join("progress.jsonl")).map_err(err)?;
     fs::remove_file(folder.join("job.json")).map_err(err)?;
     positions.remove(folder);
+    PREVIEW_INDEXES.lock().unwrap().remove(folder);
     // Do not recursively delete unexpected/user-added files.
     match fs::remove_dir(folder) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()), Err(e) => Err(err(e)) }
 }
@@ -384,13 +396,50 @@ pub async fn speech_cancel_job(folder: String) -> Result<()> {
 fn read_preview(folder: &Path, page: usize, query: &str) -> Result<Preview> {
     load_job(folder)?;
     let needle = query.trim().to_lowercase();
+    let file = File::open(folder.join("progress.jsonl")).map_err(err)?;
+    let metadata = file.metadata().map_err(err)?;
+    let mut indexes = PREVIEW_INDEXES.lock().unwrap();
+    let index = indexes.entry(folder.to_path_buf()).or_default();
+    // The journal is append-only; truncation/replacement or a new search rebuilds positions.
+    if index.query != needle || metadata.len() < index.length
+        || (metadata.len() == index.length && metadata.modified().ok() != index.modified) {
+        *index = PreviewIndex { query: needle, ..PreviewIndex::default() };
+    }
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(index.committed)).map_err(err)?;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let count = reader.read_until(b'\n', &mut line).map_err(err)?;
+        if count == 0 || line.last() != Some(&b'\n') { break; }
+        let chunk: Chunk = serde_json::from_slice(&line).map_err(|e| format!("任务进度文件损坏：{e}"))?;
+        if (chunk.from - index.end).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= chunk.from {
+            return Err("任务进度不连续".into());
+        }
+        for (cue_index, cue) in chunk.cues.iter().enumerate() {
+            if index.query.is_empty() || cue.text.to_lowercase().contains(&index.query) {
+                index.matches.push((index.committed, cue_index));
+            }
+        }
+        index.end = chunk.to;
+        index.committed += count as u64;
+    }
+    index.length = metadata.len();
+    index.modified = metadata.modified().ok();
     let start = page.saturating_mul(100);
-    let mut total = 0;
+    let total = index.matches.len();
     let mut cues = Vec::new();
-    for cue in read_chunks(folder, false)?.into_iter().flat_map(|chunk| chunk.cues) {
-        if !needle.is_empty() && !cue.text.to_lowercase().contains(&needle) { continue; }
-        if total >= start && cues.len() < 100 { cues.push(cue); }
-        total += 1;
+    let mut current_offset = None;
+    let mut chunk: Option<Chunk> = None;
+    for &(offset, cue_index) in index.matches.iter().skip(start).take(100) {
+        if current_offset != Some(offset) {
+            reader.seek(SeekFrom::Start(offset)).map_err(err)?;
+            line.clear();
+            reader.read_until(b'\n', &mut line).map_err(err)?;
+            chunk = Some(serde_json::from_slice(&line).map_err(err)?);
+            current_offset = Some(offset);
+        }
+        cues.push(chunk.as_ref().unwrap().cues[cue_index].clone());
     }
     Ok(Preview { cues, total })
 }
@@ -431,6 +480,36 @@ mod tests {
         assert_eq!(read_preview(folder, 2, "").unwrap().cues.len(), 5);
         assert_eq!(read_preview(folder, 0, "普通字幕").unwrap().total, 102);
         assert_eq!(read_preview(folder, 0, "不存在").unwrap().total, 0);
+        cleanup(root);
+    }
+    #[test]
+    fn preview_index_tracks_append_and_truncated_tail() {
+        let (root, job) = fixture();
+        let folder = Path::new(&job.folder);
+        let make_chunk = |from: f64, to: f64, count: usize| Chunk { from, to,
+            cues: (0..count).map(|i| Cue { start: from, end: to, text: format!("match {from} {i}") }).collect(), text: "fixture".into() };
+        commit(folder, make_chunk(0.0, 20.0, 105)).unwrap();
+        assert_eq!(read_preview(folder, 1, "match").unwrap().cues.len(), 5);
+        let committed = PREVIEW_INDEXES.lock().unwrap()[folder].committed;
+        commit(folder, make_chunk(20.0, 40.0, 10)).unwrap();
+        let preview = read_preview(folder, 1, "MATCH").unwrap();
+        assert_eq!(preview.total, 115);
+        assert_eq!(preview.cues.len(), 15);
+        assert_eq!(preview.cues[5].text, "match 20 0");
+        let indexed = PREVIEW_INDEXES.lock().unwrap()[folder].committed;
+        assert!(indexed > committed);
+        assert_eq!(read_preview(folder, 0, "match").unwrap().total, 115);
+        assert_eq!(PREVIEW_INDEXES.lock().unwrap()[folder].committed, indexed);
+        let tail = serde_json::to_vec(&make_chunk(40.0, 60.0, 2)).unwrap();
+        let mut journal = OpenOptions::new().append(true).open(folder.join("progress.jsonl")).unwrap();
+        journal.write_all(&tail[..tail.len() / 2]).unwrap(); journal.flush().unwrap();
+        assert_eq!(read_preview(folder, 0, "match").unwrap().total, 115, "partial append is not visible");
+        journal.write_all(&tail[tail.len() / 2..]).unwrap(); journal.write_all(b"\n").unwrap(); journal.flush().unwrap();
+        assert_eq!(read_preview(folder, 1, "match").unwrap().total, 117);
+        drop(journal);
+        OpenOptions::new().write(true).open(folder.join("progress.jsonl")).unwrap().set_len(committed).unwrap();
+        assert_eq!(read_preview(folder, 1, "match").unwrap().total, 105, "truncation resets cached positions");
+        PREVIEW_INDEXES.lock().unwrap().remove(folder);
         cleanup(root);
     }
     #[test]

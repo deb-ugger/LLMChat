@@ -61,8 +61,12 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
     let disposed = false;
     if (!active || workspaceMode !== "results" || !result) return;
     const taskId = result.id;
-    void speechNative.preview(result.folder, page, query).then(preview => { if (!disposed) setPreview({ ...preview, id: taskId, query, page }); }).catch(cause => { if (!disposed) setError(friendly(cause)); });
-    return () => { disposed = true; };
+    const read = () => {
+      void speechNative.preview(result.folder, page, query).then(preview => { if (!disposed) setPreview({ ...preview, id: taskId, query, page }); }).catch(cause => { if (!disposed) setError(friendly(cause)); });
+    };
+    const timer = query ? window.setTimeout(read, 250) : undefined;
+    if (!query) read();
+    return () => { disposed = true; window.clearTimeout(timer); };
   }, [active, workspaceMode, result?.id, result?.folder, result?.revision, result?.status, page, query]);
   const selectFile = (item: SpeechQueueItem) => {
     setSelectedId(item.id); setTabMenu(null); setPage(0); setSearch("");

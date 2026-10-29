@@ -1,3 +1,5 @@
+import { runtimeAssetBase } from "./runtimeAssets";
+
 /** One task owns one Worker. Completion or cancellation releases its model heap. */
 export class UnitySegmentation {
   private worker: Worker | null = null;
@@ -24,7 +26,7 @@ export class UnitySegmentation {
       const id = ++this.next;
       this.pending.set(id, { resolve: ends => { cleanup(); resolve(ends); }, reject: error => { cleanup(); reject(error); } });
       signal.addEventListener("abort", abort, { once: true });
-      this.worker!.postMessage({ id, text, base: document.baseURI });
+      this.worker!.postMessage({ id, text, base: runtimeAssetBase() });
     });
   }
   dispose(error = new Error("本地多语言分段任务已结束")) {

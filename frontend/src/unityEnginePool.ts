@@ -22,21 +22,22 @@ export function loadUnityEngines(): UnityEngineChoice[] {
 }
 
 /** One slot per provider; explicit key-based engines are only fallback candidates. */
-export function createUnityEnginePool(choices: UnityEngineChoice[], signal: AbortSignal, request: (provider: TranslateProvider, text: string) => Promise<string>, options: { onStats?: (value: UnityEngineProgress[]) => void; measure?: (text: string) => number; now?: () => number } = {}) {
+export function createUnityEnginePool(choices: UnityEngineChoice[], signal: AbortSignal, request: (provider: TranslateProvider, text: string) => Promise<string>, options: { initialStats?: UnityEngineProgress[]; onStats?: (value: UnityEngineProgress[]) => void; measure?: (text: string) => number; now?: () => number } = {}) {
   const enabled = normalizeUnityEngines(choices).filter(row => row.enabled);
   const free = enabled.filter(row => !engineRequiresKey(getEngineInfo(row.id)!));
   const keyed = enabled.filter(row => engineRequiresKey(getEngineInfo(row.id)!));
   const occupied = new Set<TranslateProvider>();
   const now = options.now || (() => performance.now());
   const started = options.onStats ? now() : 0;
-  const meters = new Map(enabled.map(row => [row.id, { characters: 0, entryId: undefined as string | undefined, samples: [] as { at: number; characters: number }[] }]));
+  const ids = [...new Set([...enabled.map(row => row.id), ...(options.initialStats || []).map(row => row.id)])];
+  const meters = new Map(ids.map(id => [id, { characters: options.initialStats?.find(row => row.id === id)?.characters || 0, entryId: undefined as string | undefined, samples: [] as { at: number; characters: number }[] }]));
   const emit = (stopped = false) => {
     if (!options.onStats) return;
     const time = now();
-    options.onStats(enabled.map(row => {
-      const meter = meters.get(row.id)!;
+    options.onStats(ids.map(id => {
+      const meter = meters.get(id)!;
       meter.samples = meter.samples.filter(sample => time - sample.at <= 5000);
-      return { id: row.id, characters: meter.characters, entryId: meter.entryId, active: !stopped && !signal.aborted && occupied.has(row.id),
+      return { id, characters: meter.characters, entryId: meter.entryId, active: !stopped && !signal.aborted && occupied.has(id as TranslateProvider),
         speed: stopped || signal.aborted ? 0 : meter.samples.reduce((sum, sample) => sum + sample.characters, 0) / Math.max(1, Math.min(5000, time - started)) * 1000 };
     }));
   };

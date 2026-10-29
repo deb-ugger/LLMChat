@@ -4,6 +4,7 @@ import type {
 } from "@paddleocr/paddleocr-js";
 import { API_BASE, api, type OcrMode } from "../api";
 import { OcrRuntime } from "./runtime";
+import { runtimeAssetBase } from "../runtimeAssets";
 
 type ModelPair = {
   detName: string;
@@ -13,7 +14,7 @@ type ModelPair = {
 };
 
 function localAssetUrl(path: string): string {
-  return new URL(path, document.baseURI).href;
+  return new URL(path, runtimeAssetBase()).href;
 }
 
 function backendModelUrl(fileName: string): string {
@@ -122,7 +123,7 @@ async function prepareRecognitionImage(
 export class LocalPaddleOcr {
   private runtime: OcrRuntime<PaddleOcrInstance>;
 
-  constructor(private readonly mode: OcrMode = "fast") {
+  constructor(private readonly mode: OcrMode = "fast", private readonly imageOptions: { upscale?: boolean; maxSide?: number } = {}) {
     this.runtime = new OcrRuntime(() => this.initialize(), (instance) => instance.dispose());
   }
 
@@ -146,7 +147,7 @@ export class LocalPaddleOcr {
             },
             textDetectionBatchSize: 1,
             textRecognitionBatchSize: 8,
-            textDetMaxSideLimit: 4000,
+            textDetMaxSideLimit: this.imageOptions.maxSide ?? 4000,
             // Keep isolated diagram glyphs such as the "T" in T₂/T₃. Their
             // detection boxes score lower than normal prose at small sizes.
             textDetBoxThresh: 0.3,
@@ -168,13 +169,13 @@ export class LocalPaddleOcr {
     onStage?.("正在预处理图片");
     // Manga crops are recognized separately at source resolution. Do not apply
     // the small-diagram upscaling policy to the full manga page.
-    const prepared = this.mode === "manga"
+    const prepared = this.mode === "manga" || this.imageOptions.upscale === false
       ? { image, scale: 1 }
       : await prepareRecognitionImage(image);
     if (signal.aborted) throw new Error("识别已取消");
-    onStage?.(this.mode === "manga" ? "正在检测漫画文字区域（前置 OCR）" : "正在检测并识别文字");
+    onStage?.(this.mode === "manga" ? "正在检测漫画文字区域（前置 OCR）" : "正在检测文字区域，仅识别检测到的区域");
     const [result] = await runner.predict(prepared.image, {
-      textDetMaxSideLimit: 4000,
+      textDetMaxSideLimit: this.imageOptions.maxSide ?? 4000,
       textDetBoxThresh: 0.3,
       textRecScoreThresh: 0,
     });

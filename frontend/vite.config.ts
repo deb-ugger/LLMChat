@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { copyPublicAssets } from "./build/runtimeAssets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const require = createRequire(import.meta.url);
@@ -62,7 +63,14 @@ function copyPdfjsAssets(): Plugin {
 
 export default defineConfig(async () => ({
   worker: { format: "es" },
-  plugins: [react(), copyPdfjsAssets()],
+  build: { copyPublicDir: false },
+  plugins: [react(), copyPdfjsAssets(), {
+    name: "external-runtime-assets",
+    apply: "build",
+    writeBundle(options) {
+      copyPublicAssets(path.resolve("."), path.resolve(options.dir ?? "dist"));
+    },
+  }],
   clearScreen: false,
   resolve: {
     // PaddleOCR is configured for the portable WASM backend. Avoid bundling

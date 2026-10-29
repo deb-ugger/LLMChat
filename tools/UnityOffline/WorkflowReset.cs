@@ -57,7 +57,13 @@ public static class WorkflowReset
         task["projectFolder"] = step == 1 ? "" : folders[0]; task["scanFolder"] = ""; task["previousProjectFolder"] = "";
         task["patchFolder"] = reusable;
         if (step != 4) task["patch"] = null;
-        if (step <= 2) { task["partial"] = false; task["translationFailure"] = null; }
+        if (step <= 2 && !request.ImageOnly) { task["partial"] = false; task["translationFailure"] = null; }
+        if (step == 2 && task["translationRuns"] is JsonObject runs) {
+            task["imageOnly"] = request.ImageOnly;
+            var part = request.ImageOnly ? "images" : "text";
+            var retainedMeters = runs[part]?["engineStats"]?.DeepClone();
+            runs[part] = new JsonObject { ["step"] = 2, ["state"] = "pending", ["completed"] = 0, ["total"] = null, ["detail"] = "可调整参数后重新开始", ["engineStats"] = retainedMeters };
+        }
         task["progress"] = new JsonObject { ["step"] = previous, ["state"] = "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
         var plan = new ResetPlan(step, step == 1 ? "" : Path.GetRelativePath(work, folders[0]),
             (step == 1 ? folders : patches.Where(p => reusable.Length == 0 || !Same(p, reusable)).Where(p => !obsolete.Any(old => Same(Path.GetDirectoryName(p)!, old))).Concat(step < 4 ? fontPlans : []).Concat(obsolete)).Select(p => Path.GetRelativePath(work, p)).ToArray(),
@@ -144,7 +150,7 @@ public static class WorkflowReset
                 foreach (var entry in saved.Entries) { entry.Translation = ""; entry.LayoutDraft = null; entry.Error = ""; }
                 saved.TextSkipped = false;
             }
-            ImageResources.Reset(saved);
+            else ImageResources.Reset(saved);
             Program.Save(saved);
         }
         if (plan.Step == 4) {

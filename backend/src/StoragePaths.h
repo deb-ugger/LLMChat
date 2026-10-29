@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
@@ -147,13 +148,22 @@ inline void removeTree(const fs::path& p)
     }
     fs::remove(p);
 }
-inline std::uintmax_t bytes(const fs::path& p)
+using DirectorySizes = std::map<fs::path, std::uintmax_t>;
+inline std::uintmax_t bytes(const fs::path& p, DirectorySizes* sizes = nullptr)
 {
     try {
         if (linked(p)) return 0;
         if (fs::is_regular_file(p)) return fs::file_size(p);
         std::uintmax_t n = 0;
-        if (fs::is_directory(p)) for (const auto& e : fs::directory_iterator(p)) n += bytes(e.path());
+        if (fs::is_directory(p)) {
+            const auto key = p.lexically_normal();
+            if (sizes) {
+                const auto found = sizes->find(key);
+                if (found != sizes->end()) return found->second;
+            }
+            for (const auto& e : fs::directory_iterator(p)) n += bytes(e.path(), sizes);
+            if (sizes) (*sizes)[key] = n;
+        }
         return n;
     } catch (...) { return 0; }
 }
@@ -316,7 +326,7 @@ inline std::vector<fs::path> cleanTargets(const std::string& id)
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
-inline json cleanupInfo()
+inline json cleanupInfo(DirectorySizes* sizes = nullptr)
 {
     json rows = json::array();
     for (const auto& item : std::vector<std::pair<std::string, std::string>>{
@@ -327,7 +337,7 @@ inline json cleanupInfo()
         {"projects", "全部托管翻译工程（包括工程内原文和译文，不可恢复）"}}) {
         auto targets = cleanTargets(item.first);
         json paths = json::array(); std::uintmax_t size = 0;
-        for (const auto& p : targets) { size += bytes(p); paths.push_back(utf8path::pathUtf8(p)); }
+        for (const auto& p : targets) { size += bytes(p, sizes); paths.push_back(utf8path::pathUtf8(p)); }
         rows.push_back({{"id", item.first}, {"label", item.second}, {"bytes", size}, {"paths", paths},
             {"destructive", item.first == "chats" || item.first == "usage" || item.first == "projects"}});
     }
@@ -408,11 +418,12 @@ inline void initialize(const fs::path& programBase, const fs::path& profile = {}
     // Do not create a locator just by running an unconfigured standalone backend.
     if (fs::exists(locator()) || !profile.empty()) persist(manifest);
 }
-inline json status()
+inline json status(bool includeSizes = true)
 {
     std::lock_guard lock(mutex);
     auto manifest = readManifest();
     json entries = json::array();
+    DirectorySizes sizes;
     const std::vector<std::string> labels{"软件数据", "翻译工程", "OCR 模型", "Unity 资源缓存", "临时文件", "WebView 用户数据"};
     const std::vector<std::string> descriptions{
         "config.ini（含 API 配置）、conversations.sqlite3、usage.db、旧版 JSON/JSONL、pricing.json、vendor-models.json、unity-output.log、语音输出目录索引，以及 .bak/.tmp 和 SQLite 辅助文件。仅迁移这些软件数据文件。",
@@ -423,12 +434,14 @@ inline json status()
         "WebView2 的 EBWebView：界面偏好、模型连接档案（可能含密钥）、PDF/EPUB 阅读记录（IndexedDB）、网络/图形缓存，以及通过浏览器下载的语音模型（Service Worker/CacheStorage）。迁移时完整保留，仅缓存清理不会删除档案。"};
     for (size_t i = 0; i < keys.size(); ++i) {
         auto key = keys[i]; auto p = get(key); std::uintmax_t size = 0;
-        if (key == "data") for (const auto& f : dataFiles(p)) size += bytes(f);
-        else size = bytes(p);
+        if (includeSizes) {
+            if (key == "data") for (const auto& f : dataFiles(p)) size += bytes(f, &sizes);
+            else size = bytes(p, &sizes);
+        }
         entries.push_back({{"id", key}, {"label", labels[i]}, {"path", utf8path::pathUtf8(p)},
             {"description", descriptions[i]}, {"bytes", size}, {"exists", fs::exists(p)}});
     }
-    return {{"ok", true}, {"entries", entries}, {"cleanupOptions", cleanupInfo()},
+    return {{"ok", true}, {"entries", entries}, {"cleanupOptions", includeSizes ? cleanupInfo(&sizes) : json::array()},
         {"pending", manifest.value("pending", json(nullptr))}, {"cleanup", manifest.value("cleanup", json::array())},
         {"error", manifest.value("error", startupError)}, {"locator", utf8path::pathUtf8(locator())},
         {"programDir", utf8path::pathUtf8(base)}, {"retained", manifest.value("retained", json::array())}};

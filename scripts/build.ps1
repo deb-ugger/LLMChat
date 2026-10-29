@@ -74,10 +74,21 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
     }
     Push-Location $frontend
+    $previousRustStack = [Environment]::GetEnvironmentVariable('RUST_MIN_STACK', 'Process')
+    $previousCargoJobs = [Environment]::GetEnvironmentVariable('CARGO_BUILD_JOBS', 'Process')
     try {
+        # Defaults used successfully for this checkout's large embedded frontend.
+        # Keep explicit caller settings and restore this shell's environment below.
+        if ([string]::IsNullOrWhiteSpace($previousRustStack)) { $env:RUST_MIN_STACK = '33554432' }
+        if ([string]::IsNullOrWhiteSpace($previousCargoJobs)) { $env:CARGO_BUILD_JOBS = '1' }
+        Write-Output "Rust build settings: CARGO_BUILD_JOBS=$env:CARGO_BUILD_JOBS; RUST_MIN_STACK=$env:RUST_MIN_STACK bytes"
         & node $cli build --no-bundle
         if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed; portable files were not replaced.' }
-    } finally { Pop-Location }
+    } finally {
+        [Environment]::SetEnvironmentVariable('RUST_MIN_STACK', $previousRustStack, 'Process')
+        [Environment]::SetEnvironmentVariable('CARGO_BUILD_JOBS', $previousCargoJobs, 'Process')
+        Pop-Location
+    }
 
     Write-Output '[6/6] Updating and verifying the portable application...'
     Invoke-BuildScript 'make-portable.ps1'

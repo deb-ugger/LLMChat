@@ -1,4 +1,5 @@
 import type { SpeechModel, SpeechProgress, SpeechRequest, SpeechResponse, SpeechResult } from "./transcription";
+import { runtimeAssetBase } from "../runtimeAssets";
 
 export class SpeechClient {
   private worker: Worker | null = null;
@@ -28,7 +29,7 @@ export class SpeechClient {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       this.job = { id, resolve, reject, progress, preview };
-      const request: SpeechRequest = { id, pcm, model, language, assetBase: document.baseURI, preview: previewEnabled };
+      const request: SpeechRequest = { id, pcm, model, language, assetBase: runtimeAssetBase(), preview: previewEnabled };
       try { this.worker!.postMessage(request, [pcm.buffer as ArrayBuffer]); }
       catch (error) { this.release(error instanceof Error ? error : new Error(String(error))); }
     });

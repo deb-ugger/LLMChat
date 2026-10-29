@@ -304,7 +304,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     return (Object.keys(current) as (keyof TextProject)[]).some(key => {
       if (key === "updatedAt" || key === "folder") return false;
       const value = current[key], saved = key === "elapsedMs" ? savedProject.elapsedMs || 0 : savedProject[key];
-      return value !== saved && JSON.stringify(value) !== JSON.stringify(saved);
+      return value !== saved;
     });
   }, [project, savedProject, busy, promptDraft, textLlm.model, elapsedMs]);
   const [statusLine, setStatusLine] = useState<string | null>(null);
@@ -435,6 +435,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
       : `${stats.done}/${stats.total}`;
 
   const filteredEntries = useMemo(() => {
+    if (!active || !entriesPanelOpen) return EMPTY_ENTRIES;
     const q = filter.trim().toLowerCase();
     const candidates = qualityOnly ? entries.filter(entry => entry.status === "error" || entry.warning) : entries;
     if (!q) return candidates;
@@ -444,7 +445,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         e.dst.toLowerCase().includes(q) ||
         e.status.includes(q),
     );
-  }, [entries, filter, qualityOnly]);
+  }, [active, entriesPanelOpen, entries, filter, qualityOnly]);
 
   const entryPages = Math.max(1, Math.ceil(filteredEntries.length / ENTRY_PAGE_SIZE));
   const visibleEntryPage = Math.min(entryPage, entryPages);
@@ -1121,9 +1122,10 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     }
     // 译文文件：时间轴保留，台词替换为目标语言译文
     if (p.format === "srt") {
+      const byIndex = new Map(p.entries.map(entry => [entry.metaIndex, entry]));
       const cues =
         p.sourceMeta?.srtCues?.map((c, i) => {
-          const e = p.entries.find((x) => x.metaIndex === i);
+          const e = byIndex.get(i);
           return {
             ...c,
             text:
@@ -1146,9 +1148,10 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     }
     if (p.format === "ass") {
       const base = p.sourceMeta?.assDoc;
+      const byIndex = new Map(p.entries.map(entry => [entry.metaIndex, entry]));
       const dialogues = base
         ? base.dialogues.map((d, i) => {
-            const e = p.entries.find((x) => x.metaIndex === i);
+            const e = byIndex.get(i);
             return {
               ...d,
               text:

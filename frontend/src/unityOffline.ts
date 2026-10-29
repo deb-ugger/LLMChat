@@ -9,7 +9,7 @@ export type UnityEntry = {
   layoutDraft?: string;
   parentId?: string; parentLocator?: string; sourceStart?: number;
 };
-export type UnityImageRegion = { text: string; translation: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; error: string };
+export type UnityImageRegion = { text: string; translation: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; error: string };
 export type UnityImage = { id: string; file: string; container: string; objectId: string; kind: string; name: string; width: number; height: number; sourceFile: string; sourceHash: string; renderedFile: string; renderedHash: string; selected: boolean; ocrCompleted: boolean; completed: boolean; error: string; regions: UnityImageRegion[] };
 export type UnityFont = { file: string; container: string; objectId: string; name: string; kind: string; references?: { field: string; fileId: number; pathId: string }[] };
 export type UnityInspection = { runtime: string; assemblies: { path: string; writable: boolean; reason: string }[]; catalogs: string[] };

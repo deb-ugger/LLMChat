@@ -11,6 +11,21 @@ export const UNITY_STAGE_TABS = [
 export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(i => i.completed));
 export const UNITY_SCAN_COMPATIBILITY = { current: 5, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };
+export function unityScanOptionChanges(saved: ScanOptions, current: ScanOptions) {
+  const reasons: string[] = [];
+  const mode = (value?: string) => value === "smart" ? "智能分段" : value === "lines" ? "按行" : "按段落";
+  if ((saved.textMode || "paragraphs") !== current.textMode) reasons.push(`文本分段：${mode(saved.textMode)} → ${mode(current.textMode)}`);
+  if (saved.includeCode !== current.includeCode) reasons.push(`代码字面量扫描：${saved.includeCode ? "开启" : "关闭"} → ${current.includeCode ? "开启" : "关闭"}`);
+  if ((saved.typeDirectory || "") !== (current.typeDirectory || "")) reasons.push(`类型定义目录：${saved.typeDirectory || "自动读取游戏 Managed"} → ${current.typeDirectory || "自动读取游戏 Managed"}`);
+  if (current.includeCode) {
+    const assemblies = (values?: string[] | null) => values == null ? null : [...new Set(values.map(value => value.toLowerCase()))].sort();
+    if (JSON.stringify(assemblies(saved.codeAssemblies)) !== JSON.stringify(assemblies(current.codeAssemblies))) {
+      const describe = (values?: string[] | null) => values == null ? "自动选择可写程序集" : values.length ? values.join("、") : "未选择程序集";
+      reasons.push(`代码程序集范围：${describe(saved.codeAssemblies)} → ${describe(current.codeAssemblies)}`);
+    }
+  }
+  return reasons;
+}
 export function unityScanUpdate(project: UnityProject | null, saved: (ScanOptions & { projectFolder: string; step?: number; progress?: { state: string } }) | null, current: ScanOptions) {
   const reasons: string[] = [];
   let level: "none" | "optional" | "required" = "none";
@@ -30,18 +45,7 @@ export function unityScanUpdate(project: UnityProject | null, saved: (ScanOption
       reasons.push("未完成的扫描使用旧版检查点，不能跨扫描规则版本续扫，需按当前规则重新扫描");
     }
     const optionStart = reasons.length;
-    const mode = (value?: string) => value === "smart" ? "智能分段" : value === "lines" ? "按行" : "按段落";
-    const previousMode = saved.textMode || project.textMode || "paragraphs";
-    if (previousMode !== current.textMode) reasons.push(`文本分段：${mode(previousMode)} → ${mode(current.textMode)}`);
-    if (saved.includeCode !== current.includeCode) reasons.push(`代码字面量扫描：${saved.includeCode ? "开启" : "关闭"} → ${current.includeCode ? "开启" : "关闭"}`);
-    if ((saved.typeDirectory || "") !== (current.typeDirectory || "")) reasons.push(`类型定义目录：${saved.typeDirectory || "自动读取游戏 Managed"} → ${current.typeDirectory || "自动读取游戏 Managed"}`);
-    if (current.includeCode) {
-      const assemblies = (values?: string[] | null) => values == null ? null : [...new Set(values.map(value => value.toLowerCase()))].sort();
-      if (JSON.stringify(assemblies(saved.codeAssemblies)) !== JSON.stringify(assemblies(current.codeAssemblies))) {
-        const describe = (values?: string[] | null) => values == null ? "自动选择可写程序集" : values.length ? values.join("、") : "未选择程序集";
-        reasons.push(`代码程序集范围：${describe(saved.codeAssemblies)} → ${describe(current.codeAssemblies)}`);
-      }
-    }
+    reasons.push(...unityScanOptionChanges({ ...saved, textMode: saved.textMode || project.textMode }, current));
     if (reasons.length > optionStart) level = "required";
   }
   return { label: level === "required" ? "需更新" : level === "optional" ? "可选更新" : "", level, reasons };

@@ -9,6 +9,7 @@
 #include "Utf8Path.h"
 #include "RequestCancellation.h"
 #include "StoragePaths.h"
+#include "RuntimeAssets.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -304,8 +305,8 @@ int HttpServer::run()
         };
     };
 
-    svr.Get("/api/storage", withCors([](const httplib::Request&, httplib::Response& res) {
-        try { res.set_content(storage::status().dump(), "application/json"); }
+    svr.Get("/api/storage", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try { res.set_content(storage::status(req.get_param_value("sizes") != "0").dump(), "application/json"); }
         catch (const std::exception& e) {
             res.status = 500;
             res.set_content(errorJson("无法读取存储信息：" + std::string(e.what())).dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
@@ -314,7 +315,7 @@ int HttpServer::run()
     svr.Put("/api/storage/paths", withCors([](const httplib::Request& req, httplib::Response& res) {
         try {
             storage::schedulePaths(json::parse(req.body).at("paths"));
-            res.set_content(storage::status().dump(), "application/json");
+            res.set_content(storage::status(req.get_param_value("sizes") != "0").dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(errorJson(e.what()).dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
@@ -672,6 +673,18 @@ int HttpServer::run()
             res.status = 409;
             res.set_content(errorJson(ex.what()).dump(), "application/json");
         }
+    }));
+
+    svr.Get(R"(/api/runtime-assets/(.+))", withCors([](const httplib::Request& req, httplib::Response& res) {
+        const auto file = runtime_assets::resolve(storage::base / "resources" / "web-assets", req.matches[1].str());
+        if (file.empty())
+        {
+            res.status = 404;
+            res.set_content(errorJson("软件资源文件不存在，请重新构建并更新软件").dump(), "application/json");
+            return;
+        }
+        res.set_header("Cache-Control", "no-store");
+        res.set_file_content(utf8path::pathUtf8(file), runtime_assets::contentType(file));
     }));
 
     svr.Get(R"(/api/ocr/model-files/(.+))", withCors([this](const httplib::Request& req, httplib::Response& res) {

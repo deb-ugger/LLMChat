@@ -45,6 +45,7 @@ public static class GameWorkspace
     static JsonNode CopyTask(JsonNode task)
     {
         var result = new JsonObject();
+        if (task["imageConfidenceThreshold"] != null) result["imageConfidenceThreshold"] = task["imageConfidenceThreshold"]!.DeepClone();
         foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         if (task["engines"] is JsonArray engines) {

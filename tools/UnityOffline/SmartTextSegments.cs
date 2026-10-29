@@ -9,41 +9,49 @@ namespace LLMChat.UnityOffline;
 public sealed class SmartTextSegments(string modelPath, Action checkStop, Action<string>? report = null) : IDisposable
 {
     InferenceSession? session;
+    public int InferenceRuns { get; private set; }
     readonly Dictionary<string, (int Start, int Length)[]> cache = [];
     static readonly int[] Primes = [31, 43, 59, 61, 73, 97, 103, 113];
     static readonly Regex ListStart = new(@"^\s*(?:[0-9０-９]{1,3}[.．、)）]|[①-⑳・•●■□◆◇*]|[-–—]\s)");
     static bool Cjk(char c) => c is >= '\u3000' and <= '\u9fff' or >= '\uac00' and <= '\ud7af' or >= '\uff00' and <= '\uffef';
 
-    Dictionary<int, double> Predict(string text)
+    Dictionary<int, double> Predict(string text, HashSet<int> boundaries, string context)
     {
         if (session == null) {
             if (!File.Exists(modelPath)) throw new Exception("缺少扫描分段模型，请准备 WtP 模型资源后重试");
+            report?.Invoke("加载分段模型：" + context);
             using var options = new SessionOptions { IntraOpNumThreads = 1, InterOpNumThreads = 1 };
             session = new InferenceSession(modelPath, options);
         }
         var runes = text.EnumerateRunes().ToArray();
-        var sums = new double[runes.Length]; var counts = new int[runes.Length];
+        var needed = new Dictionary<int, int>(); var offset = 0;
+        for (var i = 0; i < runes.Length; i++) { offset += runes[i].Utf16SequenceLength; if (boundaries.Contains(offset)) needed[i] = offset; }
+        var sums = new Dictionary<int, double>(); var counts = new Dictionary<int, int>();
         for (var start = 0; start < runes.Length;) {
             checkStop();
             var end = Math.Min(start + 512, runes.Length); var length = end - start;
+            var points = needed.Keys.Where(i => i >= start && i < end).ToArray();
+            if (points.Length == 0) {
+                if (end == runes.Length) break;
+                start = Math.Min(start + 256, runes.Length - 512); continue;
+            }
             var ids = new DenseTensor<long>(new[] { 1, length, 8 });
             var mask = new DenseTensor<float>(new[] { 1, length });
             for (var i = 0; i < length; i++) {
                 mask[0, i] = 1;
                 for (var j = 0; j < 8; j++) ids[0, i, j] = ((long)runes[start + i].Value + 1) * Primes[j] % 8192;
             }
+            InferenceRuns++;
+            report?.Invoke($"智能分段：{context} · 模型窗口 {start + 1}–{end} / {runes.Length} 字符");
             using var output = session.Run(new[] { NamedOnnxValue.CreateFromTensor("hashed_ids", ids), NamedOnnxValue.CreateFromTensor("attention_mask", mask) });
             var logits = output.Single(x => x.Name == "logits").AsTensor<float>();
             if (logits.Dimensions[1] != length || logits.Dimensions[2] != 127) throw new Exception("扫描分段模型输出格式不匹配");
-            for (var i = 0; i < length; i++) { sums[start + i] += logits[0, i, 0]; counts[start + i]++; }
+            foreach (var point in points) { sums[point] = sums.GetValueOrDefault(point) + logits[0, point - start, 0]; counts[point] = counts.GetValueOrDefault(point) + 1; }
             if (end == runes.Length) break;
             start = Math.Min(start + 256, runes.Length - 512);
         }
-        var result = new Dictionary<int, double>(); var offset = 0;
-        for (var i = 0; i < runes.Length; i++) {
-            offset += runes[i].Utf16SequenceLength;
-            result[offset] = 1 / (1 + Math.Exp(-sums[i] / counts[i]));
-        }
+        var result = new Dictionary<int, double>();
+        foreach (var (index, boundary) in needed) result[boundary] = 1 / (1 + Math.Exp(-sums[index] / counts[index]));
         return result;
     }
 
@@ -52,8 +60,8 @@ public sealed class SmartTextSegments(string modelPath, Action checkStop, Action
         checkStop();
         if (!text.Contains('\n') && !text.Contains('\r')) return [(0, text.Length)];
         if (cache.TryGetValue(text, out var cached)) return cached;
-        report?.Invoke("智能分段：" + context);
         var lines = Regex.Matches(text, @"[^\r\n]*(?:\r\n|\r|\n|$)").Where(m => m.Length > 0).ToArray();
+        report?.Invoke($"智能分段：{context} · 原文 {lines.Length} 行");
         var flat = new StringBuilder(); var candidates = new List<(int Original, int Flat, bool Forced)>();
         string previous = "";
         for (var i = 0; i < lines.Length; i++) {
@@ -65,8 +73,8 @@ public sealed class SmartTextSegments(string modelPath, Action checkStop, Action
             }
             previous = body;
         }
-        var scores = flat.Length == 0 ? new Dictionary<int, double>() : Predict(flat.ToString());
-        var cuts = new List<int> { 0 }; var tags = new Stack<string>();
+        var safeCandidates = new List<(int Original, int Flat, bool Forced)>();
+        var tags = new Stack<string>();
         var tokens = TranslationIntegrity.Tokens.Matches(text).ToArray(); var tokenIndex = 0;
         foreach (var candidate in candidates) {
             while (tokenIndex < tokens.Length && tokens[tokenIndex].Index < candidate.Original) {
@@ -77,8 +85,12 @@ public sealed class SmartTextSegments(string modelPath, Action checkStop, Action
                 if (tag.Groups[1].Length > 0) { if (tags.TryPeek(out var top) && top == name) tags.Pop(); }
                 else if (!token.EndsWith("/>") && name is not ("br" or "sprite" or "img" or "space")) tags.Push(name);
             }
-            if (tags.Count == 0 && (candidate.Forced || scores.GetValueOrDefault(candidate.Flat) >= .01)) cuts.Add(candidate.Original);
+            if (tags.Count == 0) safeCandidates.Add(candidate);
         }
+        var boundaries = safeCandidates.Where(c => !c.Forced && c.Flat > 0).Select(c => c.Flat).ToHashSet();
+        var scores = boundaries.Count == 0 ? new Dictionary<int, double>() : Predict(flat.ToString(), boundaries, context);
+        var cuts = new List<int> { 0 };
+        foreach (var candidate in safeCandidates) if (candidate.Forced || scores.GetValueOrDefault(candidate.Flat) >= .01) cuts.Add(candidate.Original);
         cuts.Add(text.Length);
         var spans = new List<(int Start, int Length)>();
         for (var i = 0; i < cuts.Count - 1; i++) {

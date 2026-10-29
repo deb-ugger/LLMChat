@@ -15,11 +15,19 @@ if (-not (Test-Path $exe)) {
 }
 Write-Output "Using release binary: $exe ($(Get-Item $exe | Select-Object -ExpandProperty LastWriteTime))"
 
+$webAssets = Join-Path $root 'frontend\src-tauri\resources\web-assets'
+foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp')) {
+    if (!(Test-Path -LiteralPath (Join-Path $webAssets $group) -PathType Container)) {
+        throw "Run the frontend build before packaging (missing runtime assets: $group)."
+    }
+}
+
 . (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
 $portableExecutables = @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe') | ForEach-Object { Join-Path $out $_ }
 Stop-ProjectProcesses -ExecutablePaths $portableExecutables -CloseTimeoutSeconds 20
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'portable-build.cmd') -Destination (Join-Path $out 'build.cmd') -Force
 
 # Only refresh binaries/resources. Never wipe user data next to the portable app:
 # usage-events.jsonl, conversations.json, config.ini, vendor-models.json, text-projects/, etc.
@@ -43,6 +51,9 @@ foreach ($name in $preserveHint) {
     }
 }
 
+$webAssetsOutput = Join-Path $out 'resources\web-assets'
+New-Item -ItemType Directory -Force -Path $webAssetsOutput | Out-Null
+Copy-Item (Join-Path $webAssets '*') $webAssetsOutput -Recurse -Force
 Copy-Item $exe $out -Force
 
 $speechTools = Join-Path $root 'frontend\src-tauri\resources\ffmpeg'

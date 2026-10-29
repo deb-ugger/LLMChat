@@ -49,7 +49,7 @@ public static class FontPreparation
         var characters = new SortedSet<int>(Enumerable.Range(32, 95)); var originals = 0; var translations = 0;
         foreach (var entry in project.Entries) {
             Program.CheckStop(request, "");
-            var translated = entry.Selected && (selected == null || selected.Contains(entry.Id)) && TranslationIntegrity.Validate(entry.Source, entry.Translation).Length == 0;
+            var translated = entry.Selected && entry.Error.Length == 0 && (selected == null || selected.Contains(entry.Id)) && TranslationIntegrity.Validate(entry.Source, entry.Translation).Length == 0;
             if (translated) translations++; else originals++;
             foreach (var rune in TranslationIntegrity.Visible(translated ? entry.Translation : entry.Source).EnumerateRunes())
                 if (!Rune.IsControl(rune) && !Rune.IsWhiteSpace(rune)) characters.Add(rune.Value);

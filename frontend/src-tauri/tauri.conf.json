@@ -28,7 +28,7 @@
     }
   },
   "bundle": {
-    "resources": ["resources/ffmpeg/*", "resources/unity/*"],
+    "resources": ["resources/ffmpeg/*", "resources/unity/*", "resources/web-assets/**/*"],
     "active": true,
     "targets": [],
     "icon": [

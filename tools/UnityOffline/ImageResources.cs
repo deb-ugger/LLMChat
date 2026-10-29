@@ -17,6 +17,7 @@ public sealed class ImageRegion
     public double X0 { get; set; } public double Y0 { get; set; }
     public double X1 { get; set; } public double Y1 { get; set; }
     public bool Selected { get; set; } = true;
+    public bool ManualSelected { get; set; }
     public string Error { get; set; } = "";
 }
 public sealed class ImageResource
@@ -43,6 +44,23 @@ public sealed class ImageResource
 
 public static class ImageResources
 {
+    public static object Preview(Request request) {
+        var project = Program.Load(Path.Combine(request.Path, "unity-project.json"));
+        var image = project.Images.SingleOrDefault(i => i.Id == request.ImageId) ?? throw new Exception("图片不属于当前工程");
+        if (image.SourceFile.Length == 0) throw new Exception("没有可读取的原图");
+        var bytes = File.ReadAllBytes(Program.Within(project.Folder, image.SourceFile));
+        var pixels = ImageResult.FromMemory(bytes, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+        var fullyTransparent = true;
+        for (var i = 3; i < pixels.Data.Length; i += 4) if (pixels.Data[i] != 0) { fullyTransparent = false; break; }
+        var opaque = "";
+        if (fullyTransparent) {
+            for (var i = 3; i < pixels.Data.Length; i += 4) pixels.Data[i] = 255;
+            using var output = new MemoryStream();
+            new ImageWriter().WritePng(pixels.Data, pixels.Width, pixels.Height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, output);
+            opaque = Convert.ToBase64String(output.ToArray());
+        }
+        return new { data = Convert.ToBase64String(bytes), opaque, fullyTransparent };
+    }
     static string Id(string file, string container, string id) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(file + "\n" + container + "\n" + id))).ToLowerInvariant();
     static void Png(byte[] rgba, int width, int height, string path) {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -76,12 +94,12 @@ public static class ImageResources
     }
     public static void ScanTexture(Project project, AssetsFileInstance instance, AssetTypeValueField field, string file, string container, long objectId, bool fontAtlas) {
         var image = new ImageResource { Id = Id(file, container, objectId.ToString()), File = file, Container = container, ObjectId = objectId.ToString(), Name = field["m_Name"].IsDummy ? objectId.ToString() : field["m_Name"].AsString };
+        if (fontAtlas || Regex.IsMatch(image.Name, @"(?:font|sdf|lightmap|normalmap|_nrm(?:_|$))", RegexOptions.IgnoreCase)) return;
         project.Images.Add(image);
         try {
-            if (fontAtlas || Regex.IsMatch(image.Name, @"(?:font|sdf|lightmap|normalmap|_nrm(?:_|$))", RegexOptions.IgnoreCase)) throw new Exception("字库图集、法线或光照纹理不参与图片文字翻译");
             var texture = TextureFile.ReadTextureFile(field);
             image.Width = texture.m_Width; image.Height = texture.m_Height; Dimensions(image.Width, image.Height);
-            if (texture.m_TextureDimension != 2 || texture.m_ImageCount != 1) throw new Exception("仅支持单张二维纹理，不处理数组或立方体纹理");
+            if (texture.m_TextureDimension != 2 || texture.m_ImageCount != 1) { project.Images.Remove(image); return; }
             if (texture.m_StreamData.size > 0 && !string.IsNullOrEmpty(texture.m_StreamData.path) && instance.parentBundle == null) {
                 var dependency = Program.Within(project.Root, Path.GetRelativePath(project.Root, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(instance.path)!, texture.m_StreamData.path))));
                 image.DependencyFile = Path.GetRelativePath(project.Root, dependency); image.DependencyHash = Program.Hash(dependency);
@@ -129,8 +147,8 @@ public static class ImageResources
     }
     public static ImageResource[] Ready(Project project) {
         var selected = project.Images.Where(i => i.Selected).ToArray();
-        if (!project.ImagesSkipped && selected.Any(i => !i.Completed)) throw new Exception("请完成步骤 2.2 或明确跳过未完成的图片");
-        var ready = selected.Where(i => i.Completed && i.RenderedFile.Length > 0).ToArray();
+        if (!project.ImagesSkipped && selected.Any(i => !i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0))) throw new Exception("请完成步骤 2.2 或明确跳过未完成的图片");
+        var ready = selected.Where(i => i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0) && i.RenderedFile.Length > 0).ToArray();
         foreach (var image in ready) {
             if (Program.Hash(Program.Within(project.Folder, image.RenderedFile)) != image.RenderedHash) throw new Exception("译图缓存已变化，请重新生成译图：" + image.Name);
             if (image.DependencyFile.Length > 0 && Program.Hash(Program.Within(project.Root, image.DependencyFile)) != image.DependencyHash) throw new Exception("原图的 resS 数据已变化，请重新扫描：" + image.Name);

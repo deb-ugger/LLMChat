@@ -22,6 +22,27 @@ export function prepareUnityTranslationRequest(text: string, joinLines = true) {
   return joinLines ? prepareUnityStructuredText(text, prepareUnityTranslationText) : text;
 }
 
+/** Classic engines translate visible text; Unity markup and control tokens never leave this process. */
+export async function translateUnityRichText(source: string, translate: (text: string) => Promise<string>) {
+  const token = /\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[^>\r\n]+>|\\[nrt]/g;
+  if (!token.test(source)) return translate(source);
+  token.lastIndex = 0;
+  const text = async (part: string) => {
+    if (!/\p{L}/u.test(part)) return part;
+    const leading = part.match(/^\s*/)?.[0] || "", trailing = part.match(/\s*$/)?.[0] || "";
+    const result = (await translate(part.trim())).trim();
+    if (!result) throw new Error("可见文字的译文为空");
+    if (result.match(token)) throw new Error("翻译引擎在可见文字中新增了格式标签或占位符");
+    return leading + result + trailing;
+  };
+  let result = "", offset = 0;
+  // Snapshot matches before awaiting translation, so callbacks cannot change regex traversal.
+  for (const match of [...source.matchAll(token)]) {
+    result += await text(source.slice(offset, match.index)) + match[0]; offset = match.index! + match[0].length;
+  }
+  return result + await text(source.slice(offset));
+}
+
 /** Reflow the full translation to the source layout without splitting tokens. */
 export function restoreUnityTranslationLines(source: string, translation: string) {
   if (!/[\r\n]/.test(source)) return translation;
