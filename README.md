@@ -24,6 +24,8 @@ LLMChat 是一款面向 Windows 的桌面翻译与阅读工具，提供对话、
 - **文本工程**：创建或打开工程，选择翻译方式后处理，检查失败或警告条目，再保存工程或导出文件。
 - **Unity**：选择游戏目录，按扫描、翻译、生成补丁、应用的流程操作。生成补丁使用已勾选且有效的文本和图片结果；搜索和“仅看未完成 / 失败”只改变显示范围。
 
+嵌字翻译不自动替换字体。Noto Sans CJK 字体作为独立文件放在便携版软件目录的 `fonts/` 中，连同许可和来源说明一起提供，约 15.7 MiB；点击“选择字体”即可选用，无需自行下载或安装系统字体。TMP / NGUI 补字保留原图集字形，新增文字使用所选字体；未选择字体时保持游戏原字库。修改字体后需重新生成并应用补丁，已有译文可继续使用；特殊字形符号被翻译改动的条目会提示重试。
+
 ## 项目结构
 
 - `backend/`：C++20 本地 HTTP 服务。
@@ -205,7 +207,7 @@ node node_modules/typescript/bin/tsc -b --noEmit
 | [AssetRipper.TextureDecoder](https://github.com/AssetRipper/AssetRipper.TextureDecoder) | 通过纹理扩展使用的 Unity 纹理解码能力 |
 | [StbImageSharp](https://github.com/StbSharp/StbImageSharp) / [StbImageWriteSharp](https://github.com/StbSharp/StbImageWriteSharp) | 图片解码与译图输出 |
 | [Mono.Cecil](https://github.com/jbevain/cecil) | .NET / Mono 程序集及 Unity 序列化类型信息读取 |
-| [Noto CJK](https://github.com/notofonts/noto-cjk) | 中文字体下载与游戏字体替换 |
+| [Noto CJK](https://github.com/notofonts/noto-cjk) | 软件目录 `fonts/` 中供手动选择的 Noto Sans CJK SC Regular（Sans2.004，完整语言版 OTF），以及运行时翻译的字体下载；保留 SIL OFL 许可与来源 |
 | [7-Zip](https://www.7-zip.org/) | 下载的字体资源包解压，按需使用 `7zr.exe` |
 
 ### 构建工具与功能参考

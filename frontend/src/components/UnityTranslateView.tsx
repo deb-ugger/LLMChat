@@ -30,6 +30,10 @@ import {
 } from "../unityLastGame";
 import { UnityOfflineView, type UnityOfflineHandle } from "./UnityOfflineView";
 import { unityRun } from "../unityOffline";
+import { UnityActionIcon } from "./UnityActionIcon";
+import { UnityIconButton } from "./UnityIconButton";
+import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
+import { UnityExitDialog, type UnityExitChoice } from "./UnityExitDialog";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -285,6 +289,7 @@ export function UnityTranslateView({
   onRestoreWorkspace?: () => void;
 }) {
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
+  const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const [offlineToolbar, setOfflineToolbar] = useState<HTMLDivElement | null>(null);
   const [offlineBusy, setOfflineBusy] = useState(false);
   const [embeddedInstalled, setEmbeddedInstalled] = useState<Record<string, boolean>>({});
@@ -293,6 +298,7 @@ export function UnityTranslateView({
     setEmbeddedInstalled(previous => ({ ...previous, [root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()]: installed }));
   }, []);
   const offlineRef = useRef<UnityOfflineHandle>(null);
+  const [offlineInstance, setOfflineInstance] = useState(0);
   const [pathInput, setPathInput] = useState("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [endpoint, setEndpoint] = useState("GoogleTranslate");
@@ -721,11 +727,12 @@ export function UnityTranslateView({
   }, [selected?.gameDir, loadConfigForGame, applyConfigSections]);
 
   const onSaveConfig = async () => {
-    if (busy || !configDirty) return;
+    if (busy) return false;
+    if (!configDirty) return true;
     const gameDir = selected?.gameDir;
     if (!gameDir) {
       reportError("请先选择一个游戏");
-      return;
+      return false;
     }
     setBusyAction("save-config");
     setError(null);
@@ -736,20 +743,56 @@ export function UnityTranslateView({
       });
       if (!res.ok) {
         reportError(res.error || "保存配置失败");
-        return;
+        return false;
       }
       setConfigPath(res.path || configPath);
       setConfigExists(true);
       const savedPath = res.path || configPath;
       setSavedConfig(serializeIniSections(configSections));
       reportSuccess(`配置已保存：${savedPath}`);
-      showConfigToast("配置已保存", true);
+      showConfigToast("保存成功", true);
+      return true;
     } catch (e) {
       reportError(toFriendlyError(e, "保存配置失败"));
+      return false;
     } finally {
       setBusyAction(null);
     }
   };
+
+  const [configExitChanges, setConfigExitChanges] = useState<string[] | null>(null);
+  const configExitDecision = useRef<((choice: UnityExitChoice) => void) | null>(null);
+  const configClosing = useRef(false);
+  const configExitState = useRef({ sections: configSections, saved: savedConfig, save: onSaveConfig });
+  configExitState.current = { sections: configSections, saved: savedConfig, save: onSaveConfig };
+  useEffect(() => {
+    if (!active || mode !== "runtime" || !configDirty || !isTauri()) return;
+    let disposed = false; let unlisten: (() => void) | undefined;
+    void getCurrentWindow().onCloseRequested(async event => {
+      event.preventDefault();
+      if (configClosing.current) return;
+      configClosing.current = true;
+      try {
+        const current = configExitState.current;
+        const baseline = new Map<string, string>(); let section = "";
+        for (const line of current.saved.split(/\r?\n/)) {
+          if (line.startsWith("[")) section = line.slice(1, -1);
+          else { const equal = line.indexOf("="); if (equal >= 0) baseline.set(section + "." + line.slice(0, equal), line.slice(equal + 1)); }
+        }
+        const changes = current.sections.flatMap(section => section.keys.filter(key => baseline.get(section.name + "." + key.key) !== key.value).map(key => `运行时配置：[${section.name}] ${key.key}`));
+        const choice = await new Promise<UnityExitChoice>(resolve => { configExitDecision.current = resolve; setConfigExitChanges(changes.length ? changes : ["运行时翻译配置"]); });
+        if (choice === "cancel") return;
+        if (choice === "save") {
+          await showClosing("正在保存 Unity 运行时翻译配置…");
+          if (!await configExitState.current.save()) return;
+        }
+        await showClosing("正在关闭窗口和后台服务…");
+        await getCurrentWindow().destroy();
+      } catch (error) { reportError(toFriendlyError(error, "退出失败，窗口已保留")); }
+      finally { clearClosing(); configClosing.current = false; }
+    }).then(dispose => { if (disposed) dispose(); else unlisten = dispose; }).catch(error => reportError(toFriendlyError(error, "无法检查未保存的 Unity 配置")));
+    return () => { disposed = true; unlisten?.(); configExitDecision.current?.("cancel"); configExitDecision.current = null; };
+  }, [active, mode, configDirty]);
 
   const resetPath = useCallback((path: string) => {
     interactionRef.current++;
@@ -1365,14 +1408,20 @@ export function UnityTranslateView({
     return () => { disposed = true; };
   }, []);
 
+  const allowOfflineLeave = async () => {
+    if (mode !== "offline" || !offlineRef.current) return true;
+    const result = await offlineRef.current.prepareToLeave();
+    if (result === "discard") setOfflineInstance(value => value + 1);
+    return !!result;
+  };
   const backToList = async () => {
-    if (mode === "offline" && offlineRef.current && !(await offlineRef.current.prepareToLeave())) return;
+    if (!await allowOfflineLeave()) return;
     setViewMode("list");
     setMode("offline");
   };
   const changeMode = async (next: "offline" | "runtime") => {
     if (next === mode) return;
-    if (mode === "offline" && offlineRef.current && !(await offlineRef.current.prepareToLeave())) return;
+    if (!await allowOfflineLeave()) return;
     setMode(next);
   };
 
@@ -1754,6 +1803,8 @@ export function UnityTranslateView({
 
   return (
     <div className="unity-shell" aria-hidden={!active} data-unity-mode={showDetail ? mode : "games"}>
+      {closingPhase && <ClosingProgress phase={closingPhase} />}
+      {configExitChanges && <UnityExitDialog projectOnly={false} running={busy} changes={configExitChanges} onChoice={choice => { const resolve = configExitDecision.current; configExitDecision.current = null; setConfigExitChanges(null); resolve?.(choice); }} />}
       {configToast
         ? createPortal(
             <div
@@ -1782,24 +1833,22 @@ export function UnityTranslateView({
             {helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code title={selected.gameDir}>{selected.gameDir}</code></div>}
-          <div ref={setOfflineToolbar} className="unity-header-primary" hidden={mode !== "offline"} />
           <nav className="unity-mode-nav" aria-label="Unity 翻译模式">
             <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
           </nav>
-          {onOpenUnitySettings ? (
-            <div className="unity-top-actions">
-              <button
+            <div className="unity-top-actions unity-header-icon-group">
+              <div ref={setOfflineToolbar} className="unity-header-primary unity-header-icons" hidden={mode !== "offline"} />
+              {onOpenUnitySettings && <UnityIconButton
                 type="button"
-                className="unity-btn"
+                aria-label="Unity 设置"
                 disabled={busy || offlineBusy}
                 onClick={onOpenUnitySettings}
                 title="打开 Unity 模块设置"
               >
-                Unity 设置
-              </button>
+                <UnityActionIcon kind="settings" />
+              </UnityIconButton>}
             </div>
-          ) : null}
         </header>
       ) : null}
 
@@ -2181,7 +2230,7 @@ export function UnityTranslateView({
       )}
 
       <div className="unity-offline-host" hidden={!showDetail || mode !== "offline"}>
-        <UnityOfflineView ref={offlineRef} active={active && showDetail && mode === "offline"} game={showDetail ? selected : null} settings={settings} toolbarTarget={offlineToolbar} onBusyChange={setOfflineBusy} onInstallationChange={installationChanged} onOpenGeneralSettings={onOpenGeneralSettings} />
+        <UnityOfflineView key={offlineInstance} ref={offlineRef} active={active && showDetail && mode === "offline"} game={showDetail ? selected : null} settings={settings} toolbarTarget={offlineToolbar} onBusyChange={setOfflineBusy} onInstallationChange={installationChanged} onOpenGeneralSettings={onOpenGeneralSettings} />
       </div>
       <div
         ref={workspaceRef}

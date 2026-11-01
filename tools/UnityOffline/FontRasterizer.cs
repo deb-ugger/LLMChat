@@ -9,7 +9,14 @@ public sealed record RasterGlyph(int Code, int Width, int Height, int BearingX, 
     public int X { get; set; }
     public int Y { get; set; }
 }
-public sealed record RasterAtlas(int Width, int Height, int PointSize, int Ascent, int Descent, int Padding, RasterGlyph[] Glyphs, byte[] Pixels);
+public sealed record RasterAtlas(int Width, int Height, int PointSize, int Ascent, int Descent, int Padding, RasterGlyph[] Glyphs, byte[] Pixels)
+{
+    public byte[]? OriginalRgba { get; init; }
+    public int OriginalWidth { get; init; }
+    public int OriginalHeight { get; init; }
+    public (int X, int Y, int Width, int Height)? AddedRegion { get; init; }
+}
+public sealed record FontAtlasLayout(int PointSize, int Ascent, int Descent, int Padding, (int Width, int Height)[] Bounds, double? DistanceSpread = null);
 
 // Uses a private font handle, never installs fonts or lets GDI substitute missing glyphs.
 public sealed class FontRasterizer : IDisposable
@@ -98,24 +105,37 @@ public sealed class FontRasterizer : IDisposable
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++) pixels[y * width + x] = (byte)Math.Min(255, buffer[y * stride + x] * 255 / 64);
         return new(code, width, height, metrics.X, metrics.Y, metrics.AdvanceX, pixels);
     }
-    public RasterAtlas Generate(string characters, bool sdf, Action? stop = null, Action<int, int>? progress = null)
+    public RasterAtlas Generate(string characters, bool sdf, Action? stop = null, Action<int, int>? progress = null, FontAtlasLayout? layout = null)
     {
-        var codes = characters.EnumerateRunes().Select(r => r.Value).Where(c => !Rune.IsControl(new Rune(c))).Distinct().Order().ToArray();
-        foreach (var size in new[] { 64, 48, 36, 28, 20, 16 }) {
+        var codes = characters.EnumerateRunes().Where(r => !Rune.IsControl(r) && Rune.GetUnicodeCategory(r) != System.Globalization.UnicodeCategory.Format).Select(r => r.Value).Distinct().Order().ToArray();
+        foreach (var size in layout == null ? new[] { 64, 48, 36, 28, 20, 16 } : new[] { layout.PointSize }) {
             stop?.Invoke(); Size(size);
             var glyphs = new List<RasterGlyph>();
             foreach (var code in codes) { stop?.Invoke(); glyphs.Add(Glyph(code)); if (glyphs.Count % 16 == 0 || glyphs.Count == codes.Length) progress?.Invoke(glyphs.Count, codes.Length); }
-            var padding = sdf ? 8 : 2;
-            foreach (var side in new[] { 256, 512, 1024, 2048, 4096 }) {
+            if (layout != null && glyphs.Count > 0) {
+                var top = glyphs.Max(g => g.BearingY); var bottom = glyphs.Max(g => g.Height - g.BearingY);
+                var ratio = Math.Min(1, (double)(layout.Ascent + layout.Descent) / Math.Max(1, top + bottom));
+                if (ratio < 1) {
+                    Size(Math.Max(1, (int)Math.Floor(size * ratio)));
+                    glyphs = codes.Select(code => { stop?.Invoke(); return Glyph(code); }).ToList();
+                    top = glyphs.Max(g => g.BearingY); bottom = glyphs.Max(g => g.Height - g.BearingY);
+                }
+                var shift = Math.Min(Math.Max(0, bottom - layout.Descent), layout.Ascent - top);
+                glyphs = glyphs.Select(glyph => glyph with { BearingY = glyph.BearingY + shift }).ToList();
+            }
+            var padding = layout?.Padding ?? (sdf ? 8 : 2);
+            var bounds = layout?.Bounds ?? new[] { (256, 256), (512, 512), (1024, 1024), (2048, 2048), (4096, 4096) };
+            foreach (var (width, height) in bounds) {
                 var x = 1; var y = 1; var row = 0; var fits = true;
                 foreach (var glyph in glyphs.OrderByDescending(g => g.Height).ThenBy(g => g.Code)) {
                     var w = glyph.Width + padding * 2 + 1; var h = glyph.Height + padding * 2 + 1;
-                    if (x + w >= side) { x = 1; y += row; row = 0; }
-                    if (y + h >= side) { fits = false; break; }
+                    if (w + 2 >= width) { fits = false; break; }
+                    if (x + w >= width) { x = 1; y += row; row = 0; }
+                    if (y + h >= height) { fits = false; break; }
                     glyph.X = x + padding; glyph.Y = y + padding; x += w; row = Math.Max(row, h);
                 }
                 if (!fits) continue;
-                var atlas = new byte[side * side];
+                var atlas = new byte[width * height];
                 foreach (var glyph in glyphs) {
                     stop?.Invoke();
                     if (glyph.Width == 0 || glyph.Height == 0) continue;
@@ -123,17 +143,17 @@ public sealed class FontRasterizer : IDisposable
                         var w = glyph.Width + 2 * padding; var h = glyph.Height + 2 * padding;
                         var coverage = new byte[w * h];
                         for (var iy = 0; iy < glyph.Height; iy++) Array.Copy(glyph.Pixels, iy * glyph.Width, coverage, (iy + padding) * w + padding, glyph.Width);
-                        var distance = DistanceField(coverage, w, h, padding);
-                        for (var iy = 0; iy < h; iy++) Array.Copy(distance, iy * w, atlas, (glyph.Y - padding + iy) * side + glyph.X - padding, w);
-                    } else for (var iy = 0; iy < glyph.Height; iy++) Array.Copy(glyph.Pixels, iy * glyph.Width, atlas, (glyph.Y + iy) * side + glyph.X, glyph.Width);
+                        var distance = DistanceField(coverage, w, h, layout?.DistanceSpread ?? padding);
+                        for (var iy = 0; iy < h; iy++) Array.Copy(distance, iy * w, atlas, (glyph.Y - padding + iy) * width + glyph.X - padding, w);
+                    } else for (var iy = 0; iy < glyph.Height; iy++) Array.Copy(glyph.Pixels, iy * glyph.Width, atlas, (glyph.Y + iy) * width + glyph.X, glyph.Width);
                 }
                 if (!GetTextMetricsW(dc, out var metrics)) throw new Exception("无法读取字体行高度");
-                return new(side, side, size, metrics.Ascent, metrics.Descent, padding, glyphs.ToArray(), atlas);
+                return new(width, height, size, layout?.Ascent ?? metrics.Ascent, layout?.Descent ?? metrics.Descent, padding, glyphs.ToArray(), atlas);
             }
         }
-        throw new Exception("字符无法放入 4096 像素图集，请减少补充字符或拆分字库");
+        throw new Exception(layout == null ? "字符无法放入 4096 像素图集，请减少补充字符或拆分字库" : "新增字符无法放入图集，已保留原字号；请减少补充字符或拆分字库");
     }
-    public static byte[] DistanceField(byte[] coverage, int width, int height, int spread)
+    public static byte[] DistanceField(byte[] coverage, int width, int height, double spread)
     {
         // Two-pass chamfer distance transform, positive inside and negative outside.
         float[] Distance(bool inside) {

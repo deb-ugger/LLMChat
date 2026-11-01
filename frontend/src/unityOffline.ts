@@ -61,12 +61,4 @@ export async function legacyUnityOutputDirectory() {
   return localStorage.getItem(UNITY_OUTPUT_KEY)?.trim() || await join(await resourceDir(), "unity-output");
 }
 
-const tokens = /\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[^>\r\n]+>|\\[nrt]/g;
-export function unityTranslationError(source: string, translation: string) {
-  if (!translation.trim()) return "译文为空";
-  const a = (source.match(tokens) || []).sort();
-  const b = (translation.match(tokens) || []).sort();
-  if (JSON.stringify(a) !== JSON.stringify(b)) return "占位符、转义或富文本标签发生变化";
-  const ordered = (value: string) => value.startsWith("<") || value.startsWith("\\") || value.startsWith("%") && !/^%\d+\$/.test(value);
-  return JSON.stringify((source.match(tokens) || []).filter(ordered)) === JSON.stringify((translation.match(tokens) || []).filter(ordered)) ? "" : "富文本标签嵌套、转义或非定位格式参数的顺序发生变化";
-}
+export { unityTranslationProblem as unityTranslationError } from "./unityTokens";

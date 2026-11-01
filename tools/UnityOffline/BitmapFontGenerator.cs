@@ -1,5 +1,6 @@
 using AssetsTools.NET;
 using AssetsTools.NET.Extra;
+using AssetsTools.NET.Texture;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -9,7 +10,7 @@ namespace LLMChat.UnityOffline;
 // by the exporter before a patch is marked complete.
 public static class BitmapFontGenerator
 {
-    public const int Revision = 1;
+    public const int Revision = 3;
     public static string? FontKind(AssetTypeValueField field)
     {
         if (!field["m_CharacterTable"].IsDummy || !field["m_glyphInfoList"].IsDummy) return "TMP";
@@ -19,6 +20,10 @@ public static class BitmapFontGenerator
     {
         if (field.IsDummy) throw new Exception("字库缺少必需字段");
         switch (field.TemplateField.ValueType) {
+            case AssetValueType.Int8: field.AsSByte = checked((sbyte)value); break;
+            case AssetValueType.UInt8: field.AsByte = checked((byte)value); break;
+            case AssetValueType.Int16: field.AsShort = checked((short)value); break;
+            case AssetValueType.UInt16: field.AsUShort = checked((ushort)value); break;
             case AssetValueType.Int32: field.AsInt = checked((int)value); break;
             case AssetValueType.UInt32: field.AsUInt = checked((uint)value); break;
             case AssetValueType.Int64: field.AsLong = checked((long)value); break;
@@ -26,7 +31,7 @@ public static class BitmapFontGenerator
             case AssetValueType.Float: field.AsFloat = (float)value; break;
             case AssetValueType.Double: field.AsDouble = value; break;
             case AssetValueType.Bool: field.AsBool = value != 0; break;
-            default: throw new Exception("字库数值字段布局不支持：" + field.FieldName);
+            default: throw new Exception($"字库数值字段布局不支持：{field.FieldName}（{field.TemplateField.ValueType}）");
         }
     }
     static void Optional(AssetTypeValueField root, string name, double value) { if (!root.IsDummy && !root[name].IsDummy) Number(root[name], value); }
@@ -36,9 +41,9 @@ public static class BitmapFontGenerator
         if (array.IsDummy || !array.TemplateField.IsArray) throw new Exception("字库字段布局不支持：" + name);
         return array;
     }
-    static AssetTypeValueField Sample(AssetTypeValueField array) => array.Children.FirstOrDefault()?.Clone() ?? throw new Exception("字库表为空，无法确认序列化布局");
+    static AssetTypeValueField Sample(AssetTypeValueField array) => array.Children.FirstOrDefault()?.Clone() ?? ValueBuilder.DefaultValueFieldFromArrayTemplate(array);
     static void NullPointer(AssetTypeValueField field) { if (!field.IsDummy) { Number(field["m_FileID"], 0); Number(field["m_PathID"], 0); } }
-    static IEnumerable<int> ExistingCodes(AssetTypeValueField field, bool tmp)
+    public static IEnumerable<int> ExistingCodes(AssetTypeValueField field, bool tmp)
     {
         var table = tmp ? Array(field, "m_CharacterTable") : Array(field["mFont"], "mSaved");
         return table.Children.Select(row => tmp ? checked((int)row["m_Unicode"].AsUInt) : row["index"].AsInt).Where(c => c is >= 32 and <= 0xFFFF && !char.IsSurrogate((char)c));
@@ -100,7 +105,13 @@ public static class BitmapFontGenerator
         for (var y = 0; y < atlas.Height; y++) for (var x = 0; x < atlas.Width; x++) {
             var source = atlas.Pixels[y * atlas.Width + x]; var offset = ((atlas.Height - 1 - y) * atlas.Width + x) * (sdf ? 1 : 4);
             if (sdf) pixels[offset] = source;
-            else { pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = 255; pixels[offset + 3] = source; }
+            else {
+                var isNew = atlas.AddedRegion is { } region && x >= region.X && x < region.X + region.Width && y >= region.Y && y < region.Y + region.Height;
+                if (atlas.OriginalRgba != null && x < atlas.OriginalWidth && y >= atlas.Height - atlas.OriginalHeight && !isNew) {
+                    var from = ((y - atlas.Height + atlas.OriginalHeight) * atlas.OriginalWidth + x) * 4;
+                    System.Array.Copy(atlas.OriginalRgba, from, pixels, offset, 4);
+                } else { pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = 255; pixels[offset + 3] = source; }
+            }
         }
         if (texture["image data"].IsDummy) throw new Exception("Texture2D 缺少内嵌像素字段");
         texture["image data"].AsByteArray = pixels;
@@ -119,10 +130,54 @@ public static class BitmapFontGenerator
         var item = Array(material["m_SavedProperties"], "m_TexEnvs").Children.FirstOrDefault(c => c["first"].AsString == "_MainTex");
         if (item == null) throw new Exception("字体材质缺少 _MainTex");
         var value = item["second"];
-        if (!value["m_Scale"].IsDummy) { Number(value["m_Scale"]["x"], 1); Number(value["m_Scale"]["y"], 1); }
-        if (!value["m_Offset"].IsDummy) { Number(value["m_Offset"]["x"], 0); Number(value["m_Offset"]["y"], 0); }
         return value["m_Texture"];
     }
+    public static void AppendTmp(AssetTypeValueField field, RasterAtlas atlas)
+    {
+        var generated = field.Clone(); WriteTmp(generated, atlas);
+        var glyphs = Array(field, "m_GlyphTable"); var characters = Array(field, "m_CharacterTable");
+        var offset = glyphs.Children.Count == 0 ? 0u : glyphs.Children.Max(glyph => glyph["m_Index"].AsUInt);
+        foreach (var glyph in Array(generated, "m_GlyphTable").Children) { Number(glyph["m_Index"], checked(offset + glyph["m_Index"].AsUInt)); glyphs.Children.Add(glyph); }
+        foreach (var character in Array(generated, "m_CharacterTable").Children) { Number(character["m_GlyphIndex"], checked(offset + character["m_GlyphIndex"].AsUInt)); characters.Children.Add(character); }
+        Number(field["m_AtlasWidth"], atlas.Width); Number(field["m_AtlasHeight"], atlas.Height);
+        Number(field["m_AtlasPopulationMode"], 0); Optional(field, "m_AtlasTextureIndex", 0); Optional(field, "m_IsMultiAtlasTexturesEnabled", 0);
+        NullPointer(field["m_SourceFontFile"]);
+        foreach (var name in new[] { "m_UsedGlyphRects", "m_FreeGlyphRects" }) if (!field[name].IsDummy && !field[name]["Array"].IsDummy) field[name]["Array"].Children.Clear();
+    }
+    public static void AppendNgui(AssetTypeValueField field, RasterAtlas atlas)
+    {
+        var generated = field.Clone(); WriteNgui(generated, atlas);
+        Array(field["mFont"], "mSaved").Children.AddRange(Array(generated["mFont"], "mSaved").Children);
+        Number(field["mFont"]["mWidth"], atlas.Width); Number(field["mFont"]["mHeight"], atlas.Height);
+        if (!field["mUVRect"].IsDummy) foreach (var (key, value) in new[] { ("x", 0), ("y", 0), ("width", 1), ("height", 1) }) Number(field["mUVRect"][key], value);
+    }
+    public static RasterAtlas MergeAtlas(AssetTypeValueField texture, AssetsFileInstance instance, RasterAtlas added, bool sdf, bool retainOriginal, (int X, int Y, int Width, int Height)[]? freeRegions = null)
+    {
+        var oldWidth = retainOriginal ? texture["m_Width"].AsInt : 0;
+        var oldHeight = retainOriginal ? texture["m_Height"].AsInt : 0;
+        if (oldWidth <= 0 || oldHeight <= 0) return added;
+        static int PowerOfTwo(int value) { var n = 1; while (n < value) n *= 2; return n; }
+        var free = (freeRegions ?? []).Where(region => region.Width >= added.Width && region.Height >= added.Height).OrderBy(region => (long)region.Width * region.Height).ToArray();
+        var choices = free.Length > 0 ? new[] { (Width: oldWidth, Height: oldHeight, X: free[0].X, Y: free[0].Y) } : new[] {
+            (Width: PowerOfTwo(Math.Max(oldWidth, added.Width)), Height: PowerOfTwo(oldHeight + added.Height), X: 0, Y: oldHeight),
+            (Width: PowerOfTwo(oldWidth + added.Width), Height: PowerOfTwo(Math.Max(oldHeight, added.Height)), X: oldWidth, Y: 0),
+        }.Where(choice => choice.Width <= 8192 && choice.Height <= 8192).OrderBy(choice => (long)choice.Width * choice.Height).ToArray();
+        if (choices.Length == 0) throw new Exception("保留原图集并补字后超过 8192 像素，请拆分字库");
+        var placement = choices[0];
+        var image = TextureFile.ReadTextureFile(texture);
+        var encoded = (image.m_StreamData.size == 0 ? image.pictureData : image.FillPictureData(instance)) ?? throw new Exception("原字库图集数据不存在");
+        var rgba = image.DecodeTextureRaw(encoded, false) ?? throw new Exception("原字库图集格式无法解码");
+        TextureOperations.FlipBGRA32Vertically(rgba, oldWidth, oldHeight);
+        var pixels = new byte[placement.Width * placement.Height];
+        for (var y = 0; y < oldHeight; y++) for (var x = 0; x < oldWidth; x++) pixels[(placement.Height - oldHeight + y) * placement.Width + x] = rgba[(y * oldWidth + x) * 4 + 3];
+        var top = placement.Height - placement.Y - added.Height;
+        for (var y = 0; y < added.Height; y++) System.Array.Copy(added.Pixels, y * added.Width, pixels, (top + y) * placement.Width + placement.X, added.Width);
+        foreach (var glyph in added.Glyphs) { glyph.X += placement.X; glyph.Y += top; }
+        return added with { Width = placement.Width, Height = placement.Height, Pixels = pixels, OriginalRgba = sdf ? null : rgba, OriginalWidth = oldWidth, OriginalHeight = oldHeight, AddedRegion = (placement.X, top, added.Width, added.Height) };
+    }
+    static int Metric(AssetTypeValueField field) => field.TemplateField.ValueType switch {
+        AssetValueType.Float => (int)Math.Round(field.AsFloat), AssetValueType.Double => (int)Math.Round(field.AsDouble), _ => field.AsInt,
+    };
     public static Dictionary<long, AssetTypeValueField> Generate(AssetsManager manager, AssetsFileInstance instance, FontInfo[] fonts, Request request, string characters)
     {
         var changed = new Dictionary<long, AssetTypeValueField>(); var textureOwners = new HashSet<long>();
@@ -137,7 +192,9 @@ public static class BitmapFontGenerator
             var id = pointer["m_PathID"].AsLong;
             if (id == 0) throw new Exception("字库缺少图集或材质引用"); return id;
         }
-        using var rasterizer = new FontRasterizer(File.ReadAllBytes(request.FontPath));
+        var fontBytes = File.ReadAllBytes(request.FontPath);
+        using var rasterizer = new FontRasterizer(fontBytes);
+        var unsupported = FontCoverage.Missing(fontBytes, characters).ToHashSet();
         foreach (var target in fonts) {
             Program.CheckStop(request, "");
             var id = long.Parse(target.ObjectId); var field = Read(id); var tmp = target.Kind.StartsWith("TMP", StringComparison.Ordinal);
@@ -162,12 +219,34 @@ public static class BitmapFontGenerator
             if (!textureOwners.Add(textureId)) throw new Exception("多个字库共享同一纹理，不能独立覆盖：" + name);
             var texture = Read(textureId, 28);
             // Keep shader selection, and only use an SDF atlas for an existing SDF material.
-            var sdf = tmp && Array(material["m_SavedProperties"], "m_Floats").Children.Any(c => c["first"].AsString == "_GradientScale");
-            var allCharacters = characters + string.Concat(ExistingCodes(field, tmp).Select(char.ConvertFromUtf32));
-            var atlas = rasterizer.Generate(allCharacters, sdf, () => Program.CheckStop(request, ""), (done, total) => Program.Progress("生成字形：" + name, done, total));
-            if (tmp) WriteTmp(field, atlas); else WriteNgui(field, atlas);
-            if (tmp) Optional(field, "m_AtlasRenderMode", sdf ? 0x1049 : 0x1019);
+            var gradient = tmp ? Array(material["m_SavedProperties"], "m_Floats").Children.FirstOrDefault(c => c["first"].AsString == "_GradientScale") : null;
+            var sdf = gradient != null;
+            var existing = ExistingCodes(field, tmp).ToHashSet();
+            var newCharacters = string.Concat(characters.EnumerateRunes().Where(r => !existing.Contains(r.Value) && !unsupported.Contains(r.Value)).Select(r => r.ToString()));
+            if (newCharacters.Length == 0) continue;
+            var pointSize = Metric(tmp ? field["m_FaceInfo"]["m_PointSize"] : field["mFont"]["mSize"]);
+            var ascent = Metric(tmp ? field["m_FaceInfo"]["m_AscentLine"] : field["mFont"]["mBase"]);
+            var descent = tmp ? -Metric(field["m_FaceInfo"]["m_DescentLine"]) : pointSize - ascent;
+            if (pointSize <= 0 || ascent + descent <= 0) throw new Exception("原字库缺少有效字号或行高度，不能保持排版补字：" + name);
+            var retain = tmp ? Array(field, "m_GlyphTable").Children.Any(glyph => glyph["m_GlyphRect"]["m_Width"].AsInt > 0 && glyph["m_GlyphRect"]["m_Height"].AsInt > 0)
+                : Array(field["mFont"], "mSaved").Children.Any(glyph => glyph["width"].AsInt > 0 && glyph["height"].AsInt > 0);
+            var oldWidth = retain ? texture["m_Width"].AsInt : 0; var oldHeight = retain ? texture["m_Height"].AsInt : 0;
+            var freeRegions = tmp && retain && !field["m_FreeGlyphRects"].IsDummy
+                ? Array(field, "m_FreeGlyphRects").Children.Select(rect => (X: rect["m_X"].AsInt, Y: rect["m_Y"].AsInt, Width: rect["m_Width"].AsInt, Height: rect["m_Height"].AsInt))
+                    .Where(rect => rect.X >= 0 && rect.Y >= 0 && rect.Width > 0 && rect.Height > 0 && rect.X + rect.Width <= oldWidth && rect.Y + rect.Height <= oldHeight).ToArray()
+                : [];
+            var regions = freeRegions.Select(region => (region.Width, region.Height)).ToList();
+            if (oldHeight < 8192) regions.Add((8192, 8192 - oldHeight));
+            if (oldWidth < 8192) regions.Add((8192 - oldWidth, 8192));
+            var bounds = new[] { (256, 256), (512, 512), (1024, 1024), (2048, 2048), (4096, 4096) }.Where(size => regions.Any(region => region.Item1 >= size.Item1 && region.Item2 >= size.Item2)).ToList();
+            bounds.AddRange(regions.OrderBy(region => (long)region.Item1 * region.Item2));
+            var layout = new FontAtlasLayout(pointSize, ascent, descent, tmp ? Metric(field["m_AtlasPadding"]) : 2, bounds.Distinct().ToArray(), gradient == null ? null : Math.Max(0, gradient["second"].AsFloat - 1));
+            var atlas = rasterizer.Generate(newCharacters, sdf, () => Program.CheckStop(request, ""), (done, total) => Program.Progress("生成新增字形：" + name, done, total), layout);
+            atlas = MergeAtlas(texture, instance, atlas, sdf, retain, freeRegions);
+            if (tmp) AppendTmp(field, atlas); else AppendNgui(field, atlas);
+            var settings = texture["m_TextureSettings"].IsDummy ? null : texture["m_TextureSettings"].Clone();
             WriteTexture(texture, atlas, sdf);
+            if (settings != null) texture["m_TextureSettings"].Children = settings.Children;
             if (tmp) {
                 // Text components can use material presets rather than the font's default material.
                 foreach (var info in instance.file.Metadata.AssetInfos.Where(info => info.TypeId == 21)) {
@@ -177,7 +256,6 @@ public static class BitmapFontGenerator
                     var presetSdf = Array(preset["m_SavedProperties"], "m_Floats").Children.Any(c => c["first"].AsString == "_GradientScale");
                     if (presetSdf != sdf) throw new Exception("同一字库纹理被不同渲染类型的材质使用：" + name);
                     MainTexture(preset); FloatProperty(preset, "_TextureWidth", atlas.Width); FloatProperty(preset, "_TextureHeight", atlas.Height);
-                    if (sdf) FloatProperty(preset, "_GradientScale", atlas.Padding + 1);
                     changed[info.PathId] = preset;
                 }
             }

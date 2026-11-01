@@ -1,0 +1,8 @@
+Noto Sans CJK SC Regular - Sans2.004
+Copyright 2014-2021 Adobe (http://www.adobe.com/).
+License: SIL Open Font License 1.1 (see OFL.txt).
+Upstream: https://github.com/notofonts/noto-cjk
+Font: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+License: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE
+SHA256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+Unmodified static OTF, full language-specific font (not the SC-only subset).

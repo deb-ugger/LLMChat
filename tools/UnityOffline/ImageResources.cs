@@ -45,18 +45,28 @@ public sealed class ImageResource
 public static class ImageResources
 {
     public static object Preview(Request request) {
-        var project = Program.Load(Path.Combine(request.Path, "unity-project.json"));
+        Program.CheckStop(request, "");
+        var project = request.Project ?? Program.Load(Path.Combine(request.Path, "unity-project.json"));
         var image = project.Images.SingleOrDefault(i => i.Id == request.ImageId) ?? throw new Exception("图片不属于当前工程");
         if (image.SourceFile.Length == 0) throw new Exception("没有可读取的原图");
         var bytes = File.ReadAllBytes(Program.Within(project.Folder, image.SourceFile));
         var pixels = ImageResult.FromMemory(bytes, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+        Program.CheckStop(request, "");
         var fullyTransparent = true;
         for (var i = 3; i < pixels.Data.Length; i += 4) if (pixels.Data[i] != 0) { fullyTransparent = false; break; }
+        var rgba = pixels.Data; var width = pixels.Width; var height = pixels.Height;
+        if (request.Thumbnail && Math.Max(width, height) > 256) {
+            var scale = 256d / Math.Max(width, height); var w = Math.Max(1, (int)Math.Round(width * scale)); var h = Math.Max(1, (int)Math.Round(height * scale));
+            var resized = new byte[w * h * 4];
+            for (var y = 0; y < h; y++) { Program.CheckStop(request, ""); for (var x = 0; x < w; x++) Array.Copy(rgba, ((y * height / h) * width + x * width / w) * 4, resized, (y * w + x) * 4, 4); }
+            rgba = resized; width = w; height = h;
+            using var thumbnail = new MemoryStream(); new ImageWriter().WritePng(rgba, width, height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, thumbnail); bytes = thumbnail.ToArray();
+        }
         var opaque = "";
         if (fullyTransparent) {
-            for (var i = 3; i < pixels.Data.Length; i += 4) pixels.Data[i] = 255;
+            for (var i = 3; i < rgba.Length; i += 4) rgba[i] = 255;
             using var output = new MemoryStream();
-            new ImageWriter().WritePng(pixels.Data, pixels.Width, pixels.Height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, output);
+            new ImageWriter().WritePng(rgba, width, height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, output);
             opaque = Convert.ToBase64String(output.ToArray());
         }
         return new { data = Convert.ToBase64String(bytes), opaque, fullyTransparent };

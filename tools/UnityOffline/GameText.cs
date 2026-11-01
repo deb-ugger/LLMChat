@@ -6,10 +6,10 @@ namespace LLMChat.UnityOffline;
 
 public static class GameText
 {
-    public const int SafetyRevision = 2;
+    public const int SafetyRevision = 3;
     static readonly Regex BindingField = new(@"^(?:m_)?blendshapes?(?:For\w+|Names)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     static bool BindingPath(string path) => path.Split('/').Any(BindingField.IsMatch);
-    static readonly Regex TechnicalField = new(@"^(?:\$type|type|assembly|class|method|member|field|event|function|m_Name|m_EditorClassIdentifier|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id|AssemblyTypeName|AssemblyQualifiedName|AssemblyName|TypeName|MethodName|MemberName|PropertyName|EventName|FieldName|ClassName|ScriptName|Namespace))$", RegexOptions.IgnoreCase);
+    static readonly Regex TechnicalField = new(@"^(?:\$type|type|assembly|class|method|member|field|event|function|m_Name|m_EditorClassIdentifier|(?:m_)?(?:groups|bindingGroup|controlScheme|expectedControlType|interactions|processors)|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id|AssemblyTypeName|AssemblyQualifiedName|AssemblyName|TypeName|MethodName|MemberName|PropertyName|EventName|FieldName|ClassName|ScriptName|Namespace))$", RegexOptions.IgnoreCase);
     static readonly Regex TypeIdentity = new(@"^(?:UnityEngine\.|UnityEditor\.|System\.|TMPro\.|Unity\.)[^\r\n,]+,\s*[A-Za-z_][\w.\-]*(?:\s*,\s*(?:Version|Culture|PublicKeyToken|ProcessorArchitecture)\s*=\s*[^,\r\n]+)*$|^[\w.+`\[\], ]+,\s*Assembly-CSharp(?:-firstpass)?(?:,.*)?$|^(?:UnityEngine|UnityEditor|System|TMPro|Unity)\.[A-Za-z_][\w.+`\[\],]*$", RegexOptions.IgnoreCase);
     static readonly Regex TextField = new(@"text|message|dialog|sentence|description|caption|title|displayName|speakerName|characterName|label|content|body|choice|prompt", RegexOptions.IgnoreCase);
     public static bool Visible(string field, string value, int maximum = 16000)

@@ -70,7 +70,14 @@ if (!(Test-Path -LiteralPath (Join-Path $unityTools 'llmchat-unity.exe'))) {
 }
 $unityToolsOutput = Join-Path $out 'resources\unity'
 New-Item -ItemType Directory -Force -Path $unityToolsOutput | Out-Null
-Copy-Item (Join-Path $unityTools '*') $unityToolsOutput -Force
+Get-ChildItem -LiteralPath $unityTools -File | Where-Object { $_.Name -notin @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.txt') } | Copy-Item -Destination $unityToolsOutput -Force
+$fontsOutput = Join-Path $out 'fonts'
+New-Item -ItemType Directory -Force -Path $fontsOutput | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'assets\fonts\NotoSansCJKsc-Regular.otf'), (Join-Path $root 'assets\fonts\OFL.txt'), (Join-Path $root 'assets\fonts\SOURCE.txt') -Destination $fontsOutput -Force
+foreach ($name in @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.txt')) {
+    $oldFont = Join-Path $unityToolsOutput $name
+    if (Test-Path -LiteralPath $oldFont) { Remove-Item -LiteralPath $oldFont }
+}
 
 $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"

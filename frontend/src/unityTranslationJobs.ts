@@ -33,10 +33,10 @@ export function createUnityTranslationJobs(options: {
   const abort = () => { for (const controller of controllers.values()) controller.abort(); };
   options.signal.addEventListener("abort", abort, { once: true });
   return {
-    start(part: UnityTranslationPart) {
+    start(part: UnityTranslationPart, nextPhase = false) {
       if (settled || options.signal.aborted || jobs.has(part)) return false;
       participants.add(part);
-      if (states[part] === "done" || states[part] === "skipped") { queueMicrotask(check); return false; }
+      if (!nextPhase && (states[part] === "done" || states[part] === "skipped")) { queueMicrotask(check); return false; }
       const controller = new AbortController(); controllers.set(part, controller); failures.delete(part); skipped.delete(part); change(part, "running");
       const job = Promise.resolve().then(() => { controller.signal.throwIfAborted(); return options.run(part, controller); }).then(() => {
         change(part, skipped.has(part) ? "skipped" : controller.signal.aborted ? "stopped" : "done");

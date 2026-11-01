@@ -8,12 +8,49 @@ async function png(canvas: HTMLCanvasElement) {
   if (!blob) throw new Error("无法生成图片译图");
   return blob;
 }
+export function mergeUnityOcrLines(lines: PaddleOcrLine[]): PaddleOcrLine[] {
+  const blocks: { box: PaddleOcrLine; tail: PaddleOcrLine }[] = [];
+  const token = (text: string) => /^[\d\s.,%+\-/:０-９]+$/u.test(text);
+  for (const line of [...lines].sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0)) {
+    const height = Math.max(1, line.y1 - line.y0); let match = -1, distance = Infinity;
+    if (!token(line.text)) blocks.forEach(({ box, tail }, index) => {
+      if (token(tail.text) || [...box.text.trim()].length <= 3) return;
+      const previousHeight = Math.max(1, tail.y1 - tail.y0), ratio = height / previousHeight, gap = line.y0 - tail.y1;
+      const overlap = Math.min(line.x1, tail.x1) - Math.max(line.x0, tail.x0), width = Math.max(1, Math.min(line.x1 - line.x0, tail.x1 - tail.x0));
+      const aligned = Math.min(Math.abs(line.x0 - tail.x0), Math.abs((line.x0 + line.x1 - tail.x0 - tail.x1) / 2)) <= Math.max(height, previousHeight) * .7;
+      if (ratio < .65 || ratio > 1.5 || gap < -Math.min(height, previousHeight) * .15 || gap > Math.max(height, previousHeight) * .65 || overlap / width < .7 || !aligned) return;
+      if (gap < distance) { distance = gap; match = index; }
+    });
+    if (match < 0) { blocks.push({ box: { ...line }, tail: line }); continue; }
+    const block = blocks[match], cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+    const separator = cjk.test([...block.box.text.trim()].at(-1) || "") && cjk.test([...line.text.trim()][0] || "") ? "" : " ";
+    block.box = { text: block.box.text.trim() + separator + line.text.trim(), confidence: Math.min(block.box.confidence, line.confidence), x0: Math.min(block.box.x0, line.x0), y0: Math.min(block.box.y0, line.y0), x1: Math.max(block.box.x1, line.x1), y1: Math.max(block.box.y1, line.y1) }; block.tail = line;
+  }
+  return blocks.map(block => block.box);
+}
+
+export async function maskUnityImageRegions(source: Blob, translated: Blob, regions: UnityImageRegion[]): Promise<Blob> {
+  const original = await createImageBitmap(source); let rendered: ImageBitmap | undefined;
+  try {
+    rendered = await createImageBitmap(translated);
+    const canvas = document.createElement("canvas"); canvas.width = original.width; canvas.height = original.height;
+    const context = canvas.getContext("2d"); if (!context) throw new Error("无法创建译图预览");
+    context.drawImage(rendered, 0, 0);
+    for (const region of regions.filter(region => !region.selected)) {
+      const x = Math.max(0, Math.floor(region.x0)), y = Math.max(0, Math.floor(region.y0));
+      const width = Math.min(canvas.width - x, Math.ceil(region.x1) - x), height = Math.min(canvas.height - y, Math.ceil(region.y1) - y);
+      if (width <= 0 || height <= 0) continue;
+      context.clearRect(x, y, width, height); context.drawImage(original, x, y, width, height, x, y, width, height);
+    }
+    return await png(canvas);
+  } finally { original.close(); rendered?.close(); }
+}
 export function createUnityImageOcr(mode: OcrMode) {
   const paddle = new LocalPaddleOcr(mode, mode === "fast" ? { upscale: false, maxSide: 1280 } : {}), manga = mode === "manga" ? new LocalMangaOcr() : null;
   return {
     async recognize(blob: Blob, stage: (value: string) => void): Promise<PaddleOcrLine[]> {
       const result = await paddle.recognize(blob, stage);
-      if (!manga) return result.lines;
+      if (!manga) return mergeUnityOcrLines(result.lines);
       if (!result.lines.length) return [];
       const bitmap = await createImageBitmap(blob);
       try {
@@ -25,7 +62,7 @@ export function createUnityImageOcr(mode: OcrMode) {
           stage(`日文增强识别 ${lines.length + 1} / ${result.lines.length}`);
           lines.push({ ...box, text: await manga.recognize(await png(canvas)) });
         }
-        return lines;
+        return mergeUnityOcrLines(lines);
       } finally { bitmap.close(); }
     },
     async dispose() { await Promise.all([paddle.dispose(), manga?.dispose()]); },
@@ -108,17 +145,17 @@ export function unityImageResultGroup(image: UnityImage) {
 export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number) {
   return regions.map(region => ({ ...region, selected: region.selected && (region.confidence >= threshold || !!region.manualSelected) }));
 }
-export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress) => void, confidenceThreshold = 50) {
+export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" = "all") {
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
   const next = structuredClone(project); next.imagesSkipped = false;
-  const images = (next.images || []).filter(image => image.selected && unityImageParticipates(image)), cache = new Map<string, string>();
+  const images = (next.images || []).filter(image => image.selected && unityImageParticipates(image) && (mode !== "translate" || image.ocrCompleted)), cache = new Map<string, string>();
   for (const entry of next.entries) if (entry.translation && !entry.error && !services.validate(entry.source, entry.translation)) cache.set(entry.source, entry.translation);
   for (const image of next.images || []) for (const region of image.regions) if (region.translation && !region.error && !services.validate(region.text, region.translation)) cache.set(region.text, region.translation);
-  let completed = images.filter(image => image.completed).length;
+  let completed = images.filter(image => mode === "recognize" ? image.ocrCompleted : image.completed).length;
   const report = (detail: string) => progress({ completed, total: images.length, detail });
   for (const image of images) {
     signal.throwIfAborted();
-    if (image.completed) continue;
+    if (mode === "recognize" ? image.ocrCompleted : image.completed) continue;
     const publish = async () => services.persist(next, image);
     try {
       report(`读取图片：${image.name}`);
@@ -129,6 +166,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         image.ocrCompleted = true; image.error = ""; await publish();
       }
       if (!unityImageHasText(image)) image.selected = false;
+      if (mode === "recognize") { image.completed = !unityImageHasText(image); image.error = ""; completed++; await publish(); report(`已识别图片：${image.name}`); continue; }
       let regionNumber = 0;
       const selectedRegions = image.regions.filter(region => region.selected && (region.confidence >= confidenceThreshold || region.manualSelected));
       for (const region of selectedRegions) {
@@ -164,8 +202,8 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     }
   }
   signal.throwIfAborted();
-  const failed = images.filter(image => !image.completed);
+  const failed = images.filter(image => mode === "recognize" ? !image.ocrCompleted : !image.completed);
   if (failed.length) { report(`已处理 ${images.length} 张图片，${failed.length} 张未完成，失败详情已保存`); throw new Error(`${failed.length} 张图片未完成，请检查图片结果后恢复，或跳过未完成的图片`); }
-  report(images.length ? "图片识别、翻译与译图已保存" : "当前没有选中的可处理图片");
+  report(images.length ? mode === "recognize" ? "图片识别结果已保存" : "图片翻译与译图已保存" : "当前没有选中的可处理图片");
   return next;
 }

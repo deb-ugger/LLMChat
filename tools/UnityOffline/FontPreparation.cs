@@ -8,6 +8,11 @@ public sealed record FontPlan(string Folder, int CharacterCount, int OriginalRef
 public static class FontPreparation
 {
     public const string Marker = ".llmchat-font-plan";
+    public const string OriginalFont = ":original:";
+    public static string ResolveFontPath(string selection)
+    {
+        return selection == OriginalFont ? "" : selection;
+    }
     public static string[] Requirements(IEnumerable<FontInfo> fonts)
     {
         var kinds = fonts.Select(font => font.Kind).ToArray();
@@ -52,13 +57,17 @@ public static class FontPreparation
             var translated = entry.Selected && entry.Error.Length == 0 && (selected == null || selected.Contains(entry.Id)) && TranslationIntegrity.Validate(entry.Source, entry.Translation).Length == 0;
             if (translated) translations++; else originals++;
             foreach (var rune in TranslationIntegrity.Visible(translated ? entry.Translation : entry.Source).EnumerateRunes())
-                if (!Rune.IsControl(rune) && !Rune.IsWhiteSpace(rune)) characters.Add(rune.Value);
+                if (!Rune.IsControl(rune) && !Rune.IsWhiteSpace(rune) && Rune.GetUnicodeCategory(rune) != System.Globalization.UnicodeCategory.Format) characters.Add(rune.Value);
         }
-        foreach (var rune in request.ExtraCharacters.EnumerateRunes()) if (!Rune.IsControl(rune)) characters.Add(rune.Value);
+        foreach (var rune in request.ExtraCharacters.EnumerateRunes()) if (!Rune.IsControl(rune) && Rune.GetUnicodeCategory(rune) != System.Globalization.UnicodeCategory.Format) characters.Add(rune.Value);
         var text = string.Concat(characters.Select(char.ConvertFromUtf32));
         var missing = request.FontPath.Length > 0 ? FontCoverage.Missing(File.ReadAllBytes(request.FontPath), text).ToArray() : [];
+        if (missing.Length > 0) {
+            var preserved = OriginalFontGlyphs.Codes(project);
+            missing = missing.Where(code => !preserved.Contains(code)).ToArray();
+        }
         var requirements = Requirements(project.Fonts).ToList();
-        if (request.FontPath.Length == 0) requirements.Add("尚未选择替换字体；已生成实际字符集，可用于补字或制作图集。");
+        if (request.FontPath.Length == 0) requirements.Add("保留游戏原字体；已生成实际字符集，可用于补字或制作图集。");
         if (missing.Length > 0) requirements.Add($"所选字体缺少 {missing.Length} 个字符，不能用于这些文本的完整显示。");
         requirements.Add("动态变量可能生成额外字符，可在补充字符中加入角色名等内容；字符集覆盖不等于游戏排版已验证。");
         var plan = new FontPlan(folder, characters.Count, originals, translations, request.FontPath.Length > 0, missing, project.Fonts.ToArray(), requirements.ToArray());

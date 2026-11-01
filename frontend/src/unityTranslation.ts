@@ -1,6 +1,7 @@
 import type { Settings, TranslateOptions, TranslateProvider } from "./api";
 import { resolveFeatureLlm } from "./modelPresets";
 import { prepareUnityStructuredText } from "./unityTextStructure";
+import { unityTranslationTokens } from "./unityTokens";
 
 export const UNITY_LANGUAGES = [
   { value: "zh-CN", label: "简体中文" }, { value: "zh-TW", label: "繁体中文" },
@@ -24,7 +25,7 @@ export function prepareUnityTranslationRequest(text: string, joinLines = true) {
 
 /** Classic engines translate visible text; Unity markup and control tokens never leave this process. */
 export async function translateUnityRichText(source: string, translate: (text: string) => Promise<string>) {
-  const token = /\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[^>\r\n]+>|\\[nrt]/g;
+  const token = unityTranslationTokens();
   if (!token.test(source)) return translate(source);
   token.lastIndex = 0;
   const text = async (part: string) => {
@@ -51,7 +52,7 @@ export function restoreUnityTranslationLines(source: string, translation: string
   const units = (text: string) => {
     const result: string[] = []; let offset = 0;
     const append = (part: string) => result.push(...Array.from(segmenter.segment(part), item => item.segment));
-    for (const match of text.matchAll(/\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[^>\r\n]+>|\\[nrt]/g)) {
+    for (const match of text.matchAll(unityTranslationTokens())) {
       append(text.slice(offset, match.index)); result.push(match[0]); offset = match.index! + match[0].length;
     }
     append(text.slice(offset)); return result;

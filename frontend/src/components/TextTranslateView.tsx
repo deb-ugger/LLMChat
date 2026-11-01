@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
 import { TextProjectGlossary } from "./TextProjectGlossary";
+import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
 import { parseEpub, parseMarkdown, parseVtt, protectMarkdown, restoreEpub, restoreTextRanges } from "../textProjectFormats";
 import { createTextBatchClient, decodeTextBatch } from "../textTranslationBatch";
 import { logRuntimeError } from "../runtimeLog";
@@ -266,6 +267,7 @@ const ElapsedTime = memo(function ElapsedTime({
 });
 
 export function TextTranslateView({ settings, active = true, onLanguageChange }: Props) {
+  const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const textLlm = useMemo(
     () => resolveFeatureLlm(settings, settings.textTranslateModel),
     [settings],
@@ -622,18 +624,21 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               );
               if (!ok || disposed) return;
               setStatusLine("正在停止翻译、保存工程并退出…");
+              await showClosing("正在停止文本翻译并保存工程与断点…");
               await stopRef.current({ silent: true, requireSave: true });
             } else {
               setStatusLine("正在保存工程并退出…");
+              await showClosing("正在保存文本翻译工程…");
               await persistFullSnapshotRef.current({ requireSave: true });
             }
-            if (!disposed) await win.destroy();
+            if (!disposed) { await showClosing("正在关闭窗口和后台服务…"); await win.destroy(); }
           } catch (error) {
             const detail = "退出失败，窗口已保留：" + toFriendlyError(error, "保存工程或关闭窗口失败");
             setError(detail);
             setStatusLine("未退出，请处理错误后重试");
             await messageDialog(detail, { title: "无法退出 LLMChat", kind: "error" });
           } finally {
+            clearClosing();
             closingRef.current = false;
           }
         });
@@ -2040,6 +2045,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
 
   return (
     <div className="text-layout">
+      {closingPhase && <ClosingProgress phase={closingPhase} />}
       <div className="text-toolbar">
         {languageControls}
         <button

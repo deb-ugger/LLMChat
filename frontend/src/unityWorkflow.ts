@@ -1,4 +1,5 @@
-import type { UnityEntry, UnityProject } from "./unityOffline";
+import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
+import { unityTranslationTokens } from "./unityTokens";
 
 export const UNITY_STEPS = ["扫描资源", "翻译文本", "生成补丁", "应用到游戏"];
 export const UNITY_STAGE_TABS = [
@@ -8,7 +9,8 @@ export const UNITY_STAGE_TABS = [
   { step: 3, number: "3", label: "生成补丁", imageOnly: false },
   { step: 4, number: "4", label: "应用到游戏", imageOnly: false },
 ] as const;
-export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(i => i.completed));
+export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile;
+export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(unityImageResultReady));
 export const UNITY_SCAN_COMPATIBILITY = { current: 5, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };
 export function unityScanOptionChanges(saved: ScanOptions, current: ScanOptions) {
@@ -54,9 +56,9 @@ const LANGUAGE_LABELS: Record<string, string> = { ja: "日语", ko: "韩语", en
 export const unityLanguageLabel = (language: string) => LANGUAGE_LABELS[language] || language;
 export const unityEntryLanguage = (entry: UnityEntry) => entry.locale?.trim().toLowerCase().replace(/_/g, "-").split("-")[0] || unityTextLanguage(entry.source);
 export function unityTextLanguage(text: string) {
-  const value = text.replace(/<[^>]*>|\{[^{}]*\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]/g, "");
-  if (/[ぁ-ゖァ-ヺ]/.test(value)) return "ja";
+  const value = text.replace(unityTranslationTokens(), "");
   if (/[가-힣]/.test(value)) return "ko";
+  if (/[ぁ-ゖァ-ヺ]/.test(value)) return "ja";
   if (/[一-鿿]/.test(value)) return "cjk";
   if (/[А-Яа-яЁё]/.test(value)) return "ru";
   if (/\p{Script=Latin}/u.test(value)) return "en";

@@ -1,11 +1,18 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { translateUnityGlyphs } from "../unityTokens";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
-import { exportUnityTranslations, importUnityTranslations } from "../unityTranslationFiles";
+import { exportUnityTranslations, readUnityTranslationRows, applyUnityTranslationRows, unityTranslationFileName, UnityTranslationImportError, type UnityTranslationImportMode, type UnityTranslationImportIssue } from "../unityTranslationFiles";
+import { UnityActionIcon } from "./UnityActionIcon";
+import { UnityIconButton } from "./UnityIconButton";
+import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
+import { unityTranslationQuality } from "../unityTranslationQuality";
+import { unityTranslationReadiness, unityCurrentPartProgress } from "../unityTranslationReadiness";
+import { UnityExitDialog, type UnityExitChoice } from "./UnityExitDialog";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo, type OcrMode } from "../api";
 import { currentEffectivePresets, loadLocalModelProfiles, loadVendorProfiles, resolveFeatureLlm } from "../modelPresets";
 import { engineReady, parseEngineKeys } from "../translateEngines";
@@ -20,7 +27,7 @@ import { UnitySegmentation } from "../unitySegmentation";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
 import { createUnityTranslationJobs, mergeUnityTranslationProject, UnityTranslationStopped, type UnityTranslationPart } from "../unityTranslationJobs";
-import { createUnityImageOcr, processUnityImages, renderUnityImage, unityImageTranslationRegions } from "../unityImages";
+import { createUnityImageOcr, processUnityImages, renderUnityImage, maskUnityImageRegions, unityImageTranslationRegions } from "../unityImages";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UnityEngineList } from "./UnityEngineList";
 import { UnityTranslationProgress } from "./UnityTranslationProgress";
@@ -30,17 +37,19 @@ import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { usePersistedSize } from "../hooks/usePersistedSize";
 import "../unityOffline.css";
 
-export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean> };
+export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean | "discard"> };
 const GENERATION_STEPS = UNITY_STEPS;
 type UnityTranslationOptions = ReturnType<typeof buildUnityTranslateOptions> & { engineIds?: TranslateProvider[] };
 type GenerationProgress = UnityProgress & { step: number; state: "pending" | "running" | "done" | "stopped" | "error" | "skipped"; failure?: string };
-type TranslationFileStatus = { action: "download" | "import"; state: "working" | "checked" | "done" | "cancelled" | "error"; detail: string; path?: string; folder?: string };
+type TranslationFileStatus = { action: "download" | "import"; state: "working" | "preview" | "done" | "cancelled" | "error"; detail: string; path?: string; folder?: string; issues?: UnityTranslationImportIssue[]; needsValidation?: boolean };
+type ImportPreview = { path: string; entries: UnityEntry[]; view: { search: string; reviewFilter: "all" | "unfinished" | "quality"; page: number; imagePart: boolean; activeStep: number } };
+const EMPTY_ENTRIES: UnityEntry[] = [];
 type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
   projectFolder: string; scanFolder: string; patchFolder: string; patch: UnityPatch | null;
   previousProjectFolder?: string; scopeVersion?: number; translationFailure?: string;
   translationRuns?: Record<UnityTranslationPart, GenerationProgress>;
-  imageOnly?: boolean; imageOcrMode?: OcrMode; imageConfidenceThreshold?: number;
+  imageOnly?: boolean; imageOcrMode?: OcrMode; imageConfidenceThreshold?: number; imageTask?: "recognize" | "translate";
   partial?: boolean; joinLines?: boolean; lineMode?: UnityLineMode; lineModel?: string; layoutOnly?: boolean;
   textMode?: "lines" | "paragraphs" | "smart"; codeAssemblies?: string[] | null; typeDirectory?: string; extraCharacters?: string;
   translationKind: "llm" | "engine"; llmModel?: string; engine: TranslateProvider; engines?: UnityEngineChoice[]; source: string; target: string; includeCode: boolean; fontPath: string;
@@ -54,6 +63,7 @@ type Props = {
   toolbarTarget: HTMLElement | null;
 };
 export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function UnityOfflineView({ active, game, settings, onOpenGeneralSettings, onBusyChange, onInstallationChange, toolbarTarget }, ref) {
+  const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const root = game?.gameDir || "";
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
@@ -84,21 +94,38 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const followProgress = useRef(true);
   const [fontPath, setFontPath] = useState("");
   const [search, setSearch] = useState("");
-  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [reviewFilter, setReviewFilter] = useState<"all" | "unfinished" | "quality">("all");
+  const errorsOnly = reviewFilter === "unfinished";
+  const [qualityIssueId, setQualityIssueId] = useState<string | null>(null);
+  const [importMode, setImportMode] = useState<UnityTranslationImportMode>("fill");
+  const [allowImportClear, setAllowImportClear] = useState(false);
   const [page, setPage] = useState(0);
   const [jumpPage, setJumpPage] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [fileStatus, setFileStatus] = useState<TranslationFileStatus | null>(null);
+  const [importIssuePage, setImportIssuePage] = useState(0);
+  const importIssues = fileStatus?.issues || [];
+  const importIssuePages = Math.max(1, Math.ceil(importIssues.length / 20));
+  const visibleImportIssuePage = Math.min(importIssuePage, importIssuePages - 1);
+  const visibleImportIssues = importIssues.slice(visibleImportIssuePage * 20, (visibleImportIssuePage + 1) * 20);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const importPreviewRef = useRef(importPreview); importPreviewRef.current = importPreview;
+  const applyImportRef = useRef<() => Promise<boolean>>(async () => false);
+  const pendingEdits = useRef(new Set<string>());
+  const tableEntries = importPreview?.entries ?? project?.entries ?? EMPTY_ENTRIES;
   const [message, setMessage] = useState("");
   const [patch, setPatch] = useState<UnityPatch | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false), [saveNotice, setSaveNotice] = useState("");
+  const [saveComplete, setSaveComplete] = useState(false);
+  const pendingImageMasks = useRef(new Map<string, boolean>());
+  const imageTask = useRef<"recognize" | "translate">("recognize");
   const [generationState, setGeneration] = useState<GenerationProgress | null>(null);
   const [applied, setApplied] = useState(false);
   const [checkpoint, setCheckpoint] = useState<RunCheckpoint | null>(null);
   const checkpointRef = useRef<RunCheckpoint | null>(null);
-  const generation = activeStep === 2 && checkpoint?.translationRuns ? checkpoint.translationRuns[imagePart ? "images" : "text"] : generationState;
   const translationJobs = useRef<ReturnType<typeof createUnityTranslationJobs> | null>(null);
   const projectWrites = useRef<Promise<unknown>>(Promise.resolve());
   const imageMode = useRef(imageOcrMode); imageMode.current = imageOcrMode;
@@ -108,7 +135,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [restoreNotices, setRestoreNotices] = useState<string[]>([]);
   const [workRoot, setWorkRoot] = useState("");
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
-  const [rowJump, setRowJump] = useState<{ id: string; sequence: number } | null>(null);
+  const [rowJump, setRowJump] = useState<{ id: string; sequence: number; error: boolean } | null>(null);
   const [failurePage, setFailurePage] = useState(0);
   const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, 900);
   const configRef = useRef<HTMLElement>(null);
@@ -158,7 +185,22 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const running = useRef<Promise<void> | null>(null);
   const translationQueue = useRef<UnityTranslationQueue | null>(null);
   const closing = useRef(false);
-  const status = useRef({ busy, dirty }); status.current = { busy, dirty };
+  const [exitPrompt, setExitPrompt] = useState<{ running: boolean; projectOnly: boolean; changes: string[] } | null>(null);
+  const exitDecision = useRef<((choice: UnityExitChoice) => void) | null>(null);
+  const requestExitChoice = (projectOnly: boolean): Promise<UnityExitChoice> => new Promise(resolve => {
+    if (exitDecision.current) { resolve("cancel"); return; }
+    exitDecision.current = resolve;
+    const changes = [...pendingEdits.current];
+    if (importPreviewRef.current) changes.unshift(`待应用的导入预览：${importPreviewRef.current.entries.length} 条译文，含右侧编辑`);
+    if (status.current.dirty && !changes.length) changes.push("工程参数或文本、图片编辑");
+    if (status.current.busy) changes.push(`正在处理：${status.current.busy}`);
+    setExitPrompt({ running: !!status.current.busy, projectOnly, changes });
+  });
+  const resolveExitChoice = (choice: UnityExitChoice) => {
+    const resolve = exitDecision.current; exitDecision.current = null;
+    setExitPrompt(null); resolve?.(choice);
+  };
+  const status = useRef({ busy, dirty }); status.current = { busy, dirty: dirty || !!importPreview };
   const latest = useRef(project); latest.current = project;
   const publish = (value: UnityProject) => { latest.current = value; setProject(value); };
   const scanUpdate = unityScanUpdate(project, checkpoint, { includeCode, textMode, typeDirectory, codeAssemblies });
@@ -181,7 +223,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }, []);
 
   useEffect(() => {
-    setProject(null); setPatch(null); setDirty(false); setPage(0); setJumpPage(""); setSearch(""); setFileStatus(null); setRowJump(null); setFailurePage(0);
+    setProject(null); setPatch(null); setDirty(false); pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setJumpPage(""); setSearch(""); setFileStatus(null); setRowJump(null); setFailurePage(0);
+    setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill"); setAllowImportClear(false);
     setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(""); setJoinLines(true);
     setLineMode("local"); setLineModel("");
     setImageConfidenceThreshold(50);
@@ -245,7 +288,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           }
           if (!value.finished && value.progress.state !== "error") value.progress.state = "stopped";
           remember(value);
-          setActiveStep(value.step); setImagePart(!!value.imageOnly); setImageOcrMode(value.imageOcrMode || "fast");
+          setActiveStep(value.step); setImagePart(!!value.imageOnly); setImageOcrMode(value.imageOcrMode || "fast"); imageTask.current = value.imageTask || "recognize";
           setImageConfidenceThreshold(value.imageConfidenceThreshold ?? 50);
           if (value.finished && value.endStep !== 4) setGeneration(null);
           if (value.progress.state === "error") setError(value.progress.failure || "上次任务未能完成，可以重试。已有工程和译文仍保留。");
@@ -260,15 +303,35 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     return () => { cancelled = true; };
   }, [root]);
   useEffect(() => { onBusyChange?.(!!busy || restoring); }, [busy, restoring, onBusyChange]);
+  useEffect(() => {
+    if (!saveComplete) return;
+    const timer = window.setTimeout(() => setSaveComplete(false), 2500);
+    return () => window.clearTimeout(timer);
+  }, [saveComplete]);
+  const parameterSignature = JSON.stringify({ translationKind, llmModel, engine, engineChoices, source, target, joinLines, lineMode, lineModel, imageOcrMode, imageConfidenceThreshold, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters });
+  const previousParameters = useRef(parameterSignature);
+  useEffect(() => {
+    if (!restoring && project && previousParameters.current !== parameterSignature) { pendingEdits.current.add("翻译、扫描或字体参数"); setDirty(true); setSaveNotice(""); }
+    previousParameters.current = parameterSignature;
+  }, [parameterSignature, restoring, project?.folder]);
   useImperativeHandle(ref, () => ({ prepareToLeave: async () => {
     if (busy || running.current || restoring) { setError("请先中止任务或等待当前工作目录处理完成后切换"); return false; }
-    try { if (dirty) await save(); await taskWrites.current; return true; } catch (e) { setError(String(e)); return false; }
+    try {
+      if (dirty || importPreviewRef.current) {
+        const choice = await requestExitChoice(true);
+        if (choice === "cancel") return false;
+        if (choice === "discard") { await Promise.allSettled([projectWrites.current, taskWrites.current]); return "discard"; }
+        if (importPreviewRef.current && !await applyImportRef.current()) return false;
+        await save();
+      }
+      await taskWrites.current; return true;
+    } catch (e) { setError(String(e)); return false; }
   } }));
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => () => { abort.current?.abort(); exitDecision.current?.("cancel"); exitDecision.current = null; }, []);
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty || busy) event.preventDefault(); };
+    const warn = (event: BeforeUnloadEvent) => { if (!closing.current && (dirty || busy || importPreview)) event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, busy]);
+  }, [dirty, busy, importPreview]);
   const needsCloseHandler = project !== null || !!busy;
   useEffect(() => {
     if (!active || !needsCloseHandler || !isTauri()) return;
@@ -278,16 +341,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if (closing.current) return;
       closing.current = true;
       try {
+        const choice = status.current.busy || status.current.dirty ? await requestExitChoice(false) : "save";
+        if (choice === "cancel") return;
         if (status.current.busy) {
-          const proceed = await confirm("停止翻译或等待当前资源处理结束，保存工程后退出？", { title: "退出 LLMChat", okLabel: "保存并退出", cancelLabel: "取消" });
-          if (!proceed) return;
-          abort.current?.abort(); await running.current;
+          await showClosing("正在中止 Unity 任务，等待当前资源处理结束…");
+          abort.current?.abort();
+          await running.current?.catch(() => {}); // The task's operation handler reports its outcome.
         }
-        if (latest.current) await unityRun("save", { project: latest.current });
-        await taskWrites.current;
+        if (choice === "save") {
+          if (importPreviewRef.current) {
+            await showClosing("正在校验并保存待应用的导入预览…");
+            if (!await applyImportRef.current()) return;
+          }
+          if (latest.current) { await showClosing("正在保存 Unity 工程和编辑内容…"); await save(); }
+          await showClosing("正在等待工程文件写入完成…"); await projectWrites.current;
+          await showClosing("正在保存任务进度与恢复信息…"); await taskWrites.current;
+        } else {
+          await showClosing("正在等待已开始的文件写入完成…");
+          await Promise.allSettled([projectWrites.current, taskWrites.current]);
+        }
+        await showClosing("正在关闭窗口和后台服务…");
         await getCurrentWindow().destroy();
       } catch (e) { setError(`退出失败，窗口已保留：${String(e)}`); }
-      finally { closing.current = false; }
+      finally { clearClosing(); closing.current = false; }
     }).then(fn => { if (cancelled) fn(); else dispose = fn; }).catch(e => setError(String(e)));
     return () => { cancelled = true; dispose?.(); };
   }, [active, needsCloseHandler]);
@@ -305,19 +381,45 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const modelConnection = resolveFeatureLlm(settings, llmModel);
   const engineConfigured = engineChoices.some(row => row.enabled && engineReady(parseEngineKeys(settings.translateEngineKeys), row.id));
   const connectionReady = translationKind === "llm" ? !!modelConnection.model.trim() && !!modelConnection.apiUrl.trim() : engineConfigured;
-  const done = useMemo(() => selected.filter(e => e.translation && !e.error && !unityTranslationError(e.source, e.translation)).length, [selected]);
-  const filtered = useMemo(() => project?.entries.filter(e => scope.ids.has(e.id) && (!errorsOnly || e.error || unityTranslationError(e.source, e.translation)) && (!search || `${e.source}\n${e.translation}\n${e.file}`.toLowerCase().includes(search.toLowerCase()))) || [], [project, search, scope, errorsOnly]);
+  const readiness = useMemo(() => unityTranslationReadiness(project, selected, unityTranslationError, !!checkpoint?.partial), [project, selected, checkpoint?.partial]);
+  const done = readiness.validText;
+  const currentParts = checkpoint?.translationRuns && {
+    text: unityCurrentPartProgress(checkpoint.translationRuns.text, "text", readiness, !!checkpoint.layoutOnly)!,
+    images: unityCurrentPartProgress(checkpoint.translationRuns.images, "images", readiness)!,
+  };
+  const generation = (activeStep === 2 && currentParts ? currentParts[imagePart ? "images" : "text"]
+    : generationState?.step === 2 ? unityCurrentPartProgress(generationState, checkpoint?.imageOnly ? "images" : "text", readiness, !!checkpoint?.layoutOnly) : generationState) ?? null;
+  const qualityCache = useMemo(() => new WeakMap<UnityEntry, { source: string; translation: string; warnings: string[] }>(), [target]);
+  const qualityIssues = useMemo(() => {
+    const issues = new Map<string, string[]>();
+    for (const entry of tableEntries) {
+      if (!importPreview && !scope.ids.has(entry.id)) continue;
+      let cached = qualityCache.get(entry);
+      if (!cached || cached.source !== entry.source || cached.translation !== entry.translation) {
+        cached = { source: entry.source, translation: entry.translation, warnings: unityTranslationQuality(entry.source, entry.translation, target) };
+        qualityCache.set(entry, cached);
+      }
+      const warnings = cached.warnings;
+      if (warnings.length) issues.set(entry.id, warnings);
+    }
+    return issues;
+  }, [tableEntries, importPreview, scope.ids, target, qualityCache]);
+  const qualityIssue = qualityIssueId ? qualityIssues.get(qualityIssueId) : undefined;
+  const entryProblem = (entry: UnityEntry) => entry.error || (!importPreview && entry.translation ? unityTranslationError(entry.source, entry.translation) : "");
+  const filtered = useMemo(() => tableEntries.filter(e => (importPreview || scope.ids.has(e.id)) && (!errorsOnly || (importPreview ? e.error : e.error || unityTranslationError(e.source, e.translation))) && (reviewFilter !== "quality" || qualityIssues.has(e.id)) && (!search || `${e.source}\n${e.translation}\n${e.file}`.toLowerCase().includes(search.toLowerCase()))), [tableEntries, importPreview, search, scope, errorsOnly, reviewFilter, qualityIssues]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / 40));
   const rows = filtered.slice(Math.min(page, pageCount - 1) * 40, (Math.min(page, pageCount - 1) + 1) * 40);
   const translationFailures = useMemo(() => project?.entries.filter(entry => scope.ids.has(entry.id) && !!entry.error) || [], [project, scope]);
   const failurePageCount = Math.max(1, Math.ceil(translationFailures.length / 20));
   const visibleFailurePage = Math.min(failurePage, failurePageCount - 1);
   const locateTranslationFailure = (id: string) => {
-    const index = project?.entries.filter(entry => scope.ids.has(entry.id)).findIndex(entry => entry.id === id) ?? -1;
+    const candidates = tableEntries.filter(entry => importPreview || scope.ids.has(entry.id));
+    const index = candidates.findIndex(entry => entry.id === id);
     if (index < 0) return;
-    setSearch(""); setErrorsOnly(false); setJumpPage(""); setRowIssue(null);
+    setSearch(""); setReviewFilter("all"); setJumpPage(""); setRowIssue(null); setQualityIssueId(null);
     setPage(Math.floor(index / 40));
-    setRowJump(previous => ({ id, sequence: (previous?.sequence || 0) + 1 }));
+    const item = candidates[index];
+    setRowJump(previous => ({ id, sequence: (previous?.sequence || 0) + 1, error: !!(entryProblem(item) || fileStatus?.issues?.some(issue => issue.id === id)) }));
   };
   useEffect(() => {
     if (!rowJump) return;
@@ -326,6 +428,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     row?.focus({ preventScroll: true });
   }, [rowJump]);
   const update = (id: string, value: Partial<UnityProject["entries"][number]>) => {
+    if (importPreviewRef.current) {
+      setImportPreview(previous => previous && { ...previous, entries: previous.entries.map(entry => {
+        if (entry.id !== id) return entry;
+        return { ...entry, ...value, error: entry.error };
+      }) });
+      setFileStatus(previous => previous && { ...previous, needsValidation: true });
+      return;
+    }
+    pendingEdits.current.add(`文本与译文：第 ${id} 条`);
     const p = latest.current;
     if (p) publish({ ...p, entries: p.entries.map(e => e.id === id ? { ...e, ...value, error: "" } : e) });
     setDirty(true); invalidatePatch();
@@ -333,6 +444,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   async function operation(label: string, task: () => Promise<void>, keepProgress = true, reportError: (message: string) => void = setError) {
     if (running.current) return false;
+    if (importPreviewRef.current && label !== "应用导入预览" && label !== "导入翻译文件") { setActionError("请先应用或取消右侧的导入预览"); return false; }
     if (!keepProgress) setGeneration(null);
     setBusy(label); setError(""); setActionError(""); setMessage("");
     const work = task(); running.current = work;
@@ -392,8 +504,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function save(p = latest.current) {
     if (!p) return;
-    await queueProjectWrite(() => unityRun("save", { project: latest.current?.folder === p.folder ? latest.current : p }));
+    await queueProjectWrite(async () => {
+      let current = latest.current?.folder === p.folder ? latest.current : p;
+      for (const [id, completed] of pendingImageMasks.current) {
+        const image = current.images?.find(item => item.id === id); if (!image?.renderedFile) { pendingImageMasks.current.delete(id); continue; }
+        if (closing.current) await showClosing(`正在保存图片修改：${image.name || image.id}`);
+        const source = new Blob([await readFileBytes(current.folder + "/" + image.sourceFile)], { type: "image/png" });
+        const translated = new Blob([await readFileBytes(current.folder + "/" + image.renderedFile)], { type: "image/png" });
+        const blob = await maskUnityImageRegions(source, translated, unityImageTranslationRegions(image.regions, imageConfidenceThreshold));
+        const result = await writeImage(current, image, blob);
+        current = { ...current, images: current.images!.map(item => item.id === id ? { ...image, completed, renderedFile: result.path, renderedHash: result.hash } : item) };
+        publish(current); pendingImageMasks.current.delete(id);
+      }
+      if (closing.current) await showClosing("正在写入 Unity 工程文件…");
+      publish(current); await unityRun("save", { project: current }); pendingEdits.current.clear();
+    });
     setDirty(false);
+  }
+  async function saveUserChanges() {
+    if (!dirty || saving || importPreviewRef.current) return;
+    setSaving(true); setSaveNotice(""); setSaveComplete(false);
+    try { await save(); if (checkpointRef.current) remember({ ...checkpointRef.current, translationKind, llmModel, engine, engines: engineChoices, source, target, joinLines, lineMode, lineModel, imageOcrMode, imageConfidenceThreshold, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters }); await taskWrites.current; setSaveNotice("已保存"); setSaveComplete(true); }
+    catch (error) { setDirty(true); setActionError(`保存失败：${String(error)}`); setSaveNotice("保存失败"); }
+    finally { setSaving(false); }
   }
   function publishTranslation(p: UnityProject, part: UnityTranslationPart) {
     const merged = mergeUnityTranslationProject(latest.current || p, p, part); publish(merged); return merged;
@@ -478,7 +611,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         try { const response = await api.translate(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, provider, context, autoFallback: provider === "llm" ? undefined : false }); if (!response.ok) throw new Error(response.code || "翻译请求失败"); return response.translation; }
         catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`翻译请求超过 ${seconds} 秒未响应`); throw error; }
       };
-      const translate = (block: string) => provider === "llm" ? request(block) : translateUnityRichText(block, request);
+      const translate = (block: string) => translateUnityGlyphs(block, protectedText => provider === "llm" ? request(protectedText) : translateUnityRichText(protectedText, request));
       return mergeLines ? translateUnityStructuredText(text, translate) : translate(text);
     };
     const measure = (text: string) => [...prepareUnityTranslationRequest(text, mergeLines)].length;
@@ -547,8 +680,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function translateImages(p: UnityProject, controller: AbortController, run: RunCheckpoint, onProgress: (value: UnityProgress) => void) {
     if ((p.scanRevision || 0) < 5) throw new Error("当前工程尚未扫描图片，请更新扫描，或跳过步骤 2.2");
-    if (!(p.images || []).some(image => image.selected && !image.completed)) { onProgress({ completed: 0, total: 0, detail: "图片已完成或没有选中的图片" }); return p; }
-    const options = await translationOptions(run, true), ocr = createUnityImageOcr(run.imageOcrMode || "fast");
+    const phase = run.imageTask || imageTask.current;
+    if (!(p.images || []).some(image => image.selected && (phase === "recognize" ? !image.ocrCompleted : image.ocrCompleted && !image.completed))) { onProgress({ completed: 0, total: 0, detail: "图片已完成或没有选中的图片" }); return p; }
+    const options: UnityTranslationOptions = phase === "translate" ? await translationOptions(run, true) : { provider: "llm" }, ocr = createUnityImageOcr(run.imageOcrMode || "fast");
     const primaryProvider = options.provider; if (!primaryProvider) throw new Error("未选择图片翻译引擎");
     const request = async (provider: string, text: string) => {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(provider === "llm" ? 120000 : 30000)]);
@@ -565,23 +699,46 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         write: writeImage,
         persist: async (next, image) => { current = next; publishTranslation({ ...next, images: [...(next.images || [])] }, "images"); const snapshot = structuredClone(image); await queueProjectWrite(() => unityRun("save-image", { project: imageRequest(next, snapshot), imageId: snapshot.id })); },
         validate: unityTranslationError,
-      }, onProgress, run.imageConfidenceThreshold ?? 50);
+      }, onProgress, run.imageConfidenceThreshold ?? 50, phase);
       return current;
     } finally { pool?.dispose(); controller.signal.removeEventListener("abort", cancelOcr); await ocr.dispose(); await saveTranslation(current, "images"); }
   }
   const editImage = (image: UnityImage) => {
+    pendingEdits.current.add(`图片与译文：${image.name || image.id}`);
     const p = latest.current; if (!p) return;
+    const previous = p.images?.find(item => item.id === image.id);
+    if (previous?.renderedFile && image.renderedFile) {
+      const before = unityImageTranslationRegions(previous.regions, imageConfidenceThreshold), after = unityImageTranslationRegions(image.regions, imageConfidenceThreshold);
+      const deselected = before.some((region, index) => region.selected && !after[index]?.selected);
+      const payload = (regions: typeof image.regions) => regions.map(({ selected: _selected, manualSelected: _manual, error: _error, ...region }) => region);
+      const selectionOnly = JSON.stringify(payload(previous.regions)) === JSON.stringify(payload(image.regions)) && !after.some((region, index) => region.selected && !before[index]?.selected);
+      if (deselected || pendingImageMasks.current.has(image.id)) pendingImageMasks.current.set(image.id, selectionOnly && (pendingImageMasks.current.get(image.id) ?? previous.completed));
+    } else pendingImageMasks.current.delete(image.id);
     const next = { ...p, imagesSkipped: false, images: (p.images || []).map(item => item.id === image.id ? image : item) };
-    publish(next); setDirty(true); invalidatePatch();
+    publish(next); setDirty(true); setSaveNotice(""); invalidatePatch();
   };
+  const recognizeImage = (image: UnityImage, mode: OcrMode) => operation("重新识别图片", async () => {
+    if (image.regions.some(region => region.translation) && !await confirm("重新识别会替换这张图片的识别区域和译文，是否继续？", { title: "重新识别", okLabel: "重新识别", cancelLabel: "取消" })) return;
+    const controller = new AbortController(); abort.current = controller;
+    const ocr = createUnityImageOcr(mode);
+    const cancel = () => { void ocr.dispose(); }; controller.signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const lines = await ocr.recognize(new Blob([await readFileBytes((latest.current || project!).folder + "/" + image.sourceFile)], { type: "image/png" }), detail => setMessage(detail));
+      controller.signal.throwIfAborted();
+      editImage({ ...image, completed: false, ocrCompleted: true, renderedFile: "", renderedHash: "", error: "", regions: lines.filter(line => line.text.trim()).map(line => ({ ...line, translation: "", error: "", selected: line.confidence >= imageConfidenceThreshold })) });
+      setMessage("图片识别完成");
+    } finally { controller.signal.removeEventListener("abort", cancel); await ocr.dispose(); abort.current = null; }
+  });
   const updateImagePreview = (image: UnityImage, imported = false) => operation(imported ? "替换译图" : "生成译图", async () => {
     if (!project) return;
     let blob: Blob;
     if (imported) { const selected = await open({ filters: [{ name: "PNG 译图", extensions: ["png"] }] }); if (typeof selected !== "string") return; blob = new Blob([await readFileBytes(selected)], { type: "image/png" }); }
     else blob = await renderUnityImage(new Blob([await readFileBytes(project.folder + "/" + image.sourceFile)], { type: "image/png" }), unityImageTranslationRegions(image.regions, imageConfidenceThreshold));
     const result = await writeImage(project, image, blob);
+    pendingImageMasks.current.delete(image.id);
     const next = { ...project, imagesSkipped: false, images: (project.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash } : item) };
-    publish(next); await save(next); invalidatePatch();
+    pendingEdits.current.add(`译图${imported ? "替换" : "生成"}：${image.name || image.id}`);
+    publish(next); setDirty(true); setSaveNotice(""); invalidatePatch(); setMessage(imported ? "译图已替换" : "译图已生成");
   });
   async function skipTranslationPart(images = imagePart) {
     if (!project || restoring || busy && !translationJobs.current) return;
@@ -597,6 +754,20 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       remember({ ...task, step: 2, endStep: 2, imageOnly: images, automatic: false, finished: true, partial: !!next.textSkipped, progress: { step: 2, state: "done", completed: 0, total: 0, detail: images ? "已跳过剩余图片，未完成图片保持原样" : "已跳过剩余文本，未完成文本保持原文" } });
       await taskWrites.current; setActiveStep(images ? 3 : 2); setImagePart(!images);
     });
+  }
+  async function generatePatch() {
+    if (busy || restoring || saving || !scanReady || !project || !readiness.hasPatchContent) return;
+    if (!readiness.textComplete || !readiness.imagesComplete) {
+      if (!await confirm(`将回写 ${readiness.validText} 条有效译文和 ${readiness.validImages} 张已完成译图。\n还有 ${readiness.missingText} 条文本和 ${readiness.missingImages} 张图片未完成，将保持游戏原文、原图。\n\n是否跳过剩余内容并生成补丁？`, { title: "生成已完成内容的补丁", okLabel: "保留原文原图并生成", cancelLabel: "取消" })) return;
+      if (!await operation("保存跳过选择", async () => {
+        const next = { ...(latest.current || project), textSkipped: !readiness.textComplete || !!project.textSkipped, imagesSkipped: !readiness.imagesComplete || !!project.imagesSkipped };
+        publish(next); await save(next);
+        const task = checkpointRef.current || projectCheckpoint(next);
+        remember({ ...task, finished: true, partial: !!next.textSkipped });
+        await taskWrites.current;
+      })) return;
+    }
+    void startWorkflow(3, 3);
   }
   async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
     setBusy("生成补丁");
@@ -615,6 +786,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setMessage(`已将 ${result.files} 个补丁文件应用到游戏。原件保存在补丁目录的 original 文件夹，实际显示请启动游戏检查。`);
   }
   async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false, part?: UnityTranslationPart) {
+    if (importPreviewRef.current) { setActionError("请先应用或取消右侧的导入预览"); return; }
     if (busy || restoring || running.current) return;
     const changedScanOptions = resume && checkpointRef.current?.step === 1
       ? unityScanOptionChanges(checkpointRef.current, { includeCode, textMode, typeDirectory, codeAssemblies }) : [];
@@ -665,7 +837,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         run.patch = null; run.patchFolder = "";
       }
       remember(run);
-      let p = project;
+      let p = latest.current || project;
       for (let index = run.step; index <= endStep; index++) {
         if (followProgress.current) { setActiveStep(index); if (index === 2) setImagePart(!!run.imageOnly); }
         run.step = index; setBusy(GENERATION_STEPS[index - 1]);
@@ -691,8 +863,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           await yieldUnityPreparation(controller.signal);
           const preparationScope = unityLanguageScope(p.entries, run.source);
           const rows = p.entries.filter(entry => entry.selected && preparationScope.ids.has(entry.id));
-          const textComplete = !run.layoutOnly && (!!p.textSkipped || !p.entries.length || rows.length > 0 && rows.every(entry => entry.translation && !entry.error && !unityTranslationError(entry.source, entry.translation)));
-          const imageComplete = unityImagesReady(p);
+          const live = unityTranslationReadiness(p, rows, unityTranslationError);
+          const textComplete = !run.layoutOnly && live.textReady;
+          const imageComplete = live.imagesReady;
           const initial = { text: p.textSkipped && !run.layoutOnly ? "skipped" : textComplete ? "done" : "pending", images: p.imagesSkipped ? "skipped" : imageComplete ? "done" : "pending" } as const;
           const oldParts = run.translationRuns;
           const requestedPart = part || (run.imageOnly ? "images" : "text");
@@ -717,6 +890,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               if (part === "images") {
                 run.imageOcrMode = imageMode.current;
                 run.imageConfidenceThreshold = imageThreshold.current;
+                run.imageTask = imageTask.current;
                 await translateImages(current, job, run, value => reportPart(part, value)); return;
               }
               const selectedIds = unityLanguageScope(current.entries, run.source).ids;
@@ -731,6 +905,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           try { await jobs.wait(automatic && !run.layoutOnly ? ["text", "images"] : [part || (run.imageOnly ? "images" : "text")]); }
           finally { translationJobs.current = null; await projectWrites.current; }
           p = latest.current || p;
+          if (automatic && !unityImagesReady(p)) {
+            run.endStep = 2; run.automatic = false; run.progress = { ...run.progress, step: 2, state: "done", detail: "图片识别结果已保存" };
+            setActiveStep(2); setImagePart(true); break;
+          }
         } else if (index === 3) {
           if (!p) throw new Error("请先扫描当前游戏资源");
           const result = await exportPatch(p, onProgress, controller.signal, run);
@@ -740,7 +918,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           await applyPatch(run.patch, onProgress, controller.signal);
         }
         if (controller.signal.aborted) throw new UnityPaused("");
-        if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p)) { setActiveStep(2); setImagePart(true); }
+        if (index === 2 && run.imageOnly && run.imageTask === "recognize") { setActiveStep(2); setImagePart(true); }
+        else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p)) { setActiveStep(2); setImagePart(true); }
         else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
       }
@@ -758,9 +937,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       } else { run.progress = { ...run.progress, state: "error", failure: e instanceof Error ? e.message : String(e) }; remember(run); throw e; }
     } finally { abort.current = null; await taskWrites.current; }
   }
-  const startTranslationPart = (part: UnityTranslationPart) => {
+  const startTranslationPart = (part: UnityTranslationPart, phase?: "recognize" | "translate") => {
+    if (phase) imageTask.current = phase;
     const jobs = translationJobs.current;
-    if (jobs) { jobs.start(part); return; }
+    if (jobs) { jobs.start(part, part === "images" && !!phase); return; }
     void startWorkflow(2, checkpoint?.automatic && !checkpoint.finished ? checkpoint.endStep : 2, !!checkpoint && !checkpoint.finished, !!checkpoint?.automatic && !checkpoint.finished, false, part);
   };
   const stop = () => {
@@ -773,30 +953,30 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const resumable = !preparingRescan && !!checkpoint && !checkpoint.finished;
   const pausedScan = checkpoint?.step === 1 && !checkpoint.finished && (checkpoint.progress.state === "stopped" || checkpoint.progress.state === "error");
   const scanOptionsChanged = !!pausedScan && unityScanOptionChanges(checkpoint!, { includeCode, textMode, typeDirectory, codeAssemblies }).length > 0;
-  const locked = !!busy || restoring || resumable;
-  const entriesLocked = !!busy || restoring || resumable && (checkpoint.step !== 2 || !!checkpoint.imageOnly);
+  const locked = !!busy || restoring || resumable || saving || !!importPreview;
+  const entriesLocked = !!busy || restoring || saving || resumable && (checkpoint.step !== 2 || !!checkpoint.imageOnly);
   const resumeTask = () => checkpoint && void startWorkflow(checkpoint.step, checkpoint.endStep, true, checkpoint.automatic);
   async function skipRemaining() { await skipTranslationPart(!!checkpoint?.imageOnly); }
 
   const currentPart: UnityTranslationPart = imagePart ? "images" : "text";
-  const selectedJob = checkpoint?.translationRuns?.[currentPart];
+  const selectedJob = currentParts?.[currentPart];
   const taskAction = translationJobs.current ? <>
     {selectedJob?.state === "running" && <button className="unity-btn" disabled={translationJobs.current.isStopping(currentPart)} onClick={() => { translationJobs.current?.stop(currentPart); setMessage("正在中止当前任务，另一任务继续处理"); }}>中止 {imagePart ? "2.2" : "2.1"}</button>}
     {Object.values(checkpoint?.translationRuns || {}).filter(part => part.state === "running").length > 1 && <button className="unity-btn" onClick={stop}>中止全部</button>}
   </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan || scanOptionsChanged ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片识别与翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn" disabled={restoring || needsScan} title={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
   const failureMessage = generation?.state === "error" ? generation.failure || error : error;
   const failure = failureMessage ? explainUnityFailure(failureMessage) : null;
-  const currentRowIssue = rowIssue && project?.entries.find(entry => entry.id === rowIssue.id);
-  const rowFailure = rowIssue ? explainUnityFailure(currentRowIssue?.error || currentRowIssue && unityTranslationError(currentRowIssue.source, currentRowIssue.translation) || rowIssue.error) : null;
+  const currentRowIssue = rowIssue && tableEntries.find(entry => entry.id === rowIssue.id);
+  const rowFailure = rowIssue ? explainUnityFailure(currentRowIssue && entryProblem(currentRowIssue) || rowIssue.error) : null;
   const rowQueueStatus = rowIssue ? translationQueue.current?.status(rowIssue.id) : undefined;
   const rowRetryQueued = rowQueueStatus === "pending" || rowQueueStatus === "active" || !!rowIssue && busy === `重试条目 #${rowIssue.id}`;
   useEffect(() => {
-    if (currentRowIssue && !currentRowIssue.error && currentRowIssue.translation && !unityTranslationError(currentRowIssue.source, currentRowIssue.translation)) setRowIssue(null);
-  }, [project, rowIssue?.id]);
-  const errorPanel = failure && <div className="unity-failure" role="alert">
-    <strong>失败原因</strong><p>{failure.reason}</p><p>处理方法：{failure.action}</p>
+    if (currentRowIssue && currentRowIssue.translation && !entryProblem(currentRowIssue)) setRowIssue(null);
+  }, [tableEntries, rowIssue?.id]);
+  const errorPanel = failure && <details className="unity-current-failure" open role="alert" aria-label="当前任务失败">
+    <summary>{generation?.state === "error" ? `${generation.step === 2 && progressIsImage ? "图片识别与翻译" : GENERATION_STEPS[generation.step - 1]} · 失败` : "当前操作 · 失败"}</summary><p>{failure.reason}</p><p>处理方法：{failure.action}</p>
     {failure.technical && <details><summary>技术详情</summary><pre>{failure.technical}</pre></details>}
-  </div>;
+  </details>;
   const progressRunning = !!busy && generation?.state === "running";
   useEffect(() => {
     if (progressRunning && followProgress.current)
@@ -845,12 +1025,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const scanStarted = !!project || !!(checkpoint?.projectFolder || checkpoint?.scanFolder) || checkpoint?.step === 1 && !checkpoint.finished;
   useEffect(() => {
-    if (!scanReady) { setSearch(""); setPage(0); setJumpPage(""); setRowIssue(null); setRowJump(null); setFailurePage(0); }
+    if (!scanReady) { setSearch(""); setReviewFilter("all"); setQualityIssueId(null); setPage(0); setJumpPage(""); setRowIssue(null); setRowJump(null); setFailurePage(0); }
   }, [scanReady]);
-  const textReady = scanReady && (!!project?.textSkipped || selected.length > 0 && (done === selected.length || !!checkpoint?.partial && done > 0) || project?.entries.length === 0);
-  const imagesReady = scanReady && unityImagesReady(project);
+  const textReady = scanReady && readiness.textReady;
+  const imagesReady = scanReady && readiness.imagesReady;
   const translationReady = textReady && imagesReady;
-  const patchReady = scanReady && (textReady || selected.every(entry => !!entry.error || !!entry.translation && !unityTranslationError(entry.source, entry.translation))) && (imagesReady || (project?.images || []).filter(image => image.selected).every(image => image.completed || !!image.error || image.regions.some(region => !!region.error)));
+  const patchReady = scanReady && readiness.hasPatchContent;
   const completedThrough = preparingRescan ? 0 : applied ? 4 : patch ? 3 : translationReady ? 2 : scanReady ? 1 : 0;
   const displayedCompletedThrough = preparingRescan ? 0 : Math.max(completedThrough, checkpoint?.step === 2 && !translationReady ? 1 : project && checkpoint && !checkpoint.layoutOnly ? checkpoint.finished && checkpoint.progress.state === "done" ? checkpoint.endStep : checkpoint.step - 1 : 0);
   const executingStep = generation && generation.state !== "done" ? generation.step : completedThrough < 4 ? completedThrough + 1 : undefined;
@@ -887,48 +1067,96 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const downloadTranslations = () => operation("下载翻译文件", async () => {
     if (!project || !scanReady) return;
+    const entries = project.entries.filter(entry => entry.selected && scope.ids.has(entry.id));
+    if (!entries.length) throw new Error("当前语言范围没有已选择的条目");
     setFileStatus({ action: "download", state: "working", detail: "请选择下载文件的保存位置…" });
     const path = await saveDialog({
-      title: "下载翻译文件", defaultPath: await join(await resourceDir(), "Unity翻译.json"),
+      title: "下载翻译文件", defaultPath: await join(await resourceDir(), unityTranslationFileName(game?.gameExe || "", root)),
       filters: [{ name: "JSON 翻译文件", extensions: ["json"] }, { name: "CSV 翻译表格", extensions: ["csv"] }],
     });
     if (!path) { setFileStatus({ action: "download", state: "cancelled", detail: "已取消下载" }); return; }
-    setFileStatus({ action: "download", state: "working", path, detail: `正在生成并保存 ${project.entries.length} 条原文与译文…` });
-    const contents = new TextEncoder().encode(exportUnityTranslations(project.entries, /\.csv$/i.test(path)));
+    setFileStatus({ action: "download", state: "working", path, detail: `正在生成并保存 ${entries.length} 条原文与译文…` });
+    const contents = new TextEncoder().encode(exportUnityTranslations(entries, /\.csv$/i.test(path)));
     await invoke("write_file_bytes", { path, contents: Array.from(contents) });
-    setFileStatus({ action: "download", state: "done", path, folder: await dirname(path), detail: `下载完成：${project.entries.length} 条 · ${(contents.byteLength / 1024).toFixed(1)} KiB` });
-    setMessage(`已导出 ${project.entries.length} 条原文与译文：${path}`);
+    setFileStatus({ action: "download", state: "done", path, folder: await dirname(path), detail: `下载完成：${entries.length} 条 · ${(contents.byteLength / 1024).toFixed(1)} KiB` });
   }, true, detail => setFileStatus(previous => ({ ...previous, action: "download", state: "error", detail: `下载失败：${detail}` })));
-  const uploadTranslations = () => operation("导入翻译文件", async () => {
-    if (!project || !scanReady) return;
-    setFileStatus({ action: "import", state: "working", detail: "请选择需要校验的翻译文件…" });
-    const path = await open({ title: "导入翻译文件", multiple: false, filters: [{ name: "翻译文件", extensions: ["json", "csv"] }] });
-    if (typeof path !== "string") { setFileStatus({ action: "import", state: "cancelled", detail: "已取消导入，工程未覆盖" }); return; }
-    setFileStatus({ action: "import", state: "working", path, detail: "正在读取文件并校验格式、条目标识、原文和占位符…" });
-    const result = importUnityTranslations(project.entries, new TextDecoder("utf-8", { fatal: true }).decode(await readFileBytes(path)), /\.csv$/i.test(path), unityTranslationError);
-    const summary = `校验通过：匹配 ${result.matched} 条，修改 ${result.changed} 条（其中清空 ${result.cleared} 条），${result.unchanged} 条译文不变，保留 ${result.remaining} 条未提供条目。`;
-    setFileStatus({ action: "import", state: "checked", path, detail: summary });
+  const setImportValidation = (preview: ImportPreview, issues: UnityTranslationImportIssue[] = []) => {
+    const byId = new Map(issues.map(issue => [issue.id, issue.reason]));
+    const checked = { ...preview, entries: preview.entries.map(entry => {
+      const error = byId.get(entry.id) || "";
+      return entry.error === error ? entry : { ...entry, error };
+    }) };
+    setImportPreview(checked); importPreviewRef.current = checked; setRowJump(null);
+  };
+  const checkImportPreview = (preview = importPreviewRef.current) => {
+    if (!project || !preview) return null;
+    setImportIssuePage(0);
+    try {
+      const result = applyUnityTranslationRows((latest.current || project).entries, preview.entries, unityTranslationError, { mode: importMode, allowClear: allowImportClear });
+      setImportValidation(preview);
+      setFileStatus({ action: "import", state: "preview", path: preview.path, detail: `预览校验通过：将修改 ${result.changed} 条，其中清空 ${result.cleared} 条。✓ 应用到工程，× 取消。` });
+      return result;
+    } catch (cause) {
+      if (cause instanceof UnityTranslationImportError) setImportValidation(preview, cause.issues);
+      setFileStatus({ action: "import", state: "error", path: preview.path, detail: `预览校验失败：${cause instanceof Error ? cause.message : String(cause)}`, issues: cause instanceof UnityTranslationImportError ? cause.issues : undefined });
+      return null;
+    }
+  };
+  const cancelImportPreview = () => {
+    const view = importPreviewRef.current?.view;
+    if (view) { setSearch(view.search); setReviewFilter(view.reviewFilter); setPage(view.page); setImagePart(view.imagePart); setActiveStep(view.activeStep); }
+    setImportPreview(null); importPreviewRef.current = null; setRowIssue(null); setRowJump(null);
+    setFileStatus({ action: "import", state: "cancelled", detail: "已取消导入预览，原工程与源文件保持不变。" });
+  };
+  const applyImportPreview = async () => {
+    const preview = importPreviewRef.current;
+    const result = checkImportPreview(preview);
+    if (!preview || !result || !project) return false;
     if (!result.changed) {
-      setFileStatus({ action: "import", state: "done", path, folder: await dirname(path), detail: `${summary}无需覆盖。` });
-      setMessage(`已匹配 ${result.matched} 条，译文没有变化。`); return;
+      setImportPreview(null); importPreviewRef.current = null; setRowIssue(null);
+      setFileStatus({ action: "import", state: "done", path: preview.path, detail: "没有需要应用的修改，当前工程和补丁保持不变。" });
+      return true;
     }
-    if (!await confirm(`${summary}\n\n全部检查通过，确认后才会覆盖对应译文。${applied ? "请先关闭游戏；已应用的补丁会先恢复原件。" : ""}${patch || applied ? "现有补丁将清理，之后需重新生成。" : ""}`, { title: "翻译文件校验通过", okLabel: "确认覆盖", cancelLabel: "取消" })) {
-      setFileStatus({ action: "import", state: "cancelled", path, detail: `${summary}已取消覆盖，工程未修改。` }); return;
+    if ((patch || applied) && !await confirm("应用导入将清理现有补丁并恢复游戏原件，请先退出游戏。之后需要重新生成补丁。", { title: "应用导入预览", okLabel: "继续应用", cancelLabel: "取消" })) return false;
+    return operation("应用导入预览", async () => {
+      setSaveComplete(false);
+      setFileStatus({ action: "import", state: "working", path: preview.path, detail: `正在应用并保存 ${result.changed} 条译文…` });
+      if (dirty) await save();
+      await taskWrites.current;
+      if (patch || applied) {
+        const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
+        setPatch(null); setFontPlan(null); setApplied(reset.workspace.installed); onInstallationChange?.(root, reset.workspace.installed);
+        if (reset.workspace.installed) throw new Error("当前游戏仍有其他已应用补丁，请先卸载后再应用导入");
+      }
+      const next = { ...(latest.current || project), entries: result.entries };
+      await unityRun("save", { project: next });
+      publish(next); setDirty(false); pendingEdits.current.clear(); setPatch(null); setFontPlan(null); setRowIssue(null);
+      setImportPreview(null); importPreviewRef.current = null;
+      remember(projectCheckpoint(next)); await taskWrites.current;
+      setFileStatus({ action: "import", state: "done", path: preview.path, folder: await dirname(preview.path), detail: `导入已应用：修改 ${result.changed} 条，其中清空 ${result.cleared} 条，保留 ${result.preservedExisting} 条已有译文。源文件未改动。` });
+      setSaveComplete(true);
+    }, true, detail => setFileStatus(previous => ({ ...previous, action: "import", state: "error", detail: `${importPreviewRef.current ? "应用失败" : "译文已保存，后续处理失败"}：${detail}` })));
+  };
+  applyImportRef.current = applyImportPreview;
+  const uploadTranslations = (retryPath?: string) => operation("导入翻译文件", async () => {
+    if (!project || !scanReady) return;
+    setFileStatus({ action: "import", state: "working", path: retryPath, detail: "正在读取导入文件…" });
+    const path = retryPath || await open({ title: "导入翻译文件", multiple: false, filters: [{ name: "翻译文件", extensions: ["json", "csv"] }] });
+    if (typeof path !== "string") { setFileStatus({ action: "import", state: "cancelled", detail: "已取消导入，工程未覆盖" }); return; }
+    let imported: ReturnType<typeof readUnityTranslationRows>;
+    try { imported = readUnityTranslationRows(project.entries, new TextDecoder("utf-8", { fatal: true }).decode(await readFileBytes(path)), /\.csv$/i.test(path)); }
+    catch (cause) {
+      if (cause instanceof UnityTranslationImportError) { setImportIssuePage(0); setFileStatus({ action: "import", state: "error", path, detail: `文件校验失败：${cause.message}`, issues: cause.issues }); }
+      throw cause;
     }
-    setFileStatus({ action: "import", state: "working", path, detail: `正在导入并保存 ${result.changed} 条译文…` });
-    if (dirty) await save();
-    await taskWrites.current;
-    if (patch || applied) {
-      const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
-      setPatch(null); setFontPlan(null); setApplied(reset.workspace.installed); onInstallationChange?.(root, reset.workspace.installed);
-      if (reset.workspace.installed) throw new Error("当前游戏仍有其他已应用补丁，请先卸载后再导入译文");
-    }
-    const next = { ...project, entries: result.entries };
-    await unityRun("save", { project: next });
-    publish(next); setDirty(false); setPatch(null); setFontPlan(null); setRowIssue(null);
-    remember(projectCheckpoint(next)); await taskWrites.current;
-    setFileStatus({ action: "import", state: "done", path, folder: await dirname(path), detail: `导入完成：已替换 ${result.changed} 条译文，其中清空 ${result.cleared} 条。` });
-    setActiveStep(2); setMessage(`已匹配 ${result.matched} 条，替换 ${result.changed} 条译文。`);
+    const byId = new Map(imported.map(row => [row.id, row]));
+    const preview = { path, view: { search, reviewFilter, page, imagePart, activeStep }, entries: project.entries.filter(entry => byId.has(entry.id)).map(entry => {
+      const translation = byId.get(entry.id)!.translation;
+      return { ...entry, translation, layoutDraft: undefined, error: "" };
+    }) };
+    setImportPreview(preview); importPreviewRef.current = preview;
+    setImagePart(false); setActiveStep(2); setSearch(""); setReviewFilter("all"); setPage(0); setRowIssue(null);
+    checkImportPreview(preview);
   }, true, detail => setFileStatus(previous => ({ ...previous, action: "import", state: "error", detail: `导入失败：${detail}` })));
   const openTranslationFile = async (path: string) => {
     setActionError("");
@@ -989,6 +1217,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     <div className="unity-output-heading"><strong>输出</strong>{!preparingRescan && scanWarnings.length + (project?.diagnostics?.length || 0) > 0 && <span>{scanWarnings.length + (project?.diagnostics?.length || 0)} 条提示</span>}{!preparingRescan && patch && <button className="unity-btn" onClick={() => void openFolder(patch.folder)}>补丁目录</button>}</div>
     <div className="unity-offline-log">
       {preparingRescan ? <p role="status">确认上方参数后开始扫描。</p> : <>
+      {errorPanel}
       {scanReady && translationFailures.length > 0 && <details className="unity-translation-failures" aria-label="翻译失败条目">
         <summary>翻译 / 排版失败 · {translationFailures.length} 条</summary>
         <ul>{translationFailures.slice(visibleFailurePage * 20, (visibleFailurePage + 1) * 20).map(entry => <li key={entry.id}>
@@ -1003,17 +1232,28 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <button className="unity-btn" disabled={visibleFailurePage + 1 >= failurePageCount} onClick={() => setFailurePage(visibleFailurePage + 1)}>下一页</button>
         </div>}
       </details>}
-      {fileStatus && <details className={`unity-transfer-output${fileStatus.state === "error" ? " unity-offline-error" : ""}`} aria-label="翻译文件处理结果">
-        <summary>{fileStatus.action === "download" ? "翻译文件下载" : "翻译文件导入"} · {fileStatus.state === "working" ? "处理中" : fileStatus.state === "error" ? "失败" : "已完成"}</summary>
+      {fileStatus && <details className={`unity-transfer-output${fileStatus.state === "error" ? " unity-offline-error" : ""}${fileStatus.state === "preview" ? " is-pending" : ""}`} open aria-label="翻译文件处理结果">
+        <summary>{fileStatus.action === "download" ? "翻译文件下载" : "翻译文件导入"} · {fileStatus.state === "preview" ? <span className="unity-transfer-pending-state" role="status">待应用</span> : fileStatus.state === "working" ? "处理中" : fileStatus.state === "error" ? "失败" : fileStatus.state === "cancelled" ? "已取消" : "已完成"}</summary>
         {(fileStatus.state === "working" || fileStatus.state === "done") && <progress aria-label="翻译文件处理进度" max={1} value={fileStatus.state === "done" ? 1 : undefined} />}
-        <p role={fileStatus.state === "error" ? "alert" : "status"}>{fileStatus.detail}</p>
+        {fileStatus.needsValidation && <p className="unity-import-recheck" role="status"><span>预览已修改，以下保留上次校验结果；修改完成后统一校验。</span><button type="button" className="unity-transfer-locate" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>统一校验</button></p>}
+        {fileStatus.state === "error" ? <>
+          <p role="alert"><button type="button" className="unity-transfer-retry" disabled={!!busy || restoring || !scanReady} title={importPreview ? "校验右侧当前编辑的导入预览，不重新读取磁盘文件" : "重新读取并校验文件"} onClick={() => void (importPreview ? checkImportPreview() : fileStatus.action === "import" ? uploadTranslations(fileStatus.path) : downloadTranslations())}>{fileStatus.detail} · {fileStatus.action === "import" ? importPreview ? "点击校验预览" : "点击重新读取文件" : "点击重试下载"}</button></p>
+          {fileStatus.action === "import" && <p>{importPreview ? "请直接修改右侧导入预览，再点击校验或 ✓ 应用；× 取消将保留原工程，源文件不改动。" : "请修正文件格式或条目标识后重新选择导入；工程尚未覆盖。"}</p>}
+          {!!importIssues.length && <div className="unity-import-issues" aria-label="导入校验问题">
+            <ul>{visibleImportIssues.map((issue, index) => <li key={`${issue.id}:${index}`}>
+              {importPreview ? <button type="button" className="unity-transfer-locate" title="定位右侧对应条目" onClick={() => locateTranslationFailure(issue.id)}>第 {issue.id} 条</button> : <strong>{issue.id}</strong>}
+              <p>{issue.reason}</p>
+              {(issue.source || issue.translation) && <details className="unity-import-comparison"><summary>查看原文与导入译文</summary><dl><dt>原文</dt><dd>{issue.source}</dd><dt>{fileStatus.needsValidation ? "上次校验译文" : importPreview ? "当前预览译文" : "导入译文"}</dt><dd>{issue.translation}</dd></dl></details>}
+            </li>)}</ul>
+            {importIssuePages > 1 && <div className="unity-import-issue-pages"><button type="button" className="unity-btn" disabled={visibleImportIssuePage === 0} onClick={() => setImportIssuePage(visibleImportIssuePage - 1)}>上一页</button><span>第 {visibleImportIssuePage + 1} / {importIssuePages} 页</span><button type="button" className="unity-btn" disabled={visibleImportIssuePage + 1 >= importIssuePages} onClick={() => setImportIssuePage(visibleImportIssuePage + 1)}>下一页</button></div>}
+          </div>}
+        </> : <p role="status">{fileStatus.detail}</p>}
         {fileStatus.state === "done" && fileStatus.path && <div className="unity-transfer-links">
           <a href="#" title={fileStatus.path} onClick={event => { event.preventDefault(); void openTranslationFile(fileStatus.path!); }}>文件：{fileStatus.path}</a>
           {fileStatus.folder && <a href="#" title={fileStatus.folder} onClick={event => { event.preventDefault(); void openFolder(fileStatus.folder!); }}>文件夹：{fileStatus.folder}</a>}
         </div>}
       </details>}
-      {!error && (!generation || activeStep !== generation.step) && <p role="status">{busy ? generation?.state === "running" ? generation.detail : message || `${busy}…` : message || "等待操作"}</p>}
-      {errorPanel}
+      {(!fileStatus || message || busy && !["导入翻译文件", "下载翻译文件"].includes(busy)) && !error && (!generation || activeStep !== generation.step) && <p role="status">{busy ? generation?.state === "running" ? generation.detail : message || `${busy}…` : message || "等待操作"}</p>}
       {checkpoint?.translationFailure && <p className="unity-offline-error" role="alert">待重试的翻译错误：{explainUnityFailure(checkpoint.translationFailure).reason} 重新扫描完成后将重试翻译。</p>}
       {actionError && <p className="unity-offline-error" role="alert">{actionError}</p>}
       {!!project?.resources?.length && <p className="hint">目标资源：{project.resources.filter(resource => resource.state === "ready").length} 个可读取 · {project.resources.filter(resource => resource.state === "empty").length} 个无正文或字体 · {project.resources.filter(resource => resource.state === "partial").length} 个部分解析 · {project.resources.filter(resource => resource.state === "failed").length} 个失败</p>}
@@ -1031,24 +1271,27 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio));
   };
   return <div className="unity-offline">
+    {closingPhase && <ClosingProgress phase={closingPhase} />}
+    {saveComplete && createPortal(<div className="unity-config-toast is-ok" role="status">保存成功</div>, document.body)}
+    {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
     {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
-    {toolbarTarget && createPortal(applied ? <button className="unity-btn unity-btn-danger" disabled={locked} onClick={() => void uninstallPatch()}>卸载补丁</button> : <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || !root || !output || (!resumable || checkpoint.step <= 2) && completedThrough < 2 && !connectionReady} onClick={() => void startWorkflow(needsScan ? 1 : Math.min(4, completedThrough + 1), 4, resumable, true)}>{resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"}</button>, toolbarTarget)}
+    {toolbarTarget && createPortal(<><UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>{applied ? <UnityIconButton className="unity-btn-danger" aria-label="卸载补丁" title="卸载补丁，恢复游戏原件" disabled={locked} onClick={() => void uninstallPatch()}><UnityActionIcon kind="remove" /></UnityIconButton> : <UnityIconButton className="unity-btn-primary" aria-label={resumable && checkpoint.automatic ? "恢复一键生成" : "一键生成并应用"} title={resumable && checkpoint.automatic ? "恢复一键生成并应用" : "一键生成并应用"} disabled={!!busy || restoring || !!importPreview || !root || !output || (!resumable || checkpoint.step <= 2) && completedThrough < 2 && !connectionReady} onClick={() => void startWorkflow(needsScan ? 1 : Math.min(4, completedThrough + 1), 4, resumable, true)}><UnityActionIcon kind="run" /></UnityIconButton>}</>, toolbarTarget)}
     <aside ref={configRef} className="unity-offline-config" style={{ width: panelWidth.width }}>
     <div ref={upperRef} className={`unity-offline-upper${manualLayout ? " is-manual" : ""}`} style={{ height: upperHeight }}>
     <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
       <nav className="unity-step-tabs" role="tablist" aria-label="处理步骤">{UNITY_STAGE_TABS.map(tab => {
         const { step, number, label } = tab;
         const subReady = tab.imageOnly ? imagesReady : textReady;
-        const partProgress = step === 2 && !preparingRescan ? checkpoint?.translationRuns?.[tab.imageOnly ? "images" : "text"] : undefined;
+        const partProgress = step === 2 && !preparingRescan ? currentParts?.[tab.imageOnly ? "images" : "text"] : undefined;
         const runningHere = step === 2 && partProgress ? partProgress.state === "running" : executingStep === step && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
         const state = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, !preparingRescan && needsScan ? 1 : undefined, !preparingRescan && scanUpdate.level === "optional" ? 1 : undefined);
         const selectedTab = activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
         return <button key={number} id={`unity-step-${number}`} role="tab" aria-selected={selectedTab} aria-controls="unity-step-panel" aria-current={runningHere ? "step" : undefined} className={`unity-step-tab ${state}${selectedTab ? " is-selected" : runningHere ? " is-active-task" : ""}`} onClick={() => { followProgress.current = false; setActiveStep(step); setImagePart(tab.imageOnly); }}><span className="unity-step-number" aria-hidden="true">{number}</span>{label}{(state === "outdated" || state === "optional-update") && ` · ${scanUpdate.label}`}</button>;
       })}</nav>
-      <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel">
+      <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" onChange={() => { if (project && !importPreviewRef.current) { pendingEdits.current.add("当前步骤的处理参数"); setDirty(true); setSaveNotice(""); } }}>
         {activeStep === 1 && <>
           <div className="unity-offline-fields unity-scan-fields">
-            <label>原文语言<select value={source} title="仅处理所选语言范围，其他语言的原文与译文保留在工程中" disabled={scanParametersLocked} onChange={e => { setSource(e.target.value); setPage(0); }}><option value="auto">自动（主语言）</option>{sourceLanguages.map(language => <option key={language} value={language}>{unityLanguageLabel(language)}</option>)}<option value="all">全部语言</option></select></label>
+            <label>原文语言<select value={source} title="仅处理所选语言，其他语言结果保留。优先按语言字段筛选；未标记时按文字特征判断，纯汉字可能同时属于中文和日文" disabled={scanParametersLocked} onChange={e => { setSource(e.target.value); setPage(0); }}><option value="auto">自动（主语言）</option>{sourceLanguages.map(language => <option key={language} value={language}>{unityLanguageLabel(language)}</option>)}<option value="all">全部语言</option></select></label>
             <label>文本分段<UnityDescriptionSelect label="文本分段" value={textMode} choices={UNITY_SEGMENT_CHOICES} disabled={parametersLocked} onChange={value => setTextMode(value as "lines" | "paragraphs" | "smart")} /></label>
             <label className="unity-offline-check unity-scan-code-option" title="扫描游戏代码中的硬编码文本，补充资源中未提取到的对白或界面文字。结果可能包含程序标识，请在扫描后取消不应翻译的条目；错误修改可能使游戏无法运行。"><input type="checkbox" disabled={parametersLocked} checked={includeCode} onChange={e => setIncludeCode(e.target.checked)} />扫描代码字面量</label>
 
@@ -1057,8 +1300,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {includeCode && <details className="unity-assembly-options"><summary>代码范围 · {codeAssemblies?.length ?? inspection?.assemblies?.filter(assembly => assembly.writable).length ?? 0} 个程序集</summary>{(inspection?.assemblies || []).map(assembly => <label key={assembly.path}><input type="checkbox" disabled={parametersLocked || !assembly.writable} checked={assembly.writable && (codeAssemblies?.includes(assembly.path) ?? true)} onChange={event => setCodeAssemblies(current => { const selected = current ?? inspection!.assemblies.filter(item => item.writable).map(item => item.path); return event.target.checked ? [...selected, assembly.path].sort() : selected.filter(path => path !== assembly.path); })} /><span>{assembly.path}{assembly.reason ? ` · ${assembly.reason}` : ""}</span></label>)}{!inspection?.assemblies?.length && <p className="hint">未找到可选的游戏 Managed 程序集；标准 global-metadata.dat 字面量仍按代码扫描选项处理。</p>}</details>}
           {inspectionError && <p className="unity-offline-error">程序集预检失败：{inspectionError}</p>}
           {!!inspection?.catalogs?.length && <p className="hint">检测到 {inspection.catalogs.length} 个 Addressables Catalog；修改相关 Bundle 后需验证 CRC、依赖和缓存，当前不会自动改写 Catalog。</p>}
-          {!project && <p className="hint">扫描后可在结果区查看原文范围和文本数量。</p>}
-          {!preparingRescan && project && source !== "all" && <p className="hint">优先使用语言字段标记，未标记时按文字特征筛选；纯汉字可能同时用于中文和日文。</p>}
+
+
           {pausedScan && !preparingRescan && scanOptionsChanged && <p className="hint">扫描参数已变化，继续时需从头重新扫描；确认后保留可匹配复用的旧结果。</p>}
         </>}
         {activeStep === 2 && <div className="unity-translation-settings">
@@ -1075,7 +1318,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {!connectionReady && <p className="unity-offline-error unity-group-note">{translationKind === "llm" ? "所选模型尚未配置 API 地址，请前往通用设置配置。" : "请在下方列表中启用至少一个免 Key 或已配置凭证的引擎。"}</p>}
           </div>
           {translationKind === "engine" && <UnityEngineList choices={engineChoices} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={parametersLocked} expanded={engineListExpanded} onExpandedChange={setEngineListExpanded} onChange={updateEngineChoices} />}
-          {imagePart && <><p className="hint">2.1 与 2.2 可同时处理，各自保存进度。</p><div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={restoring || applied || checkpoint?.translationRuns?.images.state === "running"} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><label title="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。">翻译置信度阈值<input aria-label="图片翻译置信度阈值" type="number" min={0} max={100} step={1} value={imageConfidenceThreshold} disabled={restoring || applied || checkpoint?.translationRuns?.images.state === "running"} onChange={event => setImageConfidenceThreshold(Math.max(0, Math.min(100, Number(event.target.value))))} />%</label><span>底图处理：纯色覆盖后嵌字</span></div><p className="hint">复用图片文字识别模型。译图保持原尺寸；复杂背景请检查预览，必要时替换译图。回写纹理使用 RGBA32，资源体积可能增大。</p></>}
+          {imagePart && <><div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={restoring || applied || checkpoint?.translationRuns?.images.state === "running"} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><label title="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。">翻译置信度阈值<input aria-label="图片翻译置信度阈值" type="number" min={0} max={100} step={1} value={imageConfidenceThreshold} disabled={restoring || applied || checkpoint?.translationRuns?.images.state === "running"} onChange={event => setImageConfidenceThreshold(Math.max(0, Math.min(100, Number(event.target.value))))} />%</label><span>底图处理：纯色覆盖后嵌字</span></div></>}
           {!imagePart && <><div className="unity-control-group unity-line-group" role="group" aria-label="换行参数">
           <div className="unity-group-fields unity-line-fields">
             <label>换行处理<UnityDescriptionSelect label="换行处理" value={joinLines ? "join" : "keep"} choices={UNITY_WRAP_CHOICES} disabled={lineOptionsLocked} onChange={value => { const enabled = value === "join"; setJoinLines(enabled); const saved = checkpointRef.current; if (saved && !saved.finished && saved.step === 2 && !saved.layoutOnly) remember({ ...saved, joinLines: enabled }); }} /></label>
@@ -1084,23 +1327,27 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           </div>
 
           </div>
-          {!scanReady && <p className="hint">请先完成扫描，再执行此步；可以提前配置翻译参数。</p>}
+
           <div className="unity-file-actions" role="group" aria-label="翻译文件导入导出">
             <span className="unity-file-caption">翻译文件</span>
-            {fileStatus && <span className={`unity-file-status${fileStatus.state === "error" ? " unity-offline-error" : ""}`} role="status" aria-live="polite">{fileStatus.detail}</span>}
-            <button className="unity-btn unity-text-action" aria-label="下载翻译文件" title="下载全部扫描条目的原文与译文（JSON / CSV）。编辑时保留 id、source，只修改 translation。" disabled={!!busy || restoring || !scanReady} onClick={() => void downloadTranslations()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4" /></svg>下载</button>
-            <button className="unity-btn unity-text-action" aria-label="导入翻译文件" title="导入 JSON / CSV 翻译文件，按 id 匹配并替换对应译文；未提供的条目保留，空译文会清空对应译文。" disabled={!!busy || restoring || !scanReady} onClick={() => void uploadTranslations()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 17V5m-5 5 5-5 5 5M4 17v4h16v-4" /></svg>导入</button>
+            <div className="unity-file-options">
+            <label>导入方式<select aria-label="翻译文件导入方式" value={importMode} disabled={!!busy || restoring} onChange={event => { setImportMode(event.target.value as UnityTranslationImportMode); setAllowImportClear(false); }}><option value="fill">仅补空译文</option><option value="replace">覆盖已有译文</option></select></label>
+            {importMode === "replace" && <label className="unity-file-clear" title="勾选后，导入文件中 translation 为空的条目会清空工程内对应的已有译文和排版草稿。未勾选时跳过空译文，保留已有内容；不会删除原文或条目。"><input type="checkbox" checked={allowImportClear} disabled={!!busy || restoring} onChange={event => setAllowImportClear(event.target.checked)} />允许空译文清空已有译文</label>}
+            </div><div className="unity-file-buttons">
+            <button className="unity-btn unity-text-action" aria-label="下载翻译文件" title="下载当前语言范围内已选择条目的原文与译文（JSON / CSV）。编辑时保留 id、source，只修改 translation。" disabled={!!busy || restoring || !scanReady || !!importPreview} onClick={() => void downloadTranslations()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4" /></svg>下载</button>
+            <button className="unity-btn unity-text-action" aria-label="导入翻译文件" title="按 id 和原文载入 JSON / CSV 到右侧预览，编辑后用 ✓ 应用或 × 取消；未提供的条目保留。" disabled={!!busy || restoring || !scanReady || !!importPreview} onClick={() => void uploadTranslations()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 17V5m-5 5 5-5 5 5M4 17v4h16v-4" /></svg>导入</button>
+            </div>
           </div>
         </>}
         </div>}
         {activeStep === 3 && <>
-          <div className="unity-offline-font"><label>替换字体<input value={fontPath} readOnly placeholder="可选 TTF / OTF；检查缺字并生成所需图集" /></label><button className="unity-btn" disabled={parametersLocked} onClick={() => void operation("选择字体", async () => { const path = await open({ filters: [{ name: "字体", extensions: ["ttf", "otf"] }] }); if (typeof path === "string") { setFontPath(path); setFontPlan(null); invalidatePatch(); } })}>选择字体</button>{fontPath && <button className="unity-btn" disabled={parametersLocked} onClick={() => { setFontPath(""); setFontPlan(null); invalidatePatch(); }}>取消替换</button>}
+          <div className="unity-offline-font"><label>替换字体<input value={fontPath === ":original:" ? "" : fontPath} readOnly placeholder="未替换；字体可在软件目录 fonts 中选择" /></label><button className="unity-btn" disabled={parametersLocked} onClick={() => void operation("选择字体", async () => { const path = await open({ defaultPath: await join(await resourceDir(), "fonts"), filters: [{ name: "字体", extensions: ["ttf", "otf"] }] }); if (typeof path === "string") { setFontPath(path); setFontPlan(null); invalidatePatch(); } })}>选择字体</button>{fontPath && <button className="unity-btn" disabled={parametersLocked} onClick={() => { setFontPath(""); setFontPlan(null); invalidatePatch(); }}>取消替换</button>}
 
           </div>
           <div className="unity-offline-fields"><label>补充字符<input value={extraCharacters} disabled={parametersLocked} placeholder="角色名等动态内容" onChange={event => { setExtraCharacters(event.target.value); setFontPlan(null); }} /></label><button className="unity-btn" disabled={!!busy || restoring || !project} onClick={() => void checkFontPlan()}>字库检查与字符集</button>{busy === "字库检查" && <button className="unity-btn" onClick={stop} disabled={abort.current?.signal.aborted}>中止检查</button>}</div>
-          {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "未选择字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <p className="unity-offline-error">缺字预览：{fontPlan.missing.slice(0, 24).map(code => String.fromCodePoint(code)).join("")}</p>}<button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
-          <p className="hint">{patchReady ? "为已选的有效译文和译图生成补丁，出错项目自动跳过，并保留原件备份。" : "请先完成所选文本的翻译，再执行此步；可以提前选择字体。"} 文本补丁与已识别的 UGUI 字体替换无需 Unity Editor。</p>
-          {project?.fonts.some(font => /^(TMP|NGUI)/.test(font.kind)) && <p className="hint">已检测到 TMP / NGUI 字体。选择替换字体后生成字形和独立图集，无需 Unity Editor；共享图集或不支持的布局会说明具体原因。</p>}
+          {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "保留游戏原字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <p className="unity-offline-error">缺字预览：{fontPlan.missing.slice(0, 24).map(code => String.fromCodePoint(code)).join("")}</p>}<button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
+
+          {project?.fonts.some(font => /^(TMP|NGUI)/.test(font.kind)) && <p className="hint">已检测到 TMP / NGUI 字体。替换时生成字形和独立图集，无需 Unity Editor；共享图集或不支持的布局会说明具体原因。</p>}
         </>}
         {activeStep === 4 && <>
           <div className="unity-offline-output"><span>应用位置</span><code title={root}>{root}</code></div>
@@ -1114,24 +1361,24 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             {(done > 0 || selected.some(e => e.layoutDraft) || checkpoint?.step === 2) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring || !scanReady} title="清除译文与后续产物，重新设置翻译参数" onClick={() => void restartStage(2)}>重做翻译</button>}
           <button className={`unity-btn${checkpoint?.layoutOnly ? " unity-btn-warning" : ""}`} disabled={!!busy || restoring || !scanReady || !joinLines || !selected.some(e => /[\r\n]/.test(e.source) && (e.translation || e.layoutDraft) && !unityTranslationError(e.source, e.translation || e.layoutDraft!))} title={applied ? "恢复游戏原件并保留译文，重新处理断行；之后需生成并应用新补丁" : "保留现有译文，仅重新处理换行；不会重新翻译"} onClick={() => void reflowExisting()}>{checkpoint?.layoutOnly ? "重做断行" : "仅重新断行"}</button>
         </>}
-        {activeStep === 2 && imagePart && <><button className="unity-btn unity-btn-primary" disabled={restoring || !!busy && !translationJobs.current || checkpoint?.translationRuns?.images.state === "running" || !scanReady || (project?.scanRevision || 0) < 5 || !connectionReady || applied || imagesReady} onClick={() => startTranslationPart("images")}>{checkpoint?.translationRuns?.images.state === "stopped" || checkpoint?.translationRuns?.images.state === "error" ? "恢复图片处理" : "识别并翻译图片"}</button><button className="unity-btn unity-btn-warning" disabled={!!busy || restoring || !scanReady} onClick={() => void restartStage(2)}>重做图片处理</button></>}
-        {activeStep === 2 && <button className="unity-btn" disabled={!!busy && !translationJobs.current || restoring || !scanReady || applied || !!patch} onClick={() => void skipTranslationPart()}>跳过 {imagePart ? "2.2" : "2.1"} 剩余内容</button>}
-        {activeStep === 3 && <button className="unity-btn unity-btn-primary" disabled={locked || !patchReady || applied || !!patch} onClick={() => void startWorkflow(3, 3)}>生成补丁</button>}
+        {activeStep === 2 && imagePart && <><button className="unity-btn unity-btn-primary" title="仅识别所选图片中的文字并保存，不发送翻译请求" disabled={restoring || !!busy && !translationJobs.current || checkpoint?.translationRuns?.images.state === "running" || !scanReady || applied || !(project?.images || []).some(image => image.selected && !image.ocrCompleted)} onClick={() => startTranslationPart("images", "recognize")}>识别图片</button><button className="unity-btn unity-btn-primary" title="翻译已识别且已勾选的文字区域，并生成译图；未识别的图片不会自动识别" disabled={restoring || !!busy && !translationJobs.current || checkpoint?.translationRuns?.images.state === "running" || !scanReady || !connectionReady || applied || !(project?.images || []).some(image => image.selected && image.ocrCompleted && !image.completed)} onClick={() => startTranslationPart("images", "translate")}>翻译图片</button><button className="unity-btn unity-btn-warning" title="清除图片识别和译图结果，保留文本翻译" disabled={!!busy || restoring || !scanReady} onClick={() => void restartStage(2)}>重做图片处理</button></>}
+        {activeStep === 2 && <button className="unity-btn" disabled={!!busy && !translationJobs.current || restoring || !scanReady || applied || !!patch} title="跳过当前部分尚未完成的内容，保留已有有效结果" onClick={() => void skipTranslationPart()}>跳过 {imagePart ? "2.2" : "2.1"} 剩余内容</button>}
+        {activeStep === 3 && <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || saving || resumable && checkpoint?.step !== 2 || !patchReady || applied || !!patch} title={!patchReady ? "当前没有可回写的有效译文或译图" : "生成所选有效译文和译图的补丁；有未完成内容时先确认保留其原文原图"} onClick={() => void generatePatch()}>生成补丁</button>}
         {activeStep === 4 && (applied ? <button className="unity-btn unity-btn-primary" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button> : <button className="unity-btn unity-btn-primary" disabled={locked || !patch} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>)}
         {activeStep > 2 && (activeStep <= completedThrough || generation?.state === "error" && activeStep === generation.step) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(activeStep)}>重做此步</button>}
       </div>
     <div className={`unity-current-task ${generation?.state || "idle"}${generation && !viewingProgress && progressRunning ? " unity-background-task is-running" : ""}`} aria-label="任务状态">
 
 
-      <div className="unity-generation-status" role="status"><strong>步骤 {(generation?.step || activeStep) === 2 ? (generation ? progressIsImage : imagePart) ? "2.2" : "2.1" : generation?.step || activeStep} · {(generation?.step || activeStep) === 2 && (generation ? progressIsImage : imagePart) ? "图片识别与翻译" : GENERATION_STEPS[(generation?.step || activeStep) - 1]}{generation ? generation.state === "done" ? " · 已完成" : generation.state === "skipped" ? " · 已跳过" : generation.state === "pending" ? " · 待开始" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : " · 正在处理" : activeStep <= completedThrough ? " · 已完成" : " · 待开始"}</strong><span>{generation ? progressPercent === null ? generation.state === "pending" ? "等待开始" : generation.state === "skipped" ? "已跳过" : generation.state === "running" ? "正在准备…" : generation.state === "done" ? "已完成" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}` : ""}</span><div className="unity-status-actions">
+      <div className="unity-generation-status" role="status"><strong>步骤 {(generation?.step || activeStep) === 2 ? (generation ? progressIsImage : imagePart) ? "2.2" : "2.1" : generation?.step || activeStep} · {(generation?.step || activeStep) === 2 && (generation ? progressIsImage : imagePart) ? "图片识别与翻译" : GENERATION_STEPS[(generation?.step || activeStep) - 1]}{generation ? generation.state === "done" ? " · 已完成" : generation.state === "skipped" ? " · 已跳过" : generation.state === "pending" ? generation.completed > 0 ? " · 未完成" : " · 待开始" : generation.state === "stopped" ? " · 已中止" : generation.state === "error" ? " · 失败" : " · 正在处理" : activeStep <= completedThrough ? " · 已完成" : " · 待开始"}</strong><span>{generation ? progressPercent === null ? generation.state === "pending" ? "等待开始" : generation.state === "skipped" ? "已跳过" : generation.state === "running" ? "正在准备…" : generation.state === "done" ? "已完成" : generation.state === "error" ? "未开始" : "等待恢复" : `${progressPercent}% · ${generation.completed} / ${generation.total} ${progressUnit}` : ""}</span><div className="unity-status-actions">
         {taskAction}
         {generation && !viewingProgress && <button className="unity-btn" onClick={() => { followProgress.current = true; setActiveStep(generation.step); setImagePart(!!checkpoint?.imageOnly); }}>查看进度</button>}
       </div></div>
       <div key={generation?.step || activeStep} className={`unity-progress-track${progressRunning ? " is-running" : ""}`} role="progressbar" aria-label="当前步骤进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generation ? progressPercent ?? undefined : activeStep <= completedThrough ? 100 : 0} aria-valuetext={generation ? progressPercent === null ? progressRunning ? "正在准备，暂未取得总量" : "未获得进度" : `${progressPercent}%` : activeStep <= completedThrough ? "已完成" : "待开始"}>
         <div className="unity-progress-fill" style={{ width: `${generation ? progressPercent ?? 0 : activeStep <= completedThrough ? 100 : 0}%` }} />
       </div>
-      {generation?.step === 2 && !checkpoint?.layoutOnly && !progressIsImage ? <UnityTranslationProgress progress={generation} running={progressRunning} onLocate={locateTranslationFailure} /> : generation?.state !== "error" && <p className="unity-task-detail" title={generation?.detail}>{generation ? generation.detail : "确认上方参数后开始处理。"}</p>}
-      {activeStep === 2 && checkpoint?.translationRuns && checkpoint.translationRuns[imagePart ? "text" : "images"].state !== "pending" && <button className="unity-sibling-task" onClick={() => setImagePart(!imagePart)}>{imagePart ? "2.1 翻译文本" : "2.2 图片识别与翻译"} · {({ running: "正在处理", done: "已完成", stopped: "已中止", error: "失败", skipped: "已跳过", pending: "待开始" })[checkpoint.translationRuns[imagePart ? "text" : "images"].state]}</button>}
+      {generation?.step === 2 && !checkpoint?.layoutOnly && !progressIsImage ? <><UnityTranslationProgress progress={generation} running={progressRunning} onLocate={locateTranslationFailure} />{generation.state === "pending" && <p className="unity-task-detail">{generation.detail}<button className="unity-btn" onClick={() => { setSearch(""); setReviewFilter("unfinished"); setPage(0); }}>查看未完成文本</button></p>}</> : generation?.state !== "error" && <p className="unity-task-detail" title={generation?.detail}>{generation ? generation.detail : "确认上方参数后开始处理。"}</p>}
+      {activeStep === 2 && currentParts && <button className="unity-sibling-task" onClick={() => setImagePart(!imagePart)}>{imagePart ? "2.1 翻译文本" : "2.2 图片识别与翻译"} · {({ running: "正在处理", done: "已完成", stopped: "已中止", error: "失败", skipped: "已跳过", pending: "待处理" })[currentParts[imagePart ? "text" : "images"].state]}</button>}
       {generation?.step === 4 && generation.state !== "done" && <p className="unity-offline-error">应用尚未完成，请勿启动游戏。恢复后继续写入，原件保存在补丁目录的 original 文件夹。</p>}
     </div>
     </section>
@@ -1140,32 +1387,36 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {projectDetails}
     </aside>
     <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />
-    {activeStep === 2 && imagePart ? <UnityImageWorkbench project={project} confidenceThreshold={imageConfidenceThreshold} disabled={!!busy || restoring || applied || !!patch} onChange={editImage} onRender={image => void updateImagePreview(image)} onImport={image => void updateImagePreview(image, true)} onSave={() => void save().catch(error => setActionError(String(error)))} /> : <section className="unity-offline-workbench">
-      <div className="unity-offline-toolbar">
-        <strong>文本与译文</strong>
+    {activeStep === 2 && imagePart ? <UnityImageWorkbench project={project} active={active} dirty={dirty} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!busy || restoring || saving || applied || !!patch || !!importPreview} onChange={editImage} onRender={image => void updateImagePreview(image)} onImport={image => void updateImagePreview(image, true)} onSave={() => void saveUserChanges()} /> : <section className="unity-offline-workbench">
+      <div className={`unity-offline-toolbar${importPreview ? " has-import-preview" : ""}`}>
       <div className="unity-result-filters">
-        <label><input type="checkbox" checked={errorsOnly} disabled={!scanReady} onChange={event => { setErrorsOnly(event.target.checked); setPage(0); }} />仅看未完成 / 失败</label>
-        {errorsOnly && <button className="unity-btn" disabled={!!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text")}>重试未完成项</button>}
-        <input type="search" aria-label="搜索原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => { setSearch(e.target.value); setPage(0); }} />
+        <strong>{importPreview ? `导入预览 · ${importPreview.entries.length} 条` : "文本与译文"}</strong>
+        <label>查看<select aria-label="译文检查筛选" value={reviewFilter} disabled={!scanReady} onChange={event => { setReviewFilter(event.target.value as typeof reviewFilter); setPage(0); }}><option value="all">全部文本</option><option value="unfinished">未完成 / 失败</option><option value="quality">疑似问题（{scanReady ? qualityIssues.size : 0}）</option></select></label>
+        {errorsOnly && !importPreview && <button className="unity-btn" disabled={!!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text")}>重试未完成项</button>}
       </div>
-        <button className="unity-btn" disabled={!scanReady || !!busy && !translationJobs.current || !dirty} onClick={() => void save().then(() => setMessage("工程已保存"), error => setActionError(String(error)))}>{scanReady && dirty ? "保存工程 *" : "保存工程"}</button>
+        {importPreview && <div className="unity-import-decisions" role="group" aria-label="是否应用此次导入"><strong>是否应用</strong><button className="unity-btn unity-preview-accept" aria-label="应用导入预览" title="校验右侧内容，按所选导入方式应用并保存到工程；不修改源文件" disabled={!!busy || restoring} onClick={() => void applyImportPreview()}><UnityActionIcon kind="check" /></button><button className="unity-btn unity-preview-cancel" aria-label="取消导入预览" title="放弃本次导入预览，返回原工程" disabled={!!busy || restoring} onClick={cancelImportPreview}><UnityActionIcon kind="cancel" /></button></div>}
+      <div className="unity-result-tools">
+        <input type="search" aria-label="搜索原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => { setSearch(e.target.value); setPage(0); }} />
+        <button className="unity-btn unity-result-save" title={importPreview ? "请先应用或取消此次导入" : "保存文本、译文和当前工程修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}>{saving ? "保存中…" : "保存"}</button>
+      </div>
       </div>
       {scanReady && project ? <>
         <div className="unity-offline-table-scroll"><table ref={tableRef} className="unity-offline-table" style={{ minWidth: Math.max(560, (sourceWidth.width + 212) / (1 - originalRatio / 100)), "--unity-original-width": `${originalRatio}%` } as CSSProperties}><colgroup><col style={{ width: 32 }} /><col style={{ width: sourceWidth.width }} /><col style={{ width: "var(--unity-original-width)" }} /><col /></colgroup><thead><tr>
-          <th><input type="checkbox" aria-label="选取全部搜索结果" disabled={entriesLocked || applied || !filtered.length} checked={filtered.length > 0 && filtered.every(e => e.selected)} onChange={e => { const ids = new Set(filtered.map(r => r.id)); const checked = e.target.checked; publish({ ...(latest.current || project), entries: (latest.current || project).entries.map(r => ids.has(r.id) ? { ...r, selected: checked } : r) }); setDirty(true); invalidatePatch(); }} /></th>
+          <th><input type="checkbox" aria-label="选取全部搜索结果" disabled={entriesLocked || applied || !!importPreview || !filtered.length} checked={filtered.length > 0 && filtered.every(e => e.selected)} onChange={e => { const ids = new Set(filtered.map(r => r.id)); const checked = e.target.checked; publish({ ...(latest.current || project), entries: (latest.current || project).entries.map(r => ids.has(r.id) ? { ...r, selected: checked } : r) }); pendingEdits.current.add(`文本勾选：${ids.size} 条`); setDirty(true); invalidatePatch(); }} /></th>
           <th className="unity-resizable-column">来源<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整来源列宽" aria-valuenow={Math.round(sourceWidth.width)} onMouseDown={e => sourceWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sourceWidth.setWidth(sourceWidth.width + (e.key === "ArrowRight" ? 8 : -8)); } }} /></th>
           <th className="unity-resizable-column">原文<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整原文和译文列宽" aria-valuenow={Math.round(originalRatio)} onPointerDown={e => { e.preventDefault(); columnDrag.current = { x: e.clientX, ratio: originalRatio, latest: originalRatio, width: tableRef.current!.getBoundingClientRect().width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { const drag = columnDrag.current; if (!drag) return; drag.latest = Math.max(20, Math.min(70, drag.ratio + (e.clientX - drag.x) / drag.width * 100)); tableRef.current?.style.setProperty("--unity-original-width", `${drag.latest}%`); }} onPointerUp={finishColumnDrag} onPointerCancel={finishColumnDrag} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const ratio = Math.max(20, Math.min(70, originalRatio + (e.key === "ArrowRight" ? 2 : -2))); setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio)); } }} /></th><th>译文</th>
-        </tr></thead><tbody>{rows.map(entry => <tr key={rowJump?.id === entry.id ? `${entry.id}:${rowJump.sequence}` : entry.id} data-entry-id={entry.id} tabIndex={-1} className={`${entry.error || entry.translation && unityTranslationError(entry.source, entry.translation) ? "has-error" : ""}${rowJump?.id === entry.id ? " unity-entry-target" : ""}`}>
-          <td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={entriesLocked || applied} checked={entry.selected} onChange={e => update(entry.id, { selected: e.target.checked })} /></td>
+        </tr></thead><tbody>{rows.map(entry => <tr key={rowJump?.id === entry.id ? `${entry.id}:${rowJump.sequence}` : entry.id} data-entry-id={entry.id} tabIndex={-1} className={`${entryProblem(entry) ? "has-error" : ""}${rowJump?.id === entry.id ? ` unity-entry-target${rowJump.error ? " is-error-target" : ""}` : ""}`}>
+          <td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={entriesLocked || applied || !!importPreview} checked={entry.selected} onChange={e => update(entry.id, { selected: e.target.checked })} /></td>
           <td title={`${entry.file}\n${entry.container}\n${entry.locator}${entry.locale ? `\n语言字段：${entry.locale}` : ""}`}><span>#{entry.id} · {entry.kind}{entry.locale ? ` · ${unityLanguageLabel(unityEntryLanguage(entry))}` : ""}</span><small>{entry.file.split(/[\\/]/).pop()} · 对象 #{entry.objectId === "0" ? entry.id : entry.objectId}</small></td>
           <td className="unity-offline-source"><div className="unity-source-text" title={entry.source}>{entry.source}</div></td>
-          <td><div className="unity-entry-editor"><textarea aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} disabled={entriesLocked || applied} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined })} />{(entry.error || entry.translation && unityTranslationError(entry.source, entry.translation)) && <button className="unity-row-error" title={entry.error ? explainUnityFailure(entry.error).reason : unityTranslationError(entry.source, entry.translation)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => setRowIssue({ ...entry, error: entry.error || unityTranslationError(entry.source, entry.translation) })}>!</button>}</div></td>
+          <td><div className="unity-entry-editor"><textarea aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} disabled={entriesLocked || applied && !importPreview} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined })} />{entryProblem(entry) && <button className="unity-row-error" title={entry.error ? explainUnityFailure(entry.error).reason : entryProblem(entry)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => { setQualityIssueId(null); setRowIssue({ ...entry, error: entryProblem(entry) }); }}>!</button>}{qualityIssues.has(entry.id) && <button className="unity-row-error" style={{ color: "#9a6700", borderColor: "#d6b56a", background: "#fff8e6" }} title={qualityIssues.get(entry.id)!.join("；")} aria-label={`第 ${entry.id} 条疑似问题`} onClick={() => { setRowIssue(null); setQualityIssueId(entry.id); }}>?</button>}</div></td>
         </tr>)}</tbody></table>{!filtered.length && <p className="hint">当前语言或搜索范围内没有文本，可在扫描步骤切换原文语言或选择全部语言查看。</p>}</div>
         <div className="unity-results-footer">
         {scanReady && <span aria-label="文本范围与选择统计">{scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}
         <div className="unity-offline-pagination"><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => Math.max(0, p - 10))}>-10 页</button><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>上一页</button><span>{Math.min(page + 1, pageCount)} / {pageCount}</span><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => p + 1)}>下一页</button><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => Math.min(pageCount - 1, p + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pageCount} placeholder="页码" value={jumpPage} onChange={e => setJumpPage(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && Number.isInteger(Number(jumpPage)) && jumpPage.trim()) { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={() => { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); }}>跳转</button></div>
         </div>
-      {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions"><button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} disabled={rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} title={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button><button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
+      {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions">{importPreview ? <button className="unity-btn" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>校验当前预览</button> : <button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} disabled={rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} title={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button>}<button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{importPreview ? "请修改右侧预览译文，再校验或应用此次导入。" : rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
+      {qualityIssue && <div className="unity-row-error-panel" style={{ borderColor: "#d6b56a", background: "#fffaf0" }} role="dialog" aria-label={`第 ${qualityIssueId} 条疑似问题详情`}><div className="unity-row-error-actions"><button className="unity-btn" onClick={() => locateTranslationFailure(qualityIssueId!)}>定位此条</button><button className="unity-btn" onClick={() => setQualityIssueId(null)}>关闭</button></div><strong>第 {qualityIssueId} 条疑似问题</strong>{qualityIssue.map(issue => <p key={issue}>{issue}</p>)}<p>请结合原文和上下文复核；这些提示不会阻止生成补丁。</p></div>}
       </> : <div className="unity-offline-empty">扫描完成后显示文本与译文。</div>}
     </section>}
   </div>;

@@ -50,6 +50,6 @@ public static class FontCoverage
             }
             return false;
         }
-        return text.EnumerateRunes().Where(r => !Rune.IsControl(r) && !Rune.IsWhiteSpace(r)).Select(r => r.Value).Distinct().Where(c => !Present(c)).ToList();
+        return text.EnumerateRunes().Where(r => !Rune.IsControl(r) && !Rune.IsWhiteSpace(r) && Rune.GetUnicodeCategory(r) != System.Globalization.UnicodeCategory.Format).Select(r => r.Value).Distinct().Where(c => !Present(c)).ToList();
     }
 }

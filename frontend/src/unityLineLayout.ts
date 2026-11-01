@@ -1,14 +1,15 @@
+import { unityTranslationTokens } from "./unityTokens";
+
 export type UnityLineMode = "local" | "ratio" | "model" | "wtp";
 export type UnityLinePlan = {
   units: string[]; layout: string[]; slots: number[]; candidates: number[][]; breaks: number[];
 };
-const token = /\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[^>\r\n]+>|\\[nrt]/g;
 const tag = /^<[^>]+>$/;
 function unitsOf(text: string) {
   const parts: string[] = []; let offset = 0;
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const append = (part: string) => parts.push(...Array.from(segmenter.segment(part), s => s.segment));
-  for (const match of text.matchAll(token)) { append(text.slice(offset, match.index)); parts.push(match[0]); offset = match.index! + match[0].length; }
+  for (const match of text.matchAll(unityTranslationTokens())) { append(text.slice(offset, match.index)); parts.push(match[0]); offset = match.index! + match[0].length; }
   append(text.slice(offset)); return parts;
 }
 // Relative display-width estimate. No model, font download or network request.
