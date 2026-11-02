@@ -89,11 +89,12 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
   };
   const report = (detail: string) => session.progress?.({ detail, completed: initial.completed + processed, total: initial.total, coverageCompleted: covered, coverageTotal: entries.length, requests, reused: reusedGroups,
     translation: { processed, pending: groups.size, successful: completed, failed: failures, failedEntries, active: [...active.values()], last } });
+  const entriesById = new Map(entries.map(entry => [entry.id, entry]));
   const queue: UnityTranslationQueue = {
-    status(id) { const entry = entries.find(item => item.id === id); return entry ? states.get(entryKey(entry)) || "done" : "not-in-task"; },
+    status(id) { const entry = entriesById.get(id); return entry ? states.get(entryKey(entry)) || "done" : "not-in-task"; },
     retry(id) {
       if (closed || session.signal.aborted || saveFailure) return false;
-      const entry = entries.find(item => item.id === id);
+      const entry = entriesById.get(id);
       if (!entry) return false;
       const key = entryKey(entry), group = groups.get(key);
       if (!group || states.get(key) !== "failed") return false;
@@ -123,11 +124,18 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       formatting = !!session.format;
       if (formatting) phase("formatting");
       const formatted: string[] = [];
+      // Exact layout inputs can repeat thousands of times within one deduplicated group.
+      const layouts = new Map<string, string>();
       for (const item of group) {
         if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
         const leading = item.source.match(session.format ? /^[\t \u3000]*/ : /^\s*/)?.[0] || "";
         const trailing = session.format ? "" : item.source.match(/\s*$/)?.[0] || "";
-        const body = session.format ? await session.format(item.source.trim(), translated.trim()) : translated.trim();
+        const source = item.source.trim();
+        let body = layouts.get(source);
+        if (body === undefined) {
+          body = session.format ? await session.format(source, translated.trim()) : translated.trim();
+          layouts.set(source, body);
+        }
         const value = leading + body + trailing;
         const problem = session.validate(item.source, value); if (problem) throw new Error(problem);
         formatted.push(value);

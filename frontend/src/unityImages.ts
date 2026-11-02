@@ -147,10 +147,13 @@ export function unityImageTranslationRegions(regions: UnityImageRegion[], thresh
 }
 export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" = "all") {
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
-  const next = structuredClone(project); next.imagesSkipped = false;
+  // This lane only changes images; retain the read-only text/resource collections.
+  const next = { ...project, images: structuredClone(project.images || []), imagesSkipped: false };
   const images = (next.images || []).filter(image => image.selected && unityImageParticipates(image) && (mode !== "translate" || image.ocrCompleted)), cache = new Map<string, string>();
-  for (const entry of next.entries) if (entry.translation && !entry.error && !services.validate(entry.source, entry.translation)) cache.set(entry.source, entry.translation);
-  for (const image of next.images || []) for (const region of image.regions) if (region.translation && !region.error && !services.validate(region.text, region.translation)) cache.set(region.text, region.translation);
+  if (mode !== "recognize") {
+    for (const entry of next.entries) if (entry.translation && !entry.error && !services.validate(entry.source, entry.translation)) cache.set(entry.source, entry.translation);
+    for (const image of next.images) for (const region of image.regions) if (region.translation && !region.error && !services.validate(region.text, region.translation)) cache.set(region.text, region.translation);
+  }
   let completed = images.filter(image => mode === "recognize" ? image.ocrCompleted : image.completed).length;
   const report = (detail: string) => progress({ completed, total: images.length, detail });
   for (const image of images) {

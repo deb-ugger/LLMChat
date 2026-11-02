@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey } from "../unityImagePreview";
 import type { OcrMode } from "../api";
@@ -95,9 +95,9 @@ function ImageGallery({ project, images, allImages, filterKey, hidden, disabled,
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set()); setPage(0); };
   useEffect(applyFilter, [filterKey]);
-  const currentImages = new Map(allImages.map(image => [image.id, image]));
-  const displayed = snapshot.map(item => currentImages.get(item.id)).filter((image): image is UnityImage => !!image);
-  const baseline = new Map(snapshot.map(item => [item.id, item.selected]));
+  const currentImages = useMemo(() => new Map(allImages.map(image => [image.id, image])), [allImages]);
+  const displayed = useMemo(() => snapshot.map(item => currentImages.get(item.id)).filter((image): image is UnityImage => !!image), [snapshot, currentImages]);
+  const baseline = useMemo(() => new Map(snapshot.map(item => [item.id, item.selected])), [snapshot]);
   const change = (value: boolean) => {
     const previous = unityGalleryChanges(displayed, selected, value);
     if (!previous.length) return;

@@ -95,7 +95,7 @@ public static class Program
     internal static void CheckStop(Request request, string folder) { if (request.StopFile.Length > 0 && File.Exists(request.StopFile)) throw new PausedException(folder); }
     internal static void WriteJson(string path, object value) {
         var temp = path + ".tmp";
-        try { File.WriteAllText(temp, JsonSerializer.Serialize(value, Json), Utf8); File.Move(temp, path, true); }
+        try { using (var stream = File.Create(temp)) JsonSerializer.Serialize(stream, value, Json); File.Move(temp, path, true); }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
@@ -111,7 +111,7 @@ public static class Program
                 var parent = Process.GetProcessById(int.Parse(args[1]));
                 _ = Task.Run(async () => { await parent.WaitForExitAsync(); Environment.Exit(2); });
             }
-            var request = JsonSerializer.Deserialize<Request>(Console.In.ReadToEnd(), Json) ?? throw new Exception("请求为空");
+            var request = JsonSerializer.Deserialize<Request>(Console.OpenStandardInput(), Json) ?? throw new Exception("请求为空");
             if (args[0] is "font-plan" or "export") request.FontPath = FontPreparation.ResolveFontPath(request.FontPath);
             object result = args[0] switch
             {
@@ -125,7 +125,7 @@ public static class Program
                 "reset-step" => WorkflowReset.Start(request),
                 "finish-rescan" => WorkflowReset.FinishRescan(request),
                 "load" => Load(request.Path),
-                "save" => Save(request.Project ?? throw new Exception("缺少工程")),
+                "save" => SaveRequest(request),
                 "save-image" => ImageResources.SaveRendered(request),
                 "preview-image" => ImageResources.Preview(request),
                 "export" => Export(request),
@@ -134,7 +134,7 @@ public static class Program
                 "installation-status" => request.Roots.Select(PatchInstallation.Status).ToArray(),
                 _ => throw new Exception("未知操作")
             };
-            Console.Out.Write(JsonSerializer.Serialize(result, Json));
+            JsonSerializer.Serialize(Console.OpenStandardOutput(), result, Json);
             return 0;
         }
         catch (PausedException e) { Console.Out.Write(JsonSerializer.Serialize(new { paused = true, folder = e.Folder }, Json)); return 0; }
@@ -142,6 +142,7 @@ public static class Program
     }
 
     static object SaveTask(Request request) { GameWorkspace.SaveTask(request); return new { ok = true }; }
+    static object SaveRequest(Request request) { Save(request.Project ?? throw new Exception("缺少工程")); return new { ok = true }; }
 
     public static string Within(string root, string relative)
     {
@@ -164,15 +165,14 @@ public static class Program
         var parents = project.Entries.Where(e => e.ParentId != null).Select(e => e.ParentId!).ToHashSet();
         foreach (var id in project.SegmentSources.Keys.Where(id => !parents.Contains(id)).ToArray()) project.SegmentSources.Remove(id);
         var path = System.IO.Path.Combine(project.Folder, "unity-project.json");
-        var temp = path + ".tmp";
-        try { File.WriteAllText(temp, JsonSerializer.Serialize(project, Json), Utf8); File.Move(temp, path, true); }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        WriteJson(path, project);
         ImageResources.CommitStates(project);
         return project;
     }
     public static Project Load(string path)
     {
-        var project = JsonSerializer.Deserialize<Project>(File.ReadAllText(path, Utf8), Json) ?? throw new Exception("工程无效");
+        using var input = File.OpenRead(path);
+        var project = JsonSerializer.Deserialize<Project>(input, Json) ?? throw new Exception("工程无效");
         project.Folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))!;
         if (project.Version != 1) throw new Exception("不支持此工程版本");
         var definitions = Path.Combine(project.Folder, "type-definitions");
