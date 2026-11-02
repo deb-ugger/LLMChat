@@ -8,7 +8,7 @@ type Props = {
   hiddenCount: number;
   sending: boolean;
   onSend: (text: string) => void;
-  onLoadEarlier: () => void;
+  onLoadEarlier: () => Promise<void>;
 };
 
 export function ChatView({
@@ -21,10 +21,21 @@ export function ChatView({
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const previousPosition = useRef({ id: conversation?.id, hiddenCount });
+  const loadingEarlier = useRef(false);
+  const loadEarlier = async () => {
+    if (loadingEarlier.current) return;
+    loadingEarlier.current = true;
+    const list = listRef.current, height = list?.scrollHeight ?? 0;
+    try { await onLoadEarlier(); }
+    finally { requestAnimationFrame(() => { if (list) list.scrollTop = list.scrollHeight - height; loadingEarlier.current = false; }); }
+  };
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, sending]);
+    const previous = previousPosition.current;
+    if (previous.id !== conversation?.id || hiddenCount >= previous.hiddenCount) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    previousPosition.current = { id: conversation?.id, hiddenCount };
+  }, [messages.length, sending, conversation?.id, hiddenCount]);
 
   const empty = !conversation || conversation.messages.length === 0;
 
@@ -48,16 +59,12 @@ export function ChatView({
           onScroll={(e) => {
             const el = e.currentTarget;
             if (el.scrollTop < 24 && hiddenCount > 0) {
-              const prevHeight = el.scrollHeight;
-              onLoadEarlier();
-              requestAnimationFrame(() => {
-                el.scrollTop = el.scrollHeight - prevHeight;
-              });
+              void loadEarlier();
             }
           }}
         >
           {hiddenCount > 0 && (
-            <button className="load-earlier" onClick={onLoadEarlier}>
+            <button className="load-earlier" onClick={() => void loadEarlier()}>
               加载更早的 {Math.min(hiddenCount, 30)} 条消息
             </button>
           )}

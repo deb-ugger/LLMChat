@@ -661,6 +661,10 @@ export function PdfPane({
   const openMenuRef = useRef<HTMLDivElement>(null);
   const imgCtxMenuRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
+  const searchTextCache = useRef(new WeakMap<PDFDocumentProxy, Map<number, string>>());
+  const searchRun = useRef(0);
+  const searchCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => { searchRun.current++; searchCleanup.current?.(); }, []);
   const pageOcrEngineRef = useRef<{
     mode: ReturnType<typeof normalizeOcrMode>; engine: LocalPaddleOcr;
   } | null>(null);
@@ -1212,6 +1216,7 @@ export function PdfPane({
       const findController = new PDFFindController({
         eventBus,
         linkService,
+        updateMatchesCountOnProgress: false,
       });
       pdfViewer = new PDFViewer({
         container,
@@ -1341,6 +1346,7 @@ export function PdfPane({
 
     return () => {
       suppressPersistRef.current = true;
+      searchRun.current++; searchCleanup.current?.();
       eventBus.off("pagechanging", onPageChanging);
       eventBus.off("scalechanging", onScaleChanging);
       eventBus.off("pagesinit", onPagesInit);
@@ -1446,6 +1452,7 @@ export function PdfPane({
         }
         if (cancelled) return;
         linkServiceRef.current?.setDocument(pdf, null);
+        searchRun.current++; searchCleanup.current?.(); setSearchBusy(false); setSearchHits([]);
         findControllerRef.current?.setDocument(pdf);
         pdfViewer.setDocument(pdf);
         if (labels) {
@@ -2087,63 +2094,48 @@ export function PdfPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedDoc, visible]);
 
-  const runPdfSearch = useCallback(async () => {
-    const pdf = pdfRef.current;
+  const runPdfSearch = useCallback(() => {
+    const run = ++searchRun.current;
+    searchCleanup.current?.();
+    const pdf = pdfRef.current, bus = eventBusRef.current, controller = findControllerRef.current;
     const q = searchQuery.trim();
-    if (!pdf || !q) {
-      setSearchHits([]);
-      return;
-    }
-    setSearchBusy(true);
-    setSearchOpen(true);
-    try {
-      const needle = q.toLowerCase();
-      const hits: { page: number; snippet: string; matchIndex: number }[] = [];
-      for (let p = 1; p <= pdf.numPages; p++) {
-        const page = await pdf.getPage(p);
-        const content = await page.getTextContent();
-        const parts: string[] = [];
-        for (const item of content.items) {
-          if (item && typeof item === "object" && "str" in item) {
-            parts.push(String((item as { str: string }).str));
+    if (!pdf || !bus || !controller || !q) { setSearchHits([]); setSearchBusy(false); return; }
+    setSearchBusy(true); setSearchOpen(true); setSearchHits([]);
+    const finished = async (event: { source: unknown; rawQuery?: string; state?: number }) => {
+      const state = controller.state as { query?: string } | null;
+      if (event.source !== controller || state?.query !== q || event.state === 3) return;
+      searchCleanup.current?.();
+      try {
+        let cache = searchTextCache.current.get(pdf);
+        if (!cache) { cache = new Map(); searchTextCache.current.set(pdf, cache); }
+        const hits: { page: number; snippet: string; matchIndex: number }[] = [];
+        const pageMatches = controller.pageMatches ?? [], lengths = controller.pageMatchesLength ?? [];
+        for (let pageIndex = 0; pageIndex < pageMatches.length && hits.length < 200; pageIndex++) {
+          const matches = pageMatches[pageIndex];
+          if (!matches?.length) continue;
+          if (run !== searchRun.current || pdfRef.current !== pdf) return;
+          let text = cache.get(pageIndex + 1);
+          if (text === undefined) {
+            const page = await pdf.getPage(pageIndex + 1);
+            const content = await page.getTextContent();
+            text = content.items.map(item => "str" in item ? item.str + (item.hasEOL ? "\n" : "") : "").join("");
+            cache.set(pageIndex + 1, text);
+          }
+          if (run !== searchRun.current || pdfRef.current !== pdf) return;
+          for (let index = 0; index < matches.length && hits.length < 200; index++) {
+            const offset = matches[index], length = lengths[pageIndex][index];
+            hits.push({ page: pageIndex + 1, snippet: text.slice(Math.max(0, offset - 24), offset + length + 36), matchIndex: hits.length });
           }
         }
-        const text = parts.join(" ").replace(/\s+/g, " ").trim();
-        const lower = text.toLowerCase();
-        let from = 0;
-        let guard = 0;
-        while (guard++ < 20) {
-          const idx = lower.indexOf(needle, from);
-          if (idx < 0) break;
-          const start = Math.max(0, idx - 24);
-          const end = Math.min(text.length, idx + needle.length + 36);
-          let snippet = text.slice(start, end);
-          if (start > 0) snippet = "…" + snippet;
-          if (end < text.length) snippet = snippet + "…";
-          hits.push({ page: p, snippet, matchIndex: hits.length });
-          from = idx + needle.length;
-          if (hits.length >= 200) break;
-        }
-        if (hits.length >= 200) break;
-      }
-      setSearchHits(hits);
-      eventBusRef.current?.dispatch("find", {
-        source: null,
-        type: "",
-        query: q,
-        caseSensitive: false,
-        entireWord: false,
-        highlightAll: true,
-        findPrevious: false,
-        matchDiacritics: false,
-      });
-    } catch {
-      setSearchHits([]);
-    } finally {
-      setSearchBusy(false);
-    }
+        setSearchHits(hits);
+      } catch { if (run === searchRun.current) setSearchHits([]); }
+      finally { if (run === searchRun.current) setSearchBusy(false); }
+    };
+    bus.on("updatefindcontrolstate", finished);
+    bus.on("updatefindmatchescount", finished);
+    searchCleanup.current = () => { bus.off("updatefindcontrolstate", finished); bus.off("updatefindmatchescount", finished); searchCleanup.current = null; };
+    bus.dispatch("find", { source: null, type: "", query: q, caseSensitive: false, entireWord: false, highlightAll: true, findPrevious: false, matchDiacritics: false });
   }, [searchQuery]);
-
   const jumpToSearchHit = useCallback(
     (hit: { page: number; snippet: string; matchIndex: number }) => {
       const q = searchQuery.trim();
@@ -3195,7 +3187,7 @@ export function PdfPane({
                 <input
                   value={searchQuery}
                   placeholder="输入关键词…"
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => { searchRun.current++; searchCleanup.current?.(); setSearchBusy(false); setSearchHits([]); setSearchQuery(e.target.value); }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") void runPdfSearch();
                   }}

@@ -142,6 +142,18 @@ powershell -File scripts/make-portable.ps1
 
 `Release` 是编译配置，便携版是程序与运行资源的分发目录；一键便携版构建使用的就是 Release 主程序。分步构建由自动化代理执行时，应先按 [AGENTS.md](AGENTS.md) 取得全局锁。
 
+### 制作不含个人数据的分发包
+
+更新好 `dist-portable/` 后，在仓库目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-distribution.ps1
+```
+
+压缩包生成在 `release/`，解压后运行 `LLMChat/llmchat.exe`。脚本只打包指定的程序、运行资源、基础 OCR 与断行模型、独立字体和许可说明，生成全新配置，默认使用 Bing 免 Key 翻译；其他免 Key 引擎仍可在软件中选择。免 Key 引擎需要联网，能否使用取决于网络和服务限制。
+
+分发包不读取个人配置，不包含填写的 Key、代理地址、聊天记录、用量、翻译工程、日志、输出文件及额外下载的模型缓存；扩展模型由接收者按需下载。不附带只能在源码仓库中使用的构建入口。本命令打包现有便携版，不重新编译，也不关闭正在运行的软件。
+
 ## 源码检查
 
 仅检查 TypeScript，不生成安装包或更新便携版：

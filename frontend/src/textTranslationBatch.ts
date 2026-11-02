@@ -1,11 +1,17 @@
 export type BatchTextItem = { id: string; text: string; prompt: string; context: { source: string; translation: string }[] };
+export class TextBatchFormatError extends Error {}
 export function decodeTextBatch(raw: string, expected: string[]) {
-  const rows: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
-  if (!Array.isArray(rows) || rows.length !== expected.length) throw new Error("批量译文条目数量不匹配");
+  let rows: unknown;
+  try { rows = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, "")); }
+  catch { throw new TextBatchFormatError("批量译文不是有效 JSON"); }
+  if (!Array.isArray(rows)) throw new TextBatchFormatError("批量译文不是数组");
   const result = new Map<string, string>();
+  const seen = new Set<string>(), wanted = new Set(expected);
   for (const row of rows) {
-    if (!row || typeof row.id !== "string" || typeof row.translation !== "string" || !expected.includes(row.id) || result.has(row.id)) throw new Error("批量译文编号不匹配或重复");
-    result.set(row.id, row.translation);
+    if (!row || typeof row.id !== "string" || !wanted.has(row.id)) continue;
+    if (seen.has(row.id)) { result.delete(row.id); continue; }
+    seen.add(row.id);
+    if (typeof row.translation === "string" && row.translation.trim()) result.set(row.id, row.translation);
   }
   return result;
 }
@@ -15,6 +21,30 @@ export function createTextBatchClient(request: (items: BatchTextItem[]) => Promi
   type Pending = { item: BatchTextItem; resolve: (text: string) => void; reject: (error: unknown) => void };
   const pending: Pending[] = [];
   let running = 0, scheduled = false;
+  const deliver = async (batch: Pending[], retryMissing = true): Promise<void> => {
+    try {
+      const result = await request(batch.map(row => row.item));
+      signal.throwIfAborted();
+      const missing: Pending[] = [];
+      for (const row of batch) {
+        const text = result.get(row.item.id);
+        if (text !== undefined) row.resolve(text);
+        else if (retryMissing && batch.length > 1) missing.push(row);
+        else row.reject(new Error(`批量译文缺少有效条目：${row.item.id}`));
+      }
+      for (const row of missing) {
+        if (signal.aborted) row.reject(signal.reason);
+        else await deliver([row], false);
+      }
+    } catch (error) {
+      if (error instanceof TextBatchFormatError && batch.length > 1 && !signal.aborted) {
+        const middle = Math.ceil(batch.length / 2);
+        await deliver(batch.slice(0, middle), false);
+        if (!signal.aborted) await deliver(batch.slice(middle), false);
+        else batch.slice(middle).forEach(row => row.reject(signal.reason));
+      } else batch.forEach(row => row.reject(error));
+    }
+  };
   const drain = () => {
     scheduled = false;
     if (signal.aborted) { pending.splice(0).forEach(item => item.reject(signal.reason)); return; }
@@ -26,11 +56,7 @@ export function createTextBatchClient(request: (items: BatchTextItem[]) => Promi
         batch.push(pending.shift()!); tokens += size;
       }
       running++;
-      void request(batch.map(row => row.item)).then(result => {
-        signal.throwIfAborted();
-        for (const row of batch) { if (!result.has(row.item.id)) throw new Error("批量译文缺少条目编号"); }
-        batch.forEach(row => row.resolve(result.get(row.item.id)!));
-      }).catch(error => batch.forEach(row => row.reject(error))).finally(() => { running--; drain(); });
+      void deliver(batch).finally(() => { running--; drain(); });
     }
   };
   return (item: BatchTextItem) => new Promise<string>((resolve, reject) => {

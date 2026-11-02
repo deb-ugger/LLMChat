@@ -40,6 +40,27 @@ namespace {
 constexpr const char* kProjectFileName = "project.lcproj";
 constexpr const char* kProjectFileNameLegacy = "project.llmchat-proj.json";
 
+void writeProjectData(const fs::path& path, const std::string& data) {
+    std::string error;
+    if (!atomicfile::writeText(path, data, &error)) throw std::runtime_error(error);
+}
+
+std::string decodeEpubArchive(const std::string& encoded)
+{
+    const std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string bytes; bytes.reserve(encoded.size() * 3 / 4);
+    unsigned int bits = 0; int count = 0;
+    for (char ch : encoded) {
+        if (ch == '=') break;
+        const auto value = alphabet.find(ch);
+        if (value == std::string::npos) throw std::runtime_error("EPUB 原书编码无效");
+        bits = (bits << 6) | static_cast<unsigned int>(value); count += 6;
+        if (count >= 8) { count -= 8; bytes.push_back(static_cast<char>((bits >> count) & 255)); }
+    }
+    if (bytes.size() < 4 || bytes.substr(0, 2) != "PK") throw std::runtime_error("EPUB 原书不是有效压缩文件");
+    return bytes;
+}
+
 /** Prefer modern name; rename leftover legacy files in place. */
 fs::path findProjectFile(const fs::path& folder)
 {
@@ -1070,7 +1091,20 @@ int HttpServer::run()
             }
 
             const auto raw = readFileUtf8(projectFile);
-            const auto doc = json::parse(raw);
+            auto doc = json::parse(raw);
+            if (doc.contains("sourceMeta") && doc["sourceMeta"].contains("epub")) {
+                auto& epub = doc["sourceMeta"]["epub"];
+                if (epub.contains("archive") && epub["archive"].is_string() && !epub["archive"].get_ref<const std::string&>().empty()) {
+                    writeProjectData(projectFile.parent_path() / "source.epub", decodeEpubArchive(epub["archive"].get_ref<const std::string&>()));
+                    epub.erase("archive"); epub.erase("archivePath"); epub["archiveFile"] = "source.epub";
+                    writeProjectData(projectFile, doc.dump(2) + "\n");
+                }
+                if (epub.value("archiveFile", "") == "source.epub") {
+                    const auto path = projectFile.parent_path() / "source.epub";
+                    if (!fs::exists(path)) throw std::runtime_error("工程缺少原书附件 source.epub");
+                    epub["archivePath"] = utf8path::pathUtf8(path);
+                }
+            }
             res.set_content(json{
                 {"ok", true},
                 {"project", doc},
@@ -1139,8 +1173,22 @@ int HttpServer::run()
 
             fs::create_directories(folderPath);
             project["folder"] = folderName;
+            std::string epubPath;
+            if (project.contains("sourceMeta") && project["sourceMeta"].contains("epub")) {
+                auto& epub = project["sourceMeta"]["epub"];
+                const auto destination = folderPath / "source.epub";
+                if (epub.contains("archive") && epub["archive"].is_string() && !epub["archive"].get_ref<const std::string&>().empty()) {
+                    writeProjectData(destination, decodeEpubArchive(epub["archive"].get_ref<const std::string&>()));
+                } else if (epub.contains("archivePath")) {
+                    const auto source = utf8path::pathFromUtf8(epub["archivePath"].get<std::string>());
+                    if (fs::weakly_canonical(source) != fs::weakly_canonical(destination)) fs::copy_file(source, destination, fs::copy_options::overwrite_existing);
+                }
+                if (!fs::exists(destination)) throw std::runtime_error("工程缺少 EPUB 原书附件");
+                epub.erase("archive"); epub.erase("archivePath"); epub["archiveFile"] = "source.epub";
+                epubPath = utf8path::pathUtf8(destination);
+            }
             const fs::path projectFile = folderPath / kProjectFileName;
-            writeFileUtf8(projectFile, project.dump(2) + "\n");
+            writeProjectData(projectFile, project.dump(2) + "\n");
 
             if (body.contains("sourceFileName") && body.contains("sourceContent") &&
                 body["sourceFileName"].is_string() && body["sourceContent"].is_string())
@@ -1161,6 +1209,7 @@ int HttpServer::run()
                 {"folderPath", utf8path::pathUtf8(folderPath)},
                 {"path", utf8path::pathUtf8(projectFile)},
                 {"root", utf8path::pathUtf8(root)},
+                {"epubPath", epubPath},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)
@@ -1416,6 +1465,15 @@ int HttpServer::run()
 
     svr.Get(R"(/api/conversations/([^/]+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         const std::string id = req.matches[1];
+        if (req.has_param("limit")) {
+            try {
+                auto page = conversations_.page(id, std::stoi(req.get_param_value("limit")), req.has_param("before") ? std::stoi(req.get_param_value("before")) : -1);
+                if (page.is_null()) { res.status = 404; res.set_content(errorJson("Conversation not found").dump(), "application/json"); return; }
+                conversations_.switchToConversation(id);
+                res.set_content(page.dump(), "application/json");
+            } catch (const std::exception& ex) { res.status = 400; res.set_content(errorJson(ex.what()).dump(), "application/json"); }
+            return;
+        }
         const auto conv = conversations_.conversation(id);
         if (conv.id.empty())
         {
@@ -1435,10 +1493,10 @@ int HttpServer::run()
             res.set_content(errorJson("Cannot delete conversation").dump(), "application/json");
             return;
         }
-        const auto current = conversations_.conversation(conversations_.currentConversationId());
+        const auto current = conversations_.page(conversations_.currentConversationId(), config_.snapshot().messagePageSize);
         res.set_content(json{
             {"ok", true},
-            {"current", conversations_.toJson(current, true)},
+            {"current", current},
         }.dump(), "application/json");
     }));
 
@@ -1460,8 +1518,7 @@ int HttpServer::run()
                 res.set_content(errorJson("Conversation not found").dump(), "application/json");
                 return;
             }
-            const auto conv = conversations_.conversation(id);
-            res.set_content(conversations_.toJson(conv, true).dump(), "application/json");
+            res.set_content(conversations_.page(id, config_.snapshot().messagePageSize).dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -1557,12 +1614,11 @@ int HttpServer::run()
             }
 
             conversations_.addMessage(conversationId, "assistant", llmRes.content);
-            conv = conversations_.conversation(conversationId);
 
             res.set_content(json{
                 {"ok", true},
                 {"reply", llmRes.content},
-                {"conversation", conversations_.toJson(conv, true)},
+                {"conversation", conversations_.page(conversationId, cfg.messagePageSize)},
             }.dump(), "application/json");
         }
         catch (const std::exception& ex)

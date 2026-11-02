@@ -25,6 +25,7 @@ public:
     /** Only id/title/createTime/messageCount; never loads message bodies. */
     nlohmann::json summaries() const;
     Conversation conversation(const std::string& id) const;
+    nlohmann::json page(const std::string& id, int limit, int before = -1) const;
     std::string currentConversationId() const;
     void switchToConversation(const std::string& id);
 

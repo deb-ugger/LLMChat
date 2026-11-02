@@ -1,6 +1,7 @@
 import { DEFAULT_TEXT_PROMPT, type GlossaryEntry, type ReplaceRule, type TransEntry } from "./textTranslate";
 import type { AssDocument, SrtCue } from "./subtitle";
 import type { EpubSource, TextRanges } from "./textProjectFormats";
+import type { TextProtection } from "./textTranslationTools";
 
 export const PROJECT_KIND = "llmchat-text-project";
 export const PROJECT_VERSION = 1;
@@ -31,7 +32,7 @@ export type TextProject = {
   preReplace: ReplaceRule[];
   postReplace: ReplaceRule[];
   format: ProjectFormat;
-  translationOptions?: { concurrency: number; batchTokens: number; contextLines: number };
+  translationOptions?: { concurrency: number; batchTokens: number; contextLines: number; followingLines?: number; protection?: TextProtection; mtoolOptimize?: boolean };
   entries: TransEntry[];
   /** Original filename if imported from source */
   sourceFileName?: string;
@@ -160,8 +161,8 @@ export function parseProject(raw: string): TextProject {
   };
 }
 
-export function serializeProject(project: TextProject): string {
-  const next: TextProject = {
+export function projectSnapshot(project: TextProject): TextProject {
+  return {
     ...project,
     updatedAt: new Date().toISOString(),
     // Never persist transient "running" — crash/reopen would show false in-progress
@@ -171,7 +172,10 @@ export function serializeProject(project: TextProject): string {
         : e,
     ),
   };
-  return `${JSON.stringify(next, null, 2)}\n`;
+}
+
+export function serializeProject(project: TextProject): string {
+  return `${JSON.stringify(projectSnapshot(project), null, 2)}\n`;
 }
 
 export function addTokens(a: TokenStats, b: Partial<TokenStats>): TokenStats {

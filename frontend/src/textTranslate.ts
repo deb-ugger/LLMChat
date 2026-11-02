@@ -1,3 +1,4 @@
+import { protectionRegex, textWarnings, type TextCheckOptions } from "./textTranslationTools";
 export type ReplaceRule = { src: string; dst: string };
 export type GlossaryEntry = {
   src: string;
@@ -5,6 +6,7 @@ export type GlossaryEntry = {
   info?: string;
   /** Default true when omitted */
   enabled?: boolean;
+  caseSensitive?: boolean;
 };
 
 export type TransEntryStatus =
@@ -24,20 +26,21 @@ export type TransEntry = {
   previousDst?: string;
   documentPath?: string;
   context?: string;
+  translateSeparately?: boolean;
   /** Link to subtitle cue / dialogue index */
   metaIndex?: number;
 };
 
 /** Checks run only when a translation is produced or edited. */
-export function checkTextTranslation(source: string, translation: string, glossary: GlossaryEntry[] = []) {
+export function checkTextTranslation(source: string, translation: string, glossary: GlossaryEntry[] = [], options: TextCheckOptions = {}) {
   if (!translation.trim()) return { error: "译文为空", warning: "" };
-  const tokens = (text: string) => text.match(/\{[^{}\r\n]+\}|%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc%]|<\/?[A-Za-z][^>\r\n]*>|\{\\[^}\r\n]+\}|\\[nrt]|\\[A-Z]+\[\d+\]/g) || [];
+  const pattern = protectionRegex(options.format ?? "json", options.protection);
+  const tokens = (text: string) => (text.match(pattern) || []).filter(token => !/^[\r\n\t]+$/.test(token));
   const original = tokens(source), translated = tokens(translation);
   if (JSON.stringify([...original].sort()) !== JSON.stringify([...translated].sort())) return { error: "占位符、转义或格式标签发生变化", warning: "" };
   const ordered = (items: string[]) => items.filter(token => token.startsWith("<") || token.startsWith("{\\") || token.startsWith("\\") || token.startsWith("%") && !/^%\d+\$/.test(token));
   if (JSON.stringify(ordered(original)) !== JSON.stringify(ordered(translated))) return { error: "格式标签或参数顺序发生变化", warning: "" };
-  const missing = glossary.filter(term => term.enabled !== false && term.src && term.dst && source.includes(term.src) && !translation.includes(term.dst));
-  return { error: "", warning: missing.length ? `术语未落实：${missing.map(term => `${term.src} → ${term.dst}`).join("；")}` : "" };
+  return { error: "", warning: textWarnings(source, translation, glossary, options) };
 }
 
 /** Plain text / paragraph files */

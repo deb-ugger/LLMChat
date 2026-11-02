@@ -118,7 +118,7 @@ export default function App() {
 
   const openConversation = useCallback(
     async (id: string, pageSize = settings.messagePageSize) => {
-      const conv = await api.getConversation(id);
+      const conv = await api.getConversation(id, pageSize);
       const offset = Math.max(0, conv.messages.length - pageSize);
       setDisplayOffset(offset);
       setCurrent(conv);
@@ -304,7 +304,8 @@ export default function App() {
     return current.messages.slice(displayOffset);
   }, [current, displayOffset]);
 
-  const hiddenCount = displayOffset;
+  const hiddenCount = displayOffset + (current?.messageOffset ?? 0);
+  const loadingEarlierRef = useRef(false);
 
   const onNewChat = async () => {
     if (!current) return;
@@ -389,8 +390,15 @@ export default function App() {
     }
   };
 
-  const onLoadEarlier = () => {
-    setDisplayOffset((v) => Math.max(0, v - settings.messagePageSize));
+  const onLoadEarlier = async () => {
+    if (displayOffset > 0) { setDisplayOffset(v => Math.max(0, v - settings.messagePageSize)); return; }
+    if (!current?.messageOffset || loadingEarlierRef.current) return;
+    loadingEarlierRef.current = true;
+    try {
+      const page = await api.getConversation(current.id, settings.messagePageSize, current.messageOffset);
+      setCurrent(value => value?.id === current.id && value.messageOffset === current.messageOffset ? { ...value, messages: [...page.messages, ...value.messages], messageOffset: page.messageOffset } : value);
+    } catch (error) { setBackendError(toFriendlyError(error, "加载历史消息失败")); }
+    finally { loadingEarlierRef.current = false; }
   };
 
   const onSaveSettings = async (next: Settings) => {

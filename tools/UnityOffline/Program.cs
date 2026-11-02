@@ -577,10 +577,12 @@ public static class Program
                 var destination = Within(System.IO.Path.Combine(folder, "patch"), file); Directory.CreateDirectory(System.IO.Path.GetDirectoryName(destination)!);
                 var fileImages = images.Where(i => i.File == file).ToArray();
                 var entries = selected.Where(e => e.File == file).ToArray(); var edits = entries.ToDictionary(e => (e.Container, e.ObjectId, e.Locator));
+                var byObject = entries.ToLookup(e => (e.Container, e.ObjectId));
+                var byParent = entries.Where(e => e.ParentLocator != null).ToLookup(e => (e.Container, e.ObjectId, e.ParentLocator));
                 var atlasChecks = new Dictionary<(string Container, long Id), string>();
                 void Change(string container, long objectId, string loc, string sourceText, Action<string> set)
                 {
-                    var segments = edits.Values.Where(e => e.Container == container && e.ObjectId == objectId.ToString() && e.ParentLocator == loc).ToArray();
+                    var segments = byParent[(container, objectId.ToString(), loc)].Where(e => edits.ContainsKey((e.Container, e.ObjectId, e.Locator))).ToArray();
                     if (segments.Length > 0) {
                         set(SmartTextSegments.Rebuild(sourceText, segments));
                         foreach (var segment in segments) edits.Remove((segment.Container, segment.ObjectId, segment.Locator));
@@ -613,7 +615,7 @@ public static class Program
                     catch (PausedException) { throw new PausedException(folder); }
                     foreach (var info in inst.file.Metadata.AssetInfos)
                     {
-                        var relevant = entries.Where(e => e.Container == container && e.ObjectId == info.PathId.ToString()).ToArray();
+                        var relevant = byObject[(container, info.PathId.ToString())].ToArray();
                         var targetImage = fileImages.SingleOrDefault(i => i.Container == container && i.ObjectId == info.PathId.ToString());
                         var replaceFont = fonts.Any(f => f.Kind == "UGUI" && f.File == file && f.Container == container && f.ObjectId == info.PathId.ToString());
                         if (relevant.Length == 0 && targetImage == null && !replaceFont && !generated.ContainsKey(info.PathId)) continue;

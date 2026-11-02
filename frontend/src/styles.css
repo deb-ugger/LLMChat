@@ -9508,23 +9508,37 @@ body.row-resizing .textLayer {
 }
 
 .text-home-grid {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 20px;
+  gap: 40px;
   width: 100%;
   flex: 1;
   min-height: 0;
   align-items: stretch;
 }
 
+.text-home-grid::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-muted) 42%, var(--border));
+  pointer-events: none;
+}
+
 .text-home-card {
   display: grid;
   grid-template-rows: auto 148px auto minmax(0, 1fr) auto;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   padding: 20px 20px 16px;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   min-height: 0;
   min-width: 0;
   height: 100%;
@@ -9692,6 +9706,12 @@ body.row-resizing .textLayer {
   border-top: 1px solid var(--border);
 }
 
+.text-home-actions .lang-combobox.is-compact .lang-combobox-list {
+  top: auto;
+  bottom: calc(100% + 6px);
+  max-height: min(220px, 40vh);
+}
+
 .text-project-list-overlay {
   position: absolute;
   inset: 0;
@@ -9737,6 +9757,15 @@ body.row-resizing .textLayer {
 }
 
 @media (max-width: 960px) {
+  .text-home-grid::before {
+    display: none;
+  }
+
+  .text-home-card + .text-home-card {
+    border-top: 3px solid color-mix(in srgb, var(--text-muted) 42%, var(--border));
+    padding-top: 24px;
+  }
+
   .text-home-grid,
   .settings-engine-catalog,
   .settings-vendor-catalog,

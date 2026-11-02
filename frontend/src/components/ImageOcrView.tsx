@@ -1542,11 +1542,11 @@ export function ImageOcrView({
         patchPage(pageId, { blocks: [...next] });
         const concurrency = translateProvider === "llm" ? 5 : 2;
         let done = 0;
-        for (let start = 0; start < workIdx.length; start += concurrency) {
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < workIdx.length) {
           throwIfAborted(signal);
-          const slice = workIdx.slice(start, start + concurrency);
-          await Promise.all(
-            slice.map(async (idx) => {
+          const idx = workIdx[cursor++];
               try {
                 const tr = await api.translate(
                   next[idx].text,
@@ -1581,9 +1581,9 @@ export function ImageOcrView({
                   patchPage(pageId, { blocks: [...next] });
                 }
               }
-            }),
-          );
-        }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(concurrency, workIdx.length) }, worker));
         throwIfAborted(signal);
         return next;
       } catch (error) {

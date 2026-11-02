@@ -2,7 +2,7 @@ import JSZip from "jszip";
 import type { TransEntry } from "./textTranslate";
 
 export type TextRanges = { original: string; ranges: { start: number; end: number }[] };
-export type EpubSource = { archive: string; documents: string[] };
+export type EpubSource = { archive?: string; archiveFile?: string; archivePath?: string; documents: string[] };
 const entry = (id: string, src: string, metaIndex: number): TransEntry => ({ id, src, dst: "", status: "pending", metaIndex });
 
 export function parseVtt(original: string) {
@@ -44,12 +44,15 @@ export function parseMarkdown(original: string) {
 
 export function restoreTextRanges(metadata: TextRanges, entries: TransEntry[]) {
   const byIndex = new Map(entries.map(item => [item.metaIndex, item]));
-  let text = metadata.original;
-  for (let i = metadata.ranges.length - 1; i >= 0; i--) {
+  const parts: string[] = [];
+  let offset = 0;
+  for (let i = 0; i < metadata.ranges.length; i++) {
     const item = byIndex.get(i), range = metadata.ranges[i];
-    if (item?.dst && item.status !== "error" && item.status !== "skipped") text = text.slice(0, range.start) + item.dst + text.slice(range.end);
+    parts.push(metadata.original.slice(offset, range.start), item?.dst && item.status !== "error" && item.status !== "skipped" ? item.dst : metadata.original.slice(range.start, range.end));
+    offset = range.end;
   }
-  return text;
+  parts.push(metadata.original.slice(offset));
+  return parts.join("");
 }
 
 export function protectMarkdown(text: string) {
@@ -107,8 +110,9 @@ export async function parseEpub(bytes: Uint8Array) {
   if (!entries.length) throw new Error("EPUB 中没有可翻译正文");
   return { metadata: { archive: base64(bytes), documents }, entries };
 }
-export async function restoreEpub(metadata: EpubSource, entries: TransEntry[]) {
-  const zip = await JSZip.loadAsync(metadata.archive, { base64: true });
+export async function restoreEpub(metadata: EpubSource, entries: TransEntry[], attachment?: Uint8Array) {
+  if (!attachment && !metadata.archive) throw new Error("缺少 EPUB 原书附件");
+  const zip = attachment ? await JSZip.loadAsync(attachment) : await JSZip.loadAsync(metadata.archive!, { base64: true });
   for (const path of metadata.documents) {
     const file = zip.file(path);
     if (!file) throw new Error(`EPUB 缺少原始章节：${path}`);

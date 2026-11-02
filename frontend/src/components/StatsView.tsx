@@ -1743,13 +1743,16 @@ function UsageBarChart({
                 : "费用 (¥)"
               : "Tokens";
         const actors = collectActors(events, day, metric);
-        const actorHourValues = actors.map((a) =>
-          Array.from({ length: 24 }, (_, h) =>
-            hourEvents[h]
-              .filter((ev) => eventActorKey(ev) === a.key)
-              .reduce((s, ev) => s + eventMetricValue(ev, metric), 0),
-          ),
-        );
+        const hoursByActor = new Map<string, number[]>();
+        hourEvents.forEach((rows, hour) => {
+          for (const event of rows) {
+            const key = eventActorKey(event);
+            let values = hoursByActor.get(key);
+            if (!values) { values = Array(24).fill(0); hoursByActor.set(key, values); }
+            values[hour] += eventMetricValue(event, metric);
+          }
+        });
+        const actorHourValues = actors.map(actor => hoursByActor.get(actor.key) || Array(24).fill(0));
 
         const series = [
           ...markAreaHost(markAreas),

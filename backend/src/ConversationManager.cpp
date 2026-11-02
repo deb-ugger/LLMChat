@@ -342,6 +342,23 @@ Conversation ConversationManager::conversation(const std::string& id) const
     return impl_->read(id);
 }
 
+json ConversationManager::page(const std::string& id, int limit, int before) const
+{
+    std::lock_guard lock(mutex_);
+    const auto conv = impl_->metadata(id);
+    if (!conv) return nullptr;
+    Statement count(impl_->api, impl_->db, "SELECT message_count FROM conversations WHERE id=?");
+    impl_->check(count.valid() && bindText(impl_->api, count.get(), 1, id) && impl_->api.step(count.get()) == kSqliteRow);
+    const int total = static_cast<int>(impl_->api.columnInt64(count.get(), 0));
+    const int end = before < 0 ? total : std::min(before, total);
+    const int start = std::max(0, end - std::clamp(limit, 1, 200));
+    Statement rows(impl_->api, impl_->db, "SELECT payload FROM conversation_messages WHERE conversation_id=? ORDER BY seq LIMIT ? OFFSET ?");
+    impl_->check(rows.valid() && bindText(impl_->api, rows.get(), 1, id) && bindText(impl_->api, rows.get(), 2, std::to_string(end - start)) && bindText(impl_->api, rows.get(), 3, std::to_string(start)));
+    json messages = json::array();
+    for (;;) { const int result = impl_->api.step(rows.get()); if (result == kSqliteDone) break; impl_->check(result == kSqliteRow); messages.push_back(json::parse(columnText(impl_->api, rows.get(), 0))); }
+    return {{"id", conv->id}, {"title", conv->title}, {"createTime", conv->createTime}, {"messages", messages}, {"messageCount", total}, {"messageOffset", start}};
+}
+
 std::string ConversationManager::currentConversationId() const
 {
     std::lock_guard lock(mutex_);

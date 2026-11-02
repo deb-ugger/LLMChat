@@ -17,6 +17,7 @@ export type ConversationSummary = {
 
 export type Conversation = ConversationSummary & {
   messages: ChatMessage[];
+  messageOffset?: number;
 };
 
 export type TranslateProvider =
@@ -378,6 +379,7 @@ export type TextProjectListItem = {
 };
 
 export type TextProjectSaveResult = {
+  epubPath?: string;
   ok: boolean;
   folder: string;
   folderPath: string;
@@ -591,8 +593,8 @@ export const api = {
     ),
   createConversation: () =>
     request<Conversation>("/api/conversations", { method: "POST" }),
-  getConversation: (id: string) =>
-    request<Conversation>(`/api/conversations/${id}`),
+  getConversation: (id: string, limit = 30, before?: number) =>
+    request<Conversation>(`/api/conversations/${id}?limit=${limit}${before === undefined ? "" : `&before=${before}`}`),
   deleteConversation: (id: string) =>
     request<{ ok: boolean; current: Conversation }>(
       `/api/conversations/${id}`,
