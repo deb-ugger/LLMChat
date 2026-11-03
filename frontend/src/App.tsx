@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type Conversation,
   type ConversationSummary,
   type Settings,
 } from "./api";
+import { DeferredPanel } from "./components/DeferredPanel";
+import { isTauri } from "@tauri-apps/api/core";
+import { lastUnityGameDir } from "./unityLastGame";
 import { ChatView } from "./components/ChatView";
-import { ImageOcrView } from "./components/ImageOcrView";
-import { LiteratureView } from "./components/LiteratureView";
-import { SettingsView } from "./components/SettingsView";
+const ImageOcrView = lazy(() => import("./components/ImageOcrView").then(module => ({ default: module.ImageOcrView })));
+const LiteratureView = lazy(() => import("./components/LiteratureView").then(module => ({ default: module.LiteratureView })));
+const SettingsView = lazy(() => import("./components/SettingsView").then(module => ({ default: module.SettingsView })));
 import { Sidebar } from "./components/Sidebar";
-import { StatsView } from "./components/StatsView";
-import { TextTranslateView } from "./components/TextTranslateView";
-import { UnityTranslateView } from "./components/UnityTranslateView";
-import { SpeechView } from "./components/SpeechView";
+const StatsView = lazy(() => import("./components/StatsView").then(module => ({ default: module.StatsView })));
+const TextTranslateView = lazy(() => import("./components/TextTranslateView").then(module => ({ default: module.TextTranslateView })));
+const UnityTranslateView = lazy(() => import("./components/UnityTranslateView").then(module => ({ default: module.UnityTranslateView })));
+const SpeechView = lazy(() => import("./components/SpeechView").then(module => ({ default: module.SpeechView })));
 import { toFriendlyError } from "./friendlyError";
 import {
   DEFAULT_MTOOL_PROMPT,
@@ -86,6 +89,7 @@ const defaultSettings: Settings = {
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
   const startupInteracted = useRef(false);
+
   const [navRailHidden, setNavRailHidden] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<
     "unity" | "general" | undefined
@@ -102,6 +106,15 @@ export default function App() {
     file: File;
     id: number;
   } | null>(null);
+  useEffect(() => {
+    if (!backendReady || !isTauri()) return;
+    const root = lastUnityGameDir(); if (!root) return;
+    let cancelled = false;
+    void import("./unityOffline").then(module => module.unityRun<{ unfinished: boolean }>("resume-info", { root }))
+      .then(info => { if (!cancelled && !startupInteracted.current && info.unfinished) setPage("unity"); })
+      .catch(error => { if (!cancelled) setBackendError(toFriendlyError(error, "读取上次 Unity 工程状态失败")); });
+    return () => { cancelled = true; };
+  }, [backendReady]);
   const ocrIncomingSeq = useRef(0);
 
   const openImageOcr = useCallback((file: File) => {
@@ -604,7 +617,7 @@ export default function App() {
           }
           aria-hidden={page !== "literature"}
         >
-          <LiteratureView
+          <DeferredPanel active={page === "literature"}><LiteratureView
             visible={page === "literature"}
             ocrMode={settings.ocrMode}
             translateProvider={settings.translateProvider}
@@ -645,7 +658,7 @@ export default function App() {
                 translatePrompt: prompt,
               });
             }}
-          />
+          /></DeferredPanel>
         </div>
         <div
           className={
@@ -653,7 +666,7 @@ export default function App() {
           }
           aria-hidden={page !== "image"}
         >
-          <ImageOcrView
+          <DeferredPanel active={page === "image"}><ImageOcrView
             active={page === "image"}
             ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
@@ -682,7 +695,7 @@ export default function App() {
             onTranslateTargetChange={async (ocrTranslateTarget) => {
               await onSaveSettings({ ...settings, ocrTranslateTarget });
             }}
-          />
+          /></DeferredPanel>
         </div>
         <div
           className={
@@ -690,12 +703,12 @@ export default function App() {
           }
           aria-hidden={page !== "text"}
         >
-          <TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
+          <DeferredPanel active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
-          }} />
+          }} /></DeferredPanel>
         </div>
         <div className={page === "speech" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "speech"}>
-          <SpeechView active={page === "speech"} />
+          <DeferredPanel active={page === "speech"}><SpeechView active={page === "speech"} /></DeferredPanel>
         </div>
         <div
           className={
@@ -703,7 +716,7 @@ export default function App() {
           }
           aria-hidden={page !== "unity"}
         >
-          <UnityTranslateView
+          <DeferredPanel active={page === "unity"}><UnityTranslateView
             active={page === "unity"}
             settings={settings}
             onRestoreWorkspace={() => { if (!startupInteracted.current) setPage("unity"); }}
@@ -715,7 +728,7 @@ export default function App() {
               setSettingsInitialTab("unity");
               setPage("settings");
             }}
-          />
+          /></DeferredPanel>
         </div>
         <div
           className={
@@ -723,15 +736,15 @@ export default function App() {
           }
           aria-hidden={page !== "stats"}
         >
-          <StatsView active={page === "stats"} />
+          <DeferredPanel active={page === "stats"}><StatsView active={page === "stats"} /></DeferredPanel>
         </div>
         {page === "settings" && (
-          <SettingsView
+          <DeferredPanel active={page === "settings"}><SettingsView
             settings={settings}
             onSave={(s) => void onSaveSettings(s)}
             initialTab={settingsInitialTab}
             onNavigate={(p) => setPage(p)}
-          />
+          /></DeferredPanel>
         )}
       </div>
     </div>
