@@ -1,11 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
 import { TextProjectGlossary } from "./TextProjectGlossary";
+import { TextEntryRow } from "./TextEntryTable";
 import { readFileBytes } from "../localDocFile";
 import { TextProtectionOptions } from "./TextProtectionOptions";
 import { contextSections, matchesTextIssue, mtoolParents, protectText, protectionRegex, termMatches, textContext, textIssueLabels, type TextIssueKind } from "../textTranslationTools";
 import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
-import { parseEpub, parseMarkdown, parseVtt, protectMarkdown, restoreEpub, restoreTextRanges } from "../textProjectFormats";
+import { protectMarkdown } from "../textProjectFormats";
+import { runTextJob, type ParsedText, type TextChecks } from "../textProcessing";
 import { createTextBatchClient, decodeTextBatch } from "../textTranslationBatch";
 import { logRuntimeError } from "../runtimeLog";
 import { saveOutputFile } from "../outputFiles";
@@ -17,10 +19,8 @@ import { api, type Settings, type TextProjectListItem } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import {
   assTextLooksEmpty,
-  parseAss,
-  parseSrt,
-  serializeAss,
-  serializeSrt,
+  type AssDocument,
+  type SrtCue,
 } from "../subtitle";
 import {
   buildGroupTranslatePayload,
@@ -48,11 +48,9 @@ import {
   classifyEntryStatus,
   DEFAULT_TEXT_PROMPT,
   checkTextTranslation,
-  entriesToManualTransJson,
   formatDuration,
   isNoNeedTranslate,
   parseJsonArray,
-  parseManualTransFile,
   promptForScenario,
   resolveTextPromptScenario,
   shouldSkipEntry,
@@ -210,22 +208,6 @@ function unsupportedProjectMessage(name: string) {
   return `「${name}」不是工程文件。打开工程仅支持：*${PROJECT_EXT}`;
 }
 
-function statusLabel(s: TransEntry["status"]): string {
-  switch (s) {
-    case "done":
-      return "已译";
-    case "pending":
-      return "未译";
-    case "skipped":
-      return "无需译";
-    case "error":
-      return "失败";
-    case "running":
-      return "进行中";
-    default:
-      return s;
-  }
-}
 
 function langFileTag(lang: string) {
   return (lang || "zh-CN").trim().replace(/-/g, "_") || "zh_CN";
@@ -721,6 +703,14 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     }
   };
 
+  const selectEntry = useCallback((id: string, selected: boolean) => setSelectedEntries(current => { const next = new Set(current); if (selected) next.add(id); else next.delete(id); return next; }), []);
+  const editEntry = useCallback((id: string, dst: string) => patchProject(p => ({ ...p, entries: p.entries.map(entry => {
+    if (entry.id !== id) return entry;
+    const quality = checkProjectText(p, entry.src, dst);
+    return { ...entry, dst, previousDst: entry.previousDst ?? entry.dst, status: quality.error ? "error" : classifyEntryStatus(entry.src, dst), error: quality.error || undefined, warning: quality.warning || undefined };
+  }) })), [patchProject]);
+  const independentEntry = useCallback((id: string, value: boolean) => patchProject(p => ({ ...p, entries: p.entries.map(entry => entry.id === id ? { ...entry, translateSeparately: value } : entry) })), [patchProject]);
+
   const persistProject = async (
     p: TextProject,
     opts?: {
@@ -764,7 +754,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
       setError(null);
       setRecentMenu(null);
       const data = await api.loadTextProject({ folder: item.folder });
-      const p = parseProject(JSON.stringify(data.project));
+      const p = parseProject(data.project);
       openWorkbench(p, {
         folder: data.folder,
         folderPath: data.folderPath,
@@ -820,7 +810,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     try {
       setError(null);
       const data = await api.loadTextProject({ folder: item.folder });
-      const p = parseProject(JSON.stringify(data.project));
+      const p = parseProject(data.project);
       setProjectListOpen(false);
       openWorkbench(p, {
         folder: data.folder,
@@ -969,7 +959,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
 
     if (side === "open" || isProjectFileName(file.name)) {
       const sourcePath = sourcePaths.current.get(file);
-      const p = sourcePath ? parseProject(JSON.stringify((await api.loadTextProject({ path: sourcePath })).project)) : parseProject(text);
+      const p = sourcePath ? parseProject((await api.loadTextProject({ path: sourcePath })).project) : parseProject(text);
       const saved = await persistProject(p, {
         folder: p.folder || stripProjectExt(file.name) || name,
         overwrite: true,
@@ -985,13 +975,13 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
 
     if (lower.endsWith(".epub") || lower.endsWith(".vtt") || lower.endsWith(".md")) {
       const format = lower.endsWith(".epub") ? "epub" : lower.endsWith(".vtt") ? "vtt" : "markdown";
-      const parsed = format === "epub" ? await parseEpub(new Uint8Array(await file.arrayBuffer())) : format === "vtt" ? parseVtt(text) : parseMarkdown(text);
+      const parsed = await runTextJob<ParsedText>({ kind: "parse", format, input: format === "epub" ? new Uint8Array(await file.arrayBuffer()) : text });
       built = createProject({ name, format, sourceLang, targetLang, model, entries: parsed.entries,
         prompt: promptForScenario(settings, format === "vtt" ? "subtitle" : "plain"), glossary: glossaryFromSettings,
         preReplace: preFromSettings, postReplace: postFromSettings, sourceFileName: file.name,
         sourceMeta: format === "epub" ? { epub: parsed.metadata as import("../textProjectFormats").EpubSource } : { textRanges: parsed.metadata as import("../textProjectFormats").TextRanges } });
     } else if (lower.endsWith(".srt")) {
-      const cues = parseSrt(text);
+      const cues = await runTextJob<SrtCue[]>({ kind: "parse", format: "srt", input: text });
       if (!cues.length) throw new Error("未能解析 SRT 字幕");
       const entries: TransEntry[] = cues.map((c, i) => ({
         id: `srt-${i}`,
@@ -1015,7 +1005,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         sourceMeta: { srtCues: cues },
       });
     } else if (lower.endsWith(".ass") || lower.endsWith(".ssa")) {
-      const assDoc = parseAss(text);
+      const assDoc = await runTextJob<AssDocument>({ kind: "parse", format: "ass", input: text });
       if (!assDoc.dialogues.length) throw new Error("未能解析 ASS 对白行");
       const entries: TransEntry[] = assDoc.dialogues.map((d, i) => {
         const empty = assTextLooksEmpty(d.text);
@@ -1042,7 +1032,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         sourceMeta: { assDoc },
       });
     } else if (lower.endsWith(".json") || text.trimStart().startsWith("{")) {
-      const { entries } = parseManualTransFile(text);
+      const { entries } = await runTextJob<{ entries: TransEntry[] }>({ kind: "parse", format: "json", input: text });
       built = createProject({
         name,
         format: "json",
@@ -1135,85 +1125,28 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     })();
   };
 
+  const checkEntries = async (ids?: Set<string>) => {
+    const base = projectRef.current;
+    if (!base || busyRef.current) return;
+    const controller = new AbortController(); abortRef.current = controller;
+    setBusy(true); busyRef.current = true; setError(null); setStatusLine("正在检查译文…");
+    try {
+      const checks = await runTextJob<TextChecks>({ kind: "check", project: { ...base, sourceMeta: undefined }, ids: ids ? [...ids] : undefined }, controller.signal);
+      if (projectRef.current !== base) return;
+      const byId = new Map(checks.map(check => [check.id, check]));
+      patchProject(p => ({ ...p, entries: p.entries.map(entry => {
+        const check = byId.get(entry.id); return check ? { ...entry, status: check.error ? "error" : "done", error: check.error || undefined, warning: check.warning || undefined } : entry;
+      }) }));
+      setStatusLine(`检查完成 · ${checks.length} 条`);
+    } catch (error) { if (!controller.signal.aborted) setError(toFriendlyError(error, "检查译文失败")); }
+    finally { setBusy(false); busyRef.current = false; if (abortRef.current === controller) abortRef.current = null; }
+  };
+
   const buildExportPayload = async (p: TextProject) => {
-    if (p.format === "epub") {
-      if (!p.sourceMeta?.epub) throw new Error("工程缺少 EPUB 原始资源");
-      const epub = p.sourceMeta.epub;
-      const attachment = epub.archivePath ? new Uint8Array(await readFileBytes(epub.archivePath)) : undefined;
-      return { fileName: exportFileName(p, "epub"), content: await restoreEpub(epub, p.entries, attachment), kind: "EPUB" };
-    }
-    if (p.format === "vtt" || p.format === "markdown") {
-      if (!p.sourceMeta?.textRanges) throw new Error("工程缺少原始文档结构");
-      const ext = p.format === "vtt" ? "vtt" : "md";
-      return { fileName: exportFileName(p, ext), content: restoreTextRanges(p.sourceMeta.textRanges, p.entries), kind: ext.toUpperCase() };
-    }
-    // 译文文件：时间轴保留，台词替换为目标语言译文
-    if (p.format === "srt") {
-      const byIndex = new Map(p.entries.map(entry => [entry.metaIndex, entry]));
-      const cues =
-        p.sourceMeta?.srtCues?.map((c, i) => {
-          const e = byIndex.get(i);
-          return {
-            ...c,
-            text:
-              e?.status === "skipped"
-                ? c.text
-                : (e?.dst || e?.src || c.text),
-          };
-        }) ??
-        p.entries.map((e, i) => ({
-          index: i + 1,
-          start: "00:00:00,000",
-          end: "00:00:02,000",
-          text: e.status === "skipped" ? e.src : e.dst || e.src,
-        }));
-      return {
-        fileName: exportFileName(p, "srt"),
-        content: serializeSrt(cues),
-        kind: "SRT" as const,
-      };
-    }
-    if (p.format === "ass") {
-      const base = p.sourceMeta?.assDoc;
-      const byIndex = new Map(p.entries.map(entry => [entry.metaIndex, entry]));
-      const dialogues = base
-        ? base.dialogues.map((d, i) => {
-            const e = byIndex.get(i);
-            return {
-              ...d,
-              text:
-                e?.status === "skipped"
-                  ? d.text
-                  : (e?.dst || e?.src || d.text),
-            };
-          })
-        : p.entries.map((e) => ({
-            prefix: "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,",
-            text: e.status === "skipped" ? e.src : e.dst || e.src,
-            rawLine: "",
-          }));
-      return {
-        fileName: exportFileName(p, "ass"),
-        content: serializeAss(
-          base
-            ? { ...base, dialogues }
-            : { header: "[Script Info]\n\n[Events]\n", dialogues, footer: "" },
-        ),
-        kind: "ASS" as const,
-      };
-    }
-    if (p.format === "json") {
-      return {
-        fileName: exportFileName(p, "json"),
-        content: entriesToManualTransJson(p.entries),
-        kind: "JSON" as const,
-      };
-    }
-    return {
-      fileName: exportFileName(p, "txt"),
-      content: p.entries.map((e) => e.dst || e.src).join("\n\n"),
-      kind: "TXT" as const,
-    };
+    const attachment = p.format === "epub" && p.sourceMeta?.epub?.archivePath ? new Uint8Array(await readFileBytes(p.sourceMeta.epub.archivePath)) : undefined;
+    const content = await runTextJob<string | Uint8Array>({ kind: "export", project: p, attachment }, abortRef.current?.signal);
+    const ext = p.format === "markdown" ? "md" : p.format === "plain" ? "txt" : p.format;
+    return { fileName: exportFileName(p, ext), content, kind: ext.toUpperCase() };
   };
 
   const exportResult = async (pOverride?: TextProject) => {
@@ -1531,14 +1464,15 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     flushProgressRef.current = flushProgress;
     let lastCheckpoint = performance.now();
     let saving = false;
+    const runId = crypto.randomUUID();
+    let backendRunStarted = false;
     const checkpoint = async () => {
       if (saving || gen !== genRef.current || ac.signal.aborted || performance.now() - lastCheckpoint < 3000) return;
       saving = true;
-      flushProgress();
-      const snapshot = { ...projectRef.current!, elapsedMs: elapsedBase + Math.round(performance.now() - t0) };
-      const write = api.saveTextProject({ project: projectSnapshot(snapshot), folder, overwrite: true });
+      const changes = liveEntries.changes();
+      const write = api.checkpointTextRun(runId, changes, addTokens(tokensAtStart, tokenAcc), elapsedBase + Math.round(performance.now() - t0));
       checkpointRef.current = write;
-      try { await write; lastCheckpoint = performance.now(); } catch (cause) { ac.abort(cause); throw cause; } finally { saving = false; }
+      try { await write; liveEntries.acknowledge(changes); lastCheckpoint = performance.now(); } catch (cause) { ac.abort(cause); throw cause; } finally { saving = false; }
     };
 
     const runOptions = active.translationOptions ?? { concurrency: 2, batchTokens: 1200, contextLines: 2 };
@@ -1670,6 +1604,9 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     };
 
     try {
+      const initial = liveEntries.changes();
+      await api.beginTextRun(runId, folder || active.name, projectSnapshot({ ...active, prompt, entries: liveEntries.snapshot() }));
+      backendRunStarted = true; liveEntries.acknowledge(initial);
       const workers = await Promise.allSettled(Array.from({ length: Math.min(concurrency * (opts?.review || settings.textTranslateProvider === "llm" ? 4 : 1), workUnits.length) }, worker));
       const failedWorker = workers.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failedWorker) throw failedWorker.reason;
@@ -1742,6 +1679,10 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         setStatusLine("任务已停止；当前译文仍保留在页面中，请查看错误信息");
       }
     } finally {
+      if (backendRunStarted) {
+        try { await checkpointRef.current; } catch (cause) { logRuntimeError("text-run-checkpoint", cause); }
+        try { await api.finishTextRun(runId); } catch (cause) { logRuntimeError("text-run-cleanup", cause); }
+      }
       if (publishTimer !== null) window.clearTimeout(publishTimer);
       if (flushProgressRef.current === flushProgress) flushProgressRef.current = null;
       if (gen === genRef.current && runStartedAtRef.current != null) {
@@ -2421,16 +2362,8 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                   void runTranslate(next, { selectedIds: new Set(selectedEntries) });
                 }}>重译选中</button>
                 <button type="button" disabled={busy || !selectedEntries.size} title="使用所选大模型，携带当前译文与检查问题进行定向审校，会产生接口用量；可通过对照恢复旧译文" onClick={() => void runTranslate(project, { selectedIds: new Set(selectedEntries), review: true })}>审校选中</button>
-                <button type="button" disabled={busy || !selectedEntries.size} onClick={() => patchProject(p => ({ ...p, entries: p.entries.map(item => {
-                  if (!selectedEntries.has(item.id) || item.status === "skipped") return item;
-                  const checked = checkProjectText(p, item.src, item.dst);
-                  return { ...item, status: checked.error ? "error" : item.dst ? "done" : "pending", error: checked.error || undefined, warning: checked.warning || undefined };
-                }) }))}>检查选中</button>
-                <button type="button" disabled={busy} onClick={() => patchProject(p => ({ ...p, entries: p.entries.map(item => {
-                  if (item.status === "skipped" || !item.dst) return item;
-                  const checked = checkProjectText(p, item.src, item.dst);
-                  return { ...item, status: checked.error ? "error" : "done", error: checked.error || undefined, warning: checked.warning || undefined };
-                }) }))}>检查全部</button>
+                <button type="button" disabled={busy || !selectedEntries.size} onClick={() => void checkEntries(selectedEntries)}>检查选中</button>
+                <button type="button" disabled={busy} onClick={() => void checkEntries()}>检查全部</button>
                 <button type="button" disabled={busy} title="仅使用大模型修正当前问题类型筛选下有译文的异常条目，会产生接口用量" onClick={() => {
                   const ids = new Set(project.entries.filter(item => item.dst && matchesTextIssue(item, qualityKind)).map(item => item.id));
                   if (!ids.size) { setStatusLine("没有可审校的异常译文"); return; }
@@ -2543,43 +2476,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                     <span>译文</span>
                     <span>状态</span>
                   </div>
-                  {pageEntries.map((e, i) => (
-                    <div
-                      key={e.id}
-                      className={`text-entry-row status-${e.status}`}
-                      title={e.error || e.warning || undefined}
-                    >
-                      <span className="text-entry-idx"><input type="checkbox" aria-label={`选择条目 ${entryOffset + i + 1}`} checked={selectedEntries.has(e.id)} disabled={busy} onChange={event => setSelectedEntries(current => { const next = new Set(current); if (event.target.checked) next.add(e.id); else next.delete(e.id); return next; })} />{entryOffset + i + 1}</span>
-                      <span className="text-entry-src">
-                        {e.src || "（空）"}
-                        {(e.error || e.warning) && <small style={{ display: "block", whiteSpace: "pre-line", color: e.error ? "var(--danger)" : "var(--text-muted)" }}>{e.error || e.warning}</small>}
-                      </span>
-                      <input
-                        className="text-entry-dst"
-                        value={e.dst}
-                        disabled={busy || e.status === "skipped"}
-                        onChange={(ev) => {
-                          const v = ev.target.value;
-                          patchProject((p) => ({
-                            ...p,
-                            entries: p.entries.map((x) => {
-                              if (x.id !== e.id) return x;
-                              const quality = checkProjectText(p, x.src, v);
-                              return { ...x, dst: v, previousDst: x.previousDst ?? x.dst,
-                                status: quality.error ? "error" : classifyEntryStatus(x.src, v),
-                                error: quality.error || undefined, warning: quality.warning || undefined };
-                            }),
-                          }));
-                        }}
-                      />
-                      <span className={`text-entry-status is-${e.status}`}>
-                        {e.warning ? "待校对" : statusLabel(e.status)}
-                        <button type="button" onClick={() => setContextId(e.id)}>前后文</button>
-                        {project.format === "json" && project.translationOptions?.mtoolOptimize && <label><input type="checkbox" disabled={busy} checked={!!e.translateSeparately} onChange={event => patchProject(p => ({ ...p, entries: p.entries.map(row => row.id === e.id ? { ...row, translateSeparately: event.target.checked } : row) }))} />独立翻译</label>}
-                        {e.previousDst !== undefined && <button type="button" onClick={() => setCompareId(e.id)}>对照</button>}
-                      </span>
-                    </div>
-                  ))}
+                  {pageEntries.map((entry, index) => <TextEntryRow key={entry.id} entry={entry} number={entryOffset + index + 1} selected={selectedEntries.has(entry.id)} disabled={busy} independent={project.format === "json" && !!project.translationOptions?.mtoolOptimize} onSelect={selectEntry} onEdit={editEntry} onIndependent={independentEntry} onContext={setContextId} onCompare={setCompareId} />)}
                 </div>
               </div>
             )}

@@ -113,11 +113,13 @@ export async function parseEpub(bytes: Uint8Array) {
 export async function restoreEpub(metadata: EpubSource, entries: TransEntry[], attachment?: Uint8Array) {
   if (!attachment && !metadata.archive) throw new Error("缺少 EPUB 原书附件");
   const zip = attachment ? await JSZip.loadAsync(attachment) : await JSZip.loadAsync(metadata.archive!, { base64: true });
+  const byDocument = new Map<string | undefined, TransEntry[]>();
+  for (const entry of entries) { const group = byDocument.get(entry.documentPath) || []; group.push(entry); byDocument.set(entry.documentPath, group); }
   for (const path of metadata.documents) {
     const file = zip.file(path);
     if (!file) throw new Error(`EPUB 缺少原始章节：${path}`);
     const document = xml(await file.async("string")), nodes = textNodes(document);
-    for (const item of entries.filter(item => item.documentPath === path)) {
+    for (const item of byDocument.get(path) || []) {
       if (!item.dst || item.status === "error" || item.status === "skipped") continue;
       const node = nodes[item.metaIndex!];
       if (!node) throw new Error(`EPUB 正文定位失效：${item.id}`);

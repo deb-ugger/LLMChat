@@ -1,39 +1,40 @@
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+useCallback,
+useEffect,
+useMemo,
+useRef,
+useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { isTauri } from "@tauri-apps/api/core";
-import { api, API_BASE, type Settings, type UnityGameInfo, type UnityIniSection } from "../api";
+import { api,API_BASE,type Settings,type UnityGameInfo,type UnityIniSection } from "../api";
 import { toFriendlyError } from "../friendlyError";
-import { isBoolIniValue, setIniValue } from "../unityIni";
 import { usePersistedHeight } from "../hooks/usePersistedHeight";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import {
-  CONFIG_HELP_CATALOG,
-  CONFIG_README_URL,
-  essentialConfigSections,
-  fieldMeta,
-  sectionMeta,
+CONFIG_HELP_CATALOG,
+CONFIG_README_URL,
+essentialConfigSections,
+fieldMeta,
+sectionMeta,
 } from "../unityConfigMeta";
+import { isBoolIniValue,setIniValue } from "../unityIni";
 import {
-  lastUnityGameDir,
-  loadRecentUnityGames,
-  rememberLastUnityGameDir,
-  rememberRecentUnityGame,
-  removeRecentUnityGame,
-  type RecentUnityGame,
+lastUnityGameDir,
+loadRecentUnityGames,
+rememberLastUnityGameDir,
+rememberRecentUnityGame,
+removeRecentUnityGame,
+type RecentUnityGame,
 } from "../unityLastGame";
-import { UnityOfflineView, type UnityOfflineHandle } from "./UnityOfflineView";
 import { unityRun } from "../unityOffline";
+import { ClosingProgress,useClosingProgress } from "./ClosingProgress";
 import { UnityActionIcon } from "./UnityActionIcon";
+import { UnityExitDialog,type UnityExitChoice } from "./UnityExitDialog";
 import { UnityIconButton } from "./UnityIconButton";
-import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
-import { UnityExitDialog, type UnityExitChoice } from "./UnityExitDialog";
+import { UnityOfflineView,type UnityOfflineHandle } from "./UnityOfflineView";
+import { archLabel,emptyScanState,gameTitle,getIniValue,joinGameExePath,parseLogLine,runtimeLabel,serializeIniSections,type OutputLevel,type OutputLine,type ScanState } from "./UnityViewHelpers";
 
 const OUTPUT_UI_MAX = 200;
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
@@ -97,15 +98,6 @@ function hasPluginFramework(g: {
   return g.loaderName === "ReiPatcher";
 }
 
-type OutputLevel = "step" | "ok" | "error" | "info";
-
-type OutputLine = {
-  id: string;
-  time: string;
-  level: OutputLevel;
-  text: string;
-};
-
 const TARGET_LANG_OPTIONS = [
   { id: "zh-CN", label: "简体中文" },
   { id: "zh-TW", label: "繁体中文" },
@@ -123,22 +115,6 @@ const FROM_LANG_OPTIONS = [
 ];
 
 type Endpoint = { id: string; label: string; needsKey: boolean };
-
-type ScanState = {
-  ok: boolean;
-  error: string;
-  scanRoot: string;
-  isUnity: boolean;
-  isIl2Cpp: boolean;
-  hasAutoTranslator: boolean;
-  hasBepInEx: boolean;
-  gameDir: string;
-  gameExe: string;
-  arch: string;
-  runtime: string;
-  installMethod: string;
-  games: UnityGameInfo[];
-};
 
 type SelfCheckCheck = {
   id: string;
@@ -178,101 +154,12 @@ type UninstallConfirm = {
   isIl2Cpp: boolean;
 };
 
-function serializeIniSections(sections: UnityIniSection[]): string {
-  const parts: string[] = [];
-  for (const sec of sections) {
-    parts.push(`[${sec.name}]`);
-    for (const k of sec.keys) {
-      parts.push(`${k.key}=${k.value}`);
-    }
-    parts.push("");
-  }
-  return parts.join("\n");
-}
-
-function getIniValue(
-  sections: UnityIniSection[],
-  section: string,
-  key: string,
-): string | undefined {
-  const sec = sections.find(
-    (s) => s.name.toLowerCase() === section.toLowerCase(),
-  );
-  const row = sec?.keys.find((k) => k.key.toLowerCase() === key.toLowerCase());
-  return row?.value;
-}
-
 function formatClock(d = new Date()) {
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
     `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   );
-}
-
-function joinGameExePath(gameDir: string, gameExe?: string | null): string {
-  const dir = gameDir.trim().replace(/[\\/]+$/, "");
-  const exe = (gameExe || "").trim();
-  if (!dir) return exe;
-  if (!exe) return dir;
-  const sep = dir.includes("/") && !dir.includes("\\") ? "/" : "\\";
-  return `${dir}${sep}${exe}`;
-}
-
-function parseLogLine(raw: string, id: string): OutputLine {
-  const m = raw.match(
-    /^\[([^\]]+)\]\s*\[(step|ok|error|info)\]\s*(.*)$/i,
-  );
-  if (m) {
-    return {
-      id,
-      time: m[1],
-      level: m[2].toLowerCase() as OutputLevel,
-      text: m[3],
-    };
-  }
-  return { id, time: "", level: "step", text: raw };
-}
-
-function emptyScanState(scanRoot = ""): ScanState {
-  return {
-    ok: true,
-    error: "",
-    scanRoot,
-    isUnity: false,
-    isIl2Cpp: false,
-    hasAutoTranslator: false,
-    hasBepInEx: false,
-    gameDir: "",
-    gameExe: "",
-    arch: "",
-    runtime: "",
-    installMethod: "",
-    games: [],
-  };
-}
-
-function gameTitle(n: UnityGameInfo) {
-  if (n.gameExe) return n.gameExe.replace(/\.exe$/i, "");
-  const e = n.gameDir.replace(/[\\/]+$/, "").split(/[\\/]/);
-  return e[e.length - 1] || n.gameDir;
-}
-
-function archLabel(n?: string) {
-  switch ((n || "").toLowerCase()) {
-    case "x86":
-      return "32位";
-    case "x64":
-      return "64位";
-    case "arm64":
-      return "ARM64";
-    default:
-      return "位数未知";
-  }
-}
-
-function runtimeLabel(n: string, e?: boolean) {
-  return n === "il2cpp" || e ? "IL2CPP" : n === "mono" ? "Mono" : "运行时未知";
 }
 
 export function UnityTranslateView({

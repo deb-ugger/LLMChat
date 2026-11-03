@@ -185,7 +185,7 @@ node node_modules/typescript/bin/tsc -b --noEmit
 | [remark-math / rehype-katex](https://github.com/remarkjs/remark-math) / [KaTeX](https://github.com/KaTeX/KaTeX) | 数学公式解析与显示 |
 | [Apache ECharts](https://github.com/apache/echarts) | 用量与费用统计图表 |
 | [OpenCC-JS](https://github.com/nk2028/opencc-js) | 中文简繁转换 |
-| [xmldom](https://github.com/xmldom/xmldom) | EPUB 处理的定向检查中使用的 XML 解析与序列化工具；软件界面使用 WebView 原生 DOM |
+| [xmldom](https://github.com/xmldom/xmldom) | EPUB 后台 Worker 中的 XML 解析与序列化，以及相关定向检查 |
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | C++ 本地 HTTP 服务 |
 | [JSON for Modern C++](https://github.com/nlohmann/json) | C++ JSON 读取与序列化 |
 | [SQLite](https://sqlite.org/) | 会话和用量数据存储；Windows 下调用系统 SQLite，不另附 SQLite 程序 |

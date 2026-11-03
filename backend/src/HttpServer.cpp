@@ -10,6 +10,8 @@
 #include "RequestCancellation.h"
 #include "StoragePaths.h"
 #include "RuntimeAssets.h"
+#include "TextTaskQueue.h"
+#include "TextRunStore.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -292,6 +294,7 @@ HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
 int HttpServer::run()
 {
     request_cancel::Registry translationTasks;
+    TextRunStore textRuns;
     std::atomic<unsigned long long> nextTask{0};
     httplib::Server svr;
     svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
@@ -1988,7 +1991,7 @@ int HttpServer::run()
         } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
 
-    svr.Post("/api/translate", withCors([this, &translationTasks, &nextTask](const httplib::Request& req, httplib::Response& res) {
+    const auto translateHandler = withCors([this, &translationTasks, &nextTask](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body);
@@ -2145,6 +2148,49 @@ int HttpServer::run()
             res.status = 400;
             res.set_content(errorJson(ex.what()).dump(), "application/json");
         }
+    });
+    svr.Post("/api/translate", translateHandler);
+    TextTaskQueue textQueue([&translationTasks](const std::string& id) { translationTasks.cancel(id); });
+    svr.Post("/api/text-requests", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body); const auto id = body.at("taskId").get<std::string>();
+            if (id.empty() || id.size() > 96 || body.value("feature", "") != "text") throw std::runtime_error("文本任务参数无效");
+            if (!textQueue.submit(id, [body = std::move(body), &translateHandler] {
+                httplib::Request request; request.body = body.dump(); httplib::Response response; response.status = 200;
+                translateHandler(request, response);
+                return json{{"status", response.status}, {"body", json::parse(response.body)}};
+            })) { res.status = 429; res.set_content(errorJson("文本请求队列已满或编号重复").dump(), "application/json"); return; }
+            res.set_content(json{{"ok", true}, {"taskId", id}}.dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Get("/api/text-requests", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try { res.set_content(textQueue.status(req.get_param_value("taskId")).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 404; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Delete("/api/text-requests", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        const auto id = req.get_param_value("taskId");
+        if (!textQueue.remove(id)) translationTasks.cancel(id);
+        res.set_content(json{{"ok", true}}.dump(), "application/json");
+    }));
+    svr.Post("/api/text-projects/run", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = json::parse(req.body); auto project = body.at("project");
+            const auto id = body.at("runId").get<std::string>(), folder = sanitizeFolderName(body.at("folder").get<std::string>());
+            if (id.empty() || id.size() > 96) throw std::runtime_error("运行编号无效");
+            project["folder"] = folder;
+            textRuns.begin(id, storage::get("projects") / utf8path::pathFromUtf8(folder) / kProjectFileName, std::move(project));
+            res.set_content(json{{"ok", true}}.dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Post("/api/text-projects/checkpoint", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = json::parse(req.body);
+            textRuns.checkpoint(body.at("runId").get<std::string>(), body.at("updates"), body.at("tokens"), body.at("elapsedMs").get<long long>());
+            res.set_content(json{{"ok", true}}.dump(), "application/json");
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Delete("/api/text-projects/run", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        textRuns.finish(req.get_param_value("runId")); res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
 
     svr.Get("/api/unity/endpoints", withCors([](const httplib::Request&, httplib::Response& res) {

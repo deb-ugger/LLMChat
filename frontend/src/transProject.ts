@@ -133,8 +133,8 @@ export function createProject(opts: {
   };
 }
 
-export function parseProject(raw: string): TextProject {
-  const data = JSON.parse(raw) as TextProject;
+export function parseProject(raw: unknown): TextProject {
+  const data = (typeof raw === "string" ? JSON.parse(raw) : raw) as TextProject;
   if (!data || data.kind !== PROJECT_KIND) {
     throw new Error("不是有效的 LLMChat 文本工程文件");
   }

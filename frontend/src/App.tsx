@@ -10,7 +10,11 @@ import { isTauri } from "@tauri-apps/api/core";
 import { lastUnityGameDir } from "./unityLastGame";
 import { ChatView } from "./components/ChatView";
 const ImageOcrView = lazy(() => import("./components/ImageOcrView").then(module => ({ default: module.ImageOcrView })));
-const LiteratureView = lazy(() => import("./components/LiteratureView").then(module => ({ default: module.LiteratureView })));
+const LiteratureView = lazy(async () => {
+  await import("./pdfjsBootstrap");
+  const module = await import("./components/LiteratureView");
+  return { default: module.LiteratureView };
+});
 const SettingsView = lazy(() => import("./components/SettingsView").then(module => ({ default: module.SettingsView })));
 import { Sidebar } from "./components/Sidebar";
 const StatsView = lazy(() => import("./components/StatsView").then(module => ({ default: module.StatsView })));

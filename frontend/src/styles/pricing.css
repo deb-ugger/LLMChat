@@ -105,20 +105,6 @@
   font-weight: 600;
 }
 
-.pricing-btn-primary {
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 24%, transparent);
-}
-
-.pricing-btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: #fff;
-  filter: none;
-}
-
 .pricing-btn-secondary {
   background: var(--bg-muted);
   border-color: var(--border);
@@ -451,20 +437,6 @@
   filter: grayscale(0.2);
 }
 
-.pricing-na {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 34px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-muted) 80%, transparent);
-  color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
 .pricing-date-input {
   width: 100%;
   max-width: 128px;
@@ -480,21 +452,6 @@
   background: var(--bg-muted);
   color: var(--text);
   text-align: center;
-}
-
-.pricing-th-parts {
-  display: block;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.pricing-rate-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 72px;
 }
 
 .pricing-rate-input.is-peak,
@@ -516,14 +473,6 @@
   width: auto;
   min-width: 88px;
   max-width: 420px;
-}
-
-.pricing-band-with-windows {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 6px 8px;
 }
 
 .pricing-windows-inline {
@@ -679,23 +628,6 @@
   opacity: 0.45;
 }
 
-.pricing-dayparts {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 220px;
-}
-
-.pricing-dayparts-inputs {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.pricing-dayparts-sep {
-  color: var(--text-muted);
-}
-
 .pricing-time-input {
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -703,12 +635,6 @@
   background: var(--bg-panel);
   color: var(--text);
   font-size: 13px;
-}
-
-.pricing-dayparts-hint {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.35;
 }
 
 .pricing-rate-input,
@@ -900,26 +826,6 @@
   font-weight: 650;
 }
 
-.pricing-current-meta {
-  display: block;
-  width: 100%;
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.3;
-}
-
-.pricing-current-meta.is-idle {
-  color: #166534;
-}
-
-.pricing-current-meta.is-peak {
-  color: #9a5b00;
-}
-
-.pricing-current-meta.is-miss {
-  color: var(--text-muted);
-}
-
 .pricing-weekdays {
   display: flex;
   flex-wrap: wrap;
@@ -948,14 +854,6 @@
   font-weight: 700;
   color: var(--accent-ink);
   background: color-mix(in srgb, var(--accent) 12%, #fff);
-}
-
-.pricing-add-sub-cell {
-  text-align: left !important;
-}
-
-.pricing-add-sub-cell .pricing-btn {
-  margin-right: 8px;
 }
 
 .pricing-edit-sub-cell {
@@ -1222,13 +1120,6 @@
   max-width: 52em;
 }
 
-.pricing-sub-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
 .pricing-sub-editor {
   display: flex;
   flex-direction: column;
@@ -1273,31 +1164,6 @@
   text-align: center;
   vertical-align: middle;
   white-space: nowrap;
-}
-
-.pricing-prio-inner {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.pricing-prio-num {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-}
-
-.pricing-drag-handle {
-  display: inline-block;
-  padding: 2px 4px;
-  letter-spacing: -2px;
-  color: var(--text-muted);
-  cursor: grab;
-  user-select: none;
-}
-
-.pricing-drag-handle:active {
-  cursor: grabbing;
 }
 
 .pricing-sub-table tbody tr.pricing-sub-gap > td {

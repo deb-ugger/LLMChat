@@ -1,88 +1,88 @@
+import "../pdfjsBootstrap";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode,
+useCallback,
+useEffect,
+useMemo,
+useRef,
+useState,
+type MouseEvent as ReactMouseEvent,
+type ReactNode,
 } from "react";
+import { isPrintedPageNumberNode,mergePdfTextFragments,normalizePdfExtractedText,pageNumberForTextNode,readPageTextFromDom,spanRectForTextNode,type PdfTextFragment } from "./PdfSelection";
 // 必须先于 pdf_viewer：后者启动时读取 globalThis.pdfjsLib
-import {
-  AnnotationMode,
-  getDocument,
-  type PDFDocumentProxy,
-} from "../pdfjsBootstrap";
-import {
-  EventBus,
-  LinkTarget,
-  PDFFindController,
-  PDFLinkService,
-  PDFViewer,
-  ScrollMode,
-  SpreadMode,
-} from "pdfjs-dist/web/pdf_viewer.mjs";
+import { message as tauriMessage } from "@tauri-apps/plugin-dialog";
+import type { PDFDocumentLoadingTask,RenderTask } from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
-import type { PDFDocumentLoadingTask, RenderTask } from "pdfjs-dist";
-import { planPdfOcrTiles, tileOwnsLine } from "../ocr/pdfOcrLayout";
-import { throwIfAborted, isAbortError } from "../ocr/taskScope";
 import {
-  loadPdfSession,
-  loadRecentPdf,
-  relocatePdfRecent,
-  removeRecentPdf,
-  savePdfSession,
-  savePdfSessionMeta,
-  type PdfSession,
-  type PdfSessionMeta,
-  type ViewMode,
-} from "../pdfSession";
-import {
-  listRecentDocuments,
-  recentKindLabel,
-  removeRecentDocument,
-  type LitRecentItem,
-} from "../litRecent";
+EventBus,
+LinkTarget,
+PDFFindController,
+PDFLinkService,
+PDFViewer,
+ScrollMode,
+SpreadMode,
+} from "pdfjs-dist/web/pdf_viewer.mjs";
 import { sha256Hex } from "../fileFingerprint";
-import { getEngineInfo } from "../translateEngines";
-import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { highlightSearchHtml } from "../highlightText";
+import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import {
-  collectPageImageRects,
-  copyImageBlob,
-  saveImageBlob,
-  findImageAtPoint,
-  syncPageImageHotspots,
-  clearPageImageHotspots,
-  type PdfImageHit,
+listRecentDocuments,
+recentKindLabel,
+removeRecentDocument,
+type LitRecentItem,
+} from "../litRecent";
+import {
+detectDocKind,
+loadLocalDoc,
+pickAndLoadDocument,
+pickDocumentPath,
+type LocalDocFile,
+} from "../localDocFile";
+import {
+LocalPaddleOcr,
+OCR_MODE_LABELS,
+normalizeOcrMode,
+type PaddleOcrLine,
+} from "../ocr/paddleOcr";
+import { planPdfOcrTiles,tileOwnsLine } from "../ocr/pdfOcrLayout";
+import { isAbortError,throwIfAborted } from "../ocr/taskScope";
+import {
+clearPageImageHotspots,
+collectPageImageRects,
+copyImageBlob,
+findImageAtPoint,
+saveImageBlob,
+syncPageImageHotspots,
+type PdfImageHit,
 } from "../pdfImages";
 import {
-  buildNativePdfSelectionText,
-  buildStructuredPdfText,
-  extractNativePdfLines,
-  nativeTextLooksUsable,
-  paddleLinesToPdfLines,
-  type PixelRect,
-  type PdfSelectionFragment,
+AnnotationMode,
+getDocument,
+type PDFDocumentProxy,
+} from "../pdfjsBootstrap";
+import {
+buildStructuredPdfText,
+extractNativePdfLines,
+nativeTextLooksUsable,
+paddleLinesToPdfLines,
+type PixelRect
 } from "../pdfOcr";
 import {
-  LocalPaddleOcr,
-  OCR_MODE_LABELS,
-  normalizeOcrMode,
-  type PaddleOcrLine,
-} from "../ocr/paddleOcr";
+loadPdfSession,
+loadRecentPdf,
+relocatePdfRecent,
+removeRecentPdf,
+savePdfSession,
+savePdfSessionMeta,
+type PdfSession,
+type PdfSessionMeta,
+type ViewMode,
+} from "../pdfSession";
+import { getEngineInfo } from "../translateEngines";
 import {
-  loadLocalDoc,
-  pickAndLoadDocument,
-  pickDocumentPath,
-  detectDocKind,
-  type LocalDocFile,
-} from "../localDocFile";
-import { message as tauriMessage } from "@tauri-apps/plugin-dialog";
-import {
-  DocOutlineTree,
-  findActiveOutlineKeyByPage,
-  type DocOutlineNode,
+DocOutlineTree,
+findActiveOutlineKeyByPage,
+type DocOutlineNode,
 } from "./DocOutlineTree";
 
 const PDF_DOCUMENT_OPTIONS = {
@@ -282,138 +282,6 @@ function isViewMode(v: unknown): v is ViewMode {
     v === "double" ||
     v === "double-scroll"
   );
-}
-
-/** Normalize PDF text-layer extraction (hyphenation / whitespace). */
-function normalizePdfExtractedText(
-  raw: string,
-  clearLineBreaks = true,
-): string {
-  const normalized = raw.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
-  if (!clearLineBreaks) {
-    return normalized.replace(/^\n+|\n+$/g, "");
-  }
-  return normalized
-    .replace(/-\s*[\r\n]+/g, "")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/[ \t\f\v]+/g, " ")
-    .trim();
-}
-
-type PdfTextFragment = {
-  text: string;
-  rect: DOMRect | null;
-  pageNumber: number;
-};
-
-function spanRectForTextNode(node: Node): DOMRect | null {
-  const host =
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : node.parentElement;
-  const span = host?.closest(".textLayer span") as HTMLElement | null;
-  if (!span) return null;
-  return span.getBoundingClientRect();
-}
-
-function pageNumberForTextNode(node: Node): number {
-  const host =
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : node.parentElement;
-  const page = host?.closest(".page") as HTMLElement | null;
-  const value = Number(
-    page?.dataset.pageNumber || page?.getAttribute("data-page-number") || 1,
-  );
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
-}
-
-/** Preserve semantic structure while keeping ordinary PDF soft wraps copy-friendly. */
-function mergePdfTextFragments(
-  fragments: PdfTextFragment[],
-  clearLineBreaks = true,
-): string {
-  const positioned: PdfSelectionFragment[] = fragments.flatMap(
-    ({ text, rect, pageNumber }) =>
-      rect
-        ? [
-            {
-              text,
-              pageNumber,
-              x0: rect.left,
-              y0: rect.top,
-              x1: rect.right,
-              y1: rect.bottom,
-            },
-          ]
-        : [],
-  );
-  if (positioned.length === fragments.length) {
-    return normalizePdfExtractedText(
-      buildNativePdfSelectionText(positioned, !clearLineBreaks),
-      clearLineBreaks,
-    );
-  }
-  return normalizePdfExtractedText(
-    fragments.map((fragment) => fragment.text).join("\n"),
-    clearLineBreaks,
-  );
-}
-
-/** Skip PDF footer/header printed page numbers in the text layer. */
-function isPrintedPageNumberSpan(span: HTMLElement): boolean {
-  const raw = (span.textContent || "").replace(/\s+/g, "");
-  if (!/^\d{1,4}$/.test(raw)) return false;
-  const page = span.closest(".page") as HTMLElement | null;
-  if (!page) return false;
-  const pageNum = Number(
-    page.dataset.pageNumber || page.getAttribute("data-page-number"),
-  );
-  const n = Number(raw);
-  const pageRect = page.getBoundingClientRect();
-  const spanRect = span.getBoundingClientRect();
-  if (pageRect.height <= 1) {
-    return Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1;
-  }
-  const relY =
-    (spanRect.top + spanRect.height / 2 - pageRect.top) / pageRect.height;
-  const nearEdge = relY < 0.1 || relY > 0.88;
-  if (!nearEdge) return false;
-  if (Number.isFinite(pageNum) && Math.abs(n - pageNum) <= 1) return true;
-  return raw.length <= 3;
-}
-
-function isPrintedPageNumberNode(textNode: Node): boolean {
-  const el =
-    textNode.nodeType === Node.ELEMENT_NODE
-      ? (textNode as HTMLElement)
-      : textNode.parentElement;
-  if (!el) return false;
-  const span = el.closest(".textLayer span") as HTMLElement | null;
-  if (!span) return false;
-  return isPrintedPageNumberSpan(span);
-}
-
-/** All visible text on a rendered page (skips printed page numbers). */
-function readPageTextFromDom(
-  pageEl: HTMLElement,
-  clearLineBreaks = true,
-): string {
-  const layer = pageEl.querySelector(".textLayer");
-  if (!layer) return "";
-  const parts: PdfTextFragment[] = [];
-  for (const span of layer.querySelectorAll("span")) {
-    if (isPrintedPageNumberSpan(span as HTMLElement)) continue;
-    const t = span.textContent || "";
-    if (t) {
-      parts.push({
-        text: t,
-        rect: span.getBoundingClientRect(),
-        pageNumber: pageNumberForTextNode(span),
-      });
-    }
-  }
-  return mergePdfTextFragments(parts, clearLineBreaks);
 }
 
 async function copyPlainText(text: string): Promise<boolean> {

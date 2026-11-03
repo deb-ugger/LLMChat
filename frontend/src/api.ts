@@ -618,17 +618,29 @@ export const api = {
     const signal = init?.signal;
     signal?.throwIfAborted();
     const taskId = crypto.randomUUID();
+    const queued = opts?.feature === "text";
     let cancellationSent = false;
     const cancel = () => {
       if (cancellationSent) return;
       cancellationSent = true;
-      void request("/api/translate/cancel", {
-        method: "POST",
-        body: JSON.stringify({ taskId }),
+      void request(queued ? `/api/text-requests?taskId=${encodeURIComponent(taskId)}` : "/api/translate/cancel", {
+        method: queued ? "DELETE" : "POST",
+        ...(queued ? {} : { body: JSON.stringify({ taskId }) }),
       }, 5000).catch(() => {});
     };
     signal?.addEventListener("abort", cancel, { once: true });
     try {
+      if (queued) {
+        await request("/api/text-requests", { ...init, method: "POST", body: JSON.stringify({ text, ...opts, taskId }) });
+        for (;;) {
+          signal?.throwIfAborted();
+          const state = await request<{ done: boolean; response?: { status: number; body: TranslateResponse & { error?: string } } }>(`/api/text-requests?taskId=${encodeURIComponent(taskId)}`, init);
+          if (state.done && state.response) {
+            if (state.response.status >= 400) throw new Error(state.response.body.error || "文本翻译失败");
+            return state.response.body;
+          }
+        }
+      }
       return await request<TranslateResponse>("/api/translate", {
         ...init,
         method: "POST",
@@ -640,8 +652,12 @@ export const api = {
       throw error;
     } finally {
       signal?.removeEventListener("abort", cancel);
+      if (queued) cancel();
     }
   },
+  beginTextRun: (runId: string, folder: string, project: unknown) => request("/api/text-projects/run", { method: "POST", body: JSON.stringify({ runId, folder, project }) }),
+  checkpointTextRun: (runId: string, updates: unknown[], tokens: unknown, elapsedMs: number) => request("/api/text-projects/checkpoint", { method: "POST", body: JSON.stringify({ runId, updates, tokens, elapsedMs }) }),
+  finishTextRun: (runId: string) => request(`/api/text-projects/run?runId=${encodeURIComponent(runId)}`, { method: "DELETE" }),
   usageEvents: (params?: {
     from?: string;
     to?: string;
