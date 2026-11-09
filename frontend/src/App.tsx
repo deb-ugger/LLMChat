@@ -120,6 +120,8 @@ export default function App() {
     return () => { cancelled = true; };
   }, [backendReady]);
   const ocrIncomingSeq = useRef(0);
+  useEffect(()=>{const text=()=>setPage("text"),image=()=>setPage("image");window.addEventListener("llmchat-open-game-text",text);window.addEventListener("llmchat-open-game-image",image);return()=>{window.removeEventListener("llmchat-open-game-text",text);window.removeEventListener("llmchat-open-game-image",image);};},[]);
+
 
   const openImageOcr = useCallback((file: File) => {
     ocrIncomingSeq.current += 1;
@@ -535,13 +537,13 @@ export default function App() {
         <button
           className={page === "unity" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("unity")}
-          title="Unity 翻译"
+          title="游戏翻译"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="m8 2 6 3.5v7L8 16l-6-3.5v-7L8 2ZM2 5.5 8 9l6-3.5M8 9v7" />
-            <path d="M14 16h8m-4-3v3m-3 0c.5 2 2.5 4 6.5 6m0-6c-.5 2-2.5 4-6.5 6" />
+            <path d="M7 7h10c2 0 3 2 3.5 4l1 6c.5 3-2 4-4 2l-3-3h-5l-3 3c-2 2-4.5 1-4-2l1-6C4 9 5 7 7 7Z" />
+            <path d="M7 10v5m-2.5-2.5h5M16 11h.01M19 14h.01" />
           </svg>
-          <span>Unity 翻译</span>
+          <span>游戏翻译</span>
         </button>
         <button
           className={page === "stats" ? "nav-item active" : "nav-item"}

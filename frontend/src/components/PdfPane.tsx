@@ -1,4 +1,5 @@
 import "../pdfjsBootstrap";
+import { PdfBookmarksPanel } from "./PdfBookmarksPanel";
 import {
 useCallback,
 useEffect,
@@ -467,6 +468,8 @@ export function PdfPane({
   const [viewMode, setViewMode] = useState<ViewMode>("single-scroll");
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  useEffect(() => { setBookmarksOpen(false); }, [fileMeta?.filePath]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchBusy, setSearchBusy] = useState(false);
@@ -2790,12 +2793,14 @@ export function PdfPane({
           disabled={!file}
           onClick={() => {
             setOutlineOpen((v) => !v);
+            setBookmarksOpen(false);
             if (!outlineOpen) setSearchOpen(false);
           }}
           title="目录"
         >
           目录
         </button>
+        <button type="button" className={`pdf-tool-btn${bookmarksOpen ? " active" : ""}`} disabled={!file} title="书签" onClick={() => { setBookmarksOpen(value => !value); setOutlineOpen(false); setSearchOpen(false); }}>书签</button>
 
         <span className="pdf-toolbar-engine" title={engineBadge}>
           {engineBadge}
@@ -2813,6 +2818,7 @@ export function PdfPane({
           onClick={() => {
             setSearchOpen((v) => !v);
             if (!searchOpen) setOutlineOpen(false);
+            setBookmarksOpen(false);
           }}
           title="搜索"
           aria-label="搜索"
@@ -3026,6 +3032,10 @@ export function PdfPane({
       </div>
 
       <div className="pdf-main">
+        {bookmarksOpen && fileMeta && !docLoading && <aside className="pdf-outline" style={{ width: outlineWidth }}>
+          <PdfBookmarksPanel key={contentHashRef.current || fileMeta.filePath} documentKey={contentHashRef.current || fileMeta.filePath} page={pageNumber} label={currentPageLabel || String(pageNumber)} onJump={goToPage} />
+          <div className="col-resizer pdf-outline-resizer" title="拖动调整书签宽度" onMouseDown={event => beginOutlineResize(event, "grow-right")} />
+        </aside>}
         {outlineOpen && (
           <aside className="pdf-outline" style={{ width: outlineWidth }}>
             <div className="pdf-outline-body">

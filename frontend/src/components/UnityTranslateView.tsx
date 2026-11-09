@@ -33,6 +33,7 @@ import { ClosingProgress,useClosingProgress } from "./ClosingProgress";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { UnityExitDialog,type UnityExitChoice } from "./UnityExitDialog";
 import { UnityIconButton } from "./UnityIconButton";
+import { JsonEmbeddingView, type EmbeddingGame } from "./JsonEmbeddingView";
 import { UnityOfflineView,type UnityOfflineHandle } from "./UnityOfflineView";
 import { archLabel,emptyScanState,gameTitle,getIniValue,joinGameExePath,parseLogLine,runtimeLabel,serializeIniSections,type OutputLevel,type OutputLine,type ScanState } from "./UnityViewHelpers";
 
@@ -176,6 +177,8 @@ export function UnityTranslateView({
   onRestoreWorkspace?: () => void;
 }) {
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
+  const [otherGames, setOtherGames] = useState<EmbeddingGame[]>([]);
+  const [embeddingGame, setEmbeddingGame] = useState<EmbeddingGame | null>(null);
   const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const [offlineToolbar, setOfflineToolbar] = useState<HTMLDivElement | null>(null);
   const [offlineBusy, setOfflineBusy] = useState(false);
@@ -583,6 +586,10 @@ export function UnityTranslateView({
       return title.includes(q) || exe.includes(q) || dir.includes(q);
     });
   }, [games, searchQuery]);
+  const filteredOtherGames = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return otherGames.filter(game => !query || game.name.toLowerCase().includes(query) || game.path.toLowerCase().includes(query));
+  }, [otherGames, searchQuery]);
 
   const selected = useMemo(() => {
     if (!games.length) return null;
@@ -686,6 +693,7 @@ export function UnityTranslateView({
     setPathInput(path);
     rememberLastPickDir(path);
     setScanState(null);
+    setOtherGames([]);
     setSelectedGameDir(null);
     setViewMode("list");
     setMode("offline");
@@ -698,6 +706,7 @@ export function UnityTranslateView({
     detectGamesAccRef.current = [];
     setBusyAction(null);
     setScanning(false);
+    setOtherGames([]);
     setPathInput("");
     setScanState(null);
     setSelectedGameDir(null);
@@ -735,6 +744,7 @@ export function UnityTranslateView({
     const ac = new AbortController();
     detectAbortRef.current = ac;
     setScanning(true);
+    setOtherGames([]);
     setError(null);
     setViewMode("list");
     setMode("offline");
@@ -744,6 +754,16 @@ export function UnityTranslateView({
     pushOutput(`开始检测：${trimmed}`, "info");
     focusOutputTab();
     try {
+      const response = await fetch(`${API_BASE}/api/json-embedding/detect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: trimmed }), signal: ac.signal });
+      const detected = await response.json(); if (!response.ok) throw new Error(detected.error);
+      if (ac.signal.aborted) return;
+      const nonUnity = (detected as EmbeddingGame[]).filter(game => game.engine !== "Unity");
+      setOtherGames(nonUnity);
+      if (nonUnity.length && !detected.some((game: EmbeddingGame) => game.engine === "Unity")) {
+        pushOutput(`检测完成，找到 ${nonUnity.length} 个游戏`, "ok");
+        if (nonUnity.length === 1 && nonUnity[0].supported) setEmbeddingGame(nonUnity[0]);
+        return;
+      }
       await api.unityDetectStream(
         trimmed,
         {
@@ -786,11 +806,11 @@ export function UnityTranslateView({
                 isUnity: list.length > 0,
               };
             });
-            if (!result.ok || found === 0) {
+            if ((!result.ok || found === 0) && nonUnity.length === 0) {
               reportError(result.error || "未找到 Unity 游戏");
             } else {
-              pushOutput(`检测完成，找到 ${found} 个游戏`, "ok");
-              if (detectGamesAccRef.current.length === 1) {
+              pushOutput(`检测完成，找到 ${found + nonUnity.length} 个游戏`, "ok");
+              if (detectGamesAccRef.current.length === 1 && nonUnity.length === 0) {
                 const game = detectGamesAccRef.current[0];
                 openGameDetail(game.gameDir, gameTitle(game));
               }
@@ -845,7 +865,7 @@ export function UnityTranslateView({
   );
 
   useEffect(() => {
-    if (!active || viewMode !== "list") {
+    if (!active || viewMode !== "list" || embeddingGame) {
       setDragOver(false);
       return;
     }
@@ -900,7 +920,7 @@ export function UnityTranslateView({
       setDragOver(false);
       for (const u of unsubs) u();
     };
-  }, [active, viewMode, pointInDropzone, resetPath, runDetect]);
+  }, [active, viewMode, embeddingGame, pointInDropzone, resetPath, runDetect]);
 
   const openHelpMenu = () => {
     if (helpOpen) {
@@ -1689,7 +1709,11 @@ export function UnityTranslateView({
   };
 
   return (
-    <div className="unity-shell" aria-hidden={!active} data-unity-mode={showDetail ? mode : "games"}>
+    <>
+    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} active={active} onBack={() => setEmbeddingGame(null)} onGameDrop={path => { setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
+    <div className="unity-shell" hidden={!!embeddingGame} aria-hidden={!active || !!embeddingGame} data-unity-mode={showDetail ? mode : "games"}
+      onDragOver={event => { if (!showDetail) event.preventDefault(); }}
+      onDrop={event => { if (showDetail || busy || scanning) return; event.preventDefault(); const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined; const path = file?.path; if (path) { resetPath(path); void runDetect(path); } }}>
       {closingPhase && <ClosingProgress phase={closingPhase} />}
       {configExitChanges && <UnityExitDialog projectOnly={false} running={busy} changes={configExitChanges} onChoice={choice => { const resolve = configExitDecision.current; configExitDecision.current = null; setConfigExitChanges(null); resolve?.(choice); }} />}
       {configToast
@@ -1720,7 +1744,7 @@ export function UnityTranslateView({
             {helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code title={selected.gameDir}>{selected.gameDir}</code></div>}
-          <nav className="unity-mode-nav" aria-label="Unity 翻译模式">
+          <nav className="unity-mode-nav" aria-label="游戏翻译模式">
             <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
           </nav>
@@ -2442,18 +2466,18 @@ export function UnityTranslateView({
                 <div className="unity-section-head">
                   <h2>检测到的游戏</h2>
                   <div className="unity-section-head-aside">
-                    {(scanning || games.length > 0) && <span role="status">
+                    {(scanning || games.length > 0 || otherGames.length > 0) && <span role="status">
                       {scanning
-                        ? `扫描中 · 已找到 ${games.length} 个`
+                        ? `扫描中 · 已找到 ${games.length + otherGames.length} 个`
                         : searchQuery.trim()
-                            ? `${filteredGames.length} / ${games.length} 个`
-                            : `${games.length} 个`}
+                            ? `${filteredGames.length + filteredOtherGames.length} / ${games.length + otherGames.length} 个`
+                            : `${games.length + otherGames.length} 个`}
                       {games.length > 0 ? " · 点选查看详情" : ""}
                     </span>}
                     {helpButton}
                   </div>
                 </div>
-                {games.length > 0 ? (
+                {games.length + otherGames.length > 0 ? (
                   <div className="unity-game-search">
                     <input
                       type="search"
@@ -2474,7 +2498,8 @@ export function UnityTranslateView({
                   </div>
                 ) : null}
                 <div className="unity-games-body">
-                  {games.length === 0 ? (
+                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => setEmbeddingGame(game)}><div className="unity-game-title">{game.name}</div><div className="unity-game-meta">{game.engine} · {game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path">{game.path}</div></button></li>)}</ul>}
+                  {games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
                     <div
                       className={
                         "unity-game-empty" +
@@ -2485,10 +2510,10 @@ export function UnityTranslateView({
                       {scanning ? (
                         <p>发现的游戏会显示在这里</p>
                       ) : (
-                        <strong>未找到 Unity 游戏</strong>
+                        <strong>未找到支持的游戏</strong>
                       )}
                     </div>
-                  ) : filteredGames.length === 0 ? (
+                  ) : filteredGames.length + filteredOtherGames.length === 0 ? (
                     <p className="unity-game-empty">
                       没有匹配「{searchQuery.trim()}」的游戏
                     </p>
@@ -2938,5 +2963,6 @@ export function UnityTranslateView({
           document.body,
         )}
     </div>
+    </>
   );
 }

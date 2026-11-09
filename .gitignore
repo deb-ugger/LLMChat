@@ -26,6 +26,7 @@ frontend/src-tauri/target/
 frontend/src-tauri/gen/schemas/
 frontend/src-tauri/resources/ffmpeg/
 frontend/src-tauri/resources/unity/
+frontend/src-tauri/resources/wolf/
 frontend/src-tauri/resources/web-assets/
 tools/UnityOffline/bin/
 tools/UnityOffline/obj/

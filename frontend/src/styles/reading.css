@@ -2548,3 +2548,14 @@ body.row-resizing .textLayer {
   border-radius: var(--radius-sm);
   background: var(--bg);
 }
+.pdf-bookmarks-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
+.pdf-bookmark { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
+.pdf-bookmark.active { background: var(--accent-soft); }
+.pdf-bookmark-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pdf-bookmark-title small { display: block; color: var(--text-muted); font-weight: 400; }
+.pdf-bookmark-action { flex: 0 0 26px; border: 0; padding: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.pdf-bookmark-action svg, .pdf-bookmarks-head svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.pdf-bookmark-edit { display: flex; gap: 4px; padding: 6px; width: 100%; }
+.pdf-bookmark-edit input { flex: 1; min-width: 0; font: inherit; }
+.pdf-bookmarks-empty, .pdf-bookmarks-error { padding: 0 12px; font-size: 13px; }
+.pdf-bookmarks-error { color: var(--danger); }

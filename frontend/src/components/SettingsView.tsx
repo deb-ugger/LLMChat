@@ -131,7 +131,7 @@ const TAB_NAV: Partial<
   image: { page: "image", label: "前往图片识别" },
   speech: { page: "speech", label: "前往语音转文字" },
   text: { page: "text", label: "前往翻译工程" },
-  unity: { page: "unity", label: "前往 Unity 翻译" },
+  unity: { page: "unity", label: "前往游戏翻译" },
 };
 
 const TAB_FIELDS: Record<SettingsTab, (keyof Settings)[]> = {

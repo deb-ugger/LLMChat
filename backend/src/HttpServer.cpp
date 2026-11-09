@@ -12,6 +12,7 @@
 #include "RuntimeAssets.h"
 #include "TextTaskQueue.h"
 #include "TextRunStore.h"
+#include "JsonEmbedding.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -295,6 +296,7 @@ int HttpServer::run()
 {
     request_cancel::Registry translationTasks;
     TextRunStore textRuns;
+    JsonEmbedding jsonEmbedding(storage::base / "resources" / "wolf");
     std::atomic<unsigned long long> nextTask{0};
     httplib::Server svr;
     svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
@@ -1247,24 +1249,13 @@ int HttpServer::run()
             const fs::path openPath =
                 (attrs & FILE_ATTRIBUTE_DIRECTORY) ? target : target.parent_path();
             const std::wstring wide = openPath.wstring();
-            const std::wstring params = L"\"" + wide + L"\"";
             HINSTANCE hi = ShellExecuteW(
                 nullptr,
-                L"open",
-                L"explorer.exe",
-                params.c_str(),
+                nullptr,
+                wide.c_str(),
+                nullptr,
                 nullptr,
                 SW_SHOWNORMAL);
-            if (reinterpret_cast<intptr_t>(hi) <= 32)
-            {
-                hi = ShellExecuteW(
-                    nullptr,
-                    L"open",
-                    wide.c_str(),
-                    nullptr,
-                    nullptr,
-                    SW_SHOWNORMAL);
-            }
             if (reinterpret_cast<intptr_t>(hi) <= 32)
             {
                 res.status = 500;
@@ -2192,6 +2183,21 @@ int HttpServer::run()
     svr.Delete("/api/text-projects/run", withCors([&](const httplib::Request& req, httplib::Response& res) {
         textRuns.finish(req.get_param_value("runId")); res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
+
+    svr.Post("/api/json-embedding/start", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try { jsonEmbedding.start(json::parse(req.body)); res.set_content(jsonEmbedding.status().dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    svr.Get("/api/json-embedding/status", withCors([&](const httplib::Request&, httplib::Response& res) { res.set_content(jsonEmbedding.status().dump(), "application/json"); }));
+    svr.Post("/api/json-embedding/detect", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try { res.set_content(JsonEmbedding::detect(utf8path::pathFromUtf8(json::parse(req.body).at("path").get<std::string>())).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(-1, ' ', false, json::error_handler_t::replace), "application/json"); }
+    }));
+    svr.Get("/api/json-embedding/backups", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try { res.set_content(JsonEmbedding::backups(utf8path::pathFromUtf8(req.get_param_value("gamePath"))).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(-1, ' ', false, json::error_handler_t::replace), "application/json"); }
+    }));
+    svr.Post("/api/json-embedding/stop", withCors([&](const httplib::Request&, httplib::Response& res) { jsonEmbedding.cancel(); res.set_content(json{{"ok", true}}.dump(), "application/json"); }));
 
     svr.Get("/api/unity/endpoints", withCors([](const httplib::Request&, httplib::Response& res) {
         json list = json::array();

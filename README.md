@@ -1,6 +1,6 @@
 # LLMChat
 
-LLMChat 是一款面向 Windows 的桌面翻译与阅读工具，提供对话、文献翻译、图片文字识别、语音转文字、文本翻译工程和 Unity 游戏翻译。桌面界面使用 Tauri 2、React 与 TypeScript，本地服务使用 C++20，Unity 资源处理工具使用 .NET 8。
+LLMChat 是一款面向 Windows 的桌面翻译与阅读工具，提供对话、文献翻译、图片文字识别、语音转文字、文本翻译工程和游戏翻译。桌面界面使用 Tauri 2、React 与 TypeScript，本地服务使用 C++20，Unity 资源处理工具使用 .NET 8。
 
 ## 主要功能
 
@@ -9,7 +9,7 @@ LLMChat 是一款面向 Windows 的桌面翻译与阅读工具，提供对话、
 - **图片文字识别**：提供快速、精确、英文增强和漫画增强模式，在原图位置显示译文，支持区域编辑和重新识别。
 - **语音转文字**：批量导入音频、选取处理片段、本地转写或使用在线模型，支持暂停与继续、字幕搜索、分屏查看及 SRT、VTT、TXT 输出；可选大模型校对。
 - **文本翻译工程**：处理文本、Markdown、EPUB、字幕和 MTool/JSON，支持术语表、替换规则、质量检查、失败重试及工程保存。
-- **Unity 翻译**：提供运行时翻译和嵌字翻译。嵌字流程包括资源扫描、文本翻译、图片识别与翻译、生成补丁和应用到游戏；支持工程恢复、复用已有结果及文本与图片分别处理。
+- **游戏翻译**：统一识别 Unity、WOLF RPG、RPG Maker MV/MZ。Unity 提供运行时翻译和嵌字翻译；WOLF 与 MV/MZ 支持提取 MTool JSON、导入译文、生成嵌入补丁、备份应用和回滚。
 - **用量统计**：按模型、功能和时间查看接口调用、Token 用量及估算费用。
 
 语言、识别模式和输出格式在相应操作页选择；凭证、代理、并发限制、模型下载及输出目录在设置中管理。API Key 保存在本地配置中，不应提交到版本库。
@@ -25,6 +25,26 @@ LLMChat 是一款面向 Windows 的桌面翻译与阅读工具，提供对话、
 - **Unity**：选择游戏目录，按扫描、翻译、生成补丁、应用的流程操作。生成补丁使用已勾选且有效的文本和图片结果；搜索和“仅看未完成 / 失败”只改变显示范围。
 
 嵌字翻译不自动替换字体。Noto Sans CJK 字体作为独立文件放在便携版软件目录的 `fonts/` 中，连同许可和来源说明一起提供，约 15.7 MiB；点击“选择字体”即可选用，无需自行下载或安装系统字体。TMP / NGUI 补字保留原图集字形，新增文字使用所选字体；未选择字体时保持游戏原字库。修改字体后需重新生成并应用补丁，已有译文可继续使用；特殊字形符号被翻译改动的条目会提示重试。
+
+## 游戏文本提取与 JSON 嵌入
+
+在「游戏翻译」选择或拖入游戏目录、游戏集合目录或主程序，识别后进入对应引擎流程。WOLF RPG、RPG Maker MV/MZ 可将对话、选项、角色与物品等显示文本导出为 `原文:译文` 结构的 `MTool.json`（初始译文为空），用「文本翻译工程」翻译后导出 JSON，再回到游戏页导入；也可直接导入已有译文。RPG Maker MV/MZ 标准文字资源本身是 JSON，直接解析其 `data/` 或 `www/data/`，无需额外解包工具。WOLF 资源包使用下面的解包工具。目录、主程序和 JSON 均支持拖入，操作图标在悬停或键盘聚焦时显示说明。
+
+支持范围是标准 WOLF BasicData / MapData / Evtext 资源，以及 RPG Maker MV/MZ 的标准地图、事件和数据库 JSON。MV/MZ 保留事件编号、分支、资源路径、脚本、插件参数、备注标签和变量标识；多行对话整体提取，回写后仍保留事件结构。此流程不处理 XP/VX/VX Ace 的 Ruby Marshal、Ren'Py、Kirikiri、二次封装或自定义加密，也不提取任意插件代码中的文本。格式依据：[RPG Maker 官方 CoreScript](https://github.com/rpgtkoolmv/corescript)。
+
+可先独立备份，不需要提供译文；应用前仍会自动备份。WOLF 备份相关文字资源包/目录，MV/MZ 独立备份文字数据库，应用时只备份实际替换的 JSON；不复制图片、音频等未修改资源。工作进度按当前阶段显示真实数量，外部工具内部未知进度时显示活动进度条。
+
+「打开目录」使用 Windows 的文件夹默认关联，可遵循 Directory Opus 等文件管理器的接管配置；文件和目录的选择窗口属于系统选择对话框，默认文件管理器关联不会替换它，可使用拖拽或直接粘贴路径。
+
+导入后先检查匹配，再生成补丁；控制符异常的译文保留原文。工作文件、MTool JSON 和补丁在游戏目录的 `LLMChat-JSON/work/`，备份在 `LLMChat-JSON/backups/`。应用操作才替换游戏资源；备份列表和回滚在重启软件后仍可使用，按最新备份优先恢复，并保留替换后的资源至备份的 `retained/` 中。中断恢复有逐资源记录，兼容旧 `LLMChat-JSON-backup/` 中的 WOLF 备份。WOLF 外部脚本输出 UTF-8 BOM；中文字体、脚本编码与实际游戏排版需在游戏中验证。
+
+WolfTL 使用固定版本并附带 MIT 许可。DXArchive 解包工具由用户本地提供，首次准备示例：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-wolf-tools.ps1 -DxArchiveZipPath "D:\工具\DXArchive_v1.08.zip"
+```
+
+参考：[WOLF 解包方法](https://crowsong.xyz/148.html)、[WolfTL](https://github.com/Sinflower/WolfTL)。纯净分发包不包含用户自行提供的 `DxaDecode.exe`。
 
 ## 项目结构
 
@@ -236,3 +256,17 @@ node node_modules/typescript/bin/tsc -b --noEmit
 各组件、模型和字体保留各自的许可与版权归属。分发时应保留对应的 LICENSE、NOTICE 和来源信息；FFmpeg 的具体 Windows 构建信息见随工具生成的 `SOURCE.txt`，Unity 工具的来源见资源目录中的第三方说明。
 
 在线翻译和大模型服务的 API 接入属于服务集成，不等同于使用了该服务的开源实现，因此未混入上述开源依赖列表。
+
+### MV/MZ 插件、字体与译图
+
+游戏翻译页可安装本地 JSON 翻译插件，提供可选中文 TTF/OTF 字体；字典匹配、绘字和测宽使用相同的翻译函数，并缓存命中及未命中的结果。通过备份列表回滚对应安装记录即可卸载。标准对话超过四行时按原对话参数分页；DTextPicture / D_TEXT 使用指定文本参数解析，不修改其他脚本参数。
+
+图片流程：导出解密图片和 images.json → 选择 PNG 进入图片文字识别 → 校对译文并下载同名 PNG → 将译图存到一个目录 → 在游戏页选择映射清单及译图目录并应用。回写检查 PNG 与原尺寸，只重新加密和替换实际修改的图片。背景覆盖采用区域边缘采样色，复杂背景需人工修图，不属于图像修复模型。新增文件与原资源均有恢复记录，备份仍在游戏目录。
+
+参考来源（当前相关功能为独立实现）：
+- [CTool](https://github.com/ansmycode/CTool)：MV/MZ 文本提取、运行时翻译和数据内嵌工作流。原项目采用 PolyForm Noncommercial 1.0.0。
+- [RPGMakerUtils](https://github.com/Justype/RPGMakerUtils)：插件文本白名单、绘字与测宽联动思路，MIT。
+- [RPG-Maker-MV-Decrypter](https://github.com/Petschko/RPG-Maker-MV-Decrypter)：标准 MV/MZ 图片格式及前 16 字节异或处理参考，MIT；维护仓库已迁往 [GitLab](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter)。
+- [RPG Maker CoreScript](https://github.com/rpgtkoolmv/corescript)：原生事件和数据库结构。
+
+上述项目名称与链接是来源说明，不改变上游许可证。本仓库未将 CTool 代码按 MIT 重新授权。

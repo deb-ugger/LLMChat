@@ -11,6 +11,7 @@ $lockScript = Join-Path $PSScriptRoot 'file-lock.ps1'
 $files = @(
     'llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe',
     'fonts/NotoSansCJKsc-Regular.otf', 'fonts/OFL.txt', 'fonts/SOURCE.txt',
+    'resources/wolf/WolfTL.exe', 'resources/wolf/WOLFTL-LICENSE.txt', 'resources/wolf/SOURCE.txt',
     'resources/ffmpeg/ffmpeg.exe', 'resources/ffmpeg/ffprobe.exe',
     'resources/ffmpeg/LICENSE', 'resources/ffmpeg/README.txt',
     'resources/ffmpeg/SOURCE.txt', 'resources/ffmpeg/VERSION.txt',

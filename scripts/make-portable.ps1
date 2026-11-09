@@ -65,6 +65,12 @@ New-Item -ItemType Directory -Force -Path $speechToolsOutput | Out-Null
 Copy-Item (Join-Path $speechTools '*') $speechToolsOutput -Force
 
 $unityTools = Join-Path $root 'frontend\src-tauri\resources\unity'
+$wolfTools = Join-Path $root 'frontend\src-tauri\resources\wolf'
+if (Test-Path -LiteralPath $wolfTools) {
+    $wolfOutput = Join-Path $out 'resources\wolf'
+    New-Item -ItemType Directory -Force -Path $wolfOutput | Out-Null
+    Copy-Item (Join-Path $wolfTools '*') -Destination $wolfOutput -Force
+}
 if (!(Test-Path -LiteralPath (Join-Path $unityTools 'llmchat-unity.exe'))) {
     throw 'Run scripts/prepare-unity-tools.ps1 before packaging the Unity embedding feature.'
 }

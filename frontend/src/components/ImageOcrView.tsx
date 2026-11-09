@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
 import {
 useCallback,
@@ -1487,6 +1488,17 @@ export function ImageOcrView({
     [drainQueue],
   );
 
+  useEffect(()=>{if(!active)return;const path=sessionStorage.getItem("llmchat-game-image");if(!path)return;sessionStorage.removeItem("llmchat-game-image");void fetch(convertFileSrc(path)).then(async response=>{if(!response.ok)throw new Error("无法读取游戏图片");addImageFiles([new File([await response.blob()],path.replace(/^.*[/\\]/,""),{type:"image/png"})]);}).catch(error=>setError(String(error)));},[active,addImageFiles]);
+  const downloadTranslatedImage = async () => {try {
+    const page=pages.find(p=>p.id===selectedPageId)||pages[0];if(!page)return;
+    const image=new Image();image.src=page.imageUrl;await image.decode();const canvas=document.createElement("canvas");canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;const context=canvas.getContext("2d")!;context.drawImage(image,0,0);
+    for(const block of page.blocks){if(!block.translation.trim())continue;const x=block.x*canvas.width,y=block.y*canvas.height,w=block.w*canvas.width,h=block.h*canvas.height;const sample=context.getImageData(Math.max(0,Math.min(canvas.width-1,Math.floor(x))),Math.max(0,Math.min(canvas.height-1,Math.floor(y))),1,1).data;context.fillStyle=`rgb(${sample[0]},${sample[1]},${sample[2]})`;context.fillRect(x,y,w,h);let size=Math.max(8,Math.min(32,h*.65)),lines:string[]=[];
+      const wrap=()=>{lines=[];let line="";for(const char of block.translation){if(char==="\n"){lines.push(line);line="";continue;}if(line&&context.measureText(line+char).width>w){lines.push(line);line=char;}else line+=char;}lines.push(line);};
+      do{context.font=`${size}px sans-serif`;wrap();if(lines.length*size*1.2<=h)break;size--;}while(size>=6);
+      context.save();context.beginPath();context.rect(x,y,w,h);context.clip();context.textBaseline="top";context.fillStyle=sample[0]*.299+sample[1]*.587+sample[2]*.114>128?"#111":"#fff";lines.forEach((line,i)=>context.fillText(line,x,y+i*size*1.2,w));context.restore();
+    }
+    const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,"image/png"));if(!blob)throw new Error("无法生成译图");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=page.file.name.replace(/\.[^.]+$/,".png");a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){setError(String(error));}};
   const handledIncomingIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!incomingImage) return;
@@ -1532,7 +1544,9 @@ export function ImageOcrView({
     [addImageFiles, showToast],
   );
 
-  const pasteFromClipboard = useCallback(async () => {
+  const pasteFromClipboard = useCallback(async () =>
+
+ {
     setStatus("正在读取剪贴板图片…");
     try {
       const picked = await fileFromAnyClipboard();
@@ -1820,6 +1834,7 @@ export function ImageOcrView({
 
   return (
     <div className="ocr-layout">
+
       {toast && (
         <div
           className={
@@ -1832,6 +1847,7 @@ export function ImageOcrView({
       )}
       <div className="ocr-main">
         <div className="ocr-toolbar">
+      {pages.length>0 && <button type="button" aria-label="下载当前图片的同名 PNG 译图" title="下载当前图片的同名 PNG 译图" disabled={busy} onClick={()=>void downloadTranslatedImage()} style={{border:0,background:"transparent",color:"var(--accent)",alignSelf:"flex-end",cursor:"pointer"}}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>}
           <button
             type="button"
             className="pdf-tool-btn"

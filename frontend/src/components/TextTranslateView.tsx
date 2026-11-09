@@ -855,6 +855,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     return file;
   }, []);
 
+  useEffect(()=>{if(!active)return;const path=sessionStorage.getItem("llmchat-game-text");if(!path)return;sessionStorage.removeItem("llmchat-game-text");void fileFromDroppedPath(path).then(file=>{setPhase("home");acceptPendingFile(file,"new");}).catch(error=>setError(String(error)));},[active,fileFromDroppedPath]);
   useEffect(() => {
     if (!active || phase !== "home") {
       setDragOver(null);
