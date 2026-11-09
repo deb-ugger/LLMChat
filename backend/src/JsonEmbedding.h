@@ -233,7 +233,7 @@ class JsonEmbedding {
     }
     static bool resourceName(const std::string& name) { return name == "BasicData" || name == "MapData" || std::regex_match(name, std::regex("Evtext[A-Za-z0-9_-]*")); }
     void backupOnly() {
-        if (!rpgDirectory_.empty()) { backupRpg(); return; }
+        if (!rpgDirectory_.empty()) { if(!jobRequest_.contains("backupScopes")&&jobRequest_.value("backupScope","text")=="text")backupRpg();else backupAssets(); return; }
         const auto backup = game_ / "LLMChat-JSON" / "backups" / ("wolf-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
         std::filesystem::create_directories(backup / "Data"); std::map<std::string, json> resources; std::vector<Path> files;
         for (const auto& entry : std::filesystem::directory_iterator(game_ / "Data")) {
@@ -409,6 +409,29 @@ class JsonEmbedding {
         ledger["state"] = "applied"; saveLedger(backup, ledger);
         std::lock_guard lock(mutex_); state_["state"] = "applied"; state_["detail"] = "译文已应用，原资源已备份";
     }
+    void backupAssets() {
+        const auto scopes=jobRequest_.contains("backupScopes")?jobRequest_.at("backupScopes").get<std::vector<std::string>>():std::vector<std::string>{jobRequest_.value("backupScope","text")};
+        if(scopes.empty())throw std::runtime_error("请选择至少一项备份范围");
+        std::vector<Path> files;const auto prefix=rpgDirectory_.parent_path();
+        for(const auto& scope:scopes) {
+            if(scope=="text") { for(auto& file:rpgFiles(game_/rpgDirectory_))files.push_back(std::filesystem::relative(file,game_));if(std::filesystem::exists(game_/prefix/"js/plugins.js"))files.push_back(prefix/"js/plugins.js"); }
+            else if(scope=="runtime") {const std::vector<Path> names={prefix/"js/plugins.js",prefix/"js/plugins/LLMChatTranslation.js",prefix/"LLMChat-translations.json",prefix/"fonts/LLMChat-font.ttf",prefix/"fonts/LLMChat-font.otf"};files.insert(files.end(),names.begin(),names.end());}
+            else if(scope=="images"){const auto root=game_/prefix/"img";for(auto& entry:std::filesystem::recursive_directory_iterator(root))if(entry.is_regular_file()){auto ext=entry.path().extension().string();if(ext==".png"||ext==".png_"||ext==".rpgmvp")files.push_back(std::filesystem::relative(entry.path(),game_));}}
+            else throw std::runtime_error("无效备份范围");
+        }
+        std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
+        const auto backup=game_/"LLMChat-JSON"/"backups"/("files-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
+        json ledger={{"engine","files"},{"kind","snapshot"},{"state","snapshot"},{"resources",json::array()}};detail("备份所选资源");progress(0,files.size());size_t completed=0;
+        for(auto& name:files){checkStop();const bool exists=std::filesystem::is_regular_file(game_/name);if(exists)write(backup/"original"/name,read(game_/name));ledger["resources"].push_back({{"name",name.generic_string()},{"existed",exists}});progress(++completed,files.size());}saveLedger(backup,ledger);
+        std::lock_guard lock(mutex_);state_["state"]=state_.value("resumeAfterBackup","backedUp");state_.erase("resumeAfterBackup");state_["backupPath"]=utf8path::pathUtf8(backup);state_["detail"]="备份完成，游戏资源未改变";
+    }
+    void finishBackupMode(const std::string& action) {
+        if(jobRequest_.value("backupMode","auto")!="manual" || (action!="apply"&&action!="runtime"&&action!="images-apply"))return;
+        Path backup;{std::lock_guard lock(mutex_);if(state_.value("state","")!="applied"||!state_.contains("backupPath"))return;backup=utf8path::pathFromUtf8(state_["backupPath"].get<std::string>());}
+        if(backup.parent_path().lexically_normal()!=(game_/"LLMChat-JSON"/"backups").lexically_normal())throw std::runtime_error("临时恢复目录不在当前游戏备份目录中");
+        std::filesystem::remove_all(backup);
+        std::lock_guard lock(mutex_);state_.erase("backupPath");state_["detail"]="已应用到游戏（手动备份模式）";
+    }
     static std::string pngCodec(std::string bytes, const std::string& key, bool encrypt) {
         const std::string header = std::string("RPGMV\0\0\0\0\3\1\0\0\0\0\0",16);
         if (key.size()!=32) throw std::runtime_error("System.json 中缺少有效的图片加密密钥");
@@ -494,7 +517,8 @@ public:
         std::lock_guard operation(startMutex_);
         const auto action = request.value("action", "inspect");
         { std::lock_guard lock(mutex_); if (state_.value("state", "") == "running") throw std::runtime_error("已有 JSON 嵌入任务正在运行"); if (action == "embed" && state_.value("state", "") != "ready") throw std::runtime_error("请先检查游戏和翻译 JSON"); if (action == "apply" && state_.value("state", "") != "done") throw std::runtime_error("请先生成嵌入补丁"); }
-        if (thread_.joinable()) thread_.join(); stop_ = false;
+        if (thread_.joinable()) thread_.join(); stop_ = false; jobRequest_=request;
+        if(request.value("backupMode","auto")!="auto"&&request.value("backupMode","auto")!="manual")throw std::runtime_error("无效备份方式");
         if (action == "inspect" || action == "extract" || action == "runtime" || action == "images-export" || action == "images-apply") {
             jobRequest_ = request;
             game_ = std::filesystem::absolute(utf8path::pathFromUtf8(request.at("gamePath").get<std::string>()));
@@ -520,6 +544,6 @@ public:
             return;
         } else if (action == "embed" || action == "apply") { std::lock_guard lock(mutex_); state_["state"] = "running"; state_["action"] = action; }
         else throw std::runtime_error("未知 JSON 嵌入操作");
-        thread_ = std::thread([this, action] { try { if (action == "inspect") inspect(); else if (action == "extract") extract(); else if (action == "runtime" || action == "images-export" || action == "images-apply") assetJob(action); else if (action == "embed") embed(); else if (action == "backup") backupOnly(); else apply(); } catch (const std::exception& e) { std::lock_guard lock(mutex_); state_["state"] = "error"; state_["detail"] = json::parse(json(e.what()).dump(-1, ' ', false, json::error_handler_t::replace)); dictionary_.clear(); } });
+        thread_ = std::thread([this, action] { try { if (action == "inspect") inspect(); else if (action == "extract") extract(); else if (action == "runtime" || action == "images-export" || action == "images-apply") assetJob(action); else if (action == "embed") embed(); else if (action == "backup") backupOnly(); else apply(); finishBackupMode(action); } catch (const std::exception& e) { std::lock_guard lock(mutex_); state_["state"] = "error"; state_["detail"] = json::parse(json(e.what()).dump(-1, ' ', false, json::error_handler_t::replace)); dictionary_.clear(); } });
     }
 };

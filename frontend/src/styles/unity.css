@@ -198,18 +198,29 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 220px;
+  display: grid;
+  grid-template-columns: minmax(0,1fr);
+  align-content: start;
+  gap: 8px 14px;
+  max-height: 340px;
+  min-height: 0;
   overflow: auto;
 }
+.unity-recent-games { container: game-recent / inline-size; }
+@container game-recent (min-width: 850px) {
+  .unity-recent-games-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+.unity-workspace-list.is-awaiting-path .has-recent .unity-dropzone { flex: .55 1 0; min-height: 96px; }
+.unity-workspace-list.is-awaiting-path .has-recent .unity-recent-games { flex: 1.45 1 0; min-height: 180px; }
+.unity-workspace-list.is-awaiting-path .has-recent .unity-recent-games-list { flex: 1; max-height: none; }
+.unity-recent-game-name small { margin-left: 8px; color: var(--unity-muted); font-weight: 400; }
 
 .unity-recent-games-list li {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  min-width: 0;
+  display:flex;
+  position:relative;
+  min-width:0;
+  border-radius:8px;
+  background:color-mix(in srgb,var(--accent-soft) 28%,white);
 }
 
 .unity-recent-game-btn {
@@ -219,10 +230,10 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 8px 38px 8px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-soft) 28%, white);
+  background: transparent;
   text-align: left;
   cursor: pointer;
   color: inherit;
@@ -258,8 +269,12 @@
 }
 
 .unity-recent-game-remove {
-  flex: 0 0 auto;
-  width: 32px;
+  position:absolute;
+  right:7px;
+  top:50%;
+  transform:translateY(-50%);
+  width:24px;
+  height:24px;
   border: none;
   border-radius: 8px;
   background: transparent;

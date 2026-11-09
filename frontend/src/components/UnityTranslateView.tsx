@@ -220,6 +220,10 @@ export function UnityTranslateView({
     setMode("offline");
     setRecentGames(rememberRecentUnityGame({ gameDir, name: displayName }));
   }, []);
+  const openEmbeddingGame = useCallback((game: EmbeddingGame) => {
+    setEmbeddingGame(game);
+    setRecentGames(rememberRecentUnityGame({ gameDir: game.path, name: game.name, engine: game.engine }));
+  }, []);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -564,7 +568,7 @@ export function UnityTranslateView({
   }, [selfCheckTabMenu]);
 
   const games = scanState?.games ?? [];
-  const installationRoots = JSON.stringify([...new Set([...games.map(game => game.gameDir), ...recentGames.map(game => game.gameDir)])]);
+  const installationRoots = JSON.stringify([...new Set([...games.map(game => game.gameDir), ...recentGames.filter(game => !game.engine || game.engine === "Unity").map(game => game.gameDir)])]);
   useEffect(() => {
     if (!active) return;
     const roots: string[] = JSON.parse(installationRoots);
@@ -761,7 +765,7 @@ export function UnityTranslateView({
       setOtherGames(nonUnity);
       if (nonUnity.length && !detected.some((game: EmbeddingGame) => game.engine === "Unity")) {
         pushOutput(`检测完成，找到 ${nonUnity.length} 个游戏`, "ok");
-        if (nonUnity.length === 1 && nonUnity[0].supported) setEmbeddingGame(nonUnity[0]);
+        if (nonUnity.length === 1 && nonUnity[0].supported) openEmbeddingGame(nonUnity[0]);
         return;
       }
       await api.unityDetectStream(
@@ -830,7 +834,7 @@ export function UnityTranslateView({
         setScanning(false);
       }
     }
-  }, [focusOutputTab, pushOutput, reportError, openGameDetail, stopDetection]);
+  }, [focusOutputTab, pushOutput, reportError, openGameDetail, openEmbeddingGame, stopDetection]);
 
   useEffect(() => {
     return () => {
@@ -1270,6 +1274,14 @@ export function UnityTranslateView({
     setBusyAction("open-recent");
     setError(null);
     try {
+      if (entry.engine && entry.engine !== "Unity") {
+        const response = await fetch(`${API_BASE}/api/json-embedding/detect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: gameDir }), signal: ac.signal });
+        const detected = await response.json(); if (!response.ok) throw new Error(detected.error);
+        if (ac.signal.aborted || detectAbortRef.current !== ac) return;
+        const game = (detected as EmbeddingGame[]).find(item => item.path.replace(/\\/g,"/").toLowerCase() === gameDir.replace(/\\/g,"/").toLowerCase());
+        if (!game?.supported) throw new Error("当前游戏资源无法识别，请重新选择游戏目录");
+        setViewMode("list"); openEmbeddingGame(game); return;
+      }
       const res = await api.unityDetect(gameDir, { signal: ac.signal, directOnly: true });
       if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       const list = res.games || [];
@@ -2304,7 +2316,7 @@ export function UnityTranslateView({
             </section>
           ) : (
             <>
-              <div className="unity-list-source">
+              <div className={`unity-list-source${recentGames.length ? " has-recent" : ""}`}>
               <section className="unity-drop">
                 <div className="unity-drop-visual" aria-hidden={true}>
                   <svg viewBox="0 0 64 64" width="56" height="56">
@@ -2422,7 +2434,6 @@ export function UnityTranslateView({
                 >
                   <div className="unity-recent-games-head">
                     <strong>最近打开</strong>
-                    <span>点击识别并进入游戏</span>
                   </div>
                   <ul className="unity-recent-games-list">
                     {recentGames.map((r) => (
@@ -2435,7 +2446,7 @@ export function UnityTranslateView({
                           title={r.gameDir}
                         >
                           <span className="unity-recent-game-name">
-                            {r.name}
+                            {r.name} <small>{r.engine || "Unity"}</small>
                           </span>
                           <span className="unity-recent-game-path">
                             {r.gameDir}
@@ -2498,7 +2509,7 @@ export function UnityTranslateView({
                   </div>
                 ) : null}
                 <div className="unity-games-body">
-                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => setEmbeddingGame(game)}><div className="unity-game-title">{game.name}</div><div className="unity-game-meta">{game.engine} · {game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path">{game.path}</div></button></li>)}</ul>}
+                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}</div><div className="unity-game-meta">{game.engine} · {game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path">{game.path}</div></button></li>)}</ul>}
                   {games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
                     <div
                       className={

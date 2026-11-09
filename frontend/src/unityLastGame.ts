@@ -9,6 +9,7 @@ export type RecentUnityGame = {
   /** Display name (folder or exe stem). */
   name: string;
   openedAt: number;
+  engine?: string;
 };
 
 export function rememberLastUnityGameDir(path: string) {
@@ -47,6 +48,7 @@ export function loadRecentUnityGames(): RecentUnityGame[] {
         gameDir: x.gameDir.trim().replace(/[\\/]+$/, ""),
         name: (x.name || "").trim() || folderNameFromPath(x.gameDir),
         openedAt: typeof x.openedAt === "number" ? x.openedAt : 0,
+        engine: typeof x.engine === "string" ? x.engine : "Unity",
       }));
   } catch {
     return [];
@@ -56,12 +58,13 @@ export function loadRecentUnityGames(): RecentUnityGame[] {
 export function rememberRecentUnityGame(entry: {
   gameDir: string;
   name?: string;
+  engine?: string;
 }): RecentUnityGame[] {
   const gameDir = entry.gameDir.trim().replace(/[\\/]+$/, "");
   if (!gameDir) return loadRecentUnityGames();
   const name = (entry.name || "").trim() || folderNameFromPath(gameDir);
   const next: RecentUnityGame[] = [
-    { gameDir, name, openedAt: Date.now() },
+    { gameDir, name, engine: entry.engine || "Unity", openedAt: Date.now() },
     ...loadRecentUnityGames().filter(
       (g) => g.gameDir.toLowerCase() !== gameDir.toLowerCase(),
     ),
@@ -71,7 +74,7 @@ export function rememberRecentUnityGame(entry: {
   } catch {
     /* ignore */
   }
-  rememberLastUnityGameDir(gameDir);
+  if (!entry.engine || entry.engine === "Unity") rememberLastUnityGameDir(gameDir);
   return next;
 }
 
