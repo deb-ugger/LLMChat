@@ -18,6 +18,7 @@ public sealed class ImageRegion
     public double X1 { get; set; } public double Y1 { get; set; }
     public bool Selected { get; set; } = true;
     public bool ManualSelected { get; set; }
+    public string ReviewReason { get; set; } = "";
     public string Error { get; set; } = "";
 }
 public sealed class ImageResource

@@ -1280,7 +1280,7 @@ export function UnityTranslateView({
         if (ac.signal.aborted || detectAbortRef.current !== ac) return;
         const game = (detected as EmbeddingGame[]).find(item => item.path.replace(/\\/g,"/").toLowerCase() === gameDir.replace(/\\/g,"/").toLowerCase());
         if (!game?.supported) throw new Error("当前游戏资源无法识别，请重新选择游戏目录");
-        setViewMode("list"); openEmbeddingGame(game); return;
+        setViewMode("list"); setOtherGames([game]); setScanState(emptyScanState(gameDir)); openEmbeddingGame(game); return;
       }
       const res = await api.unityDetect(gameDir, { signal: ac.signal, directOnly: true });
       if (ac.signal.aborted || detectAbortRef.current !== ac) return;
@@ -1722,7 +1722,7 @@ export function UnityTranslateView({
 
   return (
     <>
-    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} active={active} onBack={() => setEmbeddingGame(null)} onGameDrop={path => { setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
+    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} settings={settings} active={active} onBack={() => setEmbeddingGame(null)} onGameDrop={path => { setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
     <div className="unity-shell" hidden={!!embeddingGame} aria-hidden={!active || !!embeddingGame} data-unity-mode={showDetail ? mode : "games"}
       onDragOver={event => { if (!showDetail) event.preventDefault(); }}
       onDrop={event => { if (showDetail || busy || scanning) return; event.preventDefault(); const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined; const path = file?.path; if (path) { resetPath(path); void runDetect(path); } }}>
@@ -2446,7 +2446,7 @@ export function UnityTranslateView({
                           title={r.gameDir}
                         >
                           <span className="unity-recent-game-name">
-                            {r.name} <small>{r.engine || "Unity"}</small>
+                            {r.name} <small className="unity-recent-engine">{r.engine || "Unity"}</small>
                           </span>
                           <span className="unity-recent-game-path">
                             {r.gameDir}

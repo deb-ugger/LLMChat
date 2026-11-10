@@ -13,6 +13,7 @@
 #include "TextTaskQueue.h"
 #include "TextRunStore.h"
 #include "JsonEmbedding.h"
+#include "RpgImageProject.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -297,6 +298,7 @@ int HttpServer::run()
     request_cancel::Registry translationTasks;
     TextRunStore textRuns;
     JsonEmbedding jsonEmbedding(storage::base / "resources" / "wolf");
+    RpgImageProject gameImages;
     std::atomic<unsigned long long> nextTask{0};
     httplib::Server svr;
     svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
@@ -2187,6 +2189,18 @@ int HttpServer::run()
     svr.Post("/api/json-embedding/start", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try { jsonEmbedding.start(json::parse(req.body)); res.set_content(jsonEmbedding.status().dump(), "application/json"); }
         catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
+    for(const std::string operation:{"load","scan","save","save-many","apply","uninstall"})svr.Post("/api/game-images/"+operation,withCors([&,operation](const httplib::Request& req,httplib::Response& res){try{const auto body=json::parse(req.body);const auto game=utf8path::pathFromUtf8(body.at("gamePath").get<std::string>());json value;if(operation=="load")value=gameImages.load(game);else if(operation=="scan")value=gameImages.scan(game);else if(operation=="save-many")value=gameImages.saveMany(game,body.at("images"));else if(operation=="save")value=gameImages.saveImage(game,body.at("image"));else if(operation=="uninstall")value=gameImages.uninstall(game);else value=gameImages.apply(game,body.value("backupMode","auto")!="manual");res.set_content(value.dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    svr.Post("/api/game-images/scan-stream",withCors([&](const httplib::Request& req,httplib::Response& res){
+        try{const auto game=utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());res.set_chunked_content_provider("application/x-ndjson",[&,game](size_t,httplib::DataSink& sink){auto send=[&](const json& event){auto line=event.dump()+"\n";if(!sink.write(line.data(),line.size()))throw std::runtime_error("图片扫描已取消");};try{send({{"type","progress"},{"completed",0},{"total",0},{"detail","正在准备图片扫描"}});auto project=gameImages.scan(game,[&](size_t completed,size_t total,const std::string& detail){send({{"type","progress"},{"completed",completed},{"total",total},{"detail",detail}});});send({{"type","result"},{"project",project}});}catch(const std::exception& e){auto line=json({{"type","error"},{"error",e.what()}}).dump()+"\n";sink.write(line.data(),line.size());}sink.done();return true;});}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
+    }));
+    svr.Get("/api/game-images/preview",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.preview(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.get_param_value("translated")=="1",req.get_param_value("cache")!="0"),"image/png");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    svr.Post("/api/game-images/render",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.render(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.body).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    svr.Post("/api/json-embedding/detect-patch", withCors([&](const httplib::Request& req, httplib::Response& res){try{res.set_content(jsonEmbedding.detectPatch(utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>())).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+
+    svr.Get("/api/json-embedding/patch", withCors([&](const httplib::Request& req, httplib::Response& res) {
+        try {res.set_content(JsonEmbedding::patchInfo(utf8path::pathFromUtf8(req.get_param_value("gamePath"))).dump(),"application/json");}
+        catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
     }));
     svr.Get("/api/json-embedding/status", withCors([&](const httplib::Request&, httplib::Response& res) { res.set_content(jsonEmbedding.status().dump(), "application/json"); }));
     svr.Post("/api/json-embedding/detect", withCors([&](const httplib::Request& req, httplib::Response& res) {

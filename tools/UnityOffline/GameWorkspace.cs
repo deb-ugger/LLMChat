@@ -46,7 +46,7 @@ public static class GameWorkspace
     {
         var result = new JsonObject();
         if (task["imageConfidenceThreshold"] != null) result["imageConfidenceThreshold"] = task["imageConfidenceThreshold"]!.DeepClone();
-        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "imageTask", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
+        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "imageConcurrency", "imageTask", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         if (task["engines"] is JsonArray engines) {
             var choices = new JsonArray();
@@ -140,7 +140,13 @@ public static class GameWorkspace
     }
     public static WorkspaceResult Open(Request request)
     {
-        var root = Full(request.Root); var work = Ensure(root); var projects = Path.Combine(work, "projects");
+        var root = Full(request.Root); var work = WorkRoot(root); var projects = Path.Combine(work, "projects");
+        if (!File.Exists(Path.Combine(work,"workspace.json"))) {
+            if(!Directory.Exists(root))throw new Exception("游戏目录不存在");
+            var existing=Program.FindSaved(new Request {Root=root,OutputRoot=string.IsNullOrWhiteSpace(request.OutputRoot)?projects:request.OutputRoot});
+            return new(work,projects,existing,request.Task?.DeepClone(),PatchInstallation.Status(root).Installed);
+        }
+        work=Ensure(root);
         var markerPath = Path.Combine(work, "workspace.json");
         var marker = JsonNode.Parse(File.ReadAllText(markerPath))!;
         if (!Same(marker["root"]!.GetValue<string>(), root)) {

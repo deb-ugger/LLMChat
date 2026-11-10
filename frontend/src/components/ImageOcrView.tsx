@@ -1,4 +1,3 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
 import {
 useCallback,
@@ -1488,7 +1487,8 @@ export function ImageOcrView({
     [drainQueue],
   );
 
-  useEffect(()=>{if(!active)return;const path=sessionStorage.getItem("llmchat-game-image");if(!path)return;sessionStorage.removeItem("llmchat-game-image");void fetch(convertFileSrc(path)).then(async response=>{if(!response.ok)throw new Error("无法读取游戏图片");addImageFiles([new File([await response.blob()],path.replace(/^.*[/\\]/,""),{type:"image/png"})]);}).catch(error=>setError(String(error)));},[active,addImageFiles]);
+
+
   const downloadTranslatedImage = async () => {try {
     const page=pages.find(p=>p.id===selectedPageId)||pages[0];if(!page)return;
     const image=new Image();image.src=page.imageUrl;await image.decode();const canvas=document.createElement("canvas");canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;const context=canvas.getContext("2d")!;context.drawImage(image,0,0);

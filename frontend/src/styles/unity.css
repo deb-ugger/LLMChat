@@ -213,7 +213,7 @@
 .unity-workspace-list.is-awaiting-path .has-recent .unity-dropzone { flex: .55 1 0; min-height: 96px; }
 .unity-workspace-list.is-awaiting-path .has-recent .unity-recent-games { flex: 1.45 1 0; min-height: 180px; }
 .unity-workspace-list.is-awaiting-path .has-recent .unity-recent-games-list { flex: 1; max-height: none; }
-.unity-recent-game-name small { margin-left: 8px; color: var(--unity-muted); font-weight: 400; }
+.unity-recent-game-name .unity-recent-engine { display:inline-block; margin-left:8px; padding:2px 7px; border-radius:4px; color:var(--accent); background:var(--accent-soft); font-size:12px; font-weight:650; vertical-align:middle; }
 
 .unity-recent-games-list li {
   display:flex;

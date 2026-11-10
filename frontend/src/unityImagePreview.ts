@@ -1,5 +1,7 @@
 import { readFileBytes } from "./localDocFile";
 import { unityRun, type UnityImage, type UnityProject } from "./unityOffline";
+export type ImagePreviewReader = (image: UnityImage, translated: boolean, thumbnail: boolean, signal: AbortSignal) => Promise<Blob>;
+
 type Preview = { url: string; opaqueUrl: string; bytes: number };
 type Item = { users: number; ready: Promise<Preview>; value?: Preview; controller: AbortController; started: boolean; run: () => void; cancel: () => void };
 const cache = new Map<string, Item>(), queue: Item[] = [];
@@ -11,7 +13,7 @@ function trim() {
  for (const [key, item] of cache) { if (bytes <= limit && cache.size <= 96) break; if (item.users || !item.value) continue; bytes -= item.value.bytes; URL.revokeObjectURL(item.value.url); if(item.value.opaqueUrl)URL.revokeObjectURL(item.value.opaqueUrl); cache.delete(key); }
 }
 function pump() { while(active < 2 && queue.length) { const item=queue.shift()!; item.started=true; active++; item.run(); } }
-export function acquireUnityImagePreview(project: UnityProject, image: UnityImage, translated: boolean, thumbnail = false) {
+export function acquireUnityImagePreview(project: UnityProject, image: UnityImage, translated: boolean, thumbnail = false, reader?: ImagePreviewReader) {
  const key=unityImagePreviewKey(project,image,translated,thumbnail);let item=cache.get(key);
  if(item){cache.delete(key);cache.set(key,item);}else{
   let resolve!:(value:Preview)=>void,reject!:(reason:unknown)=>void;
@@ -19,7 +21,7 @@ export function acquireUnityImagePreview(project: UnityProject, image: UnityImag
   entry.cancel=()=>reject(new DOMException("图片读取已取消","AbortError"));
   entry.run=()=>{void(async()=>{const signal=entry.controller.signal;try{
    signal.throwIfAborted();let blob:Blob,opaque:Blob|undefined;
-   if(translated)blob=new Blob([await readFileBytes(project.folder+"/"+image.renderedFile)],{type:"image/png"});else{
+   if(reader)blob=await reader(image,translated,thumbnail,signal);else if(translated)blob=new Blob([await readFileBytes(project.folder+"/"+image.renderedFile)],{type:"image/png"});else{
     const data=await unityRun<{data:string;opaque:string;fullyTransparent:boolean}>("preview-image",{path:project.folder,imageId:image.id,thumbnail,project:{folder:project.folder,images:[image]}},undefined,signal);
     signal.throwIfAborted();blob=await fetch("data:image/png;base64,"+data.data,{signal}).then(response=>response.blob());
     if(data.fullyTransparent)opaque=await fetch("data:image/png;base64,"+data.opaque,{signal}).then(response=>response.blob());

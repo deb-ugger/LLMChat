@@ -11,6 +11,9 @@ export class LocalMangaOcr {
   private closed = false;
   private prepared: Promise<unknown> | null = null;
 
+  constructor(private readonly onDevice?:(message:string,fallback:boolean)=>void) {}
+  private deviceReported=false;
+
   private getWorker(): Worker {
     if (this.worker) return this.worker;
     const worker = new Worker(new URL("./mangaWorker.ts", import.meta.url), { type: "module" });
@@ -18,7 +21,7 @@ export class LocalMangaOcr {
       const message = event.data;
       const task = this.pending.get(message.id);
       if (!task) return;
-      if (message.type === "ready") { task.ready?.(); return; }
+      if (message.type === "ready") { if(!this.deviceReported&&message.deviceMessage){this.deviceReported=true;this.onDevice?.(message.deviceMessage,!!message.fallback);}task.ready?.(); return; }
       this.pending.delete(message.id);
       if (message.type === "result") task.resolve(message.text);
       else task.reject(new Error(message.error || "漫画识别失败"));
@@ -32,8 +35,8 @@ export class LocalMangaOcr {
     return worker;
   }
 
-  recognize(image: Blob, onReady?: () => void): Promise<string> {
-    if (this.closed) return Promise.reject(new Error("识别已取消"));
+  recognize(image: Blob | ImageBitmap, onReady?: () => void): Promise<string> {
+    if (this.closed) {if(typeof ImageBitmap!=="undefined"&&image instanceof ImageBitmap)image.close();return Promise.reject(new Error("识别已取消"));}
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, ready: onReady });
@@ -42,9 +45,10 @@ export class LocalMangaOcr {
         throw error;
       });
       void this.prepared.then(() => {
-        if (this.closed || !this.pending.has(id)) return;
-        this.getWorker().postMessage({ id, image, apiBase: API_BASE, assetBase: runtimeAssetBase() });
+        if (this.closed || !this.pending.has(id)) {if(typeof ImageBitmap!=="undefined"&&image instanceof ImageBitmap)image.close();return;}
+        this.getWorker().postMessage({ id, image, apiBase: API_BASE, assetBase: runtimeAssetBase() },typeof ImageBitmap!=="undefined"&&image instanceof ImageBitmap?[image]:[]);
       }).catch((error) => {
+        if(typeof ImageBitmap!=="undefined"&&image instanceof ImageBitmap)image.close();
         this.pending.delete(id);
         reject(error);
       });

@@ -1,3 +1,4 @@
+import type { ImageScreening } from "./gameImageScreening";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { join, resourceDir } from "@tauri-apps/api/path";
 
@@ -9,8 +10,8 @@ export type UnityEntry = {
   layoutDraft?: string;
   parentId?: string; parentLocator?: string; sourceStart?: number;
 };
-export type UnityImageRegion = { text: string; translation: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; error: string };
-export type UnityImage = { id: string; file: string; container: string; objectId: string; kind: string; name: string; width: number; height: number; sourceFile: string; sourceHash: string; renderedFile: string; renderedHash: string; selected: boolean; ocrCompleted: boolean; completed: boolean; error: string; regions: UnityImageRegion[] };
+export type UnityImageRegion = { text: string; translation: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; reviewReason?: string; error: string };
+export type UnityImage = { selectionManual?: boolean; screening?: ImageScreening; id: string; file: string; container: string; objectId: string; kind: string; name: string; width: number; height: number; sourceFile: string; sourceHash: string; renderedFile: string; renderedHash: string; selected: boolean; ocrCompleted: boolean; completed: boolean; error: string; regions: UnityImageRegion[] };
 export type UnityFont = { file: string; container: string; objectId: string; name: string; kind: string; references?: { field: string; fileId: number; pathId: string }[] };
 export type UnityInspection = { runtime: string; assemblies: { path: string; writable: boolean; reason: string }[]; catalogs: string[] };
 export type UnityFontPlan = { folder: string; characterCount: number; originalReferences: number; translatedReferences: number; fontChecked: boolean; missing: number[]; fonts: UnityFont[]; requirements: string[] };

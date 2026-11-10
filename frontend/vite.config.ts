@@ -1,3 +1,4 @@
+import { paddleBatchingPlugin } from "./build/paddleBatching.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -51,9 +52,9 @@ function servePdfjsAssets(): Plugin {
 }
 
 export default defineConfig(async () => ({
-  worker: { format: "es" },
+  worker: { format: "es", plugins:()=>[paddleBatchingPlugin()] },
   build: { copyPublicDir: false, outDir: "dist-staging" },
-  plugins: [react(), servePdfjsAssets(), {
+  plugins: [paddleBatchingPlugin(), react(), servePdfjsAssets(), {
     name: "external-runtime-assets",
     apply: "build",
     writeBundle(options) {
@@ -78,6 +79,8 @@ export default defineConfig(async () => ({
       "onnxruntime-web-use-extern-wasm",
     ],
     alias: [
+      // Match the GPU runtime to the locally shipped PaddleOCR 1.29 JSEP assets.
+      {find:/^onnxruntime-web\/webgpu$/,replacement:path.resolve(import.meta.dirname,"node_modules/@paddleocr/paddleocr-js/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs")},
       {
         find: /^onnxruntime-web$/,
         replacement: "onnxruntime-web/wasm",
