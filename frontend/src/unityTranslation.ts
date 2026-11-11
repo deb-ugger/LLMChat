@@ -97,7 +97,7 @@ export function restoreUnityTranslationLines(source: string, translation: string
 }
 
 export function buildUnityTranslateOptions(
-  settings: Pick<Settings, "apiUrl" | "apiKey" | "model">,
+  settings: Pick<Settings, "apiUrl" | "apiKey" | "model"> & Partial<Pick<Settings, "textGlossary">>,
   provider: TranslateProvider,
   source: string,
   target: string,
@@ -111,6 +111,7 @@ export function buildUnityTranslateOptions(
   return {
     provider: "llm", source, target, feature: "unity",
     ...connection,
+    glossary: settings.textGlossary,
     prompt: `将游戏界面或对白翻译为${language}。将整条文本作为一个完整的上下文理解，结合前后文确定主语、指代和语气。仅返回译文，不要解释或代码围栏。${joinLines ? "保留段落、列表编号、项目符号及条目顺序，不合并不同条目；段落或条目内部输出连贯译文，显示折行由程序恢复。" : "保留原换行和空行。"}保留所有格式占位符、富文本标签和反斜杠转义，不翻译标识符和路径。`,
   };
 }

@@ -312,7 +312,7 @@ public static class Program
         void ReportScanDetail(string detail) {
             var now = Environment.TickCount64;
             var loading = detail.StartsWith("加载分段模型：", StringComparison.Ordinal);
-            if (!loading && !loadingModel && now - lastDetailReport < 500) return;
+            if (!loading && !loadingModel && now - lastDetailReport < 250) return;
             loadingModel = loading; lastDetailReport = now;
             Progress(detail, scanIndex, paths.Length, project.Folder);
         }
@@ -321,13 +321,15 @@ public static class Program
         project.Segmenter = segmenter;
         project.CheckCancellation = () => CheckStop(request, project.Folder);
         using var types = new GameTypes(root, project.TypeDirectory);
-        foreach (var file in project.Hashes) if (Hash(Within(root, file.Key)) != file.Value) throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
+        var originals = PatchInstallation.OriginalFiles(root);
+        foreach (var file in project.Hashes) if (Hash(originals.GetValueOrDefault(file.Key) ?? Within(root, file.Key)) != file.Value) throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
         for (var index = state.Next; index < paths.Length; index++)
         {
             CheckStop(request, project.Folder);
             scanIndex = index;
             var path = paths[index];
             var rel = System.IO.Path.GetRelativePath(root, path);
+            var readPath = originals.GetValueOrDefault(rel) ?? path;
             Progress("检查资源：" + rel, index, paths.Length, project.Folder);
             var name = System.IO.Path.GetFileName(path);
             var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
@@ -343,12 +345,12 @@ public static class Program
             var fonts = project.Fonts.Count; var imagesBefore = project.Images.Count;
             try
             {
-                if (isCode && ext == ".dll") ScanAssembly(path, rel, project);
-                else if (isCode) VisitMetadata(File.ReadAllBytes(path), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
-                else if (raster) ImageResources.ScanFile(project, path, rel);
-                else if (asset) VisitResource(path, (am, inst, container) => ScanAssets(am, inst, rel, container, project, textureCache), types, rel);
-                else TextDocuments.Process(TextDocuments.Read(path), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
-                if (project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore) project.Hashes[rel] = Hash(path);
+                if (isCode && ext == ".dll") ScanAssembly(readPath, rel, project);
+                else if (isCode) VisitMetadata(File.ReadAllBytes(readPath), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
+                else if (raster) ImageResources.ScanFile(project, readPath, rel);
+                else if (asset) VisitResource(readPath, (am, inst, container) => ScanAssets(am, inst, rel, container, project, textureCache), types, rel, sourcePath: path);
+                else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
+                if (project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore) project.Hashes[rel] = Hash(readPath);
                 var failures = project.Diagnostics.Count(e => e.File == rel);
                 project.Resources.Add(new(rel, failures > 0 ? "partial" : project.Entries.Count > before || project.Fonts.Count > fonts ? "ready" : "empty", project.Entries.Count - before, project.Fonts.Count - fonts, failures));
             }
@@ -498,8 +500,7 @@ public static class Program
         {
             project.CheckCancellation?.Invoke();
             objectIndex++;
-            if (objectIndex == 1 || objectIndex % 64 == 0)
-                project.ReportScanDetail?.Invoke($"读取资源对象：{rel} / {container} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count} · 已提取 {project.Entries.Count} 条文本");
+            project.ReportScanDetail?.Invoke($"读取资源对象：{rel} / {container} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count} · 已提取 {project.Entries.Count} 条文本");
             var type = info.TypeId;
             if (type is not (28 or 49 or 128 or 114)) continue;
             var textCount = project.Entries.Count; var fontCount = project.Fonts.Count;
@@ -511,7 +512,8 @@ public static class Program
                 }
                 var field = am.GetBaseField(inst, info);
                 var name = field["m_Name"].IsDummy ? info.PathId.ToString() : field["m_Name"].AsString;
-                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache);
+                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache,
+                    stage => project.ReportScanDetail?.Invoke($"{stage}：{name} · {rel} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count}"));
                 if (type == 128) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "UGUI") { References = FontPreparation.References(field) });
                 if (type == 49 && GameText.TextAsset(name))
                     TextDocuments.Process(Utf8.GetString(field["m_Script"].AsByteArray), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
@@ -536,6 +538,7 @@ public static class Program
         Progress("校验译文、占位符与字体");
         var project = request.Project ?? throw new Exception("缺少工程");
         GameText.ProtectProject(project);
+        var originals = PatchInstallation.OriginalFiles(project.Root);
         if (project.ScanRevision < MinimumUsableScanRevision || project.ScanRevision > CurrentScanRevision) throw new Exception("扫描工程格式不兼容，请重新扫描；原工程和译文会保留");
         ScanInspection.VerifyDefinitions(project);
         using var types = new GameTypes(project.Root, project.TypeDirectory);
@@ -570,14 +573,14 @@ public static class Program
         {
             var manifest = checkpoint.Files;
             foreach (var completed in manifest)
-                if (Hash(Within(project.Root, completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "original"), completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "patch"), completed.File)) != completed.PatchSha256)
+                if (Hash(originals.GetValueOrDefault(completed.File) ?? Within(project.Root, completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "original"), completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "patch"), completed.File)) != completed.PatchSha256)
                     throw new Exception("已生成的补丁或原件发生变化：" + completed.File);
             foreach (var file in files)
             {
                 CheckStop(request, folder);
                 if (manifest.Any(f => f.File == file)) continue;
                 Progress("生成补丁：" + file, manifest.Count, files.Length, folder);
-                var source = Within(project.Root, file); var original = Within(System.IO.Path.Combine(folder, "original"), file);
+                var source = originals.GetValueOrDefault(file) ?? Within(project.Root, file); var original = Within(System.IO.Path.Combine(folder, "original"), file);
                 if (!project.Hashes.TryGetValue(file, out var expected) || expected != Hash(source)) throw new Exception($"源文件已变化，请重新扫描：{file}");
                 Directory.CreateDirectory(System.IO.Path.GetDirectoryName(original)!);
                 if (!File.Exists(original)) File.Copy(source, original);
@@ -651,7 +654,7 @@ public static class Program
                         info.SetNewData(field);
                         if (generated.ContainsKey(info.PathId)) atlasChecks[(container, info.PathId)] = BitmapFontGenerator.Digest(field, false);
                     }
-                }, types, file, destination, source);
+                }, types, file, destination, Within(project.Root, file));
                 if (edits.Count != 0) throw new Exception($"部分文本未能回写：{file}，剩余 {edits.Count} 条（{string.Join(", ", edits.Values.Take(3).Select(e => e.ObjectId + e.Locator))}）");
                 Progress("重读校验：" + file, manifest.Count, files.Length, folder);
                 var verificationTick = 0L;
@@ -661,7 +664,7 @@ public static class Program
                     verificationTick = now;
                     Progress(detail, manifest.Count, files.Length, folder);
                 }
-                VerifyWritten(project, file, destination, source, entries, fonts.Where(f => f.File == file && f.Kind == "UGUI").ToArray(), font, types, atlasChecks, fileImages, ReportVerification, () => CheckStop(request, folder));
+                VerifyWritten(project, file, destination, Within(project.Root, file), entries, fonts.Where(f => f.File == file && f.Kind == "UGUI").ToArray(), font, types, atlasChecks, fileImages, ReportVerification, () => CheckStop(request, folder));
                 ReportVerification("正在计算补丁校验值：" + file, true);
                 manifest.Add(new PatchFile(file, originalHash, Hash(destination), entries.Length));
                 ReportVerification("正在保存生成进度：" + file, true);
@@ -863,6 +866,8 @@ public static class Program
             if (previous.RootElement.GetProperty("manifestHash").GetString() != manifestHash) throw new Exception("应用检查点与补丁清单不一致");
         }
         if (files.Length == 0 || files.Select(f => f.File).Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Length) throw new Exception("补丁文件列表无效");
+        foreach (var file in files) if (Hash(Within(Path.Combine(folder, "original"), file.File)) != file.Original || Hash(Within(Path.Combine(folder, "patch"), file.File)) != file.Patch) throw new Exception("新补丁或备份校验失败：" + file.File);
+        var restoredPatches = PatchInstallation.RestoreBeforeApply(root, folder);
         var applied = new List<string>();
         foreach (var file in files)
         {
@@ -907,6 +912,6 @@ public static class Program
         }
         WriteJson(applicationPath, new { manifestHash, completed = applied, done = true });
         Progress("已应用到游戏，原件备份已保留", files.Length, files.Length, folder);
-        return new { folder, files = files.Length };
+        return new { folder, files = files.Length, restoredPatches };
     }
 }

@@ -25,7 +25,7 @@ export async function yieldUnityPreparation(signal: AbortSignal) {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
   signal.throwIfAborted();
 }
-export const unityTranslationContextKey = (entry: UnityEntry) => JSON.stringify([entry.file, entry.container, entry.kind, entry.locale || "", (entry.parentLocator || entry.locator || "").replace(/\/\d+(?=\/|$)/g, "/#"), keyOf(entry.source)]);
+export const unityTranslationContextKey = (entry: UnityEntry) => JSON.stringify([entry.file, entry.container, entry.objectId, entry.kind, entry.locale || "", entry.locator.startsWith("line/") ? entry.locator : (entry.parentLocator || entry.locator || "").replace(/\/\d+(?=\/|$)/g, "/#"), keyOf(entry.source)]);
 export function unityTranslationCharacters(selected: UnityEntry[], entries: UnityEntry[], validate: Session["validate"], prepare: (source: string) => string, canReuseDraft?: Session["canReuseDraft"], key = (entry: UnityEntry) => keyOf(entry.source)) {
   const reusable = new Set(entries.filter(entry => entry.translation && !entry.error && !validate(entry.source, entry.translation) || entry.layoutDraft && !validate(entry.source, entry.layoutDraft) && (canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)).map(key));
   const pending = new Set<string>();

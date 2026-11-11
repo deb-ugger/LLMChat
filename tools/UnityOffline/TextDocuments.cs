@@ -84,7 +84,7 @@ public static class TextDocuments
     {
         var records = new List<List<Cell>>(); var row = new List<Cell>(); var index = 0;
         while (index < text.Length) {
-            var start = index; var quoted = text[index] == '"'; var value = new StringBuilder();
+            var start = index; var quoted = !preserveUnquotedCells && text[index] == '"'; var value = new StringBuilder();
             if (quoted) {
                 index++; var closed = false;
                 while (index < text.Length) {
@@ -97,7 +97,7 @@ public static class TextDocuments
                 if (!closed || index < text.Length && text[index] != separator && text[index] is not ('\r' or '\n')) throw new Exception("CSV 引号或分隔符无效");
             } else {
                 while (index < text.Length && text[index] != separator && text[index] is not ('\r' or '\n')) {
-                    if (text[index] == '"') throw new Exception("CSV 未转义的引号");
+                    if (!preserveUnquotedCells && text[index] == '"') throw new Exception("CSV 未转义的引号");
                     value.Append(text[index++]);
                 }
             }
@@ -111,7 +111,7 @@ public static class TextDocuments
         var header = records[0]; var changes = new List<(Cell Cell, string Value)>();
         for (var column = 0; column < header.Count; column++) {
             var field = header[column].Value.Trim(); var locale = Locale(field);
-            if (GameText.IsTechnicalField(field) || locale.Length == 0 && !Regex.IsMatch(field, @"^(?:text|message|dialogue|description|caption|title|displayName|content|body|choice|prompt|source|translation|name\d*|sentence|value)$", RegexOptions.IgnoreCase)) continue;
+            if (GameText.IsTechnicalField(field) || locale.Length == 0 && !Regex.IsMatch(field, @"^(?:text|message|dialogue|description|caption|title|displayName|content|body|choice|prompt|source|translation|name\d*|sentence|value|partner_skill|partner_skill_text)$", RegexOptions.IgnoreCase)) continue;
             for (var record = 1; record < records.Count; record++) {
                 if (records[record].Count != header.Count) throw new Exception($"CSV 第 {record + 1} 条记录列数与表头不一致");
                 var cell = records[record][column];
@@ -120,10 +120,10 @@ public static class TextDocuments
         }
         var result = new StringBuilder(text);
         foreach (var change in changes.OrderByDescending(c => c.Cell.Start)) {
-            if (preserveUnquotedCells && !change.Cell.Quoted && (change.Value.Contains(separator) || change.Value.IndexOfAny(['"', '\r', '\n']) >= 0))
+            if (preserveUnquotedCells && (change.Value.Contains(separator) || change.Value.IndexOfAny(['\r', '\n']) >= 0))
                 throw new Exception("数据表译文包含分隔符、引号或换行，会改变游戏字段结构；请修改此单元格译文后重试");
             var quoted = change.Cell.Quoted || change.Value.Contains(separator) || change.Value.IndexOfAny(['"', '\r', '\n']) >= 0;
-            var replacement = quoted ? "\"" + change.Value.Replace("\"", "\"\"") + "\"" : change.Value;
+            var replacement = preserveUnquotedCells ? change.Value : quoted ? "\"" + change.Value.Replace("\"", "\"\"") + "\"" : change.Value;
             result.Remove(change.Cell.Start, change.Cell.End - change.Cell.Start).Insert(change.Cell.Start, replacement);
         }
         return result.ToString();

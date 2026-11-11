@@ -62,7 +62,7 @@ public static class WorkflowReset
             if (!File.Exists(Path.Combine(patch, "manifest.json")) && !File.Exists(Path.Combine(patch, "export-state.json"))) throw new Exception("补丁目录缺少本软件的标记，未删除：" + patch);
             NoLinks(patch);
         }
-        var restore = patches.Where(p => File.Exists(Path.Combine(p, "application-state.json")))
+        var restore = patches.Where(p => step == 4 && File.Exists(Path.Combine(p, "application-state.json")))
             .OrderByDescending(p => File.GetLastWriteTimeUtc(Path.Combine(p, "application-state.json"))).ToArray();
         var reusable = "";
         if (step == 4) {
@@ -83,9 +83,14 @@ public static class WorkflowReset
             runs[part] = new JsonObject { ["step"] = 2, ["state"] = "pending", ["completed"] = 0, ["total"] = null, ["detail"] = "可调整参数后重新开始", ["engineStats"] = retainedMeters };
         }
         task["progress"] = new JsonObject { ["step"] = previous, ["state"] = "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
+        var installedProjects = folders.Concat(obsolete).Where(folder => Directory.GetDirectories(folder, "patch-*").Any(PatchInstallation.HasApplied)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plan = new ResetPlan(step, step == 1 ? "" : Path.GetRelativePath(work, folders[0]),
             (step == 1 ? folders : patches.Where(p => reusable.Length == 0 || !Same(p, reusable)).Where(p => !obsolete.Any(old => Same(Path.GetDirectoryName(p)!, old))).Concat(step < 4 ? fontPlans : []).Concat(obsolete)).Select(p => Path.GetRelativePath(work, p)).ToArray(),
             restore.Select(p => Path.GetRelativePath(work, p)).ToArray(), GameWorkspace.PackTask(root, task), ImageOnly: request.ImageOnly);
+        if (step != 4) plan = plan with { Delete = plan.Delete.Where(relative => {
+            var target = Program.Within(work, relative);
+            return !installedProjects.Contains(target) && !PatchInstallation.HasApplied(target);
+        }).ToArray() };
         Program.WriteJson(Path.Combine(work, "reset-state.json"), plan);
         ResumePending(root);
         return new(step, GameWorkspace.Open(new Request { Root = root }));
@@ -117,13 +122,14 @@ public static class WorkflowReset
             var path = Path.Combine(patch, "application-state.json");
             if (!File.Exists(path)) continue;
             var applied = JsonNode.Parse(File.ReadAllText(path))!;
-            if (applied["done"]?.GetValue<bool>() == true || (applied["completed"]?.AsArray().Count ?? 0) > 0) throw new Exception("旧工程仍有已应用补丁，须先恢复游戏原件再清理");
+            // Installed patch folders retain the original backups until replacement.
         }
         var old = Program.Load(Path.Combine(previous, "unity-project.json"));
         var reusedText = ReuseText(old, project);
         var reusedImages = ImageResources.Reuse(old, project);
         Program.Save(project);
-        var plan = new ResetPlan(1, "", [Path.GetRelativePath(work, previous)], [], GameWorkspace.PackTask(root, task));
+        var retainInstalled = Directory.GetDirectories(previous, "patch-*").Any(PatchInstallation.HasApplied);
+        var plan = new ResetPlan(1, "", retainInstalled ? [] : [Path.GetRelativePath(work, previous)], [], GameWorkspace.PackTask(root, task));
         Program.WriteJson(Path.Combine(work, "reset-state.json"), plan);
         ResumePending(root);
         return new { ok = true, project, reusedText, reusedImages };
@@ -134,7 +140,6 @@ public static class WorkflowReset
         var translated = old.Entries.ToDictionary(Key);
         var valid = old.Entries.Where(e => e.Error.Length == 0 && TranslationIntegrity.Validate(e.Source, e.Translation).Length == 0).ToArray();
         var scoped = valid.GroupBy(e => (e.File, e.Container, e.ObjectId, e.Source)).ToDictionary(g => g.Key, g => g.Select(e => e.Translation).Distinct().ToArray());
-        var global = valid.GroupBy(e => e.Source).ToDictionary(g => g.Key, g => g.Select(e => e.Translation).Distinct().ToArray());
         var reusedText = 0;
         foreach (var entry in project.Entries) {
             if (translated.TryGetValue(Key(entry), out var saved)) {
@@ -144,7 +149,7 @@ public static class WorkflowReset
                 continue;
             }
             if (entry.Translation.Length > 0 || entry.Error.Length > 0) continue;
-            if (!scoped.TryGetValue((entry.File, entry.Container, entry.ObjectId, entry.Source), out var choices)) global.TryGetValue(entry.Source, out choices);
+            scoped.TryGetValue((entry.File, entry.Container, entry.ObjectId, entry.Source), out var choices);
             if (choices?.Length != 1) continue;
             entry.Translation = choices[0]; reusedText++;
         }

@@ -47,6 +47,7 @@ public static class GameWorkspace
         var result = new JsonObject();
         if (task["imageConfidenceThreshold"] != null) result["imageConfidenceThreshold"] = task["imageConfidenceThreshold"]!.DeepClone();
         if (task["scanElapsedMs"] != null) result["scanElapsedMs"] = task["scanElapsedMs"]!.DeepClone();
+        if (task["includeContext"] != null) result["includeContext"] = task["includeContext"]!.DeepClone();
         foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "imageConcurrency", "imageTask", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         if (task["engines"] is JsonArray engines) {
@@ -141,6 +142,7 @@ public static class GameWorkspace
     }
     public static WorkspaceResult Open(Request request)
     {
+        Program.Progress("正在检查游戏工作目录");
         var root = Full(request.Root); var work = WorkRoot(root); var projects = Path.Combine(work, "projects");
         if (!File.Exists(Path.Combine(work,"workspace.json"))) {
             if(!Directory.Exists(root))throw new Exception("游戏目录不存在");
@@ -179,12 +181,15 @@ public static class GameWorkspace
             }
             marker["legacyChecked"] = true; Program.WriteJson(markerPath, marker);
         }
+        Program.Progress("正在读取任务检查点");
         JsonNode? task = File.Exists(taskPath) ? JsonNode.Parse(File.ReadAllText(taskPath)) : null;
         if (task != null) MapPaths(task, path => Path.IsPathRooted(path) ? throw new Exception("任务检查点路径格式无效") : Program.Within(work, path));
+        Program.Progress("正在查找保存的翻译工程");
         var saved = Program.FindSaved(new Request { Root = root, OutputRoot = projects });
         var folder = task?["projectFolder"]?.GetValue<string>();
         if (string.IsNullOrEmpty(folder)) folder = task?["scanFolder"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(folder)) {
+            Program.Progress("正在读取原文、译文与图片区域信息");
             var project = Program.Load(Path.Combine(folder, "unity-project.json"));
             if (!Same(project.Root, root)) throw new Exception("游戏工作区工程与当前游戏路径不一致");
             saved = new SavedProject(project, saved.ScanCompleted, saved.ScanTotal, saved.Notices) { IncludeCode = saved.IncludeCode };
@@ -218,6 +223,13 @@ public static class GameWorkspace
                 }
             }
         }
-        return new(work, projects, saved, task, PatchInstallation.Status(root).Installed);
+        if (saved.Project != null) {
+            Program.Progress("正在检查图片缓存和可恢复结果");
+            ImageResources.RestorePreviousResults(saved.Project, projects);
+        }
+        Program.Progress("正在检查已安装补丁");
+        var installed = PatchInstallation.Status(root).Installed;
+        Program.Progress("工程数据加载完成，正在恢复界面");
+        return new(work, projects, saved, task, installed);
     }
 }

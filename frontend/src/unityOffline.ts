@@ -32,18 +32,17 @@ export type UnityWorkspace<T> = { workRoot: string; projectsRoot: string; saved:
 export function mergeUnityProject(previous: UnityProject, scanned: UnityProject) {
   const key = (e: UnityEntry) => JSON.stringify([e.file, e.container, e.objectId, e.kind === "UI 文本" && e.locator === "m_Text" ? "/m_Text" : e.locator, e.kind === "UI 文本" ? "游戏文本" : e.kind, e.source]);
   const entries = new Map(previous.entries.map(e => [key(e), e]));
-  const scoped = new Map<string, Set<string>>(), global = new Map<string, Set<string>>();
+  const scoped = new Map<string, Set<string>>();
   const scopeKey = (e: UnityEntry) => JSON.stringify([e.file, e.container, e.objectId, e.source]);
   for (const entry of previous.entries) {
     if (entry.error || unityTranslationProblem(entry.source, entry.translation)) continue;
-    for (const [map, identity] of [[scoped, scopeKey(entry)], [global, entry.source]] as const) {
-      const values = map.get(identity) || new Set<string>(); values.add(entry.translation); map.set(identity, values);
-    }
+    const identity = scopeKey(entry);
+    const values = scoped.get(identity) || new Set<string>(); values.add(entry.translation); scoped.set(identity, values);
   }
   return { ...scanned, entries: scanned.entries.map(e => {
     const saved = entries.get(key(e));
     if (saved) return { ...e, translation: saved.translation, selected: saved.selected, error: saved.error };
-    const choices = scoped.get(scopeKey(e)) || global.get(e.source);
+    const choices = scoped.get(scopeKey(e));
     return !e.translation && !e.error && choices?.size === 1 ? { ...e, translation: choices.values().next().value! } : e;
   }) };
 }

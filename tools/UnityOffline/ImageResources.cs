@@ -135,7 +135,7 @@ public static class ImageResources
     static void Png(byte[] rgba, int width, int height, string path) {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var output = File.Create(path);
-        new ImageWriter().WritePng(rgba, width, height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, output);
+        FastPng.Write(rgba, width, height, output);
     }
     static void Dimensions(int width, int height) {
         if (width <= 0 || height <= 0 || (long)width * height > 64 * 1024 * 1024) throw new Exception("图片尺寸无效或超过 6400 万像素，未解码");
@@ -162,27 +162,34 @@ public static class ImageResources
         }
         return result;
     }
-    public static void ScanTexture(Project project, AssetsFileInstance instance, AssetTypeValueField field, string file, string container, long objectId, bool fontAtlas, Dictionary<string, string> dependencyHashes, TextureScanCache? cache) {
+    public static void ScanTexture(Project project, AssetsFileInstance instance, AssetTypeValueField field, string file, string container, long objectId, bool fontAtlas, Dictionary<string, string> dependencyHashes, TextureScanCache? cache, Action<string>? report = null) {
         var image = new ImageResource { Id = Id(file, container, objectId.ToString()), File = file, Container = container, ObjectId = objectId.ToString(), Name = field["m_Name"].IsDummy ? objectId.ToString() : field["m_Name"].AsString };
         if (fontAtlas || Regex.IsMatch(image.Name, @"(?:font|sdf|lightmap|normalmap|_nrm(?:_|$))", RegexOptions.IgnoreCase)) return;
         project.Images.Add(image);
         try {
             var texture = TextureFile.ReadTextureFile(field);
             image.Width = texture.m_Width; image.Height = texture.m_Height; Dimensions(image.Width, image.Height);
+            report?.Invoke($"检查图片 {image.Width}×{image.Height}");
             if (texture.m_TextureDimension != 2 || texture.m_ImageCount != 1) { project.Images.Remove(image); return; }
             if (texture.m_StreamData.size > 0 && !string.IsNullOrEmpty(texture.m_StreamData.path) && instance.parentBundle == null) {
                 var dependency = Program.Within(project.Root, Path.GetRelativePath(project.Root, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(instance.path)!, texture.m_StreamData.path))));
                 image.DependencyFile = Path.GetRelativePath(project.Root, dependency);
                 // Hundreds of textures can share a multi-gigabyte resS file.
                 // Keep only its digest, scoped to this resource scan, never the file bytes.
-                if (!dependencyHashes.TryGetValue(dependency, out var hash)) dependencyHashes[dependency] = hash = Program.Hash(dependency);
+                if (!dependencyHashes.TryGetValue(dependency, out var hash)) {
+                    report?.Invoke("校验外部纹理数据");
+                    dependencyHashes[dependency] = hash = Program.Hash(dependency);
+                }
                 image.DependencyHash = hash;
             }
-            if (instance.parentBundle == null && cache?.Copy(project, image) == true) return;
+            report?.Invoke("检查原图缓存");
+            if (instance.parentBundle == null && cache?.Copy(project, image) == true) { report?.Invoke("已复用原图缓存"); return; }
+            report?.Invoke($"解码图片 {image.Width}×{image.Height}");
             var encoded = texture.FillPictureData(instance) ?? throw new Exception("未找到纹理的外部 resS 数据");
             var rgba = texture.DecodeTextureRaw(encoded, false) ?? throw new Exception("当前纹理压缩格式不能解码");
             TextureOperations.FlipBGRA32Vertically(rgba, image.Width, image.Height);
             image.SourceFile = "images/source/" + image.Id + ".png";
+            report?.Invoke($"编码并保存 PNG {image.Width}×{image.Height}");
             Png(rgba, image.Width, image.Height, Program.Within(project.Folder, image.SourceFile));
             image.SourceHash = Program.Hash(Program.Within(project.Folder, image.SourceFile));
         } catch (Exception error) { image.Error = error.Message; image.Selected = false; image.SourceFile = ""; }
@@ -284,6 +291,8 @@ public static class ImageResources
         if (texture.m_Width != image.Width || texture.m_Height != image.Height || raw == null || !raw.SequenceEqual(expected.Data)) throw new Exception("译图重读像素校验失败：" + image.Name);
     }
     public static void Reset(Project project) {
+        Directory.CreateDirectory(Path.GetDirectoryName(RecoveryMarker(project))!);
+        Program.WriteJson(RecoveryMarker(project), new { manualReset = true });
         foreach (var image in project.Images) {
             if (Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) {
                 foreach (var relative in new[] { "images/rendered/" + image.Id + ".png", "images/state/" + image.Id + ".json" }) { var path = Program.Within(project.Folder, relative); if (File.Exists(path)) File.Delete(path); }
@@ -311,10 +320,29 @@ public static class ImageResources
         }
     }
     public static int Reuse(Project previous, Project scanned) {
-        var prior = previous.Images.Where(i => i.SourceFile.Length > 0).ToDictionary(i => (i.File, i.Container, i.ObjectId, i.SourceHash));
+        var prior = previous.Images.Where(i => i.SourceFile.Length > 0).ToDictionary(i => (i.File, i.Container, i.ObjectId));
         var count = 0;
+        var examined = 0; long lastReport = 0;
         foreach (var image in scanned.Images.Where(i => i.SourceFile.Length > 0)) {
-            if (!prior.TryGetValue((image.File, image.Container, image.ObjectId, image.SourceHash), out var saved)) continue;
+            examined++;
+            if (Environment.TickCount64 - lastReport >= 250) {
+                lastReport = Environment.TickCount64;
+                Program.Progress($"恢复图片结果：{examined} / {scanned.Images.Count} · {image.Name}", examined, scanned.Images.Count, scanned.Folder);
+            }
+            if (!prior.TryGetValue((image.File, image.Container, image.ObjectId), out var saved)) continue;
+            if (saved.SourceHash != image.SourceHash) {
+                if (saved.Width != image.Width || saved.Height != image.Height) continue;
+                var before = Program.Within(previous.Folder, saved.SourceFile);
+                var after = Program.Within(scanned.Folder, image.SourceFile);
+                if (!File.Exists(before) || !File.Exists(after) || Program.Hash(before) != saved.SourceHash || Program.Hash(after) != image.SourceHash) continue;
+                var sameResource = image.Container.Length == 0 && saved.DependencyFile == image.DependencyFile && saved.DependencyHash == image.DependencyHash &&
+                    previous.Hashes.TryGetValue(image.File, out var oldHash) && scanned.Hashes.TryGetValue(image.File, out var newHash) && oldHash == newHash;
+                if (!sameResource) {
+                    var original = ImageResult.FromMemory(File.ReadAllBytes(before), StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+                    var current = ImageResult.FromMemory(File.ReadAllBytes(after), StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+                    if (original.Width != current.Width || original.Height != current.Height || !original.Data.AsSpan().SequenceEqual(current.Data)) continue;
+                }
+            }
             image.Selected = saved.Selected; image.OcrCompleted = saved.OcrCompleted; image.Completed = saved.Completed; image.Error = saved.Error;
             image.Regions = saved.Regions;
             if (saved.RenderedFile.Length > 0) {
@@ -330,6 +358,30 @@ public static class ImageResources
             }
             if (image.OcrCompleted || image.Regions.Count > 0 || image.Completed) count++;
         }
+        return count;
+    }
+    static string RecoveryMarker(Project project) => Path.Combine(project.Folder, "images", "previous-results-checked.json");
+    public static int RestorePreviousResults(Project project, string projectsRoot)
+    {
+        if (project.Images.Count == 0 || File.Exists(RecoveryMarker(project))) return 0;
+        var count = 0;
+        foreach (var folder in Directory.EnumerateDirectories(projectsRoot, "unity-project-*").OrderByDescending(Directory.GetLastWriteTimeUtc)) {
+            if (Path.GetFullPath(folder).Equals(Path.GetFullPath(project.Folder), StringComparison.OrdinalIgnoreCase)) continue;
+            var candidates = project.Images.Where(image => !image.OcrCompleted && image.Regions.Count == 0 && image.RenderedFile.Length == 0 && image.Error.Length == 0).ToList();
+            if (candidates.Count == 0) break;
+            var path = Path.Combine(folder, "unity-project.json"); if (!File.Exists(path)) continue;
+            Program.Progress("正在匹配旧工程的图片识别、译文和勾选状态", count, project.Images.Count, project.Folder);
+            var previous = Program.Load(path);
+            if (!Path.GetFullPath(previous.Root).Equals(Path.GetFullPath(project.Root), StringComparison.OrdinalIgnoreCase)) continue;
+            previous.Images = previous.Images.Where(image => image.OcrCompleted || image.Regions.Count > 0 || image.RenderedFile.Length > 0).ToList();
+            count += Reuse(previous, new Project { Root = project.Root, Folder = project.Folder, Images = candidates, Hashes = project.Hashes });
+        }
+        if (count > 0) {
+            project.Warnings.Add($"已从旧工程恢复 {count} 张图片的识别、译文和勾选状态。");
+            Program.Save(project);
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(RecoveryMarker(project))!);
+        Program.WriteJson(RecoveryMarker(project), new { restored = count });
         return count;
     }
 }
