@@ -9,6 +9,8 @@ param(
 
     [string]$Owner = "",
 
+    [int]$OwnerProcessId = 0,
+
     [ValidateRange(0, 86400)]
     [int]$WaitSeconds = 0,
 
@@ -116,6 +118,20 @@ function Test-LockExpired($Record) {
     }
 }
 
+function Test-LockAbandoned($Record) {
+    if ([string]$Record.machine -ne [System.Environment]::MachineName) { return $false }
+    $ownerPid = [int]$Record.ownerProcessId
+    if ($ownerPid -le 0 -and [string]$Record.owner -match '^manual-build-(\d+)$') { $ownerPid = [int]$Matches[1] }
+    if ($ownerPid -le 0) { return $false }
+    try { $process = Get-Process -Id $ownerPid -ErrorAction Stop }
+    catch { return $_.CategoryInfo.Category -eq 'ObjectNotFound' }
+    try {
+        $started = [datetimeoffset]$process.StartTime
+        if ([string]$Record.ownerProcessStartedAt) { return [Math]::Abs(($started - [datetimeoffset]::Parse([string]$Record.ownerProcessStartedAt)).TotalSeconds) -gt 2 }
+        return $started -gt [datetimeoffset]::Parse([string]$Record.acquiredAt).AddSeconds(2)
+    } catch { return $false }
+}
+
 function Remove-ExpiredLocksUnsafe {
     if (-not (Test-Path -LiteralPath $lockRoot)) {
         return 0
@@ -123,7 +139,7 @@ function Remove-ExpiredLocksUnsafe {
     $removed = 0
     foreach ($file in Get-ChildItem -LiteralPath $lockRoot -Filter "*.lock.json" -File -ErrorAction SilentlyContinue) {
         $record = Read-LockFile $file.FullName
-        if ($null -eq $record -or (Test-LockExpired $record)) {
+        if ($null -eq $record -or (Test-LockExpired $record) -or (Test-LockAbandoned $record)) {
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
             $removed++
         }
@@ -268,6 +284,8 @@ function Write-LockFileUnsafe([string]$LockFile, [string]$Path, [string]$Scope, 
     else {
         [System.DateTimeOffset]::UtcNow.ToString("o")
     }
+    $boundPid = if ($OwnerProcessId -gt 0) { $OwnerProcessId } elseif ($null -ne $Existing) { [int]$Existing.ownerProcessId } else { 0 }
+    $boundStart = if ($boundPid -gt 0) { ([datetimeoffset](Get-Process -Id $boundPid -ErrorAction Stop).StartTime).ToString("o") } else { "" }
     $payload = [ordered]@{
         version = 1
         scope = $Scope
@@ -275,6 +293,8 @@ function Write-LockFileUnsafe([string]$LockFile, [string]$Path, [string]$Scope, 
         owner = $LockOwner
         acquiredAt = $acquiredAt
         expiresAt = $ExpiresAt.ToString("o")
+        ownerProcessId = $boundPid
+        ownerProcessStartedAt = $boundStart
         machine = [System.Environment]::MachineName
     } | ConvertTo-Json
     [System.IO.File]::WriteAllText($LockFile, $payload + [System.Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))

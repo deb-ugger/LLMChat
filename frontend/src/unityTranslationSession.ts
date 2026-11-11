@@ -81,11 +81,16 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
   let last: { id: string; failed: boolean } | undefined;
   let saveFailure: unknown;
   let closed = false;
-  let saveQueue = Promise.resolve();
-  const persist = () => {
-    const write = saveQueue.then(() => { if (saveFailure) throw saveFailure; return session.persist(); });
-    saveQueue = write.catch(error => { saveFailure = error; });
-    return write;
+  let saveInFlight:Promise<void>|null=null;
+  let changedVersion=0,savedVersion=0,lastSave=performance.now();
+  const persist = (force=false,markChanged=true):Promise<void> => {
+    if(markChanged)changedVersion++;
+    if(saveFailure)return Promise.reject(saveFailure);
+    if(saveInFlight)return force?saveInFlight.then(()=>persist(true,false)):saveInFlight;
+    if(savedVersion>=changedVersion||!force&&changedVersion-savedVersion<32&&performance.now()-lastSave<1000)return Promise.resolve();
+    const version=changedVersion;
+    const write=Promise.resolve().then(()=>session.persist()).then(()=>{savedVersion=version;lastSave=performance.now();}).catch(error=>{saveFailure=error;throw error;}).finally(()=>{saveInFlight=null;});
+    saveInFlight=write;return force?write.then(()=>persist(true,false)):write;
   };
   const report = (detail: string) => session.progress?.({ detail, completed: initial.completed + processed, total: initial.total, coverageCompleted: covered, coverageTotal: entries.length, requests, reused: reusedGroups,
     translation: { processed, pending: groups.size, successful: completed, failed: failures, failedEntries, active: [...active.values()], last } });
@@ -119,7 +124,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       if (translationProblem) throw new Error(translationProblem);
       if (session.retainDraft && session.format && group.some(item => /[\r\n]/.test(item.source))) {
         group.forEach(item => { item.layoutDraft = translated; });
-        if (session.persistDraftBeforeFormat) try { await persist(); } catch (error) { persistenceFailure = true; throw error; }
+        if (session.persistDraftBeforeFormat) try { await persist(true); } catch (error) { persistenceFailure = true; throw error; }
       }
       formatting = !!session.format;
       if (formatting) phase("formatting");
@@ -173,5 +178,5 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
     const results = await Promise.allSettled(Array.from({ length: Math.min(Math.max(1, session.concurrency || 1), pending.length) }, worker));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) throw rejected.reason;
-  } finally { closed = true; session.signal.removeEventListener("abort", wake); session.onQueue?.(null); }
+  } finally { try{await persist(true,false);}finally{closed = true; session.signal.removeEventListener("abort", wake); session.onQueue?.(null);} }
 }

@@ -12,7 +12,27 @@ function trim() {
  let bytes = [...cache.values()].reduce((sum, item) => sum + (item.value?.bytes || 0), 0);
  for (const [key, item] of cache) { if (bytes <= limit && cache.size <= 96) break; if (item.users || !item.value) continue; bytes -= item.value.bytes; URL.revokeObjectURL(item.value.url); if(item.value.opaqueUrl)URL.revokeObjectURL(item.value.opaqueUrl); cache.delete(key); }
 }
-function pump() { while(active < 2 && queue.length) { const item=queue.shift()!; item.started=true; active++; item.run(); } }
+type ThumbnailData={data:string;opaque:string;fullyTransparent:boolean};
+type ThumbnailRequest={image:UnityImage;signal:AbortSignal;resolve:(data:ThumbnailData)=>void;reject:(error:unknown)=>void};
+const thumbnailBatches=new Map<string,ThumbnailRequest[]>();
+function readUnityThumbnail(project:UnityProject,image:UnityImage,signal:AbortSignal):Promise<ThumbnailData>{
+ return new Promise((resolve,reject)=>{
+  const pending=thumbnailBatches.get(project.folder);
+  const entry={image,signal,resolve,reject};
+  if(pending){pending.push(entry);return;}
+  const batch=[entry];thumbnailBatches.set(project.folder,batch);
+  setTimeout(()=>{thumbnailBatches.delete(project.folder);const live=batch.filter(item=>!item.signal.aborted);for(const item of batch)if(item.signal.aborted)item.reject(new DOMException("图片读取已取消","AbortError"));
+   if(!live.length)return;
+   const controller=new AbortController(),cancel=()=>{if(live.every(item=>item.signal.aborted))controller.abort();};
+   live.forEach(item=>item.signal.addEventListener("abort",cancel,{once:true}));
+   void unityRun<{images:Array<{id:string;preview?:ThumbnailData;error?:string}>}>("preview-image",{thumbnail:true,project:{folder:project.folder,images:live.map(item=>item.image)}},undefined,controller.signal).then(result=>{
+    const rows=new Map(result.images.map(item=>[item.id,item]));
+    for(const item of live){const row=rows.get(item.image.id);if(row?.preview)item.resolve(row.preview);else item.reject(new Error(row?.error||"缩略图未返回"));}
+   }).catch(error=>live.forEach(item=>item.reject(error))).finally(()=>live.forEach(item=>item.signal.removeEventListener("abort",cancel)));
+  },0);
+ });
+}
+function pump() { while(active < 6 && queue.length) { const item=queue.shift()!; item.started=true; active++; item.run(); } }
 export function acquireUnityImagePreview(project: UnityProject, image: UnityImage, translated: boolean, thumbnail = false, reader?: ImagePreviewReader) {
  const key=unityImagePreviewKey(project,image,translated,thumbnail);let item=cache.get(key);
  if(item){cache.delete(key);cache.set(key,item);}else{
@@ -22,7 +42,7 @@ export function acquireUnityImagePreview(project: UnityProject, image: UnityImag
   entry.run=()=>{void(async()=>{const signal=entry.controller.signal;try{
    signal.throwIfAborted();let blob:Blob,opaque:Blob|undefined;
    if(reader)blob=await reader(image,translated,thumbnail,signal);else if(translated)blob=new Blob([await readFileBytes(project.folder+"/"+image.renderedFile)],{type:"image/png"});else{
-    const data=await unityRun<{data:string;opaque:string;fullyTransparent:boolean}>("preview-image",{path:project.folder,imageId:image.id,thumbnail,project:{folder:project.folder,images:[image]}},undefined,signal);
+    const data=thumbnail?await readUnityThumbnail(project,image,signal):await unityRun<ThumbnailData>("preview-image",{path:project.folder,imageId:image.id,thumbnail:false,project:{folder:project.folder,images:[image]}},undefined,signal);
     signal.throwIfAborted();blob=await fetch("data:image/png;base64,"+data.data,{signal}).then(response=>response.blob());
     if(data.fullyTransparent)opaque=await fetch("data:image/png;base64,"+data.opaque,{signal}).then(response=>response.blob());
    }

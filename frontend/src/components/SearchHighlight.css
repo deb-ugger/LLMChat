@@ -1,0 +1,9 @@
+.search-match { color:inherit; background:#ffe083; border-radius:2px; padding:0; }
+.search-editor { position:relative; display:block; flex:1; min-width:0; width:100%; }
+.search-editor > textarea { position:relative; z-index:1; width:100%; box-sizing:border-box; }
+.unity-entry-editor > .search-editor { height:100%; }
+.search-editor.has-search-match > textarea { background:transparent!important; }
+.search-editor-mirror { position:absolute; box-sizing:border-box; overflow:hidden; white-space:pre-wrap; pointer-events:none; border-color:transparent; background:var(--panel,#fff); }
+.search-editor-mirror .search-match { color:transparent; }
+.search-matched-field { display:block; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; font-weight:400; }
+.unity-offline-table td .search-matched-field { white-space:pre-wrap; }

@@ -16,7 +16,7 @@ export function decodeTextBatch(raw: string, expected: string[]) {
   return result;
 }
 export function estimateTextTokens(text: string) { return Math.ceil([...text].reduce((count, char) => count + (/[^\x00-\x7f]/.test(char) ? 1 : 0.25), 0)); }
-/** The module owns only text-project request batches; callers own persistence. */
+/** Structured translation batching only; callers own module state and persistence. */
 export function createTextBatchClient(request: (items: BatchTextItem[]) => Promise<Map<string, string>>, tokenBudget: number, concurrency: number, signal: AbortSignal) {
   type Pending = { item: BatchTextItem; resolve: (text: string) => void; reject: (error: unknown) => void };
   const pending: Pending[] = [];
@@ -59,6 +59,7 @@ export function createTextBatchClient(request: (items: BatchTextItem[]) => Promi
       void deliver(batch).finally(() => { running--; drain(); });
     }
   };
+  signal.addEventListener("abort",()=>pending.splice(0).forEach(item=>item.reject(signal.reason)),{once:true});
   return (item: BatchTextItem) => new Promise<string>((resolve, reject) => {
     if (signal.aborted) { reject(signal.reason); return; }
     pending.push({ item, resolve, reject });

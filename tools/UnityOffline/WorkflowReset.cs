@@ -26,6 +26,24 @@ public static class WorkflowReset
         if (!Same(project.Root, root)) throw new Exception("清理目标不属于当前游戏");
         NoLinks(folder);
     }
+    public static WorkspaceResult PrepareRescan(Request request)
+    {
+        var task = (request.Task ?? throw new Exception("缺少重新扫描任务设置")).DeepClone();
+        var previous = task["previousProjectFolder"]?.GetValue<string>();
+        var source = string.IsNullOrWhiteSpace(previous) ? request.Path : previous;
+        // A paused replacement scan may still refer to the older reuse source.
+        // Retain that source and discard only the unfinished replacement.
+        task["previousProjectFolder"] = !Same(source, request.Path) ? request.Path : "";
+        var reset = Start(new Request { Root = request.Root, Path = source, Step = 3, Task = task });
+        task = reset.Workspace.Task!.DeepClone();
+        foreach (var name in new[] { "scan-state.json", "scan-files.json" }) File.Delete(Path.Combine(source, name));
+        task["step"] = 1; task["endStep"] = 1; task["finished"] = false; task["automatic"] = false;
+        task["projectFolder"] = source; task["previousProjectFolder"] = source; task["scanFolder"] = "";
+        task["scanElapsedMs"] = 0;
+        task["progress"] = new JsonObject { ["step"] = 1, ["state"] = "pending", ["completed"] = 0, ["total"] = null, ["detail"] = "旧扫描进度与失效产物已清理，等待开始扫描" };
+        GameWorkspace.SaveTask(new Request { Root = request.Root, Task = task });
+        return GameWorkspace.Open(new Request { Root = request.Root });
+    }
     public static ResetResult Start(Request request)
     {
         if (request.Step is < 1 or > 4) throw new Exception("无效重做步骤");
@@ -102,20 +120,35 @@ public static class WorkflowReset
             if (applied["done"]?.GetValue<bool>() == true || (applied["completed"]?.AsArray().Count ?? 0) > 0) throw new Exception("旧工程仍有已应用补丁，须先恢复游戏原件再清理");
         }
         var old = Program.Load(Path.Combine(previous, "unity-project.json"));
-        static (string, string, string, string, string) Key(Entry e) => (e.File, e.Container, e.ObjectId, e.Locator == "m_Text" ? "/m_Text" : e.Locator, e.Source);
-        var translated = old.Entries.ToDictionary(Key);
-        var reusedText = 0;
-        foreach (var entry in project.Entries) if (translated.TryGetValue(Key(entry), out var saved)) {
-            entry.Selected = saved.Selected;
-            if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) { entry.Translation = saved.Translation; reusedText++; }
-            entry.LayoutDraft = saved.LayoutDraft; entry.Error = saved.Error;
-        }
+        var reusedText = ReuseText(old, project);
         var reusedImages = ImageResources.Reuse(old, project);
         Program.Save(project);
         var plan = new ResetPlan(1, "", [Path.GetRelativePath(work, previous)], [], GameWorkspace.PackTask(root, task));
         Program.WriteJson(Path.Combine(work, "reset-state.json"), plan);
         ResumePending(root);
         return new { ok = true, project, reusedText, reusedImages };
+    }
+    public static int ReuseText(Project old, Project project)
+    {
+        static (string, string, string, string, string) Key(Entry e) => (e.File, e.Container, e.ObjectId, e.Locator == "m_Text" ? "/m_Text" : e.Locator, e.Source);
+        var translated = old.Entries.ToDictionary(Key);
+        var valid = old.Entries.Where(e => e.Error.Length == 0 && TranslationIntegrity.Validate(e.Source, e.Translation).Length == 0).ToArray();
+        var scoped = valid.GroupBy(e => (e.File, e.Container, e.ObjectId, e.Source)).ToDictionary(g => g.Key, g => g.Select(e => e.Translation).Distinct().ToArray());
+        var global = valid.GroupBy(e => e.Source).ToDictionary(g => g.Key, g => g.Select(e => e.Translation).Distinct().ToArray());
+        var reusedText = 0;
+        foreach (var entry in project.Entries) {
+            if (translated.TryGetValue(Key(entry), out var saved)) {
+                entry.Selected = saved.Selected;
+                if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) { entry.Translation = saved.Translation; reusedText++; }
+                entry.LayoutDraft = saved.LayoutDraft; entry.Error = saved.Error;
+                continue;
+            }
+            if (entry.Translation.Length > 0 || entry.Error.Length > 0) continue;
+            if (!scoped.TryGetValue((entry.File, entry.Container, entry.ObjectId, entry.Source), out var choices)) global.TryGetValue(entry.Source, out choices);
+            if (choices?.Length != 1) continue;
+            entry.Translation = choices[0]; reusedText++;
+        }
+        return reusedText;
     }
     public static void ResumePending(string root)
     {

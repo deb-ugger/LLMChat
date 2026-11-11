@@ -33,7 +33,7 @@ try {
     Write-Output '[1/6] Acquiring the repository build lock...'
     $waiting = $false
     do {
-        $attempt = Invoke-BuildLock @('acquire', '-Global', '-Owner', $Owner, '-WaitSeconds', '60')
+        $attempt = Invoke-BuildLock @('acquire', '-Global', '-Owner', $Owner, '-OwnerProcessId', [string]$PID, '-WaitSeconds', '60')
         if ($attempt.Code -eq 0) { $locked = $true; break }
         if ($attempt.Code -ne 2) { throw "Build lock failed: $($attempt.Output)" }
         $diagnostic = Invoke-BuildLock @('diagnose')

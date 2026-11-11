@@ -8,6 +8,35 @@ public sealed record DocumentText(string Locator, string Text, Action<string> Se
 
 public static class TextDocuments
 {
+    // Embedded TextAssets frequently omit the CSV extension. Identify table headers
+    // before applying paragraph or model-based segmentation to the whole document.
+    public static char? TableSeparator(string text)
+    {
+        var end = text.IndexOfAny(['\r', '\n']);
+        if (end < 0) return null;
+        var header = text[..end].TrimStart('\uFEFF');
+        foreach (var separator in new[] { ',', '\t' }) {
+            var fields = header.Split(separator).Select(s => s.Trim().Trim('"')).ToArray();
+            if (fields.Length < 2 || fields.Any(s => !Regex.IsMatch(s, @"^[A-Za-z_][A-Za-z0-9_]*$"))) continue;
+            if (fields.Any(s => Regex.IsMatch(s, @"^(?:name\d*|text|description|message|title|dialogue|caption)$", RegexOptions.IgnoreCase)) &&
+                fields.Any(s => Regex.IsMatch(s, @"^(?:id|key|level|label|atk|def|hp|mp|count|time|scale|value|type|kind|name\d*)$", RegexOptions.IgnoreCase))) return separator;
+        }
+        return null;
+    }
+    public static bool HasCommands(string text) => Regex.IsMatch(text, @"(?:^|\r?\n|\\n)\s*\[[A-Za-z_][\w-]*(?:\s[^\]\r\n]*)?\]");
+    static string RecordLines(string text, Action<DocumentText> visit, bool script)
+    {
+        var parts = Regex.Split(text, script ? @"(\r\n|\n|\r|\\n)" : @"(\r\n|\n|\r)");
+        for (var i = 0; i < parts.Length; i += 2) {
+            var line = parts[i]; var index = i;
+            if (string.IsNullOrWhiteSpace(line) || script && (line.TrimStart().StartsWith('#') || Regex.IsMatch(line, @"\[[A-Za-z_][^\]]*\]"))) continue;
+            visit(new("line/" + i / 2, line, translated => {
+                if (translated.IndexOfAny(['\r', '\n']) >= 0 || translated.Contains(@"\n")) throw new Exception("此资源按固定行读取，译文不能增加换行；请修改本行后重试");
+                parts[index] = translated;
+            }));
+        }
+        return string.Concat(parts);
+    }
     public static string Read(string path) => new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
     public static string Locale(string path)
     {
@@ -26,7 +55,10 @@ public static class TextDocuments
         if (text.StartsWith('\uFEFF')) return "\uFEFF" + Process(text[1..], name, mode, visit);
         var extension = Path.GetExtension(name).ToLowerInvariant();
         if (extension is ".csv" or ".tsv") return Csv(text, extension == ".tsv" ? '\t' : ',', visit);
+        if (TableSeparator(text) is char separator) return Csv(text, separator, visit, true);
         if (extension == ".xml") return Xml(text, visit);
+        if (HasCommands(text)) return RecordLines(text, visit, true);
+        if (Path.GetFileNameWithoutExtension(name).Equals("name_list", StringComparison.OrdinalIgnoreCase)) return RecordLines(text, visit, false);
         if (mode == "lines" || text.TrimStart().StartsWith('{') || text.TrimStart().StartsWith('['))
             return Program.TextDocument(text, (loc, value, set) => visit(new(loc, value, set, Locale(loc), Locale(loc).Length > 0 ? "text" : loc.StartsWith("line/") ? "text" : loc.Split('/').Last())));
         if (text.Contains('\0')) throw new Exception("文件包含二进制数据，不能按文本提取");
@@ -48,7 +80,7 @@ public static class TextDocuments
     }
 
     sealed record Cell(int Start, int End, string Value, bool Quoted);
-    static string Csv(string text, char separator, Action<DocumentText> visit)
+    static string Csv(string text, char separator, Action<DocumentText> visit, bool preserveUnquotedCells = false)
     {
         var records = new List<List<Cell>>(); var row = new List<Cell>(); var index = 0;
         while (index < text.Length) {
@@ -79,7 +111,7 @@ public static class TextDocuments
         var header = records[0]; var changes = new List<(Cell Cell, string Value)>();
         for (var column = 0; column < header.Count; column++) {
             var field = header[column].Value.Trim(); var locale = Locale(field);
-            if (GameText.IsTechnicalField(field) || locale.Length == 0 && !Regex.IsMatch(field, @"^(?:text|message|dialogue|description|caption|title|displayName|content|body|choice|prompt|source|translation|name|sentence|value)$", RegexOptions.IgnoreCase)) continue;
+            if (GameText.IsTechnicalField(field) || locale.Length == 0 && !Regex.IsMatch(field, @"^(?:text|message|dialogue|description|caption|title|displayName|content|body|choice|prompt|source|translation|name\d*|sentence|value)$", RegexOptions.IgnoreCase)) continue;
             for (var record = 1; record < records.Count; record++) {
                 if (records[record].Count != header.Count) throw new Exception($"CSV 第 {record + 1} 条记录列数与表头不一致");
                 var cell = records[record][column];
@@ -88,6 +120,8 @@ public static class TextDocuments
         }
         var result = new StringBuilder(text);
         foreach (var change in changes.OrderByDescending(c => c.Cell.Start)) {
+            if (preserveUnquotedCells && !change.Cell.Quoted && (change.Value.Contains(separator) || change.Value.IndexOfAny(['"', '\r', '\n']) >= 0))
+                throw new Exception("数据表译文包含分隔符、引号或换行，会改变游戏字段结构；请修改此单元格译文后重试");
             var quoted = change.Cell.Quoted || change.Value.Contains(separator) || change.Value.IndexOfAny(['"', '\r', '\n']) >= 0;
             var replacement = quoted ? "\"" + change.Value.Replace("\"", "\"\"") + "\"" : change.Value;
             result.Remove(change.Cell.Start, change.Cell.End - change.Cell.Start).Insert(change.Cell.Start, replacement);

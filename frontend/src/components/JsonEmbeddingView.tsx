@@ -1,6 +1,7 @@
+import { useGameFileDrop,gameDropTarget } from "../hooks/useGameFileDrop";
+import { UnityGameWorkspace } from "./UnityGameWorkspace";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
 import { GameImageWorkbench } from "./GameImageWorkbench";
-import { usePersistedHeight } from "../hooks/usePersistedHeight";
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -22,7 +23,9 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true }: { settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
-  const {height:outputHeight,setHeight:setOutputHeight,beginResize:resizeOutput}=usePersistedHeight("llmchat-game-output-height",180,70,600);
+  const [controlsTarget,setControlsTarget]=useState<HTMLDivElement|null>(null),[resultsTarget,setResultsTarget]=useState<HTMLDivElement|null>(null);
+  const [imageScanRequest,setImageScanRequest]=useState(0);
+  const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
   const [textStep,setTextStep]=useState(1);
   const [part,setPart]=useState<"text"|"images">("text");const [imagesVisited,setImagesVisited]=useState(false);
   useEffect(()=>{if(part==="images")setImagesVisited(true);},[part]);
@@ -60,9 +63,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     catch (cause) { setError(String(cause)); } finally { setPending(false); }
   };
   useEffect(() => { if (["idle", "backedUp", "applied", "rolledBack", "uninstalled", "cleaned"].includes(status.state) || status.action === "backup" && status.state !== "running" && status.state !== "error") void loadBackups(); }, [status.state, status.action, game.path]);
-  const start = async (action: string) => {
+  const start = async (action: string,jsonPath=file) => {
     touched.current = true; setPending(true); setPendingAction(action); setError("");
-    try { const value=await call<Status>("start", { action, gamePath: game.path, jsonPath: file, backupId, fontPath, backupMode, backupScopes });setStatus(value); }
+    if(action==="extract"&&game.engine.startsWith("RPG Maker")){setImagesVisited(true);setImageScanRequest(value=>value+1);}
+    try { const value=await call<Status>("start", { action, gamePath: game.path, jsonPath, backupId, fontPath, backupMode, backupScopes });setStatus(value); }
     catch (cause) { setError(String(cause)); } finally { setPending(false); }
   };
   const pick = async () => {
@@ -74,21 +78,22 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   const dropped = async (path: string) => {
     if (busyRef.current) return;
-    touched.current = true;
-    if (/\.json$/i.test(path)) { setFile(path); setStatus({ state: "idle" }); }
-    else onGameDrop(path);
+    if(/\.(json|csv|png|jpe?g|webp|bmp|zip)$/i.test(path))return;
+    touched.current = true;onGameDrop(path);
   };
   useEffect(() => {
     if (!isTauri() || !active) return;
     let disposed = false, unlisten: (() => void) | undefined;
     void getCurrentWindow().onDragDropEvent(event => {
-      if (event.payload.type === "drop" && event.payload.paths[0]) void dropped(event.payload.paths[0]);
+      if (event.payload.type === "drop" && event.payload.paths[0]&&!gameDropTarget(event.payload.position)?.closest("[data-game-drop-zone]")) void dropped(event.payload.paths[0]);
     }).then(stop => { if (disposed) stop(); else unlisten = stop; }).catch(cause => setError(String(cause)));
     return () => { disposed = true; unlisten?.(); };
   }, [active]);
   const pickFont = async () => {try{const selected=await open({multiple:false,filters:[{name:"字体",extensions:["ttf","otf"]}]});if(typeof selected==="string")setFontPath(selected);}catch(cause){setError(String(cause));}};
 
 
+  const textDropRoot=useRef<HTMLDivElement>(null);
+  const textDrop=useGameFileDrop({busy:status.action==="inspect"&&status.state==="running"||pendingAction==="inspect"&&pending,active:active&&part==="text"&&textStep===2&&!busy,root:textDropRoot,match:(_target,names)=>names.length<=1&&(!names[0]||/\.json$/i.test(names[0]))?textDropRoot.current:null,label:()=>"松开以导入翻译 JSON",drop:async source=>{const path=typeof source==="string"?source:(source as File&{path?:string}).path;if(!path)throw new Error("无法取得文件路径，请在桌面窗口拖入 JSON 文件，或使用导入按钮");touched.current=true;setFile(path);await start("inspect",path);},error:setError});
   const openText = () => {const source=status.exportPath||file;if(source){sessionStorage.setItem("llmchat-game-text",source);window.dispatchEvent(new Event("llmchat-open-game-text"));}};
   const progress = (actions: string[]) => {
     const action=pending ? pendingAction : status.action;
@@ -107,10 +112,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const restorePanel=(<section className="embed-section" data-section="restore"><header><h3>恢复</h3></header>        <select aria-label="选择回滚备份" disabled={busy||!backups.length} value={backupId} onChange={e=>setBackupId(e.target.value)}><option value="">选择备份</option>{backups.map((item,index)=><option key={item.id} value={item.id} disabled={item.state==="rolledBack"}>{index+1} · {item.resources} 组资源 · {item.state==="snapshot"?"独立备份":item.state==="rolledBack"?"已回滚":item.state==="applied"?"已应用":"待恢复"}</option>)}</select>
 <div className="json-embedding-actions"><IconAction name="refresh" label="刷新备份列表" disabled={busy} onClick={()=>void loadBackups()}/><IconAction name="rollback" caption="恢复" label="回滚所选备份的原资源" disabled={busy||!backupId} onClick={()=>void start("rollback")}/></div>{progress(["rollback"])}</section>);
 
-  const logPanel=(<div className="embed-local-output">    <div className="embed-splitter is-horizontal" role="separator" aria-label="调整输出栏高度" aria-orientation="horizontal" aria-valuemin={70} aria-valuemax={600} aria-valuenow={outputHeight} tabIndex={0} onMouseDown={event=>resizeOutput(event,"grow-up")} onKeyDown={event=>{if(event.key==="ArrowUp"||event.key==="ArrowDown"){event.preventDefault();setOutputHeight(Math.min(600,Math.max(70,outputHeight+(event.key==="ArrowUp"?10:-10))));}}}/>
-    <section style={{height:outputHeight}} className="embed-log" aria-label="输出"><header><strong>输出</strong></header><div className="embed-log-lines" role="log" aria-live="polite">{logs.map(entry=><p key={entry.id} className={`is-${entry.level}`}>{entry.text}</p>)}<div ref={logBottom}/></div></section></div>);
-
-  const selectWorkflow=(id:string)=>{if(id==="2.2"){setPart("images");setTextStep(2);}else{setPart("text");setTextStep(id==="2.1"?2:Number(id));}};
+  const logPanel=<section className="unity-offline-footer" aria-label="任务输出"><div className="unity-output-heading"><strong>输出</strong></div><div className="unity-offline-log embed-log-lines" role="log" aria-live="polite">{logs.map(entry=><p key={entry.id} className={`is-${entry.level}`}>{entry.text}</p>)}<div ref={logBottom}/></div></section>;
+  const selectWorkflow=(id:string)=>{const change=()=>{if(id==="2.2"){setPart("images");setTextStep(2);}else{setPart("text");setTextStep(id==="2.1"?2:Number(id));}};if(part==="images"&&id!=="2.2"&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();};
   const workflowSteps=<GameWorkflowSteps steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"翻译文本"},...(game.engine.startsWith("RPG Maker")?[{id:"2.2",label:"图片翻译"}]:[]),{id:"3",label:"生成补丁"},{id:"4",label:"应用到游戏"}].map(item=>{
     const selected=part==="images"?(textStep===4?item.id==="4":item.id==="2.2"):item.id===(textStep===2?"2.1":String(textStep));
     const operationStep=status.action==="extract"?"1":status.action==="inspect"?"2.1":status.action==="embed"?"3":"4";
@@ -119,12 +122,13 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     return {...item,number:item.id,state,selected,paused:imageWorkflow.state==="stopped"&&item.id===imageStep,running:imageBusy&&item.id===imageStep||status.state==="running"&&operationStep===item.id,onSelect:()=>selectWorkflow(item.id)};
   })}/>;
   return <div className="json-embedding-view" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>
-    <main className="embed-workspace">
+    {textDrop.overlay}
+    <main className="embed-workspace embed-unity-workspace">
       <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={onBack}/><strong title={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" title={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button></header>
 
-      <section className="embed-text-layout" hidden={part!=="text"}>
-        <div className="embed-text-left"><section className="embed-text-operation">
-        {workflowSteps}
+      <UnityGameWorkspace controls={<div ref={setControlsTarget} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} className="engine-workspace-slot engine-result-slot"/>} output={logPanel}/>
+      {controlsTarget&&createPortal(<div hidden={part!=="text"} className="engine-workflow-content">{workflowSteps}<div className="unity-step-panel">
+
 <header><h3>文本翻译</h3><IconAction name="help" label="导出 MTool JSON，在文本翻译工程翻译后导入；也可使用已有译文。保留脚本、标识符和资源路径。应用前请关闭游戏。"/><div className="json-embedding-actions"><span hidden={textStep!==1}><IconAction name="extract" caption="扫描资源" label="提取游戏文本并导出 MTool JSON" disabled={busy} onClick={()=>void start("extract")}/></span><span hidden={textStep!==1}><IconAction name="open" caption="进入翻译工程" label="使用文本翻译工程翻译原文" disabled={busy||!(status.exportPath||file)} onClick={openText}/></span><span hidden={textStep!==2}><IconAction name="json" caption="导入翻译" label="选择翻译 JSON，也可拖入" disabled={busy} onClick={()=>void pick()}/></span></div></header>
 
         {textStep===1&&output("MTool JSON",status.exportPath)}
@@ -139,14 +143,11 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
 
         {textStep===3&&<div className="embed-section"><div className="json-embedding-actions"><IconAction name="generate" caption="生成补丁" label="生成嵌入补丁" disabled={busy||status.state!=="ready"||!status.matched} onClick={()=>void start("embed")}/></div></div>}
         {textStep===4&&<>{backupPanel}{game.engine.startsWith("RPG Maker")&&<button className="unity-btn" type="button" onClick={()=>{setPart("images");setTextStep(4);}}>应用图片译图</button>}<div className="json-embedding-actions"><IconAction name="apply" caption={patch.installed?"更新译文":"应用译文"} label="应用到游戏，请先关闭游戏" disabled={busy||status.state!=="done"||!!patch.conflicts.length} onClick={()=>void start("apply")}/></div>        <div className="embed-patch-state"><strong>{detecting?"正在检测补丁…":patch.installed?"文本补丁已安装":patch.legacy?"发现历史补丁，检查译文后接管":patch.managed?"文本补丁已卸载":"未发现文本补丁安装记录"}</strong><IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={()=>void loadPatch(true)}/><IconAction name="rollback" caption="卸载" label="卸载文本补丁并恢复安装前资源" disabled={busy||!patch.installed||!!patch.conflicts.length} onClick={()=>void start("uninstall-text")}/><IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy||patch.installed||!patch.managed} onClick={()=>void start("cleanup-text")}/></div>{restorePanel}</>}
-        </section>{logPanel}</div>
-        <section className="embed-text-results" aria-label="译文检查结果"><h3>检查结果</h3>        {status.dictionaryEntries!==undefined&&<dl className="json-embedding-counts"><div><dt>词典条目</dt><dd>{status.dictionaryEntries.toLocaleString()}</dd></div>{status.matched!==undefined&&<div><dt>命中次数</dt><dd>{status.matched.toLocaleString()}</dd></div>}{status.blocked!==undefined&&<div><dt>异常，保留原文</dt><dd>{status.blocked.toLocaleString()}</dd></div>}</dl>}
+        {output("工作目录",status.outputPath)}</div></div>,controlsTarget)}
+      {resultsTarget&&createPortal(<div ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} hidden={part!=="text"} className="engine-result-content"><section className="unity-offline-workbench engine-text-results" aria-label="译文检查结果"><h3>检查结果</h3>        {status.dictionaryEntries!==undefined&&<dl className="json-embedding-counts"><div><dt>词典条目</dt><dd>{status.dictionaryEntries.toLocaleString()}</dd></div>{status.matched!==undefined&&<div><dt>命中次数</dt><dd>{status.matched.toLocaleString()}</dd></div>}{status.blocked!==undefined&&<div><dt>异常，保留原文</dt><dd>{status.blocked.toLocaleString()}</dd></div>}</dl>}
         {!!status.issues?.length&&<details><summary>需修正的译文 · {status.issues.length}</summary>{status.issues.map((issue,index)=><details key={index}><summary>{issue.file} · {issue.reason}</summary><p>{issue.source}</p><p>{issue.translation}</p></details>)}</details>}
-        {!!patch.conflicts.length&&<details><summary>补丁文件存在改动 · {patch.conflicts.length}</summary>{patch.conflicts.map(path=><p key={path}>{path}</p>)}</details>}{status.dictionaryEntries===undefined&&!status.issues?.length&&<p className="hint">导入译文并检查后显示结果</p>}</section>
-      </section>
-      {game.engine.startsWith("RPG Maker")&&<section className="embed-section embed-images" data-section="images" hidden={part!=="images"}>{(imagesVisited||part==="images")&&<GameImageWorkbench onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} outputPanel={part==="images"?logPanel:null} backupPanel={backupPanel} restorePanel={restorePanel} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={appendLog}/>}</section>}
-
-      {output("工作目录",status.outputPath)}
+        {!!patch.conflicts.length&&<details><summary>补丁文件存在改动 · {patch.conflicts.length}</summary>{patch.conflicts.map(path=><p key={path}>{path}</p>)}</details>}{status.dictionaryEntries===undefined&&!status.issues?.length&&<p className="hint">导入译文并检查后显示结果</p>}</section></div>,resultsTarget)}
+      {game.engine.startsWith("RPG Maker")&&(imagesVisited||part==="images")&&<GameImageWorkbench workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupPanel={backupPanel} restorePanel={restorePanel} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={appendLog}/>}
 
     </main>
 

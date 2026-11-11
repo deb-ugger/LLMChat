@@ -138,20 +138,23 @@ export async function renderUnityImage(source: Blob, regions: UnityImageRegion[]
 }
 
 /** Explicit single-image translation always replaces selected translations. */
-export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSignal,translate:(text:string)=>Promise<string>,validate:(source:string,translation:string)=>string,threshold=50):Promise<UnityImage>{
+export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSignal,translate:(text:string)=>Promise<string>,validate:(source:string,translation:string)=>string,threshold=50,concurrency=1):Promise<UnityImage>{
   const next={...image,regions:unityImageTranslationRegions(image.regions,threshold,image).map(region=>({...region})),completed:false,renderedFile:"",renderedHash:"",error:""};
-  const cache=new Map<string,string>();let failures=0;
-  for(const region of next.regions){
-    if(!region.selected)continue;
+  const cache=new Map<string,Promise<string>>();let failures=0;
+  const selected=next.regions.filter(region=>region.selected);let cursor=0;
+  const worker=async()=>{while(cursor<selected.length){const region=selected[cursor++];
     signal.throwIfAborted();region.translation="";region.error="";
-    try{if(!region.text.trim())throw new Error("原文为空，请填写该区域原文");const value=cache.get(region.text)??await translate(region.text);signal.throwIfAborted();if(!value.trim())throw new Error("翻译结果为空");const error=validate(region.text,value);if(error)throw new Error(error);cache.set(region.text,value);region.translation=value;}
+    try{if(!region.text.trim())throw new Error("原文为空，请填写该区域原文");let request=cache.get(region.text);if(!request){request=translate(region.text);cache.set(region.text,request);}const value=await request;signal.throwIfAborted();if(!value.trim())throw new Error("翻译结果为空");const error=validate(region.text,value);if(error)throw new Error(error);region.translation=value;}
     catch(error){if(signal.aborted)throw error;region.error=error instanceof Error?error.message:String(error);failures++;}
-  }
+  }};
+  const results=await Promise.allSettled(Array.from({length:Math.min(selected.length,Math.max(1,concurrency))},worker));const failure=results.find((value):value is PromiseRejectedResult=>value.status==="rejected");if(failure)throw failure.reason;
   next.error=failures?`${failures} 个勾选区域翻译失败，请检查区域提示`:"";
   return next;
 }
 export type UnityImageServices = {
   concurrency?: number;
+  translationConcurrency?:number;
+  regionConcurrency?:number;
   reuseTranslations?: boolean;
   read: (image: UnityImage) => Promise<Blob>;
   recognize: (source: Blob, stage: (value: string) => void, worker?:number,image?:UnityImage) => Promise<PaddleOcrLine[]>;
@@ -173,6 +176,7 @@ export function unityImageResultGroup(image: UnityImage) {
   if(image.screening?.state==="no-text")return "empty";
   return unityImageHasText(image) ? "text" : image.error ? "failed" : image.ocrCompleted ? "empty" : "pending";
 }
+export function unityImageUsesRegionMask(image:UnityImage):boolean{return image.renderedKind==="generated"||!image.renderedKind&&image.regions.some(region=>!!region.translation.trim());}
 export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number, size?:{width:number;height:number}) {return applyImageTextRules(regions,threshold,size);}
 export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress & {etaMs?:number}) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" = "all") {
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
@@ -183,6 +187,10 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     for (const entry of next.entries) if (entry.translation && !entry.error && !services.validate(entry.source, entry.translation)) cache.set(entry.source, entry.translation);
     for (const image of next.images) for (const region of image.regions) if (region.translation && !region.error && !services.validate(region.text, region.translation)) cache.set(region.text, region.translation);
   }
+  const pendingTranslations=new Map<string,Promise<string>>();
+  const translateText=(text:string)=>{const existing=cache.get(text);if(existing!==undefined)return Promise.resolve(existing);
+    let pending=pendingTranslations.get(text);if(!pending){pending=services.translate(text).then(value=>{const error=services.validate(text,value);if(error)throw new Error(error);cache.set(text,value);return value;}).finally(()=>pendingTranslations.delete(text));pendingTranslations.set(text,pending);}return pending;
+  };
   let completed = images.filter(image => mode === "recognize" ? image.ocrCompleted : image.completed).length;
   const samples=[{time:performance.now(),completed}];
   const report = (detail: string) => {if(completed!==samples[samples.length-1].completed){samples.push({time:performance.now(),completed});if(samples.length>64)samples.shift();}const first=samples[0],last=samples[samples.length-1],rate=(last.completed-first.completed)/(last.time-first.time);const etaMs=completed===images.length?0:samples.length>=3&&rate>0?(images.length-completed)/rate:undefined;progress({ completed, total: images.length, detail,etaMs });};
@@ -203,26 +211,29 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       if (mode === "recognize") { image.completed = !unityImageHasText(image); image.error = ""; completed++; await publish(); report(`已识别图片：${image.name}`); return; }
       let regionNumber = 0;
       const selectedRegions = image.regions.filter(region=>region.selected);
-      for (const region of selectedRegions) {
+      let regionCursor=0;
+      const regionWorker=async()=>{while(regionCursor<selectedRegions.length){const region=selectedRegions[regionCursor++];
         signal.throwIfAborted(); regionNumber++;
         if (region.translation && !services.validate(region.text, region.translation)) { region.error = ""; continue; }
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
-          const translation = cache.get(region.text) || await services.translate(region.text); signal.throwIfAborted();
+          const translation = await translateText(region.text); signal.throwIfAborted();
           const problem = services.validate(region.text, translation); if (problem) throw new Error(problem);
           region.translation = translation; region.error = ""; cache.set(region.text, translation);
         } catch (error) {
           if (signal.aborted) throw error;
           region.error = error instanceof Error ? error.message : String(error);
         }
-        await publish();
-      }
+      }};
+      const regionResults=await Promise.allSettled(Array.from({length:Math.min(selectedRegions.length,Math.max(1,services.regionConcurrency||1))},regionWorker));
+      const regionFailure=regionResults.find((value):value is PromiseRejectedResult=>value.status==="rejected");if(regionFailure)throw regionFailure.reason;
+
       const failedRegions = selectedRegions.filter(region => !!region.error);
       if (failedRegions.length) throw new Error(`${failedRegions.length} 个文字区域翻译失败，已保留成功译文和失败详情`);
       if (selectedRegions.length) {
         report(`${image.name} · 生成译图`);
         const result = await services.write(next, image, await services.render(source||await services.read(image), unityImageTranslationRegions(image.regions, confidenceThreshold,image))); signal.throwIfAborted();
-        image.renderedFile = result.path; image.renderedHash = result.hash;
+        image.renderedFile = result.path; image.renderedHash = result.hash;image.renderedKind="generated";
       } else { image.renderedFile = ""; image.renderedHash = ""; }
       image.completed = true; image.error = ""; completed++; await publish();
       report(`已完成图片：${image.name}${image.regions.length ? selectedRegions.length ? "" : "（没有达到翻译阈值的区域）" : "（未识别出文字）"}`);
@@ -236,7 +247,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     }
   };
   // Model workers can run independently. Network translation stays serialized to respect provider limits.
-  const limit=mode==="recognize"?Math.max(1,Math.min(8,services.concurrency||1)):1;let cursor=0,failure:unknown;
+  const limit=mode==="recognize"?Math.max(1,Math.min(8,services.concurrency||1)):Math.max(1,Math.min(4,services.translationConcurrency||1));let cursor=0,failure:unknown;
   const take=()=>{if(failure||signal.aborted||cursor>=images.length)return null;const image=images[cursor++];return {image,read:mode==="recognize"&&!image.ocrCompleted?services.read(image).then(blob=>({blob}),error=>({error})):undefined};};
   const workers=Array.from({length:limit},(_,worker)=>(async()=>{let item=take();while(!failure&&item){const current=item;item=take();try{await runImage(current.image,worker,current.read);}catch(error){failure=error;throw error;}}})());
   const results=await Promise.allSettled(workers);const rejected=results.find((result):result is PromiseRejectedResult=>result.status==="rejected");if(rejected)throw rejected.reason;

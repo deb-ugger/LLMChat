@@ -55,6 +55,7 @@ public sealed class Project
 public sealed class Request
 {
     public string StopFile { get; set; } = "";
+    public string ReusePath { get; set; } = "";
     public string Root { get; set; } = "";
     public string[] Roots { get; set; } = [];
     public string OutputRoot { get; set; } = "";
@@ -69,6 +70,8 @@ public sealed class Request
     public string ImageData { get; set; } = "";
     public bool ImageOnly { get; set; }
     public bool Thumbnail { get; set; }
+    public bool CleanImageCache { get; set; }
+    public string? SavedRenderedFile {get;set;}
     public int Step { get; set; }
     public string[]? SelectedIds { get; set; }
     public string[]? FontSourceIds { get; set; }
@@ -120,9 +123,11 @@ public static class Program
                 "font-plan" => FontPreparation.Create(request),
                 "find" => FindSaved(request),
                 "workspace" => GameWorkspace.Open(request),
+                "translation-directory" => new { folder = GameWorkspace.Ensure(request.Root) },
                 "resume-info" => GameWorkspace.ResumeInfo(request),
                 "save-task" => SaveTask(request),
                 "reset-step" => WorkflowReset.Start(request),
+                "prepare-rescan" => WorkflowReset.PrepareRescan(request),
                 "finish-rescan" => WorkflowReset.FinishRescan(request),
                 "load" => Load(request.Path),
                 "save" => SaveRequest(request),
@@ -142,7 +147,7 @@ public static class Program
     }
 
     static object SaveTask(Request request) { GameWorkspace.SaveTask(request); return new { ok = true }; }
-    static object SaveRequest(Request request) { Save(request.Project ?? throw new Exception("缺少工程")); return new { ok = true }; }
+    static object SaveRequest(Request request) { var project=request.Project ?? throw new Exception("缺少工程");Save(project);var cleanup=request.CleanImageCache?ImageResources.CleanupCache(project):new ImageCacheCleanup(0,[]);return new { ok = true, cacheRemoved=cleanup.Removed,cacheErrors=cleanup.Errors }; }
 
     public static string Within(string root, string relative)
     {
@@ -211,7 +216,8 @@ public static class Program
         }
         return new(null, null, null, notices);
     }
-    public static bool TextCandidate(string text, int maximum = 16000) => text.Length > 1 && text.Length <= maximum &&
+    public static bool TextCandidate(string text, int maximum = 16000) => text.Length > 0 && text.Length <= maximum &&
+        (text.Length > 1 || Regex.IsMatch(text, "[ぁ-ゖァ-ヺ一-鿿가-힣]")) &&
         !text.Any(c => char.IsControl(c) && c is not '\r' and not '\n' and not '\t') &&
         text.Any(char.IsLetter) && !Regex.IsMatch(text.Trim(), @"^(?:https?://|[\w./\\-]+\.(?:png|jpg|asset|prefab|dll)|[A-Fa-f0-9]{16,}$)");
     public static void ValidateTranslation(string source, string translation)
@@ -300,6 +306,7 @@ public static class Program
         else ScanInspection.VerifyDefinitions(project);
         Save(project);
         var scanIndex = state.Next;
+        var textureCache = request.ReusePath.Length > 0 ? new ImageResources.TextureScanCache(root, request.ReusePath) : null;
         long lastDetailReport = 0;
         var loadingModel = false;
         void ReportScanDetail(string detail) {
@@ -339,7 +346,7 @@ public static class Program
                 if (isCode && ext == ".dll") ScanAssembly(path, rel, project);
                 else if (isCode) VisitMetadata(File.ReadAllBytes(path), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
                 else if (raster) ImageResources.ScanFile(project, path, rel);
-                else if (asset) VisitResource(path, (am, inst, container) => ScanAssets(am, inst, rel, container, project), types, rel);
+                else if (asset) VisitResource(path, (am, inst, container) => ScanAssets(am, inst, rel, container, project, textureCache), types, rel);
                 else TextDocuments.Process(TextDocuments.Read(path), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
                 if (project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore) project.Hashes[rel] = Hash(path);
                 var failures = project.Diagnostics.Count(e => e.File == rel);
@@ -480,11 +487,12 @@ public static class Program
         }
         return type + " / Unity " + instance.file.Metadata.UnityVersion;
     }
-    static void ScanAssets(AssetsManager am, AssetsFileInstance inst, string rel, string container, Project project)
+    static void ScanAssets(AssetsManager am, AssetsFileInstance inst, string rel, string container, Project project, ImageResources.TextureScanCache? textureCache)
     {
         project.ReportScanDetail?.Invoke($"读取类型与纹理索引：{rel} / {container}");
         PrepareTypes(am, inst);
         var fontTextures = ImageResources.FontTextures(am, inst);
+        var dependencyHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var objectIndex = 0;
         foreach (var info in inst.file.Metadata.AssetInfos)
         {
@@ -503,7 +511,7 @@ public static class Program
                 }
                 var field = am.GetBaseField(inst, info);
                 var name = field["m_Name"].IsDummy ? info.PathId.ToString() : field["m_Name"].AsString;
-                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId));
+                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache);
                 if (type == 128) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "UGUI") { References = FontPreparation.References(field) });
                 if (type == 49 && GameText.TextAsset(name))
                     TextDocuments.Process(Utf8.GetString(field["m_Script"].AsByteArray), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
@@ -527,6 +535,7 @@ public static class Program
     {
         Progress("校验译文、占位符与字体");
         var project = request.Project ?? throw new Exception("缺少工程");
+        GameText.ProtectProject(project);
         if (project.ScanRevision < MinimumUsableScanRevision || project.ScanRevision > CurrentScanRevision) throw new Exception("扫描工程格式不兼容，请重新扫描；原工程和译文会保留");
         ScanInspection.VerifyDefinitions(project);
         using var types = new GameTypes(project.Root, project.TypeDirectory);
@@ -595,7 +604,9 @@ public static class Program
                 if (fileImages.Any(i => i.Kind == "file")) ImageResources.ApplyFile(project, fileImages.Single(), destination);
                 else if (entries.Any(e => e.Kind == "Mono 字面量"))
                 {
-                    using var module = ModuleDefinition.ReadModule(original);
+                    using var resolver = new DefaultAssemblyResolver();
+                    resolver.AddSearchDirectory(Path.GetDirectoryName(Within(project.Root, file))!);
+                    using var module = ModuleDefinition.ReadModule(original, new ReaderParameters { AssemblyResolver = resolver });
                     if (module.Assembly?.Name.HasPublicKey == true) throw new Exception("已签名程序集不能回写");
                     foreach (var method in AllTypes(module.Types).SelectMany(t => t.Methods).Where(m => m.HasBody))
                         foreach (var ins in method.Body.Instructions.Where(i => i.OpCode == OpCodes.Ldstr))
@@ -707,7 +718,9 @@ public static class Program
             if (decoded.Width != image.Width || decoded.Height != image.Height) throw new Exception("译图重读尺寸不一致：" + file);
             remainingImages.Remove(image.Id);
         } else if (entries.Any(e => e.Kind == "Mono 字面量")) {
-            using var module = ModuleDefinition.ReadModule(written);
+            using var resolver = new DefaultAssemblyResolver();
+            resolver.AddSearchDirectory(Path.GetDirectoryName(Within(project.Root, file))!);
+            using var module = ModuleDefinition.ReadModule(written, new ReaderParameters { AssemblyResolver = resolver });
             foreach (var method in AllTypes(module.Types).SelectMany(t => t.Methods).Where(m => m.HasBody))
                 foreach (var instruction in method.Body.Instructions.Where(i => i.OpCode == OpCodes.Ldstr)) Read("", 0, $"{method.MetadataToken.ToUInt32()}:{instruction.Offset}", (string)instruction.Operand);
         } else if (entries.Any(e => e.Kind == "IL2CPP 字面量")) VisitMetadata(File.ReadAllBytes(written), (loc, text, _) => Read("", 0, loc, text));

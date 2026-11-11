@@ -1,3 +1,4 @@
+import { createLlmTranslationScheduler } from "./llmTranslationScheduler";
 import { toFriendlyError } from "./friendlyError";
 
 export const API_BASE =
@@ -116,6 +117,7 @@ export type TranslateResponse = {
   translation: string;
   provider: string;
   code?: string;
+  error?:string;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
@@ -264,6 +266,9 @@ export type PricingTable = {
 };
 
 export type TranslateOptions = {
+  /** Client-side: structured protocol requests bypass envelope batching. */
+  llmBatch?: boolean;
+  llmConcurrency?:number;
   source?: string;
   target?: string;
   provider?: TranslateProvider | string;
@@ -325,9 +330,9 @@ async function request<T>(
     const raw =
       (data as { error?: string }).error ?? `HTTP ${res.status}`;
     const err = new Error(toFriendlyError(raw)) as Error & {
-      code?: string;
+      status?:number;code?: string;
     };
-    err.code = (data as { code?: string }).code;
+    err.status=res.status;err.code = (data as { code?: string }).code;
     throw err;
   }
   return data as T;
@@ -460,6 +465,49 @@ export type StorageStatus = {
   retained: { id: string; path: string }[];
 };
 
+async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions):Promise<TranslateResponse>{
+    const {llmBatch:_batch,llmConcurrency:_limit,...serverOptions}=opts||{};
+    const signal = init?.signal;
+    signal?.throwIfAborted();
+    const taskId = crypto.randomUUID();
+    const queued = opts?.feature === "text";
+    let cancellationSent = false;
+    const cancel = () => {
+      if (cancellationSent) return;
+      cancellationSent = true;
+      void request(queued ? `/api/text-requests?taskId=${encodeURIComponent(taskId)}` : "/api/translate/cancel", {
+        method: queued ? "DELETE" : "POST",
+        ...(queued ? {} : { body: JSON.stringify({ taskId }) }),
+      }, 5000).catch(() => {});
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      if (queued) {
+        await request("/api/text-requests", { ...init, method: "POST", body: JSON.stringify({ text, ...serverOptions, taskId }) });
+        for (;;) {
+          signal?.throwIfAborted();
+          const state = await request<{ done: boolean; response?: { status: number; body: TranslateResponse & { error?: string } } }>(`/api/text-requests?taskId=${encodeURIComponent(taskId)}`, init);
+          if (state.done && state.response) {
+            if (state.response.status >= 400) throw Object.assign(new Error(state.response.body.error || "文本翻译失败"),{status:state.response.status});
+            return state.response.body;
+          }
+        }
+      }
+      return await request<TranslateResponse>("/api/translate", {
+        ...init,
+        method: "POST",
+        body: JSON.stringify({ text, ...serverOptions, taskId }),
+      });
+    } catch (error) {
+      // Includes timeout and a disconnected client: no orphaned backend task.
+      cancel();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      if (queued) cancel();
+    }
+}
+const scheduledTranslate=createLlmTranslationScheduler(rawTranslate);
 export const api = {
   getStorage: (includeSizes = true) => request<StorageStatus>(`/api/storage${includeSizes ? "" : "?sizes=0"}`, undefined, 120_000),
   saveStoragePaths: (paths: Record<string, string>, includeSizes = true) => request<StorageStatus>(`/api/storage/paths${includeSizes ? "" : "?sizes=0"}`, {
@@ -614,47 +662,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ conversationId, content }),
     }),
-  translate: async (text: string, init?: RequestInit, opts?: TranslateOptions) => {
-    const signal = init?.signal;
-    signal?.throwIfAborted();
-    const taskId = crypto.randomUUID();
-    const queued = opts?.feature === "text";
-    let cancellationSent = false;
-    const cancel = () => {
-      if (cancellationSent) return;
-      cancellationSent = true;
-      void request(queued ? `/api/text-requests?taskId=${encodeURIComponent(taskId)}` : "/api/translate/cancel", {
-        method: queued ? "DELETE" : "POST",
-        ...(queued ? {} : { body: JSON.stringify({ taskId }) }),
-      }, 5000).catch(() => {});
-    };
-    signal?.addEventListener("abort", cancel, { once: true });
-    try {
-      if (queued) {
-        await request("/api/text-requests", { ...init, method: "POST", body: JSON.stringify({ text, ...opts, taskId }) });
-        for (;;) {
-          signal?.throwIfAborted();
-          const state = await request<{ done: boolean; response?: { status: number; body: TranslateResponse & { error?: string } } }>(`/api/text-requests?taskId=${encodeURIComponent(taskId)}`, init);
-          if (state.done && state.response) {
-            if (state.response.status >= 400) throw new Error(state.response.body.error || "文本翻译失败");
-            return state.response.body;
-          }
-        }
-      }
-      return await request<TranslateResponse>("/api/translate", {
-        ...init,
-        method: "POST",
-        body: JSON.stringify({ text, ...opts, taskId }),
-      });
-    } catch (error) {
-      // Includes timeout and a disconnected client: no orphaned backend task.
-      cancel();
-      throw error;
-    } finally {
-      signal?.removeEventListener("abort", cancel);
-      if (queued) cancel();
-    }
-  },
+  translate: scheduledTranslate,
   beginTextRun: (runId: string, folder: string, project: unknown) => request("/api/text-projects/run", { method: "POST", body: JSON.stringify({ runId, folder, project }) }),
   checkpointTextRun: (runId: string, updates: unknown[], tokens: unknown, elapsedMs: number) => request("/api/text-projects/checkpoint", { method: "POST", body: JSON.stringify({ runId, updates, tokens, elapsedMs }) }),
   finishTextRun: (runId: string) => request(`/api/text-projects/run?runId=${encodeURIComponent(runId)}`, { method: "DELETE" }),

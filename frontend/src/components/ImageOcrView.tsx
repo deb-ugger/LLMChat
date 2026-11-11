@@ -1046,52 +1046,13 @@ export function ImageOcrView({
         );
         patchPage(pageId, { blocks: pending });
 
-        const canBatch =
-          translateProvider === "llm" &&
-          workIdx.reduce((n, i) => n + list[i].text.length, 0) < 6000;
-
-        if (canBatch) {
-          const SEP = "\n¶¶\n";
-          try {
-            onProgress?.(0, workIdx.length);
-            const joined = workIdx.map((i) => list[i].text.trim()).join(SEP);
-            const tr = await api.translate(joined, { signal }, translateOpts);
-            throwIfAborted(signal);
-            const parts = tr.translation
-              .split(/\n?\s*¶¶\s*\n?/)
-              .map((s) => s.trim());
-            if (
-              parts.length === workIdx.length ||
-              Math.abs(parts.length - workIdx.length) <= 1
-            ) {
-              onProgress?.(workIdx.length, workIdx.length);
-              const next = list.map((b) => ({ ...b }));
-              workIdx.forEach((idx, j) => {
-                next[idx] = {
-                  ...next[idx],
-                  translation: parts[j] || "（无译文）",
-                  status: "done",
-                };
-              });
-              return next;
-            }
-          } catch (error) {
-            throwIfAborted(signal);
-            if (isAbortError(error)) {
-              controller.abort();
-              throw error;
-            }
-            // A non-cancellation batch failure may retry per block.
-          }
-        }
-
         const next: OcrBlock[] = list.map((b) =>
           b.text.trim() && !isLiteralOcrToken(b.text)
             ? { ...b, status: "pending", translation: "" }
             : { ...b, status: "done", translation: b.text.trim() },
         );
         patchPage(pageId, { blocks: [...next] });
-        const concurrency = translateProvider === "llm" ? 5 : 2;
+        const concurrency = translateProvider === "llm" ? 16 : 2;
         let done = 0;
         let cursor = 0;
         const worker = async () => {

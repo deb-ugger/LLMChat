@@ -6,7 +6,7 @@ namespace LLMChat.UnityOffline;
 
 public static class GameText
 {
-    public const int SafetyRevision = 3;
+    public const int SafetyRevision = 5;
     static readonly Regex BindingField = new(@"^(?:m_)?blendshapes?(?:For\w+|Names)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     static bool BindingPath(string path) => path.Split('/').Any(BindingField.IsMatch);
     static readonly Regex TechnicalField = new(@"^(?:\$type|type|assembly|class|method|member|field|event|function|m_Name|m_EditorClassIdentifier|(?:m_)?(?:groups|bindingGroup|controlScheme|expectedControlType|interactions|processors)|.*(?:Key|Guid|Path|Address|File|SceneName|AnimationName|SpriteName|DialogueName|Id|AssemblyTypeName|AssemblyQualifiedName|AssemblyName|TypeName|MethodName|MemberName|PropertyName|EventName|FieldName|ClassName|ScriptName|Namespace))$", RegexOptions.IgnoreCase);
@@ -33,6 +33,31 @@ public static class GameText
     {
         var lastId = project.Entries.Select(e => int.TryParse(e.Id, out var id) ? id : 0).DefaultIfEmpty(0).Max();
         project.NextEntryId = Math.Max(project.NextEntryId, lastId + 1);
+        var tables = project.SegmentSources.Where(pair => TextDocuments.TableSeparator(pair.Value) != null).Select(pair => pair.Key).ToHashSet();
+        var scripts = project.SegmentSources.Where(pair => TextDocuments.HasCommands(pair.Value)).Select(pair => pair.Key).ToHashSet();
+        var unsafeTables = project.Entries.Where(entry => entry.Kind is "TextAsset" or "文本文件" &&
+            (entry.ParentId != null && tables.Contains(entry.ParentId) || TextDocuments.TableSeparator(entry.Source) != null) &&
+            !(entry.ParentLocator ?? entry.Locator).StartsWith("record/", StringComparison.Ordinal)).ToArray();
+        foreach (var entry in unsafeTables) {
+            entry.Selected = false;
+            entry.Error = "此条按整段提取了游戏数据表，不能回写；请先恢复游戏原件，再重新扫描以按单元格提取";
+        }
+        if (unsafeTables.Length > 0) {
+            project.Warnings.RemoveAll(w => w.StartsWith("数据表保护：", StringComparison.Ordinal));
+            project.Warnings.Add($"数据表保护：{unsafeTables.Length} 条旧分段已停止回写，译文保留；恢复游戏原件后重新扫描。");
+        }
+        var unsafeRecords = project.Entries.Where(entry => entry.Kind == "TextAsset" &&
+            (entry.ParentLocator ?? entry.Locator) is not null && !(entry.ParentLocator ?? entry.Locator).StartsWith("record/", StringComparison.Ordinal) &&
+            (TextDocuments.HasCommands(entry.Source) || entry.ParentId != null && scripts.Contains(entry.ParentId) ||
+             entry.Translation.Length > 0 && Regex.Matches(entry.Source, @"\r\n|\n|\r").Count != Regex.Matches(entry.Translation, @"\r\n|\n|\r").Count)).ToArray();
+        foreach (var entry in unsafeRecords) {
+            entry.Selected = false;
+            entry.Error = "此资源包含脚本指令或译文改变了记录行数，不能按旧分段回写；恢复游戏原件后重新扫描以逐行提取";
+        }
+        if (unsafeRecords.Length > 0) {
+            project.Warnings.RemoveAll(w => w.StartsWith("记录行保护：", StringComparison.Ordinal));
+            project.Warnings.Add($"记录行保护：{unsafeRecords.Length} 条旧文本已停止回写，译文保留；恢复游戏原件后重新扫描。");
+        }
         var removed = project.Entries.RemoveAll(Protected);
         project.TextSafetyRevision = SafetyRevision;
         if (removed > 0) {
