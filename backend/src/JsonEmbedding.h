@@ -3,6 +3,7 @@
 #include "AtomicFile.h"
 #include "RpgMakerText.h"
 #include "GameFileOps.h"
+#include "GameResourceBackup.h"
 #include "ManagedGamePatch.h"
 #include "MvMzRuntime.h"
 #include <nlohmann/json.hpp>
@@ -192,8 +193,9 @@ class JsonEmbedding {
     void apply() {
         gamepatch::verify(game_);
         for(const auto& [path,stamp]:originals_)if(!std::filesystem::is_regular_file(path)||std::filesystem::file_size(path)!=stamp.first||std::filesystem::last_write_time(path)!=stamp.second)throw std::runtime_error("游戏资源已改变，请重新检查后生成补丁");
+        const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"&&!rpgDirectory_.empty()?scopedBackup():Path();
         detail("验证并应用文本补丁");const auto receipt=gamepatch::install(game_,rpgDirectory_,work_/"patch");
-        std::lock_guard lock(mutex_);if(!receipt.empty())state_["backupPath"]=utf8path::pathUtf8(receipt);else state_.erase("backupPath");state_["state"]="applied";state_["detail"]="文本补丁已安装，可检测、更新或卸载";
+        std::lock_guard lock(mutex_);if(!snapshot.empty()||!receipt.empty())state_["backupPath"]=utf8path::pathUtf8(snapshot.empty()?receipt:snapshot);else state_.erase("backupPath");state_["state"]="applied";state_["detail"]="文本补丁已安装，可检测、更新或卸载";
     }
     static void saveLedger(const Path& backup, const json& ledger) {
         std::string error; if (!atomicfile::writeText(backup / "manifest.json", ledger.dump(2), &error)) throw std::runtime_error(error);
@@ -350,20 +352,12 @@ class JsonEmbedding {
         }
         ledger["state"] = "rolledBack"; saveLedger(backup, ledger);
     }
+    Path scopedBackup() {
+        detail("按范围备份资源");
+        return gameresourcebackup::snapshot(game_,rpgDirectory_,jobRequest_.value("backupScopes",json::array({"text"})),[&](size_t completed,size_t total){checkStop();progress(completed,total);});
+    }
     void backupAssets() {
-        const auto scopes=jobRequest_.contains("backupScopes")?jobRequest_.at("backupScopes").get<std::vector<std::string>>():std::vector<std::string>{jobRequest_.value("backupScope","text")};
-        if(scopes.empty())throw std::runtime_error("请选择至少一项备份范围");
-        std::vector<Path> files;const auto prefix=rpgDirectory_.parent_path();
-        for(const auto& scope:scopes) {
-            if(scope=="text") { for(auto& file:rpgFiles(game_/rpgDirectory_))files.push_back(std::filesystem::relative(file,game_));if(std::filesystem::exists(game_/prefix/"js/plugins.js"))files.push_back(prefix/"js/plugins.js"); }
-            else if(scope=="runtime") {const std::vector<Path> names={prefix/"js/plugins.js",prefix/"js/plugins/LLMChatTranslation.js",prefix/"LLMChat-translations.json",prefix/"fonts/LLMChat-font.ttf",prefix/"fonts/LLMChat-font.otf"};files.insert(files.end(),names.begin(),names.end());}
-            else if(scope=="images"){const auto root=game_/prefix/"img";for(auto& entry:std::filesystem::recursive_directory_iterator(root))if(entry.is_regular_file()){auto ext=entry.path().extension().string();if(ext==".png"||ext==".png_"||ext==".rpgmvp")files.push_back(std::filesystem::relative(entry.path(),game_));}}
-            else throw std::runtime_error("无效备份范围");
-        }
-        std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
-        const auto backup=game_/"LLMChat-JSON"/"backups"/("files-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
-        json ledger={{"engine","files"},{"kind","snapshot"},{"state","snapshot"},{"resources",json::array()}};detail("备份所选资源");progress(0,files.size());size_t completed=0;
-        for(auto& name:files){checkStop();const bool exists=std::filesystem::is_regular_file(game_/name);if(exists)write(backup/"original"/name,read(game_/name));ledger["resources"].push_back({{"name",name.generic_string()},{"existed",exists}});progress(++completed,files.size());}saveLedger(backup,ledger);
+        const auto backup=scopedBackup();
         std::lock_guard lock(mutex_);state_["state"]=state_.value("resumeAfterBackup","backedUp");state_.erase("resumeAfterBackup");state_["backupPath"]=utf8path::pathUtf8(backup);state_["detail"]="备份完成，游戏资源未改变";
     }
     void finishBackupMode(const std::string& action) {
@@ -387,7 +381,8 @@ class JsonEmbedding {
             if(!fontPath.empty()){auto path=utf8path::pathFromUtf8(fontPath);auto ext=path.extension().string();if(ext!=".ttf"&&ext!=".otf")throw std::runtime_error("请选择 TTF/OTF 字体");font="LLMChat-font"+ext;files[base/"fonts"/font]=read(path);}
             script.replace(script.find("__FONT__"),8,font);
             files[base/"js/plugins/LLMChatTranslation.js"]=script;files[base/"LLMChat-translations.json"]=dictionary.dump();files[base/"js/plugins.js"]=original.substr(0,begin)+plugins.dump(2)+original.substr(end+1);
-            const auto backup=gamefiles::apply(game_,files);std::lock_guard lock(mutex_);state_["backupPath"]=utf8path::pathUtf8(backup);state_["state"]="applied";state_["detail"]="本地翻译插件已安装；回滚对应备份可卸载";return;
+            const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"?scopedBackup():Path();
+            const auto backup=gamefiles::apply(game_,files);std::lock_guard lock(mutex_);state_["backupPath"]=utf8path::pathUtf8(snapshot.empty()?backup:snapshot);state_["state"]="applied";state_["detail"]="本地翻译插件已安装；回滚对应备份可卸载";return;
     }
 
 public:

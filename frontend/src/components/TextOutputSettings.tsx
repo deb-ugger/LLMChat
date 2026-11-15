@@ -25,7 +25,7 @@ export function TextOutputSettings() {
   };
   return <section className="settings-card">
     <h2>保存路径</h2>
-    <label>工程保存目录<div className="settings-directory-picker"><input value={path} readOnly title={path} /><button className="pdf-tool-btn" type="button" disabled={busy || !storage} onClick={() => void change()}>选择</button></div></label>
+    <label>工程保存目录<div className="settings-directory-picker"><input value={path} readOnly data-tooltip={path} /><button className="pdf-tool-btn" type="button" disabled={busy || !storage} onClick={() => void change()}>选择</button></div></label>
     <p className="hint">工程目录变更将在下次启动时迁移并生效，原位置保留备份。</p>
     {path !== current && <p className="hint">当前：<code>{current}</code></p>}
     <OutputDirectoryField module="text" label="译文导出目录" />

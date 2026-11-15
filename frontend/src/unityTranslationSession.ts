@@ -1,3 +1,4 @@
+import { gameTextHasSpeaker } from "./gameDisplayText";
 import type { UnityEntry, UnityProgress, UnityTranslationActivity } from "./unityOffline";
 export type UnityTranslationQueue = {
   status: (id: string) => "pending" | "active" | "failed" | "done" | "not-in-task";
@@ -12,6 +13,7 @@ type Session = {
   translate: (source: string, entry?: UnityEntry) => Promise<string>;
   format?: (source: string, translated: string) => string | Promise<string>;
   retainDraft?: boolean;
+  preserveLayout?: (source: string) => boolean;
   persistDraftBeforeFormat?: boolean;
   canReuseDraft?: (source: string, translation: string) => boolean;
   validate: (source: string, translated: string) => string;
@@ -40,13 +42,13 @@ export function unityTranslationCharacters(selected: UnityEntry[], entries: Unit
   return { selectedCharacters, pendingCharacters };
 }
 export function unityTranslationStats(entries: UnityEntry[], validate: Session["validate"], key = (entry: UnityEntry) => keyOf(entry.source)) {
-  const groups = new Map<string, boolean>(); let coverageCompleted = 0;
+  const groups = new Map<string, boolean>(); let coverageCompleted = 0, coverageChanged = 0;
   for (const entry of entries) {
     const identity = key(entry), valid = !!entry.translation && !entry.error && !validate(entry.source, entry.translation);
-    if (valid) coverageCompleted++;
+    if (valid) { coverageCompleted++; if (entry.translation !== entry.source) coverageChanged++; }
     groups.set(identity, (groups.get(identity) ?? true) && valid);
   }
-  return { completed: [...groups.values()].filter(Boolean).length, total: groups.size, coverageCompleted, coverageTotal: entries.length };
+  return { completed: [...groups.values()].filter(Boolean).length, total: groups.size, coverageCompleted, coverageChanged, coverageTotal: entries.length };
 }
 
 /** Save each result and collect item failures without stopping the remaining work. */
@@ -114,7 +116,11 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
     const entry = group[0];
     let formatting = false, persistenceFailure = false;
     let failed = false;
-    const phase = (value: UnityTranslationActivity["phase"]) => { active.set(key, { id: entry.id, references: group.length, phase: value }); report(`条目 #${entry.id} · 相同原文对应 ${group.length} 个条目`); };
+    const phase = (value: UnityTranslationActivity["phase"]) => {
+      active.set(key, { id: entry.id, references: group.length, phase: value });
+      const detail = value === "reusing" ? "正在复用已有译文" : value === "saving" ? "正在保存处理结果" : value === "formatting" ? "正在还原并校验控制指令、换行及正文格式" : gameTextHasSpeaker(entry.source) ? "正在处理插件文本：保护控制参数，复用统一姓名，翻译剩余正文" : "正在请求正文翻译";
+      report(`条目 #${entry.id} · ${detail}${active.size > 1 ? ` · 同时处理 ${active.size} 种原文` : ""}${group.length > 1 ? ` · 复用到 ${group.length} 个条目` : ""}`);
+    };
     try {
       const cached = reused.get(key);
       if (!cached) requests++;
@@ -133,6 +139,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const layouts = new Map<string, string>();
       for (const item of group) {
         if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
+        if (translated === item.source || session.preserveLayout?.(item.source)) { formatted.push(translated); continue; }
         const leading = item.source.match(session.format ? /^[\t \u3000]*/ : /^\s*/)?.[0] || "";
         const trailing = session.format ? "" : item.source.match(/\s*$/)?.[0] || "";
         const source = item.source.trim();
@@ -146,7 +153,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
         formatted.push(value);
       }
       if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
-      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; delete item.layoutDraft; });
+      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; delete item.layoutDraft; delete item.screeningDraft; });
       reused.set(key, translated); cache.set(key, translated); completed++; covered += group.length;
       if (cached) reusedGroups++;
     } catch (error) {

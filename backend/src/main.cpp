@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <functional>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -15,6 +16,20 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+#ifdef _WIN32
+// Wait on the original parent handle, so PID reuse cannot keep an orphan alive.
+void watchParentProcess(DWORD pid)
+{
+    const HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!parent) throw std::runtime_error("无法监控主程序进程 " + std::to_string(pid) + "，错误 " + std::to_string(GetLastError()));
+    std::thread([parent] {
+        const DWORD result = WaitForSingleObject(parent, INFINITE);
+        CloseHandle(parent);
+        ExitProcess(result == WAIT_OBJECT_0 ? 0 : 1);
+    }).detach();
+}
+#endif
 
 fs::path dataDir()
 {
@@ -40,6 +55,16 @@ int runApp(int argc, char* argv[])
     {
         base = utf8path::pathFromUtf8(argv[1]);
     }
+
+#ifdef _WIN32
+    if (serve && argc > 2) {
+        if (argc != 4 || std::string(argv[2]) != "--parent-pid") throw std::runtime_error("无效的后端父进程参数");
+        size_t consumed = 0;
+        const auto pid = std::stoul(argv[3], &consumed);
+        if (!pid || consumed != std::string(argv[3]).size() || pid > MAXDWORD) throw std::runtime_error("无效的主程序进程 ID");
+        watchParentProcess(static_cast<DWORD>(pid));
+    }
+#endif
 
     // Only the prepare invocation may migrate a WebView profile. Tauri runs it
     // synchronously before constructing the window.

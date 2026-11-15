@@ -617,7 +617,7 @@ function PricingRateInput(props: {
       className={className}
       value={shown}
       disabled={disabled}
-      title={title}
+      data-tooltip={title}
       onFocus={() => setDraft(value === 0 ? "" : String(value))}
       onChange={(e) => {
         const raw = e.target.value;
@@ -651,7 +651,7 @@ function PricingLockButton(props: {
         (disabled ? " is-disabled" : "")
       }
       disabled={disabled}
-      title={
+      data-tooltip={
         disabled
           ? "模型已一级锁定，请先解锁模型"
           : locked
@@ -1445,7 +1445,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
           {peakWindows.length === 0 ? (
             <span
               className="pricing-windows-empty"
-              title="未配置时按列表优先级，不区分钟点"
+              data-tooltip="未配置时按列表优先级，不区分钟点"
             >
               未配置
             </span>
@@ -1457,7 +1457,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                   className="pricing-time-input"
                   value={(w.from || "").slice(0, 5)}
                   disabled={locked}
-                  title="高峰起始（含）"
+                  data-tooltip="高峰起始（含）"
                   onChange={(e) =>
                     patchPeakWindow(rule.id, wi, {
                       from: e.target.value || "00:00",
@@ -1470,7 +1470,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                   className="pricing-time-input"
                   value={(w.to || "").slice(0, 5)}
                   disabled={locked}
-                  title="高峰结束（不含）"
+                  data-tooltip="高峰结束（不含）"
                   onChange={(e) =>
                     patchPeakWindow(rule.id, wi, {
                       to: e.target.value || "00:00",
@@ -1480,7 +1480,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                 <button
                   type="button"
                   className="pricing-window-remove"
-                  title="删除此时段"
+                  data-tooltip="删除此时段" aria-label="删除此时段"
                   disabled={locked}
                   onClick={() => removePeakWindow(rule.id, wi)}
                 >
@@ -1493,7 +1493,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
             type="button"
             className="pricing-btn pricing-btn-secondary pricing-btn-sm"
             disabled={locked}
-            title={locked ? "已锁定，请先解锁" : "添加高峰时段"}
+            data-tooltip={locked ? "已锁定，请先解锁" : "添加高峰时段"} aria-label={locked ? "已锁定，请先解锁" : "添加高峰时段"}
             onClick={() => addPeakWindow(rule.id)}
           >
             添加时段
@@ -1572,7 +1572,9 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
               <button
                 type="button"
                 className="pricing-btn pricing-btn-accent pricing-btn-sm"
-                title={
+                data-tooltip={
+                  lockHint || "暂存：上一段结束日+1 起新增不限结束区间"
+                } aria-label={
                   lockHint || "暂存：上一段结束日+1 起新增不限结束区间"
                 }
                 disabled={locked}
@@ -1584,7 +1586,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                 <button
                   type="button"
                   className="pricing-btn pricing-btn-danger pricing-btn-sm"
-                  title={lockHint || undefined}
+                  data-tooltip={lockHint || undefined} aria-label={lockHint || undefined}
                   disabled={locked}
                   onClick={() => removeInterval(r, intervalCount)}
                 >
@@ -1684,7 +1686,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                 <button
                   type="button"
                   className="pricing-edit-sub-btn"
-                  title="打开子规则列表，修改或新增价格规则"
+                  data-tooltip="打开子规则列表，修改或新增价格规则" aria-label="打开子规则列表，修改或新增价格规则"
                   onClick={() => setSubEditorIntervalId(r.id)}
                 >
                   修改/新增价格规则
@@ -1800,19 +1802,19 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                         <thead>
                           <tr>
                             <th>模型 ID</th>
-                            <th title="百万tokens输入（缓存命中）">
+                            <th data-tooltip="百万tokens输入（缓存命中）">
                               <span className="pricing-th-main">Cache Read</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
-                            <th title="百万tokens输入（缓存未命中）">
+                            <th data-tooltip="百万tokens输入（缓存未命中）">
                               <span className="pricing-th-main">Input</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
-                            <th title="百万tokens缓存写入">
+                            <th data-tooltip="百万tokens缓存写入">
                               <span className="pricing-th-main">Cache Write</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
-                            <th title="百万tokens输出">
+                            <th data-tooltip="百万tokens输出">
                               <span className="pricing-th-main">Output</span>
                               <span className="pricing-th-unit">{unitShort}</span>
                             </th>
@@ -1859,7 +1861,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                     />
                                     <span
                                       className="pricing-model-id"
-                                      title={
+                                      data-tooltip={
                                         retired
                                           ? `${model}（通用已下架，保留计费）`
                                           : model
@@ -1870,7 +1872,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                     {retired ? (
                                       <span
                                         className="pricing-band-pill is-retired"
-                                        title="该模型已不在通用列表中，保留以免历史用量无法计价"
+                                        data-tooltip="该模型已不在通用列表中，保留以免历史用量无法计价"
                                       >
                                         已下架
                                       </span>
@@ -2281,7 +2283,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                               type="button"
                               className="pricing-btn pricing-btn-secondary"
                               disabled={!hasSelection || selectedIndex === 0}
-                              title={
+                              data-tooltip={
+                                hasSelection
+                                  ? "上移（提高优先级）"
+                                  : "请先选中一条价格规则"
+                              } aria-label={
                                 hasSelection
                                   ? "上移（提高优先级）"
                                   : "请先选中一条价格规则"
@@ -2308,7 +2314,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                                 !hasSelection ||
                                 selectedIndex === subs.length - 1
                               }
-                              title={
+                              data-tooltip={
+                                hasSelection
+                                  ? "下移（降低优先级）"
+                                  : "请先选中一条价格规则"
+                              } aria-label={
                                 hasSelection
                                   ? "下移（降低优先级）"
                                   : "请先选中一条价格规则"
@@ -2332,7 +2342,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                               type="button"
                               className="pricing-btn pricing-btn-danger"
                               disabled={!hasSelection || subs.length <= 1}
-                              title={
+                              data-tooltip={
+                                hasSelection
+                                  ? "删除选中的价格规则"
+                                  : "请先选中一条价格规则"
+                              } aria-label={
                                 hasSelection
                                   ? "删除选中的价格规则"
                                   : "请先选中一条价格规则"
@@ -2361,7 +2375,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                               type="button"
                               className="pricing-btn pricing-btn-secondary"
                               disabled={!hasSelection}
-                              title={
+                              data-tooltip={
+                                hasSelection
+                                  ? "复制选中的价格规则到列表顶部"
+                                  : "请先选中一条价格规则"
+                              } aria-label={
                                 hasSelection
                                   ? "复制选中的价格规则到列表顶部"
                                   : "请先选中一条价格规则"
@@ -2381,7 +2399,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                             <button
                               type="button"
                               className="pricing-btn pricing-btn-accent"
-                              title="在列表顶部新增一条价格规则"
+                              data-tooltip="在列表顶部新增一条价格规则" aria-label="在列表顶部新增一条价格规则"
                               onClick={() => {
                                 if (lockHint) {
                                   flash(lockHint, false);

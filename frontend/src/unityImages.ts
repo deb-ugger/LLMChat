@@ -178,7 +178,7 @@ export function unityImageResultGroup(image: UnityImage) {
 }
 export function unityImageUsesRegionMask(image:UnityImage):boolean{return image.renderedKind==="generated"||!image.renderedKind&&image.regions.some(region=>!!region.translation.trim());}
 export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number, size?:{width:number;height:number}) {return applyImageTextRules(regions,threshold,size);}
-export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress & {etaMs?:number}) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" = "all") {
+export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress & {etaMs?:number}) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" | "translate-only" | "render" = "all") {
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
   // This lane only changes images; retain the read-only text/resource collections.
   const next = { ...project, images: (project.images||[]).map(image=>image.selected&&(mode==="recognize"?!image.ocrCompleted:!image.completed)?structuredClone(image):image), imagesSkipped: false };
@@ -215,6 +215,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       const regionWorker=async()=>{while(regionCursor<selectedRegions.length){const region=selectedRegions[regionCursor++];
         signal.throwIfAborted(); regionNumber++;
         if (region.translation && !services.validate(region.text, region.translation)) { region.error = ""; continue; }
+        if (mode === "render") { region.error ||= "请先完成此区域的翻译"; continue; }
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
           const translation = await translateText(region.text); signal.throwIfAborted();
@@ -230,6 +231,9 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
 
       const failedRegions = selectedRegions.filter(region => !!region.error);
       if (failedRegions.length) throw new Error(`${failedRegions.length} 个文字区域翻译失败，已保留成功译文和失败详情`);
+      if (mode === "translate-only") {
+        image.error = ""; completed++; await publish(); report(`文字已翻译：${image.name}`); return;
+      }
       if (selectedRegions.length) {
         report(`${image.name} · 生成译图`);
         const result = await services.write(next, image, await services.render(source||await services.read(image), unityImageTranslationRegions(image.regions, confidenceThreshold,image))); signal.throwIfAborted();
@@ -252,7 +256,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
   const workers=Array.from({length:limit},(_,worker)=>(async()=>{let item=take();while(!failure&&item){const current=item;item=take();try{await runImage(current.image,worker,current.read);}catch(error){failure=error;throw error;}}})());
   const results=await Promise.allSettled(workers);const rejected=results.find((result):result is PromiseRejectedResult=>result.status==="rejected");if(rejected)throw rejected.reason;
   signal.throwIfAborted();
-  const failed = images.filter(image => mode === "recognize" ? !image.ocrCompleted : !image.completed);
+  const failed = images.filter(image => mode === "recognize" ? !image.ocrCompleted : mode === "translate-only" ? !!image.error || image.regions.some(region=>region.selected&&(!region.translation.trim()||!!region.error||!!services.validate(region.text,region.translation))) : !image.completed);
   if (failed.length) { report(`已处理 ${images.length} 张图片，${failed.length} 张未完成，失败详情已保存`); throw new Error(`${failed.length} 张图片未完成，请检查图片结果后恢复，或跳过未完成的图片`); }
   report(images.length ? mode === "recognize" ? "图片识别结果已保存" : "图片翻译与译图已保存" : "当前没有选中的可处理图片");
   return next;

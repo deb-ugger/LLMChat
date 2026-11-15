@@ -1,6 +1,11 @@
 import { readFileBytes } from "./localDocFile";
 import { unityRun, type UnityImage, type UnityProject } from "./unityOffline";
 export type ImagePreviewReader = (image: UnityImage, translated: boolean, thumbnail: boolean, signal: AbortSignal) => Promise<Blob>;
+export async function readUnitySourceImage(project: UnityProject, image: UnityImage, signal?: AbortSignal): Promise<Blob> {
+ if (image.kind !== "hidc") return new Blob([await readFileBytes(project.folder + "/" + image.sourceFile)], { type: "image/png" });
+ const value = await unityRun<{data:string}>("preview-image", {project:{folder:project.folder,images:[image]},imageId:image.id}, undefined, signal);
+ return fetch("data:image/png;base64," + value.data, {signal}).then(response => response.blob());
+}
 
 type Preview = { url: string; opaqueUrl: string; bytes: number };
 type Item = { users: number; ready: Promise<Preview>; value?: Preview; controller: AbortController; started: boolean; run: () => void; cancel: () => void };

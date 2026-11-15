@@ -21,10 +21,12 @@ if ($DxArchiveZipPath) {
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $output 'DxaDecode.exe'), $true)
     } finally { $zip.Dispose() }
 }
-@'
+$notice = @'
 WolfTL v0.6.2: https://github.com/Sinflower/WolfTL (MIT)
 WolfTL executable SHA256: A66FFCDB8EFA6340B6003CB0AFE0CB2BCF3ABA5C14499D0B67F8FB868BCFC276
 DxaDecode.exe is supplied locally by the user from a DXArchive package.
 The clean distribution does not redistribute this user-supplied decoder.
-'@ | Set-Content -LiteralPath (Join-Path $output 'SOURCE.txt') -Encoding UTF8
+'@
+$noticePath = Join-Path $output 'SOURCE.txt'
+if (!(Test-Path -LiteralPath $noticePath) -or [IO.File]::ReadAllText($noticePath).TrimEnd() -cne $notice.TrimEnd()) { [IO.File]::WriteAllText($noticePath,$notice,[Text.UTF8Encoding]::new($false)) }
 Write-Output "WOLF tools prepared: $output"

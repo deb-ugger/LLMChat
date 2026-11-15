@@ -28,6 +28,9 @@ public sealed class ImageResource
     public string Container { get; set; } = "";
     public string ObjectId { get; set; } = "0";
     public string Kind { get; set; } = "texture";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public int? HidcFrame { get; set; }
+    public string HidcPayload { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore] public byte[]? HidcExpected { get; set; }
     public string Name { get; set; } = "";
     public int Width { get; set; } public int Height { get; set; }
     public string SourceFile { get; set; } = "";
@@ -101,6 +104,7 @@ public static class ImageResources
             }).ToArray()};
         }
         var image = project.Images.SingleOrDefault(i => i.Id == request.ImageId) ?? throw new Exception("图片不属于当前工程");
+        HidcImages.EnsureSource(project, image, () => Program.CheckStop(request, ""));
         if (image.SourceFile.Length == 0) throw new Exception("没有可读取的原图");
         var source=Program.Within(project.Folder,image.SourceFile);
         var info=new FileInfo(source);
@@ -144,7 +148,11 @@ public static class ImageResources
         var result = new HashSet<long>();
         foreach (var info in instance.file.Metadata.AssetInfos.Where(i => i.TypeId == 114)) {
             AssetTypeValueField field;
-            try { field = manager.GetBaseField(instance, info); } catch { continue; }
+            try {
+                var template = manager.GetTemplateBaseField(instance, info);
+                if (!template.Children.Any(child => child.Name is "m_CharacterTable" or "m_glyphInfoList" or "mFont")) continue;
+                field = manager.GetBaseField(instance, info);
+            } catch { continue; }
             if (BitmapFontGenerator.FontKind(field) == null) continue;
             foreach (var reference in FontPreparation.References(field).Where(r => r.FileId == 0)) {
                 if (!long.TryParse(reference.PathId, out var id)) continue;
@@ -183,7 +191,7 @@ public static class ImageResources
                 image.DependencyHash = hash;
             }
             report?.Invoke("检查原图缓存");
-            if (instance.parentBundle == null && cache?.Copy(project, image) == true) { report?.Invoke("已复用原图缓存"); return; }
+            if (cache?.Copy(project, image) == true) { report?.Invoke("已复用原图缓存"); return; }
             report?.Invoke($"解码图片 {image.Width}×{image.Height}");
             var encoded = texture.FillPictureData(instance) ?? throw new Exception("未找到纹理的外部 resS 数据");
             var rgba = texture.DecodeTextureRaw(encoded, false) ?? throw new Exception("当前纹理压缩格式不能解码");
@@ -218,7 +226,8 @@ public static class ImageResources
             Directory.CreateDirectory(Path.GetDirectoryName(state)!); Program.WriteJson(state, image);
             return new { path = image.RenderedFile, hash = image.RenderedHash };
         }
-        if (image.SourceFile.Length == 0 || Program.Hash(Program.Within(project.Folder, image.SourceFile)) != image.SourceHash) throw new Exception("原图缓存发生变化，请重新扫描");
+        HidcImages.EnsureSource(project, image);
+        if (image.SourceFile.Length == 0 || image.Kind != "hidc" && Program.Hash(Program.Within(project.Folder, image.SourceFile)) != image.SourceHash) throw new Exception("原图缓存发生变化，请重新扫描");
         var png = Convert.FromBase64String(request.ImageData); Dimensions(image.Width, image.Height);
         if (png.Length < 24 || !png.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })) throw new Exception("请使用 PNG 格式的译图");
         if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(16, 4)) != image.Width || System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(20, 4)) != image.Height) throw new Exception("译图尺寸必须与原图一致");
@@ -295,11 +304,14 @@ public static class ImageResources
         Program.WriteJson(RecoveryMarker(project), new { manualReset = true });
         foreach (var image in project.Images) {
             if (Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) {
-                foreach (var relative in new[] { "images/rendered/" + image.Id + ".png", "images/state/" + image.Id + ".json" }) { var path = Program.Within(project.Folder, relative); if (File.Exists(path)) File.Delete(path); }
+                var state = Program.Within(project.Folder, "images/state/" + image.Id + ".json");
+                if (File.Exists(state)) File.Delete(state);
             }
-            image.RenderedFile = ""; image.RenderedHash = ""; image.OcrCompleted = false; image.Completed = false; image.Regions.Clear();
+            image.RenderedFile = ""; image.RenderedHash = ""; image.RenderedKind = ""; image.OcrCompleted = false; image.Completed = false; image.Regions.Clear();
             if (image.SourceFile.Length > 0) image.Error = "";
         }
+        var cleanup = CleanupCache(project);
+        if (cleanup.Errors.Count > 0) throw new IOException("清理译图缓存失败：" + string.Join("；", cleanup.Errors));
         project.ImagesSkipped = false;
     }
     public static void LoadStates(Project project, DateTime projectTime) {
@@ -320,7 +332,7 @@ public static class ImageResources
         }
     }
     public static int Reuse(Project previous, Project scanned) {
-        var prior = previous.Images.Where(i => i.SourceFile.Length > 0).ToDictionary(i => (i.File, i.Container, i.ObjectId));
+        var prior = previous.Images.Where(i => i.SourceFile.Length > 0).ToDictionary(i => (i.File, i.Container, i.ObjectId, i.HidcFrame));
         var count = 0;
         var examined = 0; long lastReport = 0;
         foreach (var image in scanned.Images.Where(i => i.SourceFile.Length > 0)) {
@@ -329,7 +341,7 @@ public static class ImageResources
                 lastReport = Environment.TickCount64;
                 Program.Progress($"恢复图片结果：{examined} / {scanned.Images.Count} · {image.Name}", examined, scanned.Images.Count, scanned.Folder);
             }
-            if (!prior.TryGetValue((image.File, image.Container, image.ObjectId), out var saved)) continue;
+            if (!prior.TryGetValue((image.File, image.Container, image.ObjectId, image.HidcFrame), out var saved)) continue;
             if (saved.SourceHash != image.SourceHash) {
                 if (saved.Width != image.Width || saved.Height != image.Height) continue;
                 var before = Program.Within(previous.Folder, saved.SourceFile);

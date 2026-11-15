@@ -1,0 +1,14 @@
+.searchable-select { position: relative; display: inline-flex; min-width: 0; width: 100%; flex: 1; color: inherit; }
+.searchable-select > input.searchable-select-input { width: 100%; min-width: 0; box-sizing: border-box; min-height: 36px; margin: 0; padding: 8px 32px 8px 11px; border: 1px solid var(--border, #cdd9eb); border-radius: 7px; background: var(--panel, #fff); color: inherit; font: inherit; text-overflow: ellipsis; }
+.searchable-select > input.searchable-select-input:focus { outline: 2px solid #3577ed55; outline-offset: 1px; border-color: #568cec; }
+.searchable-select > input.searchable-select-input:disabled { opacity: .6; cursor: default; }
+.searchable-select > button.searchable-select-caret { position: absolute; inset: 0 0 0 auto; display: grid; place-items: center; width: 30px; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0 7px 7px 0; box-shadow: none; background: transparent; color: inherit; cursor: pointer; }
+.searchable-select > select[hidden] { display: none !important; }
+.searchable-select-menu { position: fixed; box-sizing: border-box; margin: 0; padding: 5px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border, #cdd9eb); border-radius: 9px; background: var(--panel, #fff); color: var(--text, #203149); box-shadow: 0 8px 24px #20314926; font: inherit; }
+.searchable-select-menu > button.searchable-select-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; box-sizing: border-box; width: 100%; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-weight: 400; text-align: left; cursor: pointer; }
+.searchable-select-option > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.searchable-select-option > small { flex-shrink: 0; max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #718096); font-size: .85em; }
+.searchable-select-menu > button.searchable-select-option[aria-selected=true] { color: #245bc2; background: #edf3ff; }
+.searchable-select-menu > button.searchable-select-option.is-active, .searchable-select-menu > button.searchable-select-option:hover { background: #dfeaff; }
+.searchable-select-menu > button.searchable-select-option:disabled { opacity: .5; cursor: default; }
+.searchable-select-empty { padding: 12px 10px; color: var(--muted, #718096); }

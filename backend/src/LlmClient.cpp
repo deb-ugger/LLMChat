@@ -9,6 +9,7 @@
 #endif
 
 #include <cctype>
+#include <algorithm>
 #include <sstream>
 #include <vector>
 
@@ -81,7 +82,7 @@ bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_
 }
 
 LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body,
-                        const std::string& proxyMode, std::string proxy)
+                        const std::string& proxyMode, std::string proxy, bool requireComplete, json* nativeJson = nullptr)
 {
     LlmResponse result;
     if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
@@ -108,7 +109,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
-    WinHttpSetTimeouts(session, 5000, 10000, 30000, 100000);
+    WinHttpSetTimeouts(session, 5000, 10000, 30000, nativeJson ? 300000 : 100000);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect)
     {
@@ -234,6 +235,48 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
+    if (nativeJson) {
+        *nativeJson = json::parse(responseBody, nullptr, false);
+        result.ok = nativeJson->is_object() && !nativeJson->contains("error");
+        if (!result.ok) result.error = nativeJson->is_object() ? nativeJson->value("error", "Ollama 返回无效响应") : "Ollama 返回无效 JSON";
+        return result;
+    }
+    auto parsed = LlmClient::parseChatResponse(responseBody, requireComplete);
+    parsed.statusCode = result.statusCode;
+    parsed.externalCall = result.externalCall;
+    return parsed;
+}
+
+#endif
+
+} // namespace
+
+std::string LlmClient::modelsUrlFromChatUrl(const std::string& apiUrl)
+{
+    std::string u = apiUrl;
+    while (!u.empty() && (u.back() == ' ' || u.back() == '\t' || u.back() == '\r' || u.back() == '\n'))
+        u.pop_back();
+    size_t start = 0;
+    while (start < u.size() && (u[start] == ' ' || u[start] == '\t'))
+        ++start;
+    if (start > 0)
+        u.erase(0, start);
+
+    const std::string needle = "chat/completions";
+    const auto pos = u.rfind(needle);
+    if (pos != std::string::npos)
+    {
+        u.replace(pos, needle.size(), "models");
+        return u;
+    }
+    if (!u.empty() && u.back() == '/')
+        return u + "models";
+    return u + "/models";
+}
+
+LlmResponse LlmClient::parseChatResponse(const std::string& responseBody, bool requireComplete)
+{
+    LlmResponse result;
     try
     {
         const json root = json::parse(responseBody);
@@ -265,12 +308,6 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
                 }
             }
         }
-        if (content.empty() && message.contains("reasoning_content")
-            && message["reasoning_content"].is_string())
-        {
-            content = message["reasoning_content"].get<std::string>();
-        }
-        result.content = content;
         if (root.contains("usage") && root["usage"].is_object())
         {
             const auto& usage = root["usage"];
@@ -317,6 +354,44 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
                 result.totalTokens = result.promptTokens + result.completionTokens;
             }
         }
+        const auto& choice = root["choices"][0];
+        const auto reason = choice.find("finish_reason");
+        const std::string finishReason = reason != choice.end() && reason->is_string()
+            ? reason->get<std::string>() : "";
+        if (requireComplete && (finishReason == "length" || finishReason == "max_tokens")) {
+            result.errorCode = "LLM_OUTPUT_TRUNCATED";
+            result.error = "模型输出达到长度上限，译文不完整。请减少本批文本或提高服务端输出上限后重试";
+            return result;
+        }
+        if (finishReason == "content_filter") {
+            result.errorCode = "LLM_CONTENT_FILTERED";
+            result.error = "模型服务拦截了本次内容，未返回完整译文";
+            return result;
+        }
+        if (finishReason == "tool_calls" || finishReason == "function_call") {
+            result.errorCode = "LLM_NO_FINAL_ANSWER";
+            result.error = "模型返回了工具调用，未返回最终译文。请使用文本翻译模式";
+            return result;
+        }
+        // Some local servers put a leading thinking block in the content field.
+        // Keep only the completed final answer, never reasoning_content.
+        auto first = content.find_first_not_of(" \t\r\n");
+        while (first != std::string::npos && content.compare(first, 7, "<think>") == 0) {
+            const auto close = content.find("</think>", first + 7);
+            if (close == std::string::npos) {
+                result.errorCode = "LLM_NO_FINAL_ANSWER";
+                result.error = "模型只返回了未完成的思考内容，未生成最终译文";
+                return result;
+            }
+            content.erase(0, close + 8);
+            first = content.find_first_not_of(" \t\r\n");
+        }
+        if (first == std::string::npos) {
+            result.errorCode = "LLM_NO_FINAL_ANSWER";
+            result.error = "模型未返回最终译文。请检查模型输出上限与思考模式设置";
+            return result;
+        }
+        result.content = content;
         result.ok = true;
     }
     catch (const std::exception& ex)
@@ -329,31 +404,54 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     return result;
 }
 
-#endif
-
-} // namespace
-
-std::string LlmClient::modelsUrlFromChatUrl(const std::string& apiUrl)
+LlmResponse LlmClient::parseOllamaTestResponse(const std::string& responseBody)
 {
-    std::string u = apiUrl;
-    while (!u.empty() && (u.back() == ' ' || u.back() == '\t' || u.back() == '\r' || u.back() == '\n'))
-        u.pop_back();
-    size_t start = 0;
-    while (start < u.size() && (u[start] == ' ' || u[start] == '\t'))
-        ++start;
-    if (start > 0)
-        u.erase(0, start);
+    LlmResponse result;
+    try {
+        const auto root = json::parse(responseBody);
+        if (root.contains("error")) { result.error = root.at("error").get<std::string>(); return result; }
+        result.content = root.value("message", json::object()).value("content", "");
+        result.promptTokens = root.value("prompt_eval_count", 0);
+        result.completionTokens = root.value("eval_count", 0);
+        result.totalTokens = result.promptTokens + result.completionTokens;
+        result.ok = root.value("done", false) && result.content.find_first_not_of(" \r\n\t") != std::string::npos;
+        if (!result.ok) result.error = "模型未生成可见输出，请检查模型是否支持当前测试输入";
+    } catch (const std::exception& error) { result.error = std::string("Ollama 测试响应无效：") + error.what(); }
+    return result;
+}
 
-    const std::string needle = "chat/completions";
-    const auto pos = u.rfind(needle);
-    if (pos != std::string::npos)
-    {
-        u.replace(pos, needle.size(), "models");
-        return u;
+LlmResponse LlmClient::testOllama(const std::string& apiUrl, const std::string& model)
+{
+#ifdef _WIN32
+    auto base = apiUrl;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    for (const auto* suffix : {"/v1/chat/completions", "/api/chat", "/v1"}) {
+        if (base.ends_with(suffix)) { base.resize(base.size() - std::char_traits<char>::length(suffix)); break; }
     }
-    if (!u.empty() && u.back() == '/')
-        return u + "models";
-    return u + "/models";
+    json metadata;
+    auto response = winHttpPost(base + "/api/show", "", json{{"model",model}}.dump(), "direct", "", false, &metadata);
+    if (!response.ok) return response;
+    const auto capabilities = metadata.value("capabilities", json::array());
+    const bool vision = std::find(capabilities.begin(), capabilities.end(), "vision") != capabilities.end();
+    if (std::find(capabilities.begin(), capabilities.end(), "embedding") != capabilities.end() &&
+        std::find(capabilities.begin(), capabilities.end(), "completion") == capabilities.end()) {
+        response.ok = false; response.error = "该模型用于嵌入，不支持翻译生成测试"; return response;
+    }
+    json message = {{"role","user"},{"content",vision ? "Read the text in this image. Output only the text." : "将日语「こんにちは」翻译成简体中文，只输出译文。"}};
+    if (vision) message["images"] = json::array({
+        "iVBORw0KGgoAAAANSUhEUgAAAGAAAAAwCAYAAADuFn/PAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAIXSURBVHhe7ZfhjcMgDEYZj4EyDrtklWzCye3dqYdtMJDeB5Wf5D9VIMn3wKQhO1BC+YPzv7gAMC4AjAsA4wLAuAAwLgCMCwDjAsC4ADBvEXClmEMISsWcrnKEznkU42PKzeFXypHdl+rIZ3ktmFsFsLAaFQ0m2JwtARuFT9wk4MwHe2FjNQLtErBZ+MQNAibC/6lKqHYB2nOsGz4xKeDKKZYvXAtKCynkcMgx2QRo864dPjEn4DyElzYcsh3j2gK0RbB++MSEAPnFlYXMEL+UhMF1AfIz7BI+MS5AOvDY6qwhtQ0enC5g//CJcQFCG7F8Vr7CwhXaELvmWwD7fcPwiWEBUgsROkgVyxws6JhyKn97qd5FgGZYAAtGWL1NDLuI36dVA88B5AMF9J5FWDYXQPeUD+NynlUZFmDp3y0sc+gCXoQLInc5kIcFSC/du+p4uHwX8Ws6rittLsi4ANT/ACH8B9LzCDtqNcYFKH+ErLtAaj/SimUCKpLZtY/iUldiQoDchqiEHP8ghq+MY6FWBMi7yr4oEMwJUHaBHpQc0KOk9LsFaHKVtrUAkwKISqjm0ttErwB1UTTHYbhBADEhoRFMv4Dx1ojgJgFPWFiNsvRmNqdFgLYLKjsNxa0CflFW4LP6+vGYAP2zVDtrULxHgGPGBYBxAWBcABgXAMYFgHEBYFwAGBcAxgWAcQFgXAAYFwDGBYD5AtJA624j99OOAAAAAElFTkSuQmCC"
+    });
+    const json body = {{"model",model},{"messages",json::array({message})},{"stream",false},{"think",false},{"keep_alive",0},
+        {"options",{{"num_predict",16},{"num_ctx",2048},{"temperature",0}}}};
+    json output;
+    response = winHttpPost(base + "/api/chat", "", body.dump(), "direct", "", false, &output);
+    if (!response.ok) return response;
+    auto parsed = parseOllamaTestResponse(output.dump());
+    parsed.statusCode = response.statusCode; parsed.externalCall = response.externalCall;
+    return parsed;
+#else
+    LlmResponse response; response.error = "当前平台不支持 Ollama 生成测试"; return response;
+#endif
 }
 
 LlmResponse LlmClient::chat(const LlmRequest& request)
@@ -371,7 +469,7 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
     body["stream"] = false;
 
 #ifdef _WIN32
-    return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy);
+    return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy, request.requireComplete);
 #else
     early.error = "LLM client is only implemented for Windows in this build";
     return early;

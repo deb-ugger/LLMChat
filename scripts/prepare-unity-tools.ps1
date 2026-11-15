@@ -2,6 +2,12 @@
 param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'build-incremental.ps1')
+$cacheInputs = @((Join-Path $root 'tools\UnityOffline'),(Join-Path $root 'tools\FontSymbols'),(Join-Path $root 'assets\fonts'),$PSCommandPath,(Join-Path $PSScriptRoot 'build-incremental.ps1'),(Join-Path $PSScriptRoot 'prepare-font-symbols.ps1'),(Join-Path $PSScriptRoot 'prepare-unity-segmentation.ps1'),(Join-Path $PSScriptRoot 'convert-unity-wtp.py'),(Join-Path $root 'tools\UnityOffline\obj\project.assets.json'))
+$cacheOutputs = @((Join-Path $root 'frontend\src-tauri\resources\unity'),(Join-Path $root 'frontend\src-tauri\resources\unity\llmchat-unity.exe'),(Join-Path $root 'frontend\public\wtp'))
+$cacheIdentity = "dotnet=$(& dotnet --version);python=$env:LLMCHAT_MODEL_PYTHON;Release/win-x64/self-contained/single-file"
+if (Test-BuildCache 'unity-tools' $cacheInputs $cacheOutputs $cacheIdentity) { Write-Output 'Unity tools unchanged; reusing published tools.'; return }
+& (Join-Path $PSScriptRoot 'prepare-font-symbols.ps1')
 & (Join-Path $PSScriptRoot 'prepare-unity-segmentation.ps1')
 $output = Join-Path $root 'frontend\src-tauri\resources\unity'
 $project = Join-Path $root 'tools\UnityOffline\UnityOffline.csproj'
@@ -65,3 +71,5 @@ foreach ($name in @('LICENSE.TXT', 'THIRD-PARTY-NOTICES.TXT')) {
     if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination (Join-Path $output "DOTNET-$name") -Force }
 }
 Write-Output "Unity embedding tools ready: $output"
+
+Save-BuildCache 'unity-tools' $cacheInputs $cacheOutputs $cacheIdentity

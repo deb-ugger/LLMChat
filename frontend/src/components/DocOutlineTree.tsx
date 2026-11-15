@@ -274,7 +274,7 @@ function OutlineBranch({
                   className={`pdf-outline-twist${isCollapsed ? " is-collapsed" : ""}`}
                   aria-expanded={!isCollapsed}
                   aria-label={isCollapsed ? "展开" : "折叠"}
-                  title={isCollapsed ? "展开" : "折叠"}
+                  data-tooltip={isCollapsed ? "展开" : "折叠"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggle(key);

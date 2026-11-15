@@ -14,6 +14,7 @@
     "allow-speech-jobs",
     "allow-unity-jobs",
     "allow-runtime-log",
+    "allow-ollama-service",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

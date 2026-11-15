@@ -1808,7 +1808,7 @@ export function ImageOcrView({
       )}
       <div className="ocr-main">
         <div className="ocr-toolbar">
-      {pages.length>0 && <button type="button" aria-label="下载当前图片的同名 PNG 译图" title="下载当前图片的同名 PNG 译图" disabled={busy} onClick={()=>void downloadTranslatedImage()} style={{border:0,background:"transparent",color:"var(--accent)",alignSelf:"flex-end",cursor:"pointer"}}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>}
+      {pages.length>0 && <button type="button" aria-label="下载当前图片的同名 PNG 译图" data-tooltip="下载当前图片的同名 PNG 译图" disabled={busy} onClick={()=>void downloadTranslatedImage()} style={{border:0,background:"transparent",color:"var(--accent)",alignSelf:"flex-end",cursor:"pointer"}}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>}
           <button
             type="button"
             className="pdf-tool-btn"
@@ -1847,7 +1847,7 @@ export function ImageOcrView({
               !srcQuery &&
               !dstQuery
             }
-            title="清除全部图片与识别/翻译结果"
+            data-tooltip="清除全部图片与识别/翻译结果" aria-label="清除全部图片与识别/翻译结果"
             onClick={() => clearAll()}
           >
             清除全部
@@ -1886,7 +1886,7 @@ export function ImageOcrView({
           <OcrMetrics total count={totalSegments} milliseconds={totalElapsedMs} busy={busy}
             failed={!!error || allBlocks.some((block) => block.status === "error")}
             text={error ? "处理失败" : (status || (busy ? "处理中" : allBlocks.some((block) => block.status === "error") ? "部分翻译失败" : allBlocks.length && allBlocks.every((block) => block.status === "done") ? "翻译完成" : pages.length ? "识别完成" : "本次会话累计 · 清除后保留")).replace(/^识别 \d+ 段 · /, "")} />
-          <span className="ocr-toolbar-engine" title={engineBadge}>
+          <span className="ocr-toolbar-engine" data-tooltip={engineBadge}>
             {engineBadge}
           </span>
           {ocrModeMenu}
@@ -1978,7 +1978,7 @@ export function ImageOcrView({
 
       <div
         className="col-resizer col-resizer-panel ocr-side-resizer"
-        title="拖动调整原文栏宽度"
+        data-tooltip="拖动调整原文栏宽度"
         onMouseDown={(e) => beginSideResize(e, "grow-left")}
       />
       <aside className="ocr-side" style={{ width: sideWidth }}>
@@ -2025,7 +2025,7 @@ export function ImageOcrView({
                     <button
                       type="button"
                       className="ocr-copy-btn"
-                      title="复制原文"
+                      data-tooltip="复制原文" aria-label="复制原文"
                       onClick={(e) =>
                         void onCopy(`src-${b.id}`, b.text, e)
                       }
@@ -2039,7 +2039,7 @@ export function ImageOcrView({
           </div>
           <div
             className="col-resizer-panel ocr-dual-resizer"
-            title="拖动调整原文/译文宽度"
+            data-tooltip="拖动调整原文/译文宽度"
             onMouseDown={beginDualResize}
           />
           <div className="ocr-col" style={{ flex: "1 1 0", minWidth: "25%" }}>
@@ -2098,7 +2098,7 @@ export function ImageOcrView({
                       <button
                         type="button"
                         className="ocr-copy-btn"
-                        title="复制译文"
+                        data-tooltip="复制译文" aria-label="复制译文"
                         disabled={!copyable}
                         onClick={(e) =>
                           void onCopy(`dst-${b.id}`, b.translation, e)

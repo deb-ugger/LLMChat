@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from "react";
 import type {OcrMode,TranslateProvider} from "../api";
-export type GameImageTask={kind:"scan"|"screen"|"recognize"|"translate";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider}};
+export type GameImageTask={kind:"scan"|"screen"|"recognize"|"translate";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider;translationKind?:"llm"|"local"|"engine";translationModel?:string;reviewModel?:string;onlySourceLanguage?:boolean;skipTargetLanguage?:boolean}};
 export function useGameImageTask(gamePath:string){
   const key=`llmchat-image-task:${gamePath}`;
   const initial=useRef<{total:number;task?:GameImageTask}|undefined>(undefined);
@@ -12,8 +12,9 @@ export function useGameImageTask(gamePath:string){
   const select=(next:GameImageTask)=>{pending.current=next;operation.current=next;setTask(next);save();};
   const begin=(next?:GameImageTask)=>{if(started.current!==null)return;started.current=performance.now();operation.current=next;if(next)select(next);setRunning(true);save();};
   const finish=(success:boolean)=>{total.current=value();started.current=null;if(success&&operation.current){pending.current=undefined;setTask(undefined);}operation.current=undefined;setElapsed(total.current);setRunning(false);save();};
+  const reset=()=>{started.current=null;total.current=0;pending.current=undefined;operation.current=undefined;setElapsed(0);setTask(undefined);setRunning(false);save();};
   useEffect(()=>{if(!running)return;let ticks=0;const timer=setInterval(()=>{setElapsed(value());if(++ticks%5===0)save();},1000);return()=>clearInterval(timer);},[running]);
   useEffect(()=>()=>{save();},[key]);
-  return {elapsed,task,begin,finish,select};
+  return {elapsed,task,begin,finish,select,reset};
 }
 export function imageTaskDuration(milliseconds:number){const seconds=Math.max(0,Math.floor(milliseconds/1000));return `${Math.floor(seconds/3600).toString().padStart(2,"0")}:${Math.floor(seconds%3600/60).toString().padStart(2,"0")}:${(seconds%60).toString().padStart(2,"0")}`;}

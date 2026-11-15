@@ -20,7 +20,7 @@ export function OutputDirectoryField({ module, label }: { module: OutputModule; 
     } catch (cause) { setError(toFriendlyError(cause)); }
   };
   return <div className="settings-output-directory">
-    <label>{label}<div className="settings-directory-picker"><input value={path} readOnly title={path} /><button className="pdf-tool-btn" type="button" onClick={() => void choose()}>选择</button></div></label>
+    <label>{label}<div className="settings-directory-picker"><input value={path} readOnly data-tooltip={path} /><button className="pdf-tool-btn" type="button" onClick={() => void choose()}>选择</button></div></label>
     {error && <p className="settings-test-fail" role="alert">{error}</p>}
   </div>;
 }

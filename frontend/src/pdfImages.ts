@@ -184,7 +184,7 @@ export async function syncPageImageHotspots(
     if (r.width < 4 || r.height < 4) continue;
     const spot = document.createElement("div");
     spot.className = "pdf-image-hotspot";
-    spot.title = "双击查看图片";
+    spot.dataset.tooltip = "双击查看图片";
     spot.style.left = `${r.left}px`;
     spot.style.top = `${r.top}px`;
     spot.style.width = `${r.width}px`;

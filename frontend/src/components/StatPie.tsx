@@ -305,7 +305,7 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
               onMouseEnter={() => highlightFromLegend(s.label)}
               onMouseLeave={clearLegendHighlight}
               onClick={() => toggleSlice(s.label)}
-              title={
+              data-tooltip={
                 off
                   ? `点击显示「${s.label}」`
                   : `点击隐藏「${s.label}」· ${s.value}（${pct}%）`

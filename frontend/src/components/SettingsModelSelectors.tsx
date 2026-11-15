@@ -40,7 +40,7 @@ function StatusSelect({
   groups,
   onChange,
   className,
-  searchable = false,
+  searchable = true,
 }: {
   label?: string;
   value: string;
@@ -54,15 +54,21 @@ function StatusSelect({
   const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const sortedGroups = useMemo(() => {
+    const names = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+    return groups.map(group => ({ ...group, options: group.options.filter(option => option.value.trim()).sort((a, b) => names.compare(a.title, b.title) || names.compare(a.value, b.value)) }))
+      .filter(group => group.options.length > 0)
+      .sort((a, b) => names.compare(a.label, b.label));
+  }, [groups]);
   const flat = useMemo(
-    () => groups.flatMap((g) => g.options),
-    [groups],
+    () => sortedGroups.flatMap((g) => g.options),
+    [sortedGroups],
   );
-  const selected = flat.find((o) => o.value === value) || flat[0];
+  const selected = flat.find((o) => o.value === value);
   const filteredGroups = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
-    if (!searchable || !keyword) return groups;
-    return groups
+    if (!searchable || !keyword) return sortedGroups;
+    return sortedGroups
       .map((group) => ({
         ...group,
         options: group.options.filter((option) =>
@@ -73,7 +79,7 @@ function StatusSelect({
         ),
       }))
       .filter((group) => group.options.length > 0);
-  }, [groups, query, searchable]);
+  }, [sortedGroups, query, searchable]);
 
   useEffect(() => {
     if (!open) {
@@ -103,6 +109,7 @@ function StatusSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
+        disabled={!flat.length}
         onClick={(e) => {
           e.stopPropagation();
           if (!open) setQuery("");
@@ -122,11 +129,11 @@ function StatusSelect({
             </span>
           </>
         ) : (
-          <span className="status-select-trigger-text">请选择</span>
+          <span className="status-select-trigger-text">{flat.length ? "请选择" : "没有可用选项"}</span>
         )}
         <span className="status-select-caret" aria-hidden />
       </button>
-      {open && (
+      {open && flat.length > 0 && (
         <div id={listId} className="status-select-menu" role="listbox">
           {searchable ? (
             <div className="status-select-search">
@@ -134,11 +141,16 @@ function StatusSelect({
                 ref={searchRef}
                 type="search"
                 value={query}
-                placeholder={`搜索${label || "选项"}…`}
+                placeholder="搜索"
                 aria-label={`搜索${label || "选项"}`}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") setOpen(false);
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    const option = filteredGroups[0]?.options[0];
+                    if (option) { onChange(option.value); setOpen(false); }
+                  }
                 }}
               />
             </div>
@@ -148,7 +160,7 @@ function StatusSelect({
           ) : null}
           {filteredGroups.map((g) => (
             <div key={g.label} className="status-select-group">
-              <div className="status-select-group-label">{g.label}</div>
+              {filteredGroups.length > 1 && <div className="status-select-group-label">{g.label}</div>}
               {g.options.map((opt) => (
                 <button
                   key={opt.value}
@@ -239,11 +251,6 @@ function FeatureModelSelect({
     ).map((p) => ({ model: p.model, label: p.label }));
   }, [vendor, customModels, isConfigured, presets]);
 
-  const selectedModel = useMemo(() => {
-    if (modelsForVendor.some((m) => m.model === value)) return value;
-    return modelsForVendor[0]?.model || value;
-  }, [modelsForVendor, value]);
-
   const vendorGroups = useMemo((): StatusSelectGroup[] => {
     const options = sortByConfigured(vendorList, (g) =>
       isVendorConfigured(g),
@@ -305,7 +312,7 @@ function FeatureModelSelect({
       <StatusSelect
         label="模型"
         className="feature-model-select-half"
-        value={selectedModel}
+        value={value}
         groups={modelGroups}
         onChange={onChange}
         searchable

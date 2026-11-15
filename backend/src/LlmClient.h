@@ -12,12 +12,14 @@ struct LlmRequest {
     nlohmann::json options = nlohmann::json::object();
     std::string proxyMode;
     std::string httpProxy;
+    bool requireComplete = false;
 };
 
 struct LlmResponse {
     bool ok = false;
     std::string content;
     std::string error;
+    std::string errorCode;
     int statusCode = 0;
     int promptTokens = 0;
     int completionTokens = 0;
@@ -49,6 +51,10 @@ struct LlmListModelsResponse {
 class LlmClient {
 public:
     static LlmResponse chat(const LlmRequest& request);
+    static LlmResponse testOllama(const std::string& apiUrl, const std::string& model);
+    static LlmResponse parseOllamaTestResponse(const std::string& responseBody);
+    /** Parse a completed non-streaming response, retaining usage on rejected output. */
+    static LlmResponse parseChatResponse(const std::string& responseBody, bool requireComplete = false);
     /** GET OpenAI-compatible /v1/models and return model ids. */
     static LlmListModelsResponse listModels(const LlmListModelsRequest& request);
     /** Derive .../models URL from a chat/completions (or similar) URL. */

@@ -1,5 +1,6 @@
 import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
 import { unityTranslationTokens } from "./unityTokens";
+import { gameTextMatchesSource } from "./gameDisplayText";
 
 export const UNITY_STEPS = ["扫描资源", "翻译文本", "生成补丁", "应用到游戏"];
 export const UNITY_STAGE_TABS = [
@@ -11,7 +12,7 @@ export const UNITY_STAGE_TABS = [
 ] as const;
 export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile;
 export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(unityImageResultReady));
-export const UNITY_SCAN_COMPATIBILITY = { current: 5, minimumUsable: 2 };
+export const UNITY_SCAN_COMPATIBILITY = { current: 7, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };
 export function unityScanOptionChanges(saved: ScanOptions, current: ScanOptions) {
   const reasons: string[] = [];
@@ -64,14 +65,15 @@ export function unityTextLanguage(text: string) {
   if (/\p{Script=Latin}/u.test(value)) return "en";
   return "und";
 }
-export function unityLanguageScope(entries: UnityEntry[], source: string) {
+export function unityLanguageScope(entries: UnityEntry[], source: string, onlySourceLanguage = true) {
   const counts: Record<string, number> = {};
   const languages = entries.map(e => { const language = unityEntryLanguage(e); counts[language] = (counts[language] || 0) + 1; return language; });
   const dominant = Object.entries(counts).filter(([name]) => name !== "und").sort((a, b) => b[1] - a[1])[0]?.[0] || "und";
   const language = source === "auto" ? dominant === "cjk" ? "zh" : dominant : source;
-  const ids = new Set(entries.filter((entry, i) => language === "all" || language !== "und" && (languages[i] === language || !entry.locale && languages[i] === "cjk" && (language === "ja" || language === "zh"))).map(e => e.id));
-  return { language, label: language === "und" ? "未确定" : unityLanguageLabel(language), ids, total: entries.length, count: ids.size };
+  const explicit = source !== "auto" && source !== "all";
+  const ids = new Set(entries.filter((entry, i) => !onlySourceLanguage || language === "all" || language !== "und" && (explicit ? gameTextMatchesSource(entry.source, language, entry.locale) : languages[i] === language || !entry.locale && languages[i] === "cjk" && (language === "ja" || language === "zh"))).map(e => e.id));
+  return { language, label: !onlySourceLanguage ? "全部语言" : language === "und" ? "未确定" : unityLanguageLabel(language), ids, total: entries.length, count: ids.size };
 }
 export function unityStageState(step: number, completedThrough: number, runningStep?: number, failedStep?: number, outdatedStep?: number, optionalStep?: number) {
-  return step === failedStep ? "error" : step === runningStep ? "current" : step === outdatedStep ? "outdated" : step === optionalStep ? "optional-update" : step <= completedThrough ? "complete" : "pending";
+  return step === failedStep ? "error" : step === runningStep ? "current" : step === outdatedStep ? "outdated" : step === optionalStep ? "optional-update" : step <= completedThrough ? "complete" : step === completedThrough + 1 ? "current" : "pending";
 }

@@ -120,8 +120,8 @@ export function StoragePanel({ active }: { active: boolean }) {
           {locations.map(entry => <article className="storage-location" key={entry.id}>
             <span className="storage-item-icon"><StorageIcon name={PATH_COPY[entry.id].icon} /></span>
             <div className="storage-location-copy"><label htmlFor={`storage-${entry.id}`}>{entry.label}</label><p>{PATH_COPY[entry.id].description}</p><span>{entry.exists ? formatBytes(entry.bytes) : "尚未生成"}</span></div>
-            <div className="storage-location-path"><input id={`storage-${entry.id}`} value={paths[entry.id] ?? ""} disabled={busy} spellCheck={false} aria-label={`${entry.label}路径`} onChange={e => setPaths(p => ({ ...p, [entry.id]: e.target.value }))} />
-              {paths[entry.id] !== entry.path && <p className="storage-current-path">当前：{entry.path}</p>}
+            <div className="storage-location-path"><input id={`storage-${entry.id}`} value={paths[entry.id] ?? ""} data-tooltip={paths[entry.id] ?? ""} disabled={busy} spellCheck={false} aria-label={`${entry.label}路径`} onChange={e => setPaths(p => ({ ...p, [entry.id]: e.target.value }))} />
+              {paths[entry.id] !== entry.path && <p className="storage-current-path" data-tooltip={entry.path}>当前：{entry.path}</p>}
             </div>
             <div className="storage-location-actions">
               <button className="storage-button is-small" type="button" disabled={busy} onClick={() => { void (async () => {
@@ -130,7 +130,7 @@ export function StoragePanel({ active }: { active: boolean }) {
                   if (typeof value === "string") setPaths(p => ({ ...p, [entry.id]: value }));
                 } catch (e) { setError(toFriendlyError(e, "无法选择目录")); }
               })(); }}>更改</button>
-              <button className="storage-button is-small is-icon" type="button" title={`打开当前${entry.label}目录`} aria-label={`打开当前${entry.label}目录`} disabled={busy || !entry.exists} onClick={() => { void api.openPath(entry.path).catch(e => setError(toFriendlyError(e))); }}><StorageIcon name="folder" /></button>
+              <button className="storage-button is-small is-icon" type="button" data-tooltip={`打开当前${entry.label}目录`} aria-label={`打开当前${entry.label}目录`} disabled={busy || !entry.exists} onClick={() => { void api.openPath(entry.path).catch(e => setError(toFriendlyError(e))); }}><StorageIcon name="folder" /></button>
             </div>
           </article>)}
           <div className="storage-location-footer"><span>{dirty ? "有未保存的路径修改" : status.pending ? "路径迁移已安排，等待下次启动" : "所有位置均为当前生效目录"}</span>
@@ -183,7 +183,7 @@ export function StoragePanel({ active }: { active: boolean }) {
         <div className={`storage-modal-explanation${cleanupTarget.destructive ? " is-danger" : ""}`}><StorageIcon name={cleanupTarget.destructive ? "warning" : "clock"} /><p>{cleanupTarget.destructive ? `${CLEANUP_COPY[cleanupTarget.id].description}将被永久删除，包含历史备份，无法恢复。请先备份需要的数据。` : CLEANUP_COPY[cleanupTarget.id].description}</p></div>
         {status?.pending && <p className="storage-inline-hint">已安排路径迁移，将先迁移，再清理新位置。</p>}
       </>}</div>
-      <div className="storage-modal-actions"><button className="storage-button" type="button" autoFocus onClick={() => setConfirm(null)}>取消</button><button className={`storage-button ${cleanupTarget?.destructive ? "is-danger-filled" : "is-primary"}`} type="button" onClick={() => confirm.kind === "paths" ? void savePaths() : void scheduleCleanup(confirm.id, true)}>{confirm.kind === "paths" ? "确认更改" : cleanupTarget?.destructive ? "确认删除" : "确认清理"}</button></div>
+      <div className="storage-modal-actions"><button className={`storage-button ${cleanupTarget?.destructive ? "is-danger-filled" : "is-primary"}`} type="button" onClick={() => confirm.kind === "paths" ? void savePaths() : void scheduleCleanup(confirm.id, true)}>{confirm.kind === "paths" ? "确认更改" : cleanupTarget?.destructive ? "确认删除" : "确认清理"}</button><button className="storage-button" type="button" autoFocus onClick={() => setConfirm(null)}>取消</button></div>
     </div></div>}
   </div>;
 }

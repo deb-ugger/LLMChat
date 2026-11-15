@@ -1,4 +1,5 @@
 ﻿$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "build-incremental.ps1")
 $root = Split-Path -Parent $PSScriptRoot
 # Prefer CARGO_TARGET_DIR when set (Cursor sandbox may redirect builds).
 $targetRoot = if ($env:CARGO_TARGET_DIR -and (Test-Path $env:CARGO_TARGET_DIR)) {
@@ -27,7 +28,7 @@ $portableExecutables = @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-
 Stop-ProjectProcesses -ExecutablePaths $portableExecutables -CloseTimeoutSeconds 20
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'portable-build.cmd') -Destination (Join-Path $out 'build.cmd') -Force
+Copy-BuildFile (Join-Path $PSScriptRoot 'portable-build.cmd') (Join-Path $out 'build.cmd')
 
 # Only refresh binaries/resources. Never wipe user data next to the portable app:
 # usage-events.jsonl, conversations.json, config.ini, vendor-models.json, text-projects/, etc.
@@ -53,8 +54,8 @@ foreach ($name in $preserveHint) {
 
 $webAssetsOutput = Join-Path $out 'resources\web-assets'
 New-Item -ItemType Directory -Force -Path $webAssetsOutput | Out-Null
-Copy-Item (Join-Path $webAssets '*') $webAssetsOutput -Recurse -Force
-Copy-Item $exe $out -Force
+Copy-BuildTree $webAssets $webAssetsOutput
+Copy-BuildFile $exe $out
 
 $speechTools = Join-Path $root 'frontend\src-tauri\resources\ffmpeg'
 if (!(Test-Path -LiteralPath (Join-Path $speechTools 'ffmpeg.exe'))) {
@@ -62,24 +63,27 @@ if (!(Test-Path -LiteralPath (Join-Path $speechTools 'ffmpeg.exe'))) {
 }
 $speechToolsOutput = Join-Path $out 'resources\ffmpeg'
 New-Item -ItemType Directory -Force -Path $speechToolsOutput | Out-Null
-Copy-Item (Join-Path $speechTools '*') $speechToolsOutput -Force
+Copy-BuildTree $speechTools $speechToolsOutput
 
 $unityTools = Join-Path $root 'frontend\src-tauri\resources\unity'
 $wolfTools = Join-Path $root 'frontend\src-tauri\resources\wolf'
 if (Test-Path -LiteralPath $wolfTools) {
     $wolfOutput = Join-Path $out 'resources\wolf'
     New-Item -ItemType Directory -Force -Path $wolfOutput | Out-Null
-    Copy-Item (Join-Path $wolfTools '*') -Destination $wolfOutput -Force
+    Copy-BuildTree $wolfTools $wolfOutput
 }
 if (!(Test-Path -LiteralPath (Join-Path $unityTools 'llmchat-unity.exe'))) {
     throw 'Run scripts/prepare-unity-tools.ps1 before packaging the Unity embedding feature.'
 }
 $unityToolsOutput = Join-Path $out 'resources\unity'
 New-Item -ItemType Directory -Force -Path $unityToolsOutput | Out-Null
-Get-ChildItem -LiteralPath $unityTools -File | Where-Object { $_.Name -notin @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.txt') } | Copy-Item -Destination $unityToolsOutput -Force
+Get-ChildItem -LiteralPath $unityTools -File | Where-Object { $_.Name -notin @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.txt') } | ForEach-Object { Copy-BuildFile $_.FullName $unityToolsOutput }
+$symbolTools = Join-Path $unityTools 'font-symbols'
+if (!(Test-Path -LiteralPath (Join-Path $symbolTools 'llmchat-font-symbols.exe'))) { throw 'Run scripts/prepare-font-symbols.ps1 before packaging font supplementation.' }
+Copy-BuildTree $symbolTools (Join-Path $unityToolsOutput 'font-symbols')
 $fontsOutput = Join-Path $out 'fonts'
 New-Item -ItemType Directory -Force -Path $fontsOutput | Out-Null
-Copy-Item -LiteralPath (Join-Path $root 'assets\fonts\NotoSansCJKsc-Regular.otf'), (Join-Path $root 'assets\fonts\OFL.txt'), (Join-Path $root 'assets\fonts\SOURCE.txt') -Destination $fontsOutput -Force
+foreach ($name in @('NotoSansCJKsc-Regular.otf','OFL.txt','SOURCE.txt')) { Copy-BuildFile (Join-Path $root ('assets\fonts\' + $name)) $fontsOutput }
 foreach ($name in @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.txt')) {
     $oldFont = Join-Path $unityToolsOutput $name
     if (Test-Path -LiteralPath $oldFont) { Remove-Item -LiteralPath $oldFont }
@@ -89,12 +93,12 @@ $sidecarRelease = Join-Path $release "llmchat-backend.exe"
 $sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
 
 if (Test-Path $sidecarNamed) {
-    Copy-Item $sidecarNamed $out -Force
+    Copy-BuildFile $sidecarNamed $out
     # Prefer the freshly built named sidecar as llmchat-backend.exe too
-    Copy-Item $sidecarNamed (Join-Path $out "llmchat-backend.exe") -Force
+    Copy-BuildFile $sidecarNamed (Join-Path $out "llmchat-backend.exe")
 } elseif (Test-Path $sidecarRelease) {
-    Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend.exe") -Force
-    Copy-Item $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe") -Force
+    Copy-BuildFile $sidecarRelease (Join-Path $out "llmchat-backend.exe")
+    Copy-BuildFile $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe")
 }
 
 # Also sync font/tool caches dirs (created on first fix-font download)
@@ -106,9 +110,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\tools") | O
 $localRelease = Join-Path $root "frontend\src-tauri\target\release"
 if ($release -ne $localRelease) {
     New-Item -ItemType Directory -Force -Path $localRelease | Out-Null
-    Copy-Item $exe (Join-Path $localRelease "llmchat.exe") -Force
+    Copy-BuildFile $exe (Join-Path $localRelease "llmchat.exe")
     if (Test-Path $sidecarRelease) {
-        Copy-Item $sidecarRelease (Join-Path $localRelease "llmchat-backend.exe") -Force
+        Copy-BuildFile $sidecarRelease (Join-Path $localRelease "llmchat-backend.exe")
     }
 }
 
@@ -119,3 +123,7 @@ if (-not (Test-Path $configDst)) {
 
 Write-Output "Portable folder ready: $out"
 Get-ChildItem $out | Format-Table Name, Length
+
+New-Item -ItemType Directory -Path $script:BuildCacheRoot -Force | Out-Null
+ConvertTo-Json -InputObject @($script:BuildCopiedFiles) | Set-Content -LiteralPath (Join-Path $script:BuildCacheRoot 'portable-updated-files.json') -Encoding UTF8
+Write-Output ('Updated {0} program/resource files.' -f $script:BuildCopiedFiles.Count)

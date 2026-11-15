@@ -1,6 +1,7 @@
 import type { UnityEntry } from "./unityOffline";
 
-export type TranslationRow = { id: string; source: string; translation: string };
+export type TranslationRow = { id: string; source: string; translation: string; file?: string; container?: string; objectId?: string; locator?: string; locale?: string; localizationKey?: string };
+export type MatchedTranslationRows = TranslationRow[] & { issues: UnityTranslationImportIssue[]; remapped: number };
 export type UnityTranslationImportIssue = TranslationRow & { reason: string };
 export class UnityTranslationImportError extends Error {
   constructor(public issues: UnityTranslationImportIssue[], public checked: number) {
@@ -20,7 +21,7 @@ export function unityTranslationFileName(gameExe: string, gameDir: string) {
 }
 
 export function exportUnityTranslations(entries: UnityEntry[], csv = false) {
-  const rows = entries.map(({ id, source, translation }) => ({ id, source, translation }));
+  const rows = entries.map(({ id, source, translation, file, container, objectId, locator, locale, localizationKey }) => ({ id, source, translation, file, container, objectId, locator, locale, localizationKey }));
   if (!csv) return JSON.stringify({ kind, version: 1, entries: rows }, null, 2);
   const quote = (value: string) => `"${value.replace(/"/g, '""')}"`;
   return "\uFEFF" + [["id", "source", "translation"], ...rows.map(row => [row.id, row.source, row.translation])].map(row => row.map(quote).join(",")).join("\r\n");
@@ -55,7 +56,7 @@ function readCsv(text: string): TranslationRow[] {
   return parsed;
 }
 
-export function readUnityTranslationRows(entries: UnityEntry[], contents: string, csv: boolean): TranslationRow[] {
+export function readUnityTranslationRows(entries: UnityEntry[], contents: string, csv: boolean, partial = false): MatchedTranslationRows {
   const text = contents.replace(/^\uFEFF/, "");
   let rows: unknown;
   if (csv) rows = readCsv(text);
@@ -66,19 +67,55 @@ export function readUnityTranslationRows(entries: UnityEntry[], contents: string
   }
   if (!Array.isArray(rows) || !rows.length) throw new Error("翻译文件没有条目");
   const originals = new Map(entries.map(entry => [entry.id, entry]));
-  const replacements = new Map<string, string>();
-  const issues: UnityTranslationImportIssue[] = [];
+  const seen = new Set<string>();
+  const malformed: UnityTranslationImportIssue[] = [];
+  const incoming: TranslationRow[] = [];
   for (const [index, value] of rows.entries()) {
     if (!value || typeof value.id !== "string" || typeof value.source !== "string" || typeof value.translation !== "string") {
-      issues.push({ id: `第 ${index + 1} 行`, source: "", translation: "", reason: "每个条目必须包含字符串 id、source 和 translation" }); continue;
+      malformed.push({ id: `第 ${index + 1} 行`, source: "", translation: "", reason: "每个条目必须包含字符串 id、source 和 translation" }); continue;
     }
-    if (replacements.has(value.id)) issues.push({ ...value, reason: "条目标识重复" });
-    const original = originals.get(value.id);
-    if (!original || original.source !== value.source) issues.push({ ...value, reason: "与当前工程不匹配，请勿修改 id 或 source" });
-    replacements.set(value.id, value.translation);
+    if (seen.has(value.id)) malformed.push({ ...value, reason: "条目标识重复" });
+    seen.add(value.id); incoming.push(value);
   }
-  if (issues.length) throw new UnityTranslationImportError(issues, rows.length);
-  return rows as TranslationRow[];
+  if (malformed.length) throw new UnityTranslationImportError(malformed, rows.length);
+  const incomingIds = new Map(incoming.map(row => [row.id, row]));
+  const stableIds = incoming.every(row => originals.get(row.id)?.source === row.source);
+  const bySource = new Map<string, TranslationRow[]>();
+  for (const row of incoming) { const list = bySource.get(row.source); if (list) list.push(row); else bySource.set(row.source, [row]); }
+  const identity = (row: TranslationRow) => typeof row.file === "string" && typeof row.container === "string" && typeof row.objectId === "string" && typeof row.locator === "string"
+    ? JSON.stringify([row.file.replaceAll("\\", "/"), row.container, row.objectId, row.locator, row.source]) : null;
+  const positioned = new Map<string, TranslationRow[]>();
+  for (const row of incoming) { const key = identity(row); if (key) { const list = positioned.get(key); if (list) list.push(row); else positioned.set(key, [row]); } }
+  const issues: UnityTranslationImportIssue[] = [], matched: TranslationRow[] = [];
+  let remapped = 0;
+  const resolved = new Map<TranslationRow[], { choices: Set<string>; ids: Set<string> }>();
+  for (const entry of entries) {
+    const candidateId = incomingIds.get(entry.id);
+    const sameId = candidateId?.source === entry.source ? candidateId : undefined;
+    const location = identity(entry); const exact = location ? positioned.get(location) : undefined;
+    const candidates = exact?.length ? exact : stableIds && sameId ? [sameId] : bySource.get(entry.source);
+    if (!candidates?.length) continue;
+    // Ignore blank duplicates when a valid translation is present. Never choose
+    // arbitrarily between different translations of the same original.
+    let group = resolved.get(candidates);
+    if (!group) {
+      const nonempty = candidates.filter(row => row.translation.trim());
+      if (!nonempty.length && !exact?.length && !stableIds) continue;
+      const usable = nonempty.length ? nonempty : candidates;
+      group = { choices: new Set(usable.map(row => row.translation)), ids: new Set(usable.map(row => row.id)) }; resolved.set(candidates, group);
+    }
+    const { choices, ids } = group;
+    if (choices.size !== 1) { issues.push({ id: entry.id, source: entry.source, translation: [...choices].map((text, index) => `候选 ${index + 1}：${text}`).join("\n\n"), reason: `同一原文存在 ${choices.size} 个不同译文，缺少可唯一匹配的定位；已跳过，请比较候选后手动填写` }); continue; }
+    const translation = choices.values().next().value!;
+    matched.push({ id: entry.id, source: entry.source, translation });
+    if (!ids.has(entry.id)) remapped++;
+  }
+  const sourceSet = new Set(entries.map(entry => entry.source));
+  for (const row of incoming) if (row.translation.trim() && !sourceSet.has(row.source)) issues.push({ ...row, id: `旧条目 ${row.id}`, reason: "当前扫描中没有此原文，已保留导入文件中的译文" });
+  if (!matched.length && !issues.length) issues.push({ id: "导入文件", source: "", translation: "", reason: "没有匹配到当前工程的原文" });
+  if (!partial && issues.length) throw new UnityTranslationImportError(issues, incoming.length);
+  return Object.assign(matched, { issues, remapped });
+
 }
 
 export function applyUnityTranslationRows(entries: UnityEntry[], rows: TranslationRow[], validate: (source: string, translation: string) => string, options: ImportOptions = {}) {

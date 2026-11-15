@@ -3,13 +3,14 @@ import {createPortal} from "react-dom";
 import {isTauri} from "@tauri-apps/api/core";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import type {GameImportSource} from "../gameImageImport";
+import { webImageFile } from "../gameImageImport";
 export function gameDropTarget(position:{x:number;y:number}):Element|null{return document.elementFromPoint(position.x/window.devicePixelRatio,position.y/window.devicePixelRatio);}
-export function useGameFileDrop(options:{active:boolean;busy?:boolean;root:RefObject<HTMLElement|null>;match:(target:Element|null,names:string[])=>HTMLElement|null;label:(target:HTMLElement)=>string;drop:(source:GameImportSource,target:HTMLElement)=>Promise<unknown>;error:(text:string)=>void}){
+export function useGameFileDrop(options:{active:boolean;busy?:boolean;webImages?:boolean;root:RefObject<HTMLElement|null>;match:(target:Element|null,names:string[])=>HTMLElement|null;label:(target:HTMLElement)=>string;drop:(source:GameImportSource,target:HTMLElement)=>Promise<unknown>;error:(text:string)=>void}){
  const latest=useRef(options);latest.current=options;
  const [hover,setHover]=useState<HTMLElement|null>(null),[pending,setPending]=useState<HTMLElement|null>(null),working=useRef(false);
  const nativeNames=useRef<string[]>([]);
  const targetFor=(target:Element|null,names:string[])=>{const value=latest.current;if(!value.active||working.current||!target||!value.root.current?.contains(target))return null;return value.match(target,names);};
- const perform=async(source:GameImportSource,target:HTMLElement)=>{if(working.current)return;working.current=true;setHover(null);setPending(target);try{await latest.current.drop(source,target);}catch(error){latest.current.error(error instanceof Error?error.message:String(error));}finally{working.current=false;setPending(null);}};
+ const perform=async(source:GameImportSource,target:HTMLElement,url?:string)=>{if(working.current)return;working.current=true;setHover(null);setPending(target);try{await latest.current.drop(url ? await webImageFile(url) : source,target);}catch(error){latest.current.error(error instanceof Error?error.message:String(error));}finally{working.current=false;setPending(null);}};
  useEffect(()=>{if(!isTauri())return;let disposed=false,unlisten:(()=>void)|undefined;
   void getCurrentWindow().onDragDropEvent(event=>{const payload=event.payload;if(payload.type==="leave"){setHover(null);nativeNames.current=[];return;}
    if(payload.type==="enter")nativeNames.current=payload.paths;
@@ -23,9 +24,9 @@ export function useGameFileDrop(options:{active:boolean;busy?:boolean;root:RefOb
  useEffect(()=>{if(!options.active)setHover(null);},[options.active]);
  useEffect(()=>{const element=pending||(options.busy?options.root.current:null);if(!element)return;element.classList.add("game-drop-importing");return()=>element.classList.remove("game-drop-importing");},[pending,options.busy,options.root]);
  const handlers={
-  onDragOver:(event:DragEvent<HTMLElement>)=>{if(!event.dataTransfer.types.includes("Files"))return;event.preventDefault();event.stopPropagation();const names=[...event.dataTransfer.files].map(file=>file.name);if(!names.length&&event.dataTransfer.items[0]?.type.startsWith("image/"))names.push("image.png");setHover(targetFor(event.target as Element,names));},
+  onDragOver:(event:DragEvent<HTMLElement>)=>{const web=latest.current.webImages&&event.dataTransfer.types.some(type=>type==="text/html"||type==="text/uri-list");if(!event.dataTransfer.types.includes("Files")&&!web)return;event.preventDefault();event.stopPropagation();const names=[...event.dataTransfer.files].map(file=>file.name);if(!names.length&&(web||event.dataTransfer.items[0]?.type.startsWith("image/")))names.push("image.png");setHover(targetFor(event.target as Element,names));},
   onDragLeave:(event:DragEvent<HTMLElement>)=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setHover(null);},
-  onDrop:(event:DragEvent<HTMLElement>)=>{event.preventDefault();event.stopPropagation();const files=[...event.dataTransfer.files];const area=targetFor(event.target as Element,files.map(file=>file.name));setHover(null);if(area&&files.length===1)void perform(files[0],area);else if(files.length>1)latest.current.error("一次请拖入一张图片或一个压缩包");}
+  onDrop:(event:DragEvent<HTMLElement>)=>{event.preventDefault();event.stopPropagation();const files=[...event.dataTransfer.files];const web=latest.current.webImages&&!files.length;const area=targetFor(event.target as Element,web?["image.png"]:files.map(file=>file.name));setHover(null);if(area&&files.length===1)void perform(files[0],area);else if(files.length>1)latest.current.error("一次请拖入一张图片或一个压缩包");else if(area&&web){const html=event.dataTransfer.getData("text/html");const image=html?new DOMParser().parseFromString(html,"text/html").querySelector("img"):null;const url=image?.getAttribute("src")||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>line&&!line.startsWith("#"));if(url)void perform("web-image.png",area,url);else latest.current.error("拖入内容没有可读取的图片地址，请拖动网页中的原图");}}
  };
  const target=pending||(options.busy?options.root.current:null)||hover,rect=target?.getBoundingClientRect(),loading=!!pending||!!options.busy;
  const overlay=rect&&rect.width>0&&rect.height>0&&createPortal(createElement("div",{className:`game-drop-overlay ${loading?"is-loading":""}`,style:{left:rect.left,top:rect.top,width:rect.width,height:rect.height}},loading&&createElement("span",{className:"game-drop-spinner"}),createElement("strong",null,loading?"正在导入…":latest.current.label(target!))),document.body);

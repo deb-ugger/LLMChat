@@ -116,7 +116,7 @@ export function Sidebar({
                 y: e.clientY,
               });
             }}
-            title={c.title}
+            data-tooltip={c.title}
           >
             {renamingId === c.id ? (
               <input

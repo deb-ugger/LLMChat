@@ -1,5 +1,14 @@
+import { gameTaskPrompt } from "./gamePrompts";
+import type { GameWrapMode } from "./gameTextLayout";
 import type { Settings, TranslateOptions, TranslateProvider } from "./api";
-import { resolveFeatureLlm } from "./modelPresets";
+import { loadLocalModelProfiles, resolveFeatureLlm } from "./modelPresets";
+
+export type GameTranslationKind = "llm" | "local" | "engine";
+
+export function gameLocalModelConnection(model: string) {
+  const profile = model ? loadLocalModelProfiles()[model] : undefined;
+  return { model, apiUrl: profile?.apiUrl || "", apiKey: profile?.apiKey || "" };
+}
 import { prepareUnityStructuredText } from "./unityTextStructure";
 import { unityTranslationTokens } from "./unityTokens";
 
@@ -103,16 +112,20 @@ export function buildUnityTranslateOptions(
   target: string,
   model = "",
   joinLines = true,
+  local = false,
+  customPrompt?: string,
+  wrapMode: GameWrapMode = joinLines ? "join" : "keep",
 ): TranslateOptions {
-  if (provider !== "llm") return { provider, source, target, feature: "unity", maxLength: 0, autoChunk: true };
-  const connection = resolveFeatureLlm(settings, model);
+  if (provider !== "llm") return { provider, source, target, feature: "unity", maxLength: 0, autoChunk: false };
+  const connection = local ? gameLocalModelConnection(model || settings.model) : resolveFeatureLlm(settings, model);
+  if (local && (!connection.model.trim() || !connection.apiUrl.trim())) throw new Error("请在通用设置添加本地模型，再选择翻译模型");
   if (!connection.apiUrl.trim() || !connection.model.trim()) throw new Error("请先在设置 → 通用中配置所选模型和 API 地址");
   const language = UNITY_LANGUAGES.find(l => l.value === target)?.label || target;
   return {
-    provider: "llm", source, target, feature: "unity",
-    ...connection,
+    provider: "llm", source, target, feature: "unity", maxLength: 0, autoChunk: false,
+    ...connection, ...(local ? { localModel: true } : {}),
     glossary: settings.textGlossary,
-    prompt: `将游戏界面或对白翻译为${language}。将整条文本作为一个完整的上下文理解，结合前后文确定主语、指代和语气。仅返回译文，不要解释或代码围栏。${joinLines ? "保留段落、列表编号、项目符号及条目顺序，不合并不同条目；段落或条目内部输出连贯译文，显示折行由程序恢复。" : "保留原换行和空行。"}保留所有格式占位符、富文本标签和反斜杠转义，不翻译标识符和路径。`,
+    prompt: (customPrompt || gameTaskPrompt("text",undefined,{source,target:language})) + `\n仅返回译文，不要解释或代码围栏。保留全部格式占位符、富文本标签、控制符及分页符，不翻译标识符和路径。` + (wrapMode === "natural" ? "保留原段落空行和列表条目边界，允许按译文语义重新安排段内换行，不强制保留原文行数。" : wrapMode === "join" ? "保留段落、列表编号和项目顺序；段内输出连贯译文，显示折行由程序计算。" : "保留原换行和空行。"),
   };
 }
 

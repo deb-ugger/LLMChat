@@ -15,7 +15,7 @@ type RangeProps = {
 export function SpeechRangePicker({ ranges, readOnly, onOpen }: { ranges?: SpeechRange[]; readOnly: boolean; onOpen: () => void }) {
   const summary = ranges === undefined ? "整段音频" : ranges.length ? `已选 ${ranges.length} 段` : "未选片段";
   return <div className="speech-range-option">
-    <span className="speech-range-option-label">识别范围</span>{readOnly ? <button type="button" className="speech-range-view" title="查看识别范围" aria-label={`查看识别范围：${summary}`} onClick={onOpen}><span>{summary}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button> : <div className="speech-range-option-control"><span className="speech-range-option-summary">{summary}</span>
+    <span className="speech-range-option-label">识别范围</span>{readOnly ? <button type="button" className="speech-range-view" data-tooltip="查看识别范围" aria-label={`查看识别范围：${summary}`} onClick={onOpen}><span>{summary}</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button> : <div className="speech-range-option-control"><span className="speech-range-option-summary">{summary}</span>
     <button type="button" onClick={onOpen}>选取片段</button></div>}
   </div>;
 }
@@ -60,7 +60,7 @@ export function SpeechRangePage({ name, duration, ranges, disabled, onChange, on
     finishClose();
   };
   return <div ref={panel} className="speech-range-page" onInputCapture={() => setPendingInput(Array.from(panel.current?.querySelectorAll<HTMLInputElement>('input[aria-label^="片段 "]') || []).some(input => input.value !== input.defaultValue))} onBlurCapture={() => setPendingInput(false)} onKeyDown={event => { if (event.key === "Escape" && !confirmation.current?.open) { event.preventDefault(); close(); } }}>
-      <div className="speech-range-page-header"><h3 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h3><span title={name}>{name}</span></div>
+      <div className="speech-range-page-header"><h3 id={titleId}>{disabled ? "查看识别范围" : "选取音频片段"}{disabled && <span>只读</span>}</h3><span data-tooltip={name}>{name}</span></div>
       <div className="speech-range-page-body"><SpeechRangeEditor key={String(disabled)} duration={duration} ranges={displayedDraft} disabled={disabled} onChange={next => changeDraft(next ?? [])} /></div>
       <div className="speech-range-dialog-footer">{!disabled && <span>未选片段时按整段音频识别。</span>}<div><button type="button" onClick={() => void close()}>{disabled ? "关闭" : "取消"}</button>
         {!disabled && <button type="button" className="speech-primary" disabled={!pendingInput && !rangesChanged(displayedDraft)} onClick={save}>保存选段</button>}</div></div>
@@ -161,7 +161,7 @@ export function SpeechRangeEditor({ duration, ranges = [], disabled, onChange }:
           if (apply(next)) setActive({ index: next.findIndex(range => range.start === Math.min(anchor, value)), edge: "end" });
           setAnchor(null);
         }}>
-        {ranges.map((range, index) => <div key={index} className={`speech-range-segment${highlighted === index ? " is-active" : ""}`} title={rangeLabel(index)} style={{ left: `${range.start / duration * 100}%`, width: `${(range.end - range.start) / duration * 100}%` }}
+        {ranges.map((range, index) => <div key={index} className={`speech-range-segment${highlighted === index ? " is-active" : ""}`} data-tooltip={rangeLabel(index)} style={{ left: `${range.start / duration * 100}%`, width: `${(range.end - range.start) / duration * 100}%` }}
           onMouseEnter={() => { setHovered(index); list.current?.children[index]?.scrollIntoView({ block: "nearest" }); }} onMouseLeave={() => setHovered(null)}
           onContextMenu={event => context(event, index)} onClick={event => { event.stopPropagation(); setMenu(null); select(index); bar.current?.focus(); }}>
           {highlighted === index && <svg className="speech-range-indicator" width="16" height="22" viewBox="0 0 16 22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 2v16M3 13l5 5 5-5" /></svg>}

@@ -1,3 +1,4 @@
+import { registerAppCloseGuard } from "../appClose";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
 import { TextProjectGlossary } from "./TextProjectGlossary";
@@ -610,10 +611,8 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
 
     void (async () => {
       try {
-        const win = getCurrentWindow();
-        const fn = await win.onCloseRequested(async (event) => {
-          event.preventDefault();
-          if (disposed || closingRef.current) return;
+        const fn = await registerAppCloseGuard(async () => {
+          if (disposed || closingRef.current) return false;
           closingRef.current = true;
           try {
             if (busyRef.current) {
@@ -621,7 +620,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                 "正在翻译。停止后会将进行中的条目恢复为未翻译，保存工程并退出。",
                 { title: "退出 LLMChat", kind: "warning", okLabel: "停止并退出", cancelLabel: "取消" },
               );
-              if (!ok || disposed) return;
+              if (!ok || disposed) return false;
               setStatusLine("正在停止翻译、保存工程并退出…");
               await showClosing("正在停止文本翻译并保存工程与断点…");
               await stopRef.current({ silent: true, requireSave: true });
@@ -630,12 +629,14 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               await showClosing("正在保存文本翻译工程…");
               await persistFullSnapshotRef.current({ requireSave: true });
             }
-            if (!disposed) { await showClosing("正在关闭窗口和后台服务…"); await win.destroy(); }
+            if (disposed) return false;
+            await showClosing("正在关闭窗口和后台服务…"); return true;
           } catch (error) {
             const detail = "退出失败，窗口已保留：" + toFriendlyError(error, "保存工程或关闭窗口失败");
             setError(detail);
             setStatusLine("未退出，请处理错误后重试");
             await messageDialog(detail, { title: "无法退出 LLMChat", kind: "error" });
+            return false;
           } finally {
             clearClosing();
             closingRef.current = false;
@@ -1935,7 +1936,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                         y: e.clientY,
                       });
                     }}
-                    title={r.folderPath || r.folder}
+                    data-tooltip={r.folderPath || r.folder} aria-label={r.folderPath || r.folder}
                   >
                     <span className="text-recent-name">{r.name}</span>
                     <span className="text-recent-meta">
@@ -2026,7 +2027,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                         type="button"
                         className="text-recent-item"
                         onClick={() => void openListedProject(item)}
-                        title={item.folderPath}
+                        data-tooltip={item.folderPath} aria-label={item.folderPath}
                       >
                         <span className="text-recent-name">{item.name}</span>
                         <span className="text-recent-meta">
@@ -2165,7 +2166,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         >
           提示词
         </button>
-        <span className="text-toolbar-meta" title={statusLine || undefined}>
+        <span className="text-toolbar-meta" data-tooltip={statusLine || undefined}>
           {project.format.toUpperCase()} · {project.sourceLang} →{" "}
           {project.targetLang} ·{" "}
           {settings.textTranslateProvider === "llm"
@@ -2283,7 +2284,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
           })} />}
         <TextProtectionOptions value={project.translationOptions?.protection} format={project.format} entries={entries} disabled={busy}
           onChange={protection => patchProject(p => ({ ...p, translationOptions: { concurrency: 2, batchTokens: 1200, contextLines: 2, ...p.translationOptions, protection } }))} />
-        {project.format === "json" && <label title="仅用于 MTool 键值 JSON：长句按换行分段翻译，准确对应的短句复用结果；不会按字数猜测拆分。选中重译始终独立处理。"><input type="checkbox" disabled={busy || settings.textTranslateProvider !== "llm"} checked={!!project.translationOptions?.mtoolOptimize} onChange={event => patchProject(p => ({ ...p, translationOptions: { concurrency: 2, batchTokens: 1200, contextLines: 2, ...p.translationOptions, mtoolOptimize: event.target.checked } }))} />MTool 长短句复用（大模型）</label>}
+        {project.format === "json" && <label data-tooltip="仅用于 MTool 键值 JSON：长句按换行分段翻译，准确对应的短句复用结果；不会按字数猜测拆分。选中重译始终独立处理。"><input type="checkbox" disabled={busy || settings.textTranslateProvider !== "llm"} checked={!!project.translationOptions?.mtoolOptimize} onChange={event => patchProject(p => ({ ...p, translationOptions: { concurrency: 2, batchTokens: 1200, contextLines: 2, ...p.translationOptions, mtoolOptimize: event.target.checked } }))} />MTool 长短句复用（大模型）</label>}
         <div className="text-switch-row">
           <label
             className={`text-switch-card ${onlyUntranslated ? "is-on" : ""}`}
@@ -2300,7 +2301,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
           {(project.format === "srt" || project.format === "ass") && (
             <label
               className={`text-switch-card ${project.subtitleRetiming ? "is-on" : ""}`}
-              title="开启后，开始/重新翻译前会合并 ASR 碎片并重切时间码；关闭则保持原时间轴"
+              data-tooltip="开启后，开始/重新翻译前会合并 ASR 碎片并重切时间码；关闭则保持原时间轴"
             >
               <input
                 type="checkbox"
@@ -2336,7 +2337,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         <button
           type="button"
           className="text-tool-btn entries-open-btn"
-          title="从底部展开原文与译文对照"
+          data-tooltip="从底部展开原文与译文对照" aria-label="从底部展开原文与译文对照"
           onClick={() => setEntriesPanelOpen(true)}
         >
           原文 / 译文
@@ -2363,10 +2364,10 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                   const next = { ...project, entries: project.entries.map(item => selectedEntries.has(item.id) ? { ...item, previousDst: item.dst || item.previousDst, dst: "", status: "pending" as const, error: undefined, warning: undefined } : item) };
                   void runTranslate(next, { selectedIds: new Set(selectedEntries) });
                 }}>重译选中</button>
-                <button type="button" disabled={busy || !selectedEntries.size} title="使用所选大模型，携带当前译文与检查问题进行定向审校，会产生接口用量；可通过对照恢复旧译文" onClick={() => void runTranslate(project, { selectedIds: new Set(selectedEntries), review: true })}>审校选中</button>
+                <button type="button" disabled={busy || !selectedEntries.size} data-tooltip="使用所选大模型，携带当前译文与检查问题进行定向审校，会产生接口用量；可通过对照恢复旧译文" aria-label="使用所选大模型，携带当前译文与检查问题进行定向审校，会产生接口用量；可通过对照恢复旧译文" onClick={() => void runTranslate(project, { selectedIds: new Set(selectedEntries), review: true })}>审校选中</button>
                 <button type="button" disabled={busy || !selectedEntries.size} onClick={() => void checkEntries(selectedEntries)}>检查选中</button>
                 <button type="button" disabled={busy} onClick={() => void checkEntries()}>检查全部</button>
-                <button type="button" disabled={busy} title="仅使用大模型修正当前问题类型筛选下有译文的异常条目，会产生接口用量" onClick={() => {
+                <button type="button" disabled={busy} data-tooltip="仅使用大模型修正当前问题类型筛选下有译文的异常条目，会产生接口用量" aria-label="仅使用大模型修正当前问题类型筛选下有译文的异常条目，会产生接口用量" onClick={() => {
                   const ids = new Set(project.entries.filter(item => item.dst && matchesTextIssue(item, qualityKind)).map(item => item.id));
                   if (!ids.size) { setStatusLine("没有可审校的异常译文"); return; }
                   void runTranslate(project, { selectedIds: ids, review: true });
@@ -2427,7 +2428,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                 </div>
                 <div
                   className="col-resizer-panel text-pane-resizer"
-                  title="拖动调整宽度"
+                  data-tooltip="拖动调整宽度"
                   onMouseDown={(e) => beginResize(e, "grow-right")}
                 />
                 <div className="text-pane" style={{ flex: 1, minWidth: 0 }}>

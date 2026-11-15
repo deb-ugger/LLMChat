@@ -1,3 +1,7 @@
+import { useFollowLatest } from "../hooks/useFollowLatest";
+import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
+import { registerAppCloseGuard } from "../appClose";
+import { gameSelectionDropPath, openDroppedGameDirectly } from "../gameSelectionDrop";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -22,6 +26,8 @@ sectionMeta,
 import { isBoolIniValue,setIniValue } from "../unityIni";
 import {
 lastUnityGameDir,
+loadGameWorkspace,
+rememberGameWorkspace,
 loadRecentUnityGames,
 rememberLastUnityGameDir,
 rememberRecentUnityGame,
@@ -176,6 +182,7 @@ export function UnityTranslateView({
   onOpenGeneralSettings?: () => void;
   onRestoreWorkspace?: () => void;
 }) {
+  const confirmation = useGameActionConfirm(text => pushOutput(text, "info"));
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
   const [otherGames, setOtherGames] = useState<EmbeddingGame[]>([]);
   const [embeddingGame, setEmbeddingGame] = useState<EmbeddingGame | null>(null);
@@ -215,12 +222,14 @@ export function UnityTranslateView({
     return dir ? rememberRecentUnityGame({ gameDir: dir }) : [];
   });
   const openGameDetail = useCallback((gameDir: string, displayName?: string) => {
+    rememberGameWorkspace({gameDir,name:displayName,engine:"Unity"});
     setSelectedGameDir(gameDir);
     setViewMode("detail");
     setMode("offline");
     setRecentGames(rememberRecentUnityGame({ gameDir, name: displayName }));
   }, []);
   const openEmbeddingGame = useCallback((game: EmbeddingGame) => {
+    rememberGameWorkspace({gameDir:game.path,name:game.name,engine:game.engine});
     setEmbeddingGame(game);
     setRecentGames(rememberRecentUnityGame({ gameDir: game.path, name: game.name, engine: game.engine }));
   }, []);
@@ -265,8 +274,6 @@ export function UnityTranslateView({
     setScanning(false);
   }, []);
   const helpBtnRef = useRef<HTMLButtonElement>(null);
-  const dropzoneRef = useRef<HTMLDivElement | null>(null);
-  const outputEndRef = useRef<HTMLLIElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const detectGamesAccRef = useRef<UnityGameInfo[]>([]);
   const {
@@ -276,6 +283,7 @@ export function UnityTranslateView({
   } = usePersistedHeight("llmchat-unity-status-height", 220, 120, 520, {
     collapseBelow: 72,
   });
+  const outputScroll = useFollowLatest<HTMLUListElement>(active && activeBottomTab === "output" && !statusCollapsed);
   const {
     width: detailWidth,
     setWidth: setDetailWidth,
@@ -342,11 +350,6 @@ export function UnityTranslateView({
         // ignore history load failures
       });
   }, []);
-
-  useEffect(() => {
-    if (activeBottomTab !== "output") return;
-    outputEndRef.current?.scrollIntoView({ block: "end" });
-  }, [outputLines, activeBottomTab]);
 
   const pushOutput = useCallback((text: string, level: OutputLevel = "step") => {
     const line: OutputLine = {
@@ -666,9 +669,8 @@ export function UnityTranslateView({
   useEffect(() => {
     if (!active || mode !== "runtime" || !configDirty || !isTauri()) return;
     let disposed = false; let unlisten: (() => void) | undefined;
-    void getCurrentWindow().onCloseRequested(async event => {
-      event.preventDefault();
-      if (configClosing.current) return;
+    void registerAppCloseGuard(async () => {
+      if (configClosing.current) return false;
       configClosing.current = true;
       try {
         const current = configExitState.current;
@@ -679,20 +681,21 @@ export function UnityTranslateView({
         }
         const changes = current.sections.flatMap(section => section.keys.filter(key => baseline.get(section.name + "." + key.key) !== key.value).map(key => `运行时配置：[${section.name}] ${key.key}`));
         const choice = await new Promise<UnityExitChoice>(resolve => { configExitDecision.current = resolve; setConfigExitChanges(changes.length ? changes : ["运行时翻译配置"]); });
-        if (choice === "cancel") return;
+        if (choice === "cancel") return false;
         if (choice === "save") {
           await showClosing("正在保存 Unity 运行时翻译配置…");
-          if (!await configExitState.current.save()) return;
+          if (!await configExitState.current.save()) return false;
         }
         await showClosing("正在关闭窗口和后台服务…");
-        await getCurrentWindow().destroy();
-      } catch (error) { reportError(toFriendlyError(error, "退出失败，窗口已保留")); }
+        return true;
+      } catch (error) { reportError(toFriendlyError(error, "退出失败，窗口已保留")); return false; }
       finally { clearClosing(); configClosing.current = false; }
     }).then(dispose => { if (disposed) dispose(); else unlisten = dispose; }).catch(error => reportError(toFriendlyError(error, "无法检查未保存的 Unity 配置")));
     return () => { disposed = true; unlisten?.(); configExitDecision.current?.("cancel"); configExitDecision.current = null; };
   }, [active, mode, configDirty]);
 
   const resetPath = useCallback((path: string) => {
+    rememberGameWorkspace(null);
     interactionRef.current++;
     setPathInput(path);
     rememberLastPickDir(path);
@@ -706,6 +709,7 @@ export function UnityTranslateView({
   }, []);
 
   const clearPath = useCallback(() => {
+    rememberGameWorkspace(null);
     stopDetection();
     detectGamesAccRef.current = [];
     setBusyAction(null);
@@ -744,6 +748,7 @@ export function UnityTranslateView({
       reportError("请先选择或拖入游戏目录 / 主程序");
       return;
     }
+    const openDirectly = openDroppedGameDirectly(trimmed);
     stopDetection();
     const ac = new AbortController();
     detectAbortRef.current = ac;
@@ -760,19 +765,19 @@ export function UnityTranslateView({
     try {
       const response = await fetch(`${API_BASE}/api/json-embedding/detect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: trimmed }), signal: ac.signal });
       const detected = await response.json(); if (!response.ok) throw new Error(detected.error);
-      if (ac.signal.aborted) return;
+      if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       const nonUnity = (detected as EmbeddingGame[]).filter(game => game.engine !== "Unity");
       setOtherGames(nonUnity);
       if (nonUnity.length && !detected.some((game: EmbeddingGame) => game.engine === "Unity")) {
         pushOutput(`检测完成，找到 ${nonUnity.length} 个游戏`, "ok");
-        if (nonUnity.length === 1 && nonUnity[0].supported) openEmbeddingGame(nonUnity[0]);
+        if (openDirectly && nonUnity.length === 1 && nonUnity[0].supported) openEmbeddingGame(nonUnity[0]);
         return;
       }
       await api.unityDetectStream(
         trimmed,
         {
           onGame: (game) => {
-            if (ac.signal.aborted) return;
+            if (ac.signal.aborted || detectAbortRef.current !== ac) return;
             if (
               !detectGamesAccRef.current.some((g) => g.gameDir === game.gameDir)
             ) {
@@ -792,7 +797,7 @@ export function UnityTranslateView({
             });
           },
           onDone: (result) => {
-            if (ac.signal.aborted) return;
+            if (ac.signal.aborted || detectAbortRef.current !== ac) return;
             const found =
               typeof result.count === "number" && result.count >= 0
                 ? result.count
@@ -814,7 +819,7 @@ export function UnityTranslateView({
               reportError(result.error || "未找到 Unity 游戏");
             } else {
               pushOutput(`检测完成，找到 ${found + nonUnity.length} 个游戏`, "ok");
-              if (detectGamesAccRef.current.length === 1 && nonUnity.length === 0) {
+              if (openDirectly && detectGamesAccRef.current.length === 1 && nonUnity.length === 0) {
                 const game = detectGamesAccRef.current[0];
                 openGameDetail(game.gameDir, gameTitle(game));
               }
@@ -824,7 +829,7 @@ export function UnityTranslateView({
         ac.signal,
       );
     } catch (e) {
-      if (ac.signal.aborted) return;
+      if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       setScanState(null);
       setSelectedGameDir(null);
       reportError(toFriendlyError(e, "检测失败"));
@@ -858,7 +863,7 @@ export function UnityTranslateView({
 
   const pointInDropzone = useCallback(
     (physical: { x: number; y: number }, scaleFactor: number) => {
-      const el = dropzoneRef.current;
+      const el = workspaceRef.current;
       if (!el) return false;
       const x = physical.x / scaleFactor;
       const y = physical.y / scaleFactor;
@@ -869,7 +874,7 @@ export function UnityTranslateView({
   );
 
   useEffect(() => {
-    if (!active || viewMode !== "list" || embeddingGame) {
+    if (!active || viewMode !== "list" || embeddingGame || busy || scanning || !isTauri()) {
       setDragOver(false);
       return;
     }
@@ -904,8 +909,8 @@ export function UnityTranslateView({
           if (payload.type === "drop") {
             setDragOver(false);
             if (!over) return;
-            const p = payload.paths?.[0];
-            if (!p) return;
+            if(payload.paths.length!==1){reportError("一次请拖入一个游戏程序或目录");return;}
+            const p = payload.paths[0];
             resetPath(p);
             void runDetect(p);
           }
@@ -924,7 +929,7 @@ export function UnityTranslateView({
       setDragOver(false);
       for (const u of unsubs) u();
     };
-  }, [active, viewMode, embeddingGame, pointInDropzone, resetPath, runDetect]);
+  }, [active, viewMode, embeddingGame, busy, scanning, pointInDropzone, resetPath, runDetect, reportError]);
 
   const openHelpMenu = () => {
     if (helpOpen) {
@@ -966,8 +971,9 @@ export function UnityTranslateView({
       return;
     }
     if (
-      !window.confirm(
-        `将安装 XUnity.AutoTranslator 到：\n${gameDir}\n\n仅下载一次 GitHub 安装包到本地，不会调用翻译引擎 API。是否继续？`,
+      !await confirmation.confirm(
+        `将安装 XUnity.AutoTranslator 到：\n${gameDir}\n\n仅下载一次 GitHub 安装包到本地，不会调用翻译引擎 API。`,
+        { title: "安装翻译插件", okLabel: "安装", kind: "info" },
       )
     ) {
       return;
@@ -1071,10 +1077,11 @@ export function UnityTranslateView({
       return;
     }
     if (
-      !window.confirm(
+      !await confirmation.confirm(
         selected.isIl2Cpp
           ? `将为 IL2CPP 游戏安装插件框架 BepInEx 到：\n${gameDir}\n\n若本地 resources/bepinex 已有缓存则直接使用；否则会下载一次并保存。是否继续？`
-          : `将为 Mono 游戏安装插件框架 ReiPatcher 到：\n${gameDir}\n\n仅安装框架；官方 Setup 顺带装上的翻译插件会自动剥离。是否继续？`,
+          : `将为 Mono 游戏安装插件框架 ReiPatcher 到：\n${gameDir}\n\n仅安装框架；官方 Setup 顺带装上的翻译插件会自动剥离。`,
+        { title: "安装插件框架", okLabel: "安装", kind: "info" },
       )
     ) {
       return;
@@ -1267,6 +1274,7 @@ export function UnityTranslateView({
 
   const openRecentGame = async (entry: RecentUnityGame, restore = false) => {
     stopDetection();
+    setOtherGames([]); setScanState(null); detectGamesAccRef.current = []; setSearchQuery("");
     const ac = new AbortController(); detectAbortRef.current = ac;
     const gameDir = entry.gameDir;
     setPathInput(gameDir);
@@ -1280,7 +1288,7 @@ export function UnityTranslateView({
         if (ac.signal.aborted || detectAbortRef.current !== ac) return;
         const game = (detected as EmbeddingGame[]).find(item => item.path.replace(/\\/g,"/").toLowerCase() === gameDir.replace(/\\/g,"/").toLowerCase());
         if (!game?.supported) throw new Error("当前游戏资源无法识别，请重新选择游戏目录");
-        setViewMode("list"); setOtherGames([game]); setScanState(emptyScanState(gameDir)); openEmbeddingGame(game); return;
+        setViewMode("list"); setOtherGames([game]); setScanState(emptyScanState(gameDir)); openEmbeddingGame(game); if (restore) onRestoreWorkspace?.(); return;
       }
       const res = await api.unityDetect(gameDir, { signal: ac.signal, directOnly: true });
       if (ac.signal.aborted || detectAbortRef.current !== ac) return;
@@ -1317,14 +1325,18 @@ export function UnityTranslateView({
 
   useEffect(() => {
     if (!isTauri()) return;
-    const gameDir = lastUnityGameDir(); if (!gameDir) return;
+    const workspace = loadGameWorkspace(); if (workspace.view !== "detail") return;
     const epoch = interactionRef.current; let disposed = false;
-    void unityRun<{ unfinished: boolean }>("resume-info", { root: gameDir }).then(async info => {
-      if (disposed || epoch !== interactionRef.current || !info.unfinished) return;
-      const entry = loadRecentUnityGames().find(item => item.gameDir.toLowerCase() === gameDir.toLowerCase());
-      await openRecentGame(entry || { gameDir, name: "", openedAt: 0 }, true);
-    }).catch(error => { if (!disposed && epoch === interactionRef.current) reportError(toFriendlyError(error, "恢复上次 Unity 工程失败")); });
-    return () => { disposed = true; };
+    void Promise.resolve().then(async () => {
+      if (disposed || epoch !== interactionRef.current) return;
+      const restoringGame = openRecentGame(workspace.game, true);
+      const restoreEpoch = interactionRef.current;
+      await restoringGame;
+      if (!disposed && restoreEpoch === interactionRef.current && workspace.game.engine === "Unity") {
+        setMode(workspace.mode); rememberGameWorkspace(workspace.game, workspace.mode);
+      }
+    }).catch(error => { if (!disposed && epoch === interactionRef.current) reportError(toFriendlyError(error, "恢复上次游戏失败")); });
+    return () => { disposed = true; detectAbortRef.current?.abort(); };
   }, []);
 
   const allowOfflineLeave = async () => {
@@ -1335,6 +1347,7 @@ export function UnityTranslateView({
   };
   const backToList = async () => {
     if (!await allowOfflineLeave()) return;
+    rememberGameWorkspace(null);
     setViewMode("list");
     setMode("offline");
   };
@@ -1342,6 +1355,7 @@ export function UnityTranslateView({
     if (next === mode) return;
     if (!await allowOfflineLeave()) return;
     setMode(next);
+    if (selected) rememberGameWorkspace({gameDir:selected.gameDir,name:gameTitle(selected),engine:"Unity"},next);
   };
 
   const runSelfCheck = async () => {
@@ -1430,7 +1444,7 @@ export function UnityTranslateView({
       <p className="unity-selfcheck-summary">{check.summary}</p>
       <p className="unity-selfcheck-meta">
         时间 {check.checkedAt} · 游戏路径{" "}
-        <code className="unity-selfcheck-path">{check.gameExePath}</code>
+        <code className="unity-selfcheck-path" data-tooltip={check.gameExePath}>{check.gameExePath}</code>
       </p>
       <p className="unity-selfcheck-meta">
         游戏 {archLabel(check.gameArch)} · 加载器 {archLabel(check.loaderArch)}{" "}
@@ -1456,7 +1470,7 @@ export function UnityTranslateView({
       ) : null}
       {check.hasLog && check.logPath ? (
         <p className="unity-selfcheck-logpath">
-          日志：<code>{check.logPath}</code>
+          日志：<code data-tooltip={check.logPath}>{check.logPath}</code>
         </p>
       ) : null}
       {check.logSnippet ? (
@@ -1722,10 +1736,20 @@ export function UnityTranslateView({
 
   return (
     <>
-    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} settings={settings} active={active} onBack={() => setEmbeddingGame(null)} onGameDrop={path => { setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
-    <div className="unity-shell" hidden={!!embeddingGame} aria-hidden={!active || !!embeddingGame} data-unity-mode={showDetail ? mode : "games"}
-      onDragOver={event => { if (!showDetail) event.preventDefault(); }}
-      onDrop={event => { if (showDetail || busy || scanning) return; event.preventDefault(); const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined; const path = file?.path; if (path) { resetPath(path); void runDetect(path); } }}>
+    {confirmation.dialog}
+    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} settings={settings} onOpenSettings={onOpenUnitySettings} active={active} onBack={() => { rememberGameWorkspace(null); setEmbeddingGame(null); }} onGameDrop={path => { rememberGameWorkspace(null); setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
+    <div className="unity-shell" onClickCapture={event => { if (mode === "runtime" || !showDetail) logGameButton(event, text => pushOutput(text, "info")); }} hidden={!!embeddingGame} aria-hidden={!active || !!embeddingGame} data-unity-mode={showDetail ? mode : "games"}
+      onDragOver={event => {
+        if(showDetail||busy||scanning||!event.dataTransfer.types.some(type=>type==="Files"||type==="text/uri-list"))return;
+        event.preventDefault();event.dataTransfer.dropEffect="copy";
+        setDragOver(!!workspaceRef.current?.contains(event.target as Node));
+      }}
+      onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDragOver(false);}}
+      onDrop={event => {
+        if(showDetail||busy||scanning)return;event.preventDefault();setDragOver(false);
+        if(!workspaceRef.current?.contains(event.target as Node)||isTauri())return;
+        try{const path=gameSelectionDropPath(Array.from(event.dataTransfer.files),event.dataTransfer.getData("text/uri-list"));resetPath(path);void runDetect(path);}catch(cause){reportError(cause instanceof Error?cause.message:String(cause));}
+      }}>
       {closingPhase && <ClosingProgress phase={closingPhase} />}
       {configExitChanges && <UnityExitDialog projectOnly={false} running={busy} changes={configExitChanges} onChoice={choice => { const resolve = configExitDecision.current; configExitDecision.current = null; setConfigExitChanges(null); resolve?.(choice); }} />}
       {configToast
@@ -1755,7 +1779,7 @@ export function UnityTranslateView({
             </button>
             {helpButton}
           </div>
-          {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code title={selected.gameDir}>{selected.gameDir}</code></div>}
+          {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code data-tooltip={selected.gameDir}>{selected.gameDir}</code></div>}
           <nav className="unity-mode-nav" aria-label="游戏翻译模式">
             <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
@@ -1858,7 +1882,7 @@ export function UnityTranslateView({
                     {uninstallConfirm.frameworkName}）会保留。
                   </p>
                   <p className="unity-confirm-path">
-                    <code>{uninstallConfirm.gameDir}</code>
+                    <code data-tooltip={uninstallConfirm.gameDir}>{uninstallConfirm.gameDir}</code>
                   </p>
                 </>
               ) : (
@@ -1871,24 +1895,24 @@ export function UnityTranslateView({
                       : "（会删除 ReiPatcher 目录及相关注入）。"}
                   </p>
                   <p className="unity-confirm-path">
-                    <code>{uninstallConfirm.gameDir}</code>
+                    <code data-tooltip={uninstallConfirm.gameDir}>{uninstallConfirm.gameDir}</code>
                   </p>
                 </>
               )}
               <div className="unity-confirm-actions">
                 <button
                   type="button"
-                  className="unity-btn"
-                  onClick={() => setUninstallConfirm(null)}
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
                   className="unity-btn unity-btn-danger"
                   onClick={() => void confirmUninstall()}
                 >
                   确认卸载
+                </button>
+                <button
+                  type="button"
+                  className="unity-btn"
+                  onClick={() => setUninstallConfirm(null)}
+                >
+                  取消
                 </button>
               </div>
             </div>
@@ -2161,9 +2185,10 @@ export function UnityTranslateView({
         className={
           "unity-workspace" +
           (showDetail ? "" : " unity-workspace-list") +
-          (awaitingPath ? " is-awaiting-path" : "")
+          (awaitingPath ? " is-awaiting-path" : "") + (!showDetail&&dragOver ? " is-game-drop-over" : "")
         }
       >
+        {!showDetail&&dragOver&&<div className="unity-game-drop-overlay" role="status">松开以识别游戏程序或扫描目录</div>}
         <div
           className="unity-col-main"
           style={
@@ -2293,7 +2318,11 @@ export function UnityTranslateView({
                         type="button"
                         className="unity-btn unity-btn-primary"
                         disabled={busy || !selected.hasAutoTranslator}
-                        title={
+                        data-tooltip={
+                          selected.hasAutoTranslator
+                            ? "通过 ReiPatcher 注入补丁并启动（推荐首次使用）"
+                            : "请先安装翻译插件"
+                        } aria-label={
                           selected.hasAutoTranslator
                             ? "通过 ReiPatcher 注入补丁并启动（推荐首次使用）"
                             : "请先安装翻译插件"
@@ -2377,7 +2406,7 @@ export function UnityTranslateView({
                           type="button"
                           className="unity-path-clear"
                           aria-label="清除当前路径"
-                          title="清除路径"
+                          data-tooltip="清除路径"
                           onClick={() => clearPath()}
                         >
                           ×
@@ -2396,45 +2425,15 @@ export function UnityTranslateView({
                 </div>
               </section>
 
-              {awaitingPath ? (
-                <div
-                  ref={dropzoneRef}
-                  role="button"
-                  tabIndex={0}
-                  className={
-                    "unity-dropzone" + (dragOver ? " is-over" : "")
-                  }
-                  aria-label="点击或拖拽选择游戏目录或主程序"
-                  onClick={() => {
-                    if (!busy) void browsePath();
-                  }}
-                  onKeyDown={(ev) => {
-                    if (busy) return;
-                    if (ev.key === "Enter" || ev.key === " ") {
-                      ev.preventDefault();
-                      void browsePath();
-                    }
-                  }}
-                >
-                  <span className="unity-dropzone-plus" aria-hidden="true">
-                    ＋
-                  </span>
-                  <strong>
-                    {scanning
-                      ? "正在扫描…"
-                      : "点击或拖拽游戏目录 / 程序"}
-                  </strong>
-                </div>
-              ) : null}
 
-              {recentGames.length > 0 ? (
-                <section
+              <section
                   className="unity-recent-games"
                   aria-label="最近打开的游戏"
                 >
                   <div className="unity-recent-games-head">
                     <strong>最近打开</strong>
                   </div>
+                  {!recentGames.length&&<p className="hint">暂无最近打开的游戏</p>}
                   <ul className="unity-recent-games-list">
                     {recentGames.map((r) => (
                       <li key={r.gameDir}>
@@ -2443,7 +2442,7 @@ export function UnityTranslateView({
                           className="unity-recent-game-btn"
                           disabled={busy}
                           onClick={() => void openRecentGame(r)}
-                          title={r.gameDir}
+                          data-tooltip={r.gameDir} aria-label={r.gameDir}
                         >
                           <span className="unity-recent-game-name">
                             {r.name} <small className="unity-recent-engine">{r.engine || "Unity"}</small>
@@ -2455,7 +2454,7 @@ export function UnityTranslateView({
                         <button
                           type="button"
                           className="unity-recent-game-remove"
-                          title="从最近列表移除"
+                          data-tooltip="从最近列表移除"
                           aria-label={`移除 ${r.name}`}
                           disabled={busy}
                           onClick={(ev) => {
@@ -2469,10 +2468,8 @@ export function UnityTranslateView({
                     ))}
                   </ul>
                 </section>
-              ) : null}
               </div>
 
-              {!awaitingPath ? (
               <section className="unity-games">
                 <div className="unity-section-head">
                   <h2>检测到的游戏</h2>
@@ -2509,8 +2506,38 @@ export function UnityTranslateView({
                   </div>
                 ) : null}
                 <div className="unity-games-body">
-                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}</div><div className="unity-game-meta">{game.engine} · {game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path">{game.path}</div></button></li>)}</ul>}
-                  {games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
+              {awaitingPath ? (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={
+                    "unity-dropzone" + (dragOver ? " is-over" : "")
+                  }
+                  aria-label="点击或拖拽选择游戏目录或主程序"
+                  onClick={() => {
+                    if (!busy) void browsePath();
+                  }}
+                  onKeyDown={(ev) => {
+                    if (busy) return;
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault();
+                      void browsePath();
+                    }
+                  }}
+                >
+                  <span className="unity-dropzone-plus" aria-hidden="true">
+                    ＋
+                  </span>
+                  <strong>
+                    {scanning
+                      ? "正在扫描…"
+                      : "点击或拖拽游戏目录 / 程序"}
+                  </strong>
+                </div>
+              ) : null}
+
+                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}<span className="unity-recent-engine">{game.engine}</span></div><div className="unity-game-meta">{game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path" data-tooltip={game.path}>{game.path}</div></button></li>)}</ul>}
+                  {awaitingPath || games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
                     <div
                       className={
                         "unity-game-empty" +
@@ -2545,18 +2572,18 @@ export function UnityTranslateView({
                               }
                             >
                               <div className="unity-game-title">
-                                {gameTitle(g)}
+                                {gameTitle(g)}<span className="unity-recent-engine">Unity</span>
                               </div>
                               <div className="unity-game-meta">
                                 {embeddedInstalled[installKey(g.gameDir)] && <span>已安装嵌字翻译</span>}
-                                <span title="程序架构（主程序位数）">
+                                <span data-tooltip="程序架构（主程序位数）">
                                   {archLabel(g.arch)}
                                 </span>
-                                <span title="Unity 脚本后端">
+                                <span data-tooltip="Unity 脚本后端">
                                   {runtimeLabel(g.runtime, g.isIl2Cpp)}
                                 </span>
                                 <span
-                                  title={
+                                  data-tooltip={
                                     hasPluginFramework(g)
                                       ? `插件框架：${expectedFrameworkName(g.isIl2Cpp)}`
                                       : `未装插件框架（${expectedFrameworkName(g.isIl2Cpp)}）`
@@ -2570,7 +2597,7 @@ export function UnityTranslateView({
                                     : "无框架"}
                                 </span>
                                 <span
-                                  title={
+                                  data-tooltip={
                                     g.plugins && g.plugins.length > 0
                                       ? `已检测：${g.plugins.join("、")}`
                                       : g.hasAutoTranslator
@@ -2588,7 +2615,7 @@ export function UnityTranslateView({
                                       : "未装插件"}
                                 </span>
                               </div>
-                              <div className="unity-game-path">{g.gameDir}</div>
+                              <div className="unity-game-path" data-tooltip={g.gameDir}>{g.gameDir}</div>
                             </button>
                           </li>
                         );
@@ -2597,7 +2624,6 @@ export function UnityTranslateView({
                   )}
                 </div>
               </section>
-              ) : null}
 
               {error ? (
                 <p className="unity-error unity-list-error">{error}</p>
@@ -2638,14 +2664,18 @@ export function UnityTranslateView({
                   type="button"
                   className="unity-config-path-link"
                   onClick={() => void openConfigFile()}
-                  title={
+                  data-tooltip={
+                    configExists
+                      ? "点击打开配置文件"
+                      : "尚未生成，点击将写入并打开"
+                  } aria-label={
                     configExists
                       ? "点击打开配置文件"
                       : "尚未生成，点击将写入并打开"
                   }
                 >
                   <span className="unity-config-path-link-label">磁盘路径</span>
-                  <code className="unity-config-path-link-value">
+                  <code className="unity-config-path-link-value" data-tooltip={configPath}>
                     {configPath}
                   </code>
                 </button>
@@ -2714,7 +2744,7 @@ export function UnityTranslateView({
                 className="unity-btn unity-btn-wide"
                 disabled={busy || !selected || !configDirty}
                 onClick={() => void onSaveConfig()}
-                title="将当前表单写入游戏目录 Config.ini"
+                data-tooltip="将当前表单写入游戏目录 Config.ini" aria-label="将当前表单写入游戏目录 Config.ini"
               >
                 {actionLabel("save-config", "保存配置")}
               </button>
@@ -2723,7 +2753,7 @@ export function UnityTranslateView({
                 className="unity-btn unity-btn-wide"
                 disabled={busy || !selected}
                 onClick={() => void runSelfCheck()}
-                title="装完打不开时：核对位数与日志（本地，不出网）"
+                data-tooltip="装完打不开时：核对位数与日志（本地，不出网）" aria-label="装完打不开时：核对位数与日志（本地，不出网）"
               >
                 {actionLabel("self-check", "打不开？自检")}
               </button>
@@ -2734,7 +2764,13 @@ export function UnityTranslateView({
                   busy || !selected || hasPluginFramework(selected)
                 }
                 onClick={() => void onInstallLoader()}
-                title={
+                data-tooltip={
+                  selected && hasPluginFramework(selected)
+                    ? `已安装 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                    : selected
+                      ? `安装 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                      : undefined
+                } aria-label={
                   selected && hasPluginFramework(selected)
                     ? `已安装 ${expectedFrameworkName(selected.isIl2Cpp)}`
                     : selected
@@ -2759,7 +2795,13 @@ export function UnityTranslateView({
                   !!selected.hasAutoTranslator
                 }
                 onClick={() => onUninstallLoader()}
-                title={
+                data-tooltip={
+                  selected?.hasAutoTranslator
+                    ? "请先卸载翻译插件"
+                    : selected && hasPluginFramework(selected)
+                      ? `卸载 ${expectedFrameworkName(selected.isIl2Cpp)}`
+                      : "未安装插件框架"
+                } aria-label={
                   selected?.hasAutoTranslator
                     ? "请先卸载翻译插件"
                     : selected && hasPluginFramework(selected)
@@ -2779,7 +2821,13 @@ export function UnityTranslateView({
                   !hasPluginFramework(selected)
                 }
                 onClick={() => void onInstall()}
-                title={
+                data-tooltip={
+                  selected?.hasAutoTranslator
+                    ? "已安装翻译插件"
+                    : selected && !hasPluginFramework(selected)
+                      ? `请先安装插件框架（${expectedFrameworkName(selected.isIl2Cpp)}）`
+                      : undefined
+                } aria-label={
                   selected?.hasAutoTranslator
                     ? "已安装翻译插件"
                     : selected && !hasPluginFramework(selected)
@@ -2794,7 +2842,11 @@ export function UnityTranslateView({
                 className="unity-btn unity-btn-danger unity-btn-wide"
                 disabled={busy || !selected?.hasAutoTranslator}
                 onClick={() => onUninstall()}
-                title={
+                data-tooltip={
+                  selected?.hasAutoTranslator
+                    ? "卸载所选游戏中的翻译插件（保留插件框架）"
+                    : "所选游戏未安装插件"
+                } aria-label={
                   selected?.hasAutoTranslator
                     ? "卸载所选游戏中的翻译插件（保留插件框架）"
                     : "所选游戏未安装插件"
@@ -2879,7 +2931,7 @@ export function UnityTranslateView({
                       className={
                         "unity-bottom-tab" + (isActive ? " is-active" : "")
                       }
-                      title={tab.title}
+                      data-tooltip={tab.title} aria-label={tab.title}
                       onClick={() => {
                         setActiveBottomTab(tab.id);
                         setSelfCheckTabMenu(null);
@@ -2910,16 +2962,11 @@ export function UnityTranslateView({
                     暂无输出。操作结果会显示在这里。
                   </p>
                 ) : (
-                  <ul className="unity-output-log">
-                    {outputLines.map((line, idx) => (
+                  <ul ref={outputScroll} className="unity-output-log" tabIndex={0}>
+                    {outputLines.map(line => (
                       <li
                         key={line.id}
                         className={"level-" + line.level}
-                        ref={
-                          idx === outputLines.length - 1
-                            ? outputEndRef
-                            : undefined
-                        }
                       >
                         <time>{line.time || "—"}</time>
                         <span>{line.text}</span>
@@ -2931,7 +2978,7 @@ export function UnityTranslateView({
                   <p className="unity-output-logpath">
                     界面最多保留 {OUTPUT_UI_MAX}{" "}
                     条；更早记录见完整日志：
-                    <code>{outputLogPath}</code>
+                    <code data-tooltip={outputLogPath}>{outputLogPath}</code>
                   </p>
                 ) : null}
               </section>

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type CSSProperties, type TextareaHTMLAttributes } from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type TextareaHTMLAttributes } from "react";
 import "./SearchHighlight.css";
 
 export function SearchHighlight({ text, query }: { text: string; query: string }) {
@@ -16,9 +16,9 @@ export function SearchHighlight({ text, query }: { text: string; query: string }
 }
 
 // Keep the native editor and its selection; only the matching background is mirrored.
-export function SearchTextarea({ query, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & { query: string; value: string }) {
+export function SearchTextarea({ query, backdropContent, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & { query: string; value: string; backdropContent?: ReactNode }) {
   const editor = useRef<HTMLTextAreaElement>(null), mirror = useRef<HTMLDivElement>(null);
-  const matching = !!query && props.value.toLowerCase().includes(query.toLowerCase());
+  const matching = !!backdropContent || !!query && props.value.toLowerCase().includes(query.toLowerCase());
   useLayoutEffect(() => {
     if (!matching || !editor.current || !mirror.current) return;
     const input = editor.current, backdrop = mirror.current;
@@ -38,7 +38,7 @@ export function SearchTextarea({ query, ...props }: TextareaHTMLAttributes<HTMLT
     return () => { observer.disconnect(); input.removeEventListener("scroll", sync); };
   }, [matching, props.value, query]);
   return <span className={`search-editor${matching ? " has-search-match" : ""}`}>
-    {matching && <div className="search-editor-mirror" ref={mirror} aria-hidden="true" style={{ color: "transparent" } as CSSProperties}><SearchHighlight text={props.value + "\n"} query={query} /></div>}
+    {matching && <div className="search-editor-mirror" ref={mirror} aria-hidden="true" style={{ color: "transparent" } as CSSProperties}>{backdropContent || <SearchHighlight text={props.value + "\n"} query={query} />}</div>}
     <textarea {...props} ref={editor} />
   </span>;
 }

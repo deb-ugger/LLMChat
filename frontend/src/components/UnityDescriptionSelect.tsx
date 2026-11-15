@@ -7,7 +7,8 @@ export const UNITY_SEGMENT_CHOICES: readonly Choice[] = [
   { value: "lines", label: "按行", description: "普通文本的每个非空行提取为一条；结构化资源仍按原字段提取，不使用模型。" },
 ];
 export const UNITY_WRAP_CHOICES: readonly Choice[] = [
-  { value: "join", label: "合并翻译后恢复换行", description: "保留段落空行和列表边界，只合并段内折行后翻译，再在各段内部重新排版。短译文允许减少行数，不以空白行填充。" },
+  { value: "join", label: "合并翻译后恢复换行", description: "保留段落空行和列表边界，只合并段内折行后翻译，以原文最长行的估算显示宽度为上限，重新排版；短译文可减少行数，长译文可增加行数。" },
+  { value: "natural", label: "大模型自然断行", description: "让翻译模型按译文语义安排段内换行，不强制恢复原文行数；保留段落、列表和控制符。", warning: "仅适用于大模型翻译，未获文本框字体和宽度时无法保证实际显示不溢出。" },
   { value: "keep", label: "保留换行翻译", description: "按原有换行翻译，保留段内折行和段落空行，不进行翻译后的重新断行。" },
 ];
 export const UNITY_LINE_CHOICES: readonly Choice[] = [

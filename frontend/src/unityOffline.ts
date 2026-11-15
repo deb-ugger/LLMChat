@@ -8,7 +8,9 @@ export type UnityEntry = {
   id: string; file: string; container: string; objectId: string; locator: string;
   kind: string; source: string; translation: string; selected: boolean; error: string;
   locale?: string;
+  localizationKey?: string;
   layoutDraft?: string;
+  screeningDraft?: string;
   parentId?: string; parentLocator?: string; sourceStart?: number;
 };
 export type UnityImageRegion = { text: string; translation: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; reviewReason?: string; error: string };
@@ -26,7 +28,7 @@ export type UnityProject = {
   resources?: { file: string; state: "ready" | "empty" | "partial" | "failed"; texts: number; fonts: number; failedObjects: number }[];
   fonts: UnityFont[]; warnings: string[]; hashes: Record<string, string>;
 };
-export type UnityPatch = { folder: string; files: number; entries: number; images?: number; fontReplacements: number };
+export type UnityPatch = { folder: string; files: number; entries: number; images?: number; fontReplacements: number; fontMappings?: string[] };
 export type UnitySavedProject = { project: UnityProject | null; scanCompleted: number | null; scanTotal: number | null; includeCode: boolean | null; notices: string[] };
 export type UnityWorkspace<T> = { workRoot: string; projectsRoot: string; saved: UnitySavedProject; task: T | null; installed: boolean };
 export function mergeUnityProject(previous: UnityProject, scanned: UnityProject) {

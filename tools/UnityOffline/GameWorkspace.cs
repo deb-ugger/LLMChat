@@ -48,7 +48,7 @@ public static class GameWorkspace
         if (task["imageConfidenceThreshold"] != null) result["imageConfidenceThreshold"] = task["imageConfidenceThreshold"]!.DeepClone();
         if (task["scanElapsedMs"] != null) result["scanElapsedMs"] = task["scanElapsedMs"]!.DeepClone();
         if (task["includeContext"] != null) result["includeContext"] = task["includeContext"]!.DeepClone();
-        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "imageConcurrency", "imageTask", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
+        foreach (var key in new[] { "step", "endStep", "automatic", "finished", "partial", "imageOnly", "imageOcrMode", "imageConcurrency", "imageTask", "translationRuns", "projectFolder", "scanFolder", "patchFolder", "previousProjectFolder", "scopeVersion", "translationKind", "llmModel", "dialogueModel", "nameModel", "imageModel", "imageReviewModel", "engine", "source", "target", "includeCode", "fontPath", "joinLines", "lineMode", "lineModel", "layoutOnly", "textMode", "codeAssemblies", "typeDirectory", "extraCharacters", "translationFailure", "progress", "patch" })
             if (task[key] != null) result[key] = task[key]!.DeepClone();
         if (task["engines"] is JsonArray engines) {
             var choices = new JsonArray();

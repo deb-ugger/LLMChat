@@ -183,12 +183,23 @@ public static class WorkflowReset
             plan = plan with { Restored = true }; Program.WriteJson(marker, plan);
         }
         if (plan.Step == 2) {
+            Program.Progress("正在读取工程，准备清理译文和草稿");
             var saved = Program.Load(Path.Combine(project, "unity-project.json"));
             if (!plan.ImageOnly) {
-                foreach (var entry in saved.Entries) { entry.Translation = ""; entry.LayoutDraft = null; entry.Error = ""; }
+                var clearedTranslations = 0; var clearedDrafts = 0; var clearedErrors = 0;
+                for (var index = 0; index < saved.Entries.Count; index++) {
+                    var entry = saved.Entries[index];
+                    if (entry.Translation.Length > 0) clearedTranslations++;
+                    if (!string.IsNullOrEmpty(entry.LayoutDraft)) clearedDrafts++;
+                    if (entry.Error.Length > 0) clearedErrors++;
+                    entry.Translation = ""; entry.LayoutDraft = null; entry.ScreeningDraft = null; entry.Error = "";
+                    if ((index + 1) % 256 == 0 || index + 1 == saved.Entries.Count)
+                        Program.Progress($"清理文本 {index + 1}/{saved.Entries.Count}：译文 {clearedTranslations} 条，草稿 {clearedDrafts} 条，错误 {clearedErrors} 条", index + 1, saved.Entries.Count);
+                }
                 saved.TextSkipped = false;
             }
             else ImageResources.Reset(saved);
+            Program.Progress("正在保存清理后的工程");
             Program.Save(saved);
         }
         if (plan.Step == 4) {

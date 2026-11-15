@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-ollama-service"
+description = "Check, start and stop the local Ollama service."
+commands.allow = ["ollama_service_status", "ollama_service_start", "ollama_service_stop"]

@@ -14,7 +14,9 @@
 #include "TextTaskQueue.h"
 #include "TextRunStore.h"
 #include "JsonEmbedding.h"
+#include "GameTextProject.h"
 #include "RpgImageProject.h"
+#include "OllamaDirectories.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -1751,6 +1753,85 @@ int HttpServer::run()
         return arr;
     };
 
+    svr.Get("/api/llm/ollama/directories", withCors([](const httplib::Request& req, httplib::Response& res) {
+        const auto directory = req.get_param_value("directory");
+        json result = {{"directories", json::array()}};
+        if (directory.empty()) {
+            for (const auto& path : ollamadirectories::discover()) result["directories"].push_back(utf8path::pathUtf8(path));
+        } else {
+            const auto path = ollamadirectories::resolve(utf8path::pathFromUtf8(directory));
+            result["valid"] = path.has_value();
+            if (path) result["directories"].push_back(utf8path::pathUtf8(*path));
+            else result["error"] = "目录无效或不可访问：未找到 Ollama 的 manifests 或 blobs 模型目录。";
+        }
+        res.set_content(result.dump(), "application/json");
+    }));
+
+    svr.Get("/api/llm/ollama/models", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto directory = req.get_param_value("directory");
+            if (!directory.empty()) {
+                const auto root = ollamadirectories::resolve(utf8path::pathFromUtf8(directory));
+                if (!root) throw std::runtime_error("所选目录无效，请选择包含 Ollama 模型的目录");
+                const auto manifests = *root / "manifests";
+                json models = json::array();
+                if (!fs::is_directory(manifests)) { res.set_content(models.dump(), "application/json"); return; }
+                for (const auto& file : fs::recursive_directory_iterator(manifests)) {
+                    if (!file.is_regular_file()) continue;
+                    std::ifstream input(file.path());
+                    const auto manifest = json::parse(input);
+                    if (!manifest.contains("layers")) continue;
+                    const auto relative = fs::relative(file.path(), manifests);
+                    auto parts = relative.begin();
+                    if (parts == relative.end()) continue;
+                    const auto registry = utf8path::pathUtf8(*parts);
+                    ++parts; // Registry host is not part of an Ollama model ID.
+                    fs::path model;
+                    for (; parts != relative.end(); ++parts) model /= *parts;
+                    const auto tag = utf8path::pathUtf8(model.filename());
+                    auto name = utf8path::pathUtf8(model.parent_path());
+                    std::replace(name.begin(), name.end(), '\\', '/');
+                    if (name.starts_with("library/")) name.erase(0, 8);
+                    if (registry != "registry.ollama.ai") name = registry + "/" + name;
+                    if (!name.empty() && !tag.ends_with("cloud")) models.push_back(name + ":" + tag);
+                }
+                res.set_content(models.dump(), "application/json");
+                return;
+            }
+            const auto apiUrl = req.get_param_value("apiUrl");
+            if (!apiUrl.empty()) {
+                LlmListModelsRequest request;
+                request.apiUrl = apiUrl;
+                request.proxyMode = "direct";
+                const auto response = LlmClient::listModels(request);
+                if (!response.ok) throw std::runtime_error(response.error);
+                json models = json::array();
+                for (const auto& name : response.modelIds)
+                    if (!name.ends_with(":cloud") && !name.ends_with("-cloud")) models.push_back(name);
+                res.set_content(models.dump(), "application/json");
+                return;
+            }
+            httplib::Client ollama("127.0.0.1", 11434);
+            ollama.set_connection_timeout(2, 0);
+            ollama.set_read_timeout(5, 0);
+            const auto response = ollama.Get("/api/tags");
+            if (!response || response->status != 200)
+                throw std::runtime_error("无法读取本机 Ollama 模型，请确认 Ollama 已启动（端口 11434）");
+            const auto payload = json::parse(response->body);
+            json models = json::array();
+            for (const auto& entry : payload.at("models")) {
+                const auto name = entry.value("name", "");
+                if (name.empty() || name.ends_with(":cloud") || name.ends_with("-cloud") ||
+                    !entry.value("remote_host", "").empty() || !entry.value("remote_model", "").empty()) continue;
+                models.push_back(name);
+            }
+            res.set_content(models.dump(), "application/json");
+        } catch (const std::exception& error) {
+            res.status = 502;
+            res.set_content(errorJson(error.what()).dump(), "application/json");
+        }
+    }));
+
     svr.Get("/api/llm/vendor-models", withCors([=](const httplib::Request&, httplib::Response& res) {
         try
         {
@@ -1953,6 +2034,31 @@ int HttpServer::run()
         res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
 
+    svr.Post("/api/llm/ollama/test", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = json::parse(req.body);
+            const auto id = body.at("taskId").get<std::string>();
+            const auto url = body.at("apiUrl").get<std::string>(), model = body.at("model").get<std::string>();
+            if (id.empty() || id.size() > 96 || url.empty() || model.empty()) throw std::runtime_error("Ollama 测试参数无效");
+            const auto task = translationTasks.begin(id);
+            if (!task) { res.status = 429; res.set_content(errorJson("已有测试正在处理，请稍后重试").dump(), "application/json"); return; }
+            task->deadline = request_cancel::Clock::now() + std::chrono::seconds(300);
+            request_cancel::Scope cancellation(translationTasks, id, task);
+            auto event = UsageStore::makeEventSkeleton();
+            event.feature = "settings_test"; event.endpoint = "ollama/test"; event.channel = "llm"; event.model = model;
+            event.apiHost = UsageStore::hostFromApiUrl(url); event.vendor = "Ollama";
+            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            const auto response = LlmClient::testOllama(url, model);
+            auto& ev = usageLog.ev();
+            ev.ok = response.ok && !task->stopped();
+            ev.promptTokens = response.promptTokens; ev.completionTokens = response.completionTokens; ev.totalTokens = response.totalTokens;
+            ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
+            ev.errorMessage = ev.ok ? "" : task->stopped() ? "模型加载或测试超过 5 分钟，或任务已取消" : response.error;
+            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(errorJson(ev.errorMessage).dump(), "application/json"); return; }
+            res.set_content(json{{"ok",true},{"content",response.content}}.dump(), "application/json");
+        } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
+    }));
+
     svr.Post("/api/speech/process", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
         try {
             const auto body = json::parse(req.body);
@@ -1966,6 +2072,50 @@ int HttpServer::run()
             auto event = UsageStore::makeEventSkeleton();
             event.feature = body.value("operation", "") == "recognize" ? "speech_recognition" : "speech_proofread";
             event.endpoint = "speech/process"; event.channel = "llm"; event.model = request.model;
+            event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
+            event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
+            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            const auto response = LlmClient::chat(request);
+            auto& ev = usageLog.ev();
+            ev.ok = response.ok && !task->stopped();
+            ev.promptTokens = response.promptTokens; ev.completionTokens = response.completionTokens;
+            ev.totalTokens = response.totalTokens; ev.cacheReadTokens = response.cacheReadTokens; ev.cacheWriteTokens = response.cacheWriteTokens;
+            if (response.externalCall && response.totalTokens <= 0) {
+                ev.promptTokens = ev.completionTokens = ev.totalTokens = kUsageTokensUnknown;
+                ev.cacheReadTokens = ev.cacheWriteTokens = kUsageTokensUnknown;
+            }
+            ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
+            ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
+            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(errorJson(ev.errorMessage).dump(), "application/json"); return; }
+            res.set_content(json{{"ok", true}, {"content", response.content}}.dump(), "application/json");
+        } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
+    }));
+
+    svr.Post("/api/game-images/model", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = json::parse(req.body);
+            const auto id = body.at("taskId").get<std::string>();
+            if (id.empty() || id.size() > 96) throw std::runtime_error("invalid taskId");
+            LlmRequest request;
+            request.apiUrl = body.at("apiUrl").get<std::string>(); request.apiKey = body.value("apiKey", "");
+            request.model = body.at("model").get<std::string>(); request.requireComplete = true;
+            const auto cfg = config_.snapshot();
+            request.proxyMode = body.value("localModel", false) ? "direct" : cfg.proxyMode; request.httpProxy = cfg.httpProxy;
+            const auto prompt = body.at("prompt").get<std::string>(), image = body.value("image", "");
+            if (request.apiUrl.empty() || request.model.empty() || prompt.empty() || prompt.size() > 2000000) throw std::runtime_error("图片处理模型、接口或请求内容无效");
+            json content = json::array({json{{"type","text"},{"text",prompt}}});
+            if (!image.empty()) {
+                if (image.rfind("data:image/png;base64,", 0) != 0 || image.size() > 20000000) throw std::runtime_error("图片输入须为不超过 20 MB 的 PNG 数据");
+                content.push_back(json{{"type","image_url"},{"image_url",json{{"url",image}}}});
+            }
+            request.messages = json::array({json{{"role","user"},{"content",content}}});
+            const auto task = translationTasks.begin(id);
+            if (!task) { res.status = 429; res.set_content(errorJson("在线任务较多，请稍后重试").dump(), "application/json"); return; }
+            request_cancel::Scope cancellation(translationTasks, id, task);
+            if (task->stopped()) { res.status = 499; res.set_content(errorJson("任务已取消").dump(), "application/json"); return; }
+            auto event = UsageStore::makeEventSkeleton();
+            event.feature = "game_image_model";
+            event.endpoint = "game-images/model"; event.channel = "llm"; event.model = request.model;
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
             ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
@@ -2077,7 +2227,7 @@ int HttpServer::run()
                 }
                 tr = TranslateClient::translateWithLlm(
                     text, apiUrl, apiKey, model, source, target,
-                    cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson);
+                    body.value("localModel", false) ? "direct" : cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson);
             }
             else
             {
@@ -2121,6 +2271,11 @@ int HttpServer::run()
                     {"error", tr.error},
                     {"code", tr.code.empty() ? "ERROR" : tr.code},
                     {"provider", tr.provider},
+                    {"promptTokens", tr.promptTokens},
+                    {"completionTokens", tr.completionTokens},
+                    {"totalTokens", tr.totalTokens},
+                    {"cacheReadTokens", tr.cacheReadTokens},
+                    {"cacheWriteTokens", tr.cacheWriteTokens},
                 }.dump(), "application/json");
                 return;
             }
@@ -2187,11 +2342,18 @@ int HttpServer::run()
         textRuns.finish(req.get_param_value("runId")); res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
 
+    for (const std::string operation : {"load", "save", "workflow"}) svr.Post("/api/game-text/" + operation, withCors([operation](const httplib::Request& req, httplib::Response& res) {
+        try { const auto body = json::parse(req.body); res.set_content((operation == "load" ? gametext::load(body) : operation == "workflow" ? gametext::workflow(body) : gametext::save(body)).dump(), "application/json"); }
+        catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
     svr.Post("/api/json-embedding/start", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try { jsonEmbedding.start(json::parse(req.body)); res.set_content(jsonEmbedding.status().dump(), "application/json"); }
         catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
     }));
-    for(const std::string operation:{"load","scan","save","save-many","apply","uninstall","stop-read"})svr.Post("/api/game-images/"+operation,withCors([&,operation](const httplib::Request& req,httplib::Response& res){try{const auto body=json::parse(req.body);const auto game=utf8path::pathFromUtf8(body.at("gamePath").get<std::string>());json value;if(operation=="stop-read")value=gameImages.stopReading(game);else if(operation=="load")value=gameImages.load(game);else if(operation=="scan")value=gameImages.scan(game);else if(operation=="save-many")value=gameImages.saveMany(game,body.at("images"));else if(operation=="save")value=gameImages.saveImage(game,body.at("image"));else if(operation=="uninstall")value=gameImages.uninstall(game);else value=gameImages.apply(game,body.value("backupMode","auto")!="manual");res.set_content(value.dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    for(const std::string operation:{"info","load","scan","save","save-many","apply","uninstall","stop-read"})svr.Post("/api/game-images/"+operation,withCors([&,operation](const httplib::Request& req,httplib::Response& res){try{const auto body=json::parse(req.body);const auto game=utf8path::pathFromUtf8(body.at("gamePath").get<std::string>());json value;if(operation=="info")value=gameImages.info(game);else if(operation=="stop-read")value=gameImages.stopReading(game);else if(operation=="load")value=gameImages.load(game);else if(operation=="scan")value=gameImages.scan(game);else if(operation=="save-many")value=gameImages.saveMany(game,body.at("images"));else if(operation=="save")value=gameImages.saveImage(game,body.at("image"));else if(operation=="uninstall")value=gameImages.uninstall(game);else value=gameImages.apply(game,body.value("backupMode","auto")!="manual",body.value("backupScopes",json::array({"images"})));res.set_content(value.dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    svr.Post("/api/game-images/load-stream",withCors([&](const httplib::Request& req,httplib::Response& res){
+        try{const auto game=utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());res.set_chunked_content_provider("application/x-ndjson",[&,game](size_t,httplib::DataSink& sink){auto send=[&](const json& event){const auto line=event.dump()+"\n";if(!sink.write(line.data(),line.size()))throw std::runtime_error("图片工程读取已取消");};try{send({{"type","progress"},{"completed",0},{"total",0},{"detail","正在读取已有图片工程"}});auto project=gameImages.load(game,[&](size_t completed,size_t total,const std::string& detail){send({{"type","progress"},{"completed",completed},{"total",total},{"detail",detail}});});send({{"type","result"},{"project",project}});}catch(const std::exception& e){const auto line=json({{"type","error"},{"error",e.what()}}).dump()+"\n";sink.write(line.data(),line.size());}sink.done();return true;});}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
+    }));
     svr.Post("/api/game-images/scan-stream",withCors([&](const httplib::Request& req,httplib::Response& res){
         try{const auto game=utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());res.set_chunked_content_provider("application/x-ndjson",[&,game](size_t,httplib::DataSink& sink){auto send=[&](const json& event){auto line=event.dump()+"\n";if(!sink.write(line.data(),line.size()))throw std::runtime_error("图片扫描已取消");};try{send({{"type","progress"},{"completed",0},{"total",0},{"detail","正在准备图片扫描"}});auto project=gameImages.scan(game,[&](size_t completed,size_t total,const std::string& detail){send({{"type","progress"},{"completed",completed},{"total",total},{"detail",detail}});});send({{"type","result"},{"project",project}});}catch(const std::exception& e){auto line=json({{"type","error"},{"error",e.what()}}).dump()+"\n";sink.write(line.data(),line.size());}sink.done();return true;});}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
     }));

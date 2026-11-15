@@ -1,3 +1,4 @@
+import { FeatureIcon } from "./components/FeatureIcon";
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -460,7 +461,7 @@ export default function App() {
   return (
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
-        <div className="nav-brand" title="LLMChat">
+        <div className="nav-brand" data-tooltip="LLMChat">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
             <path
               fill="currentColor"
@@ -471,84 +472,55 @@ export default function App() {
         <button
           className={page === "chat" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("chat")}
-          title="对话"
+          data-tooltip="对话" aria-label="对话"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 4V6a2 2 0 0 1 2-2zm3 5v2h10V9H7zm0 4v2h7v-2H7z"
-            />
-          </svg>
+          <FeatureIcon feature="chat" size={22} />
           <span>对话</span>
         </button>
         <button
           className={page === "literature" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("literature")}
-          title="文献翻译"
+          data-tooltip="文献翻译" aria-label="文献翻译"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M6 3h9a3 3 0 0 1 3 3v14.5a.5.5 0 0 1-.8.4L14 18.2l-3.2 2.7a.5.5 0 0 1-.8-.4V6a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v12H3V6a3 3 0 0 1 3-3zm10 2h-1v12.6l1.5-1.2a1 1 0 0 1 1.2 0l1.3 1V6a1 1 0 0 0-1-1z"
-            />
-          </svg>
+          <FeatureIcon feature="literature" size={22} />
           <span>文献翻译</span>
         </button>
         <button
           className={page === "image" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("image")}
-          title="图片文字识别"
+          data-tooltip="图片文字识别" aria-label="图片文字识别"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="1.5" y="2" width="10" height="9" rx="1" />
-            <circle cx="4.3" cy="4.8" r=".7" fill="currentColor" stroke="none" />
-            <path d="m2 9 3-3 2.5 2L9 6.5l2.5 3.5" strokeWidth="1.4" />
-            <path d="M2 22 22 2" />
-            <path d="M13 15v-2h9v2M17.5 13v9M15 22h5" />
-          </svg>
+          <FeatureIcon feature="image" size={22} />
           <span>图片文字识别</span>
         </button>
         <button
           className={page === "speech" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("speech")}
-          title="语音转文字"
+          data-tooltip="语音转文字" aria-label="语音转文字"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="4" y="1.5" width="4" height="7" rx="2" />
-            <path d="M1.5 6.5V8a4.5 4.5 0 0 0 9 0V6.5M6 12.5V14M4 14h4" />
-            <path d="M2 22 22 2" />
-            <path d="M13 15v-2h9v2M17.5 13v9M15 22h5" />
-          </svg>
+          <FeatureIcon feature="speech" size={22} />
           <span>语音转文字</span>
         </button>
         <button
           className={page === "text" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("text")}
-          title="文本翻译工程"
+          data-tooltip="文本翻译工程" aria-label="文本翻译工程"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M4 5h9v2H4V5zm0 4h16v2H4V9zm0 4h11v2H4v-2zm0 4h16v2H4v-2zm14.5-12.5L20 6l-1.5 1.5L17 6l1.5-1.5zM17 11.5 18.5 13 17 14.5 15.5 13 17 11.5z"
-            />
-          </svg>
+          <FeatureIcon feature="text" size={22} />
           <span>文本翻译工程</span>
         </button>
         <button
           className={page === "unity" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("unity")}
-          title="游戏翻译"
+          data-tooltip="游戏翻译" aria-label="游戏翻译"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M7 7h10c2 0 3 2 3.5 4l1 6c.5 3-2 4-4 2l-3-3h-5l-3 3c-2 2-4.5 1-4-2l1-6C4 9 5 7 7 7Z" />
-            <path d="M7 10v5m-2.5-2.5h5M16 11h.01M19 14h.01" />
-          </svg>
+          <FeatureIcon feature="unity" size={22} />
           <span>游戏翻译</span>
         </button>
         <button
           className={page === "stats" ? "nav-item active" : "nav-item"}
           onClick={() => setPage("stats")}
-          title="统计"
+          data-tooltip="统计" aria-label="统计"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
             <path
@@ -564,7 +536,7 @@ export default function App() {
             setSettingsInitialTab(undefined);
             setPage("settings");
           }}
-          title="设置"
+          data-tooltip="设置" aria-label="设置"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
             <path
@@ -580,7 +552,7 @@ export default function App() {
           className="nav-rail-toggle"
           aria-label={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
           aria-expanded={!navRailHidden}
-          title={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
+          data-tooltip={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
           onClick={() => setNavRailHidden((hidden) => !hidden)}
         >
           <span
@@ -591,7 +563,7 @@ export default function App() {
       </nav>
 
       <div className="app-main">
-        {page === "chat" && (
+        <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"}>
           <div className="chat-layout">
             <Sidebar
               conversations={conversations}
@@ -612,7 +584,7 @@ export default function App() {
               onLoadEarlier={onLoadEarlier}
             />
           </div>
-        )}
+        </div>
         {/* Keep mounted so PDF + reading position survive nav switches.
             Hidden panes use visibility (not display:none) so PDF layout stays valid. */}
         <div
@@ -744,14 +716,15 @@ export default function App() {
         >
           <DeferredPanel active={page === "stats"}><StatsView active={page === "stats"} /></DeferredPanel>
         </div>
-        {page === "settings" && (
+        <div className={page === "settings" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "settings"}>
           <DeferredPanel active={page === "settings"}><SettingsView
             settings={settings}
-            onSave={(s) => void onSaveSettings(s)}
+            onSave={onSaveSettings}
             initialTab={settingsInitialTab}
+            active={page === "settings"}
             onNavigate={(p) => setPage(p)}
           /></DeferredPanel>
-        )}
+        </div>
       </div>
     </div>
   );

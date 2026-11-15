@@ -2012,7 +2012,7 @@ body.row-resizing .textLayer {
 
 .settings-engine-card-top {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 0;
 }
 
@@ -2024,9 +2024,11 @@ body.row-resizing .textLayer {
 .settings-card-mini-test {
   appearance: none;
   flex-shrink: 0;
-  align-self: stretch;
+  align-self: center;
+  min-height: 34px;
+  height: 34px;
   margin: 6px 8px 6px 0;
-  padding: 0 10px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
@@ -2252,6 +2254,9 @@ body.row-resizing .textLayer {
 .settings-engine-card-btn:hover {
   background: var(--bg-hover);
 }
+.settings-engine-card-top:hover,
+.settings-engine-card.is-open > .settings-engine-card-top:hover { background: var(--bg-hover); }
+.settings-engine-card-top .settings-engine-card-btn:hover { background: transparent; }
 
 .settings-engine-card-title {
   display: flex;
@@ -2456,9 +2461,9 @@ body.row-resizing .textLayer {
 }
 
 .settings-vendor-models-list li {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-width: 0;
   padding: 8px 10px;
@@ -2519,7 +2524,8 @@ body.row-resizing .textLayer {
   margin-top: 8px;
 }
 
-.settings-vendor-add-row input {
+.settings-vendor-add-row input,
+.settings-vendor-add-row select.settings-ollama-directory {
   flex: 1 1 120px;
   min-width: 0;
   font: inherit;
@@ -2559,3 +2565,60 @@ body.row-resizing .textLayer {
 .pdf-bookmark-edit input { flex: 1; min-width: 0; font: inherit; }
 .pdf-bookmarks-empty, .pdf-bookmarks-error { padding: 0 12px; font-size: 13px; }
 .pdf-bookmarks-error { color: var(--danger); }
+
+.settings-engine-card.is-open { container-type: inline-size; }
+.settings-engine-card.is-open > .settings-engine-card-top,
+.settings-engine-card.is-open > .settings-engine-panel { background: transparent; }
+.settings-engine-panel:has(> .settings-vendor-models) { display: grid; grid-template-columns: minmax(240px, 360px) minmax(0, 1fr); align-items: start; gap: 12px 20px; }
+.settings-engine-panel:has(> .settings-vendor-models) > .settings-engine-field { grid-column: 1; min-width: 0; }
+.settings-engine-panel:has(> .settings-vendor-models) > .settings-vendor-models { grid-column: 2; grid-row: 1 / span 4; min-width: 0; }
+.settings-engine-panel:has(> .settings-vendor-models) > .settings-engine-panel-actions { grid-column: 1; flex-wrap: wrap; }
+.settings-vendor-models-list { align-items: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.settings-vendor-models-list li > .settings-vendor-model-meta { min-width: 0; }
+.settings-vendor-models-list li > p { grid-column: 1 / -1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.settings-vendor-models-list .settings-vendor-model-meta strong { max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; word-break: normal; }
+.settings-vendor-models-list .settings-vendor-model-meta span { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-vendor-models-list .settings-local-model > .settings-vendor-model-meta,
+.settings-vendor-models-list .settings-local-model > .settings-model-actions { grid-column: 1 / -1; }
+.settings-model-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.settings-model-action { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 32px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap; cursor: pointer; }
+.settings-model-action.is-test { background: #e2f4ef; color: #047857; border-color: #75bea9; }
+.settings-model-action.is-danger { background: #fff0f1; color: #bc303b; border-color: #e3a2a7; }
+.settings-model-action:disabled { opacity: .55; cursor: default; }
+.settings-vendor-models-list .settings-vendor-model-add { grid-template-columns: minmax(0, 1fr); }
+.settings-vendor-model-add .settings-vendor-add-row { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; width: 100%; }
+.settings-vendor-model-add .settings-vendor-add-row input { box-sizing: border-box; width: 100%; }
+.settings-vendor-model-add .settings-panel-save { justify-self: end; }
+.settings-engine-panel.settings-ollama-panel { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; }
+.settings-ollama-heading { flex:1;min-width:0; }
+.settings-ollama-title-row { display:flex;align-items:center;flex-wrap:wrap;gap:10px; }
+.settings-ollama-toggle { border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer; }
+.ollama-service-status { display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:0;border-radius:999px;font:inherit;font-size:12px;cursor:pointer; }
+.ollama-service-status::before { content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none; }
+.ollama-service-status.is-running { color:#087a4b;background:#e2f4e9; }
+.ollama-service-status.is-stopped { color:#a56809;background:#fff0d4; }
+.ollama-service-action { display:none; }
+.ollama-service-status:hover { filter:brightness(.96); }
+.ollama-service-status:disabled { cursor:default; }
+dialog.ollama-service-dialog { grid-template-columns: minmax(0, 1fr); color: var(--text); margin: auto; box-sizing: border-box; }
+dialog.ollama-service-dialog::backdrop { background: #0f172a61; backdrop-filter: blur(2px); }
+.ollama-service-proxy { display: grid; gap: 12px; margin-top: 18px; }
+.ollama-service-proxy > label:first-child { display: flex; align-items: center; gap: 7px; }
+.ollama-service-proxy p { margin: 0; font-size: 12px; color: var(--text-muted); }
+.ollama-service-error { color: var(--danger, #c13b45); font-size: 13px; overflow-wrap: anywhere; }
+.settings-ollama-config { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.settings-ollama-config .settings-vendor-add-row { margin: 0; }
+.settings-ollama-config .settings-engine-field > input { box-sizing: border-box; width: 100%; min-width: 0; }
+.settings-ollama-config .settings-engine-panel-actions { margin: 0; }
+.settings-engine-panel.settings-ollama-panel > .settings-vendor-models { grid-row: auto; padding-left: 20px; border-left: 1px solid var(--border); }
+.settings-ollama-panel .settings-vendor-models-list { align-items: stretch; grid-auto-rows: 1fr; gap: 8px; }
+.settings-ollama-panel .settings-local-model { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 12px; }
+.settings-ollama-panel .settings-vendor-model-meta { width: 100%; }
+.settings-ollama-panel .settings-vendor-model-meta strong { min-height: 2.7em; line-height: 1.35; }
+.settings-ollama-panel .settings-model-actions { margin-top: auto; }
+@container (max-width: 780px) {
+  .settings-engine-panel:has(> .settings-vendor-models) { grid-template-columns: minmax(0, 1fr); }
+  .settings-engine-panel:has(> .settings-vendor-models) > .settings-vendor-models { grid-column: 1; grid-row: auto; }
+  .settings-engine-panel.settings-ollama-panel { grid-template-columns: minmax(0, 1fr); }
+  .settings-engine-panel.settings-ollama-panel > .settings-vendor-models { padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--border); }
+}

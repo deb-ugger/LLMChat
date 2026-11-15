@@ -1,3 +1,4 @@
+import { SearchableSelect } from "./SearchableSelect";
 import { useState } from "react";
 import { classicEngines, engineReady, engineRequiresKey, getEngineInfo, type EngineKeysMap } from "../translateEngines";
 import type { UnityEngineChoice } from "../unityEnginePool";
@@ -18,7 +19,7 @@ export function UnityEngineList({ choices, keys, disabled, expanded, onExpandedC
       </div>;
     })}
     <div className="unity-engine-add">
-      <select aria-label="添加并行翻译引擎" value={adding} onChange={event => setAdding(event.target.value)}><option value="">选择引擎</option>{available.map(engine => <option key={engine.id} value={engine.id}>{engine.label}{engineRequiresKey(engine) ? " · 后备，可能计费" : ""}</option>)}</select>
+      <SearchableSelect disabled={disabled} aria-label="添加并行翻译引擎" placeholder="选择引擎" emptyLabel="没有可添加的引擎" value={adding} onChange={event => setAdding(event.target.value)}>{available.map(engine => <option key={engine.id} value={engine.id}>{engine.label}{engineRequiresKey(engine) ? " · 后备，可能计费" : ""}</option>)}</SearchableSelect>
       <button type="button" className="unity-btn" disabled={!available.some(engine => engine.id === adding)} onClick={() => { const engine = available.find(item => item.id === adding); if (engine) onChange([...choices, { id: engine.id, enabled: true }]); setAdding(""); }}>添加</button>
     </div>
     <p className="hint">每个引擎最多同时处理一个任务；免 Key 引擎并行，该条目在免 Key 引擎均失败后才使用手动加入的后备引擎。凭证在通用设置中配置。</p>

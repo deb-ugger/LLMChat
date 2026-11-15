@@ -2727,7 +2727,7 @@ export function PdfPane({
             type="button"
             className="pdf-tool-btn"
             onClick={() => void openFilePicker()}
-            title="打开 PDF"
+            data-tooltip="打开 PDF" aria-label="打开 PDF"
           >
             打开 PDF
           </button>
@@ -2746,7 +2746,9 @@ export function PdfPane({
                     <button
                       type="button"
                       className="pdf-recent-item"
-                      title={`${item.filePath}${
+                      data-tooltip={`${item.filePath}${
+                        item.pageNumber ? ` · 第 ${item.pageNumber} 页` : ""
+                      }`} aria-label={`${item.filePath}${
                         item.pageNumber ? ` · 第 ${item.pageNumber} 页` : ""
                       }`}
                       onClick={() => void openRecent(item)}
@@ -2764,7 +2766,7 @@ export function PdfPane({
                     <button
                       type="button"
                       className="pdf-recent-remove"
-                      title="从最近列表移除"
+                      data-tooltip="从最近列表移除"
                       aria-label={`移除 ${item.fileName}`}
                       onClick={(e) => {
                         e.preventDefault();
@@ -2781,7 +2783,7 @@ export function PdfPane({
           )}
         </div>
         {fileMeta && (
-          <span className="pdf-file-name" title={fileMeta.filePath}>
+          <span className="pdf-file-name" data-tooltip={fileMeta.filePath}>
             <span className="pdf-recent-kind">{recentKindLabel("pdf")}</span>
             <span className="pdf-file-name-text">{fileMeta.fileName}</span>
           </span>
@@ -2796,13 +2798,13 @@ export function PdfPane({
             setBookmarksOpen(false);
             if (!outlineOpen) setSearchOpen(false);
           }}
-          title="目录"
+          data-tooltip="目录" aria-label="目录"
         >
           目录
         </button>
-        <button type="button" className={`pdf-tool-btn${bookmarksOpen ? " active" : ""}`} disabled={!file} title="书签" onClick={() => { setBookmarksOpen(value => !value); setOutlineOpen(false); setSearchOpen(false); }}>书签</button>
+        <button type="button" className={`pdf-tool-btn${bookmarksOpen ? " active" : ""}`} disabled={!file} data-tooltip="书签" aria-label="书签" onClick={() => { setBookmarksOpen(value => !value); setOutlineOpen(false); setSearchOpen(false); }}>书签</button>
 
-        <span className="pdf-toolbar-engine" title={engineBadge}>
+        <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>
           {engineBadge}
         </span>
         {toolbarExtra}
@@ -2820,7 +2822,7 @@ export function PdfPane({
             if (!searchOpen) setOutlineOpen(false);
             setBookmarksOpen(false);
           }}
-          title="搜索"
+          data-tooltip="搜索"
           aria-label="搜索"
         >
           <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden>
@@ -2836,7 +2838,7 @@ export function PdfPane({
           className="pdf-tool-btn"
           disabled={!file || pageOcrBusy}
           onClick={(event) => void extractCurrentPage(event.shiftKey)}
-          title={`智能提取本页：原生文字优先，无可用文字层时使用${OCR_MODE_LABELS[normalizeOcrMode(ocrMode)]}。Shift+点击强制 OCR；复制结果不包含页码和图片。`}
+          data-tooltip={`智能提取本页：原生文字优先，无可用文字层时使用${OCR_MODE_LABELS[normalizeOcrMode(ocrMode)]}。Shift+点击强制 OCR；复制结果不包含页码和图片。`} aria-label={`智能提取本页：原生文字优先，无可用文字层时使用${OCR_MODE_LABELS[normalizeOcrMode(ocrMode)]}。Shift+点击强制 OCR；复制结果不包含页码和图片。`}
         >
           {pageOcrBusy ? "提取中…" : "提取本页"}
         </button>
@@ -2853,7 +2855,7 @@ export function PdfPane({
               setViewMenuPos({ top: r.bottom + 4, left: r.left });
               setViewMenuOpen((v) => !v);
             }}
-            title={`页面显示模式：${VIEW_OPTIONS.find((option) => option.id === viewMode)?.label || "视图"}`}
+            data-tooltip={`页面显示模式：${VIEW_OPTIONS.find((option) => option.id === viewMode)?.label || "视图"}`}
             aria-label="切换页面显示模式"
           >
             <ViewModeIcon mode={viewMode} />
@@ -2897,7 +2899,7 @@ export function PdfPane({
           className={`pdf-tool-btn pdf-tool-icon-btn pdf-toolbar-glyph-btn${handMode ? " active" : ""}`}
           disabled={!file}
           onClick={() => setHandMode((v) => !v)}
-          title="拖动手势（也可按住 Alt 拖动）"
+          data-tooltip="拖动手势（也可按住 Alt 拖动）"
           aria-label="拖动手势"
         >
           <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden>
@@ -2909,7 +2911,7 @@ export function PdfPane({
         </button>
 
           {pageOcrStatus ? (
-            <span className="pdf-page-ocr-status" title={pageOcrStatus}>
+            <span className="pdf-page-ocr-status" data-tooltip={pageOcrStatus}>
               {pageOcrStatus}
             </span>
           ) : null}
@@ -2922,7 +2924,7 @@ export function PdfPane({
           className="pdf-tool-btn pdf-tool-icon-btn pdf-tool-round-btn"
           disabled={!file || pageNumber <= 1}
           onClick={() => goToPage(pageNumber - pageStep)}
-          title="上一页"
+          data-tooltip="上一页"
           aria-label="上一页"
         >
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
@@ -2938,7 +2940,7 @@ export function PdfPane({
         </button>
         <span
           className="pdf-page-label"
-          title={
+          data-tooltip={
             currentPageLabel
               ? `书籍页码 ${currentPageLabel} · PDF 第 ${pageNumber} / ${numPages || "?"} 页`
               : "输入 PDF 页序（正整数）后回车"
@@ -2973,7 +2975,7 @@ export function PdfPane({
           className="pdf-tool-btn pdf-tool-icon-btn pdf-tool-round-btn"
           disabled={!file || !numPages || pageNumber >= numPages}
           onClick={() => goToPage(pageNumber + pageStep)}
-          title="下一页"
+          data-tooltip="下一页"
           aria-label="下一页"
         >
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
@@ -2994,7 +2996,7 @@ export function PdfPane({
           type="button"
           className="pdf-tool-btn pdf-tool-round-btn"
           onClick={() => changeScale((s) => s - SCALE_STEP)}
-          title="缩小"
+          data-tooltip="缩小"
           aria-label="缩小"
         >
           −
@@ -3014,7 +3016,7 @@ export function PdfPane({
                 e.currentTarget.blur();
               }
             }}
-            title="自定义缩放百分比"
+            data-tooltip="自定义缩放百分比"
           />
           %
         </span>
@@ -3022,7 +3024,7 @@ export function PdfPane({
           type="button"
           className="pdf-tool-btn pdf-tool-round-btn"
           onClick={() => changeScale((s) => s + SCALE_STEP)}
-          title="放大"
+          data-tooltip="放大"
           aria-label="放大"
         >
           +
@@ -3034,7 +3036,7 @@ export function PdfPane({
       <div className="pdf-main">
         {bookmarksOpen && fileMeta && !docLoading && <aside className="pdf-outline" style={{ width: outlineWidth }}>
           <PdfBookmarksPanel key={contentHashRef.current || fileMeta.filePath} documentKey={contentHashRef.current || fileMeta.filePath} page={pageNumber} label={currentPageLabel || String(pageNumber)} onJump={goToPage} />
-          <div className="col-resizer pdf-outline-resizer" title="拖动调整书签宽度" onMouseDown={event => beginOutlineResize(event, "grow-right")} />
+          <div className="col-resizer pdf-outline-resizer" data-tooltip="拖动调整书签宽度" onMouseDown={event => beginOutlineResize(event, "grow-right")} />
         </aside>}
         {outlineOpen && (
           <aside className="pdf-outline" style={{ width: outlineWidth }}>
@@ -3048,7 +3050,7 @@ export function PdfPane({
             </div>
             <div
               className="col-resizer pdf-outline-resizer"
-              title="拖动调整目录宽度"
+              data-tooltip="拖动调整目录宽度"
               onMouseDown={(e) => beginOutlineResize(e, "grow-right")}
             />
           </aside>
@@ -3095,7 +3097,7 @@ export function PdfPane({
                       type="button"
                       className="pdf-outline-item pdf-search-hit"
                       onClick={() => jumpToSearchHit(hit)}
-                      title={`第 ${hit.page} 页`}
+                      data-tooltip={`第 ${hit.page} 页`} aria-label={`第 ${hit.page} 页`}
                     >
                       <span className="pdf-search-page">p.{hit.page}</span>
                       <span
@@ -3111,7 +3113,7 @@ export function PdfPane({
             </div>
             <div
               className="col-resizer pdf-outline-resizer"
-              title="拖动调整面板宽度"
+              data-tooltip="拖动调整面板宽度"
               onMouseDown={(e) => beginOutlineResize(e, "grow-right")}
             />
           </aside>

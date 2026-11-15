@@ -693,7 +693,11 @@ export function LiteratureView({
         type="button"
         className={"pdf-tool-btn" + (promptMenuOpen ? " is-active" : "")}
         disabled={!usesLlm}
-        title={
+        data-tooltip={
+          usesLlm
+            ? `提示词：${activeTag}`
+            : "切换为「大模型翻译」后可使用提示词"
+        } aria-label={
           usesLlm
             ? `提示词：${activeTag}`
             : "切换为「大模型翻译」后可使用提示词"
@@ -805,7 +809,7 @@ export function LiteratureView({
       </div>
       <div
         className={`col-resizer col-resizer-panel${panelHidden ? " is-collapsed" : ""}`}
-        title={panelHidden ? "" : "拖动调整译文面板宽度"}
+        data-tooltip={panelHidden ? "" : "拖动调整译文面板宽度"}
         onMouseDown={
           panelHidden
             ? undefined
@@ -817,7 +821,7 @@ export function LiteratureView({
           className="translate-panel-toggle"
           aria-label={panelHidden ? "显示翻译侧边栏" : "隐藏翻译侧边栏"}
           aria-expanded={!panelHidden}
-          title={panelHidden ? "显示翻译侧边栏" : "隐藏翻译侧边栏"}
+          data-tooltip={panelHidden ? "显示翻译侧边栏" : "隐藏翻译侧边栏"}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setPanelHidden((hidden) => !hidden)}
         >

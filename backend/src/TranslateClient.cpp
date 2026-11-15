@@ -2442,7 +2442,7 @@ TranslateResult TranslateClient::translateWithLlm(
             if (gloss.is_array() && !gloss.empty())
             {
                 std::ostringstream oss;
-                oss << "\n\nGlossary (use these translations consistently):\n";
+                bool hasMatchedTerm = false;
                 for (const auto& item : gloss)
                 {
                     if (!item.is_object())
@@ -2454,6 +2454,12 @@ TranslateResult TranslateClient::translateWithLlm(
                         continue;
                     if (item.contains("enabled") && !item.value("enabled", true))
                         continue;
+                    if (text.find(gSrc) == std::string::npos && contextJson.find(gSrc) == std::string::npos)
+                        continue;
+                    if (!hasMatchedTerm) {
+                        oss << "\n\nGlossary (use these translations consistently):\n";
+                        hasMatchedTerm = true;
+                    }
                     oss << "- " << gSrc << " => " << gDst;
                     if (!info.empty())
                         oss << " (" << info << ")";
@@ -2506,15 +2512,25 @@ TranslateResult TranslateClient::translateWithLlm(
     req.apiKey = apiKey;
     req.model = model;
     req.messages = messages;
+    req.proxyMode = proxyMode;
+    req.httpProxy = httpProxy;
+    req.requireComplete = true;
 
     const LlmResponse llm = LlmClient::chat(req);
     result.externalCall = llm.externalCall;
+    result.promptTokens = llm.promptTokens;
+    result.completionTokens = llm.completionTokens;
+    result.totalTokens = llm.totalTokens;
+    result.cacheReadTokens = llm.cacheReadTokens;
+    result.cacheWriteTokens = llm.cacheWriteTokens;
     if (!llm.ok)
     {
         const std::string en =
             llm.error.empty() ? "LLM request failed" : llm.error;
         const std::string low = toLower(llm.error);
-        if (low.find("401") != std::string::npos || low.find("unauthorized") != std::string::npos)
+        if (!llm.errorCode.empty())
+            result.error = en;
+        else if (low.find("401") != std::string::npos || low.find("unauthorized") != std::string::npos)
             result.error = withZhHint(en, "大模型认证失败，请检查 API Key");
         else if (low.find("429") != std::string::npos)
             result.error = withZhHint(en, "大模型额度不足或请求过频");
@@ -2530,16 +2546,11 @@ TranslateResult TranslateClient::translateWithLlm(
             result.error = en;
         else
             result.error = withZhHint(en, "大模型接口调用失败，请检查 API URL、密钥与模型");
-        result.code = llm.externalCall ? "ERROR" : "CONFIG_ERROR";
+        result.code = llm.errorCode.empty() ? (llm.externalCall ? "ERROR" : "CONFIG_ERROR") : llm.errorCode;
         return result;
     }
 
     result.translation = llm.content;
-    result.promptTokens = llm.promptTokens;
-    result.completionTokens = llm.completionTokens;
-    result.totalTokens = llm.totalTokens;
-    result.cacheReadTokens = llm.cacheReadTokens;
-    result.cacheWriteTokens = llm.cacheWriteTokens;
     result.ok = true;
     return result;
 }

@@ -31,7 +31,7 @@ function OcrMetrics({ count, milliseconds, text, busy, failed, total = false }: 
   return <span className={`ocr-metrics${total ? " is-total" : ""}`}>
     <span className="ocr-metric"><span>{total ? "累计段数" : "识别段数"}</span><strong>{count}</strong><small>段</small></span>
     <span className="ocr-metric"><span>{total ? "累计用时" : "页面用时"}</span><strong>{(milliseconds / 1000).toFixed(1)}</strong><small>秒</small></span>
-    <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} title={displayText}>
+    <span className={`ocr-metric-state ${failed ? "is-error" : busy ? "is-working" : "is-ready"}`} data-tooltip={displayText}>
       <i aria-hidden="true" />{displayText}
     </span>
   </span>;
@@ -341,7 +341,7 @@ function OcrPageCard({
           {page.label ? ` · ${page.label}` : ""}
         </span>
         <span className="ocr-page-meta">
-          <span className="ocr-image-scale" title="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
+          <span className="ocr-image-scale" data-tooltip="拖拽图片边缘可等比例缩放；双击边缘恢复大小">
             缩放 {Math.round(imageScale * 100)}%
           </span>
           <OcrMetrics count={page.blocks.length} milliseconds={page.elapsedMs ?? 0}
@@ -351,7 +351,7 @@ function OcrPageCard({
             type="button"
             className="ocr-copy-btn ocr-rerun-btn"
             disabled={page.busy}
-            title="使用当前识别模式重新识别此图片"
+            data-tooltip="使用当前识别模式重新识别此图片" aria-label="使用当前识别模式重新识别此图片"
             onClick={(e) => {
               e.stopPropagation();
               onRerun();
@@ -426,7 +426,7 @@ function OcrPageCard({
                 e.stopPropagation();
                 onSelectBlock(b.id, displayedField);
               }}
-              title={b.text}
+              data-tooltip={b.text}
             />
           );
         })}
@@ -437,7 +437,7 @@ function OcrPageCard({
               type="button"
               className={`ocr-image-resize-handle is-${direction}`}
               aria-label="等比例缩放图片"
-              title="拖动以等比例缩放；双击恢复为 100%"
+              data-tooltip="拖动以等比例缩放；双击恢复为 100%"
               onPointerDown={(e) => beginImageResize(e, direction)}
               onDoubleClick={(e) => {
                 e.preventDefault();

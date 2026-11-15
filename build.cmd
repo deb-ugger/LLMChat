@@ -1,5 +1,7 @@
 @echo off
 setlocal
+title LLMChat - Build and update
+rem Use build.cmd -NoLaunch to update without reopening the application.
 where pwsh.exe >nul 2>&1
 if errorlevel 1 (
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build.ps1" %*

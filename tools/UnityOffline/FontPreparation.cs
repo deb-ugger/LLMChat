@@ -61,12 +61,15 @@ public static class FontPreparation
         }
         foreach (var rune in request.ExtraCharacters.EnumerateRunes()) if (!Rune.IsControl(rune) && Rune.GetUnicodeCategory(rune) != System.Globalization.UnicodeCategory.Format) characters.Add(rune.Value);
         var text = string.Concat(characters.Select(char.ConvertFromUtf32));
-        var missing = request.FontPath.Length > 0 ? FontCoverage.Missing(File.ReadAllBytes(request.FontPath), text).ToArray() : [];
+        string[] fontChanges = [];
+        var fontBytes = request.FontPath.Length > 0 ? FontSymbols.Supplement(File.ReadAllBytes(request.FontPath), out fontChanges, text, Path.Combine(project.Folder, "font-supplements"), () => Program.CheckStop(request, project.Folder)) : null;
+        var missing = fontBytes != null ? FontCoverage.Missing(fontBytes, text).ToArray() : [];
         if (missing.Length > 0) {
             var preserved = OriginalFontGlyphs.Codes(project);
             missing = missing.Where(code => !preserved.Contains(code)).ToArray();
         }
         var requirements = Requirements(project.Fonts).ToList();
+        requirements.AddRange(fontChanges);
         if (request.FontPath.Length == 0) requirements.Add("保留游戏原字体；已生成实际字符集，可用于补字或制作图集。");
         if (missing.Length > 0) requirements.Add($"所选字体缺少 {missing.Length} 个字符，不能用于这些文本的完整显示。");
         requirements.Add("动态变量可能生成额外字符，可在补充字符中加入角色名等内容；字符集覆盖不等于游戏排版已验证。");

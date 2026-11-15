@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$Owner = "manual-build-$PID",
-    [string]$Proxy = ''
+    [string]$Proxy = '',
+    [switch]$NoLaunch,
+    [switch]$ForceClose
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -10,6 +12,12 @@ $shell = (Get-Process -Id $PID).Path
 $lockScript = Join-Path $PSScriptRoot 'file-lock.ps1'
 $locked = $false
 $buildResult = 0
+. (Join-Path $PSScriptRoot 'build-incremental.ps1')
+$buildClock = [Diagnostics.Stopwatch]::StartNew()
+$stageClock = [Diagnostics.Stopwatch]::StartNew()
+$stageTimes = [ordered]@{}
+function Complete-BuildStage([string]$Name) { $stageTimes[$Name] = [Math]::Round($stageClock.Elapsed.TotalSeconds,1); $stageClock.Restart() }
+
 
 function Invoke-BuildScript([string]$Name, [string[]]$ScriptArguments = @()) {
     & $shell -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $Name) @ScriptArguments
@@ -42,12 +50,11 @@ try {
         Start-Sleep -Seconds 2
     } while ($true)
 
-    Write-Output '[2/6] Closing this checkout and stopping remaining background processes...'
-    Write-Warning 'Unsaved changes in this checkout may be lost if its window cannot close normally.'
+    Complete-BuildStage 'Lock wait'
+    Write-Output '[2/6] Closing running build outputs...'
     . (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
     $targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $projectRoot 'frontend\src-tauri\target' }
     $processDirectories = @(
-        (Join-Path $projectRoot 'dist-portable'),
         (Join-Path $projectRoot 'backend\build\Release'),
         (Join-Path $projectRoot 'backend\build\Debug'),
         (Join-Path $projectRoot 'frontend\src-tauri\binaries'),
@@ -58,13 +65,39 @@ try {
     $executables = foreach ($directory in $processDirectories) {
         foreach ($name in @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe')) { Join-Path $directory $name }
     }
-    Stop-ProjectProcesses -ExecutablePaths $executables -KillRemaining
+    if ($ForceClose) { Write-Warning 'ForceClose enabled: remaining processes from this checkout may be stopped after normal shutdown is attempted. Unsaved changes may be lost.' }
+    Stop-ProjectProcesses -ExecutablePaths $executables -CloseTimeoutSeconds 60 -KillRemaining:$ForceClose
 
-    Write-Output '[3/6] Building the backend and preparing its sidecar...'
-    Invoke-BuildScript 'prepare-sidecar.ps1'
-    Write-Output '[4/6] Preparing speech decoding tools...'
-    $speechArguments = if ($Proxy) { @('-Proxy', $Proxy) } else { @() }
-    Invoke-BuildScript 'prepare-speech-tools.ps1' $speechArguments
+    Complete-BuildStage 'Close build outputs'
+    Write-Output '[3-4/6] Preparing backend and tools in parallel...'
+    $workers = @()
+    try {
+        foreach ($group in @(@('prepare-sidecar.ps1'), @('prepare-unity-tools.ps1','prepare-speech-tools.ps1','prepare-wolf-tools.ps1'))) {
+            $workers += Start-Job -ArgumentList $shell,$PSScriptRoot,($group -join '|'),$Proxy -ScriptBlock {
+                param($executor,$scripts,$names,$proxy)
+                $ErrorActionPreference = 'Stop'
+                . (Join-Path $scripts 'build-incremental.ps1')
+                foreach ($name in $names.Split('|')) {
+                    $clock = [Diagnostics.Stopwatch]::StartNew()
+                    $arguments = if ($name -eq 'prepare-speech-tools.ps1' -and $proxy) { @('-Proxy',$proxy) } else { @() }
+                    & $executor -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts $name) @arguments
+                    if ($LASTEXITCODE -ne 0) { throw "$name failed (exit $LASTEXITCODE)." }
+                    Write-Output ('{0}: {1:N1}s' -f $name,$clock.Elapsed.TotalSeconds)
+                }
+            }
+        }
+        $remaining = @($workers)
+        while ($remaining.Count) {
+            $finished = Wait-Job -Job $remaining -Any
+            Receive-Job -Job $finished -ErrorAction Stop
+            if ($finished.State -ne 'Completed') { throw "Preparation worker failed: $($finished.JobStateInfo.Reason)" }
+            $remaining = @($remaining | Where-Object Id -ne $finished.Id)
+        }
+    } finally {
+        # Keep the repository lock until native compiler children have finished.
+        if ($workers.Count) { $workers | Wait-Job | Out-Null; $workers | Remove-Job -Force }
+    }
+    Complete-BuildStage 'Parallel backend and tools'
     Write-Output '[5/6] Building the desktop application...'
     $frontend = Join-Path $projectRoot 'frontend'
     $cli = Join-Path $frontend 'node_modules\@tauri-apps\cli\tauri.js'
@@ -79,9 +112,15 @@ try {
         # Defaults used successfully for this checkout's large embedded frontend.
         # Keep explicit caller settings and restore this shell's environment below.
         if ([string]::IsNullOrWhiteSpace($previousRustStack)) { $env:RUST_MIN_STACK = '33554432' }
-        if ([string]::IsNullOrWhiteSpace($previousCargoJobs)) { $env:CARGO_BUILD_JOBS = '1' }
+        if ([string]::IsNullOrWhiteSpace($previousCargoJobs)) { $env:CARGO_BUILD_JOBS = [string](Get-BuildJobs) }
         Write-Output "Rust build settings: CARGO_BUILD_JOBS=$env:CARGO_BUILD_JOBS; RUST_MIN_STACK=$env:RUST_MIN_STACK bytes"
-        & node $cli build --no-bundle
+        # Tool preparation already succeeded in the workers. Direct Tauri builds
+        # retain the full hook declared in tauri.conf.json.
+        New-Item -ItemType Directory -Path $script:BuildCacheRoot -Force | Out-Null
+        $hookConfig = Join-Path $script:BuildCacheRoot 'prepared-tauri.json'
+        $override = @{ build = @{ beforeBuildCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-frontend.ps1' } } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($hookConfig,$override,[Text.UTF8Encoding]::new($false))
+        & node $cli build --no-bundle --config $hookConfig
         if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed; portable files were not replaced.' }
     } finally {
         [Environment]::SetEnvironmentVariable('RUST_MIN_STACK', $previousRustStack, 'Process')
@@ -89,25 +128,46 @@ try {
         Pop-Location
     }
 
+    Complete-BuildStage 'Desktop build'
     Write-Output '[6/6] Updating and verifying the portable application...'
+    if ($ForceClose) {
+        $portableExecutables = @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe') |
+            ForEach-Object { Join-Path (Join-Path $projectRoot 'dist-portable') $_ }
+        Stop-ProjectProcesses -ExecutablePaths $portableExecutables -CloseTimeoutSeconds 20 -KillRemaining
+    }
     Invoke-BuildScript 'make-portable.ps1'
     $pairs = @(
         @((Join-Path $targetRoot 'release\llmchat.exe'), (Join-Path $projectRoot 'dist-portable\llmchat.exe')),
         @((Join-Path $projectRoot 'frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe'), (Join-Path $projectRoot 'dist-portable\llmchat-backend.exe'))
     )
+    $updated = @(Get-Content -LiteralPath (Join-Path $script:BuildCacheRoot 'portable-updated-files.json') -Raw | ConvertFrom-Json)
     foreach ($pair in $pairs) {
+        if ($updated -notcontains $pair[1]) { continue }
         if ((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) {
             throw "Copied program does not match its build: $($pair[1])"
         }
     }
+    Complete-BuildStage 'Portable update and verification'
     Write-Output "Build complete: $(Join-Path $projectRoot 'dist-portable\llmchat.exe')"
 } catch {
     [Console]::Error.WriteLine("Build failed: $($_.Exception.Message)")
     $buildResult = 1
 } finally {
+    foreach ($name in $stageTimes.Keys) { Write-Output ('{0}: {1:N1}s' -f $name,$stageTimes[$name]) }
+    Write-Output ('Total build time: {0:N1}s' -f $buildClock.Elapsed.TotalSeconds)
     if ($locked) {
         $release = Invoke-BuildLock @('release', '-Global', '-Owner', $Owner)
         if ($release.Code -ne 0) { [Console]::Error.WriteLine($release.Output); $buildResult = 1 }
+    }
+}
+if ($buildResult -eq 0 -and !$NoLaunch) {
+    try {
+        $portableDirectory = Join-Path $projectRoot 'dist-portable'
+        Start-Process -FilePath (Join-Path $portableDirectory 'llmchat.exe') -WorkingDirectory $portableDirectory -WindowStyle Normal
+        Write-Output 'Opened the updated portable application.'
+    } catch {
+        [Console]::Error.WriteLine("Build complete, but reopening failed: $($_.Exception.Message)")
+        $buildResult = 1
     }
 }
 exit $buildResult

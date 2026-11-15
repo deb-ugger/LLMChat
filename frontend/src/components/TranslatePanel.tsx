@@ -127,7 +127,7 @@ export function TranslatePanel({
                 className="tr-copy-btn"
                 disabled={!translation.trim()}
                 onClick={() => void onCopy("dst", translation)}
-                title="复制译文"
+                data-tooltip="复制译文" aria-label="复制译文"
               >
                 {copiedKey === "dst" ? "已复制" : "复制文本"}
               </button>
@@ -147,7 +147,7 @@ export function TranslatePanel({
                 className="pdf-tool-btn"
                 disabled={loading || !source.trim()}
                 onClick={onRetranslate}
-                title="根据当前原文重新翻译"
+                data-tooltip="根据当前原文重新翻译" aria-label="根据当前原文重新翻译"
               >
                 重新翻译
               </button>
@@ -159,7 +159,7 @@ export function TranslatePanel({
               className="tr-copy-btn"
               disabled={!source.trim()}
               onClick={() => void onCopy("src", source)}
-              title="复制原文"
+              data-tooltip="复制原文" aria-label="复制原文"
             >
               {copiedKey === "src" ? "已复制" : "复制文本"}
             </button>
@@ -182,7 +182,7 @@ export function TranslatePanel({
                 className="pdf-tool-btn"
                 disabled={!dict?.word?.trim()}
                 onClick={() => void onCopy("word", dict?.word ?? "")}
-                title="复制单词"
+                data-tooltip="复制单词" aria-label="复制单词"
               >
                 {copiedKey === "word" ? "已复制" : "复制单词"}
               </button>
@@ -204,7 +204,7 @@ export function TranslatePanel({
                     type="button"
                     className="phonetic-btn"
                     onClick={() => play(phonetics.usAudio)}
-                    title="美式发音"
+                    data-tooltip="美式发音" aria-label="美式发音"
                   >
                     美 {phonetics.us}
                     {phonetics.usAudio ? " ▶" : ""}
@@ -215,7 +215,7 @@ export function TranslatePanel({
                     type="button"
                     className="phonetic-btn"
                     onClick={() => play(phonetics.ukAudio)}
-                    title="英式发音"
+                    data-tooltip="英式发音" aria-label="英式发音"
                   >
                     英 {phonetics.uk}
                     {phonetics.ukAudio ? " ▶" : ""}

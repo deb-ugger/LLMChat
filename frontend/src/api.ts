@@ -276,6 +276,7 @@ export type TranslateOptions = {
   autoChunk?: boolean;
   /** The Unity engine pool handles fallback and provider concurrency itself. */
   autoFallback?: boolean;
+  localModel?: boolean;
   /** LLM overrides for connection test / per-request */
   apiUrl?: string;
   apiKey?: string;
@@ -330,9 +331,9 @@ async function request<T>(
     const raw =
       (data as { error?: string }).error ?? `HTTP ${res.status}`;
     const err = new Error(toFriendlyError(raw)) as Error & {
-      status?:number;code?: string;
+      status?:number;code?: string;response?: unknown;
     };
-    err.status=res.status;err.code = (data as { code?: string }).code;
+    err.status=res.status;err.code = (data as { code?: string }).code;err.response = data;
     throw err;
   }
   return data as T;
@@ -488,7 +489,7 @@ async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions
           signal?.throwIfAborted();
           const state = await request<{ done: boolean; response?: { status: number; body: TranslateResponse & { error?: string } } }>(`/api/text-requests?taskId=${encodeURIComponent(taskId)}`, init);
           if (state.done && state.response) {
-            if (state.response.status >= 400) throw Object.assign(new Error(state.response.body.error || "文本翻译失败"),{status:state.response.status});
+            if (state.response.status >= 400) throw Object.assign(new Error(state.response.body.error || "文本翻译失败"),{status:state.response.status,code:state.response.body.code,response:state.response.body});
             return state.response.body;
           }
         }
@@ -529,6 +530,18 @@ export const api = {
       method: "DELETE",
     }),
   getSettings: () => request<Settings>("/api/settings"),
+  listOllamaModels: (directory = "", apiUrl = "") => request<string[]>("/api/llm/ollama/models?directory=" + encodeURIComponent(directory) + "&apiUrl=" + encodeURIComponent(apiUrl)),
+  ollamaDirectories: (directory = "") => request<{ directories: string[]; valid?: boolean; error?: string }>("/api/llm/ollama/directories?directory=" + encodeURIComponent(directory)),
+  testOllamaModel: async (apiUrl: string, model: string, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    const taskId = crypto.randomUUID();
+    let cancellationSent = false;
+    const cancel = () => { if (cancellationSent) return; cancellationSent = true; void request("/api/translate/cancel", { method: "POST", body: JSON.stringify({ taskId }) }, 5000).catch(() => {}); };
+    signal.addEventListener("abort", cancel, { once: true });
+    try { return await request<{ok: boolean; content: string}>("/api/llm/ollama/test", { method: "POST", signal, body: JSON.stringify({ apiUrl, model, taskId }) }, 310000); }
+    catch (error) { cancel(); throw error; }
+    finally { signal.removeEventListener("abort", cancel); }
+  },
   saveSettings: (settings: Settings) =>
     request<{
       ok: boolean;

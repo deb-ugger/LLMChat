@@ -15,7 +15,7 @@ export function unityTranslationReadiness(project: UnityProject | null, selected
     imagesComplete, imagesSkipped: !!project?.imagesSkipped,
     imagesReady: !!project && (imagesComplete || !!project.imagesSkipped),
     validImages: validImages.length, totalImages: images.length, missingImages: images.length - validImages.length,
-    hasPatchContent: stats.coverageCompleted > 0 || validImages.length > 0,
+    hasPatchContent: stats.coverageChanged > 0 || validImages.length > 0,
   };
 }
 

@@ -1,4 +1,8 @@
-import { useEffect,useMemo,useRef,useState,type ChangeEvent,type FocusEvent,type ReactNode } from "react";
+import { FeatureIcon } from "./FeatureIcon";
+import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
+import { createPortal } from "react-dom";
+import { OllamaServiceControl } from "./OllamaServiceControl";
+import { useEffect,useLayoutEffect,useMemo,useRef,useState,type ChangeEvent,type FocusEvent,type ReactNode } from "react";
 import {
 api,
 type OcrMode,
@@ -7,6 +11,7 @@ type TranslateOptions,
 type TranslateProvider,
 } from "../api";
 import { toFriendlyError } from "../friendlyError";
+import { open as chooseOllamaDirectory, confirm as confirmTestCost } from "@tauri-apps/plugin-dialog";
 import {
 DEFAULT_LIT_PROMPT_GENERAL,
 GENERAL_PROMPT_ID,
@@ -107,6 +112,7 @@ type Props = {
   onSave: (settings: Settings) => void | Promise<void>;
   onNavigate?: (page: FeaturePage) => void;
   initialTab?: SettingsTab;
+  active?: boolean;
 };
 
 const CUSTOM_MODEL = "__custom__";
@@ -118,7 +124,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   image: "图片文字识别",
   speech: "语音转文字",
   text: "翻译工程",
-  unity: "Unity",
+  unity: "游戏翻译",
   pricing: "计费",
   storage: "存储",
 };
@@ -597,7 +603,7 @@ function ReplaceTable({
                         type="checkbox"
                         className="settings-rule-enable"
                         checked={row.enabled !== false}
-                        title={row.enabled === false ? "启用此术语" : "停用此术语"}
+                        data-tooltip={row.enabled === false ? "启用此术语" : "停用此术语"}
                         aria-label="启用此术语"
                         onChange={(e) => {
                           const next = [...rows];
@@ -646,7 +652,7 @@ function ReplaceTable({
                     <button
                       type="button"
                       className="settings-rule-del"
-                      title="删除此行"
+                      data-tooltip="删除此行"
                       aria-label="删除此行"
                       onClick={() => onChange(rows.filter((_, j) => j !== i))}
                     >
@@ -665,13 +671,22 @@ function ReplaceTable({
   );
 }
 
+function RetainedSettingsTab({active,children}:{active:boolean;children:ReactNode}) {
+  const [visited,setVisited]=useState(active);
+  useEffect(()=>{if(active)setVisited(true);},[active]);
+  return active||visited?<div className="settings-retained-tab" hidden={!active}>{children}</div>:null;
+}
+
 export function SettingsView({
   settings,
   onSave,
   onNavigate,
   initialTab,
+  active = true,
 }: Props) {
+  const settingsBody=useRef<HTMLDivElement>(null),scrollPositions=useRef<Partial<Record<SettingsTab,number>>>({});
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
+  useLayoutEffect(()=>{if(active&&settingsBody.current)settingsBody.current.scrollTop=scrollPositions.current[tab]||0;},[active,tab]);
   const unityPanelRef = useRef<UnitySettingsPanelHandle>(null);
   const pricingPanelRef = useRef<PricingPanelHandle>(null);
   const [pricingScrollbarHost, setPricingScrollbarHost] =
@@ -726,8 +741,126 @@ export function SettingsView({
   const [generalOpen, setGeneralOpen] = useState({
     proxy: true,
     llm: true,
+    local: true,
     engine: true,
   });
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaOpen, setOllamaOpen] = useState(true);
+  const [ollamaDirectory, setOllamaDirectory] = useState(() => localStorage.getItem("llmchat-ollama-directory") || "");
+  const ollamaPathKey = (path: string) => path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const [ollamaDirectories, setOllamaDirectories] = useState<string[]>(() => {
+    let stored: unknown;
+    try { stored = JSON.parse(localStorage.getItem("llmchat-ollama-directories") || "[]"); } catch { stored = []; }
+    const paths = [localStorage.getItem("llmchat-ollama-directory") || "", ...(Array.isArray(stored) ? stored.filter((path): path is string => typeof path === "string") : [])];
+    return [...new Map(paths.filter(path => path.trim()).map(path => [ollamaPathKey(path), path])).values()];
+  });
+  const [ollamaPathBusy, setOllamaPathBusy] = useState(false);
+  const updateOllamaDirectories = (paths: string[], removed = "") => setOllamaDirectories(previous => {
+    const next = [...new Map([...previous.filter(path => !removed || ollamaPathKey(path) !== ollamaPathKey(removed)), ...paths]
+      .map(path => [ollamaPathKey(path), path])).values()];
+    localStorage.setItem("llmchat-ollama-directories", JSON.stringify(next));
+    return next;
+  });
+  const discoverOllamaDirectories = async () => {
+    setOllamaPathBusy(true);
+    try {
+      const result = await api.ollamaDirectories();
+      updateOllamaDirectories(result.directories);
+      notify(result.directories.length ? `找到 ${result.directories.length} 个 Ollama 模型目录` : "常用位置未找到模型目录，请手动选择");
+    } catch (error) { notify(error instanceof Error ? error.message : String(error), false); }
+    finally { setOllamaPathBusy(false); }
+  };
+  useEffect(() => {
+    let active = true;
+    void api.ollamaDirectories().then(result => { if (active) updateOllamaDirectories(result.directories); })
+      .catch(error => { if (active) notify(error instanceof Error ? error.message : String(error), false); });
+    return () => { active = false; };
+  }, []);
+  const validateOllamaDirectory = async (directory: string) => {
+    const path = directory.trim();
+    if (!path) { setOllamaDirectory(""); localStorage.removeItem("llmchat-ollama-directory"); return ""; }
+    setOllamaPathBusy(true);
+    try {
+      const result = await api.ollamaDirectories(path);
+      if (!result.valid) {
+        updateOllamaDirectories([], path);
+        setOllamaDirectory("");
+        localStorage.removeItem("llmchat-ollama-directory");
+        setOllamaModels([]);
+        notify(`${result.error || "目录无效"} 已从候选中移除：${path}`, false);
+        return null;
+      }
+      const canonical = result.directories[0];
+      updateOllamaDirectories([canonical], path);
+      setOllamaDirectory(canonical);
+      localStorage.setItem("llmchat-ollama-directory", canonical);
+      setOllamaModels([]);
+      return canonical;
+    } finally { setOllamaPathBusy(false); }
+  };
+  const selectOllamaDirectory = async (path: string) => {
+    try { await validateOllamaDirectory(path); }
+    catch (error) { notify(error instanceof Error ? error.message : String(error), false); }
+  };
+  const [ollamaUrl, setOllamaUrl] = useState(() => localStorage.getItem("llmchat-ollama-url") || "http://127.0.0.1:11434/v1/chat/completions");
+  const [savedOllamaUrl, setSavedOllamaUrl] = useState(ollamaUrl);
+  const ollamaDirty = ollamaUrl.trim() !== savedOllamaUrl.trim();
+  const isOllamaModel = (model: string) => {
+    const url = profiles[model]?.apiUrl?.trim();
+    return ollamaModels.includes(model) || !!url && (
+      url === ollamaUrl.trim() || url === localStorage.getItem("llmchat-ollama-url") || url.includes(":11434/")
+    );
+  };
+  const ollamaEntries = Object.keys(profiles).filter(model => !vendorOfModel(model, activePresets) && isOllamaModel(model))
+    .sort((a, b) => labelForModelId(a).localeCompare(labelForModelId(b), "zh-CN", { numeric: true }));
+  const validatedOllamaUrl = () => {
+    const value = ollamaUrl.trim();
+    try {
+      const endpoint = new URL(value);
+      if (endpoint.protocol === "http:" || endpoint.protocol === "https:") return value;
+    } catch { /* Report the same actionable message for malformed URLs. */ }
+    throw new Error("请填写完整的 HTTP 或 HTTPS Ollama 服务地址");
+  };
+  const saveOllama = async () => {
+    if (!ollamaDirty || ollamaPathBusy || ollamaBusy) return;
+    try {
+      validatedOllamaUrl();
+      if (await validateOllamaDirectory(ollamaDirectory) === null) return;
+      localStorage.setItem("llmchat-ollama-url", ollamaUrl.trim());
+      const next = { ...profiles };
+      for (const model of ollamaEntries) next[model] = { ...next[model], apiUrl: ollamaUrl.trim() };
+      saveLocalModelProfiles(next); setProfiles(next);
+      setSavedOllamaUrl(ollamaUrl.trim());
+      notify("Ollama 设置已保存");
+    } catch (error) { notify(error instanceof Error ? error.message : String(error), false); }
+  };
+  const [ollamaBusy, setOllamaBusy] = useState(false);
+  const refreshOllama = async () => {
+    setOllamaBusy(true);
+    try {
+      const directory = await validateOllamaDirectory(ollamaDirectory);
+      if (directory === null) return;
+      const models = [...new Set(await api.listOllamaModels(directory, validatedOllamaUrl()))].sort();
+      setOllamaModels(models);
+      const next = { ...profiles };
+      for (const model of models) {
+        if (!vendorOfModel(model, activePresets) && (!next[model]?.apiUrl || isOllamaModel(model))) next[model] = { apiUrl: ollamaUrl.trim(), apiKey: "" };
+      }
+      saveLocalModelProfiles(next); setProfiles(next);
+      localStorage.setItem("llmchat-ollama-url", ollamaUrl.trim());
+      setSavedOllamaUrl(ollamaUrl.trim());
+      notify(models.length ? "已更新 Ollama 模型列表，共 " + models.length + " 个" : "未找到已安装的 Ollama 模型");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), false);
+    } finally { setOllamaBusy(false); }
+  };
+  const testOllamaModels = async () => {
+    const key = "ollama-all";
+    if (!beginTest(key)) return;
+    try {
+      for (const model of ollamaEntries) await testOneModel(model);
+    } finally { endTest(key); }
+  };
   const toggleGeneral = (key: keyof typeof generalOpen) => {
     setGeneralOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -928,8 +1061,8 @@ export function SettingsView({
   const modelConfigured = (model: string) => {
     const vendor = vendorOfModel(model, activePresets);
     if (vendor) return vendorConfigured(vendor);
-    if (model === form.model) return !!(form.apiKey || "").trim();
-    return !!(profiles[model]?.apiKey || "").trim();
+    if (model === form.model) return !!(form.apiUrl || "").trim();
+    return !!(profiles[model]?.apiUrl || "").trim();
   };
 
   const credsForModel = (model: string) => {
@@ -993,8 +1126,6 @@ export function SettingsView({
     prevModelRef.current = settings.model;
     setPickingCustom(false);
     setCustomDraft("");
-    setExpandedModel(null);
-    setExpandedVendor(null);
     const classic =
       next.translateProvider === "llm" ? "bing" : next.translateProvider;
     setLitClassicProvider(classic);
@@ -1310,14 +1441,8 @@ export function SettingsView({
   };
 
   const customModels = useMemo(() => {
-    const presetIds = new Set(activePresets.map((p) => p.model));
-    const fromProfiles = Object.keys(profiles).filter((m) => !presetIds.has(m));
-    const extra =
-      form.model &&
-      !presetIds.has(form.model) &&
-      !fromProfiles.includes(form.model)
-        ? [form.model]
-        : [];
+    const fromProfiles = Object.keys(profiles).filter(model => !vendorOfModel(model, activePresets));
+    const extra = form.model && !vendorOfModel(form.model, activePresets) && !fromProfiles.includes(form.model) ? [form.model] : [];
     return [...new Set([...fromProfiles, ...extra])].sort();
   }, [form.model, profiles, activePresets]);
 
@@ -1481,8 +1606,8 @@ export function SettingsView({
     const nextProfiles = {
       ...profiles,
       [name]: {
-        apiUrl: modelDraft.apiUrl || form.apiUrl,
-        apiKey: modelDraft.apiKey || form.apiKey,
+        apiUrl: modelDraft.apiUrl,
+        apiKey: modelDraft.apiKey,
       },
     };
     setProfiles(nextProfiles);
@@ -1976,8 +2101,7 @@ export function SettingsView({
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), 15000);
     try {
-      await onSave(formRef.current);
-      const creds = credsForVendor(group);
+      const creds = expandedVendor === group ? modelDraft : credsForVendor(group);
       if (!creds.apiUrl.trim()) {
         throw new Error("请先填写 API URL");
       }
@@ -1995,6 +2119,7 @@ export function SettingsView({
         throw new Error("引擎返回空译文");
       }
       const ms = Math.round(performance.now() - t0);
+      notify(group + " 连接正常 · " + ms + " ms");
       setCardTestMsg((m) => ({
         ...m,
         [key]: { ok: true, message: `连接正常 · ${ms} ms` },
@@ -2004,6 +2129,7 @@ export function SettingsView({
       const msg = ac.signal.aborted
         ? "连接超时"
         : toFriendlyError(e, "测试失败");
+      notify(group + " · " + msg, false);
       setCardTestMsg((m) => ({
         ...m,
         [key]: { ok: false, message: `${msg} · ${ms} ms` },
@@ -2022,17 +2148,19 @@ export function SettingsView({
       delete next[key];
       return next;
     });
+    const local = !!profiles[model] && !vendorOfModel(model, activePresets);
+    const ollama = isOllamaModel(model);
     const t0 = performance.now();
     const ac = new AbortController();
-    const timer = window.setTimeout(() => ac.abort(), 15000);
+    const timer = window.setTimeout(() => ac.abort(), ollama ? 310000 : local ? 120000 : 15000);
     try {
-      await onSave(formRef.current);
-      const creds = credsForModel(model);
+      const creds = isOllamaModel(model) ? { apiUrl: ollamaUrl.trim(), apiKey: "" } : expandedModel === model ? modelDraft : credsForModel(model);
       if (!creds.apiUrl.trim()) {
         throw new Error("请先填写 API URL");
       }
-      const res = await settingsTranslate("ping", { signal: ac.signal }, {
+      const res = ollama ? { translation: (await api.testOllamaModel(validatedOllamaUrl(), model, ac.signal)).content } : await settingsTranslate("ping", { signal: ac.signal }, {
         provider: "llm",
+        localModel: local,
         source: "en",
         target: "zh-CN",
         apiUrl: creds.apiUrl,
@@ -2045,15 +2173,17 @@ export function SettingsView({
         throw new Error("引擎返回空译文");
       }
       const ms = Math.round(performance.now() - t0);
+      notify(labelForModelId(model) + " 测试成功 · " + ms + " ms");
       setCardTestMsg((m) => ({
         ...m,
-        [key]: { ok: true, message: `连接正常 · ${ms} ms` },
+        [key]: { ok: true, message: `模型可生成输出 · ${ms} ms` },
       }));
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
       const msg = ac.signal.aborted
-        ? "连接超时"
+        ? ollama ? "模型加载或测试超过 5 分钟，请检查 Ollama 日志和显存占用" : local ? "模型测试超过 120 秒，请检查模型加载和本机资源" : "连接超时"
         : toFriendlyError(e, "测试失败");
+      notify(labelForModelId(model) + " · " + msg, false);
       setCardTestMsg((m) => ({
         ...m,
         [key]: { ok: false, message: `${msg} · ${ms} ms` },
@@ -2064,7 +2194,19 @@ export function SettingsView({
     }
   };
 
+  const confirmBatchTest = async (title: string) => {
+    try {
+      return await confirmTestCost("将使用当前配置发送实际测试请求，可能消耗 API 额度或产生费用。是否继续？", {
+        title, kind: "warning", okLabel: "开始测试", cancelLabel: "取消",
+      });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), false);
+      return false;
+    }
+  };
+
   const testAllModels = async () => {
+    if (isTesting("llm-all") || !await confirmBatchTest("测试全部大模型")) return;
     if (!beginTest("llm-all")) return;
     setTestMsg((m) => ({ ...m, llm: undefined }));
     const vendorGroups = groupModelPresets(activePresets).map((g) => g.group);
@@ -2080,7 +2222,6 @@ export function SettingsView({
         id: m,
       })),
     ];
-    await onSave(formRef.current);
     const total = targets.length;
     let done = 0;
     let ok = 0;
@@ -2201,6 +2342,7 @@ export function SettingsView({
         throw new Error("引擎返回空译文");
       }
       const ms = Math.round(performance.now() - t0);
+      notify((getEngineInfo(engineId)?.label || engineId) + " 测试成功 · " + ms + " ms");
       setCardTestMsg((m) => ({
         ...m,
         [key]: { ok: true, message: `连接正常 · ${ms} ms` },
@@ -2217,6 +2359,7 @@ export function SettingsView({
       ) {
         msg = `${msg}（谷歌翻译在国内通常需要系统代理）`;
       }
+      notify((getEngineInfo(engineId)?.label || engineId) + " · " + msg, false);
       setCardTestMsg((m) => ({
         ...m,
         [key]: { ok: false, message: `${msg} · ${ms} ms` },
@@ -2228,6 +2371,7 @@ export function SettingsView({
   };
 
   const testAllEngines = async () => {
+    if (isTesting("engine-all") || !await confirmBatchTest("测试全部引擎")) return;
     if (!beginTest("engine-all")) return;
     setTestMsg((m) => ({ ...m, lit: undefined }));
     const list = catalogEngines;
@@ -2325,7 +2469,7 @@ export function SettingsView({
         group: "本地模型",
         models: customModels.map((m) => ({
           model: m,
-          label: m,
+          label: labelForModelId(m),
           apiUrl: resolveModelApi(
             m,
             localsWithCurrent(),
@@ -2462,7 +2606,7 @@ export function SettingsView({
     { id: "image", label: "图片文字识别" },
     { id: "speech", label: "语音转文字" },
     { id: "text", label: "翻译工程" },
-    { id: "unity", label: "Unity" },
+    { id: "unity", label: "游戏翻译" },
     { id: "pricing", label: "计费" },
     { id: "storage", label: "存储" },
   ];
@@ -2477,15 +2621,11 @@ export function SettingsView({
 
   return (
     <div className="settings-page">
-      {toast && (
-        <div
-          className={
-            "settings-toast" + (toast.ok ? " is-ok" : " is-fail")
-          }
-          role="status"
-        >
-          {renderToastMessage(toast.message)}
-        </div>
+      {toast && createPortal(
+        <div className={"settings-toast" + (toast.ok ? " is-ok" : " is-fail")} role="status" aria-live="polite">
+          <span className="settings-toast-mark" aria-hidden="true">{toast.ok ? "✓" : "!"}</span>
+          <div>{renderToastMessage(toast.message)}</div>
+        </div>, document.body
       )}
       {ocrUninstallConfirm ? (
         <div
@@ -2517,17 +2657,17 @@ export function SettingsView({
             <div className="ocr-confirm-actions">
               <button
                 type="button"
-                className="ocr-confirm-cancel"
-                onClick={() => setOcrUninstallConfirm(null)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
                 className="ocr-confirm-remove"
                 onClick={() => void uninstallOcrMode(ocrUninstallConfirm.mode)}
               >
                 确认卸载
+              </button>
+              <button
+                type="button"
+                className="ocr-confirm-cancel"
+                onClick={() => setOcrUninstallConfirm(null)}
+              >
+                取消
               </button>
             </div>
           </div>
@@ -2574,7 +2714,7 @@ export function SettingsView({
               .join(" ")}
             onClick={() => selectTab(t.id)}
           >
-            {t.label}
+            <FeatureIcon feature={t.id}/>{t.label}
             {t.priority ? <span className="settings-tab-badge">重要</span> : null}
           </button>
         ))}
@@ -2582,11 +2722,12 @@ export function SettingsView({
 
       <div
         className="settings-tab-body"
+        ref={settingsBody}
+        onScroll={event=>{if(active)scrollPositions.current[tab]=event.currentTarget.scrollTop;}}
         onChange={onSettingsAutoSave}
         onBlur={onSettingsAutoSave}
       >
-        {tab === "general" && (
-          <>
+        <RetainedSettingsTab active={tab === "general"}>{<>
             <div className="settings-priority-banner">
               <strong>通用</strong>
               <span>
@@ -2677,6 +2818,7 @@ export function SettingsView({
                 <button
                   type="button"
                   className="settings-test-btn"
+                  data-tooltip="向每个厂商的一个模型及各自定义模型发送短文本，检查生成是否正常。" aria-label="向每个厂商的一个模型及各自定义模型发送短文本，检查生成是否正常。"
                   disabled={isTesting("llm-all")}
                   onClick={() => void testAllModels()}
                 >
@@ -2754,6 +2896,7 @@ export function SettingsView({
                             <button
                               type="button"
                               className="settings-card-mini-test is-refresh"
+                              data-tooltip="从该厂商接口更新可选模型，保留手动添加的模型；不会下载模型。" aria-label="从该厂商接口更新可选模型，保留手动添加的模型；不会下载模型。"
                               disabled={isTesting(`vendor-refresh:${g.group}`)}
                               onClick={(ev) => {
                                 ev.stopPropagation();
@@ -2767,6 +2910,7 @@ export function SettingsView({
                             <button
                               type="button"
                               className="settings-card-mini-test is-test"
+                              data-tooltip="用该厂商当前模型或列表首个模型发送短文本，检查地址、凭证和生成是否正常。" aria-label="用该厂商当前模型或列表首个模型发送短文本，检查地址、凭证和生成是否正常。"
                               disabled={busy}
                               onClick={(ev) => {
                                 ev.stopPropagation();
@@ -2867,8 +3011,7 @@ export function SettingsView({
                                       </li>
                                     );
                                   })}
-                                </ul>
-                                <div className="settings-vendor-add-row">
+                                  <li className="settings-vendor-model-add"><div className="settings-vendor-add-row" data-tooltip="添加自定义模型 ID 和显示名称">
                                   <input
                                     value={
                                       expandedVendor === g.group
@@ -2906,10 +3049,10 @@ export function SettingsView({
                                   >
                                     添加
                                   </button>
-                                </div>
-                                <p className="hint">
-                                  「更新模型列表」拉取的官方模型不可删除；仅手动添加的模型可删（需确认）。再次更新时会保留手动模型。
-                                </p>
+                                </div></li>
+                                </ul>
+
+
                               </div>
                               <div className="settings-engine-panel-actions">
                                 <button
@@ -2934,8 +3077,47 @@ export function SettingsView({
                       );
                     })}
                 </div>
+              </div>
+                </div>
+              )}
+            </section>
+
+            <section className={"settings-card settings-fold" + (generalOpen.local ? "" : " is-collapsed")}>
+              <div className="settings-card-head settings-fold-head">
+                <button type="button" className="settings-fold-toggle" aria-expanded={generalOpen.local} onClick={() => toggleGeneral("local")}>
+                  <span className="settings-fold-chevron" aria-hidden>{generalOpen.local ? "▾" : "▸"}</span>
+                  <h2>本地大模型</h2>
+                </button>
+              </div>
+              {generalOpen.local && (
+                <div className="settings-fold-body">
+                  <div className="settings-model-groups">
+                    <div className="settings-engine-catalog settings-vendor-catalog">
+                      <div className={`settings-engine-card${ollamaOpen ? " is-open is-span-full" : ""}`}>
+                        <div className="settings-engine-card-top">
+                          <div className="settings-ollama-heading"><div className="settings-ollama-title-row"><button type="button" className="settings-ollama-toggle" onClick={()=>setOllamaOpen(value=>!value)} aria-expanded={ollamaOpen}><span className="settings-engine-card-title"><em className={`settings-engine-badge ${ollamaEntries.length ? "is-ok" : "is-warn"}`}>{ollamaEntries.length ? "已配置" : "未配置"}</em><strong>Ollama</strong></span></button><OllamaServiceControl apiUrl={ollamaUrl.trim()} directory={ollamaDirectory} notify={notify} active={active&&tab==="general"}/></div><span className="settings-engine-card-hint">{ollamaEntries.length} 个模型 · 共用服务地址</span></div>
+                          <button type="button" className="settings-card-mini-test is-refresh" disabled={ollamaBusy || ollamaPathBusy} data-tooltip="从所选目录或服务地址更新可选模型；不会下载或加载模型。" aria-label="从所选目录或服务地址更新可选模型；不会下载或加载模型。" onClick={event => { event.stopPropagation(); void refreshOllama(); }}>{ollamaBusy ? "更新中…" : "更新模型列表"}</button>
+                          <button type="button" className="settings-card-mini-test is-test" disabled={!ollamaEntries.length || isTesting("ollama-all") || ollamaEntries.some(model => isCardTesting("model:" + model))} data-tooltip="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" aria-label="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" onClick={event => { event.stopPropagation(); void testOllamaModels(); }}>{isTesting("ollama-all") ? "测试中…" : "测试全部模型"}</button>
+                        </div>
+                        {ollamaOpen && <div className="settings-engine-panel settings-ollama-panel"><div className="settings-ollama-config">
+                          <div className="settings-engine-field"><span>Ollama 模型目录</span><div className="settings-vendor-add-row"><select className="settings-ollama-directory" aria-label="已发现或记录的 Ollama 模型目录" disabled={ollamaPathBusy || ollamaBusy} value={ollamaDirectories.find(path => ollamaPathKey(path) === ollamaPathKey(ollamaDirectory)) || ""} onChange={async event => { const path = event.currentTarget.value; if (path !== "__manual") { await selectOllamaDirectory(path); return; } try { const selected = await chooseOllamaDirectory({ directory: true, multiple: false, defaultPath: ollamaDirectory || undefined }); if (typeof selected === "string") await selectOllamaDirectory(selected); } catch (error) { notify(error instanceof Error ? error.message : String(error), false); } }}><option value="__manual">手动选择目录…</option><option value="">不指定目录（读取服务）</option>{ollamaDirectories.map(path => <option key={ollamaPathKey(path)} value={path}>{path}</option>)}</select><button type="button" className="settings-panel-cancel" disabled={ollamaPathBusy || ollamaBusy} onClick={() => void discoverOllamaDirectories()}>{ollamaPathBusy ? "正在验证…" : "自动搜索"}</button></div></div>
+                          <label className="settings-engine-field">服务地址<input value={ollamaUrl} onChange={event => setOllamaUrl(event.target.value)} placeholder="http://127.0.0.1:11434/v1/chat/completions" /></label>
+                          <div className="settings-engine-panel-actions"><button type="button" className="settings-panel-save" disabled={!ollamaDirty || ollamaPathBusy || ollamaBusy} onClick={() => void saveOllama()}>保存设置</button></div>
+                          </div><div className="settings-vendor-models"><div className="settings-vendor-models-title">可用模型</div><ul className="settings-vendor-models-list">{ollamaEntries.map(model => <li key={model} className="settings-local-model" data-tooltip={model}>
+                            <div className="settings-vendor-model-meta"><strong>{labelForModelId(model)}</strong>{labelForModelId(model) !== model && <span>{model}</span>}</div>
+                            <div className="settings-model-actions">
+                              <button type="button" className="settings-model-action is-test" data-tooltip="按模型能力测试短文本或图片；关闭思考，限制输出，测试后释放模型。首次加载最多等待 5 分钟。" aria-label="按模型能力测试短文本或图片；关闭思考，限制输出，测试后释放模型。首次加载最多等待 5 分钟。" disabled={isTesting("ollama-all") || isCardTesting("model:" + model)} onClick={event => { event.stopPropagation(); void testOneModel(model); }}>{isCardTesting("model:" + model) ? "测试中…" : "测试模型"}</button>
+                              <button type="button" className="settings-model-action is-danger" data-tooltip="从软件配置移除模型，保留 Ollama 中的模型文件" aria-label="从软件配置移除模型，保留 Ollama 中的模型文件" onClick={event => { event.stopPropagation(); void deleteLocalModel(model); }}>移除</button>
+                            </div>
+                            {cardTestMsg["model:" + model] && <p className={cardTestMsg["model:" + model].ok ? "settings-card-test-ok" : "settings-card-test-fail"}>{cardTestMsg["model:" + model].message}</p>}
+                          </li>)}</ul></div>
+                        </div>}
+                      </div>
+                    </div>
                 {modelGroups
                   .filter((g) => g.group === "本地模型")
+                  .map(g => ({ ...g, models: g.models.filter(model => !isOllamaModel(model.model)) }))
+                  .filter(g => g.models.length > 0)
                   .map((g) => (
                     <div key={g.group} className="settings-model-group is-flat">
                       <div className="settings-model-group-title">
@@ -2984,6 +3166,7 @@ export function SettingsView({
                                 <button
                                   type="button"
                                   className="settings-card-mini-test is-test"
+                                  data-tooltip="向此模型发送短文本，检查接口和生成是否正常；最多等待 120 秒。" aria-label="向此模型发送短文本，检查接口和生成是否正常；最多等待 120 秒。"
                                   disabled={busy}
                                   onClick={(ev) => {
                                     ev.stopPropagation();
@@ -3046,19 +3229,19 @@ export function SettingsView({
                                     </button>
                                     <button
                                       type="button"
-                                      className="settings-panel-cancel"
-                                      onClick={cancelPanel}
-                                    >
-                                      取消
-                                    </button>
-                                    <button
-                                      type="button"
                                       className="settings-panel-delete"
                                       onClick={() =>
                                         void deleteLocalModel(p.model)
                                       }
                                     >
                                       删除
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="settings-panel-cancel"
+                                      onClick={cancelPanel}
+                                    >
+                                      取消
                                     </button>
                                   </div>
                                 </div>
@@ -3098,14 +3281,14 @@ export function SettingsView({
                           setExpandedVendor(null);
                           setExpandedEngine(null);
                           setModelDraft({
-                            apiUrl: form.apiUrl,
-                            apiKey: form.apiKey,
+                            apiUrl: "",
+                            apiKey: "",
                           });
                           setPanelSnap({
                             kind: "model",
                             id: CUSTOM_MODEL,
-                            apiUrl: form.apiUrl,
-                            apiKey: form.apiKey,
+                            apiUrl: "",
+                            apiKey: "",
                           });
                           window.setTimeout(
                             () => customInputRef.current?.focus(),
@@ -3227,6 +3410,7 @@ export function SettingsView({
                 <button
                   type="button"
                   className="settings-test-btn"
+                  data-tooltip="使用当前配置向各翻译引擎发送短文本，检查翻译是否正常。" aria-label="使用当前配置向各翻译引擎发送短文本，检查翻译是否正常。"
                   disabled={isTesting("engine-all")}
                   onClick={() => void testAllEngines()}
                 >
@@ -3288,6 +3472,7 @@ export function SettingsView({
                         <button
                           type="button"
                           className="settings-card-mini-test"
+                          data-tooltip="使用当前配置向此引擎发送短文本，检查翻译是否正常。" aria-label="使用当前配置向此引擎发送短文本，检查翻译是否正常。"
                           disabled={busy}
                           onClick={(ev) => {
                             ev.stopPropagation();
@@ -3363,11 +3548,9 @@ export function SettingsView({
                 </div>
               )}
             </section>
-          </>
-        )}
+          </>}</RetainedSettingsTab>
 
-        {tab === "chat" && (
-          <section className="settings-card">
+        <RetainedSettingsTab active={tab === "chat"}>{<section className="settings-card">
             <div className="settings-card-head">
               <h2>对话</h2>
               <button
@@ -3427,11 +3610,9 @@ export function SettingsView({
             <p className="hint">
               当前 API：{form.apiUrl || "（未配置）"}
             </p>
-          </section>
-        )}
+          </section>}</RetainedSettingsTab>
 
-        {tab === "literature" && (
-          <>
+        <RetainedSettingsTab active={tab === "literature"}>{<>
             <section className="settings-card">
               <h2>文献翻译</h2>
               <OutputDirectoryField module="literature" label="图片导出目录" />
@@ -3693,11 +3874,9 @@ export function SettingsView({
               </ModePanel>
               </div>
             </section>
-          </>
-        )}
+          </>}</RetainedSettingsTab>
 
-        {tab === "image" && (
-          <>
+        <RetainedSettingsTab active={tab === "image"}>{<>
             <section className="settings-card">
               <OcrModeTable context="image" selectedMode={form.imageOcrMode}
                 status={ocrModelStatus} busy={ocrModelBusy} error={ocrStatusError}
@@ -3872,11 +4051,9 @@ export function SettingsView({
               </ModePanel>
               </div>
             </section>
-          </>
-        )}
+          </>}</RetainedSettingsTab>
 
-        {tab === "text" && (
-          <>
+        <RetainedSettingsTab active={tab === "text"}>{<>
             <TextOutputSettings />
 
             <section className="settings-card">
@@ -4152,29 +4329,25 @@ export function SettingsView({
                 if (rows.length !== postRows.length) autoSaveTab(next);
               }}
             />
-          </>
-        )}
-        {tab === "unity" && (
+          </>}</RetainedSettingsTab>
+        <RetainedSettingsTab active={tab === "unity"}>{<><GamePromptPoolPanel notify={notify}/>
           <UnitySettingsPanel
             ref={unityPanelRef}
-            active={tab === "unity"}
+            active={active && tab === "unity"}
             notify={notify}
             onTargetChange={setUnityTarget}
             onDirtyChange={setUnityDirty}
-          />
-        )}
-        {tab === "pricing" && (
-          <PricingPanel
+          /></>}</RetainedSettingsTab>
+        <RetainedSettingsTab active={tab === "pricing"}>{<PricingPanel
             ref={pricingPanelRef}
-            active={tab === "pricing"}
+            active={active && tab === "pricing"}
             vendorModelsOverride={vendorModelsOverride}
             scrollbarHost={pricingScrollbarHost}
             notify={notify}
             onDirtyChange={setPricingDirty}
-          />
-        )}
-        {tab === "speech" && <SpeechModelPanel />}
-        <StoragePanel active={tab === "storage"} />
+          />}</RetainedSettingsTab>
+        <RetainedSettingsTab active={tab === "speech"}>{<SpeechModelPanel />}</RetainedSettingsTab>
+        <StoragePanel active={active && tab === "storage"} />
       </div>
 
       {tab === "pricing" ? (
@@ -4228,7 +4401,11 @@ export function SettingsView({
             disabled={
               saving || !currentPageDirty
             }
-            title={
+            data-tooltip={
+              !currentPageDirty
+                ? `${TAB_LABELS[tab]}无修改，无需保存`
+                : undefined
+            } aria-label={
               !currentPageDirty
                 ? `${TAB_LABELS[tab]}无修改，无需保存`
                 : undefined

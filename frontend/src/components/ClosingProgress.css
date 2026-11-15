@@ -2,6 +2,8 @@
 .closing-progress::backdrop { background: #17243a66; }
 .closing-progress h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 18px; }
 .closing-progress p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.closing-progress-actions { display:flex; justify-content:flex-end; margin-top:16px; }
+.closing-progress-actions button { border:1px solid #cf8585; border-radius:5px; padding:7px 12px; background:#fff0f0; color:#a52d2d; font:inherit; cursor:pointer; }
 .closing-progress-spinner { width: 18px; height: 18px; flex: none; border: 2px solid var(--border,#d6dfe9); border-top-color: var(--accent,#326df0); border-radius: 50%; animation: closing-progress-spin .9s linear infinite; }
 @keyframes closing-progress-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .closing-progress-spinner { animation: none; } }

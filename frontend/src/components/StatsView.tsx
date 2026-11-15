@@ -907,7 +907,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
           className="stats-seg"
           role="group"
           aria-label="货币"
-          title="按厂商计费货币筛选，不做汇率换算"
+          data-tooltip="按厂商计费货币筛选，不做汇率换算"
         >
           <button
             type="button"
@@ -1152,7 +1152,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 <th>时段</th>
                 <th>Tokens</th>
                 <th>费用</th>
-                <th title="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
+                <th data-tooltip="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
                 <th>备注</th>
               </tr>
             </thead>
@@ -1237,7 +1237,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                       <td className="stats-mono">{ev.sourceChars ?? 0}</td>
                       <td
                         className="stats-reason"
-                        title={remark === "—" ? undefined : remark}
+                        data-tooltip={remark === "—" ? undefined : remark}
                       >
                         <span className="stats-reason-text">{remark}</span>
                       </td>

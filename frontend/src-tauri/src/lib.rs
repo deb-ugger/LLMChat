@@ -1,6 +1,8 @@
+mod build_close;
 use std::io::Cursor;
 mod speech;
 mod unity_offline;
+mod ollama;
 use std::sync::{Mutex, OnceLock};
 use std::io::Write;
 
@@ -30,13 +32,17 @@ use tauri_plugin_shell::ShellExt;
 struct BackendChild(Mutex<Option<CommandChild>>);
 
 fn start_backend(app: &AppHandle) -> Result<(), String> {
+    let parent_pid = std::process::id().to_string();
     let sidecar = app
         .shell()
         .sidecar("llmchat-backend")
         .map_err(|e| e.to_string())?
-        .args(["--serve"]);
+        .args(["--serve", "--parent-pid", parent_pid.as_str()]);
 
     let (mut rx, child) = sidecar.spawn().map_err(|e| e.to_string())?;
+    let backend_pid = child.pid();
+    let backend_started = std::time::Instant::now();
+    let _ = runtime_log("backend-started", &format!("backend_pid={backend_pid}; parent_pid={parent_pid}"));
 
     {
         let state = app.state::<BackendChild>();
@@ -51,12 +57,15 @@ fn start_backend(app: &AppHandle) -> Result<(), String> {
                 }
                 CommandEvent::Stderr(line) => {
                     eprintln!("[backend] {}", String::from_utf8_lossy(&line));
+                    let _ = runtime_log("backend-stderr", &format!("backend_pid={backend_pid}; {}", String::from_utf8_lossy(&line)));
                 }
                 CommandEvent::Error(err) => {
                     eprintln!("[backend error] {err}");
+                    let _ = runtime_log("backend-process-error", &format!("backend_pid={backend_pid}; {err}"));
                 }
                 CommandEvent::Terminated(payload) => {
-                    let _ = runtime_log("backend-terminated", &format!("{payload:?}"));
+                    let code_hex = payload.code.map(|code| format!("0x{:08X}", code as u32));
+                    let _ = runtime_log("backend-terminated", &format!("backend_pid={backend_pid}; lifetime_ms={}; code_hex={code_hex:?}; {payload:?}", backend_started.elapsed().as_millis()));
                     println!("[backend] terminated: {payload:?}");
                     break;
                 }
@@ -68,18 +77,23 @@ fn start_backend(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn stop_backend(app: &AppHandle) {
+fn stop_backend(app: &AppHandle) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let _ = runtime_log("backend-stop-begin", "Acquiring owned backend handle");
     let state = app.state::<BackendChild>();
-    let child = {
-        let mut guard = state.0.lock().unwrap();
-        guard.take()
-    };
+    let child = state.0.lock().map_err(|error| error.to_string())?.take();
     if let Some(child) = child {
         let pid = child.pid();
-        if let Err(error) = child.kill() {
-            eprintln!("[backend] failed to stop process {pid}: {error}");
-        }
+        let _ = runtime_log("backend-stop-kill", &format!("backend_pid={pid}; elapsed_ms={}", started.elapsed().as_millis()));
+        child.kill().map_err(|error| {
+            let message = format!("停止后端进程 {pid} 失败：{error}");
+            let _ = runtime_log("backend-stop-error", &message);
+            message
+        })?;
+        let _ = runtime_log("backend-stop-requested", &format!("Termination requested for owned sidecar {pid}"));
     }
+    let _ = runtime_log("backend-stop-complete", &format!("elapsed_ms={}", started.elapsed().as_millis()));
+    Ok(())
 }
 
 fn is_image_path(path: &str) -> bool {
@@ -177,6 +191,75 @@ async fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+fn exit_after_close_cleanup() -> ! {
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn TerminateProcess(process: *mut std::ffi::c_void, exit_code: u32) -> i32;
+        }
+        // Terminate only this process, whose save guards have completed.
+        // ExitProcess can itself wait on a stalled DLL teardown thread.
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+    std::process::exit(0);
+}
+
+// WebView teardown can stall after all save guards and backend cleanup finish.
+// This thread must not depend on the event loop or the runtime log mutex.
+fn arm_close_watchdog() {
+    static WATCHDOG: OnceLock<()> = OnceLock::new();
+    WATCHDOG.get_or_init(|| {
+        let directory = LOG_DIRECTORY.get().cloned();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            // Use a separate file so a stalled runtime logger cannot block exit.
+            if let Some(directory) = directory {
+                let path = directory.join(format!("shutdown-timeout-{}.log", std::process::id()));
+                let _ = std::fs::write(path, serde_json::json!({
+                    "time": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|value| value.as_millis()),
+                    "pid": std::process::id(), "kind": "shutdown-timeout",
+                    "message": "Save guards and backend stop completed; window/event-loop teardown exceeded 5000 ms; terminating own process"
+                }).to_string());
+            }
+            exit_after_close_cleanup();
+        });
+    });
+}
+
+/// Called only after the frontend has finished its save/cancel close guards.
+#[tauri::command]
+async fn finish_app_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    let _ = runtime_log("shutdown-native-begin", &format!("window={}; frontend close guards accepted", window.label()));
+    stop_backend(window.app_handle())?;
+    arm_close_watchdog();
+    let _ = runtime_log("shutdown-request", "Save guards completed and backend stopped; closing window with a 5-second teardown deadline");
+    window.destroy().map_err(|error| {
+        // Tao maps PostMessageW failure to a generic runtime error. Capture the
+        // thread-local Windows error before logging or any other OS operation.
+        let native_error = std::io::Error::last_os_error();
+        let mut windows: Vec<_> = window.app_handle().webview_windows().into_keys().collect();
+        windows.sort();
+        let detail = format!(
+            "window={}; thread={:?}; runtime_error={error:?}; last_os_error_code={:?}; last_os_error={native_error}; registered_windows={windows:?}",
+            window.label(), std::thread::current().id(), native_error.raw_os_error()
+        );
+        let _ = runtime_log("shutdown-destroy-error", &detail);
+        #[cfg(windows)]
+        if native_error.raw_os_error() == Some(1400)
+            && matches!(&error, tauri::Error::Runtime(_))
+        {
+            // The event-loop target is invalid, so waiting cannot deliver Destroy.
+            let _ = runtime_log("shutdown-invalid-window-handle", "Save guards passed and backend stop was requested; exiting after failed window dispatch");
+            exit_after_close_cleanup();
+        }
+        error.to_string()
+    })?;
+    let _ = runtime_log("shutdown-destroy-queued", "Window destruction queued; waiting for Destroyed and Exit events");
+    Ok(())
+}
+
 /// File metadata for path-based document sessions (size + mtime ms).
 #[tauri::command]
 fn file_stat(path: String) -> Result<(u64, u64), String> {
@@ -207,12 +290,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(BackendChild(Mutex::new(None)))
+        .manage(ollama::OllamaChild::default())
         .invoke_handler(tauri::generate_handler![
+            ollama::ollama_service_status,
+            ollama::ollama_service_start,
+            ollama::ollama_service_stop,
             clipboard_read_image_png,
             write_file_bytes,
             read_file_bytes,
             file_stat,
             write_runtime_log,
+            finish_app_close,
             unity_offline::unity_offline_run,
             unity_offline::unity_offline_stop,
             speech::speech_environment,
@@ -236,7 +324,7 @@ pub fn run() {
             }
             let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
             let _ = LOG_DIRECTORY.set(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?).join("logs"));
-            let _ = runtime_log("startup", "LLMChat started");
+            let _ = runtime_log("startup", &format!("LLMChat started; version={}; executable={:?}; logs={:?}", env!("CARGO_PKG_VERSION"), std::env::current_exe().ok(), LOG_DIRECTORY.get()));
             app.manage(speech::SpeechStorage(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?)));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
             start_backend(app.handle()).map_err(std::io::Error::other)?;
@@ -245,21 +333,27 @@ pub fn run() {
             tauri::WebviewWindowBuilder::from_config(app, &config)?
                 .data_directory(std::path::PathBuf::from(profile))
                 .build()?;
+            build_close::install(app.handle())?;
             Ok(())
         })
         .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             match event {
-                RunEvent::WindowEvent { event: WindowEvent::Destroyed, .. }
-                    if app_handle.webview_windows().is_empty() =>
-                {
-                    // A closed window must not leave a headless event loop and sidecar.
-                    // Destroyed runs only after the frontend's save/cancel close handler.
-                    stop_backend(app_handle);
-                    app_handle.exit(0);
+                RunEvent::WindowEvent { label, event: WindowEvent::CloseRequested { .. }, .. } => {
+                    let _ = runtime_log("shutdown-native-close-requested", &format!("window={label}; event_loop_thread={:?}", std::thread::current().id()));
                 }
-                RunEvent::Exit => { let _ = runtime_log("shutdown", "Normal event-loop exit"); stop_backend(app_handle); },
+                RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
+                    let mut windows: Vec<_> = app_handle.webview_windows().into_keys().collect();
+                    windows.sort();
+                    let _ = runtime_log("shutdown-window-destroyed", &format!("window={label}; event_loop_thread={:?}; remaining_windows={windows:?}", std::thread::current().id()));
+                    if windows.is_empty() {
+                        let _ = stop_backend(app_handle);
+                        app_handle.exit(0);
+                    }
+                }
+                RunEvent::ExitRequested { code, .. } => { let _ = runtime_log("shutdown-exit-requested", &format!("code={code:?}")); },
+                RunEvent::Exit => { let _ = runtime_log("shutdown", "Normal event-loop exit"); let _ = stop_backend(app_handle); },
                 _ => {}
             }
         });

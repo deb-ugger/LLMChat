@@ -14,7 +14,7 @@ export function UnityProjectLoading({ project, path, detail }: { project: string
       <span className="unity-project-loading-spinner" aria-hidden="true" />
       <h2 id="unity-project-loading-title">正在加载 {project}</h2>
       <p id="unity-project-loading-detail">{detail}</p>
-      <p className="unity-project-loading-path">{path}</p>
+      <p className="unity-project-loading-path" data-tooltip={path}>{path}</p>
     </div>
   </dialog>, document.body);
 }

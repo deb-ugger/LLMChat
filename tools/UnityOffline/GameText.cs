@@ -15,11 +15,15 @@ public static class GameText
     public static bool Visible(string field, string value, int maximum = 16000)
     {
         if (!Program.TextCandidate(value, maximum) || TechnicalField.IsMatch(field) || IsTypeIdentity(value)) return false;
-        if (Regex.IsMatch(value.Trim(), @"^(?:[\w.-]+[/\\])+[\w .-]+$|^\d+(?:\.\d+)*[abfp]\d+$")) return false;
+        // Display names and prompts can contain slashes; technical fields are
+        // excluded above. Restrict the generic path heuristic to ASCII paths.
+        if (Regex.IsMatch(value.Trim(), @"^(?:[a-zA-Z0-9_.-]+[/\\])+[a-zA-Z0-9_ .-]+$|^\d+(?:\.\d+)*[abfp]\d+$")) return false;
         if (Regex.IsMatch(value, "[ぁ-ゖァ-ヺ一-鿿가-힣]")) return true;
         return TextField.IsMatch(field) || !Regex.IsMatch(value.Trim(), @"^[a-zA-Z0-9_.$+:/\\-]+$");
     }
     public static bool IsTechnicalField(string field) => TechnicalField.IsMatch(field);
+    public static bool EditorEventDescription(AssetTypeValueField root, string path) => path == "/description" &&
+        !root["eventDatas"].IsDummy && !root["previewSourceDialogueKey"].IsDummy && !root["showRuntimeEventDebug"].IsDummy;
     public static bool IsTypeIdentity(string value) => TypeIdentity.IsMatch(value.Trim());
     public static bool Protected(Entry entry)
     {
@@ -77,8 +81,10 @@ public static class GameText
         return parts.Any(p => p is "StreamingAssets" or "Resources") || Regex.IsMatch(name, @"dialog|scenario|story|locali[sz]|strings|subtitle", RegexOptions.IgnoreCase);
     }
     public static bool TextAsset(string name) => !Regex.IsMatch(name, @"BuildReport|BuildInfo|ScriptingAssemblies|RuntimeInitializeOnLoads|UnityConnect|PackageInfo", RegexOptions.IgnoreCase);
-    public static void VisitStrings(AssetTypeValueField field, Action<string, string, Action<string>> visit, string path = "")
+    public static void VisitStrings(AssetTypeValueField field, Action<string, string, Action<string>> visit, string path = "", AssetTypeValueField? root = null)
     {
+        root ??= field;
+        if (EditorEventDescription(root, path)) return;
         if (BindingPath(path)) return;
         if (field.TemplateField.ValueType == AssetValueType.String) {
             if (Visible(field.FieldName, field.AsString)) visit(path, field.AsString, text => field.AsString = text);
@@ -88,7 +94,7 @@ public static class GameText
         for (var i = 0; i < field.Children.Count; i++) {
             var child = field.Children[i];
             var key = field.TemplateField.IsArray ? i.ToString() : child.FieldName.Replace("~", "~0").Replace("/", "~1");
-            VisitStrings(child, visit, path + "/" + key);
+            VisitStrings(child, visit, path + "/" + key, root);
         }
     }
 }

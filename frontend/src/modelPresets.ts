@@ -201,7 +201,7 @@ export function vendorOfModel(
   model: string,
   presets: ModelPreset[] = currentEffectivePresets(),
 ): string | null {
-  return presetForModel(model, presets)?.group ?? null;
+  return presetForModel(model, presets)?.group ?? MODEL_PRESETS.find(preset => preset.model === model)?.group ?? null;
 }
 
 export function defaultApiUrlForVendor(group: string): string {
@@ -226,7 +226,7 @@ export function labelForModelId(modelId: string, group?: string): string {
     "deepseek-reasoner": "DeepSeek Reasoner（旧别名）",
     "deepseek-v3": "DeepSeek V3（旧）",
   };
-  return known[id] || id;
+  return known[id] || id.split("/").pop()!.replace(/:latest$/, "");
 }
 
 const LEGACY_PROFILES_KEY = "llmchat-model-profiles";
@@ -328,7 +328,7 @@ export function resolveModelApi(
   vendorProfiles?: Record<string, VendorProfile>,
   presets: ModelPreset[] = currentEffectivePresets(),
 ): ModelProfile {
-  const preset = presetForModel(model, presets);
+  const preset = presetForModel(model, presets) || MODEL_PRESETS.find(item => item.model === model);
   if (preset) {
     const vendors = vendorProfiles ?? loadVendorProfiles();
     const v = vendors[preset.group];

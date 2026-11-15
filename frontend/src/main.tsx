@@ -1,8 +1,12 @@
-import { installRuntimeLogging } from "./runtimeLog";
+import { initializeAppClose } from "./appClose";
+import { installControlLabelBehavior } from "./controlLabels";
+import { installRuntimeLogging, logRuntimeError } from "./runtimeLog";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { AppTooltip } from "./components/AppTooltip";
 import "./styles.css";
+import "./components/AppTooltip.css";
 import "katex/dist/katex.min.css";
 
 // 桌面端禁用 WebView 自带右键菜单（返回/刷新/另存为等）。
@@ -13,8 +17,11 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 installRuntimeLogging();
+void initializeAppClose().catch(error=>logRuntimeError("app-close-init-error",error));
+installControlLabelBehavior();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
+    <AppTooltip />
   </StrictMode>,
 );

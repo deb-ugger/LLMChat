@@ -2,6 +2,8 @@ export type UnityFailure = { reason: string; action: string; technical: string }
 export function explainUnityFailure(error: unknown): UnityFailure {
   const technical = error instanceof Error ? error.message : String(error);
   const result = (reason: string, action: string) => ({ reason, action, technical: technical.trim() === reason.trim() ? "" : technical });
+  if (/所选字体缺少/.test(technical))
+    return result(technical.split(/。检查报告：/)[0].replace(/；完整清单见字库检查$/, ""), "在步骤 3「生成补丁」的缺字清单中点击「定位文本」查看受影响译文；点击「选择字体」更换覆盖这些字符的 TTF／OTF，再点击「字库检查与字符集」，缺字数为 0 后重新生成补丁。");
   if (/写回重读缺少|写回重读未找到字段/.test(technical))
     return result("重新读取补丁时，未能找到应写入的文本或字体字段，补丁尚未通过完整性校验。", "保留已有译文，重新生成补丁；不要应用未完成的输出。若仍失败，请反馈技术详情中的资源、对象和字段位置以便定位。");
   if (/写回重读不一致|字体数据重读不一致|字库、图集或材质重读不一致/.test(technical))

@@ -642,7 +642,7 @@ export function EpubPane({
             type="button"
             className="pdf-tool-btn"
             onClick={() => void openFilePicker()}
-            title="打开 EPUB / PDF"
+            data-tooltip="打开 EPUB / PDF" aria-label="打开 EPUB / PDF"
           >
             打开
           </button>
@@ -661,7 +661,12 @@ export function EpubPane({
                     <button
                       type="button"
                       className="pdf-recent-item"
-                      title={
+                      data-tooltip={
+                        item.filePath +
+                        (item.kind === "pdf" && item.pageNumber
+                          ? ` · 第 ${item.pageNumber} 页`
+                          : "")
+                      } aria-label={
                         item.filePath +
                         (item.kind === "pdf" && item.pageNumber
                           ? ` · 第 ${item.pageNumber} 页`
@@ -682,7 +687,7 @@ export function EpubPane({
                     <button
                       type="button"
                       className="pdf-recent-remove"
-                      title="从最近列表移除"
+                      data-tooltip="从最近列表移除"
                       aria-label={`移除 ${item.fileName}`}
                       onClick={(e) => {
                         e.preventDefault();
@@ -699,7 +704,7 @@ export function EpubPane({
           )}
         </div>
         {fileMeta && (
-          <span className="pdf-file-name" title={fileMeta.filePath}>
+          <span className="pdf-file-name" data-tooltip={fileMeta.filePath}>
             <span className="pdf-recent-kind">{recentKindLabel("epub")}</span>
             <span className="pdf-file-name-text">{fileMeta.fileName}</span>
           </span>
@@ -709,11 +714,11 @@ export function EpubPane({
           className={`pdf-tool-btn${outlineOpen ? " active" : ""}`}
           disabled={!hasBook}
           onClick={() => setOutlineOpen((v) => !v)}
-          title="目录"
+          data-tooltip="目录" aria-label="目录"
         >
           目录
         </button>
-        <span className="pdf-toolbar-engine" title={engineBadge}>
+        <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>
           {engineBadge}
         </span>
         {toolbarExtra}
@@ -735,7 +740,7 @@ export function EpubPane({
             </div>
             <div
               className="col-resizer pdf-outline-resizer"
-              title="拖动调整目录宽度"
+              data-tooltip="拖动调整目录宽度"
               onMouseDown={(e) => beginOutlineResize(e, "grow-right")}
             />
           </aside>
