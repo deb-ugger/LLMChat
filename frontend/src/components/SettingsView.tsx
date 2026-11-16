@@ -1,7 +1,9 @@
+import { LlmRuntimeSettings } from "./LlmRuntimeSettings";
 import { FeatureIcon } from "./FeatureIcon";
 import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
 import { createPortal } from "react-dom";
 import { OllamaServiceControl } from "./OllamaServiceControl";
+import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { useEffect,useLayoutEffect,useMemo,useRef,useState,type ChangeEvent,type FocusEvent,type ReactNode } from "react";
 import {
 api,
@@ -911,10 +913,6 @@ export function SettingsView({
   const [ocrUninstallConfirm, setOcrUninstallConfirm] = useState<{
     mode: Exclude<OcrMode, "fast">;
   } | null>(null);
-  const [ocrCenterNotice, setOcrCenterNotice] = useState<{
-    title: string;
-    message: string;
-  } | null>(null);
   const prevModelRef = useRef(form.model);
   const customInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef(form);
@@ -1382,12 +1380,7 @@ export function SettingsView({
           item.installed,
       );
       if (remainingSharedModes.length) {
-        setOcrCenterNotice({
-          title: `“${label}”模式已卸载`,
-          message: `PP-OCRv6 medium det 仍被${remainingSharedModes
-            .map((item) => `“${item.label}”`)
-            .join("、")}模式使用，因此已自动保留；仅删除了“${label}”专用的文字识别模型。`,
-        });
+        notify(`“${label}”模式已卸载。其他已安装模式共享的检测模型已保留。`);
       } else {
         notify(`“${label}”OCR 模型已卸载`);
       }
@@ -2673,31 +2666,6 @@ export function SettingsView({
           </div>
         </div>
       ) : null}
-      {ocrCenterNotice ? (
-        <div className="ocr-confirm-backdrop" role="presentation">
-          <div
-            className="ocr-confirm-dialog is-notice"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="ocr-center-notice-title"
-          >
-            <div className="ocr-confirm-icon is-info" aria-hidden>✓</div>
-            <div className="ocr-confirm-copy">
-              <h3 id="ocr-center-notice-title">{ocrCenterNotice.title}</h3>
-              <p>{ocrCenterNotice.message}</p>
-            </div>
-            <div className="ocr-confirm-actions">
-              <button
-                type="button"
-                className="ocr-confirm-acknowledge"
-                onClick={() => setOcrCenterNotice(null)}
-              >
-                知道了
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       <div className="settings-tabs" role="tablist">
         {tabs.map((t) => (
           <button
@@ -3100,7 +3068,26 @@ export function SettingsView({
                           <button type="button" className="settings-card-mini-test is-test" disabled={!ollamaEntries.length || isTesting("ollama-all") || ollamaEntries.some(model => isCardTesting("model:" + model))} data-tooltip="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" aria-label="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" onClick={event => { event.stopPropagation(); void testOllamaModels(); }}>{isTesting("ollama-all") ? "测试中…" : "测试全部模型"}</button>
                         </div>
                         {ollamaOpen && <div className="settings-engine-panel settings-ollama-panel"><div className="settings-ollama-config">
-                          <div className="settings-engine-field"><span>Ollama 模型目录</span><div className="settings-vendor-add-row"><select className="settings-ollama-directory" aria-label="已发现或记录的 Ollama 模型目录" disabled={ollamaPathBusy || ollamaBusy} value={ollamaDirectories.find(path => ollamaPathKey(path) === ollamaPathKey(ollamaDirectory)) || ""} onChange={async event => { const path = event.currentTarget.value; if (path !== "__manual") { await selectOllamaDirectory(path); return; } try { const selected = await chooseOllamaDirectory({ directory: true, multiple: false, defaultPath: ollamaDirectory || undefined }); if (typeof selected === "string") await selectOllamaDirectory(selected); } catch (error) { notify(error instanceof Error ? error.message : String(error), false); } }}><option value="__manual">手动选择目录…</option><option value="">不指定目录（读取服务）</option>{ollamaDirectories.map(path => <option key={ollamaPathKey(path)} value={path}>{path}</option>)}</select><button type="button" className="settings-panel-cancel" disabled={ollamaPathBusy || ollamaBusy} onClick={() => void discoverOllamaDirectories()}>{ollamaPathBusy ? "正在验证…" : "自动搜索"}</button></div></div>
+                          <div className="settings-engine-field">
+                            <span>Ollama 模型目录</span>
+                            <div className="settings-vendor-add-row">
+                              <UnityDescriptionSelect label="Ollama 模型目录" disabled={ollamaPathBusy || ollamaBusy}
+                                value={ollamaDirectories.find(path => ollamaPathKey(path) === ollamaPathKey(ollamaDirectory)) || ""}
+                                choices={[
+                                  { value: "__manual", label: "手动选择目录…" },
+                                  { value: "", label: "从服务读取", description: "向正在运行的 Ollama 获取模型列表，无需指定模型目录。" },
+                                  ...ollamaDirectories.map(path => ({ value: path, label: path })),
+                                ]}
+                                onChange={async path => {
+                                  if (path !== "__manual") { await selectOllamaDirectory(path); return; }
+                                  try {
+                                    const selected = await chooseOllamaDirectory({ directory: true, multiple: false, defaultPath: ollamaDirectory || undefined });
+                                    if (typeof selected === "string") await selectOllamaDirectory(selected);
+                                  } catch (error) { notify(error instanceof Error ? error.message : String(error), false); }
+                                }} />
+                              <button type="button" className="settings-panel-cancel" disabled={ollamaPathBusy || ollamaBusy} onClick={() => void discoverOllamaDirectories()}>{ollamaPathBusy ? "正在验证…" : "自动搜索"}</button>
+                            </div>
+                          </div>
                           <label className="settings-engine-field">服务地址<input value={ollamaUrl} onChange={event => setOllamaUrl(event.target.value)} placeholder="http://127.0.0.1:11434/v1/chat/completions" /></label>
                           <div className="settings-engine-panel-actions"><button type="button" className="settings-panel-save" disabled={!ollamaDirty || ollamaPathBusy || ollamaBusy} onClick={() => void saveOllama()}>保存设置</button></div>
                           </div><div className="settings-vendor-models"><div className="settings-vendor-models-title">可用模型</div><ul className="settings-vendor-models-list">{ollamaEntries.map(model => <li key={model} className="settings-local-model" data-tooltip={model}>
@@ -4330,7 +4317,7 @@ export function SettingsView({
               }}
             />
           </>}</RetainedSettingsTab>
-        <RetainedSettingsTab active={tab === "unity"}>{<><GamePromptPoolPanel notify={notify}/>
+        <RetainedSettingsTab active={tab === "unity"}>{<><LlmRuntimeSettings/><GamePromptPoolPanel notify={notify}/>
           <UnitySettingsPanel
             ref={unityPanelRef}
             active={active && tab === "unity"}

@@ -1,3 +1,4 @@
+import { showAppNotice } from "./components/AppNotice";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { logRuntimeError } from "./runtimeLog";
@@ -10,7 +11,7 @@ let closing = false, generation = 0;
 let keepListener = false;
 
 // Keep exit prompts in the live WebView; native dialog IPC can fail during teardown.
-function closePrompt(title: string, description: string, force = false): Promise<boolean> {
+function closePrompt(title: string, description: string): Promise<boolean> {
   return new Promise(resolve => {
     const dialog = document.createElement("dialog"); dialog.className = "game-action-confirm";
     const heading = document.createElement("h2"); heading.textContent = title;
@@ -18,8 +19,8 @@ function closePrompt(title: string, description: string, force = false): Promise
     const footer = document.createElement("footer");
     const finish = (accepted: boolean) => { dialog.close(); dialog.remove(); resolve(accepted); };
     const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "game-confirm-cancel";
-    cancel.textContent = force ? "继续等待" : "返回"; cancel.autofocus = true; cancel.onclick = () => finish(false);
-    if (force) { const accept = document.createElement("button"); accept.type = "button"; accept.className = "game-confirm-accept"; accept.textContent = "强制退出"; accept.onclick = () => finish(true); footer.append(accept); }
+    cancel.textContent = "继续等待"; cancel.autofocus = true; cancel.onclick = () => finish(false);
+    { const accept = document.createElement("button"); accept.type = "button"; accept.className = "game-confirm-accept"; accept.textContent = "强制退出"; accept.onclick = () => finish(true); footer.append(accept); }
     footer.append(cancel); dialog.append(heading, detail, footer);
     dialog.oncancel = event => { event.preventDefault(); finish(false); };
     document.body.append(dialog); dialog.showModal();
@@ -65,7 +66,7 @@ async function handleAppClose() {
       if (attempt === generation) await finishAppClose();
     } catch (error) {
       logRuntimeError("app-close", error);
-      await closePrompt("无法退出 LLMChat", `退出失败，窗口已保留：${error instanceof Error ? error.message : String(error)}`);
+      showAppNotice(`退出失败，窗口已保留：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       logRuntimeError("app-close-handler-returned", `attempt=${attempt}; elapsed_ms=${Math.round(performance.now() - started)}`);
       if (attempt === generation) closing = false;
@@ -104,7 +105,7 @@ export async function registerAppCloseGuard(guard: CloseGuard) {
 }
 
 export async function requestForceAppClose() {
-  if (!await closePrompt("强制退出 LLMChat", "立即关闭窗口并退出程序？未保存的修改可能丢失；如果正在写入游戏资源，建议继续等待。", true)) return;
+  if (!await closePrompt("强制退出 LLMChat", "立即关闭窗口并退出程序？未保存的修改可能丢失；如果正在写入游戏资源，建议继续等待。")) return;
   logRuntimeError("app-force-close-confirmed", `User confirmed force exit; previous_attempt=${generation}`);
   const previous = generation;
   generation++;
@@ -112,6 +113,6 @@ export async function requestForceAppClose() {
   catch (error) {
     generation = previous; closing = false;
     logRuntimeError("app-force-close", error);
-    await closePrompt("无法退出 LLMChat", `强制退出失败：${error instanceof Error ? error.message : String(error)}`);
+    showAppNotice(`强制退出失败：${error instanceof Error ? error.message : String(error)}`, "error");
   }
 }

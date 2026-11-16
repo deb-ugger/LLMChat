@@ -1,10 +1,11 @@
-import { unityTranslationTokens } from "./unityTokens";
+import { unityTranslationTokens, unityTranslationProblem } from "./unityTokens";
 import type { UnityEntry } from "./unityOffline";
 
 const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^><{}$\\])`;
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
 const formats = () => new RegExp(`${speaker.replace("([^>", "(?:[^>")}|${controls}|${unityTranslationTokens().source}`, "gi");
 export const gameFormatTokens = formats;
+export const gameSpeakerNames = (text: string) => [...text.matchAll(new RegExp(speaker, "gi"))].map(match => match[1].trim());
 const identifiers = /\b(?:[A-Za-z]{1,6}\d+|\d+[A-Za-z]{1,6})\b/g;
 function languageText(source: string, names = true) {
   return source.replace(new RegExp(speaker, "gi"), names ? "$1" : "").replace(formats(), "").replace(identifiers, "").trim();
@@ -81,9 +82,9 @@ export function preserveTargetGameText(entries: UnityEntry[], target: string, so
       entry.translation = entry.source; entry.error = ""; delete entry.layoutDraft; delete entry.screeningDraft; count++;
     } else {
       const result = gameTextScreeningResult(entry.source, target, sourceLanguage, skipTarget, entry.locale);
-      if (result.structured && (!entry.translation.trim() || entry.translation === result.template)) {
+      if (!result.unchanged && result.structured && (!entry.translation.trim() || entry.translation === result.template)) {
         entry.translation = ""; entry.screeningDraft = result.template;
-      } else if (!result.structured) delete entry.screeningDraft;
+      } else if (result.unchanged || !result.structured) delete entry.screeningDraft;
     }
   }
   return count;
@@ -107,7 +108,7 @@ export function gameTextScreeningResult(source: string, target: string, sourceLa
   const bodyKept = skipTarget && gameTextNeedsNoTranslation(body, target);
   const text = (start: number, end: number) => {
     const value = source.slice(start, end);
-    if (!/\p{L}/u.test(value) || bodyKept || skipTarget && gameTextNeedsNoTranslation(value, target)) keep(start, end);
+    if (!gameTextMatchesSource(value, sourceLanguage) || !/\p{L}/u.test(value) || bodyKept || skipTarget && gameTextNeedsNoTranslation(value, target)) keep(start, end);
   };
   let offset = 0;
   for (const match of source.matchAll(formats())) {
@@ -139,17 +140,17 @@ export async function translateGameDisplayText(source: string, translate: (text:
   let offset = 0, prepared = "";
   for (const match of source.matchAll(speakers)) {
     const body = source.slice(offset, match.index);
-    prepared += target && gameTextNeedsNoTranslation(body, target) ? protect(body) : body;
+    prepared += !gameTextMatchesSource(body, sourceLanguage) || target && gameTextNeedsNoTranslation(body, target) ? protect(body) : body;
     prepared += match[0]; offset = match.index! + match[0].length;
   }
   const remaining = source.slice(offset);
-  prepared += target && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
+  prepared += !gameTextMatchesSource(remaining, sourceLanguage) || target && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
   const text = prepared.replace(formats(), (token: string) => {
     if (/^\{LLMCHAT_FORMAT_\d+\}$/.test(token)) return token;
     const name = new RegExp(`^${speaker}$`, "i").exec(token)?.[1];
     if (name !== undefined) {
       if (/[\\{}]/.test(name)) return protect(token);
-      const canonical = terms.get(name);
+      const canonical = terms.get(name.trim());
       if (canonical !== undefined) return protect(token.slice(0, token.indexOf("<") + 1) + canonical + ">");
       if (target.startsWith("zh") && /\p{Script=Han}/u.test(name) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Latin}]/u.test(name)) return protect(token);
       return protect(token.slice(0, token.indexOf("<") + 1)) + name + protect(">");
@@ -165,14 +166,53 @@ export async function translateGameDisplayText(source: string, translate: (text:
     return protect(terms.get(term)!);
   })).join("") : screenedText;
   const visibleText = protectedText.replace(/\{LLMCHAT_FORMAT_\d+\}/g, "");
-  let result = /\p{L}/u.test(visibleText) ? await translate(protectedText, tokens.length ? source : undefined) : protectedText;
+  // Deterministic edge controls and retained names never need model output.
+  const prefix = protectedText.match(/^(?:\s|\{LLMCHAT_FORMAT_\d+\})*/)?.[0] || "";
+  const rest = protectedText.slice(prefix.length);
+  const suffix = rest.match(/(?:\s|\{LLMCHAT_FORMAT_\d+\})*$/)?.[0] || "";
+  const body = rest.slice(0, rest.length - suffix.length);
+  const referenceText = source.replace(new RegExp(speaker, "gi"), "（说话人：$1）").replace(formats(), "");
+  let result = protectedText;
+  if (/\p{L}/u.test(visibleText)) {
+    try { result = prefix + await translate(body, referenceText.trim() !== body.trim() ? referenceText : undefined) + suffix; }
+    catch (error) {
+      if (!/token repeat limit reached|模型重复生成/.test(error instanceof Error ? error.message : String(error))) throw error;
+      result = ""; // Retry once below with only visible source spans.
+    }
+  }
+  // Specialized translation models can drop opaque markers. Retry visible spans
+  // without asking the model to recreate controls, names or retained target text.
+  const markerPattern = /\{LLMCHAT_FORMAT_\d+\}/g;
+  const expectedMarkers = protectedText.match(markerPattern) || [];
+  const restoreMarkers = (value: string) => {
+    for (let index = tokens.length - 1; index >= 0; index--) value = value.replace(`{LLMCHAT_FORMAT_${index}}`, () => tokens[index]);
+    return value;
+  };
+  if (JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ||
+      unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(restoreMarkers(result))) ||
+      gameDisplayTextProblem(source, restoreMarkers(result))) {
+    const pieces = protectedText.split(/(\{LLMCHAT_FORMAT_\d+\})/);
+    const translatedPieces: string[] = [];
+    const retriedSpans = new Map<string, string>();
+    for (const piece of pieces) {
+      if (/^\{LLMCHAT_FORMAT_\d+\}$/.test(piece) || !/\p{L}/u.test(piece)) { translatedPieces.push(piece); continue; }
+      const leading = piece.match(/^\s*/)?.[0] || "";
+      const trailing = piece.match(/\s*$/)?.[0] || "";
+      const input = piece.trim();
+      let translated = retriedSpans.get(input);
+      if (translated === undefined) { translated = (await translate(input, referenceText.trim() !== input ? referenceText : undefined)).trim(); retriedSpans.set(input, translated); }
+      if (!translated || /\{LLMCHAT_FORMAT_\d+\}/.test(translated)) throw new Error("正文重译未返回有效内容，请检查模型与提示词；此条译文未保存");
+      translatedPieces.push(leading + translated + trailing);
+    }
+    result = translatedPieces.join("");
+  }
   for (let index = tokens.length - 1; index >= 0; index--) {
     const token = tokens[index];
     const marker = `{LLMCHAT_FORMAT_${index}}`;
     if (result.split(marker).length !== 2) throw new Error(`翻译结果未保留格式控制符 ${token}（保护标记 ${marker} 缺失或重复）。此条译文未保存。请重试此条，或在译文中保留原控制符及参数后手动填写。`);
     result = result.replace(marker, token);
   }
-  const problem = gameDisplayTextProblem(source, result);
+  const problem = unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(result)) || gameDisplayTextProblem(source, result);
   if (problem) throw new Error(problem);
   return result;
 }

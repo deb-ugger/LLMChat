@@ -1,3 +1,4 @@
+import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { useFollowLatest } from "../hooks/useFollowLatest";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
@@ -1777,7 +1778,7 @@ export function UnityTranslateView({
             >
               ← 返回游戏列表
             </button>
-            {helpButton}
+            {mode === "runtime" && helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code data-tooltip={selected.gameDir}>{selected.gameDir}</code></div>}
           <nav className="unity-mode-nav" aria-label="游戏翻译模式">
@@ -1795,6 +1796,7 @@ export function UnityTranslateView({
               >
                 <UnityActionIcon kind="settings" />
               </UnityIconButton>}
+              <GameWorkflowHelp mode={mode === "offline" ? "unity-offline" : "unity-runtime"} />
             </div>
         </header>
       ) : null}

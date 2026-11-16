@@ -51,6 +51,8 @@ export function mergeUnityProject(previous: UnityProject, scanned: UnityProject)
 export type UnityTranslationActivity = { id: string; references: number; phase: "translating" | "reusing" | "formatting" | "saving" };
 export type UnityEngineProgress = { id: string; characters: number; speed: number; active: boolean; entryId?: string };
 export type UnityProgress = {
+  textStage?: "screening" | "names" | "layout";
+  model?: string;
   detail: string; completed: number; total: number | null; folder?: string; coverageCompleted?: number; coverageTotal?: number; requests?: number; reused?: number;
   translation?: { processed: number; pending: number; successful: number; failed: number; failedEntries: number; active: UnityTranslationActivity[]; last?: { id: string; failed: boolean } };
   engineStats?: UnityEngineProgress[]; engineTargetCharacters?: number;

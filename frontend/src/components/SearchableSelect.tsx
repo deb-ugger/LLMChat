@@ -2,9 +2,16 @@ import { Children, Fragment, isValidElement, useCallback, useEffect, useId, useM
 import "./SearchableSelect.css";
 
 type Choice = { value: string; label: string; group: string; disabled: boolean };
-type Props = Omit<SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> & { displayValue?:string; placeholder?: string; emptyLabel?: string };
+type Props = Omit<SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> & { optionTags?: Readonly<Record<string, readonly string[] | undefined>>; displayValue?:string; placeholder?: string; emptyLabel?: string };
 type OptionProps = { value?: string | number; label?: string; disabled?: boolean; children?: ReactNode };
 const names = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+
+function ChoiceTags({ tags }: { tags?: readonly string[] }) {
+  if (!tags?.length) return null;
+  return <span className="searchable-select-tags">
+    {tags.map(tag => <span key={tag} className="searchable-select-tag">{tag}</span>)}
+  </span>;
+}
 
 function optionText(children: ReactNode): string {
   return Children.toArray(children).map(child => isValidElement<OptionProps>(child) ? optionText(child.props.children) : String(child)).join("");
@@ -24,7 +31,7 @@ function readChoices(children: ReactNode, group = "", disabled = false): Choice[
 }
 
 /** Keep native select change events so existing settings and task handlers keep their behavior. */
-export function SearchableSelect({ children, className, style, disabled, value, defaultValue, id, title, displayValue, placeholder = "请选择", emptyLabel = "没有可用选项", ...props }: Props) {
+export function SearchableSelect({ children, className, style, disabled, value, defaultValue, id, title, optionTags, displayValue, placeholder = "请选择", emptyLabel = "没有可用选项", ...props }: Props) {
   const listId = useId();
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -38,9 +45,11 @@ export function SearchableSelect({ children, className, style, disabled, value, 
   const unavailable = disabled || !hasChoices;
   const selectedValue = String(value ?? defaultValue ?? "");
   const selected = choices.find(choice => choice.value === selectedValue);
+  const selectedTags = selected && optionTags?.[selected.value];
+  const showCaption = !open && selected && !selected.disabled && !!selectedTags?.length;
   const words = (query || "").trim().normalize("NFKC").toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const filtered = choices.filter(choice => {
-    const text = `${choice.label} ${choice.value} ${choice.group}`.normalize("NFKC").toLocaleLowerCase();
+    const text = `${choice.label} ${choice.value} ${choice.group} ${optionTags?.[choice.value]?.join(" ") || ""}`.normalize("NFKC").toLocaleLowerCase();
     return words.every(word => text.includes(word));
   });
   const close = useCallback(() => { menu.current?.hidePopover(); setOpen(false); setQuery(null); }, []);
@@ -112,6 +121,10 @@ export function SearchableSelect({ children, className, style, disabled, value, 
           if (next >= 0 && next < filtered.length) setActive(next);
         }
       }} />
+    {showCaption && <span className="searchable-select-caption" aria-hidden="true">
+      <span className="searchable-select-caption-title">{selected.label}</span>
+      <ChoiceTags tags={selectedTags} />
+    </span>}
     <button type="button" className="searchable-select-caret" disabled={unavailable} tabIndex={-1} aria-label="展开选项"
       onPointerDown={event => event.preventDefault()} onClick={() => { if (open) close(); else { input.current?.focus(); show(); } }}>
       <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
@@ -124,6 +137,7 @@ export function SearchableSelect({ children, className, style, disabled, value, 
         onPointerDown={event => event.preventDefault()} onMouseEnter={() => setActive(index)}
         onClick={event => { event.preventDefault(); choose(choice); }}>
         <span>{choice.label}</span>{choice.group && <small>{choice.group}</small>}
+        <ChoiceTags tags={optionTags?.[choice.value]} />
       </button>) : <div className="searchable-select-empty">无匹配项</div>)}
     </div>
   </div>;

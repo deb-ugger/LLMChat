@@ -6,6 +6,8 @@ mod ollama;
 use std::sync::{Mutex, OnceLock};
 use std::io::Write;
 
+const BENCHMARK_WINDOW: &str = "game-benchmark";
+static WEBVIEW_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_WRITE: Mutex<()> = Mutex::new(());
 
@@ -25,9 +27,54 @@ fn runtime_log(kind: &str, message: &str) -> Result<(), String> {
 }
 #[tauri::command]
 fn write_runtime_log(kind: String, message: String) -> Result<(), String> { runtime_log(&kind, &message) }
+#[tauri::command]
+fn append_game_performance(record: serde_json::Value) -> Result<(), String> {
+    let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
+    let directory = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?;
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let mut line = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    std::fs::OpenOptions::new().create(true).append(true)
+        .open(directory.join("game-performance.jsonl"))
+        .and_then(|mut file| file.write_all(&line)).map_err(|error| error.to_string())
+}
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+#[tauri::command]
+async fn open_game_benchmark_window(window: tauri::WebviewWindow) -> Result<bool, String> {
+    if window.label() != "main" { return Err("只能从游戏工程打开测试队列".into()); }
+    let app = window.app_handle();
+    let center = |child: &tauri::WebviewWindow| -> Result<(), String> {
+        let location = window.outer_position().map_err(|error| error.to_string())?;
+        let main = window.outer_size().map_err(|error| error.to_string())?;
+        let size = child.outer_size().map_err(|error| error.to_string())?;
+        child.set_position(tauri::PhysicalPosition::new(
+            location.x + (main.width as i32 - size.width as i32) / 2,
+            location.y + (main.height as i32 - size.height as i32) / 2,
+        )).map_err(|error| error.to_string())
+    };
+    if let Some(existing) = app.get_webview_window(BENCHMARK_WINDOW) {
+        existing.unminimize().map_err(|error| error.to_string())?;
+        center(&existing)?;
+        existing.set_focus().map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let profile = WEBVIEW_DIRECTORY.get().ok_or("窗口数据目录尚未初始化")?;
+    let child = tauri::WebviewWindowBuilder::new(app, BENCHMARK_WINDOW, tauri::WebviewUrl::default())
+        .title("测试队列 · LLMChat")
+        .inner_size(930.0, 760.0)
+        .min_inner_size(520.0, 420.0)
+        .resizable(true)
+        .visible(false)
+        .data_directory(profile.clone())
+        .build().map_err(|error| error.to_string())?;
+    center(&child)?;
+    child.show().map_err(|error| error.to_string())?;
+    child.set_focus().map_err(|error| error.to_string())?;
+    Ok(true)
+}
 
 struct BackendChild(Mutex<Option<CommandChild>>);
 
@@ -231,7 +278,11 @@ fn arm_close_watchdog() {
 /// Called only after the frontend has finished its save/cancel close guards.
 #[tauri::command]
 async fn finish_app_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" { return Err("只允许主窗口退出应用".into()); }
     let _ = runtime_log("shutdown-native-begin", &format!("window={}; frontend close guards accepted", window.label()));
+    if let Some(benchmark) = window.app_handle().get_webview_window(BENCHMARK_WINDOW) {
+        benchmark.destroy().map_err(|error| error.to_string())?;
+    }
     stop_backend(window.app_handle())?;
     arm_close_watchdog();
     let _ = runtime_log("shutdown-request", "Save guards completed and backend stopped; closing window with a 5-second teardown deadline");
@@ -293,6 +344,7 @@ pub fn run() {
         .manage(ollama::OllamaChild::default())
         .invoke_handler(tauri::generate_handler![
             ollama::ollama_service_status,
+            ollama::ollama_runtime_status,
             ollama::ollama_service_start,
             ollama::ollama_service_stop,
             clipboard_read_image_png,
@@ -300,6 +352,8 @@ pub fn run() {
             read_file_bytes,
             file_stat,
             write_runtime_log,
+            append_game_performance,
+            open_game_benchmark_window,
             finish_app_close,
             unity_offline::unity_offline_run,
             unity_offline::unity_offline_stop,
@@ -328,6 +382,7 @@ pub fn run() {
             app.manage(speech::SpeechStorage(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?)));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
             start_backend(app.handle()).map_err(std::io::Error::other)?;
+            let _ = WEBVIEW_DIRECTORY.set(std::path::PathBuf::from(profile));
             let mut config = window_config.clone();
             config.create = true;
             tauri::WebviewWindowBuilder::from_config(app, &config)?

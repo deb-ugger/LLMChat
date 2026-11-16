@@ -1,3 +1,7 @@
+import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
+import { GameTextBenchmarkHost, GameTextBenchmarkWindow } from "./components/GameTextBenchmarkDialog";
+import { recoverGamePerformanceArchives } from "./gameModelPerformance";
+import { AppNotice } from "./components/AppNotice";
 import { initializeAppClose } from "./appClose";
 import { installControlLabelBehavior } from "./controlLabels";
 import { installRuntimeLogging, logRuntimeError } from "./runtimeLog";
@@ -17,11 +21,13 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 installRuntimeLogging();
-void initializeAppClose().catch(error=>logRuntimeError("app-close-init-error",error));
+recoverGamePerformanceArchives();
+if (!isGameBenchmarkWindow) void initializeAppClose().catch(error=>logRuntimeError("app-close-init-error",error));
 installControlLabelBehavior();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    {isGameBenchmarkWindow ? <GameTextBenchmarkWindow /> : <><App /><GameTextBenchmarkHost /></>}
     <AppTooltip />
+    <AppNotice />
   </StrictMode>,
 );

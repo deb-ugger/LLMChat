@@ -2087,35 +2087,64 @@ int HttpServer::run()
             ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
             ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
             if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(errorJson(ev.errorMessage).dump(), "application/json"); return; }
-            res.set_content(json{{"ok", true}, {"content", response.content}}.dump(), "application/json");
+            res.set_content(json{{"ok", true}, {"content", response.content}, {"completionTokens", response.completionTokens}, {"generationTokensPerSecond", response.generationTokensPerSecond}}.dump(), "application/json");
         } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
 
-    svr.Post("/api/game-images/model", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
+    svr.Post(R"(/api/(game-images|game-text)/model)", withCors([this, &translationTasks](const httplib::Request& req, httplib::Response& res) {
         try {
+            const bool textScreening = req.path == "/api/game-text/model";
             const auto body = json::parse(req.body);
             const auto id = body.at("taskId").get<std::string>();
             if (id.empty() || id.size() > 96) throw std::runtime_error("invalid taskId");
             LlmRequest request;
             request.apiUrl = body.at("apiUrl").get<std::string>(); request.apiKey = body.value("apiKey", "");
             request.model = body.at("model").get<std::string>(); request.requireComplete = true;
+            request.nativeOllama = body.value("localModel", false) && body.value("ollamaNative", false);
+            const int maxOutputTokens = body.value("maxOutputTokens", 0);
+            if (maxOutputTokens > 0 && maxOutputTokens <= 1048576) request.options["max_tokens"] = maxOutputTokens;
             const auto cfg = config_.snapshot();
             request.proxyMode = body.value("localModel", false) ? "direct" : cfg.proxyMode; request.httpProxy = cfg.httpProxy;
             const auto prompt = body.at("prompt").get<std::string>(), image = body.value("image", "");
-            if (request.apiUrl.empty() || request.model.empty() || prompt.empty() || prompt.size() > 2000000) throw std::runtime_error("图片处理模型、接口或请求内容无效");
+            const bool imageClassification = !image.empty() && body.value("imageClassification", false);
+            if (imageClassification) {
+                request.options["max_tokens"] = maxOutputTokens > 0 ? std::min(maxOutputTokens, 256) : 256;
+                request.options["temperature"] = 0;
+                if (request.nativeOllama) {
+                    request.options["reasoning_effort"] = "none";
+                    request.options["num_ctx"] = 4096;
+                    request.options["keep_alive"] = "5m";
+                    request.options["format"] = json::parse(R"schema({
+                        "type":"object","required":["has_text","confidence","text"],"additionalProperties":false,
+                        "properties":{"has_text":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":100},
+                            "text":{"type":"string","maxLength":32}}
+                    })schema");
+                }
+            }
+            if (request.nativeOllama && !imageClassification && !image.empty() && body.value("imageOcr", false)) {
+                request.options["format"] = json::parse(R"schema({
+                    "type":"object","required":["regions"],"additionalProperties":false,
+                    "properties":{"regions":{"type":"array","items":{
+                        "type":"object","required":["text","confidence","x0","y0","x1","y1"],"additionalProperties":false,
+                        "properties":{"text":{"type":"string","minLength":1},"confidence":{"type":"number","minimum":0,"maximum":100},
+                        "x0":{"type":"number","minimum":0,"maximum":1000},"y0":{"type":"number","minimum":0,"maximum":1000},
+                        "x1":{"type":"number","minimum":0,"maximum":1000},"y1":{"type":"number","minimum":0,"maximum":1000}}
+                    }}}})schema");
+            }
+            if (request.apiUrl.empty() || request.model.empty() || prompt.empty() || prompt.size() > 2000000) throw std::runtime_error("处理模型、接口或请求内容无效");
             json content = json::array({json{{"type","text"},{"text",prompt}}});
             if (!image.empty()) {
                 if (image.rfind("data:image/png;base64,", 0) != 0 || image.size() > 20000000) throw std::runtime_error("图片输入须为不超过 20 MB 的 PNG 数据");
                 content.push_back(json{{"type","image_url"},{"image_url",json{{"url",image}}}});
             }
-            request.messages = json::array({json{{"role","user"},{"content",content}}});
+            request.messages = json::array({json{{"role","user"},{"content",textScreening ? json(prompt) : content}}});
             const auto task = translationTasks.begin(id);
             if (!task) { res.status = 429; res.set_content(errorJson("在线任务较多，请稍后重试").dump(), "application/json"); return; }
             request_cancel::Scope cancellation(translationTasks, id, task);
             if (task->stopped()) { res.status = 499; res.set_content(errorJson("任务已取消").dump(), "application/json"); return; }
             auto event = UsageStore::makeEventSkeleton();
-            event.feature = "game_image_model";
-            event.endpoint = "game-images/model"; event.channel = "llm"; event.model = request.model;
+            event.feature = textScreening ? "game_text_screening" : "game_image_model";
+            event.endpoint = textScreening ? "game-text/model" : "game-images/model"; event.channel = "llm"; event.model = request.model;
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
             ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
@@ -2130,8 +2159,8 @@ int HttpServer::run()
             }
             ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
             ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
-            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(errorJson(ev.errorMessage).dump(), "application/json"); return; }
-            res.set_content(json{{"ok", true}, {"content", response.content}}.dump(), "application/json");
+            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(json{{"error", ev.errorMessage}, {"code", response.errorCode}}.dump(), "application/json"); return; }
+            res.set_content(json{{"ok", true}, {"content", response.content}, {"completionTokens", response.completionTokens}, {"generationTokensPerSecond", response.generationTokensPerSecond}}.dump(), "application/json");
         } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
 
@@ -2227,7 +2256,8 @@ int HttpServer::run()
                 }
                 tr = TranslateClient::translateWithLlm(
                     text, apiUrl, apiKey, model, source, target,
-                    body.value("localModel", false) ? "direct" : cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson);
+                    body.value("localModel", false) ? "direct" : cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson,
+                    body.value("localModel", false) && body.value("ollamaReasoningOff", false), body.value("maxOutputTokens", 0), body.value("localModel", false) && body.value("ollamaNative", false));
             }
             else
             {
@@ -2273,6 +2303,7 @@ int HttpServer::run()
                     {"provider", tr.provider},
                     {"promptTokens", tr.promptTokens},
                     {"completionTokens", tr.completionTokens},
+                {"generationTokensPerSecond", tr.generationTokensPerSecond},
                     {"totalTokens", tr.totalTokens},
                     {"cacheReadTokens", tr.cacheReadTokens},
                     {"cacheWriteTokens", tr.cacheWriteTokens},
@@ -2287,6 +2318,7 @@ int HttpServer::run()
                 {"provider", tr.provider},
                 {"promptTokens", tr.promptTokens},
                 {"completionTokens", tr.completionTokens},
+                {"generationTokensPerSecond", tr.generationTokensPerSecond},
                 {"totalTokens", tr.totalTokens},
                 {"cacheReadTokens", tr.cacheReadTokens},
                 {"cacheWriteTokens", tr.cacheWriteTokens},

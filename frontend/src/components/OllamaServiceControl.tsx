@@ -1,3 +1,4 @@
+import { maximumModelConcurrency } from "../gameModelPerformance";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,7 +35,7 @@ export function OllamaServiceControl({ apiUrl, directory, notify, active=true }:
       if (action !== "stop") {
         if (proxyEnabled) { const url = new URL(proxyUrl.trim()); if (!["http:", "https:"].includes(url.protocol)) throw new Error("代理地址需为 HTTP 或 HTTPS 地址"); }
         if(action === "restart")await invoke("ollama_service_stop",endpoint());
-        await invoke("ollama_service_start", { ...endpoint(), models: directory.trim(), proxyEnabled, proxyUrl: proxyUrl.trim() });
+        await invoke("ollama_service_start", { ...endpoint(), parallel: maximumModelConcurrency(), models: directory.trim(), proxyEnabled, proxyUrl: proxyUrl.trim() });
         localStorage.setItem("llmchat-ollama-proxy-enabled", String(proxyEnabled)); localStorage.setItem("llmchat-ollama-proxy-url", proxyUrl.trim());
         setRunning(true); notify(action === "restart" ? "Ollama 服务已重启，代理配置已应用" : "Ollama 服务已开启，代理配置已保存");
       } else { await invoke("ollama_service_stop", endpoint()); setRunning(false); notify("Ollama 服务已关闭"); }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import "../unityOffline.css";
 
-type Choice = { value: string; label: string; description: string; warning?: string };
+type Choice = { value: string; label: string; description?: string; warning?: string };
 export const UNITY_SEGMENT_CHOICES: readonly Choice[] = [
   { value: "smart", label: "智能分段", description: "使用本地 WtP BERT Mini 小模型判断日文、中文等 85 种语言的原文换行：连续语句的排版折行归为同一条，句子边界、空行和列表保留分组。只在原字段内部处理，不跨字段合并。模型已内置，无需 API。", warning: "改变分段方式需要重新扫描；已有译文只复用完全匹配的条目。" },
   { value: "paragraphs", label: "按段落", description: "普通文本以空行分段，将连续非空行提取为一条；结构化资源仍按原字段提取，不使用模型。" },
@@ -70,7 +71,7 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
         }
       }}>
       {choices.map(choice => <button type="button" key={choice.value} role="option" aria-selected={choice.value === value} tabIndex={-1} className="unity-description-option" onClick={() => { onChange(choice.value); close(true); }}>
-        <strong>{choice.label}</strong><span>{choice.description}</span>{choice.warning && <b>{choice.warning}</b>}
+        <strong>{choice.label}</strong>{choice.description && <span>{choice.description}</span>}{choice.warning && <b>{choice.warning}</b>}
       </button>)}
     </div>
   </div>;

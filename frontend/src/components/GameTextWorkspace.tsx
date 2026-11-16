@@ -1,13 +1,21 @@
+import type { BatchRow } from "./GameBatchResults";
+import type { BenchmarkInput } from "./GameTextBenchmarkDialog";
+import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, gameDuration, measureGameAsync, measureGameWork } from "../gameModelPerformance";
+import { UnityProjectLoading } from "./UnityProjectLoading";
+import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
+import { screenGameText } from "../gameTextScreening";
+import { createGameTranslationContext, GAME_CONTEXT_HINT } from "../gameTranslationContext";
+import { showAppNotice } from "./AppNotice";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
-import { GameFlowSequence } from "./GameFlowSequence";
+import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { recommendedGameModels, gameModelPresetKey } from "../gameModelPreset";
-import { gameAvailableModels, GameModelSelect, GameTranslationTabs } from "./GameTranslationTabs";
+import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { unityLanguageScope } from "../unityWorkflow";
 import { registerAppCloseGuard } from "../appClose";
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
-import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters } from "./GameTextFilterMenu";
+import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
 import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
 import { GameTextFileMenu, GAME_TEXT_IMPORT_CHOICES } from "./GameTextFileMenu";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -18,9 +26,9 @@ import { api, type Settings, type TranslateProvider } from "../api";
 import { loadLocalModelProfiles } from "../modelPresets";
 import { readFileBytes } from "../localDocFile";
 import { saveOutputFile } from "../outputFiles";
-import { gameTextRequest, gameTextProblem, gameTextDictionary, importGameText, translateGameControls, type GameTextProject, type GameTextOptions } from "../gameTextProject";
+import { gameTextRequest, gameTextProblem, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, type GameTextProject, type GameTextOptions } from "../gameTextProject";
 import { translateUnitySession, unityTranslationStats } from "../unityTranslationSession";
-import { buildUnityTranslateOptions, prepareUnityTranslationRequest, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
+import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
 import { prepareGameTerms } from "../gameTermMemory";
 import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText } from "../gameDisplayText";
@@ -28,31 +36,44 @@ import { createUnityEnginePool, loadUnityEngines, UNITY_ENGINE_CHOICES_KEY } fro
 import { engineReady, parseEngineKeys } from "../translateEngines";
 import type { UnityEntry, UnityProgress, UnityEngineProgress } from "../unityOffline";
 import { UnityEngineList } from "./UnityEngineList";
-import { UnityTranslationProgress } from "./UnityTranslationProgress";
+import { gameTextStageLabels, UnityTranslationProgress } from "./UnityTranslationProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import type { GameImportSource } from "../gameImageImport";
 
 export type GameTextInfo = { count: number; selected: number; done: number; changed: number; sourcePath: string; dirty: boolean; running: boolean; state: string; translationPath: string };
-export type GameTextHandle = { prepare: () => Promise<string | false>; leave: () => Promise<boolean>; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void };
-type Props = { gamePath: string; settings: Settings; sourcePath: string; controls: HTMLElement | null; results: HTMLElement | null; visible: boolean; step: number; active: boolean; disabled: boolean; steps: ReactNode; skipped:boolean; onSkip:()=>void; handle: { current: GameTextHandle | null }; onInfo: (info: GameTextInfo) => void; onMessage: (text: string, level?: "info" | "warning" | "error" | "success") => void };
+export type GameTextHandle = { benchmark?: () => BenchmarkInput; locate?: (id: string) => void; findText?: (source: string, translation: string) => string | undefined; retryFailures?: () => void; canRetryFailures?: boolean; prepare: () => Promise<string | false>; leave: () => Promise<boolean>; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void };
+type Props = { gamePath: string; settings: Settings; sourcePath: string; controls: HTMLElement | null; results: HTMLElement | null; visible: boolean; step: number; active: boolean; disabled: boolean; steps: ReactNode; skipped:boolean; onSkip:()=>void; handle: { current: GameTextHandle | null }; onInfo: (info: GameTextInfo) => void; onBatchFailures?: (rows: BatchRow[]) => void; onMessage: (text: string, level?: "info" | "warning" | "error" | "success") => void };
 
-export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, results, visible, step, active, disabled, steps, skipped, onSkip, handle, onInfo, onMessage }: Props) {
+export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, results, visible, step, active, disabled, steps, skipped, onSkip, handle, onInfo, onBatchFailures, onMessage }: Props) {
   const {phase:closingPhase,show:showClosing,clear:clearClosing}=useClosingProgress();
   const promptState=useGamePromptSelection(gamePath + ":text");
   const [project, setProject] = useState<GameTextProject | null>(null), current = useRef(project); current.current = project;
   const baseline = useRef<GameTextProject | null>(null);
+  const openedGame = useRef("");
   const [options, setOptions] = useState<GameTextOptions>({ kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true });
   const [engines, setEngines] = useState(loadUnityEngines), [expanded, setExpanded] = useState(false);
   const [running, setRunning] = useState(false), [loading, setLoading] = useState(false), [saving, setSaving] = useState(false), [dirty, setDirty] = useState(false);
+  const latestOptions = useRef(options);
+  latestOptions.current = options;
+  const configurationCommit = useRef<GameStepConfigurationCommit | null>(null);
   const [configured, setConfigured] = useState<string | null>(null);
   const wrapMode=options.wrapMode||(options.joinLines?"join":"keep");
   const [screened, setScreened] = useState(false);
   const [screenStarted, setScreenStarted] = useState(false);
-  const confirmation = useGameActionConfirm(text => report(text)); const { confirm, message } = confirmation;
+  const confirmation = useGameActionConfirm(text => report(text)); const { confirm } = confirmation;
   const [textFilters, setTextFilters] = useState({ ...defaultGameTextFilters });
   useEffect(() => { setScreened(false); setScreenStarted(false); }, [gamePath, sourcePath]);
-  useEffect(() => { setScreened(false); }, [options.source, options.target, options.skipTargetLanguage, options.onlySourceLanguage]);
+  useEffect(() => {
+    if (loading || !baseline.current) return;
+    const signature = (value: Partial<GameTextOptions>) => JSON.stringify([value.source || "auto", value.target || "zh-CN", value.skipTargetLanguage !== false, !!value.onlySourceLanguage]);
+    if (signature(options) !== signature(baseline.current.options)) {
+      setScreened(false); setState("idle"); setProgress(null);
+      if (current.current) current.current.workflow = { screened: false };
+      baseline.current.workflow = { screened: false };
+    }
+  }, [loading, options.source, options.target, options.skipTargetLanguage, options.onlySourceLanguage]);
+  const [progressFailure, setProgressFailure] = useState("");
   const [state, setState] = useState("idle"), [progress, setProgress] = useState<UnityProgress | null>(null);
   const [jumpPage, setJumpPage] = useState("");
   const [search, setSearch] = useState(""), [filter, setFilter] = useState("all"), [page, setPage] = useState(0), [importMode, setImportMode] = useState<"fill" | "replace">("fill");
@@ -67,18 +88,34 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     writes.current=job.then(()=>{},()=>{});await job;
   };
   const report = (text: string, level: "info" | "warning" | "error" | "success" = "info") => callbacks.current.onMessage(text, level);
-  useEffect(() => { let alive = true; setLoading(true);
+  useEffect(() => { let alive = true; setLoading(true); current.current = null; setProject(null); baseline.current = null; setProgress(null); setProgressFailure("");
     void gameTextRequest<GameTextProject>("load", { gamePath, sourcePath }).then(value => {
-      if (!alive) return; publish(value); baseline.current = value; setDirty(false); setState("idle"); setSearch(""); setPage(0);
+      if (!alive) return;
+      // Recover retained rows affected by the old repeated-screening transition.
+      preserveTargetGameText(value.entries.filter(entry => entry.screeningDraft === entry.source), value.options.target || "zh-CN", value.options.onlySourceLanguage ? value.options.source || "auto" : "auto", value.options.skipTargetLanguage !== false);
+      publish(value); baseline.current = value; setDirty(false); setSearch(""); setPage(0);
+      const selected = value.entries.filter(entry => entry.selected);
+      const started = value.workflow?.screened ?? value.entries.some(entry => !!(entry.translation || entry.layoutDraft || entry.screeningDraft || entry.error));
+      const screenedIds = value.workflow?.screenedIds ?? (started ? selected.map(entry => entry.id) : []);
+      const selectionScreened = isTextSelectionScreened(value.entries, screenedIds);
+      value.workflow = { screened: selectionScreened, screenedIds };
+      setScreened(selectionScreened); setScreenStarted(screenedIds.length > 0);
+      const completed = selected.filter(entry => entry.translation && !entry.error && !gameTextProblem(entry.source, entry.translation)).length;
+      const failed = selected.filter(entry => !!entry.error).length;
+      const recordedRun = stepPerformance(promptState.scope + ":text", "translate");
+      const restored = restoreGameTextState(selectionScreened, selected.length, completed, failed, !!recordedRun.taskId && !recordedRun.endedAt);
+      setState(restored);
+      setProgress(restored !== "idle" ? { completed, total: selected.length, detail: `已恢复工程 · 有效译文 ${completed}/${selected.length} 条 · 失败 ${failed} 条` } : null);
+      setProgressFailure("");
       const preset = recommendedGameModels(), key = gameModelPresetKey(gamePath, "text");
       const applyPreset = preset && !localStorage.getItem(key);
       const japanese = unityLanguageScope(value.entries, value.options.source || "auto").language === "ja";
-      setOptions(previous => {
-        const merged: GameTextOptions = { ...previous, ...value.options, ...(applyPreset ? { kind: "llm", model: preset.text, dialogueModel: japanese ? preset.dialogue : preset.text, nameModel: preset.names, target: "zh-CN", joinLines: true, wrapMode:"join", onlySourceLanguage: true, skipTargetLanguage: true } : {}) };
+      setOptions(() => {
+        const merged: GameTextOptions = { kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true, ...value.options, ...(applyPreset ? { kind: "llm", model: preset.text, dialogueModel: japanese ? preset.dialogue : preset.text, nameModel: preset.names, target: "zh-CN", joinLines: true, wrapMode:"join", onlySourceLanguage: true, skipTargetLanguage: true } : {}) };
         baseline.current = { ...value, options: applyPreset ? value.options : merged }; return merged;
       });
       if (applyPreset) localStorage.setItem(key, "configured");
-    }).catch(error => { if (alive) report(String(error), "error"); }).finally(() => { if (alive) setLoading(false); });
+    }).catch(error => { if (alive) { const message = `读取文本工程失败：${String(error)}`; setState("error"); setProgressFailure(message); report(message, "error"); } }).finally(() => { if (alive) { openedGame.current = gamePath; setLoading(false); } });
     return () => { alive = false; };
   }, [gamePath, sourcePath]);
   useEffect(() => {
@@ -106,13 +143,24 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const selected = useMemo(() => entries.filter(entry => entry.selected), [entries]);
   const stats = useMemo(() => unityTranslationStats(selected, gameTextProblem), [selected]);
   useEffect(() => { callbacks.current.onInfo({ count: entries.length, selected: selected.length, sourcePath: project?.sourcePath || "", done: stats.coverageCompleted, changed: stats.coverageChanged, dirty, running, state, translationPath: project?.translationPath || "" }); }, [entries.length, selected.length, project?.sourcePath, stats.coverageCompleted, stats.coverageChanged, dirty, running, state, project?.translationPath]);
+  useEffect(() => {
+    onBatchFailures?.(project?.entries.filter(entry => !!entry.error).map(entry =>
+      ({ id: entry.id, label: "#" + entry.id, detail: entry.error, kind: "text" })) || []);
+  }, [project?.entries, onBatchFailures]);
   const targetTextIds = useMemo(() => new Set(entries.filter(entry => !gameTextMatchesSource(entry.source, sourceFilter, entry.locale) || options.skipTargetLanguage !== false && gameTextNeedsNoTranslation(entry.source, options.target)).map(entry => entry.id)), [project?.sourcePath, entries.length, sourceFilter, options.target, options.skipTargetLanguage]);
   const busy = disabled || loading || running || saving;
   const persist = async (value = current.current, silent = false) => {
     if (!value?.sourcePath) throw new Error("请先在步骤 1 扫描资源");
-    const snapshot = { ...value, options, entries: value.entries.map(entry => ({ ...entry, error: entry.translation ? gameTextProblem(entry.source, entry.translation) : entry.error })) };
-    const job = writes.current.then(() => gameTextRequest<{ translationPath: string }>("save", { gamePath, ...snapshot })).then(result => {
-      baseline.current = snapshot; return result.translationPath;
+    const timingScope = promptState.scope + ":text";
+    const snapshot = measureGameWork(timingScope, "processingMs", () => ({
+      ...value, options, entries: value.entries.map(entry => ({ ...entry, error: entry.translation ? gameTextProblem(entry.source, entry.translation) : entry.error })),
+    }));
+    const job = writes.current.then(async () => {
+      // A running step keeps its settings for processing. Its result writes retain newer UI options.
+      snapshot.options = latestOptions.current;
+      const result = await measureGameAsync(timingScope, "saveMs", () => gameTextRequest<{ translationPath: string }>("save", { gamePath, ...snapshot }));
+      baseline.current = snapshot;
+      return result.translationPath;
     });
     writes.current = job.then(() => {}, () => {});
     const path = await job;
@@ -120,7 +168,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     return path;
   };
   const save = async () => { setSaving(true); try { return await persist(); } catch (error) { report(String(error), "error"); return false as const; } finally { setSaving(false); } };
-  const discard = () => { setScreened(false); if (baseline.current) { publish({ ...baseline.current, options }); } setDirty(false); report("未保存的文本修改已取消"); };
+  const discard = () => { setScreened(!!baseline.current?.workflow?.screened); if (baseline.current) { publish({ ...baseline.current, options }); } setDirty(false); report("未保存的文本修改已取消"); };
   const leave = async () => {
     optionWrite.current?.(); await writes.current;
     if (controller.current) { report("请先中止文本翻译或等待任务完成", "warning"); return false; }
@@ -132,7 +180,16 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   };
   handle.current = { prepare: async () => { if (controller.current || loading) return false; return save(); }, leave, stop: () => controller.current?.abort(), automatic: async signal => {
     const stop = () => controller.current?.abort(); signal.addEventListener("abort", stop, { once: true });
-    try { if (!current.current?.entries.length) return true; if (signal.aborted || !await screen()) return false; if (signal.aborted) return false; const rows=current.current?.entries.filter(entry=>entry.selected)||[];if(rows.every(entry=>!!entry.translation&&!gameTextProblem(entry.source,entry.translation)&&!entry.error))return true;return !!await run(true); }
+    try {
+      if (!current.current?.entries.length) return true;
+      if (signal.aborted || !screened && (await configurationCommit.current?.("screen") === false ||
+          signal.aborted || !await automaticSteps.current.screen(true))) return false;
+      if (signal.aborted) return false;
+      const rows = current.current?.entries.filter(entry => entry.selected) || [];
+      if (rows.every(entry => !!entry.translation && !gameTextProblem(entry.source, entry.translation) && !entry.error)) return true;
+      if (await configurationCommit.current?.("translate") === false || signal.aborted) return false;
+      return !!await automaticSteps.current.run(true);
+    }
     finally { signal.removeEventListener("abort", stop); }
   } };
   const closeState=useRef({leave});closeState.current={leave};
@@ -150,29 +207,56 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     }).then(stop => { if (cancelled) stop(); else unlisten = stop; }).catch(error=>report(String(error),"error"));
     return () => { cancelled = true; unlisten?.(); };
   }, [needsCloseGuard,showClosing,clearClosing]);
-  const edit = (id: string, patch: Partial<UnityEntry>) => { if (!current.current) return; if (patch.selected !== undefined) setScreened(false); publish({ ...current.current, entries: current.current.entries.map(entry => entry.id === id ? { ...entry, ...patch, error: "" } : entry) }); setDirty(true); };
-  const screen = async () => {
-    if (busy || !current.current?.entries.length) return false;
+  const editEntries = (ids: ReadonlySet<string>, patch: Partial<UnityEntry>) => {
+    const project = current.current;
+    if (!project) return;
+    const saved = new Map(baseline.current?.entries.map(entry => [entry.id, entry]));
+    const entries = project.entries.map(entry => {
+      if (!ids.has(entry.id)) return entry;
+      const original = saved.get(entry.id);
+      if (patch.translation === undefined) return { ...entry, ...patch };
+      if (original && patch.translation === original.translation) return { ...original, selected: entry.selected };
+      return { ...entry, ...patch, error: "" };
+    });
+    const screened = isTextSelectionScreened(entries, project.workflow?.screenedIds);
+    publish({ ...project, entries, workflow: { ...project.workflow, screened } });
+    setScreened(screened);
+    setDirty(entries.some(entry => {
+      const original = saved.get(entry.id);
+      return !original || !sameTextEdit(entry, original);
+    }));
+  };
+  const edit = (id: string, patch: Partial<UnityEntry>) => editEntries(new Set([id]), patch);
+  const screen = async (automatic = false) => {
+    if (controller.current || loading || !automatic && busy || !current.current?.entries.length) return false;
     const next = { ...current.current, entries: current.current.entries.map(entry => ({ ...entry })) };
     const screening = new AbortController(); controller.current = screening;
+    beginGameStep(promptState.scope + ":text", "screen");
     report("开始筛选文本");
-    setScreenStarted(true); setSaving(true); setState("screening"); setProgress(null);
+    setScreenStarted(true); setSaving(true); setState("screening"); setProgressFailure(""); setProgress(null);
     try {
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       if (screening.signal.aborted) { setState("screen-stopped"); return false; }
       const selectedEntries = next.entries.filter(entry => entry.selected);
       const repaired = selectedEntries.filter(entry => entry.translation && entry.translation !== entry.source && gameTextNeedsNoTranslation(entry.source, options.target));
-      const preserved = preserveTargetGameText(selectedEntries, options.target, sourceFilter, options.skipTargetLanguage !== false);
+      const preserved = await screenGameText(selectedEntries, {
+        settings, model: options.screeningModel, prompts: promptState.selection, source: sourceFilter,
+        target: options.target, skipTarget: options.skipTargetLanguage !== false, signal: screening.signal, onOllamaStatus: report,
+        onProgress: (completed, total) => setProgress({ completed, total, detail: "正在用大模型筛选文本", textStage: "screening", model: options.screeningModel }),
+      });
+      screening.signal.throwIfAborted();
+      next.workflow = { screened: true, screenedIds: [...new Set([...(next.workflow?.screenedIds || []), ...selectedEntries.map(entry => entry.id)])] };
       await persist(next, true); publish(next); setDirty(false); setScreened(!screening.signal.aborted); setState(screening.signal.aborted ? "screen-stopped" : "screened");
       const result = unityTranslationStats(selectedEntries, gameTextProblem);
       report(`筛查完成：${preserved} 条原样保留，${result.total - result.completed} 种原文待翻译`, "success");
       if (options.skipTargetLanguage !== false && repaired.length) report(`已将 ${repaired.length} 条目标语言原文恢复为原样，替换此前重复翻译的结果。条目：${repaired.slice(0, 20).map(entry => "#" + entry.id).join("、")}`, "warning");
+      finishGameStep(promptState.scope + ":text", !screening.signal.aborted);
       return !screening.signal.aborted;
-    } catch (error) { setState("error"); setScreened(false); report(String(error), "error"); return false; }
-    finally { controller.current = null; setSaving(false); }
+    } catch (error) { setState(screening.signal.aborted ? "screen-stopped" : "error"); setScreened(false); if (!screening.signal.aborted) { const detail = error instanceof Error ? error.message : String(error); setProgressFailure(detail); report(detail, "error"); } return false; }
+    finally { finishGameStep(promptState.scope + ":text"); controller.current = null; setSaving(false); }
   };
   const resetTranslation = async (forTranslation = false) => {
-    if (busy || !current.current || !await confirmation.ask(forTranslation ? "重新翻译" : "清理译文缓存", "将删除所选条目的已有译文和草稿。")) return;
+    if (busy || !current.current || !await confirmation.ask(forTranslation ? "重新翻译" : "清理译文缓存", "将清除本次翻译统计及所选条目的已有译文和草稿。")) return;
     const next = { ...current.current, entries: current.current.entries.map(entry => entry.selected ? { ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined } : entry) };
     if (screened) preserveTargetGameText(next.entries.filter(entry=>entry.selected),options.target,sourceFilter,options.skipTargetLanguage!==false);
     const cleared = current.current.entries.filter(entry => entry.selected);
@@ -183,19 +267,20 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     try {
       await persist(next, true); publish(next); setDirty(false);
       report(`清理完成：译文 ${counts.text} 条，排版草稿 ${counts.drafts} 条，错误记录 ${counts.errors} 条；原文保留`, "success");
+      clearGamePerformance(promptState.scope + ":text", ["translate"]);
       setScreened(screened || forTranslation); setProgress(null); setState(screened || forTranslation ? "screened" : "idle");
       if (!screened && !forTranslation) setScreenStarted(false);
       report(forTranslation ? "所选译文已清除，点击开始翻译继续" : "所选译文已清除，点击开始筛选继续");
     } catch (error) { setState("error"); report(String(error), "error"); }
     finally { setSaving(false); }
   };
-  const run = async (automatic = false) => {
+  const run = async (automatic = false, failedOnly = false) => {
     if (options.kind !== "engine" && !models.includes(options.model)) { report("请选择常规文本模型", "warning"); return false; }
-    if (busy || !screened && !automatic || !current.current?.entries.length) return false;
+    if (controller.current || loading || !automatic && (busy || !screened) || !current.current?.entries.length) return false;
     const next = { ...current.current, entries: current.current.entries.map(entry => ({ ...entry })) };
-    report("开始翻译文本");
-    preserveTargetGameText(next.entries.filter(entry => entry.selected), options.target, sourceFilter, options.skipTargetLanguage !== false);
-    const abort = new AbortController(); controller.current = abort; setRunning(true); setState("running");
+    const retryIds = failedOnly ? new Set(next.entries.filter(entry => entry.error).map(entry => entry.id)) : undefined;
+    report(failedOnly ? "开始重试失败文本" : "开始翻译文本");
+    const abort = new AbortController(); controller.current = abort; beginGameStep(promptState.scope + ":text", "translate"); setRunning(true); setState("running"); setProgressFailure(""); setProgress(null);
     publish(next); setDirty(false);
     let pool: ReturnType<typeof createUnityEnginePool> | undefined;
     const task = async () => {
@@ -218,39 +303,72 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
             setProgress({ ...value, engineStats }); publish({ ...next, entries: [...next.entries] }); last = performance.now();
           }
         };
+        measureGameWork(promptState.scope + ":text", "processingMs", () => {
+          preserveTargetGameText(next.entries.filter(entry => entry.selected), options.target, sourceFilter, options.skipTargetLanguage !== false);
+        });
         const general = await api.getSettings();
         let terminology: ReadonlyMap<string, string> = new Map();
-        const request = async (provider: TranslateProvider, text: string, nameContext?: string) => {
-          const model = (nameContext ? options.nameModel : gameTextHasSpeaker(text) ? options.dialogueModel : "") || options.model;
-          const scene=nameContext?"names":gameTextHasSpeaker(text)?"dialogue":"text";
-          const config = buildUnityTranslateOptions(general, provider, sourceFilter, options.target, model, options.joinLines, !!loadLocalModelProfiles()[model || general.model] || options.kind === "local" && !model,provider==="llm"?gameTaskPrompt(scene,promptState.selection,{source:sourceFilter,target:options.target}):undefined,wrapMode);
-          const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(provider === "llm" ? 120000 : 30000)]);
+        const contextForEntry = createGameTranslationContext(next.entries, options.kind !== "engine" && !!options.includeContext);
+        const localProfiles = loadLocalModelProfiles();
+        type Role = "text" | "dialogue" | "names";
+        const llmOptions = new Map<Role, ReturnType<typeof buildUnityTranslateOptions>>();
+        const getOptions = (provider: TranslateProvider, scene: Role) => {
+          const cached = provider === "llm" && llmOptions.get(scene);
+          if (cached) return cached;
+          const model = (scene === "names" ? options.nameModel : scene === "dialogue" ? options.dialogueModel : "") || options.model;
+          const config = buildUnityTranslateOptions(general, provider, sourceFilter, options.target, model, options.joinLines,
+            !!localProfiles[model || general.model] || options.kind === "local" && !model,
+            provider === "llm" ? gameTaskPrompt(scene, promptState.selection, { source: sourceFilter, target: options.target }) : undefined,
+            wrapMode, { selection: promptState.selection, role: scene });
+          if (provider === "llm") llmOptions.set(scene, config);
+          return config;
+        };
+        const requestGroup = options.kind === "engine" || !options.dialogueModel || options.dialogueModel === options.model
+          || !localProfiles[options.dialogueModel] || !localProfiles[options.model]
+          ? undefined : localTextRequestGroup(getOptions("llm", "text"), getOptions("llm", "dialogue"));
+        const request = async (provider: TranslateProvider, text: string, nameContext?: string, entry?: UnityEntry) => {
+          const scene = nameContext ? "names" : gameTextHasSpeaker(text) ? "dialogue" : "text";
+          const config = getOptions(provider, scene);
+          const signal = provider === "llm" ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
           return translateGameControls(text, async (protectedText, originalContext) => {
-            const response = await api.translate(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...((nameContext || originalContext) && provider === "llm" ? {context:[{source:`原文语境（仅参考）：${nameContext || originalContext}`,translation:""}]} : {}), autoFallback: false });
-            if (!response.ok) throw new Error(response.code || "翻译失败"); return response.translation;
+            try {
+              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, context: provider === "llm" ? contextForEntry(entry, nameContext, originalContext) : undefined, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
+              if (!response.ok) throw new Error(response.error || response.code || "翻译失败");
+              return response.translation;
+            } catch (error) {
+              abort.signal.throwIfAborted();
+              if (provider !== "llm") throw error;
+              throw new Error(`${config.model || provider}：${signal.reason?.name === "TimeoutError" ? "请求超时" : error instanceof Error ? error.message : String(error)}`);
+            }
           }, options.skipTargetLanguage !== false ? options.target : "", sourceFilter, terminology);
         };
-        if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
-        terminology = await prepareGameTerms(next.entries.filter(entry => entry.selected && (!entry.translation || entry.error || gameTextProblem(entry.source, entry.translation))), next.entries, options.target, general.textGlossary,
+        if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { timingScope: promptState.scope + ":text", onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
+        terminology = await prepareGameTerms(next.entries.filter(entry => (retryIds ? retryIds.has(entry.id) : entry.selected) && (!entry.translation || entry.error || gameTextProblem(entry.source, entry.translation))), next.entries, options.target, general.textGlossary,
           (name, context) => options.kind !== "engine" ? request("llm", name, context) : pool!.translate(name), abort.signal,
-          (detail, completed, total) => setProgress({detail,completed,total}));
-        await translateUnitySession(next.entries.filter(entry => entry.selected), new Map(), { signal: abort.signal, concurrency: options.kind === "engine" ? Math.max(1, pool!.concurrency) : options.kind === "local" || [options.model || general.model, options.nameModel, options.dialogueModel].some(model => model && loadLocalModelProfiles()[model]) ? 1 : 16, references: next.entries,
+          (detail, completed, total) => setProgress({ detail, completed, total, textStage: "names", model: options.kind !== "engine" ? options.nameModel || options.model : undefined }));
+        await translateUnitySession(next.entries.filter(entry => retryIds ? retryIds.has(entry.id) : entry.selected), new Map(), { signal: abort.signal, concurrency: options.kind === "engine" ? Math.max(1, pool!.concurrency) : options.kind === "local" || [options.model || general.model, options.nameModel, options.dialogueModel].some(model => model && loadLocalModelProfiles()[model]) ? 8 : 16, references: next.entries,
           translate: (text, entry) => {
-            return options.kind !== "engine" ? request("llm", text) : pool!.translate(text, entry?.id);
+            return options.kind !== "engine" ? request("llm", text, undefined, entry) : pool!.translate(text, entry?.id);
           },
           format: wrapMode === "natural" ? validateGameNaturalLines : options.joinLines ? (original,translated)=>wrapGameTextToSource(original,gameTextHasSpeaker(original)?translated:restoreUnityTranslationLines(original,translated)) : undefined, preserveLayout: options.joinLines ? undefined : gameTextHasSpeaker,
+          timingScope: promptState.scope + ":text", requestGroup,
+          retainDraft: wrapMode === "natural",
           validate: gameTextProblem, persist: async () => { await persist(next, true); },
           progress: reportProgress,
         });
         publish({ ...next, entries: [...next.entries] }); setDirty(false);
         const failed = next.entries.filter(entry => entry.selected && entry.error);
         setState(failed.length ? "error" : "done"); report(failed.length ? `文本翻译结束，${failed.length} 条失败，可筛选后修改或恢复翻译` : "文本翻译完成", failed.length ? "warning" : "success");
+        const completed = !abort.signal.aborted && next.entries.every(entry => !entry.selected || (!!entry.translation && !entry.error));
+        finishGameStep(promptState.scope + ":text", completed);
         return !failed.length && !abort.signal.aborted;
       } catch (error) {
         publish({ ...next, entries: [...next.entries] }); setDirty(!abort.signal.aborted); setState(abort.signal.aborted ? "stopped" : "error");
-        report(abort.signal.aborted ? "文本翻译已中止，已完成结果保留" : String(error), abort.signal.aborted ? "warning" : "error");
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!abort.signal.aborted) setProgressFailure(detail);
+        report(abort.signal.aborted ? "文本翻译已中止，已完成结果保留" : detail, abort.signal.aborted ? "warning" : "error");
         return false;
-      } finally { pool?.dispose(); controller.current = null; setRunning(false); work.current = null; }
+      } finally { finishGameStep(promptState.scope + ":text"); pool?.dispose(); controller.current = null; setRunning(false); work.current = null; }
     };
     work.current = task(); return await work.current;
   };
@@ -276,13 +394,38 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     return ids;
   }, [entries, options.target, qualityCache, textFilters.quality, filter]);
   const membership = useRef<{ key: string; ids: Set<string> } | null>(null);
-  const filtered = useMemo(() => {
+  const matched = useMemo(() => {
     const key = `${search}\n${filter}\n${options.target}\n${JSON.stringify(textFilters)}`;
     if (dirty && membership.current?.key === key) return entries.filter(entry => membership.current!.ids.has(entry.id));
     const rows = entries.filter(entry => matchesGameTextFilters(textFilters, entry.selected, !(textFilters.pending && textFilters.failed && textFilters.done) && !!entry.translation && !gameTextProblem(entry.source, entry.translation), !!entry.error, qualityIssues.has(entry.id), targetTextIds.has(entry.id)) && (filter === "all" || filter === "target" && targetTextIds.has(entry.id) || filter === "quality" && qualityIssues.has(entry.id) || filter === "unfinished" && (!!entry.error || !!gameTextProblem(entry.source, entry.translation))) && (!search || `#${entry.id}\n${entry.source}\n${entry.translation}\n${entry.file}`.toLowerCase().includes(search.toLowerCase())));
     membership.current = { key, ids: new Set(rows.map(entry => entry.id)) }; return rows;
   }, [entries, search, filter, dirty, targetTextIds, qualityIssues, textFilters]);
+  const filtered = useMemo(() => limitGameText(matched, textFilters.limit), [matched, textFilters.limit]);
+  const checkedCount = filtered.reduce((count, entry) => count + Number(entry.selected), 0);
+  const hasMixedSelection = checkedCount > 0 && checkedCount < filtered.length;
   const pages = Math.max(1, Math.ceil(filtered.length / 40)), visiblePage = Math.min(page, pages - 1), rows = filtered.slice(visiblePage * 40, (visiblePage + 1) * 40);
+  const [rowJump, setRowJump] = useState<{ id: string; sequence: number } | null>(null);
+  const tableRef = useRef<HTMLTableElement>(null);
+  const locateEntry = (id: string) => {
+    let index = filtered.findIndex(entry => entry.id === id);
+    if (index < 0) {
+      index = entries.findIndex(entry => entry.id === id);
+      if (index < 0) return;
+      membership.current = null;
+      setSearch(""); setFilter("all"); setTextFilters({ ...defaultGameTextFilters });
+    }
+    setPage(Math.floor(index / 40));
+    setJumpPage("");
+    setRowJump(previous => ({ id, sequence: (previous?.sequence || 0) + 1 }));
+  };
+  useEffect(() => {
+    if (!rowJump) return;
+    const row = tableRef.current?.querySelector<HTMLTableRowElement>("tr[data-entry-id='" + CSS.escape(rowJump.id) + "']");
+    row?.scrollIntoView({ block: "center", inline: "nearest" });
+    row?.focus({ preventScroll: true });
+    const timer = window.setTimeout(() => setRowJump(previous => previous === rowJump ? null : previous), 2200);
+    return () => window.clearTimeout(timer);
+  }, [rowJump]);
   const jumpToPage = () => {
     const requested = Number(jumpPage);
     if (!jumpPage.trim() || !Number.isInteger(requested)) return;
@@ -290,14 +433,39 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   };
   const changeView = async (change: () => void) => { if (!dirty || running || await leave()) { membership.current = null; change(); setPage(0); } };
   const models = gameAvailableModels(settings);
-  const hasTranslations = selected.some(entry => !!(entry.translation || entry.layoutDraft || entry.error) && entry.translation !== entry.source);
+  const benchmarkWorkload = useRef({ entries, selected });
+  benchmarkWorkload.current = { entries, selected };
+  const benchmark = (): BenchmarkInput => ({
+    scope: promptState.scope, screenModel: options.screeningModel, getWorkload: () => benchmarkWorkload.current, models, onMessage: report,
+    current: { source: sourceFilter, target: options.target, wrap: wrapMode, includeContext: !!options.includeContext,
+      skipTarget: options.skipTargetLanguage !== false, engines, prompts: promptState.selection,
+      modelIds: {text:options.kind === "engine" ? "" : options.model, dialogue:options.dialogueModel || "", names:options.nameModel || ""} },
+  });
+  if (handle.current) {
+    handle.current.benchmark = benchmark;
+    handle.current.locate = locateEntry;
+    handle.current.findText = (source, translation) => {
+      const matches = entries.filter(entry => entry.source === source && entry.translation === translation);
+      return matches.length === 1 ? matches[0].id : undefined;
+    };
+    handle.current.canRetryFailures = !busy && screened;
+    handle.current.retryFailures = () => { if (!busy && screened) void run(false, true); };
+  }
+  const textCleanupAvailable = !!stepPerformance(promptState.scope + ":text", "translate").taskId ||
+    selected.some(entry => entry.layoutDraft || entry.error || (entry.translation && entry.translation !== entry.source));
   const clearScreen = async () => {
     if (busy || !current.current || !await confirmation.ask("清理筛选及后续结果", "清除筛选状态、译文和排版草稿，保留原文。")) return;
-    setSaving(true);
+    setSaving(true); setState("clearing");
+    setProgress({ completed: 0, total: current.current.entries.length, detail: "正在清理全部文本的筛选状态、译文和草稿…" });
     try {
-      const next = {...current.current,entries:current.current.entries.map(entry=>({...entry,translation:"",error:"",layoutDraft:undefined,screeningDraft:undefined}))};
-      await persist(next,true); publish(next); setDirty(false);
+      optionWrite.current?.(); await writes.current;
+      const next = {...current.current,workflow:{screened:false},entries:current.current.entries.map(entry=>({...entry,translation:"",error:"",layoutDraft:undefined,screeningDraft:undefined}))};
+      await persist(next,true);
+      const saved = await gameTextRequest<GameTextProject>("load", { gamePath, sourcePath: next.sourcePath });
+      if (saved.entries.some(entry => entry.translation || entry.layoutDraft || entry.screeningDraft || entry.error)) throw new Error("清理后仍存在文本结果，工程未恢复为空，请重试");
+      publish(saved); baseline.current = saved; setDirty(false); setProgressFailure("");
       setScreened(false); setScreenStarted(false); setProgress(null); setState("idle");
+      clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
       report("筛选及后续译文、排版草稿已清理", "success");
     } catch(error) { setState("error"); report(String(error), "error"); }
     finally { setSaving(false); }
@@ -306,13 +474,28 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const screenComplete = screened || textReady;
   const screeningProgress = !screenComplete || ["screening", "screen-stopped", "screened"].includes(state);
   const currentPhase = screeningProgress ? "screen" : "translate";
-  const isFormatting = progress?.translation?.active.some(item => item.phase === "formatting");
+  const automaticSteps = useRef({ screen, run });
+  automaticSteps.current = { screen, run };
+  const configLocked = loading || (busy && (configured === currentPhase || configured === "screen" && screened));
+
+  const [, refreshElapsed] = useState(0);
+  useEffect(() => {
+    const refresh = () => refreshElapsed(value => value + 1);
+    window.addEventListener("llmchat-game-performance", refresh);
+    const timer = running || state === "screening" ? window.setInterval(refresh, 1000) : undefined;
+    return () => {
+      window.removeEventListener("llmchat-game-performance", refresh);
+      window.clearInterval(timer);
+    };
+  }, [running, state]);
+  const elapsedLabel = gameDuration(stepPerformance(promptState.scope + ":text", currentPhase).elapsedMs);
+  const stepLabel = progress?.textStage ? gameTextStageLabels[progress.textStage] : screeningProgress ? "筛选文本" : "翻译正文";
   const progressLabel = loading ? "正在读取" : state === "clearing" ? "正在清理"
     : state === "screening" ? "正在筛选" : state === "screen-stopped" || state === "stopped" ? "已中止"
-    : running ? isFormatting ? "正在断行与校验" : progress && !progress.translation ? "正在统一姓名" : "正在翻译正文"
-    : state === "error" ? "有条目失败" : screeningProgress && screenComplete || textReady ? "已完成" : "待开始";
-  const progressCompleted = screeningProgress ? screenComplete ? selected.length : 0 : progress?.completed ?? stats.completed;
-  const progressTotal = screeningProgress ? selected.length : progress?.total ?? stats.total;
+    : running ? "正在处理"
+    : state === "error" ? progressFailure ? "失败" : "有条目失败" : screeningProgress && screenComplete || textReady ? "已完成" : "待开始";
+  const progressCompleted = screeningProgress ? screenComplete ? selected.length : progress?.completed ?? 0 : progress?.completed ?? stats.completed;
+  const progressTotal = screeningProgress ? screenComplete ? selected.length : progress?.total ?? selected.length : progress?.total ?? stats.total;
   const percent = progressTotal ? Math.min(100, Math.floor(progressCompleted / progressTotal * 100)) : textReady ? 100 : 0;
   const prompt = (scene: keyof typeof promptState.selection) => promptState.selection[scene] || "builtin:" + scene;
   const languageConfiguration = [options.source, options.target, options.onlySourceLanguage !== false, options.skipTargetLanguage !== false];
@@ -320,59 +503,83 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     options.model, prompt("text"), options.dialogueModel || "", prompt("dialogue"), options.nameModel || "", prompt("names"),
   ] : [];
   const configuration = {
-    screen: JSON.stringify([options.kind, ...languageConfiguration]),
+    screen: JSON.stringify([...languageConfiguration, options.screeningModel ?? null, options.screeningModel !== undefined ? prompt("textScreen") : null]),
     translate: JSON.stringify([options.kind, ...languageConfiguration, wrapMode,
-      options.kind === "engine" ? engines : modelConfiguration]),
+      options.kind === "engine" ? engines : [modelConfiguration, !!options.includeContext]]),
   };
   const restoreConfiguration = (step: string) => {
     if (step === "screen") {
-      const { kind, source, target, onlySourceLanguage, skipTargetLanguage } = options;
-      setOptions(current => ({ ...current, kind, source, target, onlySourceLanguage, skipTargetLanguage }));
+      const { screeningModel, source, target, onlySourceLanguage, skipTargetLanguage } = options;
+      setOptions(current => ({ ...current, screeningModel, source, target, onlySourceLanguage, skipTargetLanguage }));
+      promptState.select("textScreen", prompt("textScreen"));
       return;
     }
-    setOptions(options);
+    setOptions(current => ({ ...options, screeningModel: current.screeningModel }));
     setEngines(engines);
     for (const scene of ["text", "dialogue", "names"] as const) promptState.select(scene, prompt(scene));
   };
+  const languageFields = <>
+    <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={options.onlySourceLanguage !== false} disabled={busy} onChange={event => setOptions({ ...options, onlySourceLanguage: event.target.checked })} />仅翻译原语言</label></div><select aria-label="原文语言" disabled={busy} value={options.source} onChange={event => { setOptions({ ...options, source: event.target.value }); }}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
+    <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；中日共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={options.skipTargetLanguage !== false} disabled={busy} onChange={event => { setOptions({ ...options, skipTargetLanguage: event.target.checked }); }} />跳过目标语言</label></div><select aria-label="目标语言" disabled={busy} value={options.target} onChange={event => { setOptions({ ...options, target: event.target.value }); }}>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
+  </>;
   const progressContent = <div className={`unity-current-task ${state}`}>
-    <div className="unity-generation-status"><strong>{screeningProgress ? "筛选文本" : "翻译、断行与校验"} · {progressLabel}</strong><span>{progressCompleted} / {progressTotal}</span></div>
+    <div className="unity-generation-status"><strong>{stepLabel} · {progressLabel}</strong><span style={{display:"flex",gap:16,flexWrap:"wrap",justifyContent:"flex-end"}}><span>步骤用时：{elapsedLabel}</span><span>{progressCompleted} / {progressTotal}</span></span></div>
     <div className={`unity-progress-track${running || state === "screening" ? " is-running" : ""}`} role="progressbar" aria-label="文本处理进度" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div className="unity-progress-fill" style={{ width: `${percent}%` }} /></div>
     {state === "clearing" && <p className="unity-task-detail">{progress?.detail}</p>}
-    {progress && !screeningProgress && <UnityTranslationProgress progress={progress} running={running} onLocate={id => { setSearch(`#${id}`); setFilter("all"); setPage(0); }} />}
+    {progress && (!screeningProgress || progress.textStage === "screening") && <UnityTranslationProgress progress={progress} running={running || state === "screening"} failure={state === "error" ? progressFailure : undefined} onLocate={locateEntry} />}
+    {!progress && state === "error" && progressFailure && <p className="game-text-progress-failure" role="alert">{progressFailure}</p>}
   </div>;
-  return <>{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}>{steps}<div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{step: currentPhase, state: state === "screening" || running ? "running" : state === "screen-stopped" ? "stopped" : state, progress: progressContent}} configured={configured} onConfigure={setConfigured}
+  return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}>{steps}<div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{step: currentPhase, state: state === "screening" || running ? "running" : state === "screen-stopped" ? "stopped" : state, progress: progressContent}} configured={configured} onConfigure={setConfigured}
     onRun={!busy && !textReady && selected.length ? () => void handle.current?.automatic(new AbortController().signal) : undefined}
     steps={[
-      { id: "screen", title: "筛选文本", summary: UNITY_LANGUAGES.find(language => language.value === options.source)?.label || "自动检测",
+      { id: "screen", title: "筛选文本", models: [{role:"textScreen",id:options.screeningModel}], summary: options.screeningModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选",
         state: screenComplete ? "done" : "current",
         run: !screenComplete && selected.length ? () => void screen() : undefined,
         stop: state === "screening" ? () => controller.current?.abort() : undefined,
         runLabel: state === "screen-stopped" ? "继续" : "开始", runDisabled: busy && state !== "screening",
         clear: !busy && (screenStarted || screenComplete) ? () => void clearScreen() : undefined },
-      { id: "translate", title: "翻译正文", summary: options.kind === "engine" ? "翻译引擎" : options.model.split("/").pop(),
+      { id: "translate", title: "翻译正文",
+        models: options.kind === "engine" ? [] : [
+        {role:"names",id:options.nameModel || options.model}, {role:"text",id:options.model}, {role:"dialogue",id:options.dialogueModel || options.model},
+      ], summary: options.kind === "engine" ? "翻译引擎" : options.model.split("/").pop(),
         state: textReady ? "done" : screenComplete ? "current" : "waiting",
         run: screenComplete && !textReady ? () => void run() : undefined,
         stop: running ? () => controller.current?.abort() : undefined,
         runLabel: state === "stopped" || state === "error" ? "继续" : "开始",
         runDisabled: !running && (busy || options.kind !== "engine" && !models.includes(options.model)),
-        clear: !busy && hasTranslations ? () => void resetTranslation(true) : undefined },
-    ]}><div className="unity-translation-settings"><GameTranslationTabs kind={options.kind} disabled={busy} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
+        clear: !busy && textCleanupAvailable ? () => void resetTranslation(true) : undefined },
+    ]}><div className="unity-translation-settings">
+    {configured === "screen" && <GameProcessingTabs label="筛选方式" localLabel="本地筛选" value={options.screeningModel === undefined ? "local" : "llm"}
+      disabled={configLocked} onChange={method => setOptions(current => ({ ...current, screeningModel: method === "llm" ? "" : undefined }))}>
+      <div className="unity-control-group"><div className="unity-group-fields unity-translation-fields">
+        {options.screeningModel !== undefined && <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={models} value={options.screeningModel}
+          disabled={configLocked} onChange={model => setOptions(current => ({ ...current, screeningModel: model }))} />}
+        {languageFields}
+      </div></div>
+    </GameProcessingTabs>}
+    {configured === "translate" && <GameTranslationTabs kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
     {configured === "translate" && options.kind !== "engine" && <>
-      <GameModelSelect label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={busy} onChange={model => setOptions({ ...options, model })} />
-      <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={busy} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
-      <GameModelSelect optional label="缺失姓名模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={busy} onChange={nameModel => setOptions({ ...options, nameModel })} />
+      <GameModelSelect label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={configLocked} onChange={model => setOptions({ ...options, model })} />
+      <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={configLocked} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
+      <GameModelSelect optional label="缺失姓名模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
     </>}
-    <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={options.onlySourceLanguage !== false} disabled={busy} onChange={event => setOptions({ ...options, onlySourceLanguage: event.target.checked })} />仅翻译原语言</label></div><select aria-label="原文语言" disabled={busy} value={options.source} onChange={event => { setOptions({ ...options, source: event.target.value }); }}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
-    <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；中日共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={options.skipTargetLanguage !== false} disabled={busy} onChange={event => { setOptions({ ...options, skipTargetLanguage: event.target.checked }); }} />跳过目标语言</label></div><select aria-label="目标语言" disabled={busy} value={options.target} onChange={event => { setOptions({ ...options, target: event.target.value }); }}>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
-    </div></div>{configured === "translate" && options.kind === "engine" && <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={busy} expanded={expanded} onExpandedChange={setExpanded} onChange={setEngines} />}</GameTranslationTabs>
-    {configured === "translate" && <div className="unity-control-group"><label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={busy} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label></div>}
+    {languageFields}
+    </div>
+    {configured === "translate" && options.kind !== "engine" && <div className="unity-run-options"><label className="unity-inline-check" data-tooltip={GAME_CONTEXT_HINT + " 词典型工程仅有独立原文时，使用条目自身的语境。"}><input type="checkbox" checked={!!options.includeContext} disabled={configLocked} onChange={event => setOptions({ ...options, includeContext: event.target.checked })} />附带上下文</label></div>}
+    </div>{configured === "translate" && options.kind === "engine" && <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={expanded} onExpandedChange={setExpanded} onChange={setEngines} />}</GameTranslationTabs>}
+    {configured === "translate" && <div className="unity-control-group"><label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label></div>}
     </div></GameFlowSequence></GamePromptContext.Provider></div>
     </div>, controls)}
     {results && createPortal(<section hidden={!visible} ref={root} data-game-drop-zone="text" {...drop.handlers} className="unity-offline-workbench game-text-workbench"><div className="unity-offline-toolbar"><div className="unity-result-filters"><strong>文本与译文</strong><GameTextFileMenu kind="download" active={active&&visible} disabled={busy||!entries.length} options={[
       {value:"all",label:"下载全部",title:`下载工程全部 ${entries.length} 条，包含未勾选条目`},
       {value:"filtered",label:"下载筛选内容",title:`下载当前筛选匹配的全部 ${filtered.length} 条，包含其他分页`,disabled:!filtered.length},
-    ]} onSelect={range=>void download(range)}/><GameTextFileMenu kind="import" active={active&&visible} disabled={busy||!entries.length} options={GAME_TEXT_IMPORT_CHOICES} onSelect={mode=>void pickImport(mode)}/><GameTextFilterMenu active={active && visible} value={textFilters} onChange={value => { void changeView(() => { setTextFilters(value); setFilter("all"); }); }} /></div><div className="unity-result-tools"><input type="search" placeholder="搜索" aria-label="搜索原文和译文" value={search} onChange={event => { const value = event.target.value; void changeView(() => setSearch(value)); }} /><button className="unity-btn unity-text-discard" disabled={!dirty || busy} onClick={async () => { if (await confirm("取消尚未保存的文本修改？", { title: "取消修改", kind: "warning", okLabel: "取消修改", cancelLabel: "返回" })) discard(); }}>取消修改</button><button className="unity-btn" disabled={busy || !dirty || !project?.sourcePath} onClick={() => void save()}>保存</button></div></div>
-    {loading ? <div className="unity-offline-empty">正在读取文本工程…</div> : !entries.length ? <div className="unity-offline-empty">请先在步骤 1 扫描资源</div> : <><div className="unity-offline-table-scroll"><table className="unity-offline-table"><colgroup><col style={{ width: 32 }} /><col style={{ width: 125 }} /><col style={{ width: "42%" }} /><col /></colgroup><thead><tr><th><input type="checkbox" aria-label="勾选全部搜索结果" disabled={busy} checked={!!filtered.length && filtered.every(entry => entry.selected)} onChange={event => { const ids = new Set(filtered.map(entry => entry.id)); publish({ ...project!, entries: entries.map(entry => ids.has(entry.id) ? { ...entry, selected: event.target.checked } : entry) }); setScreened(false); setDirty(true); }} /></th><th>来源</th><th>原文</th><th>译文</th></tr></thead><tbody>{rows.map(entry => <tr key={entry.id} className={entry.error ? "has-error" : ""}><td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={busy} checked={entry.selected} onChange={event => edit(entry.id, { selected: event.target.checked })} /></td><td><span><SearchHighlight text={`#${entry.id} · 游戏文本`} query={search} /></span><small>MTool.json</small></td><td className="unity-offline-source"><div className="unity-source-text"><GameTextScreenedSource completed={!!entry.translation && !entry.error && !gameTextProblem(entry.source, entry.translation)} source={entry.source} target={options.target} sourceLanguage={sourceFilter} locale={entry.locale} skipTarget={options.skipTargetLanguage !== false} screened={entry.selected && (screened || entry.screeningDraft !== undefined || entry.translation === entry.source)} query={search} /></div></td><td><div className="unity-entry-editor"><GameTextScreenedEditor screening={{ source: entry.source, target: options.target, sourceLanguage: sourceFilter, locale: entry.locale, skipTarget: options.skipTargetLanguage !== false, screened: entry.selected && (screened || entry.screeningDraft !== undefined || entry.translation === entry.source) }} screeningDraft={entry.screeningDraft} query={search} aria-label={`第 ${entry.id} 条译文`} value={entry.translation} rows={1} disabled={busy} onChange={event => edit(entry.id, { translation: event.target.value, screeningDraft: undefined })} />{entry.error && <button className="unity-row-error" data-tooltip={entry.error} aria-label={entry.error} onClick={() => { report(`第 ${entry.id} 条翻译失败：${entry.error}`, "error"); void message(entry.error, { title: `第 ${entry.id} 条`, kind: "error" }); }}>!</button>}</div></td></tr>)}</tbody></table>{!filtered.length && <p className="hint">没有匹配的文本</p>}</div><div className="unity-results-footer"><span>{options.onlySourceLanguage === false ? "全部语言" : UNITY_LANGUAGES.find(language => language.value === detectedSource)?.label || "自动检测"} · 可回写 {stats.coverageCompleted} / {selected.length} 条</span><div className="unity-offline-pagination" aria-label="文本结果分页"><button className="unity-btn" disabled={!visiblePage} onClick={() => setPage(Math.max(0, visiblePage - 10))}>-10 页</button><button className="unity-btn" disabled={!visiblePage} onClick={() => setPage(visiblePage - 1)}>上一页</button><span>{visiblePage + 1} / {pages}</span><button className="unity-btn" disabled={visiblePage + 1 >= pages} onClick={() => setPage(visiblePage + 1)}>下一页</button><button className="unity-btn" disabled={visiblePage + 1 >= pages} onClick={() => setPage(Math.min(pages - 1, visiblePage + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pages} placeholder="页码" value={jumpPage} onChange={event => setJumpPage(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); jumpToPage(); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={jumpToPage}>跳转</button></div></div></>}
+    ]} onSelect={range=>void download(range)}/><GameTextFileMenu kind="import" active={active&&visible} disabled={busy||!entries.length} options={GAME_TEXT_IMPORT_CHOICES} onSelect={mode=>void pickImport(mode)}/><GameTextFilterMenu active={active && visible} value={textFilters} matched={matched.length} shown={filtered.length}
+          onLimitChange={limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); }}
+          onChange={value => { void changeView(() => { setTextFilters(value); setFilter("all"); }); }} /></div><div className="unity-result-tools"><input type="search" placeholder="搜索" aria-label="搜索原文和译文" value={search} onChange={event => { const value = event.target.value; void changeView(() => setSearch(value)); }} /><button className="unity-btn unity-text-discard" disabled={!dirty || busy} onClick={async () => { if (await confirm("取消尚未保存的文本修改？", { title: "取消修改", kind: "warning", okLabel: "取消修改", cancelLabel: "返回" })) discard(); }}>取消修改</button><button className="unity-btn" disabled={busy || !dirty || !project?.sourcePath} onClick={() => void save()}>保存</button></div></div>
+    {loading ? <div className="unity-offline-empty">正在读取文本工程…</div> : !entries.length ? <div className="unity-offline-empty">请先在步骤 1 扫描资源</div> : <><div className="unity-offline-table-scroll"><table ref={tableRef} className="unity-offline-table"><colgroup><col style={{ width: 32 }} /><col style={{ width: 125 }} /><col style={{ width: "42%" }} /><col /></colgroup><thead><tr><th><input type="checkbox" aria-label="勾选当前筛选结果"
+        data-tooltip="仅勾选或取消当前筛选结果，包含其他分页。" disabled={busy || !filtered.length}
+        checked={filtered.length > 0 && checkedCount === filtered.length}
+        ref={input => { if (input) input.indeterminate = hasMixedSelection; }} onChange={event => { membership.current = null; editEntries(new Set(filtered.map(entry => entry.id)), { selected: event.target.checked }); }} /></th><th>来源</th><th>原文</th><th>译文</th></tr></thead><tbody>{rows.map(entry => <tr key={rowJump?.id === entry.id ? entry.id + ":" + rowJump.sequence : entry.id} data-entry-id={entry.id} tabIndex={-1} className={(entry.error ? "has-error " : "") + (rowJump?.id === entry.id ? "unity-entry-target" : "")}><td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={busy} checked={entry.selected} onChange={event => edit(entry.id, { selected: event.target.checked })} /></td><td><span><SearchHighlight text={`#${entry.id} · 游戏文本`} query={search} /></span><small>MTool.json</small></td><td className="unity-offline-source"><div className="unity-source-text"><GameTextScreenedSource completed={!!entry.translation && !entry.error && !gameTextProblem(entry.source, entry.translation)} source={entry.source} target={options.target} sourceLanguage={sourceFilter} locale={entry.locale} skipTarget={options.skipTargetLanguage !== false} screened={entry.selected && (screened || entry.screeningDraft !== undefined || entry.translation === entry.source)} query={search} /></div></td><td><div className="unity-entry-editor"><GameTextScreenedEditor screening={{ source: entry.source, target: options.target, sourceLanguage: sourceFilter, locale: entry.locale, skipTarget: options.skipTargetLanguage !== false, screened: entry.selected && (screened || entry.screeningDraft !== undefined || entry.translation === entry.source) }} screeningDraft={entry.screeningDraft} query={search} aria-label={`第 ${entry.id} 条译文`} value={entry.translation} rows={1} disabled={busy} onChange={event => edit(entry.id, { translation: event.target.value, screeningDraft: undefined })} />{entry.error && <button className="unity-row-error" data-tooltip={entry.error} aria-label={entry.error} onClick={() => { report(`第 ${entry.id} 条翻译失败：${entry.error}`, "error"); showAppNotice(`第 ${entry.id} 条：${entry.error}`, "error"); }}>!</button>}</div></td></tr>)}</tbody></table>{!filtered.length && <div className="game-text-no-matches" role="status"><strong>没有匹配的文本</strong><span>请修改搜索词或筛选条件后重试。</span></div>}</div><div className="unity-results-footer"><span>{options.onlySourceLanguage === false ? "全部语言" : UNITY_LANGUAGES.find(language => language.value === detectedSource)?.label || "自动检测"} · 可回写 {stats.coverageCompleted} / {selected.length} 条</span><div className="unity-offline-pagination" aria-label="文本结果分页"><button className="unity-btn" disabled={!visiblePage} onClick={() => setPage(Math.max(0, visiblePage - 10))}>-10 页</button><button className="unity-btn" disabled={!visiblePage} onClick={() => setPage(visiblePage - 1)}>上一页</button><span>{visiblePage + 1} / {pages}</span><button className="unity-btn" disabled={visiblePage + 1 >= pages} onClick={() => setPage(visiblePage + 1)}>下一页</button><button className="unity-btn" disabled={visiblePage + 1 >= pages} onClick={() => setPage(Math.min(pages - 1, visiblePage + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pages} placeholder="页码" value={jumpPage} onChange={event => setJumpPage(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); jumpToPage(); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={jumpToPage}>跳转</button></div></div></>}
     </section>, results)}
     {pendingLeave && <GameDialog title="文本修改尚未保存" description="保存修改后继续，或放弃尚未保存的文本修改。" onCancel={()=>{pendingLeave("cancel");setPendingLeave(null);}}>{([["cancel", "返回"], ["discard", "放弃修改"], ["save", "保存后继续"]] as const).map(([choice,label])=><button key={choice} autoFocus={choice==="cancel"} className={choice==="save"?"game-confirm-primary":choice==="discard"?"game-confirm-accept":"game-confirm-cancel"} onClick={()=>{pendingLeave(choice);setPendingLeave(null);}}>{label}</button>)}</GameDialog>}
   </>;

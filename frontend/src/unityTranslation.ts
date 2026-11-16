@@ -1,3 +1,5 @@
+import { gameModelExecution } from "./gameModelPerformance";
+import { gameTextHasSpeaker } from "./gameDisplayText";
 import { gameTaskPrompt } from "./gamePrompts";
 import type { GameWrapMode } from "./gameTextLayout";
 import type { Settings, TranslateOptions, TranslateProvider } from "./api";
@@ -115,6 +117,7 @@ export function buildUnityTranslateOptions(
   local = false,
   customPrompt?: string,
   wrapMode: GameWrapMode = joinLines ? "join" : "keep",
+  execution?: { selection: object; role: string },
 ): TranslateOptions {
   if (provider !== "llm") return { provider, source, target, feature: "unity", maxLength: 0, autoChunk: false };
   const connection = local ? gameLocalModelConnection(model || settings.model) : resolveFeatureLlm(settings, model);
@@ -123,10 +126,25 @@ export function buildUnityTranslateOptions(
   const language = UNITY_LANGUAGES.find(l => l.value === target)?.label || target;
   return {
     provider: "llm", source, target, feature: "unity", maxLength: 0, autoChunk: false,
-    ...connection, ...(local ? { localModel: true } : {}),
+    ...connection, ...(execution ? gameModelExecution(execution.selection, execution.role, connection.model) : {}), ...(local ? { localModel: true } : {}),
     glossary: settings.textGlossary,
     prompt: (customPrompt || gameTaskPrompt("text",undefined,{source,target:language})) + `\n仅返回译文，不要解释或代码围栏。保留全部格式占位符、富文本标签、控制符及分页符，不翻译标识符和路径。` + (wrapMode === "natural" ? "保留原段落空行和列表条目边界，允许按译文语义重新安排段内换行，不强制保留原文行数。" : wrapMode === "join" ? "保留段落、列表编号和项目顺序；段内输出连贯译文，显示折行由程序计算。" : "保留原换行和空行。"),
   };
+}
+
+/** Keep each local model resident for a contiguous run when both share one service. */
+export function localTextRequestGroup(main: TranslateOptions, dialogue?: TranslateOptions): ((text: string) => string) | undefined {
+  if (!main.localModel || !dialogue?.localModel || !main.model || !dialogue.model || main.model === dialogue.model) return;
+  const origin = (address?: string) => {
+    if (!address) return;
+    const url = new URL(address);
+    if (url.hostname === "localhost" || url.hostname === "[::1]") url.hostname = "127.0.0.1";
+    return url.origin;
+  };
+  try {
+    if (!main.apiUrl || origin(main.apiUrl) !== origin(dialogue.apiUrl)) return;
+  } catch { return; }
+  return text => gameTextHasSpeaker(text) ? dialogue.model! : main.model!;
 }
 
 export function sameUnityGamePath(left: string, right: string) {

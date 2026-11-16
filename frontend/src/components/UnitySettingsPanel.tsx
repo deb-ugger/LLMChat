@@ -55,10 +55,7 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
     { active, notify, onTargetChange, onDirtyChange },
     ref,
   ) {
-    const [gameDir, setGameDir] = useState(() => lastUnityGameDir());
     const [sections, setSections] = useState<UnityIniSection[]>([]);
-    const [configPath, setConfigPath] = useState("");
-    const [configExists, setConfigExists] = useState(false);
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [expandedEngine, setExpandedEngine] = useState<string | null>(null);
@@ -91,7 +88,6 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
       if (loadingRef.current) return;
       loadingRef.current = true;
       const dir = lastUnityGameDir();
-      setGameDir(dir);
       onTargetChangeRef.current?.({ hasGame: !!dir, gameDir: dir });
       setLoading(true);
       setLoadError(null);
@@ -101,8 +97,6 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
           const draft = loadUnityConfigDraft();
           if (draft?.length) {
             acceptLoadedSections(draft);
-            setConfigPath("");
-            setConfigExists(false);
             setLoadError(res.error || "读取游戏配置失败，已回退到通用模板");
             notifyRef.current(
               res.error || "读取游戏配置失败，已回退到通用模板",
@@ -120,16 +114,12 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
         if (draft && (!dir || !res.exists)) {
           next = mergeUnityDraftInto(next, draft);
         }
-        setConfigPath(res.path || "");
-        setConfigExists(!!res.exists);
         acceptLoadedSections(next);
       } catch (e) {
         const msg = toFriendlyError(e, "读取配置失败");
         const draft = loadUnityConfigDraft();
         if (draft?.length) {
           acceptLoadedSections(draft);
-          setConfigPath("");
-          setConfigExists(false);
           setLoadError(`${msg}；已回退到通用模板`);
         } else {
           acceptLoadedSections([]);
@@ -169,14 +159,12 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
             notifyRef.current(res.error || "保存失败", false);
             throw new Error(res.error || "save failed");
           }
-          setConfigPath(res.path || configPath);
-          setConfigExists(true);
           savedSectionsRef.current = sections;
           setDirty(false);
           notifyRef.current("已写入当前游戏 Config.ini，并更新通用模板");
         },
       }),
-      [sections, configPath, setDirty],
+      [sections, setDirty],
     );
 
     const engines = engineConfigSections(sections);
@@ -192,37 +180,6 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
 
     return (
       <>
-        <p className="hint">嵌字工程、进度和补丁保存在所选游戏的 LLMChat-Unity 工作文件夹。</p>
-
-        <section className="settings-card">
-          <div className="settings-card-head">
-            <h2>{gameDir ? "当前游戏" : "通用模板"}</h2>
-          </div>
-          {gameDir ? (
-            <>
-              <p className="hint settings-unity-game-path">
-                <code>{gameDir}</code>
-              </p>
-              {configPath ? (
-                <p className="hint">
-                  配置文件
-                  {configExists ? "" : "（尚未生成，保存后写入）"}：
-                  <code>{configPath}</code>
-                </p>
-              ) : null}
-            </>
-          ) : (
-            <p className="hint">
-              尚未选中游戏。当前编辑的是通用模板，保存后会记住；之后在 Unity
-              页选中游戏再保存即可写入该游戏。
-            </p>
-          )}
-          {loading ? <p className="hint">正在读取配置…</p> : null}
-          {loadError && !loading ? (
-            <p className="hint settings-unity-load-error">{loadError}</p>
-          ) : null}
-        </section>
-
         <section className="settings-card">
           <div className="settings-card-head">
             <h2>运行时插件引擎参数</h2>
@@ -230,6 +187,8 @@ export const UnitySettingsPanel = forwardRef<UnitySettingsPanelHandle, Props>(
           <p className="hint">
             这些参数写入游戏的 AutoTranslator 配置。嵌字翻译的模型、API 和引擎凭证使用「设置 → 通用」；运行时选择 LLMChat 大模型桥接也使用通用配置。
           </p>
+          {loading && <p className="hint">正在读取配置…</p>}
+          {loadError && !loading && <p className="hint settings-unity-load-error">{loadError}</p>}
           <div className="settings-engine-catalog">
             {engines.map((sec) => {
               const meta = sectionMeta(sec.name);

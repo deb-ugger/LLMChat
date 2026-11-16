@@ -11,6 +11,7 @@ struct TranslateResult {
     std::string code;
     int promptTokens = 0;
     int completionTokens = 0;
+    double generationTokensPerSecond = 0;
     int totalTokens = 0;
     int cacheReadTokens = 0;
     int cacheWriteTokens = 0;
@@ -48,7 +49,8 @@ public:
         const std::string& httpProxy = "",
         const std::string& customPrompt = "",
         const std::string& glossaryJson = "",
-        const std::string& contextJson = "");
+        const std::string& contextJson = "",
+        bool ollamaReasoningOff = false, int maxOutputTokens = 0, bool nativeOllama = false);
 
     /** JSON: {ok, entry?, error?, provider?} — Bing webpage dictionary. */
     static std::string lookupDictionaryJson(

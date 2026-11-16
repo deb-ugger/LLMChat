@@ -2524,8 +2524,7 @@ body.row-resizing .textLayer {
   margin-top: 8px;
 }
 
-.settings-vendor-add-row input,
-.settings-vendor-add-row select.settings-ollama-directory {
+.settings-vendor-add-row input {
   flex: 1 1 120px;
   min-width: 0;
   font: inherit;
@@ -2608,6 +2607,8 @@ dialog.ollama-service-dialog::backdrop { background: #0f172a61; backdrop-filter:
 .ollama-service-error { color: var(--danger, #c13b45); font-size: 13px; overflow-wrap: anywhere; }
 .settings-ollama-config { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .settings-ollama-config .settings-vendor-add-row { margin: 0; }
+.settings-ollama-config .unity-description-select { flex: 1 1 120px; color: var(--text); }
+.settings-ollama-config .unity-description-trigger { min-height: 36px; height: 100%; font-size: 13px; background: var(--bg); }
 .settings-ollama-config .settings-engine-field > input { box-sizing: border-box; width: 100%; min-width: 0; }
 .settings-ollama-config .settings-engine-panel-actions { margin: 0; }
 .settings-engine-panel.settings-ollama-panel > .settings-vendor-models { grid-row: auto; padding-left: 20px; border-left: 1px solid var(--border); }

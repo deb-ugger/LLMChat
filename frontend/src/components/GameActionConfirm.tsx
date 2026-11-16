@@ -24,21 +24,20 @@ export function GameDialog({ title, description, onCancel, disabled = false, chi
   </dialog>, document.body);
 }
 type Options = { title?: string; okLabel?: string; cancelLabel?: string; kind?: string };
-type Question = { title: string; description: string; accept: string; cancel: string; notice?: boolean; kind?: string; resolve: (accepted: boolean) => void };
+type Question = { title: string; description: string; accept: string; cancel: string; kind?: string; resolve: (accepted: boolean) => void };
 export function useGameActionConfirm(output?: (text: string) => void) {
   const [question, setQuestion] = useState<Question | null>(null);
   const pending = useRef<((accepted: boolean) => void) | null>(null), logger = useRef(output); logger.current = output;
   useEffect(() => () => pending.current?.(false), []);
-  const request = (title: string, description: string, accept: string, cancel: string, notice = false, kind = "warning") => new Promise<boolean>(resolve => {
-    const finish = (accepted: boolean) => { pending.current = null; setQuestion(null); if (accepted && !notice) logger.current?.(`已确认：${title}`); resolve(accepted); };
-    pending.current?.(false); pending.current = finish; setQuestion({ title, description, accept, cancel, notice, kind, resolve: finish });
+  const request = (title: string, description: string, accept: string, cancel: string, kind = "warning") => new Promise<boolean>(resolve => {
+    const finish = (accepted: boolean) => { pending.current = null; setQuestion(null); if (accepted) logger.current?.(`已确认：${title}`); resolve(accepted); };
+    pending.current?.(false); pending.current = finish; setQuestion({ title, description, accept, cancel, kind, resolve: finish });
   });
   const ask = (title: string, description: string, accept = "确认清理") => request(title, description, accept, "取消");
-  const confirm = (description: string, options: Options = {}) => request(options.title || "确认操作", description, options.okLabel || "确定", options.cancelLabel || "取消", false, options.kind || "warning");
-  const message = async (description: string, options: Options = {}) => { await request(options.title || "提示", description, "知道了", "", true, options.kind || "info"); };
+  const confirm = (description: string, options: Options = {}) => request(options.title || "确认操作", description, options.okLabel || "确定", options.cancelLabel || "取消", options.kind || "warning");
   const dialog = question && <GameDialog title={question.title} description={question.description} onCancel={() => question.resolve(false)}>
-    {!question.notice && <button type="button" className="game-confirm-cancel" autoFocus onClick={() => question.resolve(false)}>{question.cancel}</button>}
-    <button type="button" className={question.kind === "info" ? "game-confirm-primary" : "game-confirm-accept"} autoFocus={question.notice} onClick={() => question.resolve(true)}>{question.accept}</button>
+    <button type="button" className="game-confirm-cancel" autoFocus onClick={() => question.resolve(false)}>{question.cancel}</button>
+    <button type="button" className={question.kind === "info" ? "game-confirm-primary" : "game-confirm-accept"} onClick={() => question.resolve(true)}>{question.accept}</button>
   </GameDialog>;
-  return { ask, confirm, message, dialog };
+  return { ask, confirm, dialog };
 }

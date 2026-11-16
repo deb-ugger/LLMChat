@@ -1,3 +1,4 @@
+import { measureGameAsync, measureGameWork, startGameTiming } from "./gameModelPerformance";
 import { gameTextHasSpeaker } from "./gameDisplayText";
 import type { UnityEntry, UnityProgress, UnityTranslationActivity } from "./unityOffline";
 export type UnityTranslationQueue = {
@@ -6,7 +7,10 @@ export type UnityTranslationQueue = {
 };
 
 type Session = {
+  timingScope?: string;
+  modelFormats?: boolean;
   references?: UnityEntry[];
+  requestGroup?: (source: string) => string;
   key?: (entry: UnityEntry) => string;
   signal: AbortSignal;
   concurrency?: number;
@@ -53,6 +57,7 @@ export function unityTranslationStats(entries: UnityEntry[], validate: Session["
 
 /** Save each result and collect item failures without stopping the remaining work. */
 export async function translateUnitySession(entries: UnityEntry[], cache: Map<string, string>, session: Session) {
+  const validate = (source: string, translation: string) => measureGameWork(session.timingScope, "processingMs", () => session.validate(source, translation));
   const entryKey = session.key || ((entry: UnityEntry) => keyOf(entry.source));
   const reused = session.key ? new Map(cache) : new Map([...cache].map(([source, translation]) => [keyOf(source), translation]));
   const groups = new Map<string, UnityEntry[]>();
@@ -63,16 +68,29 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
   session.signal.throwIfAborted();
   for (let index = 0; index < references.length; index++) {
     if (index > 0 && index % 512 === 0) await yieldUnityPreparation(session.signal);
-    const entry = references[index], key = entryKey(entry);
-    const valid = !!entry.translation && !entry.error && !session.validate(entry.source, entry.translation);
-    if (valid) reused.set(key, entry.translation);
-    else if (entry.layoutDraft && !reused.has(key) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(key, entry.layoutDraft);
-    if (targets && !targets.has(entry.id)) continue;
-    if (valid) coverageCompleted++;
-    completion.set(key, (completion.get(key) ?? true) && valid);
-    if (!valid) { const group = groups.get(key) || []; group.push(entry); groups.set(key, group); }
+    const stopProcessing = startGameTiming(session.timingScope, "processingMs");
+    try {
+      const entry = references[index], key = entryKey(entry);
+      const valid = !!entry.translation && !entry.error && !session.validate(entry.source, entry.translation);
+      if (valid) reused.set(key, entry.translation);
+      else if (entry.layoutDraft && !reused.has(key) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(key, entry.layoutDraft);
+      if (targets && !targets.has(entry.id)) continue;
+      if (valid) coverageCompleted++;
+      completion.set(key, (completion.get(key) ?? true) && valid);
+      if (!valid) { const group = groups.get(key) || []; group.push(entry); groups.set(key, group); }
+    } finally { stopProcessing(); }
   }
-  const pending = [...groups];
+  const pending = measureGameWork(session.timingScope, "processingMs", () => {
+    const group = session.requestGroup;
+    if (!group) return [...groups];
+    const batches = new Map<string, [string, UnityEntry[]][]>();
+    for (const item of groups) {
+      const id = group(item[1][0].source);
+      const batch = batches.get(id);
+      if (batch) batch.push(item); else batches.set(id, [item]);
+    }
+    return [...batches.values()].flat();
+  });
   const states = new Map<string, "pending" | "active" | "failed" | "done">(pending.map(([key]) => [key, "pending"]));
   const waitingWorkers = new Set<() => void>();
   const wake = () => { const workers = [...waitingWorkers]; waitingWorkers.clear(); workers.forEach(resolve => resolve()); };
@@ -106,7 +124,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const key = entryKey(entry), group = groups.get(key);
       if (!group || states.get(key) !== "failed") return false;
       reused.delete(key); cache.delete(key);
-      const draft = group.find(item => item.layoutDraft && !session.validate(item.source, item.layoutDraft) && (session.canReuseDraft?.(item.source, item.layoutDraft) ?? true));
+      const draft = group.find(item => item.layoutDraft && !validate(item.source, item.layoutDraft) && (session.canReuseDraft?.(item.source, item.layoutDraft) ?? true));
       if (draft?.layoutDraft) reused.set(key, draft.layoutDraft);
       states.set(key, "pending"); pending.push([key, group]); processed--; failures--; failedEntries -= group.length;
       report(`条目 #${id} 已重新加入翻译队列`); wake(); return true;
@@ -126,7 +144,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       if (!cached) requests++;
       phase(cached ? "reusing" : "translating");
       const translated = cached || await session.translate(entry.source, entry);
-      const translationProblem = session.validate(entry.source, translated);
+      const translationProblem = validate(entry.source, translated);
       if (translationProblem) throw new Error(translationProblem);
       if (session.retainDraft && session.format && group.some(item => /[\r\n]/.test(item.source))) {
         group.forEach(item => { item.layoutDraft = translated; });
@@ -139,17 +157,22 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const layouts = new Map<string, string>();
       for (const item of group) {
         if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
-        if (translated === item.source || session.preserveLayout?.(item.source)) { formatted.push(translated); continue; }
-        const leading = item.source.match(session.format ? /^[\t \u3000]*/ : /^\s*/)?.[0] || "";
-        const trailing = session.format ? "" : item.source.match(/\s*$/)?.[0] || "";
+        if (translated === item.source) { formatted.push(translated); continue; }
+        if (session.preserveLayout?.(item.source)) { formatted.push((item.source.match(/^\s*/)?.[0] || "") + translated.trim() + (item.source.match(/\s*$/)?.[0] || "")); continue; }
+        const leading = item.source.match(/^\s*/)?.[0] || "";
+        const trailing = item.source.match(/\s*$/)?.[0] || "";
         const source = item.source.trim();
         let body = layouts.get(source);
         if (body === undefined) {
-          body = session.format ? await session.format(source, translated.trim()) : translated.trim();
+          if (session.format) {
+            const format = session.format;
+            body = session.modelFormats ? await format(source, translated.trim()) :
+              await measureGameAsync(session.timingScope, "processingMs", async () => format(source, translated.trim()));
+          } else body = translated.trim();
           layouts.set(source, body);
         }
         const value = leading + body + trailing;
-        const problem = session.validate(item.source, value); if (problem) throw new Error(problem);
+        const problem = validate(item.source, value); if (problem) throw new Error(problem);
         formatted.push(value);
       }
       if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");

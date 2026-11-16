@@ -321,12 +321,15 @@ public static class Program
         var state = File.Exists(statePath) ? JsonSerializer.Deserialize<ScanCheckpoint>(File.ReadAllText(statePath, Utf8), Json)! : new ScanCheckpoint(0, request.IncludeCode) { CodeAssemblies = assemblies, TextMode = request.TextMode, TypeDirectory = request.TypeDirectory };
         if (state.IncludeCode != request.IncludeCode || state.TextMode != request.TextMode || state.TypeDirectory != request.TypeDirectory || !(state.CodeAssemblies ?? []).SequenceEqual(assemblies, StringComparer.OrdinalIgnoreCase)) throw new Exception("扫描选项或程序集范围已变化，请重新扫描或恢复原选项");
         var workPrefix = Path.GetFullPath(GameWorkspace.WorkRoot(root)).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
-        var paths = File.Exists(pathsPath) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)! : Directory.EnumerateFiles(root, "*", options).Where(path => !Path.GetFullPath(path).StartsWith(workPrefix, StringComparison.OrdinalIgnoreCase)).ToArray();
-        WriteJson(pathsPath, paths); WriteJson(statePath, state);
+        var hasFileList = File.Exists(pathsPath);
+        var paths = hasFileList ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)! : Directory.EnumerateFiles(root, "*", options).Where(path => !Path.GetFullPath(path).StartsWith(workPrefix, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (!hasFileList) WriteJson(pathsPath, paths);
+        if (!File.Exists(statePath)) WriteJson(statePath, state);
         if (request.TypeDirectory.Length > 0 && (project.DefinitionHashes.Count == 0 || File.Exists(Path.Combine(project.TypeDirectory, ScanInspection.PendingDefinitions)))) ScanInspection.CacheDefinitions(project, request.TypeDirectory, () => CheckStop(request, project.Folder));
         else ScanInspection.VerifyDefinitions(project);
         Save(project);
         var scanIndex = state.Next;
+        var lastSavedIndex = state.Next;
         var dirtyScan = false; var lastScanSave = Environment.TickCount64;
         void CommitScan(int next, bool force = false) {
             if (dirtyScan && (force || Environment.TickCount64 - lastScanSave >= 2000)) {
@@ -334,7 +337,7 @@ public static class Program
             }
             // Advance the checkpoint only after the matching project snapshot is
             // durable. A crash replays the short unsaved tail, never skips it.
-            if (!dirtyScan) WriteJson(statePath, state with { Next = next });
+            if (!dirtyScan && next != lastSavedIndex) { WriteJson(statePath, state with { Next = next }); lastSavedIndex = next; }
         }
         void CheckScanStop() {
             if (request.StopFile.Length == 0 || !File.Exists(request.StopFile)) return;
@@ -611,13 +614,17 @@ public static class Program
         try
         {
             var manifest = checkpoint.Files;
+            var completedFiles = manifest.Select(item => item.File).ToHashSet(StringComparer.Ordinal);
+            var imagesByFile = images.ToLookup(item => item.File, StringComparer.Ordinal);
+            var textByFile = selected.ToLookup(item => item.File, StringComparer.Ordinal);
+            var fontsByFile = fonts.ToLookup(item => item.File, StringComparer.Ordinal);
             foreach (var completed in manifest)
                 if (Hash(originals.GetValueOrDefault(completed.File) ?? Within(project.Root, completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "original"), completed.File)) != completed.OriginalSha256 || Hash(Within(System.IO.Path.Combine(folder, "patch"), completed.File)) != completed.PatchSha256)
                     throw new Exception("已生成的补丁或原件发生变化：" + completed.File);
             foreach (var file in files)
             {
                 CheckStop(request, folder);
-                if (manifest.Any(f => f.File == file)) continue;
+                if (completedFiles.Contains(file)) continue;
                 Progress("生成补丁：" + file, manifest.Count, files.Length, folder);
                 var source = originals.GetValueOrDefault(file) ?? Within(project.Root, file); var original = Within(System.IO.Path.Combine(folder, "original"), file);
                 if (!project.Hashes.TryGetValue(file, out var expected) || expected != Hash(source)) throw new Exception($"源文件已变化，请重新扫描：{file}");
@@ -626,8 +633,8 @@ public static class Program
                 var originalHash = Hash(original);
                 if (expected != originalHash) throw new Exception($"原件备份校验失败：{file}");
                 var destination = Within(System.IO.Path.Combine(folder, "patch"), file); Directory.CreateDirectory(System.IO.Path.GetDirectoryName(destination)!);
-                var fileImages = images.Where(i => i.File == file).ToArray();
-                var entries = selected.Where(e => e.File == file).ToArray(); var edits = entries.ToDictionary(e => (e.Container, e.ObjectId, e.Locator));
+                var fileImages = imagesByFile[file].ToArray();
+                var entries = textByFile[file].ToArray(); var edits = entries.ToDictionary(e => (e.Container, e.ObjectId, e.Locator));
                 var byObject = entries.ToLookup(e => (e.Container, e.ObjectId));
                 var byParent = entries.Where(e => e.ParentLocator != null).ToLookup(e => (e.Container, e.ObjectId, e.ParentLocator));
                 var atlasChecks = new Dictionary<(string Container, long Id), string>();
@@ -662,7 +669,7 @@ public static class Program
                 else VisitResource(original, (am, inst, container) =>
                 {
                     PrepareTypes(am, inst);
-                    var bitmapFonts = fonts.Where(f => f.File == file && f.Container == container && f.Kind != "UGUI").ToArray();
+                    var bitmapFonts = fontsByFile[file].Where(f => f.Container == container && f.Kind != "UGUI").ToArray();
                     Dictionary<long, AssetTypeValueField> generated;
                     try { generated = bitmapFonts.Length == 0 ? [] : BitmapFontGenerator.Generate(am, inst, bitmapFonts, request, characters); }
                     catch (PausedException) { throw new PausedException(folder); }
@@ -705,7 +712,7 @@ public static class Program
                     verificationTick = now;
                     Progress(detail, manifest.Count, files.Length, folder);
                 }
-                VerifyWritten(project, file, destination, Within(project.Root, file), entries, fonts.Where(f => f.File == file && f.Kind == "UGUI").ToArray(), font, types, atlasChecks, fileImages, ReportVerification, () => CheckStop(request, folder));
+                VerifyWritten(project, file, destination, Within(project.Root, file), entries, fontsByFile[file].Where(f => f.Kind == "UGUI").ToArray(), font, types, atlasChecks, fileImages, ReportVerification, () => CheckStop(request, folder));
                 ReportVerification("正在计算补丁校验值：" + file, true);
                 manifest.Add(new PatchFile(file, originalHash, Hash(destination), entries.Length));
                 ReportVerification("正在保存生成进度：" + file, true);
@@ -896,7 +903,9 @@ public static class Program
         var folder = System.IO.Path.GetFullPath(request.Path);
         Progress("检查游戏进程、补丁和原件备份");
         if (File.Exists(System.IO.Path.Combine(folder, "INCOMPLETE.txt"))) throw new Exception("补丁未完整生成，不能应用");
-        using var document = JsonDocument.Parse(File.ReadAllText(System.IO.Path.Combine(folder, "manifest.json"), Utf8));
+        var manifestBytes = File.ReadAllBytes(System.IO.Path.Combine(folder, "manifest.json"));
+        var offset = manifestBytes.AsSpan().StartsWith(new byte[] { 0xef, 0xbb, 0xbf }) ? 3 : 0;
+        using var document = JsonDocument.Parse(manifestBytes.AsMemory(offset));
         var manifest = document.RootElement;
         if (!manifest.TryGetProperty("textSafetyRevision", out var safety) || safety.GetInt32() < GameText.SafetyRevision)
             throw new Exception("旧版补丁缺少程序标识保护校验，已阻止应用。请重做生成补丁后再应用");
@@ -909,7 +918,7 @@ public static class Program
             File = f.GetProperty("file").GetString()!, Original = f.GetProperty("originalSha256").GetString(), Patch = f.GetProperty("patchSha256").GetString()
         }).ToArray();
         var applicationPath = System.IO.Path.Combine(folder, "application-state.json");
-        var manifestHash = Hash(System.IO.Path.Combine(folder, "manifest.json"));
+        var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
         var resuming = File.Exists(applicationPath);
         if (resuming) {
             using var previous = JsonDocument.Parse(File.ReadAllText(applicationPath, Utf8));

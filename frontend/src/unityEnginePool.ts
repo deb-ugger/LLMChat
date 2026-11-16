@@ -1,3 +1,4 @@
+import { measureGameAsync } from "./gameModelPerformance";
 import type { TranslateProvider } from "./api";
 import type { UnityEngineProgress } from "./unityOffline";
 import { classicEngines, engineRequiresKey, getEngineInfo } from "./translateEngines";
@@ -22,7 +23,7 @@ export function loadUnityEngines(): UnityEngineChoice[] {
 }
 
 /** One slot per provider; explicit key-based engines are only fallback candidates. */
-export function createUnityEnginePool(choices: UnityEngineChoice[], signal: AbortSignal, request: (provider: TranslateProvider, text: string) => Promise<string>, options: { initialStats?: UnityEngineProgress[]; onStats?: (value: UnityEngineProgress[]) => void; measure?: (text: string) => number; now?: () => number } = {}) {
+export function createUnityEnginePool(choices: UnityEngineChoice[], signal: AbortSignal, request: (provider: TranslateProvider, text: string) => Promise<string>, options: { timingScope?: string; initialStats?: UnityEngineProgress[]; onStats?: (value: UnityEngineProgress[]) => void; measure?: (text: string) => number; now?: () => number } = {}) {
   const enabled = normalizeUnityEngines(choices).filter(row => row.enabled);
   const free = enabled.filter(row => !engineRequiresKey(getEngineInfo(row.id)!));
   const keyed = enabled.filter(row => engineRequiresKey(getEngineInfo(row.id)!));
@@ -50,7 +51,7 @@ export function createUnityEnginePool(choices: UnityEngineChoice[], signal: Abor
       signal.throwIfAborted();
       const candidate = candidates.find(row => !occupied.has(row.id));
       if (candidate) { occupied.add(candidate.id); return candidate.id; }
-      await new Promise<void>((resolve, reject) => waiters.add({ resolve, reject }));
+      await measureGameAsync(options.timingScope, "queueMs", () => new Promise<void>((resolve, reject) => waiters.add({ resolve, reject })));
     }
   };
   const release = (id: TranslateProvider) => {

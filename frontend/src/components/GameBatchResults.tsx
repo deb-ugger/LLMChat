@@ -1,0 +1,96 @@
+
+import { useState } from "react";
+import type { UnityImage } from "../unityOffline";
+import type { ImageScreening } from "../gameImageScreening";
+
+export type BatchRow = { id: string; label: string; detail: string; group?: string } & (
+  { kind: "text" | "image" } | { kind: "resource"; paths: string[]; text?: { source: string; translation: string } }
+);
+export const refinementLabels: Record<ImageScreening["state"], string> = {
+  candidate: "待正式识别", review: "待复核", "no-text": "未检测到文字", "not-needed": "无需翻译", failed: "失败",
+};
+
+export function gameImageBatchRows(images: UnityImage[]) {
+  const errors: BatchRow[] = [], refined: BatchRow[] = [];
+  for (const image of images) {
+    const screening = image.screening;
+    const fields = { id: image.id, label: image.name || image.file, kind: "image" as const };
+    const error = screening?.refineFailed ? screening.reason : image.error;
+    if (error && image.sourceFile) errors.push({ ...fields, detail: error });
+    const previous = screening?.beforeRefine?.state;
+    if (screening?.refineKey && !screening.refineFailed && previous && previous !== screening.state) {
+      const group = `${refinementLabels[previous]} → ${refinementLabels[screening.state]}`;
+      refined.push({ ...fields, group, detail: screening.reason });
+    }
+  }
+  return { errors, refined };
+}
+
+const pageSize = 30;
+
+export function batchFailureType(detail: string) {
+  const categories: [RegExp, string][] = [
+    [/识别区域|区域.*坐标|坐标或置信度|缺少文字/, "识别区域无效"],
+    [/JSON|结构化|输出格式/, "模型输出格式无效"],
+    [/超时|timeout|timed out/i, "请求超时"],
+    [/拒答|未提供译文|译文为空|空译文/, "译文内容无效"],
+    [/占位符|转义|富文本|控制符/, "译文格式校验失败"],
+    [/排版|断行|无法放入/, "译文排版失败"],
+    [/连接|网络|fetch|HTTP|服务未/i, "连接或服务异常"],
+    [/资源.*(?:改变|改动)|补丁.*冲突/, "资源发生变化"],
+    [/读取|写入|文件|目录|路径/, "文件读写失败"],
+  ];
+  return categories.find(([pattern]) => pattern.test(detail))?.[1] || "其他处理失败";
+}
+
+function BatchGroup({ title, rows, onLocate }: { title: string; rows: BatchRow[]; onLocate: (row: BatchRow) => void }) {
+  const [page, setPage] = useState(0);
+  const pages = Math.ceil(rows.length / pageSize);
+  const current = Math.max(0, Math.min(page, pages - 1));
+  const visible = rows.slice(current * pageSize, (current + 1) * pageSize);
+  return <details className="game-batch-group">
+    <summary>{title} · {rows.length}</summary>
+    <ul>{visible.map((row, index) => <li key={row.kind + ":" + row.id}>
+      <button type="button" className="unity-progress-locate" aria-label={"定位 " + row.label} data-tooltip={row.label}
+        onClick={() => onLocate(row)}>{row.label}</button>
+      <span className="game-batch-detail" data-tooltip={row.detail}>{row.detail}</span>
+      {pages > 1 && index === visible.length - 1 && <span className="game-batch-page-controls" aria-label={title + "翻页"}>
+        <small>{current + 1} / {pages}</small>
+        <button type="button" aria-label="上一页" data-tooltip="上一页" disabled={current === 0} onClick={() => setPage(current - 1)}>
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
+        </button>
+        <button type="button" aria-label="下一页" data-tooltip="下一页" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
+        </button>
+      </span>}
+    </li>)}</ul>
+  </details>;
+}
+
+function BatchList({ title, rows, onLocate, onRetry, failed = false }: {
+  title: string; rows: BatchRow[]; failed?: boolean; onLocate: (row: BatchRow) => void; onRetry?: () => void;
+}) {
+  const groups = new Map<string, BatchRow[]>();
+  for (const row of rows) {
+    const group = row.group || (failed ? batchFailureType(row.detail) : "分类变化");
+    const items = groups.get(group) || [];
+    items.push(row);
+    groups.set(group, items);
+  }
+  return <details className={`game-batch-list${failed && rows.length ? " is-error" : ""}`}>
+    <summary>{title} · {rows.length}</summary>
+    {onRetry && <button type="button" className="unity-btn" onClick={onRetry}>重试失败文本</button>}
+    {[...groups].map(([name, items]) => <BatchGroup key={name} title={name} rows={items} onLocate={onLocate} />)}
+    {!rows.length && <p className="hint">暂无{title}</p>}
+  </details>;
+}
+
+export function GameBatchResults({ errors, refined, onLocate, onRetry }: {
+  errors: BatchRow[]; refined?: BatchRow[]; onLocate: (row: BatchRow) => void; onRetry?: () => void;
+}) {
+  return <div className="game-batch-results">
+    <BatchList failed title="失败条目" rows={errors} onLocate={onLocate} onRetry={onRetry} />
+    {!!refined?.length && <BatchList title="复筛分类变化" rows={refined} onLocate={onLocate} />}
+  </div>;
+}
+

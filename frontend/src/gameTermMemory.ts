@@ -1,9 +1,8 @@
 import type { UnityEntry } from "./unityOffline";
-import { gameTextNeedsNoTranslation, gameControlSignature, withoutGameSpeakerNames } from "./gameDisplayText";
+import { gameTextNeedsNoTranslation, gameSpeakerNames, gameControlSignature, withoutGameSpeakerNames } from "./gameDisplayText";
 import { unityTranslationProblem } from "./unityTokens";
 
 type Term = { src: string; dst: string; enabled?: boolean };
-const names = (text: string) => [...text.matchAll(/\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>/gi)].map(match => match[1]);
 const literal = (name: string) => /\p{L}/u.test(name) && !/[\\{}<>]/.test(name);
 const matchesTarget = (name: string, target: string) => target.startsWith("zh") ? /\p{Script=Han}/u.test(name) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(name)
   : target === "en" ? /\p{Script=Latin}/u.test(name) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(name)
@@ -18,7 +17,7 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   const configured: Term[] = typeof glossary === "string" ? JSON.parse(glossary || "[]") : glossary || [];
   for (const term of configured) if (term.enabled !== false && term.src?.trim() && term.dst?.trim()) terms.set(term.src.trim(), term.dst.trim());
   const requested = new Map<string, string>();
-  for (const entry of selected) for (const name of names(entry.source)) if (literal(name) && !gameTextNeedsNoTranslation(`\\nc<${name}>`, target) && !terms.has(name)) requested.set(name, requested.get(name) || entry.source);
+  for (const entry of selected) for (const name of gameSpeakerNames(entry.source)) if (literal(name) && !gameTextNeedsNoTranslation(`\\nc<${name}>`, target) && !terms.has(name)) requested.set(name, requested.get(name) || entry.source);
   if (!requested.size) {
     progress?.("说话人译名已就绪，复用术语表或原样保留的姓名", 0, 0);
     return terms;
@@ -27,10 +26,10 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   const votes = new Map<string, Map<string, number>>();
   for (const entry of references) {
     if (entry.error || !entry.translation) continue;
-    const original = names(entry.source);
+    const original = gameSpeakerNames(entry.source);
     if (!original.some(name => requested.has(name))) continue;
     if (gameControlSignature(entry.source) !== gameControlSignature(entry.translation) || unityTranslationProblem(withoutGameSpeakerNames(entry.source), withoutGameSpeakerNames(entry.translation))) continue;
-    const translated = names(entry.translation);
+    const translated = gameSpeakerNames(entry.translation);
     if (original.length !== translated.length) continue;
     original.forEach((name, index) => {
       const value = translated[index];
@@ -42,12 +41,24 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   const pending = [...requested].filter(([name]) => !terms.has(name));
   const reusedNames = requested.size - pending.length;
   progress?.(`姓名去重完成：复用 ${reusedNames} 个已有译名，待确定 ${pending.length} 个新译名`, 0, pending.length);
-  for (let index = 0; index < pending.length; index++) {
-    signal.throwIfAborted(); const [name, context] = pending[index];
-    progress?.(`正在确定姓名译名 ${index + 1}/${pending.length}：${name}，重复出现将共用本次结果`, index, pending.length);
-    const value = (await translate(name, context)).trim(); signal.throwIfAborted();
+  let completedNames = 0;
+  for (let offset = 0; offset < pending.length; offset += 4) {
+    const results = await Promise.allSettled(pending.slice(offset, offset + 4).map(async ([name, context], localIndex) => {
+    const index = offset + localIndex;
+    signal.throwIfAborted();
+    progress?.(`正在确定姓名译名 ${index + 1}/${pending.length}：${name}，重复出现将共用本次结果`, completedNames, pending.length);
+    let value: string;
+    try { value = (await translate(name, context)).trim(); }
+    catch (error) {
+      signal.throwIfAborted();
+      throw new Error(`确定译名「${name}」失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    signal.throwIfAborted();
     if (!literal(value) || /[\r\n]/.test(value)) throw new Error(`说话人「${name}」的译名无效，请在术语表指定译名后重试`);
-    terms.set(name, value); progress?.(`说话人译名已确定：${name} → ${value}`, index + 1, pending.length);
+    terms.set(name, value); progress?.(`说话人译名已确定：${name} → ${value}`, ++completedNames, pending.length);
+    }));
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) throw failed.reason;
   }
   return terms;
 }

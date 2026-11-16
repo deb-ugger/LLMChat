@@ -18,13 +18,31 @@ export async function translateUnityGlyphs(source: string, translate: (text: str
   return result;
 }
 
+export function isTranslationRefusal(source: string, translation: string) {
+  const output = translation.normalize("NFKC").trim();
+  if (source.normalize("NFKC").trim() === output) return false;
+  // Match complete canned responses. An apology by itself is valid dialogue.
+  return /^(?:抱歉|很抱歉|对不起|抱歉,[ \t]*但|很抱歉,[ \t]*但)[,\s]*我?(?:无法|不能)(?:为您|为你)?(?:提供(?:相关|该|此|这段|这部分)?(?:的)?翻译(?:内容|结果)?|翻译(?:这段|此|该|上述)?(?:文本|内容|文字|请求))\s*[。.!！]?$/u.test(output)
+    || /^(?:sorry|i(?:['’]m| am) sorry)[,.\s]+(?:but\s+)?i\s+(?:can(?:not|['’]t)|am unable to)\s+(?:translate (?:this|that)(?: (?:text|content))?|provide (?:a|the|this) translation)[.!]?$/i.test(output);
+}
+
+export const TRANSLATION_REFUSAL = "模型未提供译文。请检查识别文字，或换用其他翻译方式重试。";
+
 export function unityTranslationProblem(source: string, translation: string) {
   if (!translation.trim()) return "译文为空";
+  if (isTranslationRefusal(source, translation)) return TRANSLATION_REFUSAL;
   const sourceGlyphs = source.match(unityGlyphTokens()) || [], targetGlyphs = translation.match(unityGlyphTokens()) || [];
   if (JSON.stringify(sourceGlyphs) !== JSON.stringify(targetGlyphs)) return `游戏特殊字形符号发生变化：应保留「${sourceGlyphs.join("、") || "无"}」，当前为「${targetGlyphs.join("、") || "无"}」`;
   const original = source.match(unityTranslationTokens()) || [];
   const translated = translation.match(unityTranslationTokens()) || [];
-  if (JSON.stringify([...original].sort()) !== JSON.stringify([...translated].sort())) return "占位符、转义或富文本标签发生变化";
+  if (JSON.stringify([...original].sort()) !== JSON.stringify([...translated].sort())) {
+    const difference = (left: string[], right: string[]) => {
+      const remaining = [...right];
+      return left.filter(token => { const index = remaining.indexOf(token); if (index < 0) return true; remaining.splice(index, 1); return false; });
+    };
+    const missing = difference(original, translated), added = difference(translated, original);
+    return "占位符、转义或富文本标签发生变化：" + [missing.length ? `缺少 ${missing.map(token => JSON.stringify(token)).join("、")}` : "", added.length ? `新增 ${added.map(token => JSON.stringify(token)).join("、")}` : ""].filter(Boolean).join("；");
+  }
   const ordered = (value: string) => value.startsWith("<") || value.startsWith("\\") || value.startsWith("%") && !/^%\d+\$/.test(value);
   return JSON.stringify(original.filter(ordered)) === JSON.stringify(translated.filter(ordered)) ? "" : "富文本标签嵌套、转义或非定位格式参数的顺序发生变化";
 }

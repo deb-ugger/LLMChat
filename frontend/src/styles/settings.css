@@ -2303,12 +2303,6 @@
   font-weight: 800;
 }
 
-.ocr-confirm-acknowledge {
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
-}
-
 .ocr-download-progress {
   display: flex;
   flex-direction: column;
@@ -2986,17 +2980,19 @@
   font-weight: 600;
 }
 
-.settings-toast {
+:is(.settings-toast, .unity-config-toast, .pricing-modal-toast) {
   position: fixed;
   display: flex;
   align-items: center;
   gap: 10px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  inset: 16px 16px auto auto;
   z-index: 10000;
   max-width: min(520px, calc(100% - 32px));
-  padding: 10px 16px;
+  box-sizing: border-box;
+  max-height: 45vh;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  padding: 9px 12px;
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
@@ -3010,23 +3006,31 @@
   font-weight: 800;
 }
 
-.settings-toast.is-ok {
+.settings-toast.app-notice.is-ok {
+  inset: 50% auto auto 50%;
+  width: max-content;
+  translate: -50% -50%;
+}
+
+:is(.settings-toast, .unity-config-toast, .pricing-modal-toast).is-ok {
   background: #ecfdf5;
   color: #047857;
   border: 1px solid color-mix(in srgb, #10b981 40%, transparent);
 }
 
-.settings-toast.is-fail {
+:is(.settings-toast, .unity-config-toast, .pricing-modal-toast).is-fail {
   background: #fef2f2;
   color: #b91c1c;
   border: 1px solid color-mix(in srgb, #ef4444 40%, transparent);
 }
 
 @keyframes settings-toast-in {
-  from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)); }
-  to { opacity: 1; transform: translate(-50%, -50%); }
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-.settings-toast { max-height: 45vh; overflow: hidden; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.settings-toast, .unity-config-toast, .pricing-modal-toast) { animation: none; }
+}
 .settings-toast-mark { flex: 0 0 24px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: currentColor; font-size: 0; }
 .settings-toast-mark::after { content: "✓"; font-size: 15px; color: #fff; }
 .settings-toast.is-fail .settings-toast-mark::after { content: "!"; }

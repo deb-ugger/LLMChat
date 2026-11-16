@@ -2,6 +2,7 @@
 #include "Utf8Path.h"
 #include "AtomicFile.h"
 #include "RpgMakerText.h"
+#include "GameTextProject.h"
 #include "GameFileOps.h"
 #include "GameResourceBackup.h"
 #include "ManagedGamePatch.h"
@@ -307,6 +308,7 @@ class JsonEmbedding {
         std::lock_guard lock(mutex_); state_["matched"] = matched_; state_["blocked"] = blocked_; state_["examined"] = examined_; state_["issues"]=issues_;
     }
     void extract() {
+        checkStop(); gametext::resetForScan(game_);
         dictionary_ = json::object(); exporting_ = true; sourceGame_=gamepatch::source(game_,rpgDirectory_,backups(game_));
         try { if (rpgDirectory_.empty()) { prepareWolf(); scan(false); } else { prepareRpg(); scanRpg(false); } }
         catch (...) { exporting_ = false; throw; }

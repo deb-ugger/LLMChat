@@ -1,3 +1,4 @@
+import { showAppNotice } from "./AppNotice";
 import { registerAppCloseGuard } from "../appClose";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { IndexedTextEntries } from "../text-entry-state";
@@ -15,7 +16,7 @@ import { saveOutputFile } from "../outputFiles";
 import { LangCombobox } from "./LangCombobox";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm as confirmDialog, message as messageDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Settings, type TextProjectListItem } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import {
@@ -635,7 +636,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
             const detail = "退出失败，窗口已保留：" + toFriendlyError(error, "保存工程或关闭窗口失败");
             setError(detail);
             setStatusLine("未退出，请处理错误后重试");
-            await messageDialog(detail, { title: "无法退出 LLMChat", kind: "error" });
+            showAppNotice(detail, "error");
             return false;
           } finally {
             clearClosing();
@@ -648,7 +649,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         if (disposed) return;
         const detail = "无法设置工程退出处理，请先手动保存工程：" + toFriendlyError(error);
         setError(detail);
-        await messageDialog(detail, { title: "退出处理异常", kind: "error" });
+        showAppNotice(detail, "error");
       }
     })();
 

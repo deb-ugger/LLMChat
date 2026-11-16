@@ -26,7 +26,9 @@ export function wrapGameTextToSource(source:string,translation:string){
 }
 export function validateGameNaturalLines(source:string,translation:string){
   unityListBlocks(source,translation);
-  const count=(text:string)=>text.trim().split(/(?:\r\n|\r|\n)[\t ]*(?:\r\n|\r|\n)/).filter(part=>part.trim()).length;
-  if(count(source)!==count(translation))throw new Error("模型改变了段落数量，请保留空行分段后重试");
+  // Normalize before counting: a single CRLF must never backtrack into two line breaks.
+  const count=(text:string)=>text.replace(/\r\n?/g, "\n").replace(gameFormatTokens(), "").trim().split(/\n[\t \u3000]*\n/).filter(part=>part.trim()).length;
+  const originalCount = count(source), translatedCount = count(translation);
+  if(originalCount!==translatedCount)throw new Error(`模型改变了正文段落数量（原文 ${originalCount} 段，译文 ${translatedCount} 段），请保留空行分段后重试；译文草稿已保留`);
   return translation;
 }

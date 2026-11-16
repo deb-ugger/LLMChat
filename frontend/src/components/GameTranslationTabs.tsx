@@ -1,5 +1,7 @@
+import { GameConcurrencyDraft } from "./GameFlowSequence";
+import { modelConcurrency } from "../gameModelPerformance";
 import { recommendedGameModels } from "../gameModelPreset";
-import { ModelFilterSelect } from "./ModelFilterSelect";
+import { ModelFilterSelect, readModelFilter } from "./ModelFilterSelect";
 import { GamePromptContext, useGamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { useContext, useEffect, useId, type ReactNode } from "react";
 import { currentEffectivePresets, loadLocalModelProfiles, loadVendorProfiles, resolveFeatureLlm } from "../modelPresets";
@@ -53,7 +55,40 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
   label: string; value: string; models: string[]; disabled: boolean; onChange: (model: string) => void; optional?: boolean; promptKey?: GamePromptScene;
 }) {
   const unset = useId();
-  const prompts=useGamePromptCatalog(),context=useContext(GamePromptContext);
+  const concurrencyId = unset + "-concurrency";
+  const prompts = useGamePromptCatalog().filter(entry => entry.scene === promptKey);
+  const context = useContext(GamePromptContext);
+  const drafts = useContext(GameConcurrencyDraft);
+  const concurrency = drafts?.value(promptKey, value) ?? modelConcurrency(context?.scope || "game", promptKey, value);
+  const promptId = context?.selection[promptKey] || "builtin:" + promptKey;
   useEffect(()=>{if(value||optional||disabled)return;const preset=recommendedGameModels(),candidate=promptKey==="recognize"||promptKey==="screen"?preset?.vision||models.find(model=>/^qwen3-vl:4b-instruct$/i.test(model)):promptKey==="review"?preset?.review:promptKey==="names"?preset?.names:promptKey==="dialogue"?preset?.dialogue:preset?.text;if(candidate&&models.includes(candidate))onChange(candidate);},[value,optional,disabled,models,promptKey,onChange]);
-  return <div className="game-model-prompt-row"><div className="game-model-column"><span>{label}</span><ModelFilterSelect key={(context?.scope||"game")+":"+promptKey} label={label} value={value} models={models} disabled={disabled} optionalValue={optional?unset:undefined} filterKey={(context?.scope||"game")+":"+promptKey} onChange={value=>onChange(value===unset?"":value)}/></div><label>提示词<SearchableSelect aria-label={label+"提示词"} value={context?.selection[promptKey]||"builtin:"+promptKey} disabled={disabled||!context} placeholder="请选择提示词" onChange={event=>context?.select(promptKey,event.target.value)}>{prompts.filter(entry=>entry.scene===promptKey).map(entry=><option key={entry.id} value={entry.id}>{entry.name}{entry.tags?.length?" · "+entry.tags.join(" / "):""}</option>)}</SearchableSelect></label></div>;
+  const scope = context?.scope || "game";
+  return <div className="game-model-prompt-row">
+    <div className="game-model-column">
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <span>{label}</span>
+        <label htmlFor={concurrencyId} style={{ flex: "0 0 57px", margin: 0, textAlign: "center" }}>并发</label>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <ModelFilterSelect key={scope + ":" + promptKey} label={label} value={value} models={models}
+            disabled={disabled} optionalValue={optional ? unset : undefined}
+            filter={drafts?.filter(promptKey) ?? readModelFilter(scope + ":" + promptKey)}
+            setFilter={filter => drafts?.updateFilter(promptKey, filter)}
+            onChange={model => onChange(model === unset ? "" : model)} />
+        </div>
+        <select id={concurrencyId} aria-label={label + "并发数"} data-tooltip="并发请求数（1–4）。使用 Ollama 时，修改后重启服务。"
+          style={{ flex: "0 0 57px", width: 57 }} disabled={disabled || !value || !drafts} value={concurrency}
+          onChange={event => drafts?.update({ role: promptKey, model: value, count: Number(event.target.value) })}>
+          {[1, 2, 3, 4].map(count => <option key={count} value={count}>{count}</option>)}
+        </select>
+      </div>
+    </div>
+    <label>提示词
+    <SearchableSelect aria-label={label + "提示词"} value={promptId} disabled={disabled || !context}
+      placeholder="请选择提示词" optionTags={Object.fromEntries(prompts.map(entry => [entry.id, entry.tags]))}
+      onChange={event => context?.select(promptKey, event.target.value)}>
+      {prompts.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+    </SearchableSelect>
+  </label></div>;
 }

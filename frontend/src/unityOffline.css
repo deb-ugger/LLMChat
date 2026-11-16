@@ -260,10 +260,6 @@
 .unity-icon-button-wrap > button:disabled { pointer-events: none; }
 .unity-icon-button-wrap:focus-visible, .unity-header-icon:focus-visible { outline: 2px solid var(--accent,#326df0); outline-offset: 2px; }
 .unity-result-tools > button { flex-shrink: 0; }
-.unity-translation-failures { padding: 8px 0; border-bottom: 1px solid var(--border,#d6dfe9); }
-.unity-translation-failures ul { list-style: none; margin: 6px 0; padding: 0; }
-.unity-translation-failures li { padding: 7px 0; border-bottom: 1px solid var(--border,#d6dfe9); }
-.unity-translation-failures li p { margin: 4px 0; }
 .unity-error-locate { display: block; width: 100%; border: 0; padding: 0; background: transparent; color: var(--accent,#326df0); font: inherit; text-align: left; text-decoration: underline; overflow-wrap: anywhere; cursor: pointer; }
 .unity-error-locate:focus-visible { outline: 2px solid var(--accent,#326df0); outline-offset: 2px; }
 .unity-failure-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
@@ -406,6 +402,10 @@
 .unity-image-statistics { font-size:12px; color:var(--text-muted); white-space:nowrap; }
 .unity-image-filter-menu { position:fixed; margin:0; width:230px; box-sizing:border-box; padding:10px; border:1px solid var(--border,#d6dfe9); border-radius:6px; background:var(--panel,#fff); color:var(--text); box-shadow:0 5px 18px #0002; z-index:100; }
 .unity-image-filter-menu label { display:flex; align-items:center; gap:8px; padding:6px; font-size:13px; }
+.game-text-filter-limit { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--border, #d6dfe9); margin-top: 4px; padding: 8px 6px 2px; font-size: 13px; }
+.unity-image-filter-menu .game-text-filter-limit label { padding: 0; }
+.game-text-filter-limit input { flex: 1; min-width: 50px; width: 60px; padding: 4px 6px; }
+.game-text-filter-limit .hint { flex-basis: 100%; margin: 2px 0 0; }
 .unity-image-filter-menu button { display:block; border:0; background:transparent; padding:6px; color:var(--accent,#326df0); cursor:pointer; }
 .unity-image-filter-menu.unity-download-menu { width: max-content; max-width: calc(100vw - 16px); padding: 5px; }
 .unity-download-menu button { width: 100%; padding: 8px 12px; border-radius: 4px; text-align: left; white-space: nowrap; font: inherit; }
@@ -512,3 +512,25 @@
 
 
 .game-text-pending { background:#fff0ce; border-radius:2px; box-decoration-break:clone; -webkit-box-decoration-break:clone; }
+
+.game-batch-error-count { margin-inline-start: 5px; color: var(--danger, #ba4051); font-weight: 650; }
+.game-batch-results { display: grid; gap: 8px; min-width: 0; }
+.game-batch-list { min-width: 0; }
+.game-batch-list > summary { cursor: pointer; padding-block: 5px; font-weight: 600; }
+.game-batch-list.is-error > summary,
+.game-batch-list.is-error li,
+.game-batch-list.is-error li .unity-progress-locate { color: var(--danger, #ba4051); }
+.game-batch-list ul { list-style: none; margin: 4px 0; padding: 0; }
+.game-batch-group { min-width: 0; margin-inline-start: 12px; }
+.game-batch-group > summary { padding-block: 4px; cursor: pointer; }
+.game-batch-list li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.game-batch-list li > :is(.unity-progress-locate, .game-batch-detail) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-batch-list .unity-progress-locate { flex: 0 1 auto; max-width: 42%; white-space: nowrap; text-align: start; }
+.game-batch-detail { flex: 0 1 auto; }
+.game-batch-page-controls { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.game-batch-page-controls small { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.game-batch-page-controls button { display: grid; place-items: center; width: 24px; height: 24px; padding: 2px; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+.game-batch-page-controls button:hover:enabled { color: var(--text); }
+.game-batch-page-controls button:disabled { opacity: .35; cursor: default; }
+.game-batch-page-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.game-batch-list > p { margin: 4px 0; }

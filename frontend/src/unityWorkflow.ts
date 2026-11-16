@@ -1,5 +1,5 @@
 import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
-import { unityTranslationTokens } from "./unityTokens";
+import { isTranslationRefusal, unityTranslationTokens } from "./unityTokens";
 import { gameTextMatchesSource } from "./gameDisplayText";
 
 export const UNITY_STEPS = ["扫描资源", "翻译文本", "生成补丁", "应用到游戏"];
@@ -10,7 +10,8 @@ export const UNITY_STAGE_TABS = [
   { step: 3, number: "3", label: "生成补丁", imageOnly: false },
   { step: 4, number: "4", label: "应用到游戏", imageOnly: false },
 ] as const;
-export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile;
+export const unityImageHasRefusal = (image: UnityImage) => image.renderedKind !== "imported" && image.regions.some(region => region.selected && isTranslationRefusal(region.text, region.translation));
+export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
 export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(unityImageResultReady));
 export const UNITY_SCAN_COMPATIBILITY = { current: 7, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };

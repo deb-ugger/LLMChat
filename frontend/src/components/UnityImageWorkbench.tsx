@@ -6,7 +6,7 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { readFileBytes } from "../localDocFile";
 import { sortGameImages, exportGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
-import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { readUnitySourceImage, acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey, type ImagePreviewReader } from "../unityImagePreview";
 import type { OcrMode } from "../api";
@@ -166,8 +166,16 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
   </div>;
 }
 
-export function UnityImageWorkbench({ project, disabled, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
-  project: UnityProject | null; disabled: boolean; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
+const imageListGroups = [
+  ["candidate", "待正式识别"], ["text", "识别到文字"], ["pending", "未执行 OCR"], ["failed", "识别失败"],
+  ["empty", "未检测到文字"], ["review", "待复核"], ["excluded", "无需翻译"],
+] as const;
+const imageListPageSize = 60;
+export function imagePageIndex(index: number, page: number, count: number) {
+  return Math.min(count - 1, page * imageListPageSize + Math.max(0, index) % imageListPageSize);
+}
+export function UnityImageWorkbench({ project, disabled, imageTarget, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
+  project: UnityProject | null; disabled: boolean; imageTarget?: { id: string; sequence: number }; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
   onImport: (image: UnityImage,source?:GameImportSource) => Promise<unknown>; onSave: () => Promise<boolean>;onDiscard:()=>Promise<boolean>;leaveGuard?:{current:((change:()=>void)=>void)|null};
@@ -228,6 +236,64 @@ export function UnityImageWorkbench({ project, disabled, active = true, dirty = 
   useEffect(()=>setGroupPages({}),[deferredSearch,imageFilters,project?.folder]);
   const counts=useMemo(()=>({selected:images.filter(item=>item.selected).length,done:images.filter(item=>item.selected&&item.completed).length,failed:images.filter(item=>item.error).length}),[images]);
   const image = (returnToGallery ? images : filtered).find(image => image.id === selectedId) || filtered.find(item=>item.screening?.state==="candidate") || filtered.find(unityImageHasText) || filtered[0];
+  const listRef = useRef<HTMLDivElement>(null);
+  const [keyboardTarget, setKeyboardTarget] = useState<{ id: string }>();
+  const selectListImage = (group: string, index: number, focus: boolean) => {
+    const item = groups[group].items[index];
+    if (!item) return;
+    setGroupPages(previous => ({ ...previous, [group]: Math.floor(index / imageListPageSize) }));
+    setSelectedId(item.id);
+    if (focus) setKeyboardTarget({ id: item.id });
+  };
+  const handledTarget = useRef<typeof imageTarget>(undefined);
+  useEffect(() => {
+    if (!active || !imageTarget || handledTarget.current === imageTarget) return;
+    const target = images.find(item => item.id === imageTarget.id);
+    if (!target) return;
+    const group = Object.keys(groups).find(id => groups[id].items.some(item => item.id === target.id));
+    if (!group) {
+      setSearch("");
+      setImageFilters(previous => Object.values(previous).every(Boolean) ? previous : { checked: true, unchecked: true, done: true, pending: true, failed: true });
+      return;
+    }
+    handledTarget.current = imageTarget;
+    setGallery(false);
+    setReturnToGallery(false);
+    setCollapsed(previous => ({ ...previous, [group]: false }));
+    selectListImage(group, groups[group].items.findIndex(item => item.id === target.id), true);
+  }, [active, imageTarget, images, groups]);
+  const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
+    if (!expanded.length) return;
+    event.preventDefault();
+    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row]")?.dataset.imageRow;
+    const id = focused || image?.id;
+    const groupIndex = expanded.findIndex(([group]) => groups[group].items.some(item => item.id === id));
+    if (groupIndex < 0) { selectListImage(expanded[0][0], 0, true); return; }
+    const [group] = expanded[groupIndex];
+    const items = groups[group].items;
+    const index = items.findIndex(item => item.id === id);
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      const page = Math.floor(index / imageListPageSize) + (event.key === "ArrowRight" ? 1 : -1);
+      if (page >= 0 && page * imageListPageSize < items.length) selectListImage(group, imagePageIndex(index, page, items.length), true);
+      return;
+    }
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    const next = index + offset;
+    if (next >= 0 && next < items.length) selectListImage(group, next, true);
+    else {
+      const adjacent = expanded[groupIndex + offset]?.[0];
+      if (adjacent) selectListImage(adjacent, offset > 0 ? 0 : groups[adjacent].items.length - 1, true);
+    }
+  };
+  useLayoutEffect(() => {
+    if (!keyboardTarget) return;
+    const node = listRef.current?.querySelector<HTMLButtonElement>('button[data-image-row="' + CSS.escape(keyboardTarget.id) + '"]');
+    node?.focus({ preventScroll: true });
+    node?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [keyboardTarget]);
   useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setRegionMenu(null); setDetailMode(ocrMode); }, [image?.id, ocrMode]);
   const locateRegion = (index: number) => { setActiveRegion(index);setSelectedRegions(new Set([index])); workbench.current?.querySelector<HTMLElement>(`[data-region-index="${index}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
   const selectImages = (items: UnityImage[], selected: boolean) => {const changed=items.filter(item=>item.sourceFile&&item.selected!==selected).map(item=>({...item,selected}));if(onChangeMany)onChangeMany(changed);else changed.forEach(onChange);};
@@ -267,11 +333,13 @@ export function UnityImageWorkbench({ project, disabled, active = true, dirty = 
 {([["checked","已勾选"],["unchecked","未勾选"],["pending","未完成"],["failed","失败"],["done","已完成"]] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={imageFilters[key]} onChange={event=>{const checked=event.currentTarget.checked;requestFilter(()=>setImageFilters(current=>({...current,[key]:checked})));}}/>{label}</label>)}
 </div>,document.body)}{archiveBusy&&<span role="status">{archiveBusy}</span>}<span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张 · 已完成 {counts.done} 张{counts.failed ? ` · 失败 ${counts.failed} 张` : ""}</span><input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} /><button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
     {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <div className="unity-image-body">
-      {!focusedDetail && <div className="unity-image-list" aria-label="游戏图片列表">{([['candidate','待正式识别'], ['text', '识别到文字'], ['pending', '未执行 OCR'], ['failed', '识别失败'], ['empty', '未检测到文字'], ['review','待复核'], ['excluded','无需翻译']] as const).map(([group, label]) => {
-        const {items,eligible,checked}=groups[group];const pages=Math.max(1,Math.ceil(items.length/60)),page=Math.min(groupPages[group]||0,pages-1);const visible=collapsed[group]?[]:items.slice(page*60,(page+1)*60);const changePage=(next:number)=>{setGroupPages(current=>({...current,[group]:next}));setSelectedId(items[next*60]?.id||"");};
+      {!focusedDetail && <div ref={listRef} className="unity-image-list" aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>{imageListGroups.map(([group, label]) => {
+        const {items,eligible,checked}=groups[group];const pages = Math.max(1, Math.ceil(items.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
+        const visible = collapsed[group] ? [] : items.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
+        const changePage = (next: number) => selectListImage(group, imagePageIndex(items.findIndex(item => item.id === image?.id), next, items.length), false);
         return items.length > 0 && <details key={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => { const closed = !event.currentTarget.open; setCollapsed(previous => previous[group] === closed ? previous : { ...previous, [group]: closed }); }}><summary onContextMenu={event=>{event.preventDefault();setGroupMenu({group,label,x:Math.max(8,Math.min(event.clientX,window.innerWidth-200)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-52))});}}><span>{label} · {items.length}</span><input className="unity-image-group-check" type="checkbox" aria-label={`${checked===eligible&&eligible>0?"取消全选":"全选"}：${label}`} data-tooltip={`${checked===eligible&&eligible>0?"取消本组全部勾选":"勾选本组全部图片"}（包含其他分页）`} disabled={disabled || !!archiveBusy || !eligible} checked={eligible>0&&checked===eligible} ref={node=>{if(node)node.indeterminate=checked>0&&checked<eligible;}} onClick={event=>event.stopPropagation()} onChange={event=>selectImages(items,event.target.checked)}/></summary>{visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}`}>
         <input type="checkbox" aria-label={`选择图片 ${item.name}`} disabled={disabled || !!archiveBusy || !item.sourceFile} checked={item.selected} onChange={event => onChange({ ...item, selected: event.target.checked })} />
-        <button onClick={() => setSelectedId(item.id)} data-tooltip={item.file} aria-label={item.file}><strong><SearchHighlight text={item.name} query={deferredSearch} /></strong><small>{item.width} × {item.height} · {item.completed ? unityImageHasText(item) ? "已完成" : "未识别出文字" : item.error ? "识别或处理失败" : item.ocrCompleted ? "已识别" : item.screening?.state==="candidate"?"待正式识别":"未执行 OCR"}{item.screening ? ` · ${item.screening.reason}` : ""}</small></button>
+        <button data-image-row={item.id} onClick={() => setSelectedId(item.id)} data-tooltip={item.file} aria-label={item.file}><strong><SearchHighlight text={item.name} query={deferredSearch} /></strong><small>{item.width} × {item.height} · {item.completed ? unityImageHasText(item) ? "已完成" : "未识别出文字" : item.error ? "识别或处理失败" : item.ocrCompleted ? "已识别" : item.screening?.state==="candidate"?"待正式识别":"未执行 OCR"}{item.screening ? ` · ${item.screening.reason}` : ""}</small></button>
       </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><span>{page+1} / {pages}</span><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
       })}</div>}
       {!focusedDetail && !filtered.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}

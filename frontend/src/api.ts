@@ -1,3 +1,4 @@
+import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
 import { createLlmTranslationScheduler } from "./llmTranslationScheduler";
 import { toFriendlyError } from "./friendlyError";
 
@@ -120,6 +121,7 @@ export type TranslateResponse = {
   error?:string;
   promptTokens?: number;
   completionTokens?: number;
+  generationTokensPerSecond?: number;
   totalTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
@@ -144,6 +146,7 @@ export type UsageEvent = {
   apiHost?: string;
   promptTokens?: number;
   completionTokens?: number;
+  generationTokensPerSecond?: number;
   totalTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
@@ -269,6 +272,8 @@ export type TranslateOptions = {
   /** Client-side: structured protocol requests bypass envelope batching. */
   llmBatch?: boolean;
   llmConcurrency?:number;
+  performanceScope?: string;
+  performanceStep?: string;
   source?: string;
   target?: string;
   provider?: TranslateProvider | string;
@@ -277,6 +282,8 @@ export type TranslateOptions = {
   /** The Unity engine pool handles fallback and provider concurrency itself. */
   autoFallback?: boolean;
   localModel?: boolean;
+  ollamaReasoningOff?: boolean;
+  ollamaNative?: boolean;
   /** LLM overrides for connection test / per-request */
   apiUrl?: string;
   apiKey?: string;
@@ -467,7 +474,8 @@ export type StorageStatus = {
 };
 
 async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions):Promise<TranslateResponse>{
-    const {llmBatch:_batch,llmConcurrency:_limit,...serverOptions}=opts||{};
+    const {llmBatch:_batch,llmConcurrency:_limit,performanceScope:_scope,performanceStep:_step,...rest}=opts||{};
+    const serverOptions = { ...rest, maxOutputTokens: loadLlmRuntime().maxOutputTokens };
     const signal = init?.signal;
     signal?.throwIfAborted();
     const taskId = crypto.randomUUID();
@@ -508,7 +516,7 @@ async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions
       if (queued) cancel();
     }
 }
-const scheduledTranslate=createLlmTranslationScheduler(rawTranslate);
+const scheduledTranslate=createLlmTranslationScheduler((text, init, options) => options?.provider === "llm" ? runModelRequest(options, init?.signal, signal => rawTranslate(text, { ...init, signal }, options)) : rawTranslate(text, init, options));
 export const api = {
   getStorage: (includeSizes = true) => request<StorageStatus>(`/api/storage${includeSizes ? "" : "?sizes=0"}`, undefined, 120_000),
   saveStoragePaths: (paths: Record<string, string>, includeSizes = true) => request<StorageStatus>(`/api/storage/paths${includeSizes ? "" : "?sizes=0"}`, {

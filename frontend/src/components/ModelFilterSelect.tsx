@@ -1,12 +1,21 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { currentEffectivePresets, labelForModelId, loadLocalModelProfiles, vendorOfModel } from "../modelPresets";
 import { SearchableSelect } from "./SearchableSelect";
-type Filter={excluded:string[];local:boolean;online:boolean};
-const sessionFilters=new Map<string,Filter>();
-export function ModelFilterSelect({label,value,models,disabled,onChange,optionalValue,filterKey}:{label:string;value:string;models:string[];disabled:boolean;onChange:(value:string)=>void;optionalValue?:string;filterKey:string}){
+export type ModelFilter = { excluded: string[]; local: boolean; online: boolean };
+export const defaultModelFilter: ModelFilter = { excluded: [], local: true, online: true };
+export function readModelFilter(key: string): ModelFilter {
+  try {
+    const value = JSON.parse(localStorage.getItem("llmchat-game-model-filter:" + key) || "null");
+    if (value && Array.isArray(value.excluded) && value.excluded.every((item: unknown) => typeof item === "string") &&
+        typeof value.local === "boolean" && typeof value.online === "boolean") return value;
+  } catch { /* Use the default filter. */ }
+  return defaultModelFilter;
+}
+export function saveModelFilter(key: string, filter: ModelFilter) {
+  localStorage.setItem("llmchat-game-model-filter:" + key, JSON.stringify(filter));
+}
+export function ModelFilterSelect({label,value,models,disabled,onChange,optionalValue,filter,setFilter}:{label:string;value:string;models:string[];disabled:boolean;onChange:(value:string)=>void;optionalValue?:string;filter:ModelFilter;setFilter:(filter:ModelFilter)=>void}){
   const id=useId(),menu=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),[open,setOpen]=useState(false);
-  const [filter,setFilter]=useState<Filter>(()=>sessionFilters.get(filterKey)||{excluded:[],local:true,online:true});
-  useEffect(()=>{sessionFilters.set(filterKey,filter);},[filterKey,filter]);
   const rows=useMemo(()=>{const profiles=loadLocalModelProfiles(),presets=currentEffectivePresets();return [...new Set(models)].map(model=>{const vendor=vendorOfModel(model,presets),profile=profiles[model];return {model,local:!vendor&&!!profile,vendor:vendor||(profile?.apiUrl.includes(":11434/")?"Ollama":profile?"自定义本地服务":"其他接口")};});},[models]);
   const vendors=[...new Set(rows.map(row=>row.vendor))].sort((a,b)=>a.localeCompare(b,"zh-CN"));
   const filtered=rows.filter(row=>!filter.excluded.includes(row.vendor)&&(row.local?filter.local:filter.online));

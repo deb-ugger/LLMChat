@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from "react";
 import type {OcrMode,TranslateProvider} from "../api";
-export type GameImageTask={kind:"scan"|"screen"|"recognize"|"translate";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider;translationKind?:"llm"|"local"|"engine";translationModel?:string;reviewModel?:string;onlySourceLanguage?:boolean;skipTargetLanguage?:boolean}};
+export type GameImageTask={kind:"scan"|"screen"|"refine"|"recognize"|"translate";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider;translationKind?:"llm"|"local"|"engine";translationModel?:string;reviewModel?:string;onlySourceLanguage?:boolean;skipTargetLanguage?:boolean}};
 export function useGameImageTask(gamePath:string){
   const key=`llmchat-image-task:${gamePath}`;
   const initial=useRef<{total:number;task?:GameImageTask}|undefined>(undefined);

@@ -13,6 +13,7 @@ struct LlmRequest {
     std::string proxyMode;
     std::string httpProxy;
     bool requireComplete = false;
+    bool nativeOllama = false;
 };
 
 struct LlmResponse {
@@ -23,6 +24,7 @@ struct LlmResponse {
     int statusCode = 0;
     int promptTokens = 0;
     int completionTokens = 0;
+    double generationTokensPerSecond = 0;
     int totalTokens = 0;
     /** Prompt-cache hit / read tokens (vendor-specific; 0 if unsupported). */
     int cacheReadTokens = 0;

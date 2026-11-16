@@ -64,6 +64,17 @@ inline Json workflow(const Json& request) {
     if (request.contains("textSkipped") || request.contains("imagesSkipped")) write(file, value);
     return value;
 }
+inline void resetForScan(const fs::path& game) {
+    std::lock_guard lock(mutex);
+    const auto base = game / "LLMChat-JSON", file = base / "text-project.json";
+    if (fs::is_regular_file(file)) {
+        auto value = read(file);
+        for (auto& entry : value["entries"]) { entry["translation"] = ""; entry["error"] = ""; entry.erase("layoutDraft"); entry.erase("screeningDraft"); }
+        value["workflow"] = Json{{"screened", false}}; write(file, value);
+    }
+    write(base / "text-translation.json", Json::object());
+    write(base / "workflow.json", Json{{"textSkipped", false}, {"imagesSkipped", false}});
+}
 inline Json load(const Json& request) {
     std::lock_guard lock(mutex);
     const auto base = storage(request), path = source(base, request.value("sourcePath", ""));
@@ -72,14 +83,16 @@ inline Json load(const Json& request) {
     const auto saved = fs::is_regular_file(base / "text-project.json") ? read(base / "text-project.json") : Json::object();
     Json previous = Json::object(), rows = Json::array();
     if (saved.contains("entries")) for (const auto& row : saved.at("entries")) previous[row.at("source").get<std::string>()] = row;
+    bool sameSource = previous.size() == originals.size();
+    for (auto it = originals.begin(); it != originals.end(); ++it) if (!previous.contains(it.key())) { sameSource = false; break; }
     size_t index = 0;
     for (auto it = originals.begin(); it != originals.end(); ++it) {
         Json row = {{"id", std::to_string(++index)}, {"source", it.key()}, {"translation", ""}, {"selected", true}, {"error", ""}, {"file", "MTool.json"}, {"container", ""}, {"objectId", std::to_string(index)}, {"locator", it.key()}, {"kind", "游戏文本"}};
         if (previous.contains(it.key())) for (const auto& key : {"translation", "selected", "error"}) row[key] = previous[it.key()].at(key);
-        if (previous.contains(it.key()) && previous[it.key()].contains("screeningDraft")) row["screeningDraft"] = previous[it.key()]["screeningDraft"];
+        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
         rows.push_back(std::move(row));
     }
-    return {{"entries", rows}, {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}};
+    return {{"entries", rows}, {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}, {"workflow", sameSource ? saved.value("workflow", Json()) : Json{{"screened", false}}}};
 }
 inline Json save(const Json& request) {
     std::lock_guard lock(mutex);
@@ -96,7 +109,7 @@ inline Json save(const Json& request) {
         if (row.at("selected").get<bool>() && row.at("error").get<std::string>().empty() && !value.empty() && value != text) translated[text] = value;
     }
     // The source export and game resources are never overwritten by editing.
-    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())}});
+    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())}, {"workflow", request.value("workflow", Json())}});
     write(base / "text-translation.json", translated);
     return {{"ok", true}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}};
 }

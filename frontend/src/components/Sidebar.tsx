@@ -1,3 +1,4 @@
+import { showAppNotice } from "./AppNotice";
 import { useEffect, useRef, useState } from "react";
 import type { ConversationSummary } from "../api";
 
@@ -78,7 +79,7 @@ export function Sidebar({
         await onRename(id, next);
       }
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "重命名失败");
+      showAppNotice(e instanceof Error ? e.message : "重命名失败", "error");
     } finally {
       committingRef.current = false;
     }

@@ -109,7 +109,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
-    WinHttpSetTimeouts(session, 5000, 10000, 30000, nativeJson ? 300000 : 100000);
+    WinHttpSetTimeouts(session, 5000, 10000, 30000, 300000);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect)
     {
@@ -160,7 +160,20 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
 
     if (!sent || !operation.receive())
     {
-        result.error = "HTTP request failed";
+        const auto error = GetLastError();
+        const bool loopback = host == L"127.0.0.1" || host == L"localhost" || host == L"::1" || host == L"[::1]";
+        if (error == ERROR_WINHTTP_CANNOT_CONNECT && loopback)
+        {
+            const auto address = host == L"::1" ? "[::1]" : toUtf8(host);
+            result.error = "无法连接本地模型服务 " + std::string(address) + ":" + std::to_string(port) +
+                "。请启动所选模型的服务（Ollama 可在「设置 → 通用 → 本地大模型」开启），再继续。";
+            result.errorCode = "LLM_LOCAL_CONNECTION_FAILED";
+        }
+        else
+        {
+            result.error = std::string(sent ? "HTTP receive failed" : "HTTP send failed") +
+                " (WinHTTP " + std::to_string(error) + ")";
+        }
         operation.close();
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
@@ -205,7 +218,10 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
 
     if (status < 200 || status >= 300)
     {
-        result.error = "LLM HTTP " + std::to_string(status) + ": " + responseBody.substr(0, 500);
+        if (responseBody.find("token repeat limit reached") != std::string::npos) {
+            result.errorCode = "LLM_MODEL_REPETITION";
+            result.error = "模型重复生成，服务已中止本次输出；需简化输入或拆分条目后重试";
+        } else result.error = "LLM HTTP " + std::to_string(status) + ": " + responseBody.substr(0, 500);
         return result;
     }
 
@@ -469,6 +485,41 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
     body["stream"] = false;
 
 #ifdef _WIN32
+    const std::string suffix = "/v1/chat/completions";
+    if (request.nativeOllama && request.apiUrl.ends_with(suffix)) {
+        json nativeBody = {{"model", request.model}, {"messages", request.messages}, {"stream", false}};
+        for (auto& message : nativeBody["messages"]) if (message.contains("content") && message["content"].is_array()) {
+            std::string text; json images = json::array();
+            for (const auto& part : message["content"]) {
+                if (part.value("type", "") == "text") text += part.value("text", "");
+                if (part.value("type", "") == "image_url") {
+                    const auto url = part.at("image_url").at("url").get<std::string>();
+                    const auto comma = url.find(',');
+                    if (!url.starts_with("data:image/") || comma == std::string::npos) { early.error = "Ollama 图片输入须为内嵌图片数据"; return early; }
+                    images.push_back(url.substr(comma + 1));
+                }
+            }
+            message["content"] = text; if (!images.empty()) message["images"] = images;
+        }
+        json options = request.options;
+        if (options.contains("keep_alive")) { nativeBody["keep_alive"] = options["keep_alive"]; options.erase("keep_alive"); }
+        if (options.contains("format")) { nativeBody["format"] = options["format"]; options.erase("format"); }
+        if (options.contains("max_tokens")) { options["num_predict"] = options["max_tokens"]; options.erase("max_tokens"); }
+        if (options.value("reasoning_effort", "") == "none") nativeBody["think"] = false;
+        options.erase("reasoning_effort"); nativeBody["options"] = options;
+        json output;
+        auto result = winHttpPost(request.apiUrl.substr(0, request.apiUrl.size() - suffix.size()) + "/api/chat", request.apiKey,
+            nativeBody.dump(), request.proxyMode, request.httpProxy, false, &output);
+        if (!result.ok) return result;
+        const auto message = output.value("message", json::object());
+        const json compatible = {{"choices", json::array({json{{"message", message}, {"finish_reason", output.value("done_reason", "")}}})},
+            {"usage", {{"prompt_tokens", output.value("prompt_eval_count", 0)}, {"completion_tokens", output.value("eval_count", 0)}}}};
+        auto parsed = parseChatResponse(compatible.dump(), request.requireComplete);
+        parsed.statusCode = result.statusCode; parsed.externalCall = result.externalCall;
+        const double duration = output.value("eval_duration", 0.0);
+        if (duration > 0 && parsed.completionTokens > 0) parsed.generationTokensPerSecond = parsed.completionTokens * 1e9 / duration;
+        return parsed;
+    }
     return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy, request.requireComplete);
 #else
     early.error = "LLM client is only implemented for Windows in this build";

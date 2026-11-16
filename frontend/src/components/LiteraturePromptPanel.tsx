@@ -1,3 +1,4 @@
+import { showAppNotice } from "./AppNotice";
 import { useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_LIT_PROMPT_GENERAL,
@@ -109,7 +110,7 @@ export function LiteraturePromptPanel({
     if (editing.id === GENERAL_PROMPT_ID) return;
     const tag = tagDraft.trim();
     if (!tag) {
-      window.alert("请填写标题（tag）");
+      showAppNotice("请填写标题（tag）", "error");
       return;
     }
     if (
@@ -119,7 +120,7 @@ export function LiteraturePromptPanel({
           c.tag.toLowerCase() === tag.toLowerCase(),
       )
     ) {
-      window.alert("已存在同名标题");
+      showAppNotice("已存在同名标题", "error");
       return;
     }
     void run(async () => {
@@ -138,16 +139,16 @@ export function LiteraturePromptPanel({
   const addEntry = () => {
     const tag = tagDraft.trim();
     if (!tag) {
-      window.alert("请填写标题（tag）");
+      showAppNotice("请填写标题（tag）", "error");
       return;
     }
     if (catalog.some((c) => c.tag.toLowerCase() === tag.toLowerCase())) {
-      window.alert("已存在同名标题");
+      showAppNotice("已存在同名标题", "error");
       return;
     }
     const prompt = promptDraft.trim();
     if (!prompt) {
-      window.alert("请填写提示词内容");
+      showAppNotice("请填写提示词内容", "error");
       return;
     }
     void run(async () => {

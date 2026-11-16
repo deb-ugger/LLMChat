@@ -5,8 +5,26 @@ import type { UnityEntry } from "./unityOffline";
 import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRow, type UnityTranslationImportMode } from "./unityTranslationFiles";
 import { unityTranslationError } from "./unityOffline";
 
-export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; nameModel?: string; source: string; target: string; joinLines: boolean; wrapMode?: GameWrapMode; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
-export type GameTextProject = { entries: UnityEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions> };
+export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; screeningModel?: string; nameModel?: string; source: string; target: string; joinLines: boolean; includeContext?: boolean; wrapMode?: GameWrapMode; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
+export type GameTextProject = { entries: UnityEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[] } };
+
+export function isTextSelectionScreened(entries: UnityEntry[], screenedIds?: string[]) {
+  if (!screenedIds?.length) return false;
+  const screened = new Set(screenedIds);
+  return entries.every(entry => !entry.selected || screened.has(entry.id));
+}
+
+export function restoreGameTextState(screened: boolean, selected: number, completed: number, failed: number, interrupted: boolean) {
+  if (!screened || !selected) return "idle";
+  if (completed === selected) return "done";
+  if (failed) return "error";
+  return interrupted ? "stopped" : "idle";
+}
+
+export function sameTextEdit(current: UnityEntry, saved: UnityEntry) {
+  return current.selected === saved.selected && current.translation === saved.translation &&
+    current.screeningDraft === saved.screeningDraft && current.layoutDraft === saved.layoutDraft && current.error === saved.error;
+}
 export function gameTextProblem(source: string, translation: string) {
   const error = unityTranslationError(withoutGameSpeakerNames(source), withoutGameSpeakerNames(translation));
   if (error) return error;

@@ -1,3 +1,6 @@
+import { LocalPaddleOcr } from "./ocr/paddleOcr";
+import type { OcrMode } from "./api";
+import { measureGameAsync, measureGameWork } from "./gameModelPerformance";
 import {applyImageTextRules, IMAGE_TEXT_RULE_VERSION} from "./imageTextRules";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 import type { UnityImage, UnityProject } from "./unityOffline";
@@ -7,9 +10,12 @@ export type ImageScreening = {
   state: "candidate" | "no-text" | "review" | "not-needed" | "failed";
   recognition?:{profile:string;lines:PaddleOcrLine[];detectedBoxes:number};
   boxes: number; reason: string;
+  refineKey?: string; refineFailed?: boolean;
+  beforeRefine?: Pick<ImageScreening, "state" | "reason" | "boxes">;
 };
-type Options = { resume?:boolean; source:string;target:string;strategy?:"staged"|"full";concurrency?:number;model?:string };
-type Recognition = { profile?:string;lines:PaddleOcrLine[];detectedBoxes:number };
+type Options = { timingScope?: string; resume?:boolean; source:string;target:string;strategy?:"staged"|"full";concurrency?:number;model?:string; confidenceThreshold?: number };
+export type ImagePresence = { hasText: boolean; confidence: number; evidence: string };
+type Recognition = { profile?:string;lines:PaddleOcrLine[];detectedBoxes:number; presence?: ImagePresence };
 const language=(value:string)=>value.trim().toLowerCase().replace(/_/g,"-");
 
 export function classifyImageText(result:Recognition,options:Options):Pick<ImageScreening,"state"|"reason"> {
@@ -17,8 +23,9 @@ export function classifyImageText(result:Recognition,options:Options):Pick<Image
   if(!result.detectedBoxes&&!text)return {state:"no-text",reason:"未检测到文字区域"};
   if(!text)return {state:"review",reason:"检测到区域，但未识别出文字"};
   if(!/\p{L}/u.test(text))return {state:"not-needed",reason:"仅数字或符号"};
-  const confident=result.lines.filter(line=>line.confidence>=50&&/\p{L}/u.test(line.text)).map(line=>line.text).join(" ");
-  if(!confident)return {state:"review",reason:"文字置信度低于 50%"};
+  const threshold = options.confidenceThreshold ?? 50;
+  const confident=result.lines.filter(line=>line.confidence>=threshold&&/\p{L}/u.test(line.text)).map(line=>line.text).join(" ");
+  if(!confident)return {state:"review",reason:`文字置信度低于 ${threshold}%`};
   const source=language(options.source),target=language(options.target),src=source.split("-")[0],dst=target.split("-")[0];
   if(src!=="auto"&&source===target)return {state:"not-needed",reason:"源语言与目标语言相同"};
   const kana=/[\u3040-\u30ff]/u.test(confident),hangul=/[\uac00-\ud7af]/u.test(confident),han=/\p{Script=Han}/u.test(confident),latin=/\p{Script=Latin}/u.test(confident);
@@ -41,6 +48,37 @@ export function coarseImageReason(image:UnityImage):string|null {
   const group=file.match(/(?:^|\/)img\/(animations|characters|sv_actors|sv_enemies|tilesets)\//)?.[1];
   return group?`粗筛跳过 ${group} 素材，可手动改选或使用完整筛选`:null;
 }
+export function needsGameImageRefinement(image: UnityImage, key: string) {
+  const screening = image.screening;
+  const state = screening?.beforeRefine?.state ?? screening?.state;
+  return !!image.sourceFile && !image.completed && !image.ocrCompleted &&
+    (state === "candidate" || state === "review") && (screening?.refineKey !== key || !!screening.refineFailed);
+}
+
+export function clearGameImageRefinement(image: UnityImage): UnityImage {
+  const screening = image.screening;
+  if (!screening?.refineKey) return image;
+  const { beforeRefine, refineKey, refineFailed, ...result } = screening;
+  const initial = beforeRefine ? { ...result, ...beforeRefine } : result;
+  return { ...image, screening: initial, selected: image.selectionManual ? image.selected : initial.state === "candidate" };
+}
+
+function classifyGameImage(image: UnityImage, result: Recognition, options: Options, reuse = false) {
+  return measureGameWork(options.timingScope, "processingMs", () => {
+    const threshold = options.confidenceThreshold ?? 50;
+    if (result.presence) {
+      const { hasText, confidence, evidence } = result.presence;
+      if (confidence < threshold) return { state: "review" as const, reason: `文字存在判断置信度 ${confidence}% 低于复筛阈值 ${threshold}%` };
+      if (!hasText) return { state: "no-text" as const, reason: "未发现可读文字" };
+      return { state: "candidate" as const, reason: "确认存在可读文字" + (evidence ? ` · ${evidence}` : "") };
+    }
+    const regions = applyImageTextRules(reuse ? image.regions : result.lines.map(line => ({ ...line, translation: "", selected: true, error: "" })), threshold, image);
+    const initial = classifyImageText(result, options);
+    return initial.state === "candidate" && regions.every(region => !region.selected)
+      ? { state: "review" as const, reason: "文字区域疑似误检，需人工确认" } : initial;
+  });
+}
+
 export class ScreeningModelError extends Error {}
 export async function screenGameImages(project:UnityProject,signal:AbortSignal,options:Options,services:{
   read:(image:UnityImage)=>Promise<Blob>;
@@ -57,9 +95,12 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
   const report=(detail:string)=>progress({completed,total:images.length,detail,etaMs:eta()});
   // Cheap resource-type pass before any image decoding or model initialization.
   for(const image of images){signal.throwIfAborted();const old=image.screening;
-    if(options.resume&&old?.sourceHash===image.sourceHash&&old.state!=="failed"){counts[old.state]++;completed++;continue;}
-    if(old?.version===1&&old.rules===IMAGE_TEXT_RULE_VERSION&&old.sourceHash===image.sourceHash&&old.source===options.source&&old.target===options.target&&old.state!=="failed"&&(old.strategy||"full")===strategy&&(old.model||"fast")===(options.model||"fast")){counts[old.state]++;completed++;continue;}
-    const reason=strategy==="staged"?coarseImageReason(image):null;
+    if (old?.version === 1 && old.rules === IMAGE_TEXT_RULE_VERSION && old.sourceHash === image.sourceHash &&
+        old.source === options.source && old.target === options.target && old.state !== "failed" &&
+        (old.strategy || "full") === strategy && (old.model || "fast") === (options.model || "fast")) {
+      counts[old.state]++; completed++; continue;
+    }
+    const reason=strategy==="staged"?measureGameWork(options.timingScope, "processingMs", () => coarseImageReason(image)):null;
     if(reason){pending.push({...image,selected:false,screening:policy(image,"not-needed",reason)});counts["not-needed"]++;completed++;if(pending.length>=128)await flush();}
     else work.push(image);
   }
@@ -67,12 +108,122 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
   let failure:unknown;
   const take=()=>{if(failure||signal.aborted||next>=work.length)return null;const original=work[next++];return {original,read:original.ocrCompleted?null:services.read(original).then(blob=>({blob,error:undefined}),error=>({blob:undefined,error}))};};
   const worker=async(workerId:number)=>{let item=take();while(!failure&&item){signal.throwIfAborted();const {original,read}=item;item=take();let image:UnityImage={...original};report(`检测文字：${image.name}`);
-    try {const reuse=image.ocrCompleted&&(!image.screening||image.selectionManual||(image.screening.sourceHash===image.sourceHash&&image.screening.source===options.source&&image.screening.target===options.target&&(image.screening.strategy||"full")===strategy&&(image.screening.model||"fast")===(options.model||"fast")));const result=reuse?{lines:image.regions,detectedBoxes:image.screening?.boxes??image.regions.length}:await services.recognize(await(async()=>{if(!read)return services.read(image);const value=await read;if(value.error)throw value.error;return value.blob!;})(),detail=>report(`${image.name} · ${detail}`),workerId);
-      signal.throwIfAborted();const regions=applyImageTextRules(reuse?image.regions:result.lines.map(line=>({...line,translation:"",selected:line.confidence>=50,error:""})),50,image);let classification=classifyImageText(result,options);if(classification.state==="candidate"&&regions.every(region=>!region.selected))classification={state:"review",reason:"文字区域疑似误检，需人工确认"};image={...image,error:"",screening:policy(image,classification.state,classification.reason,result.detectedBoxes)};if(result.profile&&(classification.state==="candidate"||classification.state==="review"))image.screening!.recognition={profile:result.profile,lines:result.lines,detectedBoxes:result.detectedBoxes};
-      if(!image.selectionManual)image.selected=classification.state==="candidate";
+    try {
+      const reuse = image.ocrCompleted && (!image.screening || image.selectionManual ||
+        (image.screening.sourceHash === image.sourceHash && image.screening.source === options.source &&
+          image.screening.target === options.target && (image.screening.strategy || "full") === strategy &&
+          (image.screening.model || "fast") === (options.model || "fast")));
+      const blobForImage = () => !read ? services.read(image) : read.then(value => {
+        if (value.error) throw value.error;
+        return value.blob!;
+      });
+      const stage = (detail: string) => report(image.name + " · " + detail);
+      const result: Recognition = reuse
+        ? { lines: image.regions, detectedBoxes: image.screening?.boxes ?? image.regions.length }
+        : await services.recognize(await blobForImage(), stage, workerId);
+      signal.throwIfAborted();
+      const classification = classifyGameImage(image, result, options, reuse);
+      const screening = policy(image, classification.state, classification.reason, result.detectedBoxes);
+      if (result.profile && (classification.state === "candidate" || classification.state === "review")) {
+        screening.recognition = { profile: result.profile, lines: result.lines, detectedBoxes: result.detectedBoxes };
+      }
+      image = { ...image, error: "", screening };
+      if (!image.selectionManual) image.selected = classification.state === "candidate";
     }catch(error){if(signal.aborted||error instanceof ScreeningModelError)throw error;image={...image,screening:policy(image,"failed",String(error)),error:String(error)};if(!image.selectionManual)image.selected=false;}
     counts[image.screening!.state]++;pending.push(image);completed++;deepDone++;samples.push({time:performance.now(),done:deepDone});if(samples.length>64)samples.shift();if(pending.length>=16)await flush();report(`文字筛选 ${completed} / ${images.length}`);
   }};
-  try{const results=await Promise.allSettled(Array.from({length:Math.max(1,Math.min(8,options.concurrency||1))},(_,i)=>worker(i).catch(error=>{failure=error;throw error;})));const rejected=results.find((result):result is PromiseRejectedResult=>result.status==="rejected");if(rejected)throw rejected.reason;}finally{await flush();}
+  const concurrency = Math.max(1, Math.min(8, options.concurrency || 1));
+  const runWorkers = async (count: number, run: (index: number) => Promise<void>) => {
+    try {
+      const results = await Promise.allSettled(Array.from({ length: count }, (_, index) => run(index).catch(error => {
+        failure = error;
+        throw error;
+      })));
+      const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (rejected) throw rejected.reason;
+    } finally { await flush(); }
+  };
+  await runWorkers(concurrency, worker);
   return counts;
+}
+
+export type LocalRefineMode = Extract<OcrMode, "fast" | "precise" | "english">;
+export const LOCAL_REFINE_MODELS: { id: LocalRefineMode; title: string; description: string }[] = [
+  { id: "fast", title: "PP-OCRv6 Small", description: "轻量中英日混合文字，适合普通菜单和界面。" },
+  { id: "precise", title: "PP-OCRv6 Medium", description: "适合细小文字、复杂底图或低清晰度截图。" },
+  { id: "english", title: "PP-OCRv5 Mobile（英文增强）", description: "使用 PP-OCRv6 Medium 检测，适合纯英文菜单、缩写和标签。" },
+];
+
+export function createLocalImageRefiner(mode: LocalRefineMode, concurrency: number, timingScope?: string,
+  onDevice?: (message: string, fallback: boolean) => void) {
+  const workers = Array.from({ length: concurrency }, () => new LocalPaddleOcr(mode, {
+    upscale: false, maxSide: 1600, boxThresh: .3, onDevice,
+  }));
+  return {
+    prepare: () => workers[0].prepare(),
+    recognize: (blob: Blob, index: number) => {
+      const worker = workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index];
+      return measureGameAsync(timingScope, "processingMs", () => worker.recognize(blob));
+    },
+    dispose: async () => { await Promise.all(workers.map(worker => worker.dispose())); },
+  };
+}
+
+export async function refineGameImages(images: UnityImage[], signal: AbortSignal, options: Options & { refineKey: string; local?: boolean }, services: {
+  read: (image: UnityImage) => Promise<Blob>;
+  recognize: (blob: Blob, worker: number) => Promise<Recognition>;
+  persist: (images: UnityImage[]) => Promise<void>;
+}, progress: (value: { completed: number; total: number; detail: string }) => void) {
+  const queue = images.filter(image => needsGameImageRefinement(image, options.refineKey));
+  const total = queue.length;
+  let next = 0, completed = 0;
+  let pending: UnityImage[] = [], writes = Promise.resolve();
+  const flush = () => {
+    if (pending.length) {
+      const batch = pending;
+      pending = [];
+      writes = writes.then(() => services.persist(batch));
+    }
+    return writes;
+  };
+  const counts = { candidate: 0, review: 0, "no-text": 0, "not-needed": 0, failed: 0 };
+  let promoted = 0, removed = 0, changed = 0, unchanged = 0;
+  const method = options.local ? "本地复筛" : "视觉模型复筛";
+  progress({ completed, total, detail: "正在复筛待复核和待正式识别的图片" });
+  try {
+    const results = await Promise.allSettled(Array.from({ length: Math.min(options.concurrency || 1, total) }, async (_, worker) => {
+      while (next < total) {
+        signal.throwIfAborted();
+        const image = clearGameImageRefinement(queue[next++]);
+        const initial = image.screening!;
+        let screening: ImageScreening;
+        try {
+          const result = await services.recognize(await services.read(image), worker);
+          signal.throwIfAborted();
+          const classification = classifyGameImage(image, result, options);
+          screening = { ...initial, ...classification, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
+            beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes }, refineKey: options.refineKey };
+        } catch (error) {
+          signal.throwIfAborted();
+          screening = { ...initial, refineKey: options.refineKey, refineFailed: true,
+            beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes },
+            reason: method + "未完成：" + (error instanceof Error ? error.message : String(error)) };
+        }
+        pending.push({ ...image, screening, selected: image.selectionManual ? image.selected : screening.state === "candidate" });
+        const state = screening.state;
+        counts[screening.refineFailed ? "failed" : state]++;
+        if (!screening.refineFailed && initial.state !== state) {
+          changed++;
+          if (state === "candidate") promoted++;
+          else if (initial.state === "candidate") removed++;
+        } else if (!screening.refineFailed) unchanged++;
+        completed++;
+        progress({ completed, total, detail: method + " " + completed + " / " + total });
+        if (pending.length >= 16) await flush();
+      }
+    }));
+    const rejected = results.find(result => result.status === "rejected");
+    if (rejected) throw rejected.reason;
+  } finally { await flush(); }
+  return { completed, counts, promoted, removed, changed, unchanged };
 }
