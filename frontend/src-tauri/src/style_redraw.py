@@ -167,32 +167,19 @@ async def upload_image(session, reference):
     return name
 
 
-def refine_transparent_lettering(crop, draft, layer, protected):
-    from scipy import ndimage
-
-    original = np.asarray(crop)
-    guide = np.asarray(draft)
-    candidate = np.array(layer, dtype=np.float32)
-    guide_alpha = np.where(protected, 0, guide[:, :, 3]).astype(np.float32)
-    model_alpha = np.minimum(candidate[:, :, 3], ndimage.maximum_filter(guide_alpha, size=3))
-    model_alpha[protected] = 0
-    guide_ink = guide_alpha.sum()
-    if model_alpha.sum() < guide_ink * .25:
+def refine_transparent_lettering(draft, layer, protected):
+    result = np.array(draft)
+    model = np.asarray(layer, dtype=np.float32)
+    guide_alpha = np.where(protected, 0, result[:, :, 3]).astype(np.float32)
+    overlap = np.minimum(guide_alpha, model[:, :, 3])
+    if overlap.sum() < guide_alpha.sum() * .25:
         raise ValueError("模型笔画与中文字形底稿偏差过大，请采用程序版或重新生成")
 
-    # Keep the draft strokes readable while allowing a one-pixel variation at the edges.
-    base_alpha = guide_alpha * .65
-    style_alpha = np.maximum(model_alpha - base_alpha, 0)
-    ink_budget = guide_ink * 1.12 - base_alpha.sum()
-    candidate[:, :, 3] = base_alpha + style_alpha * min(1., ink_budget / max(1., style_alpha.sum()))
-    candidate[model_alpha < base_alpha, :3] = guide[model_alpha < base_alpha, :3]
-
-    visible = original[(original[:, :, 3] >= 128) & ~protected, :3].astype(np.float32)
-    if visible.size:
-        color = np.median(visible, axis=0)
-        if np.mean(np.max(np.abs(visible - color), axis=1) <= 25) >= .7:
-            candidate[:, :, :3] = candidate[:, :, :3] * .28 + color * .72
-    return Image.fromarray(np.rint(candidate).astype(np.uint8))
+    # Keep a single glyph silhouette. Transfer ink variation only where the model covers the draft.
+    ink = result[:, :, :3].astype(np.float32)
+    tone_delta = np.clip(model[:, :, :3] - ink, -48, 48)
+    result[:, :, :3] = np.rint(ink + tone_delta * (overlap[:, :, None] / 510)).astype(np.uint8)
+    return Image.fromarray(result)
 
 
 async def render(session, crop, draft, translation, steps, label, profile):
@@ -401,7 +388,7 @@ async def run(data):
                 crop, draft, protected, transparent = drafts[i-1]
                 layer = await render(session, crop, draft, region["translation"].strip(), steps, label, profile)
                 if transparent:
-                    layer = refine_transparent_lettering(crop, draft, layer, protected)
+                    layer = refine_transparent_lettering(draft, layer, protected)
                 layer.paste(crop, (0,0), Image.fromarray(protected))
             except Exception as exc:
                 raise RuntimeError(f"{label}：{exc}") from exc
