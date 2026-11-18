@@ -48,11 +48,12 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
   const [program, setProgram] = useState("");
   const [layer, setLayer] = useState("");
   const [layerView, setLayerView] = useState(false);
+  const [zoomRegion, setZoomRegion] = useState(-1);
   const [candidates, setCandidates] = useState<Record<string, string>>({});
   const [measurements, setMeasurements] = useState<Record<string, string>>({});
   const [choice, setChoice] = useState("program");
   const result = choice === "program" ? program : candidates[choice] || "";
-  const setResult = (value: string) => { setProgram(value); setLayer(""); setLayerView(false); setCandidates({}); setChoice("program"); };
+  const setResult = (value: string) => { setProgram(value); setLayer(""); setLayerView(false); setZoomRegion(-1); setCandidates({}); setChoice("program"); };
   const [profiles,setProfiles] = useState(savedProfiles);
   const [profileId,setProfileId] = useState<ProfileId>("2511");
   const profile = profiles[profileId];
@@ -79,6 +80,12 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
   const processing = useRef(false);
   const [dimensions, setDimensions] = useState([0, 0]);
   const regionList: Region[] = game?.regions ?? [{ box, translation }];
+  const zoom = result && regionList[zoomRegion]?.box;
+  const cropPreview = (url: string, label: string) => zoom && <svg className="style-redraw-detail" role="img" aria-label={label}
+    viewBox={`${zoom[0]} ${zoom[1]} ${zoom[2]-zoom[0]} ${zoom[3]-zoom[1]}`}
+    style={{ aspectRatio: `${zoom[2]-zoom[0]} / ${zoom[3]-zoom[1]}` }}>
+    <image href={url} width={dimensions[0]} height={dimensions[1]} />
+  </svg>;
   const report = (e: unknown) => showAppNotice(e instanceof Error ? e.message : String(e), "error");
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -120,7 +127,7 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
         const url = "data:image/png;base64," + png.image;
         setLayerView(false);
         if (png.layer) setLayer("data:image/png;base64," + png.layer);
-        if (mode === "program") { setProgram(url); setChoice("program"); }
+        if (mode === "program") { setProgram(url); setChoice("program"); setZoomRegion(0); }
         else {
           setCandidates(previous => ({ ...previous, [profileId]: url })); setChoice(profileId);
           setMeasurements(previous => ({ ...previous, [profileId]: `${steps} 步 · 含排队 ${Math.round((performance.now()-started)/1000)} 秒` }));
@@ -199,12 +206,15 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
       </fieldset>
       {game && !valid && <small>请先确认每个勾选区域的坐标和译文。</small>}
       {missing.length > 0 && <small>模型目录内未找到　{missing.join("、")}</small>}
-      {program && choice === "program" && <label><span><input type="checkbox" checked={layerView} onChange={e => setLayerView(e.target.checked)} />仅预览透明字层</span></label>}
+      {result && <div className="style-redraw-tools"><label>预览范围<select value={zoomRegion} onChange={e => setZoomRegion(Number(e.target.value))}>
+        <option value={-1}>整幅画布</option>{regionList.map((_,i) => <option key={i} value={i}>区域 {i+1}</option>)}
+      </select></label>{choice === "program" && <label><span><input type="checkbox" checked={layerView} onChange={e => setLayerView(e.target.checked)} />仅预览透明字层</span></label>}</div>}
       {!game && <small>输出位置　{output}</small>}
       {status && <p role="status">{status}</p>}
       {source && <div className="style-redraw-previews">
-        <figure><figcaption>{game ? "原图" : "原图 · 拖选文字区域"}</figcaption>
-          <div className="style-redraw-canvas"><img src={source} alt="重绘原图" draggable={false} />
+        <figure><figcaption>{game || zoom ? "原图" : "原图 · 拖选文字区域"}</figcaption>
+          {zoom ? cropPreview(source,"原图文字区域") : <div className="style-redraw-canvas"><img src={source} alt="重绘原图" draggable={false}
+            onLoad={e => setDimensions([e.currentTarget.naturalWidth,e.currentTarget.naturalHeight])} />
           {!game && <svg viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} preserveAspectRatio="none" aria-label="拖选重绘范围"
             onPointerDown={e => {
               if (busy || e.button !== 0) return;
@@ -220,8 +230,9 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
               setBox([Math.min(a,x),Math.min(b,y),Math.max(a,x),Math.max(b,y)]); setResult("");
             }} onLostPointerCapture={() => { drag.current = null; }}>
             <rect x={box[0]} y={box[1]} width={Math.max(0,box[2]-box[0])} height={Math.max(0,box[3]-box[1])} />
-          </svg>}</div></figure>
-        {result && <figure><figcaption>译图预览</figcaption><img src={choice === "program" && layerView && layer ? layer : result} alt="重绘后的文字与透明背景" /></figure>}
+          </svg>}</div>}</figure>
+        {result && <figure><figcaption>译图预览</figcaption>{zoom ? cropPreview(choice === "program" && layerView && layer ? layer : result, "译图文字区域") :
+          <img src={choice === "program" && layerView && layer ? layer : result} alt="重绘后的文字与透明背景" />}</figure>}
       </div>}
     </>}
   </section>;
