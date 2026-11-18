@@ -38,6 +38,10 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <objbase.h>
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 #endif
 
 using json = nlohmann::json;
@@ -47,6 +51,22 @@ namespace {
 
 constexpr const char* kProjectFileName = "project.lcproj";
 constexpr const char* kProjectFileNameLegacy = "project.llmchat-proj.json";
+
+#ifdef _WIN32
+bool selectFileInExplorer(const fs::path& path)
+{
+    const std::wstring fullPath = fs::absolute(path).make_preferred().wstring();
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return false;
+
+    PIDLIST_ABSOLUTE file = nullptr;
+    HRESULT result = SHParseDisplayName(fullPath.c_str(), nullptr, &file, 0, nullptr);
+    if (SUCCEEDED(result)) result = SHOpenFolderAndSelectItems(file, 0, nullptr, 0);
+    CoTaskMemFree(file);
+    if (SUCCEEDED(initialized)) CoUninitialize();
+    return SUCCEEDED(result);
+}
+#endif
 
 void writeProjectData(const fs::path& path, const std::string& data) {
     std::string error;
@@ -1169,20 +1189,14 @@ int HttpServer::run()
                 res.set_content(errorJson("路径不存在").dump(), "application/json");
                 return;
             }
-            const fs::path openPath =
-                (attrs & FILE_ATTRIBUTE_DIRECTORY) ? target : target.parent_path();
-            const std::wstring wide = openPath.wstring();
-            HINSTANCE hi = ShellExecuteW(
-                nullptr,
-                nullptr,
-                wide.c_str(),
-                nullptr,
-                nullptr,
-                SW_SHOWNORMAL);
-            if (reinterpret_cast<intptr_t>(hi) <= 32)
+            const bool directory = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const bool opened = directory
+                ? reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, nullptr, wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32
+                : selectFileInExplorer(target);
+            if (!opened)
             {
                 res.status = 500;
-                res.set_content(errorJson("无法打开文件夹").dump(), "application/json");
+                res.set_content(errorJson(directory ? "无法打开文件夹" : "无法在文件夹中定位文件").dump(), "application/json");
                 return;
             }
 #else
