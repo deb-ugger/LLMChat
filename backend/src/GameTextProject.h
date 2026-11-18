@@ -1,11 +1,18 @@
 #pragma once
 #include "AtomicFile.h"
+#include "TranslationPromptLeak.h"
+#include "RpgMessageCore.h"
+#include "RpgMakerText.h"
 #include "Utf8Path.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <map>
 #include <set>
+#include <vector>
 
 namespace gametext {
 using Json = nlohmann::json;
@@ -46,6 +53,40 @@ inline void write(const fs::path& path, const Json& value) {
     std::string error;
     if (!atomicfile::writeText(path, value.dump(2), &error)) throw std::runtime_error(error);
 }
+inline std::map<uint64_t, fs::path> checkpoints(const fs::path& base) {
+    std::map<uint64_t, fs::path> batches;
+    const auto directory = base / "text-checkpoints";
+    if (!fs::is_directory(directory)) return batches;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        if (entry.path().extension() != ".json" || !entry.is_regular_file()) continue;
+        const auto stem = entry.path().stem().string();
+        uint64_t number = 0;
+        const auto [end, error] = std::from_chars(stem.data(), stem.data() + stem.size(), number);
+        if (error == std::errc{} && end == stem.data() + stem.size() && number) batches.emplace(number, entry.path());
+    }
+    return batches;
+}
+// Retain the newest batch number so sequence numbers survive compaction and restarts.
+inline void compactCheckpoints(const std::map<uint64_t, fs::path>& batches) {
+    if (batches.empty()) return;
+    for (auto it = batches.begin(); it != std::prev(batches.end()); ++it) {
+        std::error_code ignored;
+        fs::remove(it->second, ignored);
+    }
+}
+inline Json checkpoint(const Json& request) {
+    std::lock_guard lock(mutex);
+    const auto base = storage(request), path = source(base, request.at("sourcePath").get<std::string>());
+    if (path.empty()) throw std::runtime_error("请先扫描游戏文本");
+    const auto& entries = request.at("entries");
+    if (!entries.is_array()) throw std::runtime_error("增量译文格式无效");
+    const auto batches = checkpoints(base);
+    const auto sequence = batches.empty() ? 1 : batches.rbegin()->first + 1;
+    Json batch = {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", entries}};
+    for (const auto* key : {"options", "workflow"}) if (request.contains(key)) batch[key] = request.at(key);
+    write(base / "text-checkpoints" / (std::to_string(sequence) + ".json"), batch);
+    return {{"ok", true}};
+}
 inline Json workflow(const Json& request) {
     std::lock_guard lock(mutex);
     const auto base = storage(request), file = base / "workflow.json";
@@ -67,50 +108,223 @@ inline Json workflow(const Json& request) {
 inline void resetForScan(const fs::path& game) {
     std::lock_guard lock(mutex);
     const auto base = game / "LLMChat-JSON", file = base / "text-project.json";
-    if (fs::is_regular_file(file)) {
-        auto value = read(file);
+    const auto batches = checkpoints(base);
+    if (fs::is_regular_file(file) || !batches.empty()) {
+        auto value = fs::is_regular_file(file) ? read(file) : Json{{"entries", Json::array()}};
         for (auto& entry : value["entries"]) { entry["translation"] = ""; entry["error"] = ""; entry.erase("layoutDraft"); entry.erase("screeningDraft"); }
+        if (!batches.empty()) value["checkpointSequence"] = batches.rbegin()->first;
         value["workflow"] = Json{{"screened", false}}; write(file, value);
     }
     write(base / "text-translation.json", Json::object());
     write(base / "workflow.json", Json{{"textSkipped", false}, {"imagesSkipped", false}});
+    compactCheckpoints(batches);
 }
+inline void flagPromptLeak(Json& row, const std::string& source) {
+    const auto translation = row.at("translation").get<std::string>();
+    if (translation_prompt::leaked(source, translation)) row["error"] = translation_prompt::leakError;
+    const auto draft = row.find("layoutDraft");
+    if (draft != row.end() && draft->is_string() && translation_prompt::leaked(source, draft->get_ref<const std::string&>())) {
+        row.erase(draft);
+        if (translation.empty()) row["error"] = translation_prompt::leakError;
+    }
+}
+
+inline std::set<std::string> linkedDialogueNames(const fs::path& directory) {
+    std::set<std::string> linked;
+    if (!fs::is_directory(directory)) return linked;
+    static const std::regex danglingJson(R"json(\\\\nc[ \t]*")json", std::regex::icase);
+    for (const auto& file : fs::directory_iterator(directory)) {
+        const auto name = utf8path::pathUtf8(file.path().filename());
+        if (!file.is_regular_file() || !(name.starts_with("Map") || name == "CommonEvents.json" || name == "Troops.json") ||
+            !rpgtext::dataFile(name)) continue;
+        std::ifstream stream(file.path(), std::ios::binary);
+        const std::string raw((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        if (raw.find("\\\\nc") == std::string::npos && raw.find("\\\\NC") == std::string::npos) continue;
+        if (!std::regex_search(raw, danglingJson)) continue;
+        auto map = Json::parse(raw, nullptr, false);
+        if (map.is_discarded()) continue;
+        rpgtext::visit(name, map, [](std::string&) { return false; }, {}, [&](Json& commands) {
+            rpgmessage::repairNameFragments(commands, [&](const std::string& dialogue, const std::string& fragment) {
+                linked.insert(dialogue);
+                linked.insert(fragment);
+            });
+        });
+    }
+    return linked;
+}
+
+struct DialogueContexts {
+    Json pages = Json::array();
+    std::map<std::string, std::pair<size_t, size_t>> positions;
+    std::set<std::string> repeated;
+};
+inline DialogueContexts collectDialogueContexts(const fs::path& directory, const Json& originals) {
+    DialogueContexts result;
+    if (!fs::is_directory(directory)) return result;
+    std::vector<fs::path> files;
+    for (const auto& file : fs::directory_iterator(directory)) {
+        const auto name = utf8path::pathUtf8(file.path().filename());
+        if (file.is_regular_file() && rpgtext::dataFile(name) &&
+            (name.starts_with("Map") || name == "CommonEvents.json" || name == "Troops.json")) files.push_back(file.path());
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) {
+        auto data = read(file);
+        const auto name = utf8path::pathUtf8(file.filename());
+        rpgtext::visitDialoguePages(name, data, [&](int event, size_t page, const Json& commands) {
+            Json lines = Json::array(), indexes = Json::array();
+            const auto flush = [&] {
+                if (lines.empty()) return;
+                result.pages.push_back({{"file", name}, {"event", event}, {"page", page},
+                                        {"commands", indexes}, {"lines", lines}});
+                lines.clear();
+                indexes.clear();
+            };
+            const auto append = [&](size_t command, const std::string& text) {
+                if (text.empty()) return;
+                if (originals.contains(text) && !result.positions.try_emplace(text, result.pages.size(), lines.size()).second)
+                    result.repeated.insert(text);
+                lines.push_back(text);
+                indexes.push_back(command);
+            };
+            for (size_t i = 0; i < commands.size(); ++i) {
+                const auto& item = commands[i];
+                const auto code = item.value("code", 0);
+                // Choices, conditions, loops, battle outcomes and jumps split narrative paths.
+                if (code == 111 || code == 112 || code == 113 || code == 115 || code == 117 ||
+                    code == 118 || code == 119 || code == 201 || code == 301 ||
+                    (code >= 402 && code <= 404) || (code >= 411 && code <= 413) ||
+                    (code >= 601 && code <= 604)) flush();
+                if (code == 401 || code == 405) {
+                    const auto command = i;
+                    const auto message = rpgtext::messageBlock(commands, i);
+                    append(command, message);
+                } else if (code == 102 && item.contains("parameters") && !item["parameters"].empty() && item["parameters"][0].is_array()) {
+                    for (const auto& choice : item["parameters"][0])
+                        if (choice.is_string()) append(i, choice.get_ref<const std::string&>());
+                }
+            }
+            flush();
+        });
+    }
+    for (const auto& text : result.repeated) result.positions.erase(text);
+    return result;
+}
+
 inline Json load(const Json& request) {
     std::lock_guard lock(mutex);
     const auto base = storage(request), path = source(base, request.value("sourcePath", ""));
     if (path.empty()) return {{"entries", Json::array()}, {"sourcePath", ""}, {"translationPath", ""}, {"options", Json::object()}};
     const auto originals = dictionary(path);
-    const auto saved = fs::is_regular_file(base / "text-project.json") ? read(base / "text-project.json") : Json::object();
+    auto contextData = path.parent_path() / "source";
+    if (!fs::is_directory(contextData)) {
+        const auto game = base.parent_path();
+        const fs::path data = fs::is_regular_file(game / "www/data/System.json") ? "www/data" : "data";
+        const auto patch = base / "patches/text";
+        const auto ledger = patch / "manifest.json";
+        contextData = fs::is_regular_file(ledger) && read(ledger).value("installed", false)
+            ? patch / "original" / data : game / data;
+    }
+    const auto dialogue = collectDialogueContexts(contextData, originals);
+    std::map<std::string, std::string> systemMessages;
+    const auto systemFile = contextData / "System.json";
+    if (fs::is_regular_file(systemFile)) {
+        const auto system = read(systemFile);
+        const auto terms = system.value("terms", Json::object());
+        const auto messages = terms.value("messages", Json::object());
+        for (const auto& [key, value] : messages.items())
+            if (value.is_string()) systemMessages.try_emplace(value.get_ref<const std::string&>(), key);
+    }
+    const auto layout = rpgmessage::messageLayout(base.parent_path());
+    const bool messageCore = layout.enabled;
+    const auto linkedNames = messageCore ? linkedDialogueNames(contextData) : std::set<std::string>{};
+    auto saved = fs::is_regular_file(base / "text-project.json") ? read(base / "text-project.json") : Json::object();
     Json previous = Json::object(), rows = Json::array();
     if (saved.contains("entries")) for (const auto& row : saved.at("entries")) previous[row.at("source").get<std::string>()] = row;
     bool sameSource = previous.size() == originals.size();
     for (auto it = originals.begin(); it != originals.end(); ++it) if (!previous.contains(it.key())) { sameSource = false; break; }
-    size_t index = 0;
+    const auto batches = checkpoints(base);
+    const auto sourcePath = utf8path::pathUtf8(path);
+    for (auto it = batches.upper_bound(saved.value("checkpointSequence", uint64_t{0})); it != batches.end(); ++it) {
+        auto batch = read(it->second);
+        if (batch.at("sourcePath") != sourcePath) continue;
+        for (auto& row : batch.at("entries")) {
+            const auto key = row.at("source").get<std::string>();
+            if (originals.contains(key)) previous[key] = std::move(row);
+        }
+        if (batch.contains("options")) saved["options"] = std::move(batch["options"]);
+        if (batch.contains("workflow")) {
+            saved["workflow"] = std::move(batch["workflow"]);
+            sameSource = true;
+        }
+    }
+    size_t index = 0, positionRepairs = 0;
     for (auto it = originals.begin(); it != originals.end(); ++it) {
         Json row = {{"id", std::to_string(++index)}, {"source", it.key()}, {"translation", ""}, {"selected", true}, {"error", ""}, {"file", "MTool.json"}, {"container", ""}, {"objectId", std::to_string(index)}, {"locator", it.key()}, {"kind", "游戏文本"}};
+        if (const auto position = dialogue.positions.find(it.key()); position != dialogue.positions.end())
+            row["dialoguePosition"] = {{"page", position->second.first}, {"line", position->second.second}};
+        else if (const auto message = systemMessages.find(it.key()); message != systemMessages.end() && !dialogue.repeated.contains(it.key()))
+            row["rpgSystemMessage"] = message->second;
         if (previous.contains(it.key())) for (const auto& key : {"translation", "selected", "error"}) row[key] = previous[it.key()].at(key);
-        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
+        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
+        flagPromptLeak(row, it.key());
+        if (messageCore) {
+            Json repairs = Json::array();
+            const auto& source = it.key();
+            const auto position = rpgmessage::repairPosition(source);
+            const auto namedSource = rpgmessage::repairNameLineBreak(position);
+            const auto sourceContinuation = rpgmessage::alignContinuation(namedSource, layout);
+            const auto& input = row["translation"].get_ref<const std::string&>();
+            const auto& baseText = !input.empty() && row["error"] == "" ? input : source;
+            const auto targetPosition = rpgmessage::repairPosition(baseText);
+            const auto namedTarget = rpgmessage::repairNameLineBreak(targetPosition);
+            const auto continuation = rpgmessage::alignContinuation(
+                rpgmessage::restoreName(namedSource, namedTarget), layout);
+            const auto corrected = rpgmessage::alignPositionedLines(continuation);
+            if (position != source) repairs.push_back("position");
+            if (sourceContinuation != namedSource) repairs.push_back("continuation");
+            if (corrected != continuation || rpgmessage::alignPositionedLines(sourceContinuation) != sourceContinuation)
+                repairs.push_back("alignment");
+            if (namedSource != position || namedTarget != targetPosition || linkedNames.contains(source) ||
+                std::regex_match(source, rpgmessage::nameWithoutSlash)) repairs.push_back("name");
+            if (!repairs.empty()) {
+                if (corrected != baseText && row["error"] == "") row["dialogueRepairPreview"] = {{"input", input}, {"text", corrected}};
+                ++positionRepairs;
+                row["dialogueRepairs"] = std::move(repairs);
+            }
+        }
         rows.push_back(std::move(row));
     }
-    return {{"entries", rows}, {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}, {"workflow", sameSource ? saved.value("workflow", Json()) : Json{{"screened", false}}}};
+    return {{"entries", rows}, {"dialoguePages", dialogue.pages}, {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}, {"workflow", sameSource ? saved.value("workflow", Json()) : Json{{"screened", false}}}, {"messageCore", messageCore}, {"positionRepairs", positionRepairs}};
 }
 inline Json save(const Json& request) {
     std::lock_guard lock(mutex);
     const auto base = storage(request), path = source(base, request.at("sourcePath").get<std::string>());
     if (path.empty()) throw std::runtime_error("请先扫描游戏文本");
     const auto originals = dictionary(path);
-    const auto& rows = request.at("entries");
+    auto rows = request.at("entries");
     if (!rows.is_array() || rows.size() != originals.size()) throw std::runtime_error("工程条目与扫描文本数量不一致，请重新读取");
     Json translated = Json::object(); std::set<std::string> seen;
-    for (const auto& row : rows) {
+    const auto target = request.value("options", Json::object()).value("target", "");
+    for (auto& row : rows) {
+        row.erase("dialoguePosition");
+        row.erase("rpgSystemMessage");
+        row.erase("dialogueRepairPreview");
+        row.erase("dialogueRepairs");
         const auto text = row.at("source").get<std::string>();
         if (!originals.contains(text) || !seen.insert(text).second) throw std::runtime_error("工程包含重复或不属于当前扫描的原文：" + text.substr(0, 120));
+        flagPromptLeak(row, text);
         const auto value = row.at("translation").get<std::string>();
-        if (row.at("selected").get<bool>() && row.at("error").get<std::string>().empty() && !value.empty() && value != text) translated[text] = value;
+        const auto savedTarget = row.value("translationTarget", "");
+        if (row.at("selected").get<bool>() && row.at("error").get<std::string>().empty() && !value.empty() && value != text &&
+            (target.empty() || savedTarget.empty() || target == savedTarget)) translated[text] = value;
     }
     // The source export and game resources are never overwritten by editing.
-    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())}, {"workflow", request.value("workflow", Json())}});
+    const auto batches = checkpoints(base);
+    const auto sequence = batches.empty() ? uint64_t{0} : batches.rbegin()->first;
+    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())}, {"workflow", request.value("workflow", Json())}, {"checkpointSequence", sequence}});
     write(base / "text-translation.json", translated);
+    compactCheckpoints(batches);
     return {{"ok", true}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}};
 }
 }

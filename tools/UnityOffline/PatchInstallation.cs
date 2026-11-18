@@ -5,7 +5,7 @@ namespace LLMChat.UnityOffline;
 public sealed record InstallationStatus(string Root, bool Installed);
 public static class PatchInstallation
 {
-    sealed record AppliedPatch(string Folder, bool Done, DateTime Updated);
+    sealed record AppliedPatch(string Folder, DateTime Updated);
     static AppliedPatch[] Applied(string root)
     {
         var work = GameWorkspace.WorkRoot(root);
@@ -18,11 +18,11 @@ public static class PatchInstallation
                 if (!File.Exists(statePath)) continue;
                 var state = JsonNode.Parse(File.ReadAllText(statePath))!;
                 var done = state["done"]?.GetValue<bool>() == true;
-                if (done || (state["completed"]?.AsArray().Count ?? 0) > 0) result.Add(new(patch, done, File.GetLastWriteTimeUtc(statePath)));
+                if (done || (state["completed"]?.AsArray().Count ?? 0) > 0) result.Add(new(patch, File.GetLastWriteTimeUtc(statePath)));
             }
         return result.OrderByDescending(p => p.Updated).ToArray();
     }
-    public static InstallationStatus Status(string root) => new(Path.GetFullPath(root), Applied(root).Any(p => p.Done));
+    public static InstallationStatus Status(string root) => new(Path.GetFullPath(root), Applied(root).Length > 0);
     public static Dictionary<string, string> OriginalFiles(string root)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

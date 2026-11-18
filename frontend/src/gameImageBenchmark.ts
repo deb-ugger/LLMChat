@@ -63,7 +63,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   }) };
   const read = (image: UnityImage) => measureGameAsync(scope, "processingMs", async () => {
     if (!workload.embedded) return readUnity(image);
-    const query = new URLSearchParams({ gamePath: project.root, id: image.id, cache: "0" });
+    const query = new URLSearchParams({ gamePath: project.root, id: image.id });
     const response = await fetch(API_BASE + "/api/game-images/preview?" + query, { signal });
     if (!response.ok) throw new Error((await response.json()).error || "图片读取失败");
     return response.blob();

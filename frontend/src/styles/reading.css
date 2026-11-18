@@ -2589,10 +2589,12 @@ body.row-resizing .textLayer {
 .settings-vendor-model-add .settings-vendor-add-row input { box-sizing: border-box; width: 100%; }
 .settings-vendor-model-add .settings-panel-save { justify-self: end; }
 .settings-engine-panel.settings-ollama-panel { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; }
-.settings-ollama-heading { flex:1;min-width:0; }
-.settings-ollama-title-row { display:flex;align-items:center;flex-wrap:wrap;gap:10px; }
-.settings-ollama-toggle { border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer; }
-.ollama-service-status { display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:0;border-radius:999px;font:inherit;font-size:12px;cursor:pointer; }
+.settings-ollama-card-top { align-items:stretch;flex-wrap:wrap;gap:8px 12px;padding:8px 10px 8px 14px; }
+.settings-ollama-heading { display:flex;flex:1 1 240px;min-width:0;gap:10px; }
+.settings-ollama-toggle { display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer; }
+.settings-ollama-header-actions { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }
+.settings-ollama-header-actions .settings-card-mini-test { margin:0; }
+.ollama-service-status { display:inline-flex;flex:none;align-items:center;justify-content:center;gap:6px;padding:5px 10px;border:0;border-radius:var(--radius-sm);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer; }
 .ollama-service-status::before { content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none; }
 .ollama-service-status.is-running { color:#087a4b;background:#e2f4e9; }
 .ollama-service-status.is-stopped { color:#a56809;background:#fff0d4; }

@@ -10,6 +10,7 @@ export type GameFlowStep = {
   summary?: string;
   models?: { role: string; id?: string }[];
   state: "done" | "current" | "waiting";
+  stateLabel?: string;
   run?: () => void;
   stop?: () => void;
   runLabel?: string;
@@ -190,17 +191,17 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const models = chosen ? [...modelKeys].map(([key, model]) => measured.models[key] || { ...model, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 }) : Object.values(measured.models);
         const matchesActivity = activity?.step === step.id;
         const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
-        const current = state === "running" || (activity?.state !== "running" && state === "current");
+        const current = showingBenchmark || !benchmarkRunning && (state === "running" || activity?.state !== "running" && state === "current");
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
         const expanded = configured === step.id;
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
-        return <li key={step.id} className={`game-flow-item is-${state}${current ? " is-current-step" : ""}${hasConfiguration ? " is-configured" : ""}`}>
+        return <li key={step.id} className={`game-flow-item is-${state}${showingBenchmark ? " is-benchmark" : ""}${current ? " is-current-step" : ""}${hasConfiguration ? " is-configured" : ""}`}>
           <div className="game-flow-step">
           <div className="game-flow-row">
             <button type="button" className="game-flow-step-toggle" aria-label={`${expanded ? "收起" : "展开"}${step.title}设置`}
               aria-expanded={expanded} data-tooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"} onClick={() => onConfigure(expanded ? null : step.id)} />
-            <div className="game-flow-step-main"><strong>{step.title}</strong><small>{showingBenchmark ? "性能测试中" : stateLabels[state]} · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></small></div>
+            <div className="game-flow-step-main"><strong>{step.title}</strong><small>{showingBenchmark ? "性能测试中" : (state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state]}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</small></div>
             <div className="game-flow-summary" style={{display:"block",overflow:"visible",WebkitLineClamp:"unset"}}>
               {showingBenchmark && benchmarkQueue && <div className="game-flow-model-rates">
                 <span className="game-flow-model-name">性能测试</span>

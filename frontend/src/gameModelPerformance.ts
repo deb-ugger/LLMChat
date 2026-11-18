@@ -143,7 +143,7 @@ export function clearGamePerformance(scope: string, affected: readonly string[])
 }
 const benchmarkWindowMeters = new Map<string, { queue: StepPerformance; run: StepPerformance; step: string }>();
 export function updateBenchmarkWindowPerformance(scope: string, value?: { queue: StepPerformance; run: StepPerformance; step: string }) {
-  if (value) {
+  if (value?.queue.started !== undefined) {
     const now = performance.now();
     benchmarkWindowMeters.set(scope, {
       step: value.step,

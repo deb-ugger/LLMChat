@@ -8,6 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
+#include <map>
+#include <regex>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -826,20 +829,6 @@ std::vector<fs::path> listXUnityUninstallTargets(const fs::path& gameDir)
                 add(managed / name);
             add(managed / "Translators");
 
-            // Leftover ReiPatcher timestamped backups: Foo.dll.YYYY-MM-DD_HH-MM-SS.bak
-            for (fs::directory_iterator mit(managed, ec), mend; !ec && mit != mend;
-                 mit.increment(ec))
-            {
-                if (ec || !mit->is_regular_file(ec))
-                    continue;
-                const std::string name = pathUtf8(mit->path().filename());
-                std::string lower = name;
-                for (char& c : lower)
-                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-                if (lower.ends_with(".bak")
-                    && (lower.find(".dll.") != std::string::npos || lower.ends_with(".dll.bak")))
-                    out.push_back(mit->path());
-            }
         }
     }
 
@@ -941,54 +930,69 @@ void restoreReiPatcherDllBackups(
     std::vector<std::string>& steps,
     std::vector<std::string>& removed)
 {
-    std::error_code ec;
-    for (fs::directory_iterator it(gameDir, ec), end; !ec && it != end; it.increment(ec))
+    const std::regex backupName(R"((.+\.dll)\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.bak)", std::regex::icase);
+    const auto orderPaths = [](const fs::path& left, const fs::path& right) {
+#ifdef _WIN32
+        return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_LESS_THAN;
+#else
+        return left < right;
+#endif
+    };
+    std::map<fs::path, std::vector<fs::path>, decltype(orderPaths)> groups(orderPaths);
+    for (const auto& directory : fs::directory_iterator(gameDir))
     {
-        if (ec || !it->is_directory(ec))
+        if (!directory.is_directory() || !pathUtf8(directory.path().filename()).ends_with("_Data"))
             continue;
-        const std::string folder = pathUtf8(it->path().filename());
-        if (folder.size() <= 5 || !folder.ends_with("_Data"))
+        const auto managed = directory.path() / "Managed";
+        if (!fs::is_directory(managed))
             continue;
-        const fs::path managed = it->path() / "Managed";
-        if (!fs::is_directory(managed, ec))
-            continue;
-
-        for (fs::directory_iterator mit(managed, ec), mend; !ec && mit != mend; mit.increment(ec))
+        for (const auto& backup : fs::directory_iterator(managed))
         {
-            if (ec || !mit->is_regular_file(ec))
-                continue;
-            const fs::path bakPath = mit->path();
-            const std::string name = pathUtf8(bakPath.filename());
-            if (name.size() < 10 || !name.ends_with(".bak"))
-                continue;
-
-            // Expect: <dllName>.<YYYY-MM-DD_HH-MM-SS>.bak
-            const std::string stem = name.substr(0, name.size() - 4); // drop .bak
-            const auto dot = stem.rfind('.');
-            if (dot == std::string::npos || dot == 0)
-                continue;
-            const std::string stamp = stem.substr(dot + 1);
-            if (stamp.size() < 15 || stamp[4] != '-' || stamp.find('_') == std::string::npos)
-                continue;
-            const std::string originalName = stem.substr(0, dot);
-            if (originalName.find(".dll") == std::string::npos)
-                continue;
-
-            const fs::path original = managed / pathFromUtf8(originalName);
-            fs::copy_file(bakPath, original, fs::copy_options::overwrite_existing, ec);
-            if (ec)
+            std::smatch match;
+            const auto name = pathUtf8(backup.path().filename());
+            if (backup.is_regular_file() && std::regex_match(name, match, backupName))
+                groups[managed / pathFromUtf8(match[1].str())].push_back(backup.path());
+        }
+    }
+    for (auto& [original, backups] : groups)
+    {
+        std::sort(backups.begin(), backups.end());
+        const auto& first = backups.front();
+        for (auto candidate = std::next(backups.begin()); candidate != backups.end(); ++candidate)
+        {
+            using Bytes = std::istreambuf_iterator<char>;
+            std::ifstream left(first, std::ios::binary), right(*candidate, std::ios::binary);
+            if (!left || !right) throw std::runtime_error("无法读取 DLL 备份：" + pathUtf8(original));
+            if (!std::equal(Bytes(left), Bytes(), Bytes(right), Bytes()))
             {
-                steps.push_back(
-                    "恢复备份失败：" + originalName + "（" + ec.message() + "）");
-                continue;
+                std::string detail = "DLL 备份有多个不同版本：" + pathUtf8(original);
+                for (const auto& backup : backups) detail += "\n" + pathUtf8(backup.filename());
+                throw std::runtime_error(detail + "\n请确认原版 DLL 对应的备份，将其他候选移到游戏目录外后重试。");
             }
-            steps.push_back("已从备份恢复 " + originalName);
-            fs::remove(bakPath, ec);
-            if (!ec)
-            {
-                removed.push_back(pathUtf8(bakPath));
-                steps.push_back("已删除备份 " + name);
-            }
+        }
+    }
+    for (const auto& [original, backups] : groups)
+    {
+        auto temporary = original;
+        temporary += ".llmchat-restore.tmp";
+        fs::copy_file(backups.front(), temporary, fs::copy_options::overwrite_existing);
+#ifdef _WIN32
+        if (!MoveFileExW(temporary.c_str(), original.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            const auto error = GetLastError();
+            std::error_code ignored;
+            fs::remove(temporary, ignored);
+            throw std::runtime_error("恢复 DLL 失败：" + pathUtf8(original) + "（Windows 错误码 " + std::to_string(error) + "）");
+        }
+#else
+        fs::rename(temporary, original);
+#endif
+        steps.push_back("已从备份恢复 " + pathUtf8(original.filename()));
+        for (const auto& backup : backups)
+        {
+            std::error_code error;
+            if (fs::remove(backup, error)) removed.push_back(pathUtf8(backup));
+            if (error) steps.push_back("备份已保留：" + pathUtf8(backup) + "（" + error.message() + "）");
         }
     }
 }

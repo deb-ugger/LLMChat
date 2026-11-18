@@ -9,6 +9,7 @@
 namespace rpgtext {
 using Json = nlohmann::json;
 using Edit = std::function<bool(std::string&)>;
+using EditCommands = std::function<void(Json&)>;
 inline bool dataFile(const std::string& name) {
     static const std::regex names(R"((Actors|Classes|Skills|Items|Weapons|Armors|Enemies|Troops|States|CommonEvents|System|Map[0-9]+)\.json)");
     return std::regex_match(name, names);
@@ -35,16 +36,42 @@ inline void notes(Json& row, const Edit& edit) {
     for(auto it=std::sregex_iterator(value.begin(),value.end(),tag);it!=std::sregex_iterator();++it){result+=value.substr(offset,it->position()-offset);auto body=(*it)[2].str();changed=edit(body)||changed;result+=(*it)[1].str()+body+(*it)[3].str();offset=it->position()+it->length();}
     if(changed)row["note"]=result+value.substr(offset);
 }
-inline void commands(Json& list, const Edit& edit) {
+inline std::string messageBlock(const Json& list, size_t& index) {
+    const auto& first = list[index];
+    const auto code = first.value("code", 0), indent = first.value("indent", 0);
+    auto message = first.at("parameters").at(0).get<std::string>();
+    while (index + 1 < list.size() && list[index + 1].value("code", 0) == code && list[index + 1].value("indent", 0) == indent)
+        message += "\n" + list[++index].at("parameters").at(0).get<std::string>();
+    return message;
+}
+using DialoguePage = std::function<void(int, size_t, const Json&)>;
+inline void visitDialoguePages(const std::string& file, const Json& data, const DialoguePage& accept) {
+    const auto pages = [&](const Json& object) {
+        if (!object.is_object() || !object.contains("pages")) return;
+        for (size_t page = 0; page < object["pages"].size(); ++page) {
+            const auto& node = object["pages"][page];
+            if (node.contains("list") && node["list"].is_array()) accept(object.value("id", 0), page, node["list"]);
+        }
+    };
+    if (file.starts_with("Map") && data.contains("events")) {
+        for (const auto& event : data["events"]) pages(event);
+    } else if (file == "CommonEvents.json" && data.is_array()) {
+        for (const auto& event : data)
+            if (event.is_object() && event.contains("list") && event["list"].is_array()) accept(event.value("id", 0), 0, event["list"]);
+    } else if (file == "Troops.json" && data.is_array()) {
+        for (const auto& troop : data) pages(troop);
+    }
+}
+inline void commands(Json& list, const Edit& edit, const Edit& messageEdit, const EditCommands& editCommands) {
     if (!list.is_array()) return;
     Json result = Json::array();
     for (size_t i = 0; i < list.size(); ++i) {
         auto command = list[i]; const auto code = command.value("code", 0);
         if (code == 401 || code == 405) {
-            auto original = command; std::string message = command.at("parameters").at(0).get<std::string>();
+            auto original = command;
             const auto first = i;
-            while (i + 1 < list.size() && list[i + 1].value("code", 0) == code && list[i + 1].value("indent", 0) == command.value("indent", 0)) message += "\n" + list[++i].at("parameters").at(0).get<std::string>();
-            if (!edit(message)) { for (auto j = first; j <= i; ++j) result.push_back(list[j]); continue; }
+            auto message = messageBlock(list, i);
+            if (!(code == 401 && messageEdit ? messageEdit(message) : edit(message))) { for (auto j = first; j <= i; ++j) result.push_back(list[j]); continue; }
             size_t offset = 0, line = 0;
             do { const auto end = message.find('\n', offset); if (code == 401 && line && line % 4 == 0 && first && list[first - 1].value("code", 0) == 101) result.push_back(list[first - 1]); original["parameters"][0] = message.substr(offset, end == std::string::npos ? end : end - offset); result.push_back(original); ++line; if (end == std::string::npos) break; offset = end + 1; } while (offset <= message.size());
             continue;
@@ -62,22 +89,23 @@ inline void commands(Json& list, const Edit& edit) {
         }
         result.push_back(std::move(command));
     }
+    if (editCommands) editCommands(result);
     list = std::move(result);
 }
-inline void pages(Json& value, const Edit& edit) {
-    if (value.contains("pages")) for (auto& page : value["pages"]) if (page.contains("list")) commands(page["list"], edit);
+inline void pages(Json& value, const Edit& edit, const Edit& messageEdit, const EditCommands& editCommands) {
+    if (value.contains("pages")) for (auto& page : value["pages"]) if (page.contains("list")) commands(page["list"], edit, messageEdit, editCommands);
 }
-inline void visit(const std::string& file, Json& value, const Edit& edit) {
+inline void visit(const std::string& file, Json& value, const Edit& edit, const Edit& messageEdit = {}, const EditCommands& editCommands = {}) {
     if (file == "System.json") {
         field(value, "gameTitle", edit); field(value, "currencyUnit", edit);
         for (const auto key : {"terms", "armorTypes", "elements", "equipTypes", "skillTypes", "weaponTypes"}) if (value.contains(key)) strings(value[key], edit);
     } else if (file.starts_with("Map")) {
         field(value, "displayName", edit);
-        if (value.contains("events")) for (auto& event : value["events"]) if (event.is_object()) pages(event, edit);
+        if (value.contains("events")) for (auto& event : value["events"]) if (event.is_object()) pages(event, edit, messageEdit, editCommands);
     } else if (value.is_array()) for (auto& row : value) {
         if (!row.is_object()) continue;
-        if (file == "CommonEvents.json") { if (row.contains("list")) commands(row["list"], edit); }
-        else if (file == "Troops.json") pages(row, edit);
+        if (file == "CommonEvents.json") { if (row.contains("list")) commands(row["list"], edit, messageEdit, editCommands); }
+        else if (file == "Troops.json") pages(row, edit, messageEdit, editCommands);
         else {
             notes(row,edit);
             field(row, "name", edit);

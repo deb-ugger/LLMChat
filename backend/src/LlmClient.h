@@ -14,6 +14,7 @@ struct LlmRequest {
     std::string httpProxy;
     bool requireComplete = false;
     bool nativeOllama = false;
+    int ollamaContextLength = 0;
 };
 
 struct LlmResponse {

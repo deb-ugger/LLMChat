@@ -28,8 +28,22 @@ export function isTranslationRefusal(source: string, translation: string) {
 
 export const TRANSLATION_REFUSAL = "模型未提供译文。请检查识别文字，或换用其他翻译方式重试。";
 
+export const TRANSLATION_PROMPT_LEAK = "译文混入了参考语境或模型提示，请重译此条";
+
+export function hasTranslationPromptLeak(source: string, translation: string) {
+  if (!translation || source === translation) return false;
+  const original = source.normalize("NFKC");
+  const output = translation.normalize("NFKC");
+  const markers = /<[ \t]*\/?[ \t]*reference[_ -]context[ \t]*>|"reference_context"[ \t]*:/gi;
+  const count = output.match(markers)?.length ?? 0;
+  if (count > 0 && count > (original.match(markers)?.length ?? 0)) return true;
+  return ["原文语境(仅参考)", "以下仅为参考上下文,不要翻译或输出此部分", "只输出最后一条用户消息的译文",
+    "Use reference_context as read-only reference"].some(phrase => output.includes(phrase) && !original.includes(phrase));
+}
+
 export function unityTranslationProblem(source: string, translation: string) {
   if (!translation.trim()) return "译文为空";
+  if (hasTranslationPromptLeak(source, translation)) return TRANSLATION_PROMPT_LEAK;
   if (isTranslationRefusal(source, translation)) return TRANSLATION_REFUSAL;
   const sourceGlyphs = source.match(unityGlyphTokens()) || [], targetGlyphs = translation.match(unityGlyphTokens()) || [];
   if (JSON.stringify(sourceGlyphs) !== JSON.stringify(targetGlyphs)) return `游戏特殊字形符号发生变化：应保留「${sourceGlyphs.join("、") || "无"}」，当前为「${targetGlyphs.join("、") || "无"}」`;

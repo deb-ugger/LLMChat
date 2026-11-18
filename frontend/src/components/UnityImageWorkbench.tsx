@@ -1,6 +1,7 @@
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
+import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { importSourceName,type GameImportSource } from "../gameImageImport";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +12,7 @@ import { createPortal } from "react-dom";
 import { readUnitySourceImage, acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey, type ImagePreviewReader } from "../unityImagePreview";
 import type { OcrMode } from "../api";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
+import { moveScreenedImageToGroup, type ManualImageGroup } from "../gameImageScreening";
 import { type UnityImage, type UnityImageRegion, type UnityProject } from "../unityOffline";
 import { unityImageParticipates, unityImageUsesRegionMask, unityImageHasText, unityImageResultGroup, unityImageTranslationRegions, maskUnityImageRegions } from "../unityImages";
 
@@ -171,17 +173,37 @@ const imageListGroups = [
   ["empty", "未检测到文字"], ["review", "待复核"], ["excluded", "无需翻译"],
 ] as const;
 const imageListPageSize = 60;
+function imageListStatus(image: UnityImage) {
+  const status = image.completed ? (unityImageHasText(image) ? "已完成" : "未识别出文字") :
+    image.error ? "识别或处理失败" : image.ocrCompleted ? "已识别" :
+    imageListGroups.find(([group]) => group === unityImageResultGroup(image))?.[1] ?? "未执行 OCR";
+  return `${image.width} × ${image.height} · ${status}${image.screening?.reason ? ` · ${image.screening.reason}` : ""}`;
+}
 export function imagePageIndex(index: number, page: number, count: number) {
   return Math.min(count - 1, page * imageListPageSize + Math.max(0, index) % imageListPageSize);
 }
-export function UnityImageWorkbench({ project, disabled, imageTarget, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
-  project: UnityProject | null; disabled: boolean; imageTarget?: { id: string; sequence: number }; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
+export function UnityImageWorkbench({ project, disabled, imageTarget, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
+  project: UnityProject | null; disabled: boolean; imageTarget?: { id: string; sequence: number }; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
   onImport: (image: UnityImage,source?:GameImportSource) => Promise<unknown>; onSave: () => Promise<boolean>;onDiscard:()=>Promise<boolean>;leaveGuard?:{current:((change:()=>void)=>void)|null};
 }) {
   const reader=useContext(ImagePreviewReaderContext);
   const confirmation = useGameActionConfirm(text => onArchiveMessage(text)); const confirm = confirmation.confirm;
+  const imageListId = useId();
+  const [imageBody, setImageBody] = useState<HTMLDivElement | null>(null);
+  const [imageBodyWidth, setImageBodyWidth] = useState(0);
+  const listMaxWidth = imageBodyWidth > 0 ? Math.min(520, Math.floor(imageBodyWidth * .5)) : 520;
+  const listMinWidth = Math.min(136, listMaxWidth);
+  const listWidth = usePersistedWidth("unity-image-browser-list-width", 180, listMinWidth, listMaxWidth);
+  useLayoutEffect(() => {
+    if (!imageBody) return;
+    const update = () => { if (imageBody.clientWidth > 0) setImageBodyWidth(imageBody.clientWidth); };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(imageBody);
+    return () => observer.disconnect();
+  }, [imageBody]);
   const [viewer, setViewer] = useState<{ id: string; translated: boolean; allowDetails: boolean } | null>(null);
   const [previewMenu, setPreviewMenu] = useState<{ id: string; translated: boolean; x: number; y: number } | null>(null);
   const openViewer = (id: string, translated: boolean, allowDetails: boolean) => { setPreviewMenu(null); setViewer({ id, translated, allowDetails }); };
@@ -332,19 +354,44 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
 <div className="unity-image-filter-presets"><button type="button" onClick={()=>requestFilter(()=>setImageFilters(allFilters))}>全部选取</button><button type="button" onClick={()=>requestFilter(()=>setImageFilters({checked:false,unchecked:false,done:false,pending:false,failed:false}))}>取消全部选取</button></div>
 {([["checked","已勾选"],["unchecked","未勾选"],["pending","未完成"],["failed","失败"],["done","已完成"]] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={imageFilters[key]} onChange={event=>{const checked=event.currentTarget.checked;requestFilter(()=>setImageFilters(current=>({...current,[key]:checked})));}}/>{label}</label>)}
 </div>,document.body)}{archiveBusy&&<span role="status">{archiveBusy}</span>}<span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张 · 已完成 {counts.done} 张{counts.failed ? ` · 失败 ${counts.failed} 张` : ""}</span><input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} /><button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
-    {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <div className="unity-image-body">
-      {!focusedDetail && <div ref={listRef} className="unity-image-list" aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>{imageListGroups.map(([group, label]) => {
+    {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <div ref={setImageBody} className="unity-image-body">
+      {!focusedDetail && <><div id={imageListId} ref={listRef} className="unity-image-list" style={{ width: listWidth.width }} aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>{imageListGroups.map(([group, label]) => {
         const {items,eligible,checked}=groups[group];const pages = Math.max(1, Math.ceil(items.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
         const visible = collapsed[group] ? [] : items.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
         const changePage = (next: number) => selectListImage(group, imagePageIndex(items.findIndex(item => item.id === image?.id), next, items.length), false);
         return items.length > 0 && <details key={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => { const closed = !event.currentTarget.open; setCollapsed(previous => previous[group] === closed ? previous : { ...previous, [group]: closed }); }}><summary onContextMenu={event=>{event.preventDefault();setGroupMenu({group,label,x:Math.max(8,Math.min(event.clientX,window.innerWidth-200)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-52))});}}><span>{label} · {items.length}</span><input className="unity-image-group-check" type="checkbox" aria-label={`${checked===eligible&&eligible>0?"取消全选":"全选"}：${label}`} data-tooltip={`${checked===eligible&&eligible>0?"取消本组全部勾选":"勾选本组全部图片"}（包含其他分页）`} disabled={disabled || !!archiveBusy || !eligible} checked={eligible>0&&checked===eligible} ref={node=>{if(node)node.indeterminate=checked>0&&checked<eligible;}} onClick={event=>event.stopPropagation()} onChange={event=>selectImages(items,event.target.checked)}/></summary>{visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}`}>
         <input type="checkbox" aria-label={`选择图片 ${item.name}`} disabled={disabled || !!archiveBusy || !item.sourceFile} checked={item.selected} onChange={event => onChange({ ...item, selected: event.target.checked })} />
-        <button data-image-row={item.id} onClick={() => setSelectedId(item.id)} data-tooltip={item.file} aria-label={item.file}><strong><SearchHighlight text={item.name} query={deferredSearch} /></strong><small>{item.width} × {item.height} · {item.completed ? unityImageHasText(item) ? "已完成" : "未识别出文字" : item.error ? "识别或处理失败" : item.ocrCompleted ? "已识别" : item.screening?.state==="candidate"?"待正式识别":"未执行 OCR"}{item.screening ? ` · ${item.screening.reason}` : ""}</small></button>
+        <button data-image-row={item.id} onClick={() => setSelectedId(item.id)}
+          data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item), item.error].filter(Boolean).join("\n")}
+          aria-label={item.file || item.name}>
+          <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
+          <small>{imageListStatus(item)}</small>
+        </button>
       </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><span>{page+1} / {pages}</span><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
-      })}</div>}
+      })}</div>
+      <button type="button" role="separator" aria-orientation="vertical" aria-controls={imageListId} aria-label="调整图片列表宽度"
+        aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
+        className="unity-image-list-divider" data-tooltip="拖动调整图片列表宽度"
+        onMouseDown={event => listWidth.beginResize(event, "grow-right")} onKeyDown={event => {
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            event.preventDefault();
+            listWidth.setWidth(listWidth.width + (event.key === "ArrowRight" ? 16 : -16));
+          }
+        }} /></>}
       {!focusedDetail && !filtered.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}
       {image && <div className="unity-image-detail" tabIndex={0} aria-label="当前图片详情" onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="a"){event.preventDefault();event.stopPropagation();setSelectedRegions(new Set(image.regions.map((_,index)=>index)));setActiveRegion(-1);}if(event.key==="Escape")setRegionMenu(null);}} onContextMenu={event=>{event.preventDefault();event.stopPropagation();setRegionMenu({x:Math.max(8,Math.min(event.clientX,window.innerWidth-190)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-90))});}}>
-        <div className="unity-image-actions">{focusedDetail && <button className="unity-btn unity-image-back" aria-label="返回缩略图位置" data-tooltip="返回原来的缩略图位置" onClick={() => requestView(()=>setGallery(true))}>←</button>}<strong data-tooltip={image.file}><SearchHighlight text={image.name} query={deferredSearch} />{deferredSearch && image.file.toLowerCase().includes(deferredSearch) && <small className="search-matched-field"><SearchHighlight text={image.file} query={deferredSearch} /></small>}</strong><div className="unity-image-button-group"><select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label="重新识别" data-tooltip="仅使用所选模型重新识别当前图片，不调用翻译引擎；已有译文会在确认后替换" disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
+        <div className="unity-image-actions">{focusedDetail && <button className="unity-btn unity-image-back" aria-label="返回缩略图位置" data-tooltip="返回原来的缩略图位置" onClick={() => requestView(()=>setGallery(true))}>←</button>}<strong data-tooltip={image.file}><SearchHighlight text={image.name} query={deferredSearch} />{deferredSearch && image.file.toLowerCase().includes(deferredSearch) && <small className="search-matched-field"><SearchHighlight text={image.file} query={deferredSearch} /></small>}</strong><div className="unity-image-button-group">
+          {image.screening && image.sourceFile && (!image.completed || image.ocrCompleted) && <select aria-label="移动图片到分组" disabled={disabled || !!archiveBusy}
+            data-tooltip="移动图片到指定分组并保留已有识字结果"
+            value={image.screening.manualGroup ? image.screening.state : ""}
+            onChange={event => { if (event.target.value) onChange(moveScreenedImageToGroup(image, event.target.value as ManualImageGroup)); }}>
+            <option value="" disabled>移动到分组…</option>
+            <option value="candidate" disabled={image.ocrCompleted && !unityImageHasText(image)}>{image.ocrCompleted ? "识别到文字" : "待正式识别"}</option>
+            <option value="review">待复核</option>
+            <option value="no-text">未检测到文字</option>
+            <option value="not-needed">无需翻译</option>
+          </select>}
+          <select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label={reuseRecognition ? "识字与定位" : "重新识别"} data-tooltip={reuseRecognition && image.ocrCompleted ? "已有识字结果" : "使用所选模型识别当前图片"} disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile || reuseRecognition && image.ocrCompleted} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
         {image.error && <p className="unity-offline-error" role="alert">{image.error}</p>}
         <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, x, y })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, x, y }) : undefined} /></div>
         <div className="unity-image-regions">{unityImageTranslationRegions(image.regions,confidenceThreshold,image).map((region, index) => <div key={index} data-region-index={index} tabIndex={0} className={`unity-image-region${activeRegion === index||selectedRegions.has(index) ? " is-active" : ""}`} onClick={() => {setActiveRegion(index);setSelectedRegions(new Set([index]));}} onFocus={() => setActiveRegion(index)}>

@@ -38,6 +38,30 @@ fn append_game_performance(record: serde_json::Value) -> Result<(), String> {
         .open(directory.join("game-performance.jsonl"))
         .and_then(|mut file| file.write_all(&line)).map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+async fn read_game_performance(scope: String, step: String) -> Result<Vec<serde_json::Value>, String> {
+    let file = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?.join("game-performance.jsonl");
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
+        use std::io::BufRead;
+        let file = match std::fs::File::open(file) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("读取测试历史失败：{error}")),
+        };
+        let mut records = Vec::new();
+        for (index, line) in std::io::BufReader::new(file).lines().enumerate() {
+            let line = line.map_err(|error| error.to_string())?;
+            if line.trim().is_empty() { continue; }
+            let record: serde_json::Value = serde_json::from_str(&line).map_err(|error| format!("测试历史第 {} 行无法读取：{error}", index + 1))?;
+            if record["scope"].as_str() == Some(scope.as_str()) && record["step"].as_str() == Some(step.as_str()) && record["benchmark"]["config"].is_object() {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }).await.map_err(|error| error.to_string())?
+}
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -353,6 +377,7 @@ pub fn run() {
             file_stat,
             write_runtime_log,
             append_game_performance,
+            read_game_performance,
             open_game_benchmark_window,
             finish_app_close,
             unity_offline::unity_offline_run,

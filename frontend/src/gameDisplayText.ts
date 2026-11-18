@@ -3,12 +3,44 @@ import type { UnityEntry } from "./unityOffline";
 
 const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^><{}$\\])`;
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
-const formats = () => new RegExp(`${speaker.replace("([^>", "(?:[^>")}|${controls}|${unityTranslationTokens().source}`, "gi");
+const rpgArguments = String.raw`%[1-9]\d*(?![\d$])`;
+const rpgConditions = String.raw`(?:if|en)\([^)\r\n]+\)`;
+const formats = () => new RegExp(`${speaker.replace("([^>", "(?:[^>")}|${controls}|${rpgConditions}|${unityTranslationTokens().source}|${rpgArguments}`, "gi");
 export const gameFormatTokens = formats;
 export const gameSpeakerNames = (text: string) => [...text.matchAll(new RegExp(speaker, "gi"))].map(match => match[1].trim());
 const identifiers = /\b(?:[A-Za-z]{1,6}\d+|\d+[A-Za-z]{1,6})\b/g;
+const japaneseOnlyHan = /[撃戦闘剣仮変黒発録経闇髪楽続読売覚気顔対価]/u;
+const japaneseKana = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 function languageText(source: string, names = true) {
   return source.replace(new RegExp(speaker, "gi"), names ? "$1" : "").replace(formats(), "").replace(identifiers, "").trim();
+}
+
+export function hasGameJapaneseText(source: string) {
+  const visible = languageText(source);
+  return japaneseKana.test(visible) || japaneseOnlyHan.test(visible);
+}
+
+export function gameJapaneseTextIssue(source: string, translation: string, target: string) {
+  if (!translation.trim() || !target.startsWith("zh") || !hasGameJapaneseText(source)) return "";
+  const visible = languageText(translation).replace(/[っッー]/g, "");
+  return japaneseKana.test(visible) || japaneseOnlyHan.test(visible) ? "译文仍含日文，请检查正文和说话人姓名" : "";
+}
+
+const rpgSystemTranslations = new Map<string, [string, string]>([
+  ["Recovery", ["%1は%2を%3回復した！", "%1恢复了%3点%2！"]],
+  ["Loss", ["%1は%2を%3失った！", "%1失去了%3点%2！"]],
+  ["Drain", ["%1は%2を%3消費した！", "%1被吸取了%3点%2！"]],
+  ["Gain", ["%1は%2を%3獲得した！", "%1获得了%3点%2！"]],
+  ["obtainExp", ["%1を%2受け取った！", "获得了%1点%2！"]],
+  ["criticalToEnemy", ["会心の一撃！！", "暴击！！"]],
+  ["criticalToActor", ["痛恨の一撃！！", "遭到暴击！！"]],
+]);
+
+export function translateRpgSystemMessage(entry: Pick<UnityEntry, "source" | "rpgSystemMessage"> | undefined, target: string) {
+  if (!entry?.rpgSystemMessage || target !== "zh-CN") return undefined;
+  const template = rpgSystemTranslations.get(entry.rpgSystemMessage.replace(/^(actor|enemy)(?=[A-Z])/, ""));
+  if (!template || entry.source.trim().normalize("NFKC") !== template[0].normalize("NFKC")) return undefined;
+  return entry.source.replace(/\S[\s\S]*\S|\S/, () => template[1]);
 }
 
 /** Explicit source selection requires script evidence or a declared resource locale. */
@@ -18,7 +50,7 @@ export function gameTextMatchesSource(source: string, language: string, locale?:
   if (locale) return locale.toLowerCase().replace(/_/g, "-").split("-")[0] === selected;
   const visible = languageText(source);
   switch (selected) {
-    case "ja": return /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(visible);
+    case "ja": return japaneseKana.test(visible) || japaneseOnlyHan.test(visible);
     case "ko": return /\p{Script=Hangul}/u.test(visible);
     case "zh": return /\p{Script=Han}/u.test(visible) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(visible);
     case "en": return /\p{Script=Latin}/u.test(visible);
@@ -50,7 +82,7 @@ export function gameTextNeedsNoTranslation(source: string, target: string) {
     const chineseGrammar = hanCount >= 4 && /(?:[谁誰]|[啊呀哦喔嘛啦呢吧](?=[，。！？、…,.!?~～\s]|$)|真是|[都就才也又][能是有要不]|不知道|不知曉)/u.test(visible);
     const chineseEvidence = chinese || simplified || chineseSyntax || chineseGrammar;
     const chineseWithLoanwords = chineseEvidence && hanCount >= 4 && hanCount >= latinCount * .6;
-    if (kana || hangul || foreign || prose && !chineseWithLoanwords || !han || !(chineseEvidence || speakerOnly)) return false;
+    if (kana || japaneseOnlyHan.test(visible) || hangul || foreign || prose && !chineseWithLoanwords || !han || !(chineseEvidence || speakerOnly)) return false;
     // Do not skip obvious script conversion between simplified and traditional output.
     const opposite = target === "zh-TW" ? /[这们吗么没获请选认开关档读买卖钱为与体]/u : /[這們嗎麼沒獲請選認開關檔讀買賣錢為與體]/u;
     return !opposite.test(visible);
@@ -63,6 +95,13 @@ export function gameTextNeedsNoTranslation(source: string, target: string) {
     return evidence >= 2 || /\b(?:new game|save game|load game|please wait|game over)\b/i.test(visible);
   }
   return false;
+}
+
+export function rpgTextControlProblem(source: string, translation: string) {
+  const signature = (value: string) => JSON.stringify([...value.matchAll(formats())]
+    .map(match => match[0])
+    .filter(token => /^%[1-9]\d*$/.test(token) || /^(?:if|en)\(/i.test(token)).sort());
+  return signature(source) === signature(translation) ? "" : "RPG 参数或选项条件发生变化";
 }
 
 export function gameDisplayTextProblem(source: string, translated: string) {
@@ -129,22 +168,23 @@ export function gameTextScreeningResult(source: string, target: string, sourceLa
 }
 
 /** Keep the whole body and speaker together instead of translating tag-separated fragments. */
-export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map()) {
+export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true) {
   const tokens: string[] = [];
   const protect = (value: string) => `{LLMCHAT_FORMAT_${tokens.push(value) - 1}}`;
+  const keepTarget = !!target && skipTarget;
   if (!gameTextMatchesSource(source, sourceLanguage)) return source;
-  if (target && gameTextNeedsNoTranslation(source, target)) return source;
+  if (keepTarget && gameTextNeedsNoTranslation(source, target)) return source;
   // A Chinese body with a Japanese speaker only needs the speaker translated.
   // Protect target-language runs verbatim, including their original whitespace.
   const speakers = new RegExp(speaker, "gi");
   let offset = 0, prepared = "";
   for (const match of source.matchAll(speakers)) {
     const body = source.slice(offset, match.index);
-    prepared += !gameTextMatchesSource(body, sourceLanguage) || target && gameTextNeedsNoTranslation(body, target) ? protect(body) : body;
+    prepared += !gameTextMatchesSource(body, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(body, target) ? protect(body) : body;
     prepared += match[0]; offset = match.index! + match[0].length;
   }
   const remaining = source.slice(offset);
-  prepared += !gameTextMatchesSource(remaining, sourceLanguage) || target && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
+  prepared += !gameTextMatchesSource(remaining, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
   const text = prepared.replace(formats(), (token: string) => {
     if (/^\{LLMCHAT_FORMAT_\d+\}$/.test(token)) return token;
     const name = new RegExp(`^${speaker}$`, "i").exec(token)?.[1];
@@ -152,12 +192,12 @@ export async function translateGameDisplayText(source: string, translate: (text:
       if (/[\\{}]/.test(name)) return protect(token);
       const canonical = terms.get(name.trim());
       if (canonical !== undefined) return protect(token.slice(0, token.indexOf("<") + 1) + canonical + ">");
-      if (target.startsWith("zh") && /\p{Script=Han}/u.test(name) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Latin}]/u.test(name)) return protect(token);
+      if (keepTarget && target.startsWith("zh") && gameTextNeedsNoTranslation(token, target)) return protect(token);
       return protect(token.slice(0, token.indexOf("<") + 1)) + name + protect(">");
     }
     return protect(token);
   });
-  const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !target || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
+  const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !keepTarget || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
   const escape = (value: string) => [...value].map(char => ".*+?^${}()|[]\\".includes(char) ? "\\" + char : char).join("");
   const replacements = [...terms].filter(([from, to]) => from !== to).sort((a, b) => b[0].length - a[0].length);
   const termPattern = replacements.length ? new RegExp(replacements.map(([from]) => escape(from)).join("|"), "gu") : null;
@@ -188,9 +228,17 @@ export async function translateGameDisplayText(source: string, translate: (text:
     for (let index = tokens.length - 1; index >= 0; index--) value = value.replace(`{LLMCHAT_FORMAT_${index}}`, () => tokens[index]);
     return value;
   };
+  const qualityProblem = (value: string) => {
+    const residue = gameJapaneseTextIssue(source, value, target);
+    if (residue) return residue;
+    const duplicated = replacements.find(([from, to]) => to.length >= 2 && source.includes(from) &&
+      !source.includes(from + from) && !source.includes(to + to) && value.includes(to + to));
+    return duplicated ? `译文重复了术语「${duplicated[1]}」` : "";
+  };
+  const restored = restoreMarkers(result);
   if (JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ||
-      unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(restoreMarkers(result))) ||
-      gameDisplayTextProblem(source, restoreMarkers(result))) {
+      unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(restored)) ||
+      gameDisplayTextProblem(source, restored) || rpgTextControlProblem(source, restored) || qualityProblem(restored)) {
     const pieces = protectedText.split(/(\{LLMCHAT_FORMAT_\d+\})/);
     const translatedPieces: string[] = [];
     const retriedSpans = new Map<string, string>();
@@ -212,7 +260,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
     if (result.split(marker).length !== 2) throw new Error(`翻译结果未保留格式控制符 ${token}（保护标记 ${marker} 缺失或重复）。此条译文未保存。请重试此条，或在译文中保留原控制符及参数后手动填写。`);
     result = result.replace(marker, token);
   }
-  const problem = unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(result)) || gameDisplayTextProblem(source, result);
+  const problem = unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(result)) || gameDisplayTextProblem(source, result) || rpgTextControlProblem(source, result) || qualityProblem(result);
   if (problem) throw new Error(problem);
   return result;
 }

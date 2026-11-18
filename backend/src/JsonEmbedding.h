@@ -2,6 +2,7 @@
 #include "Utf8Path.h"
 #include "AtomicFile.h"
 #include "RpgMakerText.h"
+#include "RpgMessageCore.h"
 #include "GameTextProject.h"
 #include "GameFileOps.h"
 #include "GameResourceBackup.h"
@@ -38,6 +39,7 @@ class JsonEmbedding {
         std::ofstream out(file, std::ios::binary | std::ios::trunc); out.write(value.data(), static_cast<std::streamsize>(value.size())); out.flush();
         if (!out) throw std::runtime_error("无法写入输出文件：" + utf8path::pathUtf8(file));
     }
+    std::vector<Path> checkedRpgFiles_;
     void remember(const Path& path) { originals_[path] = {std::filesystem::file_size(path), std::filesystem::last_write_time(path)}; }
     void detail(const std::string& value) { std::lock_guard lock(mutex_); state_["detail"] = value; state_["completed"] = 0; state_["total"] = 0; }
     void progress(size_t completed, size_t total) { std::lock_guard lock(mutex_); state_["completed"] = completed; state_["total"] = total; }
@@ -68,12 +70,30 @@ class JsonEmbedding {
         std::vector<std::string> result; for (auto it = std::sregex_iterator(value.begin(), value.end(), pattern); it != std::sregex_iterator(); ++it) result.push_back(it->str());
         std::sort(result.begin(), result.end()); return result;
     }
-    bool replace(std::string& source) {
+    using NameAliases = std::map<std::string, const std::string*>;
+    bool replace(std::string& source, const rpgmessage::MessageLayout* messageCore = nullptr, const NameAliases* aliases = nullptr) {
         if (source.empty()) return false; ++examined_;
         if (exporting_) { dictionary_[source] = ""; return false; }
-        const auto it = dictionary_.find(source); if (it == dictionary_.end()) return false;
-        const auto target = it->get<std::string>(); if (target.empty() || target == source) return false;
-        if ((rpgDirectory_.empty() ? controls(source) != controls(target) : rpgControls(source) != rpgControls(target)) || (rpgDirectory_.empty() && (target[0] == '/' || target.find("\n/") != std::string::npos))) { ++blocked_; issues_.push_back({{"file",context_},{"source",source},{"translation",target},{"reason","译文控制符与原文不一致"}}); return false; }
+        const auto it = dictionary_.find(source);
+        const std::string* translated = it == dictionary_.end() ? nullptr : &it->get_ref<const std::string&>();
+        if (!translated && aliases && source.find('<') != std::string::npos) {
+            const auto alias = aliases->find(rpgmessage::repairNameLineBreak(source));
+            if (alias != aliases->end()) translated = alias->second;
+        }
+        auto target = translated ? *translated : std::string();
+        if (!messageCore && (target.empty() || target == source)) return false;
+        if (target.empty()) target = source;
+        auto originalControls = source, targetControls = target;
+        if (messageCore) {
+            originalControls = rpgmessage::repairNameLineBreak(rpgmessage::repairPosition(source));
+            target = rpgmessage::restoreName(originalControls, rpgmessage::repairNameLineBreak(rpgmessage::repairPosition(target)));
+            targetControls = target;
+            if (!std::regex_search(originalControls, rpgmessage::nameBox))
+                targetControls = std::regex_replace(targetControls, rpgmessage::manualName, "");
+        }
+        if ((rpgDirectory_.empty() ? controls(source) != controls(target) : rpgControls(originalControls) != rpgControls(targetControls)) || (rpgDirectory_.empty() && (target[0] == '/' || target.find("\n/") != std::string::npos))) { ++blocked_; issues_.push_back({{"file",context_},{"source",source},{"translation",target},{"reason","译文控制符与原文不一致"}}); return false; }
+        if (messageCore) target = rpgmessage::alignPositionedLines(rpgmessage::alignContinuation(std::move(target), *messageCore));
+        if (target == source) return false;
         source = target; ++matched_; return true;
     }
     void visit(json& node) {
@@ -159,13 +179,23 @@ class JsonEmbedding {
         detail("提取事件、地图与数据库文本"); runTool("WolfTL.exe", {data.wstring(), work_.wstring(), L"--create"});
         if (!std::filesystem::is_directory(work_ / "dump")) throw std::runtime_error("没有生成可回写的文本定位数据");
     }
+    static json readTranslationDictionary(const Path& path) {
+        auto dictionary = json::parse(read(path));
+        if (!dictionary.is_object()) throw std::runtime_error("需要原文到译文的 JSON 对象");
+        size_t leaks = 0;
+        for (auto it = dictionary.begin(); it != dictionary.end(); ++it) {
+            if (!it->is_string()) throw std::runtime_error("JSON 不是 MTool 原文到译文格式，值必须全部是文本");
+            if (translation_prompt::leaked(it.key(), it->get_ref<const std::string&>())) ++leaks;
+        }
+        if (leaks) throw std::runtime_error("翻译 JSON 有 " + std::to_string(leaks) + " 条译文混入了参考语境或模型提示，请重译后再生成补丁");
+        return dictionary;
+    }
     void inspect() {
-        detail("读取翻译 JSON"); dictionary_ = json::parse(read(input_));
-        if (!dictionary_.is_object() || dictionary_.empty()) throw std::runtime_error("需要原文到译文的非空 JSON 对象");
-        for (const auto& value : dictionary_) if (!value.is_string()) throw std::runtime_error("JSON 不是 MTool 原文到译文格式，值必须全部是文本");
+        detail("读取翻译 JSON"); dictionary_ = readTranslationDictionary(input_);
+        if (dictionary_.empty() && (rpgDirectory_.empty() || !rpgmessage::enabled(game_))) throw std::runtime_error("译文 JSON 为空");
         inputTime_ = std::filesystem::last_write_time(input_); inputSize_ = std::filesystem::file_size(input_);
         sourceGame_=gamepatch::source(game_,rpgDirectory_,backups(game_));
-        if (rpgDirectory_.empty()) prepareWolf(); else prepareRpg();
+        if (rpgDirectory_.empty()) prepareWolf();
         detail("匹配译文并检查控制符"); if (rpgDirectory_.empty()) scan(false); else scanRpg(false);
         std::lock_guard lock(mutex_); state_["dictionaryEntries"] = dictionary_.size(); state_["state"] = "ready"; state_["detail"] = "检查完成，可生成嵌入补丁";
     }
@@ -191,39 +221,56 @@ class JsonEmbedding {
         write(work_ / "使用说明.txt", "本目录 patch/Data 是已写入译文的资源。原游戏未修改。\n请在游戏副本中备份并移走对应 BasicData.wolf、MapData.wolf、Evtext*.wolf，再复制对应解包目录；保留其他图片、音频资源包。不要删除原件。\n外部脚本输出 UTF-8 BOM。数据已通过重读检查，仍需实测中文字体、外部脚本编码与游戏显示。\n");
         dictionary_.clear(); std::lock_guard lock(mutex_); state_["state"] = "done"; state_["detail"] = "嵌入补丁已生成，原游戏未修改"; state_["patchPath"] = utf8path::pathUtf8(work_ / "patch");
     }
+    void verifyInputs() const {
+        for(const auto& [path,stamp]:originals_)if(!std::filesystem::is_regular_file(path)||std::filesystem::file_size(path)!=stamp.first||std::filesystem::last_write_time(path)!=stamp.second)throw std::runtime_error("游戏资源已改变，请重新检查后生成补丁");
+    }
     void apply() {
         gamepatch::verify(game_);
-        for(const auto& [path,stamp]:originals_)if(!std::filesystem::is_regular_file(path)||std::filesystem::file_size(path)!=stamp.first||std::filesystem::last_write_time(path)!=stamp.second)throw std::runtime_error("游戏资源已改变，请重新检查后生成补丁");
-        const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"&&!rpgDirectory_.empty()?scopedBackup():Path();
+        verifyInputs();
+        const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"?scopedBackup():gameresourcebackup::Snapshot{};
         detail("验证并应用文本补丁");const auto receipt=gamepatch::install(game_,rpgDirectory_,work_/"patch");
-        std::lock_guard lock(mutex_);if(!snapshot.empty()||!receipt.empty())state_["backupPath"]=utf8path::pathUtf8(snapshot.empty()?receipt:snapshot);else state_.erase("backupPath");state_["state"]="applied";state_["detail"]="文本补丁已安装，可检测、更新或卸载";
+        std::lock_guard lock(mutex_);
+        if(!snapshot.path.empty()||!receipt.empty()) state_["backupPath"]=utf8path::pathUtf8(snapshot.path.empty()?receipt:snapshot.path);
+        else state_.erase("backupPath");
+        state_["state"]="applied";
+        state_["detail"]=std::string("文本补丁已安装")+(snapshot.path.empty()?"":" · "+snapshot.summary());
     }
     static void saveLedger(const Path& backup, const json& ledger) {
         std::string error; if (!atomicfile::writeText(backup / "manifest.json", ledger.dump(2), &error)) throw std::runtime_error(error);
     }
     static bool resourceName(const std::string& name) { return name == "BasicData" || name == "MapData" || std::regex_match(name, std::regex("Evtext[A-Za-z0-9_-]*")); }
     void backupOnly() {
-        if (!rpgDirectory_.empty()) { if(!jobRequest_.contains("backupScopes")&&jobRequest_.value("backupScope","text")=="text")backupRpg();else backupAssets(); return; }
-        const auto backup = game_ / "LLMChat-JSON" / "backups" / ("wolf-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
-        std::filesystem::create_directories(backup / "Data"); std::map<std::string, json> resources; std::vector<Path> files;
-        for (const auto& entry : std::filesystem::directory_iterator(game_ / "Data")) {
-            const auto name = entry.is_directory() ? entry.path().filename().string() : entry.path().stem().string();
-            if (!resourceName(name)) continue;
-            auto& item = resources[name]; if (item.is_null()) item = {{"name", name}, {"hadArchive", false}, {"hadDirectory", false}};
-            if (entry.is_directory()) { item["hadDirectory"] = true; for (const auto& file : std::filesystem::recursive_directory_iterator(entry.path())) if (file.is_regular_file()) files.push_back(file.path()); }
-            else if (entry.path().extension() == ".wolf") { item["hadArchive"] = true; files.push_back(entry.path()); }
+        if (!rpgDirectory_.empty() && !jobRequest_.contains("backupScopes") && jobRequest_.value("backupScope","text")=="text") {
+            backupRpg();
+            return;
         }
-        if (files.empty()) throw std::runtime_error("没有找到可备份的 WOLF 文字资源");
-        detail("备份原资源"); size_t completed = 0; progress(0, files.size());
-        for (const auto& file : files) { checkStop(); const auto target = backup / "Data" / std::filesystem::relative(file, game_ / "Data"); std::filesystem::create_directories(target.parent_path()); std::filesystem::copy_file(file, target); progress(++completed, files.size()); }
-        json entries = json::array(); for (const auto& [name, item] : resources) entries.push_back(item);
-        saveLedger(backup, {{"version", 2}, {"kind", "snapshot"}, {"state", "snapshot"}, {"resources", entries}});
-        std::lock_guard lock(mutex_); state_["state"] = state_.value("resumeAfterBackup", "backedUp"); state_.erase("resumeAfterBackup"); state_["backupPath"] = utf8path::pathUtf8(backup); state_["detail"] = "备份完成，游戏资源未改变";
+        const auto backup=scopedBackup();
+        std::lock_guard lock(mutex_);
+        state_["state"]=state_.value("resumeAfterBackup","backedUp");
+        state_.erase("resumeAfterBackup");
+        state_["backupPath"]=utf8path::pathUtf8(backup.path);
+        state_["detail"]=backup.summary();
     }
     void restoreBackup(const Path& backup) {
         detail("正在恢复原资源");
         auto ledger = json::parse(read(backup / "manifest.json"));
-        if (ledger.value("engine", "") == "files") { gamefiles::restore(game_, backup); return; }
+        if (ledger.value("engine", "") == "files") {
+            const bool wolfText=ledger.value("wolfTextSnapshot",false);
+            if(wolfText&&ledger.value("state","")=="snapshot"&&std::filesystem::is_directory(game_/"Data")) {
+                std::set<std::string> originals;
+                for(const auto& item:ledger.at("resources")) originals.insert(item.at("name").get<std::string>());
+                for(const auto& name:gamepatch::sources(game_,{}))
+                    if(!originals.contains(gamefiles::key(name))) ledger["resources"].push_back({{"name",gamefiles::key(name)},{"existed",false}});
+                saveLedger(backup,ledger);
+            }
+            gamefiles::restore(game_, backup);
+            if(wolfText) {
+                json files=json::array();
+                for(const auto& item:ledger.at("resources")) files.push_back({{"path",item.at("name")}});
+                gamepatch::pruneEmpty(game_,{{"files",files}});
+            }
+            return;
+        }
         if (ledger.value("engine", "") == "rpgmaker") { restoreRpg(backup, ledger); return; }
         if (ledger.value("state", "") == "rolledBack") return;
         auto resources = ledger.at("resources");
@@ -261,9 +308,10 @@ class JsonEmbedding {
         ledger["state"] = "rolledBack"; saveLedger(backup, ledger);
     }
     static std::vector<std::string> rpgControls(const std::string& value) {
-        static const std::regex pattern(R"(\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\])?|[{}.!|><^$\\])|%[1-9][0-9]*)");
+        static const std::regex pattern(R"((?:if|en)\([^)\r\n]+\)|\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\])?|[{}.!|><^$\\])|%%|%[1-9][0-9]*(?![0-9$]))", std::regex::icase);
         std::vector<std::string> result;
-        for (auto it = std::sregex_iterator(value.begin(), value.end(), pattern); it != std::sregex_iterator(); ++it) result.push_back(it->str());
+        for (auto it = std::sregex_iterator(value.begin(), value.end(), pattern); it != std::sregex_iterator(); ++it)
+            if (it->str() != "%%") result.push_back(it->str());
         std::sort(result.begin(), result.end()); return result;
     }
     void selectEngine() {
@@ -277,11 +325,6 @@ class JsonEmbedding {
         for (const auto& entry : std::filesystem::directory_iterator(directory)) if (entry.is_regular_file() && rpgtext::dataFile(entry.path().filename().string())) files.push_back(entry.path());
         std::sort(files.begin(), files.end()); return files;
     }
-    void prepareRpg() {
-        originals_.clear(); const auto files = rpgFiles(sourceGame_ / rpgDirectory_); size_t completed = 0;
-        detail("读取 RPG Maker 地图、事件与数据库"); progress(0, files.size());
-        for (const auto& file : files) { checkStop(); if(std::filesystem::is_regular_file(game_/rpgDirectory_/file.filename()))remember(game_/rpgDirectory_/file.filename()); write(work_ / "source" / file.filename(), read(file)); progress(++completed, files.size()); }
-    }
     void scanPlugins(bool save) {
         const auto source=sourceGame_/rpgDirectory_.parent_path()/"js/plugins.js";
         if(!std::filesystem::exists(source))return;
@@ -293,11 +336,35 @@ class JsonEmbedding {
         if(!save&&std::filesystem::is_regular_file(game_/rpgDirectory_.parent_path()/"js/plugins.js"))remember(game_/rpgDirectory_.parent_path()/"js/plugins.js");
     }
     void scanRpg(bool save) {
-        matched_ = blocked_ = examined_ = 0; issues_=json::array(); const auto files = rpgFiles(work_ / "source"); size_t completed = 0;
+        matched_ = blocked_ = examined_ = 0; issues_=json::array(); const auto files = rpgFiles(sourceGame_ / rpgDirectory_); size_t completed = 0;
+        if (!save) originals_.clear();
+        else {
+            if (files != checkedRpgFiles_) throw std::runtime_error("数据库文件列表已改变，请重新检查");
+            verifyInputs();
+        }
+        if (!save) checkedRpgFiles_ = files;
+        const auto layout = !exporting_ ? rpgmessage::messageLayout(game_) : rpgmessage::MessageLayout{};
+        NameAliases aliases;
+        if (layout.enabled) for (auto it = dictionary_.cbegin(); it != dictionary_.cend(); ++it) {
+            if (it.key().find('<') == std::string::npos) continue;
+            const auto normalized = rpgmessage::repairNameLineBreak(it.key());
+            if (!std::regex_search(normalized, rpgmessage::nameBox)) continue;
+            const auto* translation = &it->get_ref<const std::string&>();
+            const auto [alias, inserted] = aliases.emplace(normalized, translation);
+            if (!inserted && alias->second && *alias->second != *translation) alias->second = nullptr;
+        }
         detail(exporting_ ? "提取 RPG Maker 显示文本" : "匹配 RPG Maker 显示文本"); progress(0, files.size());
         for (const auto& file : files) {
-            checkStop(); context_=file.filename().string(); auto value = json::parse(read(file)); const auto before = matched_;
-            rpgtext::visit(file.filename().string(), value, [this](std::string& text) { return replace(text); });
+            checkStop();
+            if (!save && !exporting_) {
+                remember(file);
+                const auto live = game_ / rpgDirectory_ / file.filename();
+                if (live != file && std::filesystem::is_regular_file(live)) remember(live);
+            }
+            context_=file.filename().string(); auto value = json::parse(read(file)); const auto before = matched_;
+            rpgtext::visit(file.filename().string(), value, [this](std::string& text) { return replace(text); },
+                [this, &layout, &aliases](std::string& text) { return replace(text, layout.enabled ? &layout : nullptr, layout.enabled ? &aliases : nullptr); },
+                [this, &layout](json& commands) { if (layout.enabled) matched_ += rpgmessage::repairNameFragments(commands); });
             if (save && matched_ != before) {
                 const auto target = work_ / "patch" / rpgDirectory_ / file.filename(); write(target, value.dump());
                 if (json::parse(read(target)) != value) throw std::runtime_error("回写校验失败：" + file.filename().string());
@@ -310,7 +377,7 @@ class JsonEmbedding {
     void extract() {
         checkStop(); gametext::resetForScan(game_);
         dictionary_ = json::object(); exporting_ = true; sourceGame_=gamepatch::source(game_,rpgDirectory_,backups(game_));
-        try { if (rpgDirectory_.empty()) { prepareWolf(); scan(false); } else { prepareRpg(); scanRpg(false); } }
+        try { if (rpgDirectory_.empty()) { prepareWolf(); scan(false); } else scanRpg(false); }
         catch (...) { exporting_ = false; throw; }
         exporting_ = false;
         const auto output = work_ / "MTool.json"; write(output, dictionary_.dump(2));
@@ -354,13 +421,11 @@ class JsonEmbedding {
         }
         ledger["state"] = "rolledBack"; saveLedger(backup, ledger);
     }
-    Path scopedBackup() {
+    gameresourcebackup::Snapshot scopedBackup() {
         detail("按范围备份资源");
-        return gameresourcebackup::snapshot(game_,rpgDirectory_,jobRequest_.value("backupScopes",json::array({"text"})),[&](size_t completed,size_t total){checkStop();progress(completed,total);});
-    }
-    void backupAssets() {
-        const auto backup=scopedBackup();
-        std::lock_guard lock(mutex_);state_["state"]=state_.value("resumeAfterBackup","backedUp");state_.erase("resumeAfterBackup");state_["backupPath"]=utf8path::pathUtf8(backup);state_["detail"]="备份完成，游戏资源未改变";
+        const auto data=rpgDirectory_.empty()?Path("Data"):rpgDirectory_;
+        return gameresourcebackup::snapshot(game_,data,jobRequest_.value("backupScopes",json::array({"text"})),
+            [&](size_t completed,size_t total){checkStop();progress(completed,total);});
     }
     void finishBackupMode(const std::string& action) {
         if(jobRequest_.value("backupMode","auto")!="manual" || (action!="apply"&&action!="runtime"))return;
@@ -372,8 +437,7 @@ class JsonEmbedding {
     void installRuntime() {
         const auto base=rpgDirectory_.parent_path();
         if(rpgDirectory_.empty())throw std::runtime_error("本地译文加载适用于 RPG Maker MV/MZ");
-            detail("准备本地翻译插件");auto dictionary=json::parse(read(utf8path::pathFromUtf8(jobRequest_.at("jsonPath"))));
-            if(!dictionary.is_object())throw std::runtime_error("翻译 JSON 必须为原文到译文对象");for(auto& value:dictionary)if(!value.is_string())throw std::runtime_error("译文必须为字符串");
+            detail("准备本地翻译插件");auto dictionary=readTranslationDictionary(utf8path::pathFromUtf8(jobRequest_.at("jsonPath")));
             auto original=read(game_/base/"js/plugins.js");auto begin=original.find('['),end=original.find_last_of(']');if(begin==std::string::npos||end==std::string::npos)throw std::runtime_error("无法解析 plugins.js");
             auto plugins=json::parse(original.substr(begin,end-begin+1));if(!plugins.is_array())throw std::runtime_error("插件列表格式错误");
             plugins.erase(std::remove_if(plugins.begin(),plugins.end(),[](const json& p){return p.value("name","")=="LLMChatTranslation";}),plugins.end());
@@ -383,7 +447,7 @@ class JsonEmbedding {
             if(!fontPath.empty()){auto path=utf8path::pathFromUtf8(fontPath);auto ext=path.extension().string();if(ext!=".ttf"&&ext!=".otf")throw std::runtime_error("请选择 TTF/OTF 字体");font="LLMChat-font"+ext;files[base/"fonts"/font]=read(path);}
             script.replace(script.find("__FONT__"),8,font);
             files[base/"js/plugins/LLMChatTranslation.js"]=script;files[base/"LLMChat-translations.json"]=dictionary.dump();files[base/"js/plugins.js"]=original.substr(0,begin)+plugins.dump(2)+original.substr(end+1);
-            const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"?scopedBackup():Path();
+            const auto snapshot=jobRequest_.value("backupMode","auto")=="auto"?scopedBackup().path:Path();
             const auto backup=gamefiles::apply(game_,files);std::lock_guard lock(mutex_);state_["backupPath"]=utf8path::pathUtf8(snapshot.empty()?backup:snapshot);state_["state"]="applied";state_["detail"]="本地翻译插件已安装；回滚对应备份可卸载";return;
     }
 

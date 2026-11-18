@@ -1,7 +1,7 @@
 
 import { useState } from "react";
 import type { UnityImage } from "../unityOffline";
-import type { ImageScreening } from "../gameImageScreening";
+import { imageManuallyExcluded, IMAGE_PRESENCE_CONFLICT, IMAGE_PRESENCE_REVIEW_HINT, type ImageScreening } from "../gameImageScreening";
 
 export type BatchRow = { id: string; label: string; detail: string; group?: string } & (
   { kind: "text" | "image" } | { kind: "resource"; paths: string[]; text?: { source: string; translation: string } }
@@ -16,7 +16,11 @@ export function gameImageBatchRows(images: UnityImage[]) {
     const screening = image.screening;
     const fields = { id: image.id, label: image.name || image.file, kind: "image" as const };
     const error = screening?.refineFailed ? screening.reason : image.error;
-    if (error && image.sourceFile) errors.push({ ...fields, detail: error });
+    if (error && image.sourceFile && !imageManuallyExcluded(image)) {
+      const conflict = error.indexOf(IMAGE_PRESENCE_CONFLICT);
+      const detail = conflict < 0 ? error : error.slice(0, conflict + IMAGE_PRESENCE_CONFLICT.length);
+      errors.push({ ...fields, detail });
+    }
     const previous = screening?.beforeRefine?.state;
     if (screening?.refineKey && !screening.refineFailed && previous && previous !== screening.state) {
       const group = `${refinementLabels[previous]} → ${refinementLabels[screening.state]}`;
@@ -27,11 +31,16 @@ export function gameImageBatchRows(images: UnityImage[]) {
 }
 
 const pageSize = 30;
+const imagePresenceConflictGroup = "复筛判断矛盾";
 
 export function batchFailureType(detail: string) {
+  if (detail.includes(IMAGE_PRESENCE_CONFLICT)) return imagePresenceConflictGroup;
   const categories: [RegExp, string][] = [
+    [/输出被截断|输出达到长度上限/, "模型输出被截断"],
+    [/置信度无效/, "置信度无效"],
     [/识别区域|区域.*坐标|坐标或置信度|缺少文字/, "识别区域无效"],
     [/JSON|结构化|输出格式/, "模型输出格式无效"],
+    [/已取消或超过时限/, "请求超时或取消"],
     [/超时|timeout|timed out/i, "请求超时"],
     [/拒答|未提供译文|译文为空|空译文/, "译文内容无效"],
     [/占位符|转义|富文本|控制符/, "译文格式校验失败"],
@@ -50,6 +59,7 @@ function BatchGroup({ title, rows, onLocate }: { title: string; rows: BatchRow[]
   const visible = rows.slice(current * pageSize, (current + 1) * pageSize);
   return <details className="game-batch-group">
     <summary>{title} · {rows.length}</summary>
+    {title === imagePresenceConflictGroup && <p className="hint">{IMAGE_PRESENCE_REVIEW_HINT}</p>}
     <ul>{visible.map((row, index) => <li key={row.kind + ":" + row.id}>
       <button type="button" className="unity-progress-locate" aria-label={"定位 " + row.label} data-tooltip={row.label}
         onClick={() => onLocate(row)}>{row.label}</button>
@@ -85,11 +95,12 @@ function BatchList({ title, rows, onLocate, onRetry, failed = false }: {
   </details>;
 }
 
-export function GameBatchResults({ errors, refined, onLocate, onRetry }: {
-  errors: BatchRow[]; refined?: BatchRow[]; onLocate: (row: BatchRow) => void; onRetry?: () => void;
+export function GameBatchResults({ errors, refined, repairs, onLocate, onRetry }: {
+  errors: BatchRow[]; refined?: BatchRow[]; repairs?: BatchRow[]; onLocate: (row: BatchRow) => void; onRetry?: () => void;
 }) {
   return <div className="game-batch-results">
     <BatchList failed title="失败条目" rows={errors} onLocate={onLocate} onRetry={onRetry} />
+    {!!repairs?.length && <BatchList title="对话纠错" rows={repairs} onLocate={onLocate} />}
     {!!refined?.length && <BatchList title="复筛分类变化" rows={refined} onLocate={onLocate} />}
   </div>;
 }

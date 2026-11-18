@@ -12,6 +12,8 @@ type Session = {
   references?: UnityEntry[];
   requestGroup?: (source: string) => string;
   key?: (entry: UnityEntry) => string;
+  targetLanguage?: string;
+  entryProblem?: (entry: UnityEntry) => string | undefined;
   signal: AbortSignal;
   concurrency?: number;
   translate: (source: string, entry?: UnityEntry) => Promise<string>;
@@ -21,7 +23,7 @@ type Session = {
   persistDraftBeforeFormat?: boolean;
   canReuseDraft?: (source: string, translation: string) => boolean;
   validate: (source: string, translated: string) => string;
-  persist: () => Promise<void>;
+  persist: (changed: UnityEntry[]) => Promise<void>;
   progress?: (value: UnityProgress) => void;
   onQueue?: (queue: UnityTranslationQueue | null) => void;
 };
@@ -45,10 +47,19 @@ export function unityTranslationCharacters(selected: UnityEntry[], entries: Unit
   }
   return { selectedCharacters, pendingCharacters };
 }
-export function unityTranslationStats(entries: UnityEntry[], validate: Session["validate"], key = (entry: UnityEntry) => keyOf(entry.source)) {
+export function textTranslationMatchesTarget(entry: UnityEntry, target?: string) {
+  return !target || !entry.translationTarget || entry.translationTarget === target;
+}
+export function tagLegacyTextTargets(entries: UnityEntry[], target: string) {
+  for (const entry of entries) {
+    if (entry.translation) entry.translationTarget ??= target;
+    if (entry.layoutDraft) entry.layoutDraftTarget ??= target;
+  }
+}
+export function unityTranslationStats(entries: UnityEntry[], validate: Session["validate"], key = (entry: UnityEntry) => keyOf(entry.source), target?: string) {
   const groups = new Map<string, boolean>(); let coverageCompleted = 0, coverageChanged = 0;
   for (const entry of entries) {
-    const identity = key(entry), valid = !!entry.translation && !entry.error && !validate(entry.source, entry.translation);
+    const identity = key(entry), valid = !!entry.translation && !entry.error && textTranslationMatchesTarget(entry, target) && !validate(entry.source, entry.translation);
     if (valid) { coverageCompleted++; if (entry.translation !== entry.source) coverageChanged++; }
     groups.set(identity, (groups.get(identity) ?? true) && valid);
   }
@@ -59,6 +70,7 @@ export function unityTranslationStats(entries: UnityEntry[], validate: Session["
 export async function translateUnitySession(entries: UnityEntry[], cache: Map<string, string>, session: Session) {
   const validate = (source: string, translation: string) => measureGameWork(session.timingScope, "processingMs", () => session.validate(source, translation));
   const entryKey = session.key || ((entry: UnityEntry) => keyOf(entry.source));
+  const draftMatchesTarget = (entry: UnityEntry) => !session.targetLanguage || !entry.layoutDraftTarget || entry.layoutDraftTarget === session.targetLanguage;
   const reused = session.key ? new Map(cache) : new Map([...cache].map(([source, translation]) => [keyOf(source), translation]));
   const groups = new Map<string, UnityEntry[]>();
   const completion = new Map<string, boolean>();
@@ -71,9 +83,9 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
     const stopProcessing = startGameTiming(session.timingScope, "processingMs");
     try {
       const entry = references[index], key = entryKey(entry);
-      const valid = !!entry.translation && !entry.error && !session.validate(entry.source, entry.translation);
+      const valid = !!entry.translation && !entry.error && textTranslationMatchesTarget(entry, session.targetLanguage) && !session.validate(entry.source, entry.translation);
       if (valid) reused.set(key, entry.translation);
-      else if (entry.layoutDraft && !reused.has(key) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(key, entry.layoutDraft);
+      else if (entry.layoutDraft && draftMatchesTarget(entry) && !reused.has(key) && !session.validate(entry.source, entry.layoutDraft) && (session.canReuseDraft?.(entry.source, entry.layoutDraft) ?? true)) reused.set(key, entry.layoutDraft);
       if (targets && !targets.has(entry.id)) continue;
       if (valid) coverageCompleted++;
       completion.set(key, (completion.get(key) ?? true) && valid);
@@ -102,15 +114,23 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
   let saveFailure: unknown;
   let closed = false;
   let saveInFlight:Promise<void>|null=null;
-  let changedVersion=0,savedVersion=0,lastSave=performance.now();
-  const persist = (force=false,markChanged=true):Promise<void> => {
-    if(markChanged)changedVersion++;
-    if(saveFailure)return Promise.reject(saveFailure);
-    if(saveInFlight)return force?saveInFlight.then(()=>persist(true,false)):saveInFlight;
-    if(savedVersion>=changedVersion||!force&&changedVersion-savedVersion<32&&performance.now()-lastSave<1000)return Promise.resolve();
-    const version=changedVersion;
-    const write=Promise.resolve().then(()=>session.persist()).then(()=>{savedVersion=version;lastSave=performance.now();}).catch(error=>{saveFailure=error;throw error;}).finally(()=>{saveInFlight=null;});
-    saveInFlight=write;return force?write.then(()=>persist(true,false)):write;
+  const changedEntries = new Map<string, UnityEntry>();
+  const rememberChanges = (entries: UnityEntry[]) => {
+    for (const entry of entries) changedEntries.set(entry.id, entry);
+  };
+  let lastSave = performance.now();
+  const persist = (force = false): Promise<void> => {
+    if (saveFailure) return Promise.reject(saveFailure);
+    if (saveInFlight) return force ? saveInFlight.then(() => persist(true)) : saveInFlight;
+    if (!changedEntries.size || !force && changedEntries.size < 32 && performance.now() - lastSave < 1000) return Promise.resolve();
+    const batch = [...changedEntries.values()].map(entry => ({ ...entry }));
+    changedEntries.clear();
+    const write = Promise.resolve().then(() => session.persist(batch))
+      .then(() => { lastSave = performance.now(); })
+      .catch(error => { saveFailure = error; throw error; })
+      .finally(() => { saveInFlight = null; });
+    saveInFlight = write;
+    return force ? write.then(() => persist(true)) : write;
   };
   const report = (detail: string) => session.progress?.({ detail, completed: initial.completed + processed, total: initial.total, coverageCompleted: covered, coverageTotal: entries.length, requests, reused: reusedGroups,
     translation: { processed, pending: groups.size, successful: completed, failed: failures, failedEntries, active: [...active.values()], last } });
@@ -124,7 +144,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const key = entryKey(entry), group = groups.get(key);
       if (!group || states.get(key) !== "failed") return false;
       reused.delete(key); cache.delete(key);
-      const draft = group.find(item => item.layoutDraft && !validate(item.source, item.layoutDraft) && (session.canReuseDraft?.(item.source, item.layoutDraft) ?? true));
+    const draft = group.find(item => item.layoutDraft && draftMatchesTarget(item) && !validate(item.source, item.layoutDraft) && (session.canReuseDraft?.(item.source, item.layoutDraft) ?? true));
       if (draft?.layoutDraft) reused.set(key, draft.layoutDraft);
       states.set(key, "pending"); pending.push([key, group]); processed--; failures--; failedEntries -= group.length;
       report(`条目 #${id} 已重新加入翻译队列`); wake(); return true;
@@ -140,6 +160,8 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       report(`条目 #${entry.id} · ${detail}${active.size > 1 ? ` · 同时处理 ${active.size} 种原文` : ""}${group.length > 1 ? ` · 复用到 ${group.length} 个条目` : ""}`);
     };
     try {
+      const problem = session.entryProblem?.(entry);
+      if (problem) throw new Error(problem);
       const cached = reused.get(key);
       if (!cached) requests++;
       phase(cached ? "reusing" : "translating");
@@ -147,7 +169,8 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       const translationProblem = validate(entry.source, translated);
       if (translationProblem) throw new Error(translationProblem);
       if (session.retainDraft && session.format && group.some(item => /[\r\n]/.test(item.source))) {
-        group.forEach(item => { item.layoutDraft = translated; });
+        group.forEach(item => { item.layoutDraft = translated; item.layoutDraftTarget = session.targetLanguage; });
+        rememberChanges(group);
         if (session.persistDraftBeforeFormat) try { await persist(true); } catch (error) { persistenceFailure = true; throw error; }
       }
       formatting = !!session.format;
@@ -176,7 +199,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
         formatted.push(value);
       }
       if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
-      group.forEach((item, index) => { item.translation = formatted[index]; item.error = ""; delete item.layoutDraft; delete item.screeningDraft; });
+      group.forEach((item, index) => { item.translation = formatted[index]; item.translationTarget = session.targetLanguage ?? item.translationTarget; item.error = ""; delete item.layoutDraft; delete item.layoutDraftTarget; delete item.screeningDraft; });
       reused.set(key, translated); cache.set(key, translated); completed++; covered += group.length;
       if (cached) reusedGroups++;
     } catch (error) {
@@ -186,6 +209,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       failures++; failedEntries += group.length; failed = true;
     }
     phase("saving");
+    rememberChanges(group);
     await persist(); // Serialize disk snapshots; never let an older write overwrite a newer result.
     processed++; active.delete(key); states.set(key, failed ? "failed" : "done"); last = { id: entry.id, failed };
     report(`本轮已检查 ${processed}/${groups.size} 种原文 · 右侧已有有效译文 ${covered}/${entries.length} 条 · 失败 ${failedEntries} 条`);
@@ -208,5 +232,5 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
     const results = await Promise.allSettled(Array.from({ length: Math.min(Math.max(1, session.concurrency || 1), pending.length) }, worker));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) throw rejected.reason;
-  } finally { try{await persist(true,false);}finally{closed = true; session.signal.removeEventListener("abort", wake); session.onQueue?.(null);} }
+  } finally { try{await persist(true);}finally{closed = true; session.signal.removeEventListener("abort", wake); session.onQueue?.(null);} }
 }

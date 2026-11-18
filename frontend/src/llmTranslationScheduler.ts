@@ -108,7 +108,7 @@ export function createLlmTranslationScheduler(raw: Raw) {
       for (const job of missing) await deliver(resource, [job]);
     } catch (error) {
       const code = (error as RequestError | undefined)?.code;
-      if (batched && !controller.signal.aborted && (error instanceof TextBatchFormatError || code === "LLM_OUTPUT_TRUNCATED")) {
+      if (batched && !controller.signal.aborted && (error instanceof TextBatchFormatError || code === "LLM_OUTPUT_TRUNCATED" || code === "OLLAMA_CONTEXT_LIMIT")) {
         const middle = Math.ceil(live.length / 2);
         await deliver(resource, live.slice(0, middle));
         await deliver(resource, live.slice(middle));

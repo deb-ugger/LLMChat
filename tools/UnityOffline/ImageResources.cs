@@ -13,6 +13,7 @@ public sealed class ImageRegion
 {
     public string Text { get; set; } = "";
     public string Translation { get; set; } = "";
+    public string? TranslationTarget { get; set; }
     public double Confidence { get; set; }
     public double X0 { get; set; } public double Y0 { get; set; }
     public double X1 { get; set; } public double Y1 { get; set; }
@@ -38,6 +39,8 @@ public sealed class ImageResource
     public string RenderedFile { get; set; } = "";
     public string RenderedHash { get; set; } = "";
     public string RenderedKind {get;set;} = "";
+    public string? RenderedTarget { get; set; }
+    public bool NoTranslationNeeded { get; set; }
     public string DependencyFile { get; set; } = "";
     public string DependencyHash { get; set; } = "";
     public bool Selected { get; set; } = true;
@@ -307,7 +310,8 @@ public static class ImageResources
                 var state = Program.Within(project.Folder, "images/state/" + image.Id + ".json");
                 if (File.Exists(state)) File.Delete(state);
             }
-            image.RenderedFile = ""; image.RenderedHash = ""; image.RenderedKind = ""; image.OcrCompleted = false; image.Completed = false; image.Regions.Clear();
+            image.RenderedFile = ""; image.RenderedHash = ""; image.RenderedKind = ""; image.RenderedTarget = null;
+            image.OcrCompleted = false; image.Completed = false; image.NoTranslationNeeded = false; image.Regions.Clear();
             if (image.SourceFile.Length > 0) image.Error = "";
         }
         var cleanup = CleanupCache(project);
@@ -356,6 +360,7 @@ public static class ImageResources
                 }
             }
             image.Selected = saved.Selected; image.OcrCompleted = saved.OcrCompleted; image.Completed = saved.Completed; image.Error = saved.Error;
+            image.RenderedTarget = saved.RenderedTarget; image.NoTranslationNeeded = saved.NoTranslationNeeded;
             image.Regions = saved.Regions;
             if (saved.RenderedFile.Length > 0) {
                 var source = Program.Within(previous.Folder, saved.RenderedFile);

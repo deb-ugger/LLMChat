@@ -2764,6 +2764,11 @@ body.ocr-image-resizing * {
 .game-flow-item.is-running { --flow-color: #176cc6; --flow-background: #dceeff; --flow-selected: #b5d9ff; }
 .game-flow-item.is-error { --flow-color: #c13b45; --flow-background: #ffeaec; --flow-selected: #ffc9cf; }
 .game-flow-item.is-stopped { --flow-color: #8551b4; --flow-background: #f2e9fa; --flow-selected: #e1cdf4; }
+.game-flow-item.is-benchmark { --flow-color: #8851cf; --flow-background: #f2ebfc; --flow-selected: #e8d9fa; }
+.game-flow-item.is-benchmark .game-flow-model-name { color: var(--flow-color); }
+.game-flow-item.is-benchmark > .game-flow-config { background: color-mix(in srgb, var(--flow-color) 6%, var(--panel, #fff)); }
+.game-benchmark-records-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.game-benchmark-record-date { color: var(--text-muted); margin-inline-end: 8px; font-size: 12px; }
 .game-flow-item.is-configured { border-color: var(--flow-color); }
 .game-flow-item.is-current-step { border: 2px solid var(--flow-color); animation: game-flow-pulse 1.65s ease-in-out infinite; }
 .game-flow-step { padding: 10px 12px; border-radius: inherit; background: var(--flow-background); }
@@ -3153,6 +3158,8 @@ dialog.game-workflow-help::backdrop { background: #0f172a66; }
 .game-benchmark-model select { width: 100%; min-width: 0; }
 .game-benchmark-results { display: grid; gap: 8px; overflow-wrap: anywhere; }
 .game-benchmark-results details { padding: 9px 12px; background: var(--panel, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: 6px; }
+.game-benchmark-record-runs { display: grid; gap: 6px; margin-top: 8px; }
+.game-benchmark-record-runs > details { padding: 6px 9px; }
 .game-benchmark-browser-fallback {
   position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); width: min(850px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px));
   z-index: 120; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; overflow: hidden;

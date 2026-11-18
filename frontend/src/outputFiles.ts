@@ -12,9 +12,9 @@ export function setOutputDirectory(module: OutputModule, path: string) {
   localStorage.setItem(`llmchat-output-directory-${module}`, path);
 }
 
-export async function saveOutputFile(fileName: string, contents: Uint8Array, extensions: string[], label: string, module: OutputModule): Promise<string | null> {
+export async function saveOutputFile(fileName: string, contents: Uint8Array, extensions: string[], label: string, module: OutputModule, initialDirectory?: string): Promise<string | null> {
   const path = await save({
-    defaultPath: await join(await getOutputDirectory(module), fileName),
+    defaultPath: await join(initialDirectory ?? await getOutputDirectory(module), fileName),
     filters: [{ name: label, extensions }],
   });
   if (!path) return null;

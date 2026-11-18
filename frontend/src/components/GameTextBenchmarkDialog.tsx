@@ -1,3 +1,4 @@
+import type { GameDialoguePage } from "../gameTranslationContext";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -5,7 +6,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { benchmarkChannelName, requestBenchmarkWindow } from "../gameBenchmarkWindow";
 import { registerAppCloseGuard } from "../appClose";
-import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameTextScreenSample, type BenchmarkStepRunner, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
+import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, runGameTextBenchmarks, runGameTextScreenSample, type BenchmarkStepRunner, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
 import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, modelConcurrency, stepPerformance, updateBenchmarkWindowPerformance, flushGamePerformanceArchive } from "../gameModelPerformance";
 import type { UnityEntry, UnityImage, UnityProgress } from "../unityOffline";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkStep, type ImageBenchmarkSetup, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
@@ -23,7 +24,7 @@ export type BenchmarkImageSource = {
 };
 export type BenchmarkInput = {
   scope: string; current: Omit<BenchmarkConfig, "id" | "label" | "models"> & { modelIds: Record<typeof benchmarkRoles[number], string> };
-  getWorkload: () => { entries: UnityEntry[]; selected: UnityEntry[] };
+  getWorkload: () => { entries: UnityEntry[]; selected: UnityEntry[]; dialoguePages?: GameDialoguePage[] };
   screenModel?: string;
   images?: BenchmarkImageSource;
   initialPart?: "text" | "images";
@@ -100,7 +101,7 @@ export function GameTextBenchmarkHost() {
           channel.postMessage({ type: "response", id: message.id, value: response });
         } catch (error) { channel.postMessage({ type: "response", id: message.id, error: String(error) }); }
       } else if (message?.type === "performance" && (active?.scope === message.scope || active?.images?.setup.scope === message.scope)) {
-        running = !!message.value;
+        running = message.value?.queue?.started !== undefined;
         updateBenchmarkWindowPerformance(message.scope, message.value && { ...message.value, step: message.step });
       } else if (message?.type === "output") active?.onMessage(message.text, message.level);
     };
@@ -202,6 +203,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState("");
   const [results, setResults] = useState<BenchmarkResult[]>([]);
+  const [history, setHistory] = useState<BenchmarkResult[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [total, setTotal] = useState<number>();
   const [sampleSize, setSampleSize] = useState<number>();
   const [samplePreview, setSamplePreview] = useState<Record<string, BenchmarkSample>>({});
@@ -263,6 +267,14 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   }, [channel, scope]);
   const runScope = scope + (imageStep ? ":benchmark:images" : ":benchmark:text");
   useEffect(() => {
+    let active = true;
+    setHistoryLoading(true); setHistoryError("");
+    void readGameBenchmarkHistory(runScope, step).then(records => { if (active) setHistory(records); })
+      .catch(error => { if (active) setHistoryError(String(error)); })
+      .finally(() => { if (active) setHistoryLoading(false); });
+    return () => { active = false; };
+  }, [runScope, step, historyRevision]);
+  useEffect(() => {
     if (!channel || !running) return;
     const publish = () => channel.postMessage({ type: "performance", scope, step, value: {
       queue: stepPerformance(scope + ":benchmark-total", "queue"), run: stepPerformance(runScope, step),
@@ -307,7 +319,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     let timerStarted = false;
     work.current = (async () => {
       saveQueue(true);
-      let workload = { entries: [] as UnityEntry[], selectedIds: new Set<string>() };
+      let workload: { entries: UnityEntry[]; selectedIds: Set<string>; dialoguePages?: GameDialoguePage[] } = { entries: [], selectedIds: new Set() };
       let target: { step: string; selected: number; run: BenchmarkStepRunner } | undefined;
       const onProgress = (value: UnityProgress) => setProgress(value.detail);
       if (imageStep && images) {
@@ -318,10 +330,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         target = { step, selected: sample.length, run: (config, settings, runScope) => runGameImageSample(
           imageStep, sample, source, config, images, settings, runScope, controller.signal, readImage, onMessage, onProgress) };
       } else {
-        const { entries, selected } = await requestWorkload();
+        const { entries, selected, dialoguePages } = await requestWorkload();
         if (!selected.length) throw new Error("请先勾选要测试的文本");
         setSelectionCount(selected.length);
-        workload = { entries, selectedIds: new Set(selected.map(entry => entry.id)) };
+        workload = { entries, selectedIds: new Set(selected.map(entry => entry.id)), dialoguePages };
         if (step === "screen") target = { step, selected: selected.length, run: (config, settings, runScope) =>
           runGameTextScreenSample(config, selected, settings, runScope, controller.signal, onMessage, onProgress) };
         if (step === "translate") {
@@ -357,10 +369,15 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         clearGamePerformance(totalScope, ["queue"]);
       }
       onMessage(`${stepTitle}${metadata.status} · 已执行 ${metadata.runs}/${queue.length * totalRounds} 个配置轮次 · 失败配置 ${metadata.failedRuns}${elapsed === undefined ? "" : ` · 总用时 ${(elapsed / 1000).toFixed(2)} 秒`}${metadata.detail ? " · " + metadata.detail : ""}`, metadata.status === "测试失败" || metadata.failedRuns ? "error" : "info");
+      updateBenchmarkWindowPerformance(scope);
+      channel?.postMessage({ type: "performance", scope });
+      setHistoryRevision(value => value + 1);
       abort.current = undefined; work.current = undefined; setRunning(false); onRunning(false);
     });
   };
 
+  const currentIds = new Set(results.map(result => result.performance.taskId));
+  const tasks = groupBenchmarkTasks([...results, ...history.filter(result => !currentIds.has(result.performance.taskId))]);
   const page = <main className={"game-benchmark-page" + (channel ? "" : " game-benchmark-browser-fallback")}>
     <header className="game-benchmark-page-header">
       <h2>测试队列</h2>
@@ -454,8 +471,18 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </p>}
       </details>)}
       {status && <p role="status"><strong>{status}{total === undefined ? "" : " · 总用时 " + gameDuration(total)}</strong> {progress}</p>}
-      {!!results.length && <div className="game-benchmark-results" aria-label="测试结果">
-        {results.map((result, index) => <details key={index}>
+      <div className="game-benchmark-results" aria-label="测试记录">
+        <header className="game-benchmark-records-head"><strong>测试记录 · {tasks.length} 个任务</strong>
+          <button type="button" className="unity-btn" disabled={running || historyLoading} onClick={() => setHistoryRevision(value => value + 1)}>刷新</button></header>
+        {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
+        {historyError && <p className="unity-offline-error" role="alert">{historyError}</p>}
+        {!historyLoading && !historyError && !tasks.length && <p className="hint">当前步骤暂无测试记录。</p>}
+        {tasks.map(task => <details key={task.id} className="game-benchmark-record-task">
+          <summary><span className="game-benchmark-record-date">{task.firstTime && new Date(task.firstTime).toLocaleString("zh-CN", { hour12: false })}</span>
+            {task.rounds} 轮 · {task.configs} 个配置 · {task.runs.length} 项{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项中止`}
+          </summary>
+          <div className="game-benchmark-record-runs">
+          {task.runs.map((result, index) => <details key={result.performance.taskId || index}>
           <summary>第 {result.round} 轮 · {result.label} · {result.status} · {gameDuration(result.performance.elapsedMs)} · 完成 {result.translated}/{result.selected}</summary>
           {result.detail && <p>{result.detail}</p>}
           {result.summary && <p>{result.summary}</p>}
@@ -463,8 +490,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           {Object.values(result.performance.models).map(model => <div key={model.model + model.concurrency}>
             {model.model.split("/").at(-1)} · 并发 {model.concurrency} · {model.requests} 次 · 纯生成 {model.generationMs ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—"} tok/s · 请求平均 {model.requestMs ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—"} tok/s
           </div>)}
+          </details>)}
+          </div>
         </details>)}
-      </div>}
+      </div>
     </div></section>
     <footer className="game-benchmark-footer">
     <button type="button" className="settings-panel-save" disabled={!running && !canRun} onClick={running ? () => abort.current?.abort() : start}>{running ? "中止测试" : "开始测试"}</button>

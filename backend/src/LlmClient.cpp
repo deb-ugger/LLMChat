@@ -82,7 +82,7 @@ bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_
 }
 
 LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body,
-                        const std::string& proxyMode, std::string proxy, bool requireComplete, json* nativeJson = nullptr)
+                        const std::string& proxyMode, std::string proxy, bool requireComplete, json* nativeJson = nullptr, bool readOnly = false)
 {
     LlmResponse result;
     if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
@@ -109,7 +109,8 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
-    WinHttpSetTimeouts(session, 5000, 10000, 30000, 300000);
+    if (readOnly) WinHttpSetTimeouts(session, 1000, 1000, 2000, 2000);
+    else WinHttpSetTimeouts(session, 5000, 10000, 30000, 300000);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect)
     {
@@ -121,7 +122,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET request = WinHttpOpenRequest(
         connect,
-        L"POST",
+        readOnly ? L"GET" : L"POST",
         path.c_str(),
         nullptr,
         WINHTTP_NO_REFERER,
@@ -156,7 +157,7 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     }
 
     result.externalCall = true;
-    const bool sent = operation.send(headers.c_str(), (LPVOID)body.data(), static_cast<DWORD>(body.size()));
+    const bool sent = operation.send(headers.c_str(), body.empty() ? nullptr : (LPVOID)body.data(), static_cast<DWORD>(body.size()));
 
     if (!sent || !operation.receive())
     {
@@ -487,6 +488,7 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
 #ifdef _WIN32
     const std::string suffix = "/v1/chat/completions";
     if (request.nativeOllama && request.apiUrl.ends_with(suffix)) {
+        const auto baseUrl = request.apiUrl.substr(0, request.apiUrl.size() - suffix.size());
         json nativeBody = {{"model", request.model}, {"messages", request.messages}, {"stream", false}};
         for (auto& message : nativeBody["messages"]) if (message.contains("content") && message["content"].is_array()) {
             std::string text; json images = json::array();
@@ -502,20 +504,68 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
             message["content"] = text; if (!images.empty()) message["images"] = images;
         }
         json options = request.options;
+        if (request.ollamaContextLength >= 1024 && request.ollamaContextLength <= 1048576) options["num_ctx"] = request.ollamaContextLength;
         if (options.contains("keep_alive")) { nativeBody["keep_alive"] = options["keep_alive"]; options.erase("keep_alive"); }
         if (options.contains("format")) { nativeBody["format"] = options["format"]; options.erase("format"); }
         if (options.contains("max_tokens")) { options["num_predict"] = options["max_tokens"]; options.erase("max_tokens"); }
         if (options.value("reasoning_effort", "") == "none") nativeBody["think"] = false;
         options.erase("reasoning_effort"); nativeBody["options"] = options;
         json output;
-        auto result = winHttpPost(request.apiUrl.substr(0, request.apiUrl.size() - suffix.size()) + "/api/chat", request.apiKey,
+        auto result = winHttpPost(baseUrl + "/api/chat", request.apiKey,
             nativeBody.dump(), request.proxyMode, request.httpProxy, false, &output);
-        if (!result.ok) return result;
+        if (!result.ok) {
+            auto message = result.error;
+            std::transform(message.begin(), message.end(), message.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (message.find("exceed_context_size_error") != std::string::npos ||
+                message.find("exceeds the available context size") != std::string::npos ||
+                message.find("input length exceeds maximum context length") != std::string::npos ||
+                message.find("input exceeds the context length") != std::string::npos ||
+                message.find("prompt is too long for the context") != std::string::npos) {
+                result.errorCode = "OLLAMA_CONTEXT_LIMIT";
+                result.error = "Ollama 拒绝了请求，输入超过上下文容量。请提高「设置 → 通用 → 本地大模型 → Ollama」中的上下文长度，或缩短输入。服务响应：" + result.error;
+            }
+            return result;
+        }
         const auto message = output.value("message", json::object());
-        const json compatible = {{"choices", json::array({json{{"message", message}, {"finish_reason", output.value("done_reason", "")}}})},
+        const auto doneReason = output.value("done_reason", "");
+        const bool explicitContextStop = doneReason == "context_length";
+        const json compatible = {{"choices", json::array({json{{"message", message}, {"finish_reason", explicitContextStop ? "length" : doneReason}}})},
             {"usage", {{"prompt_tokens", output.value("prompt_eval_count", 0)}, {"completion_tokens", output.value("eval_count", 0)}}}};
         auto parsed = parseChatResponse(compatible.dump(), request.requireComplete);
         parsed.statusCode = result.statusCode; parsed.externalCall = result.externalCall;
+        if (parsed.errorCode == "LLM_OUTPUT_TRUNCATED") {
+            int context = 0;
+            json running;
+            const auto status = winHttpPost(baseUrl + "/api/ps", request.apiKey, "", request.proxyMode, request.httpProxy, false, &running, true);
+            const auto normalizeModel = [](std::string name) { if (name.ends_with(":latest")) name.resize(name.size() - 7); return name; };
+            const auto models = status.ok ? running.find("models") : running.end();
+            if (models != running.end() && models->is_array()) {
+                for (const auto& model : *models) {
+                    if (!model.is_object()) continue;
+                    const auto name = model.find("name"), length = model.find("context_length");
+                    if (name != model.end() && name->is_string() && normalizeModel(name->get<std::string>()) == normalizeModel(request.model) &&
+                        length != model.end() && length->is_number_integer()) { context = length->get<int>(); break; }
+                }
+            }
+            const int limit = options.value("num_predict", 0);
+            const bool reachedOutputLimit = limit > 0 && parsed.completionTokens >= limit;
+            const bool reachedContext = context > 0 && parsed.promptTokens > 0 && parsed.completionTokens > 0 &&
+                static_cast<long long>(parsed.promptTokens) + parsed.completionTokens == context;
+            if (explicitContextStop || (reachedContext && !reachedOutputLimit)) {
+                parsed.errorCode = "OLLAMA_CONTEXT_LIMIT";
+                parsed.error = "Ollama 上下文已用满";
+            } else if (reachedContext && reachedOutputLimit) {
+                parsed.error = "Ollama 同时达到上下文容量与本次输出上限";
+            } else if (reachedOutputLimit) {
+                parsed.error = "Ollama 达到本次请求的输出上限 " + std::to_string(limit) + " token";
+            } else {
+                parsed.error = "Ollama 因长度限制停止，无法确认触发的是上下文还是输出上限";
+            }
+            parsed.error += "（输入 " + std::to_string(parsed.promptTokens) + "，输出 " + std::to_string(parsed.completionTokens) + " token";
+            if (context > 0) parsed.error += "，运行上下文 " + std::to_string(context) + " token";
+            parsed.error += "）。";
+            if (parsed.errorCode == "OLLAMA_CONTEXT_LIMIT" || reachedContext) parsed.error += "请提高「设置 → 通用 → 本地大模型 → Ollama」中的上下文长度，或缩短输入。";
+        }
         const double duration = output.value("eval_duration", 0.0);
         if (duration > 0 && parsed.completionTokens > 0) parsed.generationTokensPerSecond = parsed.completionTokens * 1e9 / duration;
         return parsed;

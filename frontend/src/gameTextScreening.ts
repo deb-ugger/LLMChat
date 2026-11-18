@@ -1,7 +1,7 @@
 import { gameModelExecution, measureGameWork } from "./gameModelPerformance";
 import type { OllamaOutput } from "./gameOllama";
 import type { Settings } from "./api";
-import { preserveTargetGameText } from "./gameDisplayText";
+import { hasGameJapaneseText, preserveTargetGameText } from "./gameDisplayText";
 import { requestGameModelJson } from "./gameModelRequest";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import type { UnityEntry } from "./unityOffline";
@@ -26,7 +26,8 @@ export async function screenGameText(rows: UnityEntry[], options: ScreeningOptio
   let kept = measureGameWork(execution, "processingMs", () => preserveTargetGameText(rows, target, source, skipTarget));
   if (!model || !skipTarget) return kept;
 
-  const candidates = rows.filter(row => !row.translation && !row.layoutDraft && !row.screeningDraft && /\p{L}/u.test(row.source));
+  const candidates = rows.filter(row => !row.translation && !row.layoutDraft && !row.screeningDraft &&
+    /\p{L}/u.test(row.source) && !(target.startsWith("zh") && hasGameJapaneseText(row.source)));
   if (!candidates.length) return kept;
   const prompt = gameTaskPrompt("textScreen", options.prompts, { source, target });
   const bySource = new Map<string, UnityEntry[]>();

@@ -16,7 +16,7 @@ const defaults: Record<GamePromptScene,string> = {
   names: "将游戏人物姓名或称呼从{source}译为{target}。依据上下文区分姓名、绰号和身份称呼，优先沿用给定术语及已有译名；不将身份称呼误译为亲属关系，不附加解释，只返回一个译名。",
   image: "将图片中识别出的游戏文字从{source}翻译为{target}。兼顾完整含义和界面空间，使用简洁自然的表达，保留数值、等级、快捷键和人物译名，不凭空补全未识别内容。",
   screen: "逐一检查图片中的可读文字并给出位置。不要将纹理、图案或装饰误识别为文字，不猜测无法辨认的内容；文字不是目标语言也应如实识别，不翻译。",
-  refine: "判断图片中是否存在真实可读文字。忽略装饰、衣物纹理和重复图案，区分文字与相似图形，简短给出判断置信度和文字证据。",
+  refine: "判断图片是否存在真实可读文字。忽略装饰、衣物纹理和重复图案，不猜测模糊内容，不抄录文字。",
   recognize: "准确抄录图片中的全部可读文字并标出各区域位置。保留原语言、标点和有意义的换行，区分正文、按钮、标题与姓名；不要翻译、改写或凭空补字。",
   review: "将校验失败的游戏原文从{source}重新翻译为{target}。重新理解上下文，完整保留正文、说话人、数值及术语，不重复错误结果，不输出原因分析或修正说明。",
   layout: "为游戏译文规划自然断行。结合区域宽高，优先在标点或完整词语之间断行，避免拆开姓名、数字与单位；只能改变换行，其他字符包括空格和标点必须保持原样。",
@@ -94,5 +94,8 @@ export const GamePromptContext = createContext<{scope?:string;selection:GameProm
 export function gameTaskPrompt(scene:GamePromptScene,selection?:GamePromptSelection,variables:{source?:string;target?:string}={}) {
   const id=selection?.[scene]||"builtin:"+scene,entry=gamePromptCatalog().find(item=>item.id===id&&item.scene===scene);
   if(!entry)throw new Error(`${GAME_PROMPT_SCENES[scene]}提示词已删除，请重新选择`);
-  return entry.prompt.replace(/\{(source|target)\}/g,(_,key:"source"|"target")=>variables[key]||(key==="source"?"原文语言":"目标语言"));
+  const prompt = entry.prompt.replace(/\{(source|target)\}/g,(_,key:"source"|"target")=>variables[key]||(key==="source"?"原文语言":"目标语言"));
+  return scene === "text" || scene === "dialogue"
+    ? prompt + "\n保留动作发出者和承受者的关系；原文省略主语且无法确定时，译文也不补主语。不要把已保留的译名或术语再翻译一遍，也不要抄写参考语境。"
+    : prompt;
 }

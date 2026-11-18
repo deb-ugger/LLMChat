@@ -385,7 +385,7 @@ export default function App() {
     setDisplayOffset(0);
 
     try {
-      const res = await api.chat(current.id, content);
+      const res = await api.chat(current.id, content, settings.apiUrl);
       setCurrent(res.conversation);
       setDisplayOffset(
         Math.max(

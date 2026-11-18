@@ -1583,6 +1583,10 @@ int HttpServer::run()
             llmReq.apiKey = cfg.apiKey;
             llmReq.model = cfg.model;
             llmReq.messages = conv.messages;
+            llmReq.nativeOllama = body.value("ollamaNative", false) && cfg.apiUrl == body.value("ollamaApiUrl", "");
+            llmReq.ollamaContextLength = body.value("ollamaContextLength", 0);
+            llmReq.requireComplete = llmReq.nativeOllama;
+            if (llmReq.nativeOllama) llmReq.proxyMode = "direct";
 
             UsageEvent usageEv = UsageStore::makeEventSkeleton();
             usageEv.feature = "chat";
@@ -1598,7 +1602,7 @@ int HttpServer::run()
             ScopedUsageLog usageLog(usage_.get(), usageEv, trackUsage);
             const LlmResponse llmRes = LlmClient::chat(llmReq);
             usageLog.ev().ok = llmRes.ok;
-            usageLog.ev().errorCode = llmRes.ok ? "" : "LLM_ERROR";
+            if (!llmRes.ok) usageLog.ev().errorCode = llmRes.errorCode.empty() ? "LLM_ERROR" : llmRes.errorCode;
             usageLog.ev().errorMessage = llmRes.ok ? "" : llmRes.error;
             usageLog.ev().promptTokens = llmRes.promptTokens;
             usageLog.ev().completionTokens = llmRes.completionTokens;
@@ -1608,7 +1612,7 @@ int HttpServer::run()
             if (!llmRes.ok)
             {
                 res.status = 502;
-                res.set_content(errorJson(llmRes.error).dump(), "application/json");
+                res.set_content(json{{"error", llmRes.error}, {"code", llmRes.errorCode}}.dump(), "application/json");
                 return;
             }
 
@@ -2101,6 +2105,7 @@ int HttpServer::run()
             request.apiUrl = body.at("apiUrl").get<std::string>(); request.apiKey = body.value("apiKey", "");
             request.model = body.at("model").get<std::string>(); request.requireComplete = true;
             request.nativeOllama = body.value("localModel", false) && body.value("ollamaNative", false);
+            request.ollamaContextLength = body.value("ollamaContextLength", 0);
             const int maxOutputTokens = body.value("maxOutputTokens", 0);
             if (maxOutputTokens > 0 && maxOutputTokens <= 1048576) request.options["max_tokens"] = maxOutputTokens;
             const auto cfg = config_.snapshot();
@@ -2112,12 +2117,10 @@ int HttpServer::run()
                 request.options["temperature"] = 0;
                 if (request.nativeOllama) {
                     request.options["reasoning_effort"] = "none";
-                    request.options["num_ctx"] = 4096;
                     request.options["keep_alive"] = "5m";
                     request.options["format"] = json::parse(R"schema({
-                        "type":"object","required":["has_text","confidence","text"],"additionalProperties":false,
-                        "properties":{"has_text":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":100},
-                            "text":{"type":"string","maxLength":32}}
+                        "type":"object","required":["text_probability"],"additionalProperties":false,
+                        "properties":{"text_probability":{"type":"number","minimum":0,"maximum":100}}
                     })schema");
                 }
             }
@@ -2129,6 +2132,15 @@ int HttpServer::run()
                         "properties":{"text":{"type":"string","minLength":1},"confidence":{"type":"number","minimum":0,"maximum":100},
                         "x0":{"type":"number","minimum":0,"maximum":1000},"y0":{"type":"number","minimum":0,"maximum":1000},
                         "x1":{"type":"number","minimum":0,"maximum":1000},"y1":{"type":"number","minimum":0,"maximum":1000}}
+                    }}}})schema");
+            }
+            if (request.nativeOllama && image.empty() && body.value("imageLayout", false)) {
+                request.options["format"] = json::parse(R"schema({
+                    "type":"object","required":["regions"],"additionalProperties":false,
+                    "properties":{"regions":{"type":"array","items":{
+                        "type":"object","required":["index","breakAfter"],"additionalProperties":false,
+                        "properties":{"index":{"type":"integer","minimum":0},
+                            "breakAfter":{"type":"array","items":{"type":"integer","minimum":1}}}
                     }}}})schema");
             }
             if (request.apiUrl.empty() || request.model.empty() || prompt.empty() || prompt.size() > 2000000) throw std::runtime_error("处理模型、接口或请求内容无效");
@@ -2159,7 +2171,13 @@ int HttpServer::run()
             }
             ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
             ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
-            if (!ev.ok) { res.status = task->stopped() ? 499 : 502; res.set_content(json{{"error", ev.errorMessage}, {"code", response.errorCode}}.dump(), "application/json"); return; }
+            if (!ev.ok) {
+                res.status = task->stopped() ? 499 : 502;
+                res.set_content(json{{"error", ev.errorMessage}, {"code", response.errorCode},
+                    {"outputTokenLimit", request.options.value("max_tokens", 0)},
+                    {"promptTokens", response.promptTokens}, {"completionTokens", response.completionTokens}}.dump(), "application/json");
+                return;
+            }
             res.set_content(json{{"ok", true}, {"content", response.content}, {"completionTokens", response.completionTokens}, {"generationTokensPerSecond", response.generationTokensPerSecond}}.dump(), "application/json");
         } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
@@ -2257,7 +2275,8 @@ int HttpServer::run()
                 tr = TranslateClient::translateWithLlm(
                     text, apiUrl, apiKey, model, source, target,
                     body.value("localModel", false) ? "direct" : cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson,
-                    body.value("localModel", false) && body.value("ollamaReasoningOff", false), body.value("maxOutputTokens", 0), body.value("localModel", false) && body.value("ollamaNative", false));
+                    body.value("localModel", false) && body.value("ollamaReasoningOff", false), body.value("maxOutputTokens", 0),
+                    body.value("localModel", false) && body.value("ollamaNative", false), body.value("ollamaContextLength", 0));
             }
             else
             {
@@ -2374,24 +2393,46 @@ int HttpServer::run()
         textRuns.finish(req.get_param_value("runId")); res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
 
-    for (const std::string operation : {"load", "save", "workflow"}) svr.Post("/api/game-text/" + operation, withCors([operation](const httplib::Request& req, httplib::Response& res) {
-        try { const auto body = json::parse(req.body); res.set_content((operation == "load" ? gametext::load(body) : operation == "workflow" ? gametext::workflow(body) : gametext::save(body)).dump(), "application/json"); }
+    for (const std::string operation : {"load", "save", "workflow", "checkpoint"}) svr.Post("/api/game-text/" + operation, withCors([operation](const httplib::Request& req, httplib::Response& res) {
+        try { const auto body = json::parse(req.body); res.set_content((operation == "load" ? gametext::load(body) : operation == "workflow" ? gametext::workflow(body) : operation == "checkpoint" ? gametext::checkpoint(body) : gametext::save(body)).dump(), "application/json"); }
         catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
     }));
     svr.Post("/api/json-embedding/start", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try { jsonEmbedding.start(json::parse(req.body)); res.set_content(jsonEmbedding.status().dump(), "application/json"); }
         catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
     }));
-    for(const std::string operation:{"info","load","scan","save","save-many","apply","uninstall","stop-read"})svr.Post("/api/game-images/"+operation,withCors([&,operation](const httplib::Request& req,httplib::Response& res){try{const auto body=json::parse(req.body);const auto game=utf8path::pathFromUtf8(body.at("gamePath").get<std::string>());json value;if(operation=="info")value=gameImages.info(game);else if(operation=="stop-read")value=gameImages.stopReading(game);else if(operation=="load")value=gameImages.load(game);else if(operation=="scan")value=gameImages.scan(game);else if(operation=="save-many")value=gameImages.saveMany(game,body.at("images"));else if(operation=="save")value=gameImages.saveImage(game,body.at("image"));else if(operation=="uninstall")value=gameImages.uninstall(game);else value=gameImages.apply(game,body.value("backupMode","auto")!="manual",body.value("backupScopes",json::array({"images"})));res.set_content(value.dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    for(const std::string operation:{"info","load","scan","save","save-many","apply","uninstall","stop-read","current-sources"})svr.Post("/api/game-images/"+operation,withCors([&,operation](const httplib::Request& req,httplib::Response& res){try{const auto body=json::parse(req.body);const auto game=utf8path::pathFromUtf8(body.at("gamePath").get<std::string>());json value;if(operation=="info")value=gameImages.info(game);else if(operation=="current-sources")value=gameImages.currentSources(game,body.at("sources"));else if(operation=="stop-read")value=gameImages.stopReading(game);else if(operation=="load")value=gameImages.load(game);else if(operation=="scan")value=gameImages.scan(game);else if(operation=="save-many")value=gameImages.saveMany(game,body.at("images"));else if(operation=="save")value=gameImages.saveImage(game,body.at("image"));else if(operation=="uninstall")value=gameImages.uninstall(game);else value=gameImages.apply(game,body.value("backupMode","auto")!="manual",body.value("backupScopes",json::array({"images"})),body.value("imageIds",json(nullptr)));res.set_content(value.dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
     svr.Post("/api/game-images/load-stream",withCors([&](const httplib::Request& req,httplib::Response& res){
         try{const auto game=utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());res.set_chunked_content_provider("application/x-ndjson",[&,game](size_t,httplib::DataSink& sink){auto send=[&](const json& event){const auto line=event.dump()+"\n";if(!sink.write(line.data(),line.size()))throw std::runtime_error("图片工程读取已取消");};try{send({{"type","progress"},{"completed",0},{"total",0},{"detail","正在读取已有图片工程"}});auto project=gameImages.load(game,[&](size_t completed,size_t total,const std::string& detail){send({{"type","progress"},{"completed",completed},{"total",total},{"detail",detail}});});send({{"type","result"},{"project",project}});}catch(const std::exception& e){const auto line=json({{"type","error"},{"error",e.what()}}).dump()+"\n";sink.write(line.data(),line.size());}sink.done();return true;});}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
     }));
     svr.Post("/api/game-images/scan-stream",withCors([&](const httplib::Request& req,httplib::Response& res){
         try{const auto game=utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());res.set_chunked_content_provider("application/x-ndjson",[&,game](size_t,httplib::DataSink& sink){auto send=[&](const json& event){auto line=event.dump()+"\n";if(!sink.write(line.data(),line.size()))throw std::runtime_error("图片扫描已取消");};try{send({{"type","progress"},{"completed",0},{"total",0},{"detail","正在准备图片扫描"}});auto project=gameImages.scan(game,[&](size_t completed,size_t total,const std::string& detail){send({{"type","progress"},{"completed",completed},{"total",total},{"detail",detail}});});send({{"type","result"},{"project",project}});}catch(const std::exception& e){auto line=json({{"type","error"},{"error",e.what()}}).dump()+"\n";sink.write(line.data(),line.size());}sink.done();return true;});}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}
     }));
-    svr.Get("/api/game-images/preview",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.preview(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.get_param_value("translated")=="1",req.get_param_value("cache")!="0"),"image/png");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+    svr.Get("/api/game-images/preview",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.preview(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.get_param_value("translated")=="1"),"image/png");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
     svr.Post("/api/game-images/render",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.render(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.body).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
     svr.Post("/api/json-embedding/detect-patch", withCors([&](const httplib::Request& req, httplib::Response& res){try{res.set_content(jsonEmbedding.detectPatch(utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>())).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
+
+    svr.Post("/api/json-embedding/launch", withCors([](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto game = utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());
+            if (game.empty() || !fs::is_directory(game)) throw std::runtime_error("游戏目录不存在");
+            const auto games = JsonEmbedding::detect(game);
+            if (games.size() != 1 || !games[0].value("supported", false) ||
+                !fs::equivalent(game, utf8path::pathFromUtf8(games[0].at("path").get<std::string>())))
+                throw std::runtime_error("无法识别当前 RPG Maker 或 WOLF RPG 游戏目录");
+            const auto root = fs::absolute(game);
+            auto exe = root / "Game.exe";
+            if (!fs::is_regular_file(exe)) exe = root / (root.filename().wstring() + L".exe");
+            if (!fs::is_regular_file(exe)) throw std::runtime_error("未找到 Game.exe 或与游戏目录同名的主程序");
+#ifdef _WIN32
+            const auto result = reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, root.c_str(), SW_SHOWNORMAL));
+            if (result <= 32) throw std::runtime_error("Windows 无法启动游戏（错误 " + std::to_string(result) + "）");
+            res.set_content(json{{"ok", true}, {"gameExe", utf8path::pathUtf8(exe.filename())}}.dump(), "application/json");
+#else
+            throw std::runtime_error("当前平台不支持启动 Windows 游戏");
+#endif
+        } catch (const std::exception& e) { res.status = 400; res.set_content(errorJson(e.what()).dump(), "application/json"); }
+    }));
 
     svr.Get("/api/json-embedding/patch", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try {res.set_content(JsonEmbedding::patchInfo(utf8path::pathFromUtf8(req.get_param_value("gamePath"))).dump(),"application/json");}

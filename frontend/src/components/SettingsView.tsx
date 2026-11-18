@@ -3,6 +3,8 @@ import { FeatureIcon } from "./FeatureIcon";
 import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
 import { createPortal } from "react-dom";
 import { OllamaServiceControl } from "./OllamaServiceControl";
+import { showAppNotice } from "./AppNotice";
+import { loadOllamaContext, maxOllamaContext, saveOllamaContext, validOllamaContext } from "../ollamaContext";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { useEffect,useLayoutEffect,useMemo,useRef,useState,type ChangeEvent,type FocusEvent,type ReactNode } from "react";
 import {
@@ -806,7 +808,9 @@ export function SettingsView({
   };
   const [ollamaUrl, setOllamaUrl] = useState(() => localStorage.getItem("llmchat-ollama-url") || "http://127.0.0.1:11434/v1/chat/completions");
   const [savedOllamaUrl, setSavedOllamaUrl] = useState(ollamaUrl);
-  const ollamaDirty = ollamaUrl.trim() !== savedOllamaUrl.trim();
+  const [ollamaContext, setOllamaContext] = useState(() => String(loadOllamaContext()));
+  const [savedOllamaContext, setSavedOllamaContext] = useState(loadOllamaContext);
+  const ollamaDirty = ollamaUrl.trim() !== savedOllamaUrl.trim() || !ollamaContext.trim() || Number(ollamaContext) !== savedOllamaContext;
   const isOllamaModel = (model: string) => {
     const url = profiles[model]?.apiUrl?.trim();
     return ollamaModels.includes(model) || !!url && (
@@ -827,13 +831,17 @@ export function SettingsView({
     if (!ollamaDirty || ollamaPathBusy || ollamaBusy) return;
     try {
       validatedOllamaUrl();
+      const contextLength = Number(ollamaContext);
+      if (!ollamaContext.trim() || !validOllamaContext(contextLength)) throw new Error(`上下文长度请填 0 或 1024–${maxOllamaContext} 之间的整数`);
       if (await validateOllamaDirectory(ollamaDirectory) === null) return;
       localStorage.setItem("llmchat-ollama-url", ollamaUrl.trim());
       const next = { ...profiles };
       for (const model of ollamaEntries) next[model] = { ...next[model], apiUrl: ollamaUrl.trim() };
       saveLocalModelProfiles(next); setProfiles(next);
+      saveOllamaContext(contextLength);
+      setSavedOllamaContext(contextLength);
       setSavedOllamaUrl(ollamaUrl.trim());
-      notify("Ollama 设置已保存");
+      showAppNotice(contextLength === savedOllamaContext ? "Ollama 设置已保存" : "上下文长度已保存，下次请求生效，无需重启 Ollama");
     } catch (error) { notify(error instanceof Error ? error.message : String(error), false); }
   };
   const [ollamaBusy, setOllamaBusy] = useState(false);
@@ -3062,10 +3070,21 @@ export function SettingsView({
                   <div className="settings-model-groups">
                     <div className="settings-engine-catalog settings-vendor-catalog">
                       <div className={`settings-engine-card${ollamaOpen ? " is-open is-span-full" : ""}`}>
-                        <div className="settings-engine-card-top">
-                          <div className="settings-ollama-heading"><div className="settings-ollama-title-row"><button type="button" className="settings-ollama-toggle" onClick={()=>setOllamaOpen(value=>!value)} aria-expanded={ollamaOpen}><span className="settings-engine-card-title"><em className={`settings-engine-badge ${ollamaEntries.length ? "is-ok" : "is-warn"}`}>{ollamaEntries.length ? "已配置" : "未配置"}</em><strong>Ollama</strong></span></button><OllamaServiceControl apiUrl={ollamaUrl.trim()} directory={ollamaDirectory} notify={notify} active={active&&tab==="general"}/></div><span className="settings-engine-card-hint">{ollamaEntries.length} 个模型 · 共用服务地址</span></div>
-                          <button type="button" className="settings-card-mini-test is-refresh" disabled={ollamaBusy || ollamaPathBusy} data-tooltip="从所选目录或服务地址更新可选模型；不会下载或加载模型。" aria-label="从所选目录或服务地址更新可选模型；不会下载或加载模型。" onClick={event => { event.stopPropagation(); void refreshOllama(); }}>{ollamaBusy ? "更新中…" : "更新模型列表"}</button>
-                          <button type="button" className="settings-card-mini-test is-test" disabled={!ollamaEntries.length || isTesting("ollama-all") || ollamaEntries.some(model => isCardTesting("model:" + model))} data-tooltip="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" aria-label="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" onClick={event => { event.stopPropagation(); void testOllamaModels(); }}>{isTesting("ollama-all") ? "测试中…" : "测试全部模型"}</button>
+                        <div className="settings-engine-card-top settings-ollama-card-top">
+                          <div className="settings-ollama-heading">
+                            <button type="button" className="settings-ollama-toggle" onClick={() => setOllamaOpen(value => !value)} aria-expanded={ollamaOpen}>
+                              <span className="settings-engine-card-title">
+                                <em className={`settings-engine-badge ${ollamaEntries.length ? "is-ok" : "is-warn"}`}>{ollamaEntries.length ? "已配置" : "未配置"}</em>
+                                <strong>Ollama</strong>
+                              </span>
+                              <span className="settings-engine-card-hint">{ollamaEntries.length} 个模型 · 共用服务地址</span>
+                            </button>
+                            <OllamaServiceControl apiUrl={ollamaUrl.trim()} directory={ollamaDirectory} notify={notify} active={active && tab === "general"} />
+                          </div>
+                          <div className="settings-ollama-header-actions">
+                            <button type="button" className="settings-card-mini-test is-refresh" disabled={ollamaBusy || ollamaPathBusy} data-tooltip="从所选目录或服务地址更新可选模型；不会下载或加载模型。" aria-label="从所选目录或服务地址更新可选模型；不会下载或加载模型。" onClick={event => { event.stopPropagation(); void refreshOllama(); }}>{ollamaBusy ? "更新中…" : "更新模型列表"}</button>
+                            <button type="button" className="settings-card-mini-test is-test" disabled={!ollamaEntries.length || isTesting("ollama-all") || ollamaEntries.some(model => isCardTesting("model:" + model))} data-tooltip="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" aria-label="依次测试全部 Ollama 模型；会加载模型并生成短文本，结果显示在各模型卡片中。" onClick={event => { event.stopPropagation(); void testOllamaModels(); }}>{isTesting("ollama-all") ? "测试中…" : "测试全部模型"}</button>
+                          </div>
                         </div>
                         {ollamaOpen && <div className="settings-engine-panel settings-ollama-panel"><div className="settings-ollama-config">
                           <div className="settings-engine-field">
@@ -3089,6 +3108,10 @@ export function SettingsView({
                             </div>
                           </div>
                           <label className="settings-engine-field">服务地址<input value={ollamaUrl} onChange={event => setOllamaUrl(event.target.value)} placeholder="http://127.0.0.1:11434/v1/chat/completions" /></label>
+                          <label className="settings-engine-field">上下文长度（token）
+                            <input type="number" min={0} max={maxOllamaContext} step={1} value={ollamaContext} onChange={event => setOllamaContext(event.target.value)} />
+                            <span className="settings-engine-card-hint">0 使用 Ollama 默认值。保存后从下一次请求起生效。</span>
+                          </label>
                           <div className="settings-engine-panel-actions"><button type="button" className="settings-panel-save" disabled={!ollamaDirty || ollamaPathBusy || ollamaBusy} onClick={() => void saveOllama()}>保存设置</button></div>
                           </div><div className="settings-vendor-models"><div className="settings-vendor-models-title">可用模型</div><ul className="settings-vendor-models-list">{ollamaEntries.map(model => <li key={model} className="settings-local-model" data-tooltip={model}>
                             <div className="settings-vendor-model-meta"><strong>{labelForModelId(model)}</strong>{labelForModelId(model) !== model && <span>{model}</span>}</div>

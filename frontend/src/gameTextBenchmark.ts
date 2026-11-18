@@ -1,12 +1,13 @@
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
-import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "./gameDisplayText";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText, translateRpgSystemMessage } from "./gameDisplayText";
 import { validateGameNaturalLines, wrapGameTextToSource, type GameWrapMode } from "./gameTextLayout";
 import { gameTextProblem } from "./gameTextProject";
-import { createGameTranslationContext } from "./gameTranslationContext";
-import { prepareGameTerms } from "./gameTermMemory";
+import { createGameTranslationContext, gameDialogueReuseKey, type GameDialoguePage } from "./gameTranslationContext";
+import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareBenchmarkOllama, translateGameWithOllama } from "./gameOllama";
-import { beginGameStep, clearGamePerformance, finishGameStep, measureGameWork, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, measureGameWork, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
@@ -28,6 +29,51 @@ export type BenchmarkResult = {
   status: "完成" | "失败" | "已中止"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
+
+export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
+  const groups = new Map<string, BenchmarkResult[]>();
+  results.forEach((result, index) => {
+    const queueId = result.performance.benchmark?.queueId;
+    const id = typeof queueId === "string" && queueId ? queueId : `run:${result.performance.taskId ?? index}`;
+    const group = groups.get(id);
+    if (group) group.push(result);
+    else groups.set(id, [result]);
+  });
+  return [...groups].map(([id, records]) => {
+    const runs = records.sort((left, right) => left.round - right.round ||
+      (left.performance.beginTime || "").localeCompare(right.performance.beginTime || ""));
+    const firstTime = runs[0].performance.beginTime || runs[0].performance.endedAt || "";
+    const configs = new Set(runs.map(run => (run.performance.benchmark?.config as { id?: string } | undefined)?.id || run.label));
+    return { id, runs, firstTime, rounds: new Set(runs.map(run => run.round)).size, configs: configs.size,
+      failed: runs.filter(run => run.status === "失败").length,
+      stopped: runs.filter(run => run.status === "已中止").length };
+  }).sort((left, right) => right.firstTime.localeCompare(left.firstTime));
+}
+
+export function benchmarkHistoryResults(records: StepPerformance[]): BenchmarkResult[] {
+  const unique = new Map<string, BenchmarkResult>();
+  for (const record of records) {
+    const benchmark = record.benchmark;
+    if (!benchmark || typeof benchmark.round !== "number" || typeof benchmark.label !== "string" || !record.taskId) continue;
+    const status = benchmark.status === "完成" || benchmark.status === "失败" ? benchmark.status : "已中止";
+    unique.set(record.taskId, { round: benchmark.round, label: benchmark.label,
+      selected: Number(benchmark.selected) || 0, translated: Number(benchmark.translated) || 0, failed: Number(benchmark.failed) || 0,
+      status, detail: typeof benchmark.detail === "string" ? benchmark.detail : undefined,
+      summary: typeof benchmark.summary === "string" ? benchmark.summary : undefined,
+      unobservedModels: Array.isArray(benchmark.unobservedModels) ? benchmark.unobservedModels.filter((model): model is string => typeof model === "string") : [],
+      performance: record,
+    });
+  }
+  return [...unique.values()].sort((left, right) => (right.performance.endedAt || right.performance.beginTime || "").localeCompare(left.performance.endedAt || left.performance.beginTime || ""));
+}
+
+export async function readGameBenchmarkHistory(scope: string, step: string): Promise<BenchmarkResult[]> {
+  await flushGamePerformanceArchive();
+  const records = isTauri() ? await invoke<StepPerformance[]>("read_game_performance", { scope, step }) :
+    (JSON.parse(localStorage.getItem("llmchat-game-performance-outbox") || "[]") as (StepPerformance & { scope: string; step: string })[])
+      .filter(record => record.scope === scope && record.step === step);
+  return benchmarkHistoryResults(records);
+}
 export function inspectBenchmarkSample(entries: UnityEntry[], configs: BenchmarkConfig[]): Record<string, BenchmarkSample> {
   const byLanguage = new Map<string, BenchmarkSample>();
   return Object.fromEntries(configs.map(config => {
@@ -48,7 +94,7 @@ export function inspectBenchmarkSample(entries: UnityEntry[], configs: Benchmark
   }));
 }
 
-type Workload = { entries: UnityEntry[]; selectedIds: ReadonlySet<string> };
+type Workload = { entries: UnityEntry[]; dialoguePages?: GameDialoguePage[]; selectedIds: ReadonlySet<string> };
 type Reporter = Parameters<typeof translateGameWithOllama>[3];
 
 async function runSample(config: BenchmarkConfig, workload: Workload, settings: Settings, scope: string,
@@ -59,7 +105,7 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   const rows = entries.filter(entry => entry.selected);
   measureGameWork(scope, "processingMs", () => preserveTargetGameText(rows, config.target, config.source, config.skipTarget));
   const references = rows; // Reuse only content produced in this sample.
-  const context = createGameTranslationContext(entries, config.includeContext);
+  const context = createGameTranslationContext(entries, config.includeContext, workload.dialoguePages);
   const profiles = loadLocalModelProfiles();
   const models = Object.fromEntries(benchmarkRoles.map(role => {
     const selected = config.models[role].id ? config.models[role] : config.models.text;
@@ -77,6 +123,8 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   }, { timingScope: scope }) : null;
   let terms: ReadonlyMap<string,string> = new Map();
   const request = (input: string, entry?: UnityEntry, nameContext?: string) => {
+    const systemTranslation = translateRpgSystemMessage(entry, config.target);
+    if (systemTranslation !== undefined) return Promise.resolve(systemTranslation);
     const role = nameContext ? "names" : gameTextHasSpeaker(input) ? "dialogue" : "text";
     const model = models[role];
     return translateGameDisplayText(input, async (text, reference) => {
@@ -86,14 +134,15 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
         { ...model, context: context(entry, nameContext, reference), ollamaReasoningOff: !!nameContext && canDisableOllamaNameThinking(model) }, report);
       if (!result.ok) throw new Error(result.error || result.code || "翻译请求失败");
       return result.translation;
-    }, config.skipTarget ? config.target : "", config.source, terms);
+    }, config.target, config.source, terms, config.skipTarget);
   };
   try {
-    terms = await prepareGameTerms(rows.filter(entry => !entry.translation), references, config.target, settings.textGlossary,
+    const preparedTerms = await prepareGameTerms(rows.filter(entry => !entry.translation), references, config.target, settings.textGlossary,
       (name, dialogue) => request(name, undefined, dialogue), signal,
       (detail, completed, total) => progress({ detail, completed, total, textStage: "names", model: models.names.model }));
+    terms = preparedTerms.terms;
     await translateUnitySession(rows, new Map(), {
-      signal, references, concurrency: pool ? Math.max(1, pool.concurrency) : Object.values(models).some(model => model.localModel) ? 8 : 16,
+      signal, references, key: gameDialogueReuseKey, entryProblem: entry => gameTermProblem(entry.source, preparedTerms.issues), concurrency: pool ? Math.max(1, pool.concurrency) : Object.values(models).some(model => model.localModel) ? 8 : 16,
       timingScope: scope, requestGroup: pool ? undefined : localTextRequestGroup(models.text, models.dialogue), validate: gameTextProblem, persist: async () => {},
       translate: (text, entry) => request(text, entry),
       format: config.wrap === "natural" ? validateGameNaturalLines : config.wrap === "join" ? (source, translated) =>

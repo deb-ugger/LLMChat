@@ -1,4 +1,7 @@
 .search-match { color:inherit; background:#ffe083; border-radius:2px; padding:0; }
+.game-dialogue-repair { color:inherit; background:#ffd0d4; border-radius:2px; padding:0; }
+.game-dialogue-repair .search-match { background:inherit; }
+.search-editor > textarea.game-dialogue-repair-empty { background:#fff0f1; }
 .search-editor { position:relative; display:block; flex:1; min-width:0; width:100%; }
 .search-editor > textarea { position:relative; z-index:1; width:100%; box-sizing:border-box; }
 .unity-entry-editor > .search-editor { height:100%; }

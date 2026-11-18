@@ -25,6 +25,8 @@ public sealed record Entry(string Id, string File, string Container, string Obje
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Locale { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LocalizationKey { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LayoutDraft { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? TranslationTarget { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LayoutDraftTarget { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ScreeningDraft { get; set; }
 }
 public sealed record FontInfo(string File, string Container, string ObjectId, string Name, string Kind) { [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<FontReference>? References { get; init; } }
@@ -962,10 +964,16 @@ public static class Program
         catch (Exception e)
         {
             var failed = new List<string>();
+            var remaining = new List<string>();
+            var originalHashes = files.ToDictionary(file => file.File, file => file.Original);
             foreach (var file in applied.AsEnumerable().Reverse())
-                try { ReplaceFile(Within(System.IO.Path.Combine(folder, "original"), file), Within(root, file)); }
-                catch (Exception rollback) { failed.Add(file + "：" + rollback.Message); }
-            try { WriteJson(applicationPath, new { manifestHash, completed = Array.Empty<string>(), done = false }); }
+                try {
+                    var target = Within(root, file);
+                    ReplaceFile(Within(System.IO.Path.Combine(folder, "original"), file), target);
+                    if (Hash(target) != originalHashes[file]) throw new Exception("恢复后校验失败");
+                }
+                catch (Exception rollback) { remaining.Add(file); failed.Add(file + "：" + rollback.Message); }
+            try { WriteJson(applicationPath, new { manifestHash, completed = remaining, done = false }); }
             catch (Exception checkpointError) { failed.Add("回滚状态保存失败：" + checkpointError.Message); }
             throw new Exception(e.Message + (failed.Count == 0 ? "；已回滚本次写入，原游戏文件已保留" : "；部分文件回滚失败，请从原件备份恢复：" + string.Join("；", failed)));
         }

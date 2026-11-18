@@ -12,7 +12,32 @@ export const UNITY_STAGE_TABS = [
 ] as const;
 export const unityImageHasRefusal = (image: UnityImage) => image.renderedKind !== "imported" && image.regions.some(region => region.selected && isTranslationRefusal(region.text, region.translation));
 export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
-export const unityImagesReady = (project: UnityProject | null) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(unityImageResultReady));
+export const imageTranslationMatchesTarget = (image: UnityImage, target?: string) =>
+  !target || !image.renderedTarget || image.renderedTarget === target || image.renderedKind === "imported";
+export const unityImageReadyForTarget = (image: UnityImage, target?: string) =>
+  unityImageResultReady(image) && imageTranslationMatchesTarget(image, target);
+export const unityImageWorkDone = (image: UnityImage, target?: string) =>
+  unityImageReadyForTarget(image, target) || !!image.noTranslationNeeded && image.completed && !image.error && imageTranslationMatchesTarget(image, target);
+export const unityImagesReady = (project: UnityProject | null, target?: string) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(image => unityImageWorkDone(image, target)));
+export function tagLegacyImageTargets(images: UnityImage[], target: string) {
+  for (const image of images) {
+    if (image.renderedFile && image.renderedKind !== "imported") image.renderedTarget ??= target;
+    for (const region of image.regions) if (region.translation) region.translationTarget ??= target;
+  }
+}
+export function rememberLegacyGameTarget(game: string, lane: "images" | "unity", current: string) {
+  const key = `llmchat-legacy-game-target:${lane}:${game}`;
+  const saved = localStorage.getItem(key);
+  if (saved) return saved;
+  localStorage.setItem(key, current);
+  return current;
+}
+export function tagEditedImageTranslations(image: UnityImage, previous: UnityImage, target: string) {
+  for (const [index, region] of image.regions.entries()) {
+    if (region.translation && region.translation !== previous.regions[index]?.translation &&
+        (!region.translationTarget || region.translationTarget === previous.regions[index]?.translationTarget)) region.translationTarget = target;
+  }
+}
 export const UNITY_SCAN_COMPATIBILITY = { current: 7, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };
 export function unityScanOptionChanges(saved: ScanOptions, current: ScanOptions) {

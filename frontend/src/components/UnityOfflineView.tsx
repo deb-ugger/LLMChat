@@ -25,7 +25,8 @@ import type { ImageArchiveReplacement } from "../gameImageArchive";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { prepareGameTerms } from "../gameTermMemory";
+import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
+import { gameImageRegionLanguageFilter } from "../gameImageScreening";
 import { gameTextHasSpeaker, gameDisplayTextProblem, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
@@ -46,8 +47,8 @@ import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslate
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
-import { UNITY_STAGE_TABS, unityImagesReady, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
-import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
+import { UNITY_STAGE_TABS, unityImagesReady, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
+import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
 import { UnityProjectLoading } from "./UnityProjectLoading";
@@ -172,7 +173,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [saving, setSaving] = useState(false), [saveNotice, setSaveNotice] = useState("");
   const [saveComplete, setSaveComplete] = useState(false);
   const [savedChanges, setSavedChanges] = useState<string[]>([]);
-  const [saveFeedbackArea, setSaveFeedbackArea] = useState<"text" | "images">("text");
   const imageDraftOriginals=useRef(new Map<string,UnityImage>());
   const textDraftOriginals = useRef(new Map<string,UnityEntry>());
   const pendingImageMasks = useRef(new Map<string, boolean>());
@@ -319,6 +319,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (cancelled) return;
         setLoadingDetail(p ? `正在恢复 ${p.entries.length.toLocaleString("zh-CN")} 条原文、译文及处理进度…` : "正在准备项目操作界面…");
         if (p && !sameUnityGamePath(p.root, root)) throw new Error("检查点不属于当前游戏");
+        if (p) {
+          const legacyTarget = rememberLegacyGameTarget(root, "unity", value?.target || "zh-CN");
+          tagLegacyTextTargets(p.entries, legacyTarget);
+          tagLegacyImageTargets(p.images || [], legacyTarget);
+        }
         setProject(p);
         setInstalled(workspace.installed);
         setApplied(workspace.installed && !!value?.patch && value.step === 4 && value.progress.state === "done"); onInstallationChange?.(root, workspace.installed);
@@ -457,7 +462,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const connection = translationKind === "local" && !model ? gameLocalModelConnection(settings.model) : resolveFeatureLlm(settings, model);
     return !!connection.model.trim() && !!connection.apiUrl.trim();
   });
-  const readiness = useMemo(() => unityTranslationReadiness(project, selected, unityTranslationError, !!checkpoint?.partial), [project, selected, checkpoint?.partial]);
+  const readiness = useMemo(() => unityTranslationReadiness(project, selected, unityTranslationError, !!checkpoint?.partial, target), [project, selected, checkpoint?.partial, target]);
   const done = readiness.validText;
   const currentParts = checkpoint?.translationRuns && {
     text: unityCurrentPartProgress(checkpoint.translationRuns.text, "text", readiness, !!checkpoint.layoutOnly)!,
@@ -549,7 +554,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const original = textDraftOriginals.current.get(entry.id) || entry;
       const next = value.translation === undefined
         ? { ...entry, ...value }
-        : value.translation === original.translation ? { ...original, selected: entry.selected } : { ...entry, ...value, error: "" };
+        : value.translation === original.translation ? { ...original, selected: entry.selected } : { ...entry, ...value, translationTarget: target, error: "" };
       const key = "文本与译文：第 " + entry.id + " 条";
       if (sameTextEdit(next, original)) {
         textDraftOriginals.current.delete(entry.id);
@@ -675,7 +680,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (saving || importPreviewRef.current) return false;
     const changes = [...pendingEdits.current].filter(key => area === "all" || (area === "images") === (key.startsWith("图片与译文：") || key.startsWith("译图")));
     if (!changes.length) { logAction("当前没有需要保存的修改"); return true; }
-    setSaveFeedbackArea(area === "all" ? imagePart && activeStep === 2 ? "images" : "text" : area);
     setSavedChanges(changes.map(change => {
       const id = change.match(/^文本与译文：第 (.+) 条$/)?.[1]; const entry = id && latest.current?.entries.find(row => row.id === id);
       return entry ? `${change} · ${entry.translation.slice(0, 80) || "空译文"}` : change;
@@ -741,7 +745,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       imageReviewOptions: forImages && provider === "llm" && reviewer ? buildOptions(reviewer,"review") : undefined,
       dialogueOptions: !forImages && provider === "llm" ? buildOptions(dialogue||main,"dialogue") : undefined,
       nameOptions: !forImages && provider === "llm" ? buildOptions(name||main,"names") : undefined,
-      skipTargetLanguage: !forImages && (run?.skipTargetLanguage ?? skipTargetLanguage), onlySourceLanguage: run?.onlySourceLanguage ?? onlySourceLanguage, includeContext: !forImages && (run?.includeContext ?? includeContext), engineIds: provider === "llm" ? undefined : engineIds
+      skipTargetLanguage: run?.skipTargetLanguage ?? skipTargetLanguage, onlySourceLanguage: run?.onlySourceLanguage ?? onlySourceLanguage, includeContext: !forImages && (run?.includeContext ?? includeContext), engineIds: provider === "llm" ? undefined : engineIds
     };
   }
   async function scan(onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
@@ -767,6 +771,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       onProgress?.({ completed: 0, total: selectedEntries.length, detail: "正在筛查目标语言", textStage: "screening" });
       await yieldUnityPreparation(controller.signal);
       const preserved = options.skipTargetLanguage ? measureGameWork(promptState.scope + ":text", "processingMs", () => preserveTargetGameText(selectedEntries, options.target || "zh-CN")) : 0;
+      for (const entry of selectedEntries)
+        if (entry.translation === entry.source) entry.translationTarget = options.target;
       if (preserved) await saveTranslation(next, "text");
     }
     const helperCache = new Map<string, string>();
@@ -815,6 +821,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       return work;
     };
     let terminology: ReadonlyMap<string, string> = new Map();
+    let termIssues: ReadonlyMap<string, string> = new Map();
     const requestTranslation = async (text: string, provider = options.provider, entry?: UnityEntry, nameContext?: string) => {
       const { engineIds: _engines, includeContext: withContext, skipTargetLanguage: _skipTargetLanguage, dialogueOptions, nameOptions, ...mainOptions } = options;
       const requestOptions = provider === "llm" ? (nameContext ? nameOptions : gameTextHasSpeaker(text) ? dialogueOptions : undefined) || mainOptions : mainOptions;
@@ -824,7 +831,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const request = async (block: string, originalContext?: string) => {
         const seconds = provider === "llm" ? 120 : 30;
         const signal = provider === "llm" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
-        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, context: provider === "llm" ? contextForEntry(entry, nameContext, originalContext) : undefined, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, logAction); if (!response.ok) throw new Error(response.error || response.code || "翻译请求失败"); return response.translation; }
+        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, context: provider === "llm" ? contextForEntry(entry, nameContext, originalContext) : undefined, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, logAction); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code }); return response.translation; }
         catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
       };
       return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology);
@@ -844,9 +851,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       return translated;
     }, { timingScope: promptState.scope + ":text", initialStats, measure, onStats: value => { engineStats = value; if (translationProgress) onProgress?.({ ...translationProgress, engineStats, engineTargetCharacters }); } }) : null;
     try {
-      if (!layoutOnly) terminology = await prepareGameTerms(selectedEntries.filter(entry => !entry.translation || entry.error || unityTranslationError(entry.source, entry.translation)), next.entries, options.target || "zh-CN", glossary,
+      if (!layoutOnly) {
+        const prepared = await prepareGameTerms(selectedEntries.filter(entry => !entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || unityTranslationError(entry.source, entry.translation)), next.entries, options.target || "zh-CN", glossary,
         (name, context) => pool ? pool.translate(name) : requestTranslation(name, options.provider, undefined, context), controller.signal,
         (detail, completed, total) => onProgress?.({ detail, completed, total, textStage: "names", model: options.nameOptions?.model || options.model }));
+        terminology = prepared.terms;
+        termIssues = prepared.issues;
+      }
       if (layoutOnly) {
         const total = next.entries.filter(e => e.selected && ids.has(e.id) && /[\r\n]/.test(e.source) && (e.layoutDraft || e.translation && !unityTranslationError(e.source, e.translation))).length;
         let completed = total - selectedEntries.length, failures = 0;
@@ -871,7 +882,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       }
       await translateUnitySession(selectedEntries, cache, {
         references: next.entries,
-        key: unityTranslationContextKey,
+        key: unityTranslationContextKey, targetLanguage: options.target, entryProblem: entry => gameTermProblem(entry.source, termIssues),
         requestGroup: localTextRequestGroup(options, options.dialogueOptions),
         signal: controller.signal, validate: (s, t) => unityTranslationError(s, t) || gameDisplayTextProblem(s, t), progress: reportTranslation,
         onQueue: queue => { translationQueue.current = queue; },
@@ -904,12 +915,31 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const translate = async (config: ReturnType<typeof buildUnityTranslateOptions>) => {
       const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(provider === "llm" ? 120000 : 30000)]);
       const response = await translateGameWithOllama(text, { signal }, { ...config, provider }, logAction);
-      if (!response.ok) throw new Error(response.code || "图片文字翻译失败");
+      if (!response.ok) throw Object.assign(new Error(response.error || response.code || "图片文字翻译失败"), { code: response.code });
       return response.translation;
     };
-    const translated = await translate(primary);
-    if (provider === "llm" && imageReviewOptions && unityTranslationError(text, translated)) return translate(imageReviewOptions);
-    return translated;
+    let primaryError: unknown;
+    try {
+      const translated = await translate(primary);
+      const issue = unityTranslationError(text, translated);
+      if (!issue) return translated;
+      primaryError = new Error(issue);
+    } catch (error) {
+      primaryError = error;
+    }
+    parentSignal.throwIfAborted();
+    if (provider !== "llm" || !imageReviewOptions) throw primaryError;
+    try {
+      const reviewed = await translate(imageReviewOptions);
+      const issue = unityTranslationError(text, reviewed);
+      if (issue) throw new Error(issue);
+      return reviewed;
+    }
+    catch (reviewError) {
+      parentSignal.throwIfAborted();
+      const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
+      throw new Error(`图片初译失败（${describe(primaryError)}），复核重译失败（${describe(reviewError)}）`);
+    }
   }
 
   async function translateImages(p: UnityProject, controller: AbortController, run: RunCheckpoint, onProgress: (value: UnityProgress) => void) {
@@ -917,7 +947,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const phase = run.imageTask || imageTask.current;
     if(phase==="recognize"&&run.imageVisionModel!==undefined&&!run.imageVisionModel)throw new Error("请选择识字视觉模型");
     if(phase==="translate"&&run.imageLayoutModel!==undefined&&!run.imageLayoutModel)throw new Error("请选择断行排版模型");
-    if (!(p.images || []).some(image => image.selected && (phase === "recognize" ? !image.ocrCompleted : image.ocrCompleted && !image.completed))) { onProgress({ completed: 0, total: 0, detail: "图片已完成或没有选中的图片" }); return p; }
+    if (!(p.images || []).some(image => image.selected && (phase === "recognize" ? !image.ocrCompleted : image.ocrCompleted && !unityImageWorkDone(image, run.target)))) { onProgress({ completed: 0, total: 0, detail: "图片已完成或没有选中的图片" }); return p; }
     const options: UnityTranslationOptions = phase === "translate" ? await translationOptions(run, true) : { provider: "llm" }, ocrCount=Math.max(1,Math.min(8,run.imageConcurrency||imageConcurrency)),deviceMessages=new Set<string>(),
       ocr=Array.from({length:ocrCount},()=>createUnityImageOcr(run.imageOcrMode||"fast","auto",(message)=>{if(!deviceMessages.has(message)){deviceMessages.add(message);setMessage(message);}}));
     const primaryProvider = options.provider; if (!primaryProvider) throw new Error("未选择图片翻译引擎");
@@ -934,6 +964,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         timingScope: promptState.scope + ":images",
         concurrency: run.imageVisionModel ? modelConcurrency(promptState.scope, "recognize", run.imageVisionModel) : ocrCount,
         translationConcurrency: Math.max(translationLanes, layoutLanes), regionConcurrency: translationLanes,
+        targetLanguage: options.target,
+        includeRegion: phase === "translate" ? gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN",
+          !!options.onlySourceLanguage, !!options.skipTargetLanguage) : undefined,
         read: image => measureGameAsync(promptState.scope + ":images", "processingMs", () => readUnitySourceImage(p, image, controller.signal)),
         recognize:(blob,stage,worker=0)=>run.imageVisionModel?recognizeGameImage(settings,run.imageVisionModel,blob,controller.signal,"recognize",promptState.selection,{source:run.source,target:run.target},logAction,image=>ocr[worker%ocr.length].recognize(image,stage)):measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu?worker%Math.min(2,ocr.length):worker].recognize(blob,stage)), translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: (blob,regions)=>renderGameImage(settings,run.imageLayoutModel||"",blob,regions,controller.signal,promptState.selection,{source:run.source,target:run.target},logAction),
         write: (project, image, blob) => measureGameAsync(promptState.scope + ":images", "saveMs", () => writeImage(project, image, blob)),
@@ -956,13 +989,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const selectionOnly = JSON.stringify(payload(previous.regions)) === JSON.stringify(payload(image.regions)) && !after.some((region, index) => region.selected && !before[index]?.selected);
       if (deselected || pendingImageMasks.current.has(image.id)) pendingImageMasks.current.set(image.id, selectionOnly && (pendingImageMasks.current.get(image.id) ?? previous.completed));
     } else pendingImageMasks.current.delete(image.id);
-    const next = { ...p, imagesSkipped: false, images: (p.images || []).map(item => item.id === image.id ? image : item) };
+    tagEditedImageTranslations(image, previous, target);
+    const edited = previous.selected === image.selected ? image : { ...image, selectionManual: true };
+    const next = { ...p, imagesSkipped: false, images: (p.images || []).map(item => item.id === image.id ? edited : item) };
     publish(next); setDirty(true); setSaveNotice(""); invalidatePatch();
   };
   const editImages=(images:UnityImage[])=>{
     const p=latest.current;if(!p||!images.length)return;
     const changes=new Map(images.filter(image=>{const previous=p.images?.find(row=>row.id===image.id);return previous&&JSON.stringify(previous)!==JSON.stringify(image);}).map(image=>[image.id,image])); if(!changes.size)return;
-    const next={...p,imagesSkipped:false,images:p.images?.map(image=>{const changed=changes.get(image.id);if(!changed)return image;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);pendingEdits.current.add(`图片与译文：${image.name||image.id}`);return changed;})};
+    const next={...p,imagesSkipped:false,images:p.images?.map(image=>{const changed=changes.get(image.id);if(!changed)return image;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);pendingEdits.current.add(`图片与译文：${image.name||image.id}`);return image.selected===changed.selected?changed:{...changed,selectionManual:true};})};
     publish(next);setDirty(true);setSaveNotice("");invalidatePatch();
   };
   async function imageOperation(label:string,task:()=>Promise<void>){
@@ -987,7 +1022,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const options=await translationOptions(undefined,true);const provider=options.provider;if(!provider)throw new Error("未选择图片翻译引擎");
     const request = (engine: string, text: string) => requestImageTranslation(options, engine, text, controller.signal);
     const pool=provider!=="llm"&&options.engineIds?.length?createUnityEnginePool(options.engineIds.map(id=>({id,enabled:true})),controller.signal,request):null;
-    try{const next=await translateCurrentUnityImage(image,controller.signal,text=>pool?pool.translate(text):request(provider,text),unityTranslationError,imageConfidenceThreshold,!options.localModel&&!options.imageReviewOptions?.localModel&&provider==="llm"?16:1);editImage(next);await save();if(next.error)throw new Error(next.error);setMessage("当前图片译文已更新");}
+    try{const next=await translateCurrentUnityImage(image,controller.signal,text=>pool?pool.translate(text):request(provider,text),unityTranslationError,imageConfidenceThreshold,!options.localModel&&!options.imageReviewOptions?.localModel&&provider==="llm"?16:1,
+      gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN", !!options.onlySourceLanguage, !!options.skipTargetLanguage), options.target);editImage(next);await save();if(next.error)throw new Error(next.error);setMessage("当前图片译文已更新");}
     finally{pool?.dispose();imageEditorAbort.current=null;}
   });
   const recognizeImage = (image: UnityImage, mode: OcrMode) => imageOperation("重新识别图片", async () => {
@@ -1007,10 +1043,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const base=latest.current;if(!base)return;
     let blob: Blob;
     if (imported) { const selected = importSource||await open({ filters: [{ name: "静态图片", extensions: ["png","jpg","jpeg","webp","bmp"] }] }); if (!selected) return; blob = await imageImportPng(selected,image); }
-    else {const controller=new AbortController();imageEditorAbort.current=controller;try{if(imageLayoutModel!==undefined&&!imageLayoutModel)throw new Error("请选择断行排版模型");blob=await renderGameImage(settings,imageLayoutModel||"",await readUnitySourceImage(base,image,controller.signal),unityImageTranslationRegions(image.regions,imageConfidenceThreshold,image),controller.signal,promptState.selection,{source,target},logAction);}finally{imageEditorAbort.current=null;}}
+    else {const controller=new AbortController();imageEditorAbort.current=controller;try{if(imageLayoutModel!==undefined&&!imageLayoutModel)throw new Error("请选择断行排版模型");const include=gameImageRegionLanguageFilter(source,target,onlySourceLanguage,skipTargetLanguage);const regions=unityImageTranslationRegions(image.regions,imageConfidenceThreshold,image).map(region=>include(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");blob=await renderGameImage(settings,imageLayoutModel||"",await readUnitySourceImage(base,image,controller.signal),regions,controller.signal,promptState.selection,{source,target},logAction);}finally{imageEditorAbort.current=null;}}
     const result = await writeImage(base, image, blob);
     pendingImageMasks.current.delete(image.id);
-    const current=latest.current||base;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);const next = { ...current, imagesSkipped: false, images: (current.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash,renderedKind:imported?"imported" as const:"generated" as const } : item) };
+    const current=latest.current||base;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);const next = { ...current, imagesSkipped: false, images: (current.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash,renderedKind:imported?"imported" as const:"generated" as const,renderedTarget:imported?undefined:target,noTranslationNeeded:false } : item) };
     pendingEdits.current.add(`译图${imported ? "替换" : "生成"}：${image.name || image.id}`);
     publish(next); setDirty(true); setSaveNotice(""); invalidatePatch(); setMessage(imported ? "译图已替换" : "译图已生成");
   });
@@ -1037,9 +1073,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint) {
     setBusy("生成补丁");
     const ids = unityLanguageScope(p.entries, run?.source || source, run?.onlySourceLanguage ?? onlySourceLanguage).ids;
-    const selectedIds = run?.partial || p.textSkipped ? p.entries.filter(e => e.selected && ids.has(e.id) && !e.error && e.translation && !unityTranslationError(e.source, e.translation)).map(e => e.id) : [...ids];
+    const selectedIds = run?.partial || p.textSkipped ? p.entries.filter(e => e.selected && ids.has(e.id) && !e.error && e.translation && textTranslationMatchesTarget(e, run?.target ?? target) && !unityTranslationError(e.source, e.translation)).map(e => e.id) : [...ids];
     const fontSourceIds = run?.partial || p.textSkipped ? p.entries.filter(e => e.selected && ids.has(e.id)).map(e => e.id) : undefined;
-    const fontRequest = { project: p, selectedIds, fontPath: run?.fontPath ?? fontPath, extraCharacters: run?.extraCharacters ?? extraCharacters, fontSourceIds };
+    const patchTarget = run?.target ?? target;
+    const patchProject = {
+      ...p,
+      entries: p.entries.map(entry => entry.selected && !textTranslationMatchesTarget(entry, patchTarget) ? { ...entry, selected: false } : entry),
+      images: p.images?.map(image => image.selected && !unityImageReadyForTarget(image, patchTarget) ? { ...image, selected: false } : image),
+    };
+    const fontRequest = { project: patchProject, selectedIds, fontPath: run?.fontPath ?? fontPath, extraCharacters: run?.extraCharacters ?? extraCharacters, fontSourceIds };
     let result: UnityPatch;
     try { result = await unityRun<UnityPatch>("export", { ...fontRequest, path: run?.patchFolder || "" }, onProgress, signal); }
     catch (error) {
@@ -1059,7 +1101,17 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const response = await unityRun<{ restoredPatches: number }>("apply", { root, path: result.folder }, progress => {
       if (progress.detail.includes("旧补丁")) setInstallationMessages(previous => previous.includes(progress.detail) ? previous : [...previous, progress.detail]);
       onProgress?.(progress);
-    }, signal);
+    }, signal).catch(async cause => {
+      try {
+        const [status] = await unityRun<Array<{ installed: boolean }>>("installation-status", { roots: [root] });
+        setInstalled(status.installed);
+        setApplied(false);
+        onInstallationChange?.(root, status.installed);
+      } catch (statusError) {
+        logAction(`读取补丁恢复状态失败：${String(statusError)}`, "error");
+      }
+      throw cause;
+    });
     setApplied(true); setInstalled(true); onInstallationChange?.(root, true);
     setMessage(`${response.restoredPatches > 0 ? `已卸载 ${response.restoredPatches} 个旧补丁并完成替换。` : ""}已将 ${result.files} 个补丁文件应用到游戏。原件保存在补丁目录的 original 文件夹，实际显示请启动游戏检查。`);
   }
@@ -1150,7 +1202,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           await yieldUnityPreparation(controller.signal);
           const preparationScope = unityLanguageScope(p.entries, run.source, run.onlySourceLanguage !== false);
           const rows = p.entries.filter(entry => entry.selected && preparationScope.ids.has(entry.id));
-          const live = unityTranslationReadiness(p, rows, unityTranslationError);
+          const live = unityTranslationReadiness(p, rows, unityTranslationError, false, run.target);
           const textComplete = !run.layoutOnly && live.textReady;
           const imageComplete = live.imagesReady;
           const initial = { text: p.textSkipped && !run.layoutOnly ? "skipped" : textComplete ? "done" : "pending", images: p.imagesSkipped ? "skipped" : imageComplete ? "done" : "pending" } as const;
@@ -1234,7 +1286,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           try { await jobs.wait(automatic && !run.layoutOnly ? ["text", "images"] : [part || (run.imageOnly ? "images" : "text")]); }
           finally { translationJobs.current = null; await projectWrites.current; }
           p = latest.current || p;
-          if (automatic && !unityImagesReady(p)) {
+          if (automatic && !unityImagesReady(p, run.target)) {
             run.endStep = 2; run.automatic = false; run.progress = { ...run.progress, step: 2, state: "done", detail: "图片识别结果已保存" };
             setActiveStep(2); setImagePart(true); break;
           }
@@ -1248,7 +1300,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         }
         if (controller.signal.aborted) throw new UnityPaused("");
         if (index === 2 && run.imageOnly && run.imageTask === "recognize") { setActiveStep(2); setImagePart(true); }
-        else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p)) { setActiveStep(2); setImagePart(true); }
+        else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p, run.target)) { setActiveStep(2); setImagePart(true); }
         else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
       }
@@ -1469,9 +1521,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const entries = range === "all" ? project.entries : filtered;
     if (!entries.length) throw new Error(range === "all" ? "工程中没有可下载的条目" : "没有符合当前筛选条件的条目");
     setFileStatus({ action: "download", state: "working", detail: "请选择下载文件的保存位置…" });
-    const directory = await unityRun<{ folder: string }>("translation-directory", { root });
     const path = await saveDialog({
-      title: "下载翻译文件", defaultPath: await join(directory.folder, unityTranslationFileName(game?.gameExe || "", root)),
+      title: "下载翻译文件", defaultPath: await join(root, unityTranslationFileName(game?.gameExe || "", root)),
       filters: [{ name: "JSON 翻译文件", extensions: ["json"] }, { name: "CSV 翻译表格", extensions: ["csv"] }],
     });
     if (!path) { setFileStatus({ action: "download", state: "cancelled", detail: "已取消下载" }); return; }
@@ -1528,7 +1579,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
         setPatch(null); setFontPlan(null); setInstalled(reset.workspace.installed); setApplied(false); onInstallationChange?.(root, reset.workspace.installed);
       }
-      const next = { ...(latest.current || project), entries: result.entries };
+      const previous = latest.current || project;
+      const oldTranslations = new Map(previous.entries.map(entry => [entry.id, entry.translation]));
+      for (const entry of result.entries) if (entry.translation !== oldTranslations.get(entry.id)) entry.translationTarget = target;
+      const next = { ...previous, entries: result.entries };
       await unityRun("save", { project: { ...next, images: next.images?.map(image => imageDraftOriginals.current.get(image.id) || image) } });
       publish(next); textDraftOriginals.current.clear(); for (const key of pendingEdits.current) if (key.startsWith("文本与译文：") || key.startsWith("文本勾选：")) pendingEdits.current.delete(key); setDirty(pendingEdits.current.size > 0); setPatch(null); setFontPlan(null); setRowIssue(null);
       setImportPreview(null); importPreviewRef.current = null;
@@ -1536,7 +1590,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const progress: GenerationProgress = { ...stats, step: 2, state: stats.completed === stats.total ? "done" : "pending", detail: "导入译文已保存，后续步骤进度已清空" };
       remember({ ...projectCheckpoint(next), step: 2, endStep: 2, finished: stats.completed === stats.total, translationRuns: { text: progress, images: checkpointRef.current?.translationRuns?.images || { step: 2, state: imagesReady ? "done" : "pending", completed: 0, total: null, detail: "图片结果已保留" } }, progress }); await taskWrites.current;
       setFileStatus({ action: "import", state: "done", path: preview.path, issues: preview.issues, folder: await dirname(preview.path), detail: `导入已应用：修改 ${result.changed} 条，其中清空 ${result.cleared} 条，保留 ${result.preservedExisting} 条已有译文。${preview.issues?.length ? `另有 ${preview.issues.length} 项冲突或未匹配内容未应用，清单已保留。` : ""}源文件未改动。` });
-      setSaveFeedbackArea("text"); setSavedChanges([`导入译文：修改 ${result.changed} 条，清空 ${result.cleared} 条`]);
+      setSavedChanges([`导入译文：修改 ${result.changed} 条，清空 ${result.cleared} 条`]);
       setSaveComplete(true);
     }, true, detail => setFileStatus(previous => ({ ...previous, action: "import", state: "error", detail: `${importPreviewRef.current ? "应用失败" : "译文已保存，后续处理失败"}：${detail}` })));
   };
@@ -1544,7 +1598,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const uploadTranslations = (retryPath?: GameImportSource, mode = importMode) => operation("导入翻译文件", async () => {
     if (!project || !scanReady) return;
     setFileStatus({ action: "import", state: "working", path: typeof retryPath==="string"?retryPath:retryPath?.name, detail: "正在读取导入文件…" });
-    const path = retryPath || await open({ title: "导入翻译文件", multiple: false, filters: [{ name: "翻译文件", extensions: ["json", "csv"] }] });
+    const path = retryPath || await open({ title: "导入翻译文件", defaultPath: root, multiple: false, filters: [{ name: "翻译文件", extensions: ["json", "csv"] }] });
     if (!path) { setFileStatus({ action: "import", state: "cancelled", detail: "已取消导入，工程未覆盖" }); return; }
     let imported: ReturnType<typeof readUnityTranslationRows>;
     try { imported = readUnityTranslationRows(project.entries, new TextDecoder("utf-8", { fatal: true }).decode(typeof path==="string"?await readFileBytes(path):await path.arrayBuffer()), /\.csv$/i.test(typeof path==="string"?path:path.name), true); }
@@ -1733,7 +1787,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [flowConfig, setFlowConfig] = useState<string | null>(null);
   const imagesNeedRecognition = (project?.images || []).some(image => image.selected && !image.ocrCompleted);
   const screenComplete = textScreened || textReady;
-  const partHasWork = imagePart ? (project?.images || []).some(image => image.selected && (!image.ocrCompleted || !image.completed)) : selected.length > 0 && !textReady;
+  const partHasWork = imagePart ? (project?.images || []).some(image => image.selected && (!image.ocrCompleted || !unityImageWorkDone(image, target))) : selected.length > 0 && !textReady;
   const partActionDisabled = restoring || saving || !scanReady || (!partRunning && !textScreening && (!!busy && !translationJobs.current || !partHasWork || (!imagePart && textScreened || imagePart && !imagesNeedRecognition) && !connectionReady));
   const saveFeedback = saveComplete && <div className="unity-save-feedback" role="status"><strong>保存成功</strong>{savedChanges.length > 0 && <ul>{savedChanges.slice(0, 5).map((change, index) => <li key={index}>{change}</li>)}</ul>}{savedChanges.length > 5 && <small>另有 {savedChanges.length - 5} 项修改已保存</small>}</div>;
   const flowProgressState = !imagePart && textScreening || partRunning ? "running" :
@@ -1807,6 +1861,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         onLocate={locateTranslationFailure} />}
   </div>;
   return <div className="unity-offline" onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
+    {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
     {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
     {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
@@ -1930,7 +1985,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {projectDetails}
     </aside>
     <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />
-    <div hidden={!(activeStep===2&&imagePart)} className="unity-image-result-pane"><UnityImageWorkbench imageTarget={imageTarget} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source)=>updateImagePreview(image,true,source)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} />{saveFeedbackArea === "images" && saveFeedback}</div>{!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>{saveFeedbackArea === "text" && saveFeedback}
+    <div hidden={!(activeStep===2&&imagePart)} className="unity-image-result-pane"><UnityImageWorkbench imageTarget={imageTarget} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source)=>updateImagePreview(image,true,source)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
       <div className="unity-offline-toolbar">
       <div className="unity-result-filters">
         <strong>{importPreview ? `导入预览 · ${importPreview.entries.length} 条` : "文本与译文"}</strong><GameTextFileMenu kind="download" active={active} disabled={!!busy || restoring || !scanReady || !!importPreview} options={[

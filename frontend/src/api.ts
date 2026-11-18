@@ -1,6 +1,7 @@
 import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
 import { createLlmTranslationScheduler } from "./llmTranslationScheduler";
 import { toFriendlyError } from "./friendlyError";
+import { ollamaRequestContext } from "./ollamaContext";
 
 export const API_BASE =
   import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:17800";
@@ -475,7 +476,8 @@ export type StorageStatus = {
 
 async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions):Promise<TranslateResponse>{
     const {llmBatch:_batch,llmConcurrency:_limit,performanceScope:_scope,performanceStep:_step,...rest}=opts||{};
-    const serverOptions = { ...rest, maxOutputTokens: loadLlmRuntime().maxOutputTokens };
+    const ollama = rest.provider === "llm" ? ollamaRequestContext(rest.apiUrl) : {};
+    const serverOptions = { ...rest, ...ollama, ...(ollama.ollamaNative ? { localModel: true } : {}), maxOutputTokens: loadLlmRuntime().maxOutputTokens };
     const signal = init?.signal;
     signal?.throwIfAborted();
     const taskId = crypto.randomUUID();
@@ -674,14 +676,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ title }),
     }),
-  chat: (conversationId: string, content: string) =>
+  chat: (conversationId: string, content: string, apiUrl?: string) =>
     request<{
       ok: boolean;
       reply: string;
       conversation: Conversation;
     }>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ conversationId, content }),
+      body: JSON.stringify({ conversationId, content, ollamaApiUrl: apiUrl, ...ollamaRequestContext(apiUrl) }),
     }),
   translate: scheduledTranslate,
   beginTextRun: (runId: string, folder: string, project: unknown) => request("/api/text-projects/run", { method: "POST", body: JSON.stringify({ runId, folder, project }) }),

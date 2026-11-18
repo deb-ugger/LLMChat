@@ -1,40 +1,70 @@
 #pragma once
 #include "GameFileOps.h"
-#include "RpgMakerText.h"
+#include "ManagedGamePatch.h"
 #include <functional>
 #include <vector>
 
 namespace gameresourcebackup {
 using namespace gamefiles;
-inline fs::path snapshot(const fs::path& game, const fs::path& data, const Json& selected, const std::function<void(size_t,size_t)>& progress = {}) {
+inline fs::path imageRoot(const fs::path& game, const fs::path& data) {
+    return data == "Data" ? game / data : game / data.parent_path() / "img";
+}
+inline std::string imageExtension(const fs::path& path) {
+    auto extension = path.extension().string();
+    for (auto& c : extension) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return extension;
+}
+inline bool isImage(const fs::path& path) {
+    const auto extension = imageExtension(path);
+    return extension == ".png" || extension == ".png_" || extension == ".rpgmvp";
+}
+struct Snapshot {
+    fs::path path;
+    Json counts = Json::object();
+    std::string summary() const {
+        std::string message = "备份完成";
+        for (const auto& [scope, label] : {std::pair{"text","文本资源"}, {"runtime","插件与字体"}, {"images","图片资源"}})
+            if (counts.contains(scope)) message += std::string(" · ") + label + " " + std::to_string(counts.at(scope).get<size_t>()) + " 个";
+        return message;
+    }
+};
+inline Snapshot snapshot(const fs::path& game, const fs::path& data, const Json& selected, const std::function<void(size_t,size_t)>& progress = {}) {
     const auto scopes = selected.get<std::vector<std::string>>();
     if (scopes.empty()) throw std::runtime_error("请选择至少一项备份范围");
-    std::vector<fs::path> files; const auto prefix = data.parent_path();
+    Snapshot result;
+    std::set<fs::path> files;
+    const auto prefix = data.parent_path();
+    const bool wolf = data == "Data";
     for (const auto& scope : scopes) {
+        std::vector<fs::path> candidates;
         if (scope == "text") {
-            for (const auto& file : fs::directory_iterator(game / data)) if (file.is_regular_file() && rpgtext::dataFile(file.path().filename().string())) files.push_back(fs::relative(file.path(), game));
-            if (fs::is_regular_file(game / prefix / "js/plugins.js")) files.push_back(prefix / "js/plugins.js");
-        } else if (scope == "runtime") {
-            for (const auto& name : {"js/plugins.js", "js/plugins/LLMChatTranslation.js", "LLMChat-translations.json", "fonts/LLMChat-font.ttf", "fonts/LLMChat-font.otf"}) files.push_back(prefix / name);
+            if (!wolf || fs::is_directory(game / data)) candidates = gamepatch::sources(game, wolf ? fs::path{} : data);
+        } else if (scope == "runtime" && !wolf) {
+            for (const auto& name : {"js/plugins.js", "js/plugins/LLMChatTranslation.js", "LLMChat-translations.json", "fonts/LLMChat-font.ttf", "fonts/LLMChat-font.otf"}) candidates.push_back(prefix / name);
         } else if (scope == "images") {
-            const auto folder = game / prefix / "img";
-            if (fs::is_directory(folder)) for (const auto& file : fs::recursive_directory_iterator(folder)) if (file.is_regular_file()) {
-                const auto extension = file.path().extension().string();
-                if (extension == ".png" || extension == ".png_" || extension == ".rpgmvp") files.push_back(fs::relative(file.path(), game));
-            }
+            const auto folder = imageRoot(game, data);
+            if (fs::is_directory(folder)) for (const auto& file : fs::recursive_directory_iterator(folder))
+                if (file.is_regular_file() && isImage(file.path())) candidates.push_back(fs::relative(file.path(), game));
         } else throw std::runtime_error("无效备份范围：" + scope);
+        result.counts[scope] = std::count_if(candidates.begin(), candidates.end(), [&](const auto& name) {
+            return fs::is_regular_file(game / name);
+        });
+        files.insert(candidates.begin(), candidates.end());
     }
-    std::sort(files.begin(), files.end()); files.erase(std::unique(files.begin(), files.end()), files.end());
+    if (files.empty()) throw std::runtime_error("所选范围没有可备份的资源");
     const auto backup = game / "LLMChat-JSON/backups" / ("files-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
-    Json manifest = {{"engine","files"},{"kind","snapshot"},{"state","snapshot"},{"scopes",scopes},{"resources",Json::array()}};
+    Json manifest = {{"engine","files"},{"kind","snapshot"},{"state","snapshot"},{"scopes",scopes},{"counts",result.counts},
+        {"wolfTextSnapshot",wolf && result.counts.contains("text")},{"resources",Json::array()}};
     size_t completed = 0; if (progress) progress(0, files.size());
     for (const auto& entry : files) {
         const auto name = relative(key(entry));
         const bool exists = fs::is_regular_file(game / name);
-        if (exists) write(backup / "original" / name, read(game / name));
+        if (exists) copyResource(game / name, backup / "original" / name);
         manifest["resources"].push_back({{"name",key(name)},{"existed",exists}});
         if (progress) progress(++completed, files.size());
     }
-    ledger(backup, manifest); return backup;
+    ledger(backup, manifest);
+    result.path = backup;
+    return result;
 }
 }

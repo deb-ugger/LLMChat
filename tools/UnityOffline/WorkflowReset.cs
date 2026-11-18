@@ -139,19 +139,21 @@ public static class WorkflowReset
         static (string, string, string, string, string) Key(Entry e) => (e.File, e.Container, e.ObjectId, e.Locator == "m_Text" ? "/m_Text" : e.Locator, e.Source);
         var translated = old.Entries.ToDictionary(Key);
         var valid = old.Entries.Where(e => e.Error.Length == 0 && TranslationIntegrity.Validate(e.Source, e.Translation).Length == 0).ToArray();
-        var scoped = valid.GroupBy(e => (e.File, e.Container, e.ObjectId, e.Source)).ToDictionary(g => g.Key, g => g.Select(e => e.Translation).Distinct().ToArray());
+        var scoped = valid.GroupBy(e => (e.File, e.Container, e.ObjectId, e.Source)).ToDictionary(g => g.Key, g => g.Select(e => (e.Translation, e.TranslationTarget)).Distinct().ToArray());
         var reusedText = 0;
         foreach (var entry in project.Entries) {
             if (translated.TryGetValue(Key(entry), out var saved)) {
                 entry.Selected = saved.Selected;
-                if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) { entry.Translation = saved.Translation; reusedText++; }
-                entry.LayoutDraft = saved.LayoutDraft; entry.Error = saved.Error;
+                if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) {
+                    entry.Translation = saved.Translation; entry.TranslationTarget = saved.TranslationTarget; reusedText++;
+                }
+                entry.LayoutDraft = saved.LayoutDraft; entry.LayoutDraftTarget = saved.LayoutDraftTarget; entry.Error = saved.Error;
                 continue;
             }
             if (entry.Translation.Length > 0 || entry.Error.Length > 0) continue;
             scoped.TryGetValue((entry.File, entry.Container, entry.ObjectId, entry.Source), out var choices);
             if (choices?.Length != 1) continue;
-            entry.Translation = choices[0]; reusedText++;
+            (entry.Translation, entry.TranslationTarget) = choices[0]; reusedText++;
         }
         return reusedText;
     }
@@ -192,7 +194,7 @@ public static class WorkflowReset
                     if (entry.Translation.Length > 0) clearedTranslations++;
                     if (!string.IsNullOrEmpty(entry.LayoutDraft)) clearedDrafts++;
                     if (entry.Error.Length > 0) clearedErrors++;
-                    entry.Translation = ""; entry.LayoutDraft = null; entry.ScreeningDraft = null; entry.Error = "";
+                    entry.Translation = ""; entry.TranslationTarget = null; entry.LayoutDraft = null; entry.LayoutDraftTarget = null; entry.ScreeningDraft = null; entry.Error = "";
                     if ((index + 1) % 256 == 0 || index + 1 == saved.Entries.Count)
                         Program.Progress($"清理文本 {index + 1}/{saved.Entries.Count}：译文 {clearedTranslations} 条，草稿 {clearedDrafts} 条，错误 {clearedErrors} 条", index + 1, saved.Entries.Count);
                 }

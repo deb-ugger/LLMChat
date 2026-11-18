@@ -2,6 +2,7 @@
 #include "CancellableWinHttp.h"
 #include "RequestCancellation.h"
 #include "LlmClient.h"
+#include "TranslationPromptLeak.h"
 
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -2394,7 +2395,7 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string& customPrompt,
     const std::string& glossaryJson,
     const std::string& contextJson,
-    bool ollamaReasoningOff, int maxOutputTokens, bool nativeOllama)
+    bool ollamaReasoningOff, int maxOutputTokens, bool nativeOllama, int ollamaContextLength)
 {
     TranslateResult result;
     result.provider = "llm";
@@ -2496,7 +2497,7 @@ TranslateResult TranslateClient::translateWithLlm(
                     const std::string segDst = seg.value("translation", "");
                     if (segSrc.empty())
                         continue;
-                    if (segDst.empty())
+                    if (segDst.empty() || translation_prompt::leaked(segSrc, segDst))
                     {
                         referenceSources.push_back(segSrc);
                         continue;
@@ -2513,15 +2514,8 @@ TranslateResult TranslateClient::translateWithLlm(
         }
     }
     const auto lowerModel = toLower(model);
-    if (!referenceSources.empty() && (lowerModel.find("sakura") != std::string::npos || lowerModel.find("hy-mt") != std::string::npos))
-    {
-        std::string references;
-        for (const auto& source : referenceSources) references += source.get<std::string>() + "\n";
-        messages.front()["content"] = systemPrompt + "\n以下仅为参考上下文，不要翻译或输出此部分：\n<reference_context>\n" + references +
-            "</reference_context>\n只输出最后一条用户消息的译文，不输出说明、JSON 或额外控制符。";
-        messages.push_back({{"role", "user"}, {"content", text}});
-    }
-    else if (!referenceSources.empty())
+    const bool plainTextModel = lowerModel.find("sakura") != std::string::npos || lowerModel.find("hy-mt") != std::string::npos;
+    if (!referenceSources.empty() && !plainTextModel)
     {
         messages.front()["content"] = systemPrompt +
             "\nThe final user message is a JSON object. Translate only its text field. "
@@ -2543,6 +2537,7 @@ TranslateResult TranslateClient::translateWithLlm(
     req.httpProxy = httpProxy;
     req.requireComplete = true;
     req.nativeOllama = nativeOllama;
+    req.ollamaContextLength = ollamaContextLength;
     if (maxOutputTokens > 0 && maxOutputTokens <= 1048576) req.options["max_tokens"] = maxOutputTokens;
     if (ollamaReasoningOff) req.options["reasoning_effort"] = "none";
 
@@ -2581,6 +2576,11 @@ TranslateResult TranslateClient::translateWithLlm(
         return result;
     }
 
+    if (translation_prompt::leaked(text, llm.content)) {
+        result.error = translation_prompt::leakError;
+        result.code = "LLM_TRANSLATION_PROMPT_LEAK";
+        return result;
+    }
     result.translation = llm.content;
     result.ok = true;
     return result;
