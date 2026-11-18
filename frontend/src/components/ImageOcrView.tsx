@@ -1930,12 +1930,7 @@ export function ImageOcrView({
         >
           {pages.length === 0 ? (
             <div className="pdf-empty ocr-empty">
-              <p>
-                打开、粘贴或拖入图片后将追加到下方列表并识别，叠字显示译文。
-              </p>
-              <p className="hint">
-                可在此灰色背景处按 Ctrl+V，拖拽图片，或右键选择「从剪贴板粘贴图片」。
-              </p>
+              <p>拖入图片，或按 Ctrl+V 粘贴并识别。</p>
               <div className="ocr-empty-actions">
                 <button
                   type="button"
@@ -1976,6 +1971,7 @@ export function ImageOcrView({
         </div>
       </div>
 
+      {pages.length > 0 && <>
       <div
         className="col-resizer col-resizer-panel ocr-side-resizer"
         data-tooltip="拖动调整原文栏宽度"
@@ -2114,6 +2110,7 @@ export function ImageOcrView({
           </div>
         </div>
       </aside>
+      </>}
 
       {ctxMenu &&
         createPortal(

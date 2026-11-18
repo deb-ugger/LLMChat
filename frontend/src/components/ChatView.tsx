@@ -40,19 +40,9 @@ export function ChatView({
   const empty = !conversation || conversation.messages.length === 0;
 
   return (
-    <section className="chat-panel">
+    <section className={empty ? "chat-panel is-empty" : "chat-panel"}>
+      <header className="chat-title">{conversation?.title || "新对话"}</header>
       {!empty && (
-        <header className="chat-title">
-          {conversation?.title || "新对话"}
-        </header>
-      )}
-
-      {empty ? (
-        <div className="empty-state">
-          <h2>今天有什么计划？</h2>
-          <p>在下方输入消息开始对话</p>
-        </div>
-      ) : (
         <div
           className="message-list"
           ref={listRef}
@@ -101,12 +91,13 @@ function ChatComposer({ sending, onSend }: Pick<Props, "sending" | "onSend">) {
     <div className="input-panel">
       <textarea
         className="input-box"
-        placeholder="支持 Markdown / LaTeX；$公式$、$$公式$$、Enter 发送"
+        aria-label="消息"
+        placeholder="输入消息，Shift + Enter 换行"
         value={text}
         disabled={sending}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
           }

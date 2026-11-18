@@ -4,13 +4,11 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: clamp(10px, 2vh, 20px) clamp(12px, 1.8vw, 24px) 0;
+  padding: var(--page-inset);
   display: flex;
   flex-direction: column;
-  gap: clamp(8px, 1.5vh, 16px);
-  background:
-    radial-gradient(800px 400px at 0% 0%, rgba(47, 111, 237, 0.05), transparent 60%),
-    var(--bg-muted);
+  gap: var(--panel-gap);
+  background: var(--bg-app);
 }
 
 .stats-header {
@@ -679,7 +677,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 240px;
+  min-height: clamp(90px, 14vh, 160px);
   color: var(--text-muted);
   font-size: 14px;
 }

@@ -1855,15 +1855,6 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               </strong>
               <span>{SOURCE_FORMATS_HINT}</span>
             </div>
-            <h3 className="text-home-sub">支持文件格式</h3>
-            <div className="text-format-grid">
-              {FORMAT_CARDS.map((f) => (
-                <div key={f.title} className="text-format-item">
-                  <strong>{f.title}</strong>
-                  <span>{f.exts}</span>
-                </div>
-              ))}
-            </div>
             <div className="text-home-actions">
               {languageControls}
               <button
@@ -1874,6 +1865,15 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               >
                 创建工程
               </button>
+            </div>
+            <h3 className="text-home-sub">支持文件格式</h3>
+            <div className="text-format-grid">
+              {FORMAT_CARDS.map((f) => (
+                <div key={f.title} className="text-format-item">
+                  <strong>{f.title}</strong>
+                  <span>{f.exts}</span>
+                </div>
+              ))}
             </div>
           </section>
 
@@ -1917,6 +1917,24 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               </strong>
               <span>*{PROJECT_EXT}</span>
             </div>
+            <div className="text-home-actions">
+              <button
+                type="button"
+                className="settings-test-btn"
+                disabled={projectListBusy}
+                onClick={() => void openProjectList()}
+              >
+                {projectListBusy ? "加载中…" : "打开工程列表"}
+              </button>
+              <button
+                type="button"
+                className="send-btn"
+                disabled={!pendingFile || pendingSide !== "open"}
+                onClick={() => void onConfirmFile()}
+              >
+                打开工程
+              </button>
+            </div>
             <h3 className="text-home-sub">最近打开</h3>
             <ul className="text-recent-list">
               {recent.length === 0 && (
@@ -1947,24 +1965,6 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                 </li>
               ))}
             </ul>
-            <div className="text-home-actions">
-              <button
-                type="button"
-                className="settings-test-btn"
-                disabled={projectListBusy}
-                onClick={() => void openProjectList()}
-              >
-                {projectListBusy ? "加载中…" : "打开工程列表"}
-              </button>
-              <button
-                type="button"
-                className="send-btn"
-                disabled={!pendingFile || pendingSide !== "open"}
-                onClick={() => void onConfirmFile()}
-              >
-                打开工程
-              </button>
-            </div>
           </section>
         </div>
         {recentMenu && (

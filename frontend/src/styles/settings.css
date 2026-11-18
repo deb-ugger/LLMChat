@@ -7,20 +7,18 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(800px 400px at 0% 0%, rgba(47, 111, 237, 0.05), transparent 60%),
-    var(--bg-muted);
+  background: var(--bg-app);
 }
 
 .settings-tabs {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 12px 16px 0;
+  padding: 4px var(--page-inset) 0;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg-muted) 100%);
+  background: var(--bg-panel);
   flex-shrink: 0;
 }
 
@@ -101,7 +99,7 @@
 .settings-tab-body {
   flex: 1;
   overflow: auto;
-  padding: 20px 28px 12px;
+  padding: var(--page-inset);
   min-height: 0;
 }
 
@@ -319,7 +317,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg-muted) 100%);
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -1138,12 +1136,10 @@
 
 .settings-card.settings-fold {
   background: var(--bg-panel);
-  border: 1px solid color-mix(in srgb, var(--border-strong, var(--border)) 85%, var(--text) 15%);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-strong, var(--border)) 85%, var(--text) 15%);
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 0;
-  margin-bottom: 16px;
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 12%, transparent);
+  margin-bottom: var(--panel-gap);
   overflow: hidden;
 }
 
@@ -1151,19 +1147,15 @@
   margin-top: 4px;
 }
 
-.settings-fold-head {
-  margin-bottom: 0 !important;
-  padding: 12px 14px !important;
-  border-bottom: 2px solid color-mix(in srgb, var(--accent) 35%, var(--border)) !important;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 8%, var(--bg-panel)) 0%,
-    var(--bg-panel) 100%
-  );
+.settings-fold > .settings-fold-head {
+  margin-bottom: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 .settings-fold.is-collapsed .settings-fold-head {
-  border-bottom: none !important;
+  border-bottom: none;
 }
 
 .settings-fold-toggle {
@@ -1559,7 +1551,7 @@
   align-items: stretch;
   gap: 0;
   padding: 8px 12px;
-  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg-muted) 100%);
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   overflow: visible;
   position: relative;
@@ -1574,6 +1566,7 @@
 }
 
 .pdf-toolbar-primary {
+  flex-wrap: wrap;
   min-height: 34px;
 }
 

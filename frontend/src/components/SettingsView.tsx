@@ -1,3 +1,4 @@
+import { normalizeProvider, ocrLangToTranslateSource, withDefaults } from "../settingsDefaults";
 import { LlmRuntimeSettings } from "./LlmRuntimeSettings";
 import { FeatureIcon } from "./FeatureIcon";
 import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
@@ -271,102 +272,6 @@ function renderToastMessage(message: string): ReactNode {
     }
     return <span key={i}>{part}</span>;
   });
-}
-
-function ocrLangToTranslateSource(ocrLang: string): string {
-  switch (ocrLang) {
-    case "chi_sim":
-      return "zh-CN";
-    case "chi_tra":
-      return "zh-TW";
-    case "jpn":
-      return "ja";
-    case "kor":
-      return "ko";
-    case "eng+chi_sim":
-      return "en";
-    case "eng":
-    default:
-      return "en";
-  }
-}
-
-function normalizeProvider(p: string): TranslateProvider {
-  if (p === "llm") return "llm";
-  if (p === "free") return "mymemory";
-  if (p === "blind") return "bing";
-  return (p || "bing") as TranslateProvider;
-}
-
-function withDefaults(s: Settings): Settings {
-  return {
-    ...s,
-    proxyMode: s.proxyMode || "direct",
-    httpProxy: s.httpProxy || "",
-    translateProvider: normalizeProvider(s.translateProvider),
-    translateModel: s.translateModel || s.model || "",
-    ...(() => {
-      const lit = resolveLiteraturePromptState({
-        catalogRaw: s.translatePromptCatalog,
-        activeIdRaw: s.translatePromptId,
-        legacyKind: s.translatePromptKind,
-        legacyPrompt: s.translatePrompt,
-      });
-      return {
-        translatePromptId: lit.activeId,
-        translatePromptCatalog: stringifyLiteraturePromptCatalog(lit.catalog),
-        translatePromptKind: lit.activeId,
-        translatePrompt: lit.prompt,
-      };
-    })(),
-    translateMaxLength: s.translateMaxLength ?? 0,
-    translateAutoChunk: s.translateAutoChunk ?? true,
-    translateClearLineBreaks: s.translateClearLineBreaks ?? true,
-    translateContextParagraphs: s.translateContextParagraphs ?? 0,
-    translateGlossary: s.translateGlossary || "[]",
-    ocrLang: s.ocrLang || "eng",
-    ocrMode:
-      s.ocrMode === "precise" || s.ocrMode === "english"
-        ? s.ocrMode
-        : "fast",
-    imageOcrMode:
-      s.imageOcrMode === "precise" ||
-      s.imageOcrMode === "english" ||
-      s.imageOcrMode === "manga"
-        ? s.imageOcrMode
-        : "fast",
-    ocrAutoTranslate: s.ocrAutoTranslate ?? true,
-    ocrTranslateProvider: normalizeProvider(
-      s.ocrTranslateProvider || "bing",
-    ),
-    ocrTranslateSource:
-      s.ocrTranslateSource || ocrLangToTranslateSource(s.ocrLang || "eng"),
-    ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
-    ocrTranslateModel: s.ocrTranslateModel || s.model || "",
-    ocrTranslateMaxLength: s.ocrTranslateMaxLength ?? 0,
-    ocrTranslateAutoChunk: s.ocrTranslateAutoChunk ?? true,
-    textTranslateSource: s.textTranslateSource || "en",
-    textTranslateTarget: s.textTranslateTarget || "zh-CN",
-    textTranslateProvider: normalizeProvider(
-      s.textTranslateProvider || "llm",
-    ),
-    textTranslateModel: s.textTranslateModel || s.model || "",
-    textTranslatePrompt: s.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
-    textPromptMtool: s.textPromptMtool || DEFAULT_MTOOL_PROMPT,
-    textPromptSubtitle: s.textPromptSubtitle || DEFAULT_SUBTITLE_PROMPT,
-    textPromptSubtitleRetime:
-      s.textPromptSubtitleRetime || DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
-    textGlossary: s.textGlossary || "[]",
-    textPreReplace: s.textPreReplace || "[]",
-    textPostReplace: s.textPostReplace || "[]",
-    textProjectsDir:
-      s.textProjectsDir ||
-      s.textProjectsDirResolved ||
-      (s.dataDir ? `${s.dataDir}\\text-projects` : ""),
-    textProjectsDirResolved: s.textProjectsDirResolved,
-    dataDir: s.dataDir,
-    translateEngineKeys: s.translateEngineKeys || "{}",
-  };
 }
 
 function SettingToggle({

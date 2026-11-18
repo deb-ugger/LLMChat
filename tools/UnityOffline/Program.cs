@@ -307,7 +307,9 @@ public static class Program
         var root = System.IO.Path.GetFullPath(request.Root);
         if (!Directory.Exists(root)) throw new Exception("游戏目录不存在");
         var output = System.IO.Path.GetFullPath(request.OutputRoot);
-        if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase) && !GameWorkspace.IsProjectsRoot(root, output))
+        if (GameWorkspace.IsProjectsRoot(root, output))
+            GameWorkspace.Ensure(root);
+        else if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
             throw new Exception("游戏内工程只能保存在 LLMChat-Unity 工作文件夹中");
         var inspection = ScanInspection.Inspect(root);
         var assemblies = request.IncludeCode ? ScanInspection.SelectedAssemblies(request, inspection) : [];

@@ -23,73 +23,27 @@ const TextTranslateView = lazy(() => import("./components/TextTranslateView").th
 const UnityTranslateView = lazy(() => import("./components/UnityTranslateView").then(module => ({ default: module.UnityTranslateView })));
 const SpeechView = lazy(() => import("./components/SpeechView").then(module => ({ default: module.SpeechView })));
 import { toFriendlyError } from "./friendlyError";
-import {
-  DEFAULT_MTOOL_PROMPT,
-  DEFAULT_SUBTITLE_PROMPT,
-  DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
-  DEFAULT_TEXT_PROMPT,
-} from "./textTranslate";
-import {
-  DEFAULT_LIT_PROMPT_GENERAL,
-  resolveLiteraturePromptState,
-  stringifyLiteraturePromptCatalog,
-} from "./literaturePrompt";
+import { stringifyLiteraturePromptCatalog } from "./literaturePrompt";
+import { defaultSettings, withDefaults } from "./settingsDefaults";
 import { resolveFeatureLlm, setVendorModelsOverrideCache } from "./modelPresets";
 
-type Page =
-  | "chat"
-  | "literature"
-  | "image"
-  | "speech"
-  | "text"
-  | "unity"
-  | "stats"
-  | "settings";
+const navigation = [
+  ["chat", "对话"],
+  ["literature", "文献翻译"],
+  ["image", "图片文字识别"],
+  ["speech", "语音转文字"],
+  ["text", "文本翻译工程"],
+  ["unity", "游戏翻译"],
+  ["stats", "统计"],
+  ["settings", "设置"],
+] as const;
+type Page = typeof navigation[number][0];
 
-const defaultSettings: Settings = {
-  apiUrl: "https://api.openai.com/v1/chat/completions",
-  apiKey: "",
-  model: "gpt-4o",
-  messagePageSize: 30,
-  proxyMode: "direct",
-  httpProxy: "",
-  translateProvider: "bing",
-  translateSource: "en",
-  translateTarget: "zh-CN",
-  translateModel: "",
-  translatePromptId: "general",
-  translatePromptCatalog: "[]",
-  translatePromptKind: "general",
-  translatePrompt: DEFAULT_LIT_PROMPT_GENERAL,
-  translateMaxLength: 0,
-  translateAutoChunk: true,
-  translateClearLineBreaks: true,
-  translateContextParagraphs: 0,
-  translateGlossary: "[]",
-  ocrLang: "eng",
-  ocrMode: "fast",
-  imageOcrMode: "fast",
-  ocrAutoTranslate: true,
-  ocrTranslateProvider: "bing",
-  ocrTranslateSource: "en",
-  ocrTranslateTarget: "zh-CN",
-  ocrTranslateModel: "",
-  ocrTranslateMaxLength: 0,
-  ocrTranslateAutoChunk: true,
-  textTranslateSource: "en",
-  textTranslateTarget: "zh-CN",
-  textTranslateProvider: "llm",
-  textTranslateModel: "",
-  textTranslatePrompt: DEFAULT_TEXT_PROMPT,
-  textPromptMtool: DEFAULT_MTOOL_PROMPT,
-  textPromptSubtitle: DEFAULT_SUBTITLE_PROMPT,
-  textPromptSubtitleRetime: DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
-  textGlossary: "[]",
-  textPreReplace: "[]",
-  textPostReplace: "[]",
-  textProjectsDir: "",
-  translateEngineKeys: "{}",
-};
+function PagePanel({ active, children }: { active: boolean; children: React.ReactNode }) {
+  return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
+    <DeferredPanel active={active}>{children}</DeferredPanel>
+  </div>;
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
@@ -177,103 +131,7 @@ export default function App() {
 
           if (cancelled) return;
 
-          setSettings({
-            ...defaultSettings,
-            ...s,
-            proxyMode: (s.proxyMode as Settings["proxyMode"]) || "direct",
-            httpProxy: String(s.httpProxy || ""),
-            translateProvider: (() => {
-              const p = String(s.translateProvider || "bing");
-              if (p === "llm") return "llm";
-              if (p === "free") return "mymemory";
-              if (p === "blind") return "bing";
-              return p as Settings["translateProvider"];
-            })(),
-            translateSource: s.translateSource || "en",
-            translateTarget: s.translateTarget || "zh-CN",
-            translateModel: String(s.translateModel || s.model || ""),
-            ...(() => {
-              const lit = resolveLiteraturePromptState({
-                catalogRaw: s.translatePromptCatalog,
-                activeIdRaw: s.translatePromptId,
-                legacyKind: s.translatePromptKind,
-                legacyPrompt: s.translatePrompt,
-              });
-              return {
-                translatePromptId: lit.activeId,
-                translatePromptCatalog: stringifyLiteraturePromptCatalog(
-                  lit.catalog,
-                ),
-                translatePromptKind: lit.activeId,
-                translatePrompt: lit.prompt,
-              };
-            })(),
-            translateMaxLength: s.translateMaxLength ?? 0,
-            translateAutoChunk: s.translateAutoChunk ?? true,
-            translateClearLineBreaks: s.translateClearLineBreaks ?? true,
-            translateContextParagraphs: s.translateContextParagraphs ?? 0,
-            translateGlossary: s.translateGlossary || "[]",
-            ocrLang: s.ocrLang || "eng",
-            ocrMode:
-              s.ocrMode === "precise" || s.ocrMode === "english"
-                ? s.ocrMode
-                : "fast",
-            imageOcrMode:
-              s.imageOcrMode === "precise" ||
-              s.imageOcrMode === "english" ||
-              s.imageOcrMode === "manga"
-                ? s.imageOcrMode
-                : "fast",
-            ocrAutoTranslate: s.ocrAutoTranslate ?? true,
-            ocrTranslateProvider: (() => {
-              const p = String(s.ocrTranslateProvider || "bing");
-              if (p === "llm") return "llm";
-              if (p === "free") return "mymemory";
-              if (p === "blind") return "bing";
-              return p as Settings["translateProvider"];
-            })(),
-            ocrTranslateSource: (() => {
-              if (s.ocrTranslateSource) return s.ocrTranslateSource;
-              const lang = s.ocrLang || "eng";
-              if (lang === "chi_sim") return "zh-CN";
-              if (lang === "chi_tra") return "zh-TW";
-              if (lang === "jpn") return "ja";
-              if (lang === "kor") return "ko";
-              if (lang === "eng+chi_sim") return "en";
-              return "en";
-            })(),
-            ocrTranslateTarget: s.ocrTranslateTarget || "zh-CN",
-            ocrTranslateModel: String(s.ocrTranslateModel || s.model || ""),
-            ocrTranslateMaxLength: s.ocrTranslateMaxLength ?? 0,
-            ocrTranslateAutoChunk: s.ocrTranslateAutoChunk ?? true,
-            textTranslateSource: s.textTranslateSource || "en",
-            textTranslateTarget: s.textTranslateTarget || "zh-CN",
-            textTranslateProvider: (() => {
-              const p = String(s.textTranslateProvider || "llm");
-              if (p === "free") return "mymemory";
-              if (p === "blind") return "bing";
-              return p as Settings["textTranslateProvider"];
-            })(),
-            textTranslateModel: String(s.textTranslateModel || s.model || ""),
-            textTranslatePrompt:
-              s.textTranslatePrompt || DEFAULT_TEXT_PROMPT,
-            textPromptMtool: s.textPromptMtool || DEFAULT_MTOOL_PROMPT,
-            textPromptSubtitle:
-              s.textPromptSubtitle || DEFAULT_SUBTITLE_PROMPT,
-            textPromptSubtitleRetime:
-              s.textPromptSubtitleRetime ||
-              DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT,
-            textGlossary: s.textGlossary || "[]",
-            textPreReplace: s.textPreReplace || "[]",
-            textPostReplace: s.textPostReplace || "[]",
-            textProjectsDir:
-              s.textProjectsDir ||
-              s.textProjectsDirResolved ||
-              (s.dataDir ? `${s.dataDir}\\text-projects` : ""),
-            textProjectsDirResolved: s.textProjectsDirResolved,
-            dataDir: s.dataDir,
-            translateEngineKeys: s.translateEngineKeys || "{}",
-          });
+          setSettings(withDefaults(s));
           setConversations(list.items);
           const offset = Math.max(
             0,
@@ -460,93 +318,20 @@ export default function App() {
 
   return (
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
-      <nav className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
-        <div className="nav-brand" data-tooltip="LLMChat">
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M12 2a7 7 0 0 0-7 7c0 2.9 1.7 5.4 4.2 6.5L8 21l4-2.2L16 21l-1.2-5.5A7 7 0 0 0 19 9a7 7 0 0 0-7-7zm0 3.2A3.8 3.8 0 1 1 8.2 9 3.8 3.8 0 0 1 12 5.2z"
-            />
-          </svg>
+      <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
+        <div className="nav-brand" aria-label="LLMChat"><span aria-hidden="true">L</span><strong>LLMChat</strong></div>
+        <div className="nav-links">
+          {navigation.map(([id, label]) => (
+            <button key={id} type="button" className={page === id ? "nav-item active" : "nav-item"}
+              aria-current={page === id ? "page" : undefined} aria-label={label} data-tooltip={label}
+              onClick={() => {
+                if (id === "settings") setSettingsInitialTab(undefined);
+                setPage(id);
+              }}>
+              <FeatureIcon feature={id} size={20} /><span>{label}</span>
+            </button>
+          ))}
         </div>
-        <button
-          className={page === "chat" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("chat")}
-          data-tooltip="对话" aria-label="对话"
-        >
-          <FeatureIcon feature="chat" size={22} />
-          <span>对话</span>
-        </button>
-        <button
-          className={page === "literature" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("literature")}
-          data-tooltip="文献翻译" aria-label="文献翻译"
-        >
-          <FeatureIcon feature="literature" size={22} />
-          <span>文献翻译</span>
-        </button>
-        <button
-          className={page === "image" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("image")}
-          data-tooltip="图片文字识别" aria-label="图片文字识别"
-        >
-          <FeatureIcon feature="image" size={22} />
-          <span>图片文字识别</span>
-        </button>
-        <button
-          className={page === "speech" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("speech")}
-          data-tooltip="语音转文字" aria-label="语音转文字"
-        >
-          <FeatureIcon feature="speech" size={22} />
-          <span>语音转文字</span>
-        </button>
-        <button
-          className={page === "text" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("text")}
-          data-tooltip="文本翻译工程" aria-label="文本翻译工程"
-        >
-          <FeatureIcon feature="text" size={22} />
-          <span>文本翻译工程</span>
-        </button>
-        <button
-          className={page === "unity" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("unity")}
-          data-tooltip="游戏翻译" aria-label="游戏翻译"
-        >
-          <FeatureIcon feature="unity" size={22} />
-          <span>游戏翻译</span>
-        </button>
-        <button
-          className={page === "stats" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("stats")}
-          data-tooltip="统计" aria-label="统计"
-        >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M5 19V9h3v10H5zm5.5 0V5h3v14h-3zM16 19v-6h3v6h-3z"
-            />
-          </svg>
-          <span>统计</span>
-        </button>
-        <button
-          className={page === "settings" ? "nav-item active" : "nav-item"}
-          onClick={() => {
-            setSettingsInitialTab(undefined);
-            setPage("settings");
-          }}
-          data-tooltip="设置" aria-label="设置"
-        >
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.22-1.14.53-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.49.41 1.04.72 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.22 1.14-.53 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
-            />
-          </svg>
-          <span>设置</span>
-        </button>
-        <div className="nav-version">v1.0</div>
         <button
           type="button"
           className="nav-rail-toggle"
@@ -563,7 +348,7 @@ export default function App() {
       </nav>
 
       <div className="app-main">
-        <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"}>
+        <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"} inert={page !== "chat"}>
           <div className="chat-layout">
             <Sidebar
               conversations={conversations}
@@ -587,15 +372,7 @@ export default function App() {
         </div>
         {/* Keep mounted so PDF + reading position survive nav switches.
             Hidden panes use visibility (not display:none) so PDF layout stays valid. */}
-        <div
-          className={
-            page === "literature"
-              ? "literature-host"
-              : "literature-host is-hidden"
-          }
-          aria-hidden={page !== "literature"}
-        >
-          <DeferredPanel active={page === "literature"}><LiteratureView
+        <PagePanel active={page === "literature"}><LiteratureView
             visible={page === "literature"}
             ocrMode={settings.ocrMode}
             translateProvider={settings.translateProvider}
@@ -636,15 +413,8 @@ export default function App() {
                 translatePrompt: prompt,
               });
             }}
-          /></DeferredPanel>
-        </div>
-        <div
-          className={
-            page === "image" ? "literature-host" : "literature-host is-hidden"
-          }
-          aria-hidden={page !== "image"}
-        >
-          <DeferredPanel active={page === "image"}><ImageOcrView
+          /></PagePanel>
+        <PagePanel active={page === "image"}><ImageOcrView
             active={page === "image"}
             ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
@@ -673,28 +443,12 @@ export default function App() {
             onTranslateTargetChange={async (ocrTranslateTarget) => {
               await onSaveSettings({ ...settings, ocrTranslateTarget });
             }}
-          /></DeferredPanel>
-        </div>
-        <div
-          className={
-            page === "text" ? "literature-host" : "literature-host is-hidden"
-          }
-          aria-hidden={page !== "text"}
-        >
-          <DeferredPanel active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
+          /></PagePanel>
+        <PagePanel active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
-          }} /></DeferredPanel>
-        </div>
-        <div className={page === "speech" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "speech"}>
-          <DeferredPanel active={page === "speech"}><SpeechView active={page === "speech"} /></DeferredPanel>
-        </div>
-        <div
-          className={
-            page === "unity" ? "literature-host" : "literature-host is-hidden"
-          }
-          aria-hidden={page !== "unity"}
-        >
-          <DeferredPanel active={page === "unity"}><UnityTranslateView
+          }} /></PagePanel>
+        <PagePanel active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
+        <PagePanel active={page === "unity"}><UnityTranslateView
             active={page === "unity"}
             settings={settings}
             onRestoreWorkspace={() => { if (!startupInteracted.current) setPage("unity"); }}
@@ -706,25 +460,15 @@ export default function App() {
               setSettingsInitialTab("unity");
               setPage("settings");
             }}
-          /></DeferredPanel>
-        </div>
-        <div
-          className={
-            page === "stats" ? "literature-host" : "literature-host is-hidden"
-          }
-          aria-hidden={page !== "stats"}
-        >
-          <DeferredPanel active={page === "stats"}><StatsView active={page === "stats"} /></DeferredPanel>
-        </div>
-        <div className={page === "settings" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "settings"}>
-          <DeferredPanel active={page === "settings"}><SettingsView
+          /></PagePanel>
+        <PagePanel active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
+        <PagePanel active={page === "settings"}><SettingsView
             settings={settings}
             onSave={onSaveSettings}
             initialTab={settingsInitialTab}
             active={page === "settings"}
             onNavigate={(p) => setPage(p)}
-          /></DeferredPanel>
-        </div>
+          /></PagePanel>
       </div>
     </div>
   );

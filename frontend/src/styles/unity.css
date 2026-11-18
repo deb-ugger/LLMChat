@@ -21,11 +21,11 @@
 }
 
 .unity-shell {
-  --unity-ink: #172033;
-  --unity-muted: #667589;
-  --unity-line: rgba(23, 32, 51, 0.1);
-  --unity-divider: rgba(23, 32, 51, 0.26);
-  --unity-panel: rgba(255, 255, 255, 0.78);
+  --unity-ink: var(--text);
+  --unity-muted: var(--text-muted);
+  --unity-line: var(--border);
+  --unity-divider: var(--border-strong);
+  --unity-panel: var(--bg-panel);
   position: relative;
   flex: 1;
   width: 100%;
@@ -36,10 +36,7 @@
   flex-direction: column;
   overflow: hidden;
   color: var(--unity-ink);
-  background:
-    radial-gradient(1000px 480px at 0% 0%, rgba(47, 111, 237, 0.1), transparent 55%),
-    radial-gradient(900px 520px at 100% 100%, rgba(28, 70, 120, 0.08), transparent 50%),
-    linear-gradient(165deg, #f5f7fb, #eef2f7 45%, #e8edf4);
+  background: var(--bg-app);
 }
 
 .unity-top {
@@ -48,7 +45,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding: 12px clamp(16px, 3vw, 28px);
+  padding: var(--toolbar-inset);
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--unity-line);
   animation: unity-fade-up 0.36s ease both;
 }
@@ -602,7 +600,7 @@
   min-height: 0;
   width: 100%;
   margin: 0;
-  padding: 14px clamp(14px, 2.2vw, 24px) 8px;
+  padding: var(--page-inset);
   display: flex;
   flex-direction: row;
   align-items: stretch;
@@ -1047,7 +1045,7 @@ body.row-resizing .unity-row-resizer::before {
   border: 1px solid var(--unity-line);
   background: #fff;
   color: var(--unity-ink);
-  padding: 9px 15px;
+  padding: 6px 12px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, transform 0.14s ease;
@@ -2414,7 +2412,7 @@ body.row-resizing .unity-row-resizer::before {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  background: linear-gradient(180deg, #fbfcfe 0%, var(--bg-muted) 100%);
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
   overflow: visible;
@@ -2462,7 +2460,7 @@ body.row-resizing .unity-row-resizer::before {
   flex: 1;
   overflow: auto;
   padding: 16px;
-  background: #e2e8f0;
+  background: var(--bg-app);
   outline: none;
   min-height: 240px;
 }
@@ -2551,7 +2549,7 @@ body.row-resizing .unity-row-resizer::before {
 }
 
 .ocr-empty {
-  min-height: 280px;
+  min-height: clamp(120px, 24vh, 240px);
   display: flex;
   flex-direction: column;
   align-items: center;

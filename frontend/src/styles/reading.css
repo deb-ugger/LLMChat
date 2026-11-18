@@ -61,6 +61,21 @@
   min-height: 0;
 }
 
+@media (max-width: 740px) {
+  .ocr-layout { flex-direction: column; }
+  .ocr-main, .ocr-main .ocr-canvas-wrap { min-height: 0; }
+  .ocr-layout > .ocr-side {
+    flex: 0 0 clamp(136px, 32vh, 280px);
+    align-self: stretch;
+    min-width: 0;
+    max-width: 100%;
+    width: 100% !important; /* The saved horizontal width applies in desktop mode. */
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .ocr-layout > .ocr-side-resizer { display: none; }
+}
+
 .ocr-side-resizer {
   flex-shrink: 0;
   z-index: 4;
@@ -508,7 +523,7 @@
 
 .lang-combobox-option:hover,
 .lang-combobox-option.active {
-  background: #f0f4f9;
+  background: var(--bg-muted);
 }
 
 .lang-code {
@@ -756,7 +771,7 @@ mark.search-hit-mark {
 
 .pdf-view-option:hover,
 .pdf-view-option.active {
-  background: #f0f4f9;
+  background: var(--bg-muted);
 }
 
 .pdf-view-check {
@@ -1548,7 +1563,7 @@ body.row-resizing .textLayer {
   padding: 0;
   min-width: 0;
   min-height: 0;
-  background: #e2e8f0;
+  background: var(--bg-app);
 }
 
 /* Official PDFViewer requires container position:absolute (throws otherwise). */
@@ -1666,7 +1681,7 @@ body.row-resizing .textLayer {
   padding: 3px 8px;
   border: 1px solid color-mix(in srgb, #2f6fed 35%, #c5d0de);
   border-radius: 6px;
-  background: #e8f1ff;
+  background: var(--accent-soft);
   color: #1e4fbf;
   font: inherit;
   font-size: 12px;
