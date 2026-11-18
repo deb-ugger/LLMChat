@@ -141,13 +141,18 @@ def prepare(crop):
 
 def extract(result, matte, size):
     layer = result.convert("RGBA")
-    if matte and layer.getchannel("A").getextrema()[0] == 255:
-        rgb = np.asarray(layer, dtype=np.float32)[:, :, :3]
-        bg = np.asarray(matte, dtype=np.float32)
+    if matte:
+        pixels = np.asarray(layer, dtype=np.float32)
+        rgb = pixels[:, :, :3]
+        # ComfyUI can return the key color at a lower brightness than the input.
+        key_channels = np.asarray(matte) == 255
+        brightness = np.clip(rgb[:, :, key_channels].mean(axis=2, keepdims=True), 192, 255)
+        bg = brightness * key_channels
         distance = np.max(np.abs(rgb - bg), axis=2, keepdims=True)
-        alpha = np.clip((distance - 18) / 80, 0, 1)
-        foreground = np.clip((rgb - bg * (1 - alpha)) / np.maximum(alpha, 0.001), 0, 255)
-        layer = Image.fromarray(np.concatenate((foreground, 255 * alpha), axis=2).astype(np.uint8))
+        key_alpha = np.clip((distance - 48) / 80, 0, 1)
+        foreground = np.clip((rgb - bg * (1 - key_alpha)) / np.maximum(key_alpha, 0.001), 0, 255)
+        alpha = pixels[:, :, 3:4] * key_alpha
+        layer = Image.fromarray(np.concatenate((foreground, alpha), axis=2).astype(np.uint8))
     return layer.resize(size, Image.Resampling.LANCZOS)
 
 
