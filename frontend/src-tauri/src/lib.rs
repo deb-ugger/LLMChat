@@ -1,5 +1,6 @@
 mod build_close;
 mod clipboard;
+mod game_image_zip;
 mod speech;
 mod unity_offline;
 mod ollama;
@@ -194,6 +195,40 @@ async fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn begin_game_image_zip(id: String, path: String) -> Result<(), String> {
+    game_image_zip::begin(id, path)
+}
+
+#[tauri::command]
+fn append_game_image_zip(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let id = request.headers().get("llmchat-download-id").and_then(|value| value.to_str().ok())
+        .ok_or("缺少图片下载编号")?;
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => game_image_zip::append(id, bytes),
+        tauri::ipc::InvokeBody::Json(value) => {
+            // WebView can switch to postMessage IPC, which sends typed arrays as JSON byte lists.
+            let values = value.as_array().filter(|items| items.len() <= game_image_zip::CHUNK_LIMIT)
+                .ok_or("未收到有效的图片 ZIP 分块")?;
+            let bytes: Vec<_> = values.iter().map(|value| {
+                value.as_u64().and_then(|byte| u8::try_from(byte).ok()).ok_or("图片 ZIP 分块包含无效字节")
+            }).collect::<Result<_, _>>()?;
+            game_image_zip::append(id, &bytes)
+        }
+    }
+}
+
+#[tauri::command]
+async fn finish_game_image_zip(id: String, expected_bytes: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || game_image_zip::finish(&id, expected_bytes))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn cancel_game_image_zip(id: String) -> Result<(), String> {
+    game_image_zip::cancel(&id)
+}
+
 fn exit_after_close_cleanup() -> ! {
     #[cfg(windows)]
     unsafe {
@@ -240,6 +275,7 @@ async fn finish_app_close(window: tauri::WebviewWindow) -> Result<(), String> {
         benchmark.destroy().map_err(|error| error.to_string())?;
     }
     stop_backend(window.app_handle())?;
+    game_image_zip::cancel_all()?;
     arm_close_watchdog();
     let _ = runtime_log("shutdown-request", "Save guards completed and backend stopped; closing window with a 5-second teardown deadline");
     window.destroy().map_err(|error| {
@@ -305,6 +341,10 @@ pub fn run() {
             ollama::ollama_service_stop,
             clipboard::clipboard_read_image_png,
             write_file_bytes,
+            begin_game_image_zip,
+            append_game_image_zip,
+            finish_game_image_zip,
+            cancel_game_image_zip,
             read_file_bytes,
             file_stat,
             write_runtime_log,

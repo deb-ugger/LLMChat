@@ -115,23 +115,33 @@ function runNext() {
   active = { id, control };
   update(id, { status: "running" });
   void (async () => {
+    let started = false;
     try {
+      await control.checkpoint();
+      await invoke("begin_game_image_zip", { id, path });
+      started = true;
       let lastReport = -Infinity;
-      const bytes = await exportGameImages(images, read, progress => {
+      const expectedBytes = await exportGameImages(images, read, progress => {
         const now = performance.now();
         if (progress.stage === "reading" && now - lastReport < 100) return;
         lastReport = now;
         update(id, { progress });
-      }, control);
+      }, control, chunk => invoke("append_game_image_zip", chunk, { headers: { "llmchat-download-id": id } }));
       await control.checkpoint();
       update(id, { status: "saving" });
-      await invoke("write_file_bytes", { path, contents: Array.from(bytes) });
+      await invoke("finish_game_image_zip", { id, expectedBytes });
       update(id, { status: "completed" });
       showAppNotice("图片下载完成。可在右上角「下载任务」打开文件。");
     } catch (error) {
-      if (control.signal.aborted) update(id, { status: "cancelled" });
+      let detail = error instanceof Error ? error.message : String(error);
+      let cleanupFailed = false;
+      if (started) {
+        try { await invoke("cancel_game_image_zip", { id }); }
+        catch (cleanupError) { cleanupFailed = true; detail += "；" + String(cleanupError); }
+      }
+      if (control.signal.aborted && !cleanupFailed) update(id, { status: "cancelled" });
       else {
-        update(id, { status: "failed", error: error instanceof Error ? error.message : String(error) });
+        update(id, { status: "failed", error: detail });
         showAppNotice("图片下载失败。请在右上角查看下载任务。", "error");
       }
     } finally {

@@ -18,48 +18,131 @@ export type GameImageExportControl = {
   onPauseChange: (listener: (paused: boolean) => void) => () => void;
 };
 
+const archiveChunkSize = 1024 * 1024;
+const manifestPath = "llmchat-images.json";
+
 export async function exportGameImages(
   images: readonly UnityImage[],
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
   progress: (value: GameImageExportProgress) => void,
   control: GameImageExportControl,
-): Promise<Uint8Array> {
- const zip=new JSZip(),entries:Entry[]=[];
- for(const image of images){
+  write: (chunk: Uint8Array) => Promise<void>,
+): Promise<number> {
+  if (images.length + 1 >= 0xffff) throw new Error("图片数量超过单个 ZIP 的上限，请按筛选范围分批下载");
   await control.checkpoint();
-  if(!image.sourceFile)throw new Error(`无法导出 ${image.name}：没有原图文件（${locator(image)}）`);
-  const name=image.name.replace(/[\/:*?"<>|]/g,"_").replace(/\.[^.]*$/,"")||"image";
-  const path=`images/${encodeURIComponent(image.id)}/${name}.png`;
-  progress({ stage: "reading", completed: entries.length, file: image.name });
-  const contents = await (await read(image, control.signal)).arrayBuffer();
-  await control.checkpoint();
-  zip.file(path, contents);
-  entries.push({id:image.id,file:image.file,container:image.container,objectId:image.objectId,sourceHash:image.sourceHash,width:image.width,height:image.height,path});
- }
- zip.file("llmchat-images.json",JSON.stringify({format:"llmchat-images",version:1,images:entries},null,2));
- progress({ stage: "packing", percent: 0 });
- const stream = zip.generateInternalStream({ type: "uint8array", compression: "STORE", streamFiles: true });
- const { signal } = control;
- return new Promise((resolve, reject) => {
-   const unsubscribe = control.onPauseChange(paused => { if (paused) stream.pause(); else stream.resume(); });
-   const cleanup = () => {
-     unsubscribe();
-     signal.removeEventListener("abort", abort);
-   };
-   const abort = () => {
-     stream.pause();
-     cleanup();
-     reject(signal.reason);
-   };
-   signal.addEventListener("abort", abort, { once: true });
-   let lastPercent = 0;
-   void stream.accumulate(({ percent }) => {
-     const rounded = Math.floor(percent);
-     if (rounded === lastPercent) return;
-     lastPercent = rounded;
-     progress({ stage: "packing", percent: rounded });
-   }).then(bytes => { cleanup(); resolve(bytes); }, error => { cleanup(); reject(error); });
- });
+  const zip = new JSZip();
+  const entries: Entry[] = [];
+  const sources = new Map<string, { image: UnityImage; index: number; supply: (bytes: ArrayBuffer) => void }>();
+  for (const [index, image] of images.entries()) {
+    if (!image.sourceFile) throw new Error(`无法导出 ${image.name}：没有原图文件（${locator(image)}）`);
+    const name = image.name.replace(/[\\/:*?"<>|]/g, "_").replace(/\.[^.]*$/, "") || "image";
+    const path = `images/${encodeURIComponent(image.id)}/${name}.png`;
+    if (sources.has(path)) throw new Error(`压缩包内图片路径重复：${path}`);
+    const bytes = new Promise<ArrayBuffer>(supply => sources.set(path, { image, index, supply }));
+    zip.file(path, bytes, { binary: true, createFolders: false });
+    entries.push({ id: image.id, file: image.file, container: image.container, objectId: image.objectId,
+      sourceHash: image.sourceHash, width: image.width, height: image.height, path });
+  }
+  zip.file(manifestPath, JSON.stringify({ format: "llmchat-images", version: 1, images: entries }, null, 2));
+  const archive = zip.generateInternalStream({ type: "uint8array", compression: "STORE", streamFiles: true });
+  // The ZIP worker owns each input after registration. Drop our ZIP entries so completed inputs can be collected.
+  for (const path of sources.keys()) zip.remove(path);
+  zip.remove(manifestPath);
+
+  const { signal } = control;
+  let resume = () => {};
+  let stop = () => {};
+  const chunks = new ReadableStream<Uint8Array>({
+    start(output) {
+      let ended = false;
+      let paused = false;
+      let lastPercent = -1;
+      resume = () => {
+        if (!ended && !paused && (output.desiredSize ?? 0) > 0) archive.resume();
+      };
+      stop = () => {
+        ended = true;
+        archive.pause();
+        unsubscribe();
+        signal.removeEventListener("abort", abort);
+      };
+      const fail = (error: unknown) => {
+        if (ended) return;
+        stop();
+        output.error(error);
+      };
+      const abort = () => fail(signal.reason);
+      const unsubscribe = control.onPauseChange(value => {
+        paused = value;
+        if (paused) archive.pause();
+        else resume();
+      });
+      signal.addEventListener("abort", abort, { once: true });
+      archive.on("data", (chunk, { currentFile, percent }) => {
+        if (ended) return;
+        output.enqueue(chunk);
+        if ((output.desiredSize ?? 0) <= 0) archive.pause();
+
+        // A streamed entry emits its local header before waiting for its image bytes.
+        const source = currentFile ? sources.get(currentFile) : undefined;
+        if (currentFile && source) {
+          sources.delete(currentFile);
+          void (async () => {
+            await control.checkpoint();
+            progress({ stage: "reading", completed: source.index, file: source.image.name });
+            const bytes = await (await read(source.image, signal)).arrayBuffer();
+            await control.checkpoint();
+            if (!ended) source.supply(bytes);
+          })().catch(fail);
+        } else if (!sources.size && (currentFile === manifestPath || currentFile === null)) {
+          const rounded = Math.floor(percent);
+          if (rounded !== lastPercent) {
+            lastPercent = rounded;
+            progress({ stage: "packing", percent: rounded });
+          }
+        }
+      }).on("error", fail).on("end", () => {
+        if (ended) return;
+        stop();
+        output.close();
+      });
+    },
+    pull() { resume(); },
+    cancel() { stop(); },
+  }, { highWaterMark: archiveChunkSize, size: chunk => chunk.byteLength });
+
+  const reader = chunks.getReader();
+  const buffer = new Uint8Array(archiveChunkSize);
+  let buffered = 0;
+  let written = 0;
+  const flush = async () => {
+    await control.checkpoint();
+    await write(buffer.subarray(0, buffered));
+    written += buffered;
+    buffered = 0;
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      await control.checkpoint();
+      if (written + buffered + value.byteLength >= 0xffffffff) {
+        throw new Error("图片压缩包将超过 4 GiB，请按筛选范围分批下载");
+      }
+      for (let offset = 0; offset < value.byteLength;) {
+        const length = Math.min(archiveChunkSize - buffered, value.byteLength - offset);
+        buffer.set(value.subarray(offset, offset + length), buffered);
+        buffered += length;
+        offset += length;
+        if (buffered === archiveChunkSize) await flush();
+      }
+    }
+    if (buffered) await flush();
+    return written;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 export async function validateGameImageArchive(bytes:ArrayBuffer,images:UnityImage[],decode:(blob:Blob)=>Promise<{width:number;height:number;close:()=>void}>=createImageBitmap):Promise<{replacements:ImageArchiveReplacement[];ignored:number;missing:number}>{
  const zip=await JSZip.loadAsync(bytes,{checkCRC32:true,createFolders:false});
