@@ -8,18 +8,58 @@ const prefixKey=(image:UnityImage)=>image.name.normalize("NFKC").toLocaleLowerCa
 export function sortGameImages(images:UnityImage[],selected?:ReadonlyMap<string,boolean>):UnityImage[]{
  return images.map(image=>({image,key:prefixKey(image),selected:selected?.get(image.id)??image.selected})).sort((a,b)=>Number(b.selected)-Number(a.selected)||(a.key<b.key?-1:a.key>b.key?1:locator(a.image).localeCompare(locator(b.image))||a.image.id.localeCompare(b.image.id))).map(row=>row.image);
 }
-export async function exportGameImages(images:UnityImage[],read:(image:UnityImage)=>Promise<Blob>,progress:(text:string)=>void):Promise<Uint8Array>{
+export type GameImageExportProgress =
+  | { stage: "reading"; completed: number; file: string }
+  | { stage: "packing"; percent: number };
+
+export type GameImageExportControl = {
+  signal: AbortSignal;
+  checkpoint: () => Promise<void>;
+  onPauseChange: (listener: (paused: boolean) => void) => () => void;
+};
+
+export async function exportGameImages(
+  images: readonly UnityImage[],
+  read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
+  progress: (value: GameImageExportProgress) => void,
+  control: GameImageExportControl,
+): Promise<Uint8Array> {
  const zip=new JSZip(),entries:Entry[]=[];
  for(const image of images){
+  await control.checkpoint();
   if(!image.sourceFile)throw new Error(`无法导出 ${image.name}：没有原图文件（${locator(image)}）`);
   const name=image.name.replace(/[\/:*?"<>|]/g,"_").replace(/\.[^.]*$/,"")||"image";
   const path=`images/${encodeURIComponent(image.id)}/${name}.png`;
-  progress(`导出图片 ${entries.length+1}/${images.length}：${image.name}`);
-  zip.file(path,await(await read(image)).arrayBuffer());
+  progress({ stage: "reading", completed: entries.length, file: image.name });
+  const contents = await (await read(image, control.signal)).arrayBuffer();
+  await control.checkpoint();
+  zip.file(path, contents);
   entries.push({id:image.id,file:image.file,container:image.container,objectId:image.objectId,sourceHash:image.sourceHash,width:image.width,height:image.height,path});
  }
  zip.file("llmchat-images.json",JSON.stringify({format:"llmchat-images",version:1,images:entries},null,2));
- return zip.generateAsync({type:"uint8array",compression:"STORE",streamFiles:true});
+ progress({ stage: "packing", percent: 0 });
+ const stream = zip.generateInternalStream({ type: "uint8array", compression: "STORE", streamFiles: true });
+ const { signal } = control;
+ return new Promise((resolve, reject) => {
+   const unsubscribe = control.onPauseChange(paused => { if (paused) stream.pause(); else stream.resume(); });
+   const cleanup = () => {
+     unsubscribe();
+     signal.removeEventListener("abort", abort);
+   };
+   const abort = () => {
+     stream.pause();
+     cleanup();
+     reject(signal.reason);
+   };
+   signal.addEventListener("abort", abort, { once: true });
+   let lastPercent = 0;
+   void stream.accumulate(({ percent }) => {
+     const rounded = Math.floor(percent);
+     if (rounded === lastPercent) return;
+     lastPercent = rounded;
+     progress({ stage: "packing", percent: rounded });
+   }).then(bytes => { cleanup(); resolve(bytes); }, error => { cleanup(); reject(error); });
+ });
 }
 export async function validateGameImageArchive(bytes:ArrayBuffer,images:UnityImage[],decode:(blob:Blob)=>Promise<{width:number;height:number;close:()=>void}>=createImageBitmap):Promise<{replacements:ImageArchiveReplacement[];ignored:number;missing:number}>{
  const zip=await JSZip.loadAsync(bytes,{checkCRC32:true,createFolders:false});

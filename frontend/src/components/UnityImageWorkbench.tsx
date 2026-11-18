@@ -5,10 +5,10 @@ import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { importSourceName,type GameImportSource } from "../gameImageImport";
-import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
-import { sortGameImages, exportGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
+import { sortGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
+import { downloadGameImages, type GameImageDownloadRange } from "../gameImageDownloads";
 import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { readUnitySourceImage, acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey, type ImagePreviewReader } from "../unityImagePreview";
@@ -345,9 +345,20 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
   const [archiveBusy,setArchiveBusy]=useState("");
   const saveCurrent=async()=>{if(await onSave())setViewRevision(value=>value+1);};
   const discardCurrent=async()=>{if(!dirty){onArchiveMessage("当前没有未保存的图片修改");return;}if(!await confirm("取消当前尚未保存的图片勾选、区域和译文修改？已保存内容保留。",{title:"取消当前修改",kind:"warning",okLabel:"取消当前修改",cancelLabel:"返回"}))return;if(await onDiscard())setViewRevision(value=>value+1);};
-  const exportArchive=async(range: "all" | "filtered")=>{if(!project)return;const selected=(range === "all" ? images : filtered).filter(image=>!!image.sourceFile);if(!selected.length)return;
-    const path=await saveDialog({defaultPath:range === "all" ? "all-images.zip" : "filtered-images.zip",filters:[{name:"图片压缩包",extensions:["zip"]}]});if(!path)return;
-    setArchiveBusy("导出");try{const bytes=await exportGameImages(selected,async image=>reader?reader(image,false,false,new AbortController().signal):readUnitySourceImage(project,image),text=>setArchiveBusy(text));await invoke("write_file_bytes",{path,contents:Array.from(bytes)});onArchiveMessage(`已导出 ${selected.length} 张图片：${path}`);}catch(error){onArchiveMessage(error instanceof Error?error.message:String(error),true);}finally{setArchiveBusy("");}};
+  const downloadable = useMemo(() => {
+    const all = images.filter(image => !!image.sourceFile);
+    return {
+      all,
+      filtered: filtered.filter(image => !!image.sourceFile),
+      checked: all.filter(image => image.selected),
+    };
+  }, [images, filtered]);
+  const exportArchive = (range: GameImageDownloadRange) => {
+    downloadMenu.current?.hidePopover();
+    if (!project || !downloadable[range].length) return;
+    void downloadGameImages(range, downloadable[range], (image, signal) =>
+      reader ? reader(image, false, false, signal) : readUnitySourceImage(project, image, signal));
+  };
   const importArchive=async(source?:GameImportSource)=>{const path=source||await open({multiple:false,filters:[{name:"图片压缩包",extensions:["zip"]}]});if(!path)return;setArchiveBusy("校验压缩包");
     try{const result=await validateGameImageArchive(typeof path==="string"?await readFileBytes(path):await path.arrayBuffer(),images);if(result.replacements.length&&!await onImportArchive(result.replacements))return;onArchiveMessage(`图片包导入：替换 ${result.replacements.length} 张，忽略不存在的对象 ${result.ignored} 个，跳过未提供的图片 ${result.missing} 张`);}catch(error){onArchiveMessage(error instanceof Error?error.message:String(error),true);}finally{setArchiveBusy("");}};
   const fileDrop=useGameFileDrop({active:active&&!disabled&&!archiveBusy,webImages:true,root:workbench,
@@ -361,10 +372,12 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
 
   return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className="unity-offline-workbench unity-image-workbench" aria-label="图片识别与翻译结果">{confirmation.dialog}
     {createPortal(<div ref={downloadMenu} id={downloadId} popover="auto" role="menu" aria-label="图片下载范围" className="unity-image-filter-menu unity-download-menu">
-      <button type="button" role="menuitem" disabled={!images.some(image => image.sourceFile)} onClick={() => { downloadMenu.current?.hidePopover(); void exportArchive("all"); }}>下载全部</button>
-      <button type="button" role="menuitem" disabled={!filtered.some(image => image.sourceFile)} onClick={() => { downloadMenu.current?.hidePopover(); void exportArchive("filtered"); }}>下载筛选内容</button>
+      {([["all", "下载全部"], ["filtered", "下载筛选内容"], ["checked", "下载勾选图片"]] as const).map(([range, label]) =>
+        <button key={range} type="button" role="menuitem" disabled={!downloadable[range].length}
+          data-tooltip={range === "checked" ? "下载整个工程中已勾选的图片，包含其他分组和分页" : undefined}
+          onClick={() => exportArchive(range)}>{label}</button>)}
     </div>, document.body)}
-    {focusedDetail ? null : <div className="unity-offline-toolbar unity-image-toolbar"><button className="unity-btn" onClick={toggleGallery} data-tooltip={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"} aria-label={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"}>{gallery ? "返回文字区域" : returnToGallery ? "返回缩略图位置" : "原图批量阅览"}</button><button className="unity-btn unity-text-action" aria-label="下载图片" disabled={disabled||!!archiveBusy||!images.some(image=>image.sourceFile)} data-tooltip="选择下载全部图片或当前筛选结果及定位清单" aria-haspopup="menu" popoverTarget={downloadId} popoverTargetAction="toggle" onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();Object.assign(downloadMenu.current!.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-160))}px`,top:`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-110))}px`});}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>下载</button><button className="unity-btn unity-text-action" aria-label="导入图片" disabled={disabled||!!archiveBusy} data-tooltip="导入本软件导出的 ZIP，校验定位信息、原资源版本和 PNG 尺寸后替换译图" onClick={()=>requestFilter(()=>void importArchive())}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4"/></svg>导入</button><button type="button" className="unity-image-filter-trigger" aria-label="筛选图片" aria-controls={filterId} aria-haspopup="dialog" data-tooltip="筛选图片" onClick={event=>{const menu=filterMenu.current!;if(menu.matches(":popover-open")){menu.hidePopover();return;}const rect=event.currentTarget.getBoundingClientRect();Object.assign(menu.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-248))}px`,top:`${Math.min(rect.bottom+6,window.innerHeight-320)}px`});menu.showPopover();}}><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></button>
+    {focusedDetail ? null : <div className="unity-offline-toolbar unity-image-toolbar"><button className="unity-btn" onClick={toggleGallery} data-tooltip={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"} aria-label={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"}>{gallery ? "返回文字区域" : returnToGallery ? "返回缩略图位置" : "原图批量阅览"}</button><button className="unity-btn unity-text-action" aria-label="下载图片" disabled={disabled||!!archiveBusy||!downloadable.all.length} data-tooltip="下载原图 ZIP，可选择全部、筛选结果或已勾选图片" aria-haspopup="menu" popoverTarget={downloadId} popoverTargetAction="toggle" onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();Object.assign(downloadMenu.current!.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-160))}px`,top:`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-145))}px`});}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>下载</button><button className="unity-btn unity-text-action" aria-label="导入图片" disabled={disabled||!!archiveBusy} data-tooltip="导入本软件导出的 ZIP，校验定位信息、原资源版本和 PNG 尺寸后替换译图" onClick={()=>requestFilter(()=>void importArchive())}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4"/></svg>导入</button><button type="button" className="unity-image-filter-trigger" aria-label="筛选图片" aria-controls={filterId} aria-haspopup="dialog" data-tooltip="筛选图片" onClick={event=>{const menu=filterMenu.current!;if(menu.matches(":popover-open")){menu.hidePopover();return;}const rect=event.currentTarget.getBoundingClientRect();Object.assign(menu.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-248))}px`,top:`${Math.min(rect.bottom+6,window.innerHeight-320)}px`});menu.showPopover();}}><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></button>
 {createPortal(<div ref={filterMenu} id={filterId} popover="auto" role="dialog" aria-label="图片筛选" className="unity-image-filter-menu">
 <div className="unity-image-filter-presets"><button type="button" onClick={()=>requestFilter(()=>setImageFilters(allFilters))}>全部选取</button><button type="button" onClick={()=>requestFilter(()=>setImageFilters({checked:false,unchecked:false,done:false,pending:false,failed:false}))}>取消全部选取</button></div>
 {([["checked","已勾选"],["unchecked","未勾选"],["pending","未完成"],["failed","失败"],["done","已完成"]] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={imageFilters[key]} onChange={event=>{const checked=event.currentTarget.checked;requestFilter(()=>setImageFilters(current=>({...current,[key]:checked})));}}/>{label}</label>)}

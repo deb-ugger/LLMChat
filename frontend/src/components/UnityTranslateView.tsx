@@ -1,4 +1,5 @@
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
+import { GameImageDownloadsButton } from "./GameImageDownloadsButton";
 import { useFollowLatest } from "../hooks/useFollowLatest";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
@@ -1759,6 +1760,7 @@ export function UnityTranslateView({
               >
                 <UnityActionIcon kind="settings" />
               </UnityIconButton>}
+              {mode === "offline" && <GameImageDownloadsButton active={active && !embeddingGame} />}
               <GameWorkflowHelp mode={mode === "offline" ? "unity-offline" : "unity-runtime"} />
             </div>
         </header>
