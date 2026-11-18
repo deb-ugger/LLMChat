@@ -282,7 +282,22 @@ def ink_components(crop):
     return ndimage.binary_dilation(protected, iterations=2)
 
 
-def program_layer(crop, translation, font_path, protected):
+def lettering_orientation(axis, writing_mode):
+    if writing_mode not in {"auto", "horizontal", "horizontal-reverse", "vertical", "vertical-reverse"}:
+        raise ValueError("未知的字形方向")
+    # The line angle alone cannot identify writing mode. Use vertical type only near upright by default.
+    near_upright = abs(axis[0]) <= np.sin(np.deg2rad(15))
+    vertical = writing_mode.startswith("vertical") or (writing_mode == "auto" and near_upright)
+    if axis[1] < 0 and (vertical or abs(axis[0]) < 1e-6):
+        axis = -axis
+    angle = np.degrees(np.arctan2(axis[1], axis[0]))
+    rotation = 90 - angle if vertical else -angle
+    if writing_mode.endswith("-reverse"):
+        rotation += 180
+    return vertical, rotation
+
+
+def program_layer(crop, translation, font_path, protected, writing_mode="auto"):
     from PIL import ImageDraw, ImageFont
     rgba = np.asarray(crop)
     transparent = rgba[:, :, 3].min() < 255
@@ -301,17 +316,13 @@ def program_layer(crop, translation, font_path, protected):
     vals,vecs = np.linalg.eigh(np.cov(coords.T))
     axis = vecs[:,-1] if vals[-1] > 1.35*vals[0] else np.array([1.,0.])
     if axis[0] < 0: axis = -axis
-    if abs(axis[0]) < .16 and axis[1] < 0: axis = -axis
     normal = np.array([-axis[1],axis[0]])
     along, across = coords @ axis, coords @ normal
     center = axis*(along.min()+along.max())/2 + normal*(across.min()+across.max())/2
     colors,counts=np.unique(rgba[ys,xs,:3],axis=0,return_counts=True)
     color=tuple(map(int,colors[counts.argmax()]))+(255,)
     font=ImageFont.truetype(font_path, 128)
-    vertical = abs(axis[1]) > abs(axis[0])
-    if vertical and axis[1] < 0:
-        axis = -axis
-    angle = np.degrees(np.arctan2(axis[1],axis[0]))
+    vertical, rotation = lettering_orientation(axis, writing_mode)
     text = "\n".join(ch for ch in translation.strip() if ch != "\n") if vertical else translation.strip()
     draw=ImageDraw.Draw(Image.new("L",(1,1)))
     bounds=draw.multiline_textbbox((0,0),text,font=font,align="center")
@@ -320,7 +331,7 @@ def program_layer(crop, translation, font_path, protected):
     length, width = np.ptp(along)+1, np.ptp(across)+1
     scale = min(width/stamp.width,length/stamp.height) if vertical else min(length/stamp.width,width/stamp.height)
     stamp=stamp.resize((max(1,round(stamp.width*scale*3)),max(1,round(stamp.height*scale*3))),Image.Resampling.LANCZOS)
-    stamp=stamp.rotate(90-angle if vertical else -angle,expand=True,resample=Image.Resampling.BICUBIC)
+    stamp=stamp.rotate(rotation,expand=True,resample=Image.Resampling.BICUBIC)
     stamp=stamp.resize((max(1,round(stamp.width/3)),max(1,round(stamp.height/3))),Image.Resampling.LANCZOS)
     # Keep the new text clear of protected ornaments, including their transparent counters.
     original_stamp = stamp
@@ -373,7 +384,7 @@ async def run(data):
         crop = original.crop(box)
         transparent = crop.getchannel("A").getextrema()[0] < 255
         protected = ink_components(crop) if transparent else np.zeros((crop.height,crop.width),dtype=bool)
-        draft, lettering = program_layer(crop, region["translation"], font, protected)
+        draft, lettering = program_layer(crop, region["translation"], font, protected, region.get("writingMode", "auto"))
         lettering_canvas.paste(lettering, box)
         drafts.append((crop, lettering if transparent else draft, protected, transparent))
         composed.paste(draft, box)

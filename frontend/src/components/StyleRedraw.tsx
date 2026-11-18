@@ -11,6 +11,14 @@ type Box = [number, number, number, number];
 type Region = { box: Box; translation: string };
 type GameInput = {
   name: string; regions: Region[]; load: () => Promise<Blob>;
+const writingModes = {
+  auto: "自动",
+  horizontal: "横排字",
+  "horizontal-reverse": "横排字（反向）",
+  vertical: "竖排字",
+  "vertical-reverse": "竖排字（反向）",
+} as const;
+type WritingMode = keyof typeof writingModes;
   apply: (file: File) => Promise<unknown>; failure: (message: string) => Promise<void>;
 };
 type ProfileId = "2511" | "turbo" | "custom";
@@ -79,7 +87,20 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
   const drag = useRef<[number, number] | null>(null);
   const processing = useRef(false);
   const [dimensions, setDimensions] = useState([0, 0]);
-  const regionList: Region[] = game?.regions ?? [{ box, translation }];
+  const regionList = (game?.regions ?? [{ box, translation }]).map((region, index) => ({
+    ...region, writingMode: regionWritingModes[index] ?? "auto",
+  }));
+  const writingModeControl = (index: number) => (
+    <label>字形方向<select aria-label={game ? `区域 ${index + 1} 字形方向` : "字形方向"}
+      title="字形沿原文行的角度排放，反向可旋转 180°"
+      value={regionList[index].writingMode} onChange={event => {
+        const mode = event.target.value as WritingMode;
+        setRegionWritingModes(previous => ({ ...previous, [index]: mode }));
+        setResult("");
+      }}>
+      {Object.entries(writingModes).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+    </select></label>
+  );
   const zoom = result && regionList[zoomRegion]?.box;
   const cropPreview = (url: string, label: string) => zoom && <svg className="style-redraw-detail" role="img" aria-label={label}
     viewBox={`${zoom[0]} ${zoom[1]} ${zoom[2]-zoom[0]} ${zoom[3]-zoom[1]}`}
@@ -90,6 +111,7 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     if (!game || settings) return;
+  const [regionWritingModes, setRegionWritingModes] = useState<Partial<Record<number, WritingMode>>>({});
     let current = true;
     game.load().then(readImage).then(value => { if (current) setSource(value); })
       .catch(error => { if (current) report(error); });
@@ -193,8 +215,14 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
           <label key={label}>{label}<input type="number" value={box[i]} min={0} max={dimensions[i % 2]} onChange={e => {
             const next: Box = [...box]; next[i] = e.target.valueAsNumber || 0; setBox(next); setResult("");
           }} /></label>)}</div>}
-        {game ? <details><summary>已勾选 {regionList.length} 个区域</summary><ol>{regionList.map((r, i) => <li key={i}>{r.translation}</li>)}</ol></details> :
-          <label>目标译文<textarea rows={2} value={translation} onChange={e => { setTranslation(e.target.value); setResult(""); }} /></label>}
+        {game ? <details><summary>已勾选 {regionList.length} 个区域 · 字形方向</summary>
+          <ol>{regionList.map((region, index) => <li key={index}><div className="style-redraw-tools">
+            <span>{region.translation}</span>{writingModeControl(index)}
+          </div></li>)}</ol>
+        </details> : <>
+          <label>目标译文<textarea rows={2} value={translation} onChange={e => { setTranslation(e.target.value); setResult(""); }} /></label>
+          <div className="style-redraw-tools">{writingModeControl(0)}</div>
+        </>}
         <div className="style-redraw-tools"><label>模型工作流{selectControl}</label><label>采样步数<input type="number" min={1} max={100} disabled={profileId === "turbo"} value={steps || ""} onChange={e => { setSteps(e.target.valueAsNumber || 0); }} /></label>
           <button disabled={!source || !valid || !directory} onClick={() => void run("program").catch(report)}>生成中文字层</button>
           <button disabled={!program || !directory || steps < 1 || steps > 100 || !Number.isInteger(steps) || (profileId === "custom" && !profile.graph)} onClick={() => void run("model").catch(report)}>生成模型候选</button>
@@ -238,6 +266,7 @@ function Editor({ game, onBusy }: { game?: GameInput; onBusy?: (busy: boolean) =
   </section>;
 }
 
+      setRegionWritingModes({});
 export default function StyleRedraw() { return <Editor />; }
 
 function RedrawDialog({ game, close }: { game: GameInput; close: () => void }) {
