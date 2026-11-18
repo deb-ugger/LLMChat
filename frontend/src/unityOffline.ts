@@ -35,6 +35,21 @@ export type UnityProject = {
 export type UnityPatch = { folder: string; files: number; entries: number; images?: number; fontReplacements: number; fontMappings?: string[] };
 export type UnitySavedProject = { project: UnityProject | null; scanCompleted: number | null; scanTotal: number | null; includeCode: boolean | null; notices: string[] };
 export type UnityWorkspace<T> = { workRoot: string; projectsRoot: string; saved: UnitySavedProject; task: T | null; installed: boolean };
+export function countMissingGlyphEntries(entries: UnityEntry[], missing: number[]) {
+  const counts = new Map(missing.map(code => [String.fromCodePoint(code), 0]));
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    seen.clear();
+    for (const character of entry.translation || entry.source) {
+      const count = counts.get(character);
+      if (count === undefined || seen.has(character)) continue;
+      seen.add(character);
+      counts.set(character, count + 1);
+    }
+  }
+  return counts;
+}
+
 export function mergeUnityProject(previous: UnityProject, scanned: UnityProject) {
   const key = (e: UnityEntry) => JSON.stringify([e.file, e.container, e.objectId, e.kind === "UI 文本" && e.locator === "m_Text" ? "/m_Text" : e.locator, e.kind === "UI 文本" ? "游戏文本" : e.kind, e.source]);
   const entries = new Map(previous.entries.map(e => [key(e), e]));

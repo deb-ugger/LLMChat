@@ -102,19 +102,16 @@ constexpr std::array<const ModelSpec*, 7> kMangaFiles{
     &kMangaEncoder,
     &kMangaDecoder,
 };
-constexpr std::uintmax_t kMangaModelBytes = 116790634;
-constexpr std::array<const ModelSpec*, 10> kDownloadable{
-    &kMediumDet,
-    &kMediumRec,
-    &kEnglishRec,
-    &kMangaConfig,
-    &kMangaGenerationConfig,
-    &kMangaPreprocessorConfig,
-    &kMangaTokenizer,
-    &kMangaTokenizerConfig,
-    &kMangaEncoder,
-    &kMangaDecoder,
-};
+constexpr std::uintmax_t kMangaModelBytes = [] {
+    std::uintmax_t total = 0;
+    for (const auto* spec : kMangaFiles) total += spec->bytes;
+    return total;
+}();
+constexpr auto kDownloadable = [] {
+    std::array<const ModelSpec*, 3 + kMangaFiles.size()> files{&kMediumDet, &kMediumRec, &kEnglishRec};
+    std::copy(kMangaFiles.begin(), kMangaFiles.end(), files.begin() + 3);
+    return files;
+}();
 constexpr std::array<const char*, 3> kLegacyPaddleModels{
     "PP-OCRv6_medium_det_infer.tar",
     "PP-OCRv6_medium_rec_infer.tar",
@@ -194,8 +191,8 @@ std::uintmax_t cachedBytes(const fs::path& root)
     {
         std::error_code ec;
         const fs::path path = root / spec->fileName;
-        if (fs::is_regular_file(path, ec))
-            total += fs::file_size(path, ec);
+        const auto bytes = fs::file_size(path, ec);
+        if (!ec) total += bytes;
     }
     return total;
 }
@@ -415,8 +412,11 @@ json OcrModelStore::status() const
     const bool det = isComplete(root_, kMediumDet);
     const bool rec = isComplete(root_, kMediumRec);
     const bool englishRec = isComplete(root_, kEnglishRec);
-    const bool mangaRec = isMangaComplete(root_);
     const std::uintmax_t mangaCached = mangaCachedBytes(root_);
+    const bool mangaRec = mangaCached == kMangaModelBytes;
+    const auto missingDetectorBytes = det ? 0 : kMediumDet.bytes;
+    const auto missingPreciseBytes = missingDetectorBytes + (rec ? 0 : kMediumRec.bytes);
+    const auto missingEnglishBytes = missingDetectorBytes + (englishRec ? 0 : kEnglishRec.bytes);
     const bool precise = det && rec;
     const bool english = det && englishRec;
     const bool manga = det && mangaRec;
@@ -436,17 +436,17 @@ json OcrModelStore::status() const
                        kFastModelBytes, kFastModelBytes,
                        kFastDetModelBytes, kFastRecModelBytes),
             modeStatus("precise", "精确", false, precise, det, rec,
-                       precise ? 0 : (det ? kMediumRec.bytes : kMediumDet.bytes + kMediumRec.bytes),
+                       missingPreciseBytes,
                        kMediumDet.bytes + kMediumRec.bytes,
                        (det ? kMediumDet.bytes : 0) + (rec ? kMediumRec.bytes : 0),
                        kMediumDet.bytes, kMediumRec.bytes),
             modeStatus("english", "英文增强", false, english, det, englishRec,
-                       english ? 0 : (det ? kEnglishRec.bytes : kMediumDet.bytes + kEnglishRec.bytes),
+                       missingEnglishBytes,
                        kMediumDet.bytes + kEnglishRec.bytes,
                        (det ? kMediumDet.bytes : 0) + (englishRec ? kEnglishRec.bytes : 0),
                        kMediumDet.bytes, kEnglishRec.bytes),
             modeStatus("manga", "漫画增强", false, manga, det, mangaRec,
-                       manga ? 0 : (det ? 0 : kMediumDet.bytes) + (kMangaModelBytes - mangaCached),
+                       missingDetectorBytes + (kMangaModelBytes - mangaCached),
                        kMediumDet.bytes + kMangaModelBytes,
                        (det ? kMediumDet.bytes : 0) + mangaCached,
                        kMediumDet.bytes, kMangaModelBytes),

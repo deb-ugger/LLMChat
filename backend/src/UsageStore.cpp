@@ -1,3 +1,4 @@
+#include "AsciiText.h"
 #include "UsageStore.h"
 #include "SqliteUsageDb.h"
 
@@ -41,14 +42,7 @@ std::string usageRequestType(const json& row)
     return row.value("ok", false) ? "ok" : "fail";
 }
 
-std::string trimCopy(std::string s)
-{
-    while (!s.empty() && (unsigned char)s.front() <= 0x20)
-        s.erase(s.begin());
-    while (!s.empty() && (unsigned char)s.back() <= 0x20)
-        s.pop_back();
-    return s;
-}
+using ascii_text::trimCopy;
 
 std::string toLower(std::string s)
 {

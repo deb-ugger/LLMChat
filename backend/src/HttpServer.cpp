@@ -134,17 +134,15 @@ json errorJson(const std::string& message)
 /** Writes markPending on construction and finalize on destruction (same event id). */
 class ScopedUsageLog {
 public:
-    ScopedUsageLog(UsageStore* store, UsageEvent ev, bool track)
-        : store_(track ? store : nullptr), ev_(std::move(ev))
+    ScopedUsageLog(UsageStore& store, UsageEvent ev)
+        : store_(store), ev_(std::move(ev))
     {
-        if (store_)
-            store_->markPending(ev_);
+        store_.markPending(ev_);
     }
 
     ~ScopedUsageLog()
     {
-        if (store_)
-            store_->finalize(ev_);
+        store_.finalize(ev_);
     }
 
     UsageEvent& ev() { return ev_; }
@@ -153,7 +151,7 @@ public:
     ScopedUsageLog& operator=(const ScopedUsageLog&) = delete;
 
 private:
-    UsageStore* store_;
+    UsageStore& store_;
     UsageEvent ev_;
 };
 
@@ -287,12 +285,9 @@ std::string readFileTailLines(const fs::path& path, int maxLines)
 HttpServer::HttpServer(ConfigStore& config, ConversationManager& conversations)
     : config_(config)
     , conversations_(conversations)
-    , usage_(std::make_unique<UsageStore>(
-          (fs::path(config.path()).parent_path() / "usage-events.jsonl").string()))
-    , pricing_(std::make_unique<PricingStore>(
-          (fs::path(config.path()).parent_path() / "pricing.json").string()))
-    , ocrModels_(std::make_unique<OcrModelStore>(
-          storage::get("ocr")))
+    , usage_((dataDirectory(config) / "usage-events.jsonl").string())
+    , pricing_((dataDirectory(config) / "pricing.json").string())
+    , ocrModels_(storage::get("ocr"))
 {
 }
 
@@ -362,113 +357,47 @@ int HttpServer::run()
         }
     }));
 
-    svr.Get("/api/usage/events", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
-        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
-        const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
-        const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
-        const std::string bandFilter =
-            req.has_param("band") ? req.get_param_value("band") : "";
-        std::string currency =
-            req.has_param("currency") ? req.get_param_value("currency") : "";
-        if (currency.empty() && pricing_)
-            currency = pricing_->displayCurrency();
-        if (currency.empty())
-            currency = "CNY";
-        json items = json::array();
-        if (usage_)
-        {
-            for (auto& row : usage_->events(from, to, feature, okFilter))
-            {
-                const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
-                row["cost"] = cost;
-                std::string band = "flat";
-                if (pricing_ && row.value("channel", "") == "llm")
-                {
-                    const std::string model = row.value("model", "");
-                    if (!model.empty())
-                    {
-                        band = pricing_->bandFor(
-                            model,
-                            row.value("date", ""),
-                            row.value("time", ""));
-                        if (band.empty())
-                            band = "flat";
-                    }
-                }
-                row["pricingBand"] = band;
-                if (!bandFilter.empty() && band != bandFilter)
-                    continue;
-                items.push_back(std::move(row));
-            }
+    const auto requestCurrency = [this](const httplib::Request& req) {
+        auto currency = req.get_param_value("currency");
+        return currency.empty() ? pricing_.displayCurrency() : currency;
+    };
+    const auto eventBand = [this](const json& row) -> std::string {
+        if (row.value("channel", "") == "llm") {
+            auto band = pricing_.bandFor(row.value("model", ""), row.value("date", ""), row.value("time", ""));
+            if (!band.empty()) return band;
         }
-        res.set_content(
-            json{{"ok", true}, {"currency", currency}, {"items", items}}.dump(),
-            "application/json");
+        return "flat";
+    };
+    const auto pricedEvents = [this, eventBand](const httplib::Request& req, const std::string& currency) {
+        auto rows = usage_.events(req.get_param_value("from"), req.get_param_value("to"),
+                                  req.get_param_value("feature"), req.get_param_value("ok"));
+        for (auto& row : rows) {
+            row["cost"] = pricing_.costFor(row, currency);
+            row["pricingBand"] = eventBand(row);
+        }
+        const auto band = req.get_param_value("band");
+        if (!band.empty())
+            std::erase_if(rows, [&](const json& row) { return row.at("pricingBand") != band; });
+        return rows;
+    };
+
+    svr.Get("/api/usage/events", withCors([requestCurrency, pricedEvents](const httplib::Request& req, httplib::Response& res) {
+        const auto currency = requestCurrency(req);
+        res.set_content(json{{"ok", true}, {"currency", currency}, {"items", pricedEvents(req, currency)}}.dump(),
+                        "application/json");
     }));
 
-    svr.Get("/api/usage/summary", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
-        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
-        const std::string feature = req.has_param("feature") ? req.get_param_value("feature") : "";
-        const std::string groupBy =
-            req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
-        const std::string okFilter = req.has_param("ok") ? req.get_param_value("ok") : "";
-        const std::string bandFilter =
-            req.has_param("band") ? req.get_param_value("band") : "";
-        std::string currency =
-            req.has_param("currency") ? req.get_param_value("currency") : "";
-        if (currency.empty() && pricing_)
-            currency = pricing_->displayCurrency();
-        if (currency.empty())
-            currency = "CNY";
-        if (!usage_)
-        {
-            res.set_content(
-                json{
-                    {"ok", true},
-                    {"groupBy", groupBy},
-                    {"currency", currency},
-                    {"items", json::array()},
-                    {"totalEvents", 0}}
-                    .dump(),
-                "application/json");
-            return;
-        }
-        auto rows = usage_->events(from, to, feature, okFilter);
-        std::vector<json> filteredRows;
-        filteredRows.reserve(rows.size());
-        for (auto& row : rows)
-        {
-            const double cost = pricing_ ? pricing_->costFor(row, currency) : 0.0;
-            row["cost"] = cost;
-            std::string band = "flat";
-            if (pricing_ && row.value("channel", "") == "llm")
-            {
-                const std::string model = row.value("model", "");
-                if (!model.empty())
-                {
-                    band = pricing_->bandFor(
-                        model,
-                        row.value("date", ""),
-                        row.value("time", ""));
-                    if (band.empty())
-                        band = "flat";
-                }
-            }
-            row["pricingBand"] = band;
-            if (!bandFilter.empty() && band != bandFilter)
-                continue;
-            filteredRows.push_back(std::move(row));
-        }
-        json body = UsageStore::summaryFromEvents(filteredRows, groupBy);
+    svr.Get("/api/usage/summary", withCors([requestCurrency, pricedEvents](const httplib::Request& req, httplib::Response& res) {
+        const auto currency = requestCurrency(req);
+        const auto groupBy = req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
+        json body = UsageStore::summaryFromEvents(pricedEvents(req, currency), groupBy);
         body["currency"] = currency;
         res.set_content(body.dump(), "application/json");
     }));
 
-    svr.Get("/api/usage/report", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        const std::string from = req.has_param("from") ? req.get_param_value("from") : "";
-        const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+    svr.Get("/api/usage/report", withCors([this, requestCurrency, eventBand](const httplib::Request& req, httplib::Response& res) {
+        const std::string from = req.get_param_value("from");
+        const std::string to = req.get_param_value("to");
         if (from.empty() || to.empty())
         {
             res.status = 400;
@@ -477,19 +406,14 @@ int HttpServer::run()
         }
 
         const std::string feature =
-            req.has_param("feature") ? req.get_param_value("feature") : "";
+            req.get_param_value("feature");
         const std::string groupBy =
             req.has_param("groupBy") ? req.get_param_value("groupBy") : "feature";
         const std::string okFilter =
-            req.has_param("ok") ? req.get_param_value("ok") : "";
+            req.get_param_value("ok");
         const std::string bandFilter =
-            req.has_param("band") ? req.get_param_value("band") : "";
-        std::string currency =
-            req.has_param("currency") ? req.get_param_value("currency") : "";
-        if (currency.empty() && pricing_)
-            currency = pricing_->displayCurrency();
-        if (currency.empty())
-            currency = "CNY";
+            req.get_param_value("band");
+        const auto currency = requestCurrency(req);
 
         auto intParam = [&](const char* name, int fallback, int low, int high) {
             if (!req.has_param(name))
@@ -507,25 +431,7 @@ int HttpServer::run()
         };
         const int page = intParam("page", 1, 1, 1000000);
         const int pageSize = intParam("pageSize", 100, 20, 200);
-        const bool detailsOnly = req.has_param("detailsOnly") && req.get_param_value("detailsOnly") == "1";
-
-        if (!usage_)
-        {
-            res.set_content(
-                json{
-                    {"ok", true},
-                    {"groupBy", groupBy},
-                    {"currency", currency},
-                    {"summary", json::array()},
-                    {"chart", json::array()},
-                    {"events", json::array()},
-                    {"pagination",
-                     {{"page", page}, {"pageSize", pageSize}, {"total", 0}, {"pages", 0}}},
-                }
-                    .dump(),
-                "application/json");
-            return;
-        }
+        const bool detailsOnly = req.get_param_value("detailsOnly") == "1";
 
         struct PriceContext {
             std::optional<TokenRates> rates;
@@ -535,7 +441,7 @@ int HttpServer::run()
         auto decorate = [&](json& row) {
             row["cost"] = 0.0;
             row["pricingBand"] = "flat";
-            if (!pricing_ || row.value("channel", "") != "llm")
+            if (row.value("channel", "") != "llm")
                 return;
             const std::string model = row.value("model", "");
             if (model.empty())
@@ -547,8 +453,8 @@ int HttpServer::run()
             auto [it, inserted] = priceCache.try_emplace(cacheKey);
             if (inserted)
             {
-                it->second.rates = pricing_->ratesFor(model, date, currency, minute);
-                it->second.band = pricing_->bandFor(model, date, minute);
+                it->second.rates = pricing_.ratesFor(model, date, currency, minute);
+                it->second.band = pricing_.bandFor(model, date, minute);
                 if (it->second.band.empty())
                     it->second.band = "flat";
             }
@@ -564,7 +470,7 @@ int HttpServer::run()
                 *it->second.rates);
         };
 
-        auto chartRows = detailsOnly ? std::vector<json>{} : usage_->chartBuckets(from, to, feature, okFilter);
+        auto chartRows = detailsOnly ? std::vector<json>{} : usage_.chartBuckets(from, to, feature, okFilter);
         std::vector<json> filteredChart;
         filteredChart.reserve(chartRows.size());
         for (auto& row : chartRows)
@@ -579,7 +485,7 @@ int HttpServer::run()
         int totalRows = 0;
         if (bandFilter.empty())
         {
-            pageRows = usage_->eventPage(
+            pageRows = usage_.eventPage(
                 from,
                 to,
                 feature,
@@ -587,24 +493,14 @@ int HttpServer::run()
                 page,
                 pageSize,
                 totalRows);
-            for (auto& row : pageRows)
-                decorate(row);
         }
         else
         {
-            pageRows = usage_->eventPage(
+            pageRows = usage_.eventPage(
                 from, to, feature, okFilter, page, pageSize, totalRows,
-                [&](const json& row) {
-                    std::string band = "flat";
-                    if (pricing_ && row.value("channel", "") == "llm") {
-                        band = pricing_->bandFor(row.value("model", ""),
-                            row.value("date", ""), row.value("time", ""));
-                        if (band.empty()) band = "flat";
-                    }
-                    return band == bandFilter;
-                });
-            for (auto& row : pageRows) decorate(row);
+                [&](const json& row) { return eventBand(row) == bandFilter; });
         }
+        for (auto& row : pageRows) decorate(row);
 
         json summaryBody = UsageStore::summaryFromEvents(filteredChart, groupBy);
         const int pages = totalRows <= 0 ? 0 : (totalRows + pageSize - 1) / pageSize;
@@ -627,42 +523,28 @@ int HttpServer::run()
     }));
 
     svr.Delete("/api/usage", withCors([this](const httplib::Request&, httplib::Response& res) {
-        if (usage_)
-            usage_->clear();
+        usage_.clear();
         res.set_content(json{{"ok", true}}.dump(), "application/json");
     }));
 
     svr.Get("/api/pricing", withCors([this](const httplib::Request&, httplib::Response& res) {
-        if (!pricing_)
-        {
-            res.set_content(
-                json{{"ok", true}, {"displayCurrency", "CNY"}, {"rules", json::array()}}.dump(),
-                "application/json");
-            return;
-        }
-        json table = pricing_->get();
+        json table = pricing_.get();
         table["ok"] = true;
         res.set_content(table.dump(), "application/json; charset=utf-8");
     }));
 
     svr.Put("/api/pricing", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        if (!pricing_)
-        {
-            res.status = 500;
-            res.set_content(errorJson("pricing unavailable").dump(), "application/json");
-            return;
-        }
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
-            const std::string err = pricing_->put(body);
+            const std::string err = pricing_.put(body);
             if (!err.empty())
             {
                 res.status = 400;
                 res.set_content(errorJson(err).dump(), "application/json");
                 return;
             }
-            json table = pricing_->get();
+            json table = pricing_.get();
             table["ok"] = true;
             res.set_content(table.dump(), "application/json; charset=utf-8");
         }
@@ -678,14 +560,14 @@ int HttpServer::run()
     }));
 
     svr.Get("/api/ocr/models", withCors([this](const httplib::Request&, httplib::Response& res) {
-        res.set_content(ocrModels_->status().dump(), "application/json");
+        res.set_content(ocrModels_.status().dump(), "application/json");
     }));
 
     svr.Post(R"(/api/ocr/models/(fast|precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const std::string mode = req.matches[1].str();
-            res.set_content(ocrModels_->ensureMode(mode, config_.snapshot()).dump(), "application/json");
+            res.set_content(ocrModels_.ensureMode(mode, config_.snapshot()).dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -697,7 +579,7 @@ int HttpServer::run()
     svr.Delete(R"(/api/ocr/models/(precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
-            res.set_content(ocrModels_->removeMode(req.matches[1].str()).dump(), "application/json");
+            res.set_content(ocrModels_.removeMode(req.matches[1].str()).dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -720,7 +602,7 @@ int HttpServer::run()
 
     svr.Get(R"(/api/ocr/model-files/(.+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         const std::string fileName = req.matches[1].str();
-        if (!ocrModels_->isAllowedModelFile(fileName))
+        if (!ocrModels_.isAllowedModelFile(fileName))
         {
             res.status = 404;
             res.set_content(errorJson("OCR 模型文件尚未下载").dump(), "application/json");
@@ -734,7 +616,7 @@ int HttpServer::run()
                 : fileName.ends_with(".txt")
                     ? "text/plain; charset=utf-8"
                     : "application/x-tar";
-        res.set_file_content(ocrModels_->modelFile(fileName).string(), contentType);
+        res.set_file_content(ocrModels_.modelFile(fileName).string(), contentType);
     }));
 
     svr.Get("/api/settings", withCors([this](const httplib::Request&, httplib::Response& res) {
@@ -1598,8 +1480,7 @@ int HttpServer::run()
             usageEv.sourceChars = static_cast<int>(content.size());
             usageEv.endpoint = "chat";
 
-            const bool trackUsage = static_cast<bool>(usage_);
-            ScopedUsageLog usageLog(usage_.get(), usageEv, trackUsage);
+            ScopedUsageLog usageLog(usage_, usageEv);
             const LlmResponse llmRes = LlmClient::chat(llmReq);
             usageLog.ev().ok = llmRes.ok;
             if (!llmRes.ok) usageLog.ev().errorCode = llmRes.errorCode.empty() ? "LLM_ERROR" : llmRes.errorCode;
@@ -1635,7 +1516,7 @@ int HttpServer::run()
         try
         {
             const AppConfig cfg = config_.snapshot();
-            const std::string q = req.has_param("q") ? req.get_param_value("q") : "";
+            const std::string q = req.get_param_value("q");
             const std::string source = req.has_param("source")
                 ? req.get_param_value("source")
                 : cfg.translateSource;
@@ -1937,7 +1818,7 @@ int HttpServer::run()
                     usageEv.apiHost, "", vendor);
                 usageEv.endpoint = "list_models";
 
-                ScopedUsageLog usageLog(usage_.get(), usageEv, static_cast<bool>(usage_));
+                ScopedUsageLog usageLog(usage_, usageEv);
                 const LlmListModelsResponse listed = LlmClient::listModels(lm);
                 usageLog.ev().ok = listed.ok;
                 usageLog.ev().errorCode = listed.ok ? "" : "LIST_MODELS_ERROR";
@@ -2051,7 +1932,7 @@ int HttpServer::run()
             auto event = UsageStore::makeEventSkeleton();
             event.feature = "settings_test"; event.endpoint = "ollama/test"; event.channel = "llm"; event.model = model;
             event.apiHost = UsageStore::hostFromApiUrl(url); event.vendor = "Ollama";
-            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            ScopedUsageLog usageLog(usage_, event);
             const auto response = LlmClient::testOllama(url, model);
             auto& ev = usageLog.ev();
             ev.ok = response.ok && !task->stopped();
@@ -2078,7 +1959,7 @@ int HttpServer::run()
             event.endpoint = "speech/process"; event.channel = "llm"; event.model = request.model;
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
-            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            ScopedUsageLog usageLog(usage_, event);
             const auto response = LlmClient::chat(request);
             auto& ev = usageLog.ev();
             ev.ok = response.ok && !task->stopped();
@@ -2159,7 +2040,7 @@ int HttpServer::run()
             event.endpoint = textScreening ? "game-text/model" : "game-images/model"; event.channel = "llm"; event.model = request.model;
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
-            ScopedUsageLog usageLog(usage_.get(), event, static_cast<bool>(usage_));
+            ScopedUsageLog usageLog(usage_, event);
             const auto response = LlmClient::chat(request);
             auto& ev = usageLog.ev();
             ev.ok = response.ok && !task->stopped();
@@ -2228,8 +2109,7 @@ int HttpServer::run()
             usageEv.sourceChars = static_cast<int>(text.size());
             usageEv.endpoint = "translate";
 
-            const bool trackUsage = static_cast<bool>(usage_);
-            ScopedUsageLog usageLog(usage_.get(), usageEv, trackUsage);
+            ScopedUsageLog usageLog(usage_, usageEv);
 
             if (provider == "llm")
             {
@@ -2468,7 +2348,7 @@ int HttpServer::run()
         static std::atomic<int> inFlight{0};
         constexpr int kMaxInFlight = 4;
 
-        const std::string text = req.has_param("text") ? req.get_param_value("text") : "";
+        const std::string text = req.get_param_value("text");
         if (text.empty())
         {
             res.status = 400;
@@ -2522,7 +2402,7 @@ int HttpServer::run()
             usageEv.sourceChars = static_cast<int>(text.size());
             usageEv.endpoint = "unity_llm";
 
-            ScopedUsageLog usageLog(usage_.get(), usageEv, static_cast<bool>(usage_));
+            ScopedUsageLog usageLog(usage_, usageEv);
             const auto resourceKey=json::array({cfg.apiUrl,cfg.apiKey,cfg.model,source,target,cfg.proxyMode,cfg.httpProxy}).dump();
             const TranslateResult tr=runtimeLlm.submit(resourceKey,text,[cfg,source,target](const std::vector<std::string>& texts){
                 auto single=[&](const std::string& input){return TranslateClient::translateWithLlm(
@@ -2592,7 +2472,7 @@ int HttpServer::run()
     svr.Get("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {
         try
         {
-            const std::string path = req.has_param("path") ? req.get_param_value("path") : "";
+            const std::string path = req.get_param_value("path");
             const auto result = UnityAutoTranslator::getConfig(path);
             json sections = json::array();
             for (const auto& sec : result.sections)

@@ -559,6 +559,15 @@ function hourlyBarPoint(hour: number, value: number, base: number) {
   return [hour, value, base, base + value];
 }
 
+// Advance each hour's stack once as its series is added.
+function appendHourlyBars(values: number[], bases: number[]) {
+  return values.map((value, hour) => {
+    const base = bases[hour];
+    bases[hour] += value;
+    return hourlyBarPoint(hour, value, base);
+  });
+}
+
 function buildActorDetailOption({
   actor,
   day,
@@ -722,20 +731,17 @@ function buildActorDetailOption({
         ),
       },
     ];
-    stacks.forEach((stack, i) => {
-      const bases = new Array(24).fill(0);
-      for (let j = 0; j < i; j++) {
-        for (let h = 0; h < 24; h++) bases[h] += stacks[j].values[h];
-      }
+    const bases = Array<number>(24).fill(0);
+    for (const stack of stacks) {
       series.push({
         name: stack.name,
         type: "custom",
         renderItem: hourlyBarRender,
         encode: { x: 0, y: [2, 3] },
         itemStyle: { color: stack.color },
-        data: stack.values.map((v, h) => hourlyBarPoint(h, v, bases[h])),
+        data: appendHourlyBars(stack.values, bases),
       });
-    });
+    }
   }
 
   return {
@@ -812,24 +818,26 @@ function UsageBarChartContent({
   selectedActor,
   onSelectActor,
 }: BarChartProps) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<EChartsType | null>(null);
-
-  const singleDay =
-    groupBy === "day" &&
-    rangeFrom &&
-    rangeTo &&
-    inclusiveDayCount(rangeFrom, rangeTo) === 1
-      ? rangeFrom
-      : "";
+  const rows = useMemo(() => items.filter(hasConsumption), [items]);
+  const days = useMemo(() => {
+    if (groupBy !== "day") return null;
+    let from = rangeFrom, to = rangeTo;
+    if (!from || !to) {
+      for (const { key } of rows) {
+        if (!key) continue;
+        if (!rangeFrom && (!from || key < from)) from = key;
+        if (!rangeTo && (!to || key > to)) to = key;
+      }
+    }
+    return { from, to, span: from && to ? inclusiveDayCount(from, to) : 0 };
+  }, [groupBy, rangeFrom, rangeTo, rows]);
+  const singleDay = rangeFrom && rangeTo && days?.span === 1 ? rangeFrom : "";
   const drillableActors = useMemo(
     () => (singleDay ? collectActors(events, singleDay, metric) : []),
     [events, metric, singleDay],
   );
 
   const option = useMemo((): EChartsCoreOption => {
-    const rows = items.filter(hasConsumption);
-
     if (singleDay && selectedActor) {
       return buildActorDetailOption({
         actor: selectedActor,
@@ -842,17 +850,8 @@ function UsageBarChartContent({
     }
 
     // 按日期 + 时间跨度 > 1 天 → 按模型累计折线/面积图
-    if (groupBy === "day") {
-      let from = rangeFrom;
-      let to = rangeTo;
-      if (!from || !to) {
-        const keys = rows.map((r) => r.key).filter(Boolean).sort();
-        if (keys.length > 0) {
-          from = from || keys[0];
-          to = to || keys[keys.length - 1];
-        }
-      }
-      const span = from && to ? inclusiveDayCount(from, to) : 0;
+    if (days) {
+      const { from, to, span } = days;
       if (span > 1 && from && to) {
         const dates = enumerateDates(from, to);
         const dateSet = new Set(dates);
@@ -940,6 +939,9 @@ function UsageBarChartContent({
           });
         }
 
+        const todayIdx = dates.indexOf(today);
+        let todayBase = 0;
+
         return {
           tooltip: {
             trigger: "axis",
@@ -1014,13 +1016,7 @@ function UsageBarChartContent({
             minInterval: metric === "requests" ? 1 : undefined,
           },
           series: seriesDefs.map((s, i) => {
-            const todayIdx = dates.indexOf(today);
-            const todayStackY =
-              todayIdx >= 0
-                ? seriesDefs
-                    .slice(0, i + 1)
-                    .reduce((sum, sd) => sum + (sd.cumulative[todayIdx] ?? 0), 0)
-                : null;
+            if (todayIdx >= 0) todayBase += s.cumulative[todayIdx] ?? 0;
             return {
               name: s.name,
               type: "line" as const,
@@ -1066,7 +1062,7 @@ function UsageBarChartContent({
                       },
                     },
               markPoint:
-                todayStackY != null
+                todayIdx >= 0
                   ? {
                       symbol: "circle",
                       symbolSize: 8,
@@ -1079,7 +1075,7 @@ function UsageBarChartContent({
                       data: [
                         {
                           xAxis: formatAxisDate(today),
-                          yAxis: todayStackY,
+                          yAxis: todayBase,
                         },
                       ],
                     }
@@ -1162,7 +1158,7 @@ function UsageBarChartContent({
                 ? "费用 ($)"
                 : "费用 (¥)"
               : "Tokens";
-        const actors = collectActors(events, day, metric);
+        const actors = singleDay ? drillableActors : collectActors(events, day, metric);
         const hoursByActor = new Map<string, number[]>();
         hourEvents.forEach((rows, hour) => {
           for (const event of rows) {
@@ -1172,7 +1168,7 @@ function UsageBarChartContent({
             values[hour] += eventMetricValue(event, metric);
           }
         });
-        const actorHourValues = actors.map(actor => hoursByActor.get(actor.key) || Array(24).fill(0));
+        const bases = Array<number>(24).fill(0);
 
         const series = [
           ...markAreaHost(markAreas),
@@ -1186,12 +1182,7 @@ function UsageBarChartContent({
                 },
               ]
             : actors.map((a, i) => {
-                const bases = new Array(24).fill(0);
-                for (let j = 0; j < i; j++) {
-                  for (let h = 0; h < 24; h++) {
-                    bases[h] += actorHourValues[j][h];
-                  }
-                }
+                const values = hoursByActor.get(a.key) ?? Array<number>(24).fill(0);
                 return {
                   id: a.key,
                   name: a.label,
@@ -1202,9 +1193,7 @@ function UsageBarChartContent({
                   itemStyle: {
                     color: MODEL_LINE_COLORS[i % MODEL_LINE_COLORS.length],
                   },
-                  data: actorHourValues[i].map((v, h) =>
-                    hourlyBarPoint(h, v, bases[h]),
-                  ),
+                  data: appendHourlyBars(values, bases),
                 };
               })),
         ];
@@ -1406,88 +1395,46 @@ function UsageBarChartContent({
         },
       ],
     };
-  }, [
-    events,
-    groupBy,
-    items,
-    metric,
-    currency,
-    pricingRules,
-    rangeFrom,
-    rangeTo,
-    selectedActor,
-    singleDay,
-  ]);
+  }, [events, groupBy, rows, metric, currency, pricingRules, selectedActor, singleDay, days, drillableActors]);
 
-  useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    let chart = chartRef.current;
-    if (!chart) {
-      chart = echarts.init(el, undefined, { renderer: "canvas" });
-      chartRef.current = chart;
-    }
-    chart.setOption(option, true);
-    const onChartClick = (params: unknown) => {
-      if (!singleDay || selectedActor) return;
-      const hit = params as { seriesId?: string };
-      const actor = drillableActors.find((item) => item.key === hit.seriesId);
-      if (actor) onSelectActor(actor);
-    };
-    chart.on("click", onChartClick);
-    const onResize = () => chart?.resize();
-    window.addEventListener("resize", onResize);
-    const ro = new ResizeObserver(onResize);
-    ro.observe(el);
-    return () => {
-      chart?.off("click", onChartClick);
-      window.removeEventListener("resize", onResize);
-      ro.disconnect();
-    };
-  }, [drillableActors, onSelectActor, option, selectedActor, singleDay]);
-
-  useEffect(
-    () => () => {
-      chartRef.current?.dispose();
-      chartRef.current = null;
-    },
-    [],
-  );
-
-  const isDayLine =
-    groupBy === "day" &&
-    (() => {
-      let from = rangeFrom;
-      let to = rangeTo;
-      if (!from || !to) {
-        const keys = items
-          .filter(hasConsumption)
-          .map((r) => r.key)
-          .filter(Boolean)
-          .sort();
-        if (keys.length > 0) {
-          from = from || keys[0];
-          to = to || keys[keys.length - 1];
-        }
-      }
-      return from && to ? inclusiveDayCount(from, to) > 1 : false;
-    })();
-  const isSingleDayHourly =
-    groupBy === "day" &&
-    !!rangeFrom &&
-    !!rangeTo &&
-    inclusiveDayCount(rangeFrom, rangeTo) === 1;
-
-  if (
-    !isDayLine &&
-    !isSingleDayHourly &&
-    items.filter(hasConsumption).length === 0
-  ) {
+  if (!rows.length && !(days && days.span > 1) && !singleDay) {
     return <div className="stats-empty">所选范围内暂无用量数据</div>;
   }
+  return <ChartCanvas option={option} onSeriesClick={seriesId => {
+    if (!singleDay || selectedActor) return;
+    const actor = drillableActors.find(item => item.key === seriesId);
+    if (actor) onSelectActor(actor);
+  }} />;
+}
 
+function ChartCanvas({ option, onSeriesClick }: {
+  option: EChartsCoreOption;
+  onSeriesClick: (seriesId: string | undefined) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<EChartsType | null>(null);
+  const click = useRef(onSeriesClick);
+  useEffect(() => { click.current = onSeriesClick; }, [onSeriesClick]);
+  useEffect(() => {
+    const host = hostRef.current!;
+    const chart = echarts.init(host, undefined, { renderer: "canvas" });
+    chartRef.current = chart;
+    chart.on("click", (event: unknown) => click.current((event as { seriesId?: string }).seriesId));
+    const resize = () => chart.resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      observer.disconnect();
+      chart.dispose();
+      chartRef.current = null;
+    };
+  }, []);
+  useEffect(() => { chartRef.current!.setOption(option, true); }, [option]);
   return <div className="stats-chart" ref={hostRef} />;
 }
+
 const UsageBarChart = memo(UsageBarChartContent);
 export { bandLabel, FEATURE_LABEL, FEATURE_OPTIONS, formatTokenExact, hasConsumption, isSupplementEvent, localDateString, nonCachedInput, parseLocalDate, tokenFieldForSum, tokenTotalOf, UsageBarChart };
 export type { ActorOption, GroupBy };

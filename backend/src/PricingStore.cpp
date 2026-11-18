@@ -1,3 +1,4 @@
+#include "AsciiText.h"
 #include "PricingStore.h"
 #include "AtomicFile.h"
 
@@ -20,14 +21,7 @@ using json = nlohmann::json;
 
 namespace {
 
-std::string trimCopy(std::string s)
-{
-    while (!s.empty() && (unsigned char)s.front() <= 0x20)
-        s.erase(s.begin());
-    while (!s.empty() && (unsigned char)s.back() <= 0x20)
-        s.pop_back();
-    return s;
-}
+using ascii_text::trimCopy;
 std::string toUpper(std::string s)
 {
     for (char& c : s)

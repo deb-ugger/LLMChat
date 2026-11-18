@@ -152,13 +152,3 @@ export function newLiteraturePromptId(): string {
     .toString(36)
     .slice(2, 7)}`;
 }
-
-export function findLiteraturePrompt(
-  catalog: LiteraturePromptEntry[],
-  id: string,
-): LiteraturePromptEntry | undefined {
-  return catalog.find((c) => c.id === id);
-}
-
-/** @deprecated kept for transitional imports */
-export type LiteraturePromptKind = string;

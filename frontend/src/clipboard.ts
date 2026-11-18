@@ -9,10 +9,14 @@ export async function copyText(text: string): Promise<boolean> {
     textarea.value = value;
     textarea.style.position = "fixed";
     textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const copied = document.execCommand("copy");
-    textarea.remove();
-    return copied;
+    try {
+      document.body.appendChild(textarea);
+      textarea.select();
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      textarea.remove();
+    }
   }
 }

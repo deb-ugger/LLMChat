@@ -781,9 +781,11 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     const subEditorRef = useRef<string | null>(null);
     const [nowTick, setNowTick] = useState(() => Date.now());
     useEffect(() => {
+      if (!active) return;
+      setNowTick(Date.now());
       const t = window.setInterval(() => setNowTick(Date.now()), 30000);
       return () => window.clearInterval(t);
-    }, []);
+    }, [active]);
     editorModelRef.current = editorModel;
     subEditorRef.current = subEditorIntervalId;
     const flash = useCallback(
@@ -1131,18 +1133,26 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       return null;
     };
 
-    const tryPatchRule = (id: string, patch: Partial<PricingRule>) => {
-      const cur = tableRef.current;
-      const target = cur.rules.find((r) => r.id === id);
-      if (!target) return;
-      const block = editBlockReason(target);
+    const editableRule = (id: string) => {
+      const rule = tableRef.current.rules.find(item => item.id === id);
+      if (!rule) return;
+      const block = editBlockReason(rule);
       if (block) {
         flash(block, false);
         return;
       }
-      const nextRules = cur.rules.map((r) =>
-        r.id === id ? { ...r, ...patch } : r,
-      );
+      return rule;
+    };
+
+    const tryPatchRule = (
+      id: string,
+      change: Partial<PricingRule> | ((current: PricingRule) => Partial<PricingRule>),
+    ) => {
+      const cur = tableRef.current;
+      const target = editableRule(id);
+      if (!target) return;
+      const patch = typeof change === "function" ? change(target) : change;
+      const nextRules = cur.rules.map(rule => rule.id === id ? { ...rule, ...patch } : rule);
       try {
         validateRules(nextRules);
       } catch (e) {
@@ -1152,51 +1162,19 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       applyLocal({ ...cur, rules: nextRules });
     };
 
-    const setPeakWindows = (id: string, peakWindows: PeakWindow[]) => {
-      tryPatchRule(id, { peakWindows });
-    };
+    const addPeakWindow = (id: string) => tryPatchRule(id, rule => {
+      const windows = rule.peakWindows || [];
+      const { from, to } = windows.at(-1) ?? DEFAULT_DEEPSEEK_PEAK_WINDOWS[0]!;
+      return { peakWindows: [...windows, { from, to }] };
+    });
 
-    const addPeakWindow = (id: string) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === id);
-      if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
-      const seed =
-        rule.peakWindows?.[rule.peakWindows.length - 1] ||
-        DEFAULT_DEEPSEEK_PEAK_WINDOWS[0]!;
-      setPeakWindows(id, [
-        ...(rule.peakWindows || []),
-        { from: seed.from, to: seed.to },
-      ]);
-    };
+    const patchPeakWindow = (id: string, index: number, patch: Partial<PeakWindow>) =>
+      tryPatchRule(id, rule => ({
+        peakWindows: (rule.peakWindows || []).map((window, i) => i === index ? { ...window, ...patch } : window),
+      }));
 
-    const patchPeakWindow = (
-      id: string,
-      index: number,
-      patch: Partial<PeakWindow>,
-    ) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === id);
-      if (!rule) return;
-      const next = (rule.peakWindows || []).map((w, i) =>
-        i === index ? { ...w, ...patch } : w,
-      );
-      setPeakWindows(id, next);
-    };
-
-    const removePeakWindow = (id: string, index: number) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === id);
-      if (!rule) return;
-      setPeakWindows(
-        id,
-        (rule.peakWindows || []).filter((_, i) => i !== index),
-      );
-    };
+    const removePeakWindow = (id: string, index: number) =>
+      tryPatchRule(id, rule => ({ peakWindows: (rule.peakWindows || []).filter((_, i) => i !== index) }));
 
     const patchInterval = (id: string, next: PricingRule) => {
       const cur = tableRef.current;
@@ -1211,14 +1189,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
       subId: string,
       patch: Partial<PricingSubRule>,
     ) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === intervalId);
+      const rule = editableRule(intervalId);
       if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
       const subs = ensureSubRules(rule).map((s) =>
         s.id === subId ? { ...s, ...patch } : s,
       );
@@ -1226,14 +1198,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     };
 
     const copySubRule = (intervalId: string, subId: string) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === intervalId);
+      const rule = editableRule(intervalId);
       if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
       const subs = ensureSubRules(rule);
       const src = subs.find((s) => s.id === subId);
       if (!src) {
@@ -1253,14 +1219,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     };
 
     const addSubRule = (intervalId: string) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === intervalId);
+      const rule = editableRule(intervalId);
       if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
       const subs = ensureSubRules(rule);
       const seed = subs[0];
       const next: PricingSubRule = {
@@ -1276,14 +1236,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     };
 
     const moveSubRule = (intervalId: string, fromIndex: number, toIndex: number) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === intervalId);
+      const rule = editableRule(intervalId);
       if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
       const subs = ensureSubRules(rule);
       if (
         fromIndex === toIndex ||
@@ -1301,14 +1255,8 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
     };
 
     const removeSubRule = (intervalId: string, subId: string) => {
-      const cur = tableRef.current;
-      const rule = cur.rules.find((r) => r.id === intervalId);
+      const rule = editableRule(intervalId);
       if (!rule) return;
-      const block = editBlockReason(rule);
-      if (block) {
-        flash(block, false);
-        return;
-      }
       const subs = ensureSubRules(rule);
       if (subs.length <= 1) {
         flash("至少保留一条子规则", false);
@@ -1827,7 +1775,7 @@ export const PricingPanel = forwardRef<PricingPanelHandle, Props>(
                               model.trim(),
                             );
                             const current = currentRatesForModel(
-                              table.rules,
+                              rulesByModel.get(model.trim()) ?? [],
                               model,
                               now,
                             );

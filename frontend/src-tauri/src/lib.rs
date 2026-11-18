@@ -1,5 +1,5 @@
 mod build_close;
-use std::io::Cursor;
+mod clipboard;
 mod speech;
 mod unity_offline;
 mod ollama;
@@ -167,74 +167,6 @@ fn stop_backend(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn is_image_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".webp")
-        || lower.ends_with(".bmp")
-        || lower.ends_with(".tif")
-        || lower.ends_with(".tiff")
-}
-
-fn encode_rgba_png(width: usize, height: usize, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let w = u32::try_from(width).map_err(|_| "image width too large".to_string())?;
-    let h = u32::try_from(height).map_err(|_| "image height too large".to_string())?;
-    let expected = (width * height * 4) as usize;
-    if bytes.len() < expected {
-        return Err("clipboard image data incomplete".to_string());
-    }
-    let img = image::RgbaImage::from_raw(w, h, bytes[..expected].to_vec())
-        .ok_or_else(|| "failed to build image buffer".to_string())?;
-    let mut png = Vec::new();
-    let mut cursor = Cursor::new(&mut png);
-    img.write_to(&mut cursor, image::ImageFormat::Png)
-        .map_err(|e| format!("png encode failed: {e}"))?;
-    Ok(png)
-}
-
-fn read_clipboard_bitmap_png() -> Result<Vec<u8>, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("打开剪贴板失败: {e}"))?;
-    let img = clipboard
-        .get_image()
-        .map_err(|e| format!("剪贴板中没有位图: {e}"))?;
-    encode_rgba_png(img.width, img.height, img.bytes.as_ref())
-}
-
-#[cfg(windows)]
-fn read_clipboard_file_image() -> Result<Vec<u8>, String> {
-    use clipboard_win::{formats, get_clipboard};
-
-    let files: Vec<String> =
-        get_clipboard(formats::FileList).map_err(|e| format!("剪贴板中没有文件: {e}"))?;
-    let path = files
-        .into_iter()
-        .find(|p| is_image_path(p))
-        .ok_or_else(|| "剪贴板文件不是图片".to_string())?;
-    std::fs::read(&path).map_err(|e| format!("读取图片文件失败: {e}"))
-}
-
-#[cfg(not(windows))]
-fn read_clipboard_file_image() -> Result<Vec<u8>, String> {
-    Err("file clipboard image is only supported on Windows".to_string())
-}
-
-/// Read clipboard image as PNG bytes (bitmap first, then copied image file).
-#[tauri::command]
-async fn clipboard_read_image_png() -> Result<tauri::ipc::Response, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-    match read_clipboard_bitmap_png() {
-        Ok(png) => Ok(png),
-        Err(bitmap_err) => match read_clipboard_file_image() {
-            Ok(bytes) => Ok(bytes),
-            Err(file_err) => Err(format!("{bitmap_err}；{file_err}")),
-        },
-    }.map(tauri::ipc::Response::new)
-    }).await.map_err(|e| e.to_string())?
-}
-
 /// Write raw bytes to an absolute path chosen via the save dialog.
 #[tauri::command]
 fn write_file_bytes(path: String, contents: Vec<u8>) -> Result<(), String> {
@@ -371,7 +303,7 @@ pub fn run() {
             ollama::ollama_runtime_status,
             ollama::ollama_service_start,
             ollama::ollama_service_stop,
-            clipboard_read_image_png,
+            clipboard::clipboard_read_image_png,
             write_file_bytes,
             read_file_bytes,
             file_stat,
@@ -402,9 +334,10 @@ pub fn run() {
                 return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()).into());
             }
             let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-            let _ = LOG_DIRECTORY.set(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?).join("logs"));
+            let data = std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?);
+            let _ = LOG_DIRECTORY.set(data.join("logs"));
             let _ = runtime_log("startup", &format!("LLMChat started; version={}; executable={:?}; logs={:?}", env!("CARGO_PKG_VERSION"), std::env::current_exe().ok(), LOG_DIRECTORY.get()));
-            app.manage(speech::SpeechStorage(std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?)));
+            app.manage(speech::SpeechStorage(data));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;
             start_backend(app.handle()).map_err(std::io::Error::other)?;
             let _ = WEBVIEW_DIRECTORY.set(std::path::PathBuf::from(profile));

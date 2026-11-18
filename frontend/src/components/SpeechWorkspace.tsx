@@ -33,7 +33,7 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
   const [rangeWorkspace, setRangeWorkspace] = useState<{ ids: string[]; activeId: string | null }>({ ids: [], activeId: null });
   const rangeOrder = useRef(rangeWorkspace);
   rangeOrder.current = rangeWorkspace;
-  const [closedResults, setClosedResults] = useState<string[]>([]);
+  const [closedResults, setClosedResults] = useState(() => new Set<string>());
   const [page, setPage] = useState(0);
   const [view, setView] = useState<"cues" | "text">("cues");
   const [search, setSearch] = useState("");
@@ -43,10 +43,11 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
   const [notice, setNotice] = useState("");
   const rangePages = useRef(new Map<string, SpeechRangePageHandle>());
   const [tabMenu, setTabMenu] = useState<{ mode: "results" | "ranges"; id: string; x: number; y: number } | null>(null);
-  const selected = items.find(item => item.id === selectedId) ?? (selectedId === null ? initialItem : undefined);
-  const resultItems = items.filter(item => item.folder && item.showOutput && !closedResults.includes(item.id) && !["cancelling", "resetting"].includes(item.status));
+  const byId = new Map(items.map(item => [item.id, item]));
+  const selected = selectedId === null ? initialItem : byId.get(selectedId);
+  const resultItems = items.filter(item => item.folder && item.showOutput && !closedResults.has(item.id) && !["cancelling", "resetting"].includes(item.status));
   const result = resultItems.find(item => item.id === selected?.id);
-  const rangeItems = rangeWorkspace.ids.flatMap(id => { const item = items.find(item => item.id === id); return item ? [item] : []; });
+  const rangeItems = rangeWorkspace.ids.map(id => byId.get(id)).filter((item): item is SpeechQueueItem => !!item);
   const fileTabs = workspaceMode === "ranges" ? rangeItems : resultItems;
   const selectedTabId = workspaceMode === "ranges" ? rangeWorkspace.activeId : result?.id;
   const menuItems = tabMenu?.mode === "ranges" ? rangeItems : resultItems;
@@ -70,7 +71,13 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
   }, [active, workspaceMode, result?.id, result?.folder, result?.revision, result?.status, page, query]);
   const selectFile = (item: SpeechQueueItem) => {
     setSelectedId(item.id); setTabMenu(null); setPage(0); setSearch("");
-    setClosedResults(current => current.filter(id => id !== item.id)); onSelect(item);
+    setClosedResults(current => {
+      if (!current.has(item.id)) return current;
+      const next = new Set(current);
+      next.delete(item.id);
+      return next;
+    });
+    onSelect(item);
   };
   const openRange = (item: SpeechQueueItem) => {
     selectFile(item); setWorkspaceMode("ranges");
@@ -82,20 +89,21 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
     const ids = current.ids.filter(value => value !== taskId);
     const activeId = current.activeId === taskId ? ids[Math.min(current.ids.indexOf(taskId), ids.length - 1)] ?? null : current.activeId;
     rangeOrder.current = { ids, activeId }; setRangeWorkspace(rangeOrder.current);
-    const next = items.find(item => item.id === activeId);
+    const next = activeId === null ? undefined : byId.get(activeId);
     if (current.activeId === taskId && next) selectFile(next);
   };
   const closeTabs = async (mode: "results" | "ranges", ids: string[]) => {
     setTabMenu(null);
     if (mode === "ranges") {
       for (const taskId of ids) {
-        const item = items.find(item => item.id === taskId), page = rangePages.current.get(taskId);
+        const item = byId.get(taskId), page = rangePages.current.get(taskId);
         if (page && item && !await page.requestClose(() => openRange(item))) break;
       }
     } else {
-      setClosedResults(current => [...new Set([...current, ...ids])]);
-      if (selected && ids.includes(selected.id)) {
-        const remaining = resultItems.filter(item => !ids.includes(item.id));
+      const closing = new Set(ids);
+      setClosedResults(current => new Set([...current, ...closing]));
+      if (selected && closing.has(selected.id)) {
+        const remaining = resultItems.filter(item => !closing.has(item.id));
         const next = remaining[Math.min(resultItems.findIndex(item => item.id === selected.id), remaining.length - 1)];
         if (next) selectFile(next);
       }

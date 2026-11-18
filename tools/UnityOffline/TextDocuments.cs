@@ -59,8 +59,13 @@ public static class TextDocuments
         if (extension == ".xml") return Xml(text, visit);
         if (HasCommands(text)) return RecordLines(text, visit, true);
         if (Path.GetFileNameWithoutExtension(name).Equals("name_list", StringComparison.OrdinalIgnoreCase)) return RecordLines(text, visit, false);
-        if (mode == "lines" || text.TrimStart().StartsWith('{') || text.TrimStart().StartsWith('['))
-            return Program.TextDocument(text, (loc, value, set) => visit(new(loc, value, set, Locale(loc), Locale(loc).Length > 0 ? "text" : loc.StartsWith("line/") ? "text" : loc.Split('/').Last())));
+        var content = text.AsSpan().TrimStart();
+        if (mode == "lines" || content.StartsWith("{") || content.StartsWith("["))
+            return Program.TextDocument(text, (loc, value, set) => {
+                var locale = Locale(loc);
+                var field = locale.Length > 0 || loc.StartsWith("line/") ? "text" : loc[(loc.LastIndexOf('/') + 1)..];
+                visit(new(loc, value, set, locale, field));
+            });
         if (text.Contains('\0')) throw new Exception("文件包含二进制数据，不能按文本提取");
         if (mode == "smart") { var result = text; visit(new("document", text, next => result = next)); return result; }
         var lines = Regex.Split(text, "(\r\n|\n|\r)");

@@ -2,6 +2,7 @@
 import json
 import sys
 import math
+from contextlib import ExitStack
 from pathlib import Path
 
 from fontTools import subset
@@ -20,14 +21,20 @@ def progress(detail):
 
 
 def supplement(request):
+    with ExitStack() as fonts:
+        return _supplement(request, fonts)
+
+
+def _supplement(request, fonts):
     progress("正在读取字体字符映射")
-    font = TTFont(request.get("baseFont") or request["source"], recalcTimestamp=False, recalcBBoxes=False)
+    base_path = request.get("baseFont") or request["source"]
+    font = fonts.enter_context(TTFont(base_path, recalcTimestamp=False, recalcBBoxes=False))
     existing_mappings = request.get("baseMappings") or []
     original_cmap = dict(font.getBestCmap())
     missing = [code for code in request["codepoints"] if code not in original_cmap]
     donors = []
     for path in request["donors"]:
-        donor = TTFont(path, recalcTimestamp=False)
+        donor = fonts.enter_context(TTFont(path, recalcTimestamp=False))
         if "fvar" in donor:
             from fontTools.varLib.instancer import instantiateVariableFont
             donor = instantiateVariableFont(donor, {axis.axisTag: axis.defaultValue for axis in donor["fvar"].axes}, inplace=True)
@@ -36,7 +43,7 @@ def supplement(request):
     additions = [item for item in available if item[1] is not None]
     if not additions:
         import shutil
-        shutil.copyfile(request.get("baseFont") or request["source"], request["output"])
+        shutil.copyfile(base_path, request["output"])
         return {"mappings": existing_mappings, "missing": missing}
     if len(font.getGlyphOrder()) + len(additions) > 65535:
         progress(f"正在整理原字体的 {len(font.getGlyphOrder())} 个字形，保留原始字符与排版功能")
@@ -53,6 +60,11 @@ def supplement(request):
     if len(font.getGlyphOrder()) + len(additions) > 65535:
         raise ValueError("字体字形数量已达上限，无法安全补入新字形，请选择其他主字体")
     mappings = list(existing_mappings)
+    top = font["CFF "].cff.topDictIndex[0] if "CFF " in font else None
+    cid = top is not None and hasattr(top, "FDArray")
+    if cid:
+        existing = set(top.charset)
+        free_cids = (name for i in range(1, 65536) if (name := f"cid{i:05d}") not in existing)
     for code, (source_name, donor, donor_glyph) in additions:
         progress(f"正在补入 U+{code:04X} 的真实字形，来源 {source_name}")
         glyph_set = donor.getGlyphSet()
@@ -64,18 +76,15 @@ def supplement(request):
         bounds = tuple(rounding(value) for rounding, value in zip((math.floor, math.floor, math.ceil, math.ceil), bounds_pen.bounds or (0, 0, 0, 0)))
         width, lsb = donor["hmtx"][donor_glyph]
         width, lsb = round(width * scale), round(lsb * scale)
-        if "CFF " in font:
+        if top is not None:
             cff = font["CFF "].cff
-            top = cff.topDictIndex[0]
-            cid = hasattr(top, "FDArray")
             private = top.FDArray[0].Private if cid else top.Private
             nominal = getattr(private, "nominalWidthX", 0)
             default = getattr(private, "defaultWidthX", 0)
             pen = T2CharStringPen(None if width == default else width - nominal, None)
             recording.replay(Qu2CuPen(TransformPen(pen, (scale, 0, 0, scale, 0, 0)), max_err=1, all_cubic=True))
             if cid:
-                used = set(top.charset)
-                glyph_name = next(f"cid{index:05d}" for index in range(1, 65536) if f"cid{index:05d}" not in used)
+                glyph_name = next(free_cids)
             else:
                 glyph_name = f"symbol{code:X}"
             charstring = pen.getCharString(private=private, globalSubrs=cff.GlobalSubrs)
@@ -112,7 +121,7 @@ def supplement(request):
         metrics.minLeftSideBearing = min(metrics.minLeftSideBearing, lsb)
         metrics.minRightSideBearing = min(metrics.minRightSideBearing, width - lsb - (bounds[2] - bounds[0]))
         metrics.xMaxExtent = max(metrics.xMaxExtent, lsb + bounds[2] - bounds[0])
-        if "CFF " in font:
+        if top is not None:
             top.FontBBox = [head.xMin, head.yMin, head.xMax, head.yMax]
         if code > 0xFFFF and not any(table.isUnicode() and table.format == 12 for table in font["cmap"].tables):
             from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
@@ -131,19 +140,16 @@ def supplement(request):
     for record in font["name"].names:
         if record.nameID in names:
             record.string = names[record.nameID].encode(record.getEncoding())
-    if "CFF " in font:
+    if top is not None:
         font["CFF "].cff.fontNames = ["LLMChat-Symbol-Supplement"]
         top.FullName = top.FamilyName = "LLMChat Symbol Supplement"
     progress("正在写入补字后的字体文件")
     font.save(request["output"])
-    font.close()
     with TTFont(request["output"], checkChecksums=2) as checked:
         progress("正在校验补字后的字符映射")
         cmap = checked.getBestCmap()
         if not set(original_cmap).issubset(cmap) or any(item["codepoint"] not in cmap for item in mappings):
             raise ValueError("补字后的 Unicode 映射校验失败")
-    for _, donor, _ in donors:
-        donor.close()
     return {"mappings": mappings, "missing": [code for code, donor in available if donor is None]}
 
 

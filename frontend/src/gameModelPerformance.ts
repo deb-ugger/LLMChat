@@ -98,13 +98,20 @@ function records(scope: string) {
 }
 function commit(scope: string) {
   const value = records(scope);
+  const running = Object.values(value).some(meter => meter.started !== undefined);
+  const timer = checkpoints.get(scope);
+  if (running && timer === undefined) {
+    checkpoints.set(scope, setInterval(() => commit(scope), 5000));
+  } else if (!running && timer !== undefined) {
+    clearInterval(timer);
+    checkpoints.delete(scope);
+  }
   localStorage.setItem("llmchat-game-performance:" + scope, JSON.stringify(Object.fromEntries(Object.entries(value).map(([step, meter]) => [step, { ...performanceSnapshot(meter), started: undefined }]))));
   window.dispatchEvent(new Event("llmchat-game-performance"));
 }
 export function beginGameStep(scope: string, step: string, benchmark?: Record<string, unknown>) {
   const all = records(scope);
   if (all[step]?.started !== undefined) return;
-  if (!checkpoints.has(scope)) checkpoints.set(scope, setInterval(() => commit(scope), 5000));
   for (const [id, meter] of Object.entries(all)) {
     if (id !== step && meter.started !== undefined) {
       stopMeter(meter);
@@ -118,7 +125,6 @@ export function beginGameStep(scope: string, step: string, benchmark?: Record<st
   meter.started ??= performance.now(); commit(scope);
 }
 export function finishGameStep(scope: string, completed = false) {
-  clearInterval(checkpoints.get(scope)); checkpoints.delete(scope);
   for (const [step, meter] of Object.entries(records(scope))) {
     if (meter.started === undefined) continue;
     stopMeter(meter);

@@ -99,19 +99,6 @@ export function resolveTextPromptScenario(
   return "plain";
 }
 
-export function defaultPromptForScenario(scenario: TextPromptScenario): string {
-  switch (scenario) {
-    case "mtool":
-      return DEFAULT_MTOOL_PROMPT;
-    case "subtitle":
-      return DEFAULT_SUBTITLE_PROMPT;
-    case "subtitleRetime":
-      return DEFAULT_SUBTITLE_RETIME_TRANSLATE_PROMPT;
-    default:
-      return DEFAULT_TEXT_PROMPT;
-  }
-}
-
 export function promptForScenario(
   settings: {
     textTranslatePrompt?: string;

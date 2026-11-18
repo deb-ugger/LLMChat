@@ -36,6 +36,7 @@ struct SqliteApi {
     int (*exec)(sqlite3*, const char*, int (*)(void*, int, char**, char**), void*, char**) = nullptr;
     int (*prepareV2)(sqlite3*, const char*, int, sqlite3_stmt**, const char**) = nullptr;
     int (*step)(sqlite3_stmt*) = nullptr;
+    int (*reset)(sqlite3_stmt*) = nullptr;
     int (*finalize)(sqlite3_stmt*) = nullptr;
     int (*bindText)(sqlite3_stmt*, int, const char*, int, SqliteDestructor) = nullptr;
     int (*bindNull)(sqlite3_stmt*, int) = nullptr;
@@ -57,6 +58,7 @@ struct SqliteApi {
         exec = load<decltype(exec)>("sqlite3_exec");
         prepareV2 = load<decltype(prepareV2)>("sqlite3_prepare_v2");
         step = load<decltype(step)>("sqlite3_step");
+        reset = load<decltype(reset)>("sqlite3_reset");
         finalize = load<decltype(finalize)>("sqlite3_finalize");
         bindText = load<decltype(bindText)>("sqlite3_bind_text");
         bindNull = load<decltype(bindNull)>("sqlite3_bind_null");
@@ -83,7 +85,7 @@ struct SqliteApi {
 
     bool ready() const
     {
-        return module && openV2 && close && errorMessage && exec && prepareV2 && step
+        return module && openV2 && close && errorMessage && exec && prepareV2 && step && reset
             && finalize && bindText && bindNull && bindInt64 && columnText
             && columnInt64 && busyTimeout;
     }

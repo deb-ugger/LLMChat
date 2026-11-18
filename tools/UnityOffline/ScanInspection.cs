@@ -1,6 +1,5 @@
 using Mono.Cecil;
 using System.Text.RegularExpressions;
-using System.Security.Cryptography;
 
 namespace LLMChat.UnityOffline;
 
@@ -12,7 +11,6 @@ public sealed record ResourceResult(string File, string State, int Texts, int Fo
 public static class ScanInspection
 {
     public const string PendingDefinitions = "INCOMPLETE.json";
-    static string Digest(string path) { using var stream = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(stream)); }
     public static void CacheDefinitions(Project project, string source, Action? checkStop = null)
     {
         project.TypeDirectory = "";
@@ -27,15 +25,15 @@ public static class ScanInspection
         project.TypeDirectory = folder; Program.Save(project);
         foreach (var file in files) {
             checkStop?.Invoke();
-            var name = Path.GetFileName(file); var target = Path.Combine(folder, name); var sourceHash = Digest(file);
+            var name = Path.GetFileName(file); var target = Path.Combine(folder, name); var sourceHash = Program.Hash(file);
             if (project.DefinitionHashes.TryGetValue(name, out var expected)) {
-                if (sourceHash != expected || !File.Exists(target) || Digest(target) != expected) throw new Exception("类型定义发生变化，请重新扫描：" + name);
+                if (sourceHash != expected || !File.Exists(target) || Program.Hash(target) != expected) throw new Exception("类型定义发生变化，请重新扫描：" + name);
                 continue;
             }
             try { using (ModuleDefinition.ReadModule(file)) { } }
             catch (BadImageFormatException) { throw new Exception("类型定义不是托管 DLL，请提供 Managed 或 DummyDll，不要选择 GameAssembly.dll：" + name); }
             File.Copy(file, target, true);
-            if (Digest(target) != sourceHash) throw new Exception("类型定义复制校验失败：" + name);
+            if (Program.Hash(target) != sourceHash) throw new Exception("类型定义复制校验失败：" + name);
             project.DefinitionHashes[name] = sourceHash; Program.Save(project);
         }
         File.Delete(pending);
@@ -46,8 +44,7 @@ public static class ScanInspection
         foreach (var item in project.DefinitionHashes) {
             var path = Program.Within(project.TypeDirectory, item.Key);
             if (!File.Exists(path)) throw new Exception("工程类型定义缺失，请重新扫描：" + item.Key);
-            using var stream = File.OpenRead(path);
-            if (Convert.ToHexString(SHA256.HashData(stream)) != item.Value) throw new Exception("工程类型定义发生变化，请重新扫描：" + item.Key);
+            if (Program.Hash(path) != item.Value) throw new Exception("工程类型定义发生变化，请重新扫描：" + item.Key);
         }
     }
     public static bool GameAssembly(string relative) => relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(p => p.Equals("Managed", StringComparison.OrdinalIgnoreCase)) &&

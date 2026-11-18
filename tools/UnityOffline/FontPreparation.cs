@@ -43,6 +43,12 @@ public static class FontPreparation
     public static FontPlan Create(Request request, bool report = true)
     {
         var project = request.Project ?? throw new Exception("请先扫描资源");
+        return Prepare(request, project, Program.WritableSelection(request.SelectedIds), report).Plan;
+    }
+
+    internal static (FontPlan Plan, string Characters, byte[]? Font) Prepare(
+        Request request, Project project, Func<Entry, bool> useTranslation, bool report)
+    {
         if (!Directory.Exists(project.Folder)) throw new Exception("工程目录不存在");
         var folder = Path.Combine(project.Folder, "font-plan"); Directory.CreateDirectory(folder);
         var ownership = Path.Combine(folder, Marker);
@@ -50,11 +56,10 @@ public static class FontPreparation
         File.WriteAllText(ownership, "llmchat-font-plan-v1");
         var incomplete = Path.Combine(folder, "INCOMPLETE.txt"); File.WriteAllText(incomplete, "字库检查尚未完成，请重新检查后使用输出。");
         Program.CheckStop(request, "");
-        var selected = request.SelectedIds?.ToHashSet(StringComparer.Ordinal);
         var characters = new SortedSet<int>(Enumerable.Range(32, 95)); var originals = 0; var translations = 0;
         foreach (var entry in project.Entries) {
             Program.CheckStop(request, "");
-            var translated = entry.Selected && entry.Error.Length == 0 && (selected == null || selected.Contains(entry.Id)) && TranslationIntegrity.Validate(entry.Source, entry.Translation).Length == 0;
+            var translated = useTranslation(entry);
             if (translated) translations++; else originals++;
             foreach (var rune in TranslationIntegrity.Visible(translated ? entry.Translation : entry.Source).EnumerateRunes())
                 if (!Rune.IsControl(rune) && !Rune.IsWhiteSpace(rune) && Rune.GetUnicodeCategory(rune) != System.Globalization.UnicodeCategory.Format) characters.Add(rune.Value);
@@ -79,6 +84,6 @@ public static class FontPreparation
         File.WriteAllText(Path.Combine(folder, "字库检查.txt"), $"字符数：{characters.Count}\n使用译文：{translations} 处；保留原文：{originals} 处\n" + string.Join("\n", requirements) + "\n缺字：" + string.Join(" ", missing.Select(c => $"{char.ConvertFromUtf32(c)} U+{c:X4}")), new UTF8Encoding(false));
         File.Delete(incomplete);
         if (report) Program.Progress($"字符集已保存：{characters.Count} 个字符，{(plan.FontChecked ? missing.Length + " 个缺字" : "未选择字体")}", characters.Count, characters.Count, folder);
-        return plan;
+        return (plan, text, fontBytes);
     }
 }

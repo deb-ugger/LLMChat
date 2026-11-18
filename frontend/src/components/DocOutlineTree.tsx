@@ -182,20 +182,6 @@ export function findActiveOutlineKeyByHref(
   return best;
 }
 
-/**
- * Prefer location-based active chapter when TOC items have pageNumber
- * from book.locations (1-based). Same rule as PDF pages.
- */
-export function findActiveOutlineKeyByLocation(
-  items: DocOutlineNode[],
-  currentLocation: number,
-): string | null {
-  if (!Number.isFinite(currentLocation) || currentLocation < 0) return null;
-  // pageNumber is 1-based ≈ location index + 1
-  const currentPage = Math.floor(currentLocation) + 1;
-  return findActiveOutlineKeyByPage(items, currentPage);
-}
-
 function collectOutlineTitleMatches(
   items: DocOutlineNode[],
   query: string,

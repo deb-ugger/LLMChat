@@ -397,24 +397,6 @@ export function currentRatesForModel(
   };
 }
 
-export function formatIntervalHint(rule: PricingRule): string {
-  const from = (rule.from || "").trim();
-  const to = (rule.to || "").trim();
-  if (!from && !to) return "不限日期";
-  if (from && !to) return `${from} 起`;
-  if (!from && to) return `至 ${to}`;
-  return `${from} ~ ${to}`;
-}
-
-/** Legacy: idle = complement of peak derived from global dayParts. */
-export function isIdleLocalTime(
-  time: string,
-  dayParts: PricingDayParts,
-): boolean {
-  const peak = peakWindowsFromIdleDayParts(dayParts);
-  return !isPeakLocalTime(time, peak);
-}
-
 /** Convert legacy global idle [idleFrom, idleTo) → peak complement window. */
 export function peakWindowsFromIdleDayParts(
   dayParts: PricingDayParts,

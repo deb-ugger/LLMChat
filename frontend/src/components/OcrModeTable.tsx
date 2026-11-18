@@ -1,5 +1,5 @@
 import type { OcrMode, OcrModelStatus } from "../api";
-import { OCR_MODE_OPTIONS } from "../ocr/modes";
+import { OCR_MODE_OPTIONS, ocrDownloadProgress } from "../ocr/modes";
 
 type Props = {
   context: "literature" | "image";
@@ -19,11 +19,7 @@ function formatModelBytes(bytes: number): string {
 
 export function OcrModeTable({ context, selectedMode, status: ocrModelStatus, busy: ocrModelBusy, error, onRetry, onChoose, onUninstall }: Props) {
     const progress = ocrModelStatus?.download;
-    const progressTotal = Math.max(0, progress?.totalBytes ?? 0);
-    const progressDone = Math.max(0, progress?.downloadedBytes ?? 0);
-    const progressPercent = progressTotal
-      ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
-      : 0;
+    const { total: progressTotal, done: progressDone, percent: progressPercent } = ocrDownloadProgress(progress);
     const modeDisabled =
       ocrModelBusy !== null || ocrModelStatus?.download?.active === true;
     const visibleOptions = OCR_MODE_OPTIONS.filter(

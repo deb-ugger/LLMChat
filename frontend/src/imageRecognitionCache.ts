@@ -1,9 +1,10 @@
+import { sha256Hex } from "./fileFingerprint";
+
 /** Exact image bytes plus processing profile; bounded and never caches failures. */
 export class ImageRecognitionCache<T> {
   private values=new Map<string,Promise<T>>();
   async run(image:Blob,profile:string,work:()=>Promise<T>):Promise<T>{
-    const digest=await crypto.subtle.digest("SHA-256",await image.arrayBuffer());
-    const key=profile+":"+Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,"0")).join("");
+    const key = profile + ":" + await sha256Hex(await image.arrayBuffer());
     let result=this.values.get(key);
     if(result){this.values.delete(key);this.values.set(key,result);return structuredClone(await result);}
     result=work();this.values.set(key,result);

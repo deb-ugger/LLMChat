@@ -108,9 +108,10 @@ public static class HidcImages
     // its original compressed blocks, including frames referencing an edited frame.
     public static void Apply(Project project, ImageResource[] images, AssetTypeValueField field) {
         var original = field["m_Script"].AsByteArray; var h = ReadHeader(original);
+        var chunkHash = Digest(original);
         var replacement = images.ToDictionary(i => i.HidcFrame ?? throw new InvalidDataException("缺少 HIDC 帧索引")); var frames = Decode(original, project.CheckCancellation).Select(f => f.Data).ToArray();
         foreach (var item in replacement) {
-            if (Digest(Encoding.UTF8.GetBytes(Digest(original) + ":" + item.Key)) != item.Value.SourceHash) throw new InvalidDataException("HIDC 原始图片块与扫描版本不一致：" + item.Value.Name);
+            if (Digest(Encoding.UTF8.GetBytes(chunkHash + ":" + item.Key)) != item.Value.SourceHash) throw new InvalidDataException("HIDC 原始图片块与扫描版本不一致：" + item.Value.Name);
             var index = item.Key - h.First; if (index < 0 || index >= frames.Length) throw new InvalidDataException("HIDC 译图帧越界");
             frames[index] = EncodeFrame(project, item.Value, h, frames[index]);
         }

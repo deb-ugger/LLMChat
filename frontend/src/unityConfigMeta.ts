@@ -573,10 +573,6 @@ export const CONFIG_ENGINE_SECTION_ORDER: readonly string[] = [
   "Watson",
 ];
 
-export function isEngineConfigSection(name: string): boolean {
-  return CONFIG_ENGINE_SECTION_ORDER.includes(name);
-}
-
 /** Engines that typically need a Key / Url / install path in AT Config.ini. */
 export const CONFIG_ENGINE_NEEDS_CREDS: ReadonlySet<string> = new Set([
   "Custom",
@@ -590,76 +586,32 @@ export const CONFIG_ENGINE_NEEDS_CREDS: ReadonlySet<string> = new Set([
   "LingoCloud",
 ]);
 
+const credentialKeys = new Set([
+  "url", "apikey", "key", "appid", "appsecret", "secret", "installationpath", "lingocloudtoken", "serviceurl",
+]);
+
 export function engineSectionConfigured(sec: {
   name: string;
   keys: { key: string; value: string }[];
 }): boolean {
-  const important = new Set([
-    "url",
-    "apikey",
-    "key",
-    "appid",
-    "appsecret",
-    "secret",
-    "installationpath",
-    "lingocloudtoken",
-    "serviceurl",
-  ]);
-  return sec.keys.some(
-    (k) =>
-      important.has(k.key.toLowerCase()) && k.value.trim() !== "",
-  );
+  return sec.keys.some(row => credentialKeys.has(row.key.toLowerCase()) && row.value.trim() !== "");
 }
 
-export function advancedUnityConfigSections<T extends { name: string }>(
-  sections: T[],
-): T[] {
-  const byName = new Map(sections.map((s) => [s.name, s]));
-  return CONFIG_UI_SECTION_ORDER.map((name) => byName.get(name)).filter(
-    (s): s is T => s != null,
-  );
+function orderedSections<T extends { name: string }>(sections: T[], order: readonly string[]): T[] {
+  const byName = new Map(sections.map(section => [section.name, section]));
+  return order.map(name => byName.get(name)).filter((section): section is T => section !== undefined);
 }
 
-export function essentialConfigSections<T extends { name: string }>(
-  sections: T[],
-): T[] {
-  const byName = new Map(sections.map((s) => [s.name, s]));
-  return CONFIG_ESSENTIAL_SECTION_ORDER.map((name) => byName.get(name)).filter(
-    (s): s is T => s != null,
-  );
+export function advancedUnityConfigSections<T extends { name: string }>(sections: T[]) {
+  return orderedSections(sections, CONFIG_UI_SECTION_ORDER);
 }
 
-export function visibleConfigSections<T extends { name: string }>(
-  sections: T[],
-): T[] {
-  const byName = new Map(sections.map((s) => [s.name, s]));
-  return CONFIG_UI_SECTION_ORDER.map((name) => byName.get(name)).filter(
-    (s): s is T => s != null,
-  );
+export function essentialConfigSections<T extends { name: string }>(sections: T[]) {
+  return orderedSections(sections, CONFIG_ESSENTIAL_SECTION_ORDER);
 }
 
-export function engineConfigSections<T extends { name: string }>(
-  sections: T[],
-): T[] {
-  const byName = new Map(sections.map((s) => [s.name, s]));
-  return CONFIG_ENGINE_SECTION_ORDER.map((name) => byName.get(name)).filter(
-    (s): s is T => s != null,
-  );
-}
-
-/** Settings → Unity: advanced AT sections + per-engine credentials. */
-export const CONFIG_SETTINGS_UNITY_SECTION_ORDER: readonly string[] = [
-  ...CONFIG_ENGINE_SECTION_ORDER,
-  ...CONFIG_UI_SECTION_ORDER,
-];
-
-export function settingsUnityConfigSections<T extends { name: string }>(
-  sections: T[],
-): T[] {
-  const byName = new Map(sections.map((s) => [s.name, s]));
-  return CONFIG_SETTINGS_UNITY_SECTION_ORDER.map((name) => byName.get(name)).filter(
-    (s): s is T => s != null,
-  );
+export function engineConfigSections<T extends { name: string }>(sections: T[]) {
+  return orderedSections(sections, CONFIG_ENGINE_SECTION_ORDER);
 }
 
 export function fieldMeta(key: string): ConfigFieldMeta {

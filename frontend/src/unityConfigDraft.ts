@@ -33,18 +33,17 @@ export function mergeUnityDraftInto(
   );
   return base.map((sec) => {
     const d = draftBySec.get(sec.name.toLowerCase());
-    if (!d) return { ...sec, keys: sec.keys.map((k) => ({ ...k })) };
-    return {
-      ...sec,
-      keys: sec.keys.map((k) => {
-        const dv = d.keys.find(
-          (x) => x.key.toLowerCase() === k.key.toLowerCase(),
-        )?.value;
-        if (dv != null && dv.trim() !== "" && k.value.trim() === "") {
-          return { ...k, value: dv };
-        }
-        return { ...k };
-      }),
-    };
+    if (!d) return sec;
+    const values = new Map<string, string>();
+    for (const row of d.keys) {
+      const name = row.key.toLowerCase();
+      if (!values.has(name)) values.set(name, row.value);
+    }
+    const keys = sec.keys.map(row => {
+      if (row.value.trim()) return row;
+      const value = values.get(row.key.toLowerCase());
+      return value?.trim() ? { ...row, value } : row;
+    });
+    return { ...sec, keys };
   });
 }

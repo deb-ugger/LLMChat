@@ -3,6 +3,28 @@ import path from "node:path";
 
 export const runtimeAssetDirectories = ["ocr", "ort", "manga-ort", "wtp"];
 
+// ONNX and WASM files can be hundreds of MiB. Compare the actual bytes without
+// holding both complete assets in memory on an incremental build.
+function sameBytes(source, target, size) {
+  const length = Math.max(1, Math.min(size, 256 * 1024));
+  const left = Buffer.allocUnsafe(length);
+  const right = Buffer.allocUnsafe(length);
+  const input = fs.openSync(source, "r");
+  try {
+    const existing = fs.openSync(target, "r");
+    try {
+      for (let offset = 0;;) {
+        const readLeft = fs.readSync(input, left, 0, length, offset);
+        const readRight = fs.readSync(existing, right, 0, length, offset);
+        if (!readLeft || !readRight) return readLeft === readRight;
+        const bytes = Math.min(readLeft, readRight);
+        if (!left.subarray(0, bytes).equals(right.subarray(0, bytes))) return false;
+        offset += bytes;
+      }
+    } finally { fs.closeSync(existing); }
+  } finally { fs.closeSync(input); }
+}
+
 function syncEntry(source, destination) {
   const sourceStat = fs.statSync(source);
   const targetStat = fs.existsSync(destination) ? fs.statSync(destination) : null;
@@ -12,7 +34,7 @@ function syncEntry(source, destination) {
   if (sourceStat.isDirectory()) {
     syncDirectory(source, destination);
   } else if (!targetStat || targetStat.isDirectory() || sourceStat.size !== targetStat.size
-    || !fs.readFileSync(source).equals(fs.readFileSync(destination))) {
+    || !sameBytes(source, destination, sourceStat.size)) {
     fs.copyFileSync(source, destination);
     const now = new Date();
     fs.utimesSync(destination, now, now);

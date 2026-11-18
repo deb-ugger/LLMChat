@@ -80,7 +80,6 @@ public sealed class Request
     public string? SavedRenderedFile {get;set;}
     public int Step { get; set; }
     public string[]? SelectedIds { get; set; }
-    public string[]? FontSourceIds { get; set; }
     public JsonNode? Task { get; set; }
     public Project? Project { get; set; }
 }
@@ -103,9 +102,19 @@ public static class Program
     }
     internal static void CheckStop(Request request, string folder) { if (request.StopFile.Length > 0 && File.Exists(request.StopFile)) throw new PausedException(folder); }
     internal static void WriteJson(string path, object value) {
-        var temp = path + ".tmp";
-        try { using (var stream = File.Create(temp)) JsonSerializer.Serialize(stream, value, Json); File.Move(temp, path, true); }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try {
+            using (var stream = File.Create(temp)) JsonSerializer.Serialize(stream, value, Json);
+            for (var attempt = 0; ; attempt++) {
+                try { File.Move(temp, path, true); return; }
+                // Windows may briefly deny replacing a checkpoint that was just published.
+                catch (Exception error) when (OperatingSystem.IsWindows() &&
+                    unchecked((uint)error.HResult) is 0x80070005 or 0x80070020 or 0x80070021) {
+                    if (attempt == 3) throw new IOException($"保存检查点失败：{path}：{error.Message}", error);
+                    Thread.Sleep(20 << attempt);
+                }
+            }
+        } finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
     public static int Main(string[] args)
@@ -246,9 +255,14 @@ public static class Program
         text.Any(char.IsLetter) && !Regex.IsMatch(text.Trim(), @"^(?:https?://|[\w./\\-]+\.(?:png|jpg|asset|prefab|dll)|[A-Fa-f0-9]{16,}$)");
     public static void ValidateTranslation(string source, string translation)
     {
-        if (string.IsNullOrWhiteSpace(translation)) throw new Exception("译文为空");
         var problem = TranslationIntegrity.Validate(source, translation);
         if (problem.Length > 0) throw new Exception(problem);
+    }
+    internal static Func<Entry, bool> WritableSelection(string[]? selectedIds)
+    {
+        var ids = selectedIds?.ToHashSet(StringComparer.Ordinal);
+        return entry => entry.Selected && entry.Error.Length == 0 && (ids == null || ids.Contains(entry.Id))
+            && TranslationIntegrity.Validate(entry.Source, entry.Translation).Length == 0;
     }
     static void Add(Project project, string file, string container, long objectId, string locator, string kind, string text, string locale = "")
     {
@@ -589,23 +603,15 @@ public static class Program
         if (project.ScanRevision < MinimumUsableScanRevision || project.ScanRevision > CurrentScanRevision) throw new Exception("扫描工程格式不兼容，请重新扫描；原工程和译文会保留");
         ScanInspection.VerifyDefinitions(project);
         using var types = new GameTypes(project.Root, project.TypeDirectory);
-        var ids = request.SelectedIds?.ToHashSet(StringComparer.Ordinal);
-        var candidates = project.Entries.Where(e => e.Selected && (ids == null || ids.Contains(e.Id))).ToArray();
-        var selected = candidates.Where(e => e.Error.Length == 0 && TranslationIntegrity.Validate(e.Source, e.Translation).Length == 0).ToArray();
+        var selected = project.Entries.Where(WritableSelection(request.SelectedIds)).ToArray();
         var images = ImageResources.Ready(project);
         if (selected.Length == 0 && images.Length == 0) throw new Exception("没有可回写的有效译文或译图；出错和未完成的项目已跳过，游戏原文与原图保持不变");
-        if (selected.Any(GameText.Protected)) throw new Exception("发现程序类型或事件绑定标识，已阻止生成补丁。请重新打开工程剔除程序标识后再生成");
-        foreach (var entry in selected) ValidateTranslation(entry.Source, entry.Translation);
-        var fontPlan = FontPreparation.Create(request, false);
-        byte[]? font = null;
-        if (request.FontPath.Length > 0 && selected.Length > 0)
-        {
-            font = FontSymbols.Supplement(File.ReadAllBytes(request.FontPath), out _, File.ReadAllText(Path.Combine(fontPlan.Folder, "characters.txt")), Path.Combine(project.Folder, "font-supplements"), () => CheckStop(request, project.Folder));
-            if (fontPlan.Missing.Length > 0) throw new Exception($"所选字体缺少 {fontPlan.Missing.Length} 个字符：{string.Join("、", fontPlan.Missing.Take(24).Select(code => $"{char.ConvertFromUtf32(code)} U+{code:X4}"))}。检查报告：{Path.Combine(fontPlan.Folder, "字库检查.txt")}");
-        }
+        var writable = new HashSet<Entry>(selected, ReferenceEqualityComparer.Instance);
+        var (fontPlan, characters, font) = FontPreparation.Prepare(request, project, writable.Contains, false);
+        if (selected.Length == 0) font = null;
+        if (font != null && fontPlan.Missing.Length > 0) throw new Exception($"所选字体缺少 {fontPlan.Missing.Length} 个字符：{string.Join("、", fontPlan.Missing.Take(24).Select(code => $"{char.ConvertFromUtf32(code)} U+{code:X4}"))}。检查报告：{Path.Combine(fontPlan.Folder, "字库检查.txt")}");
         var fonts = font == null ? [] : project.Fonts.Where(f => f.Kind == "UGUI" || f.Kind.StartsWith("TMP", StringComparison.Ordinal) || f.Kind.StartsWith("NGUI", StringComparison.Ordinal)).ToArray();
         if (font != null && fonts.Length == 0) throw new Exception("未扫描到可替换的字体，请先扫描游戏字体资源");
-        var characters = File.ReadAllText(System.IO.Path.Combine(fontPlan.Folder, "characters.txt"), Utf8);
         var files = selected.Select(e => e.File).Concat(fonts.Select(f => f.File)).Concat(images.Select(i => i.File)).Distinct().ToArray();
         var signature = Convert.ToHexString(SHA256.HashData(Utf8.GetBytes(JsonSerializer.Serialize(new { selected, images, fonts, characters, atlasRevision = BitmapFontGenerator.Revision, font = font == null ? "" : Convert.ToHexString(SHA256.HashData(font)) }, Json))));
         var folder = request.Path.Length > 0 ? Within(project.Folder, System.IO.Path.GetRelativePath(project.Folder, request.Path)) : NewFolder(project.Folder, "patch");

@@ -11,8 +11,7 @@ type Running = { client: SpeechClient; controller: AbortController; reason: "pau
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const abort = () => new DOMException("任务已暂停或取消", "AbortError");
 const chineseConverters: Partial<Record<SpeechJobOptions["chineseScript"], (text: string) => string>> = {};
-function jobOptions(): SpeechJobOptions {
-  const pref = getSpeechPreferences();
+function jobOptions(pref: ReturnType<typeof getSpeechPreferences>): SpeechJobOptions {
   return { model: pref.model, language: pref.language, formats: [...pref.formats], chineseScript: pref.chineseScript,
     processing: { mode: pref.mode ?? "local", provider: pref.onlineProvider ?? "google", model: pref.onlineModel ?? "gemini-3.8-flash", proofread: pref.proofread ?? false, proofreadModel: pref.proofreadModel ?? "" } };
 }
@@ -35,7 +34,13 @@ export class SpeechQueue {
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
   private publish(patch: Partial<Snapshot>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener(); }
-  private patch(id: string, patch: Partial<SpeechQueueItem>) { this.publish({ items: this.state.items.map(item => item.id === id ? { ...item, ...patch } : item) }); }
+  private patch(id: string, patch: Partial<SpeechQueueItem>) {
+    const index = this.state.items.findIndex(item => item.id === id);
+    if (index < 0) return;
+    const items = this.state.items.slice();
+    items[index] = { ...items[index], ...patch };
+    this.publish({ items });
+  }
   clearError() { this.publish({ error: "" }); }
   setShowOutput(id: string, showOutput: boolean) { this.patch(id, { showOutput }); }
   setRanges(id: string, ranges: SpeechRange[] | undefined) {
@@ -53,7 +58,7 @@ export class SpeechQueue {
           const source = await speechNative.probe(path);
           const pref = getSpeechPreferences();
           const item: SpeechQueueItem = { id: crypto.randomUUID(), source, root: pref.outputRoot, folder: "", offset: 0, cueCount: 0,
-            options: jobOptions(),
+            options: jobOptions(pref),
             status: "ready", showOutput: true, message: "等待开始", elapsedMs: 0, revision: 0 };
           this.publish({ items: [...this.state.items, item] });
         } catch (error) { errors.push(`${path.split(/[\\/]/).at(-1)}：${message(error)}`); }
@@ -76,17 +81,19 @@ export class SpeechQueue {
   start(id?: string) {
     const pref = getSpeechPreferences();
     const eligible = (item: SpeechQueueItem) => (!id || item.id === id) && ["ready", "paused", "error"].includes(item.status);
-    const createsNew = this.state.items.some(item => eligible(item) && !item.folder);
-    try { for (const item of this.state.items.filter(item => eligible(item) && !item.folder)) validateSpeechRanges(item.options.ranges, item.source.duration); }
+    const newItems = this.state.items.filter(item => eligible(item) && !item.folder);
+    try { for (const item of newItems) validateSpeechRanges(item.options.ranges, item.source.duration); }
     catch (error) { this.publish({ error: message(error) }); return; }
-    if (createsNew && !pref.formats.length) { this.publish({ error: "至少选择一种输出格式" }); return; }
-    if (createsNew && !pref.outputRoot) { this.publish({ error: "请选择输出目录" }); return; }
-    if (createsNew && pref.mode === "online" && !pref.onlineModel.trim()) { this.publish({ error: "请选择在线识别模型" }); return; }
-    if (createsNew && pref.proofread && !pref.proofreadModel.trim()) { this.publish({ error: "请选择校对模型" }); return; }
+    if (newItems.length) {
+      if (!pref.formats.length) { this.publish({ error: "至少选择一种输出格式" }); return; }
+      if (!pref.outputRoot) { this.publish({ error: "请选择输出目录" }); return; }
+      if (pref.mode === "online" && !pref.onlineModel.trim()) { this.publish({ error: "请选择在线识别模型" }); return; }
+      if (pref.proofread && !pref.proofreadModel.trim()) { this.publish({ error: "请选择校对模型" }); return; }
+    }
     this.publish({ error: "", items: this.state.items.map(item => {
       if (!eligible(item)) return item;
       return { ...item, status: "queued", message: "排队等待",
-        ...(!item.folder ? { root: pref.outputRoot, options: { ...jobOptions(), ranges: item.options.ranges } } : {}) };
+        ...(!item.folder ? { root: pref.outputRoot, options: { ...jobOptions(pref), ranges: item.options.ranges } } : {}) };
     }) });
     for (const item of this.state.items.filter(job => job.status === "queued" && !job.folder && !this.staging.has(job.id))) {
       const staged = speechNative.create(item.root, item.id, item.source, item.options)

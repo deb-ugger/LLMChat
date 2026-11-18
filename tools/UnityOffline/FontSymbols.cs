@@ -60,7 +60,8 @@ public static class FontSymbols
                 if (process.ExitCode != 0) throw new Exception("特殊符号补字失败：" + error.Trim());
                 report = JsonSerializer.Deserialize<Report>(response, Program.Json) ?? throw new Exception("补字组件响应无效");
                 result = File.ReadAllBytes(temporary);
-                foreach (var mapping in report.Mappings) if (FontCoverage.Missing(result, char.ConvertFromUtf32(mapping.Codepoint)).Count > 0) throw new Exception("补入的字符映射未通过校验");
+                var mapped = string.Concat(report.Mappings.Select(mapping => char.ConvertFromUtf32(mapping.Codepoint)));
+                if (mapped.Length > 0 && FontCoverage.Missing(result, mapped).Count > 0) throw new Exception("补入的字符映射未通过校验");
                 File.Move(temporary, output, true); Program.WriteJson(reportPath, report);
                 Program.WriteJson(basePath, new BaseCache(Path.GetFileName(output), report));
             } finally { File.Delete(input); File.Delete(temporary); }

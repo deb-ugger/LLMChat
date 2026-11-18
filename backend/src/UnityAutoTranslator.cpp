@@ -580,22 +580,7 @@ UnityGameItem inspectGameDir(const fs::path& input)
 
     // Plugin framework: Mono → ReiPatcher, IL2CPP → BepInEx (report what matches policy first)
     const bool hasRei = detectReiPatcher(gameDir);
-    if (item.isIl2Cpp && item.hasBepInEx)
-    {
-        item.loaderName = "BepInEx";
-        fs::path core = gameDir / "BepInEx" / "core" / "BepInEx.Core.dll";
-        if (!fs::is_regular_file(core, ec))
-            core = findNamedFileUnder(gameDir / "BepInEx" / "core", "BepInEx.Core.dll", 2);
-        if (!fs::is_regular_file(core, ec))
-            core = findNamedFileUnder(gameDir / "BepInEx" / "core", "BepInEx.dll", 2);
-        item.loaderVersion = readFileVersion(core);
-    }
-    else if (!item.isIl2Cpp && hasRei)
-    {
-        item.loaderName = "ReiPatcher";
-        item.loaderVersion = readFileVersion(gameDir / "ReiPatcher" / "ReiPatcher.exe");
-    }
-    else if (item.hasBepInEx)
+    if (item.hasBepInEx && (item.isIl2Cpp || !hasRei))
     {
         item.loaderName = "BepInEx";
         fs::path core = gameDir / "BepInEx" / "core" / "BepInEx.Core.dll";
@@ -702,6 +687,16 @@ bool resolveGameTarget(
     error = "请先在列表中选择一个具体游戏";
     return false;
 }
+
+bool resolveDetectedGame(const UnityDetectInfo& detected, std::string& gameDir, UnityGameItem& game, std::string& error)
+{
+    if (!detected.ok && detected.games.empty()) {
+        error = detected.error.empty() ? "检测失败" : detected.error;
+        return false;
+    }
+    return resolveGameTarget(detected, gameDir, game, error);
+}
+
 
 /**
  * Uninstall targets = translation plugin this module installs
@@ -995,6 +990,28 @@ void restoreReiPatcherDllBackups(
             if (error) steps.push_back("备份已保留：" + pathUtf8(backup) + "（" + error.message() + "）");
         }
     }
+}
+
+void removeUninstallTarget(const fs::path& gameDir, const fs::path& p, UnityUninstallResult& result)
+{
+    std::error_code ec;
+    if (!fs::exists(p, ec))
+        return;
+    const std::string label = pathUtf8(p.lexically_relative(gameDir));
+    const std::string shown =
+        label.empty() || label == "." ? pathUtf8(p.filename()) : label;
+    const bool isDir = fs::is_directory(p, ec);
+    if (isDir)
+        fs::remove_all(p, ec);
+    else
+        fs::remove(p, ec);
+    if (ec)
+    {
+        result.steps.push_back("删除失败：" + shown + "（" + ec.message() + "）");
+        return;
+    }
+    result.removed.push_back(pathUtf8(p));
+    result.steps.push_back(std::string("已删除 ") + (isDir ? shown + "/" : shown));
 }
 
 std::vector<fs::path> listBepInExLoaderTargets(const fs::path& gameDir)
@@ -2303,7 +2320,20 @@ bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& e
     return true;
 }
 
-bool runProcess(const fs::path& exe, const fs::path& workDir, std::string& error, DWORD* outCode = nullptr)
+bool unpackTranslatorPackage(const std::string& method, const fs::path& gameDir, UnityInstallResult& result)
+{
+    result.package = packageFileName(method);
+    storage::TemporaryDirectory temporary("xunity");
+    const auto zip = temporary.path / pathFromUtf8(result.package);
+    const auto url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + result.package;
+    result.steps.push_back("下载 " + result.package);
+    if (!downloadFile(url, zip, result.error)) return false;
+
+    result.steps.push_back("解压到游戏目录");
+    return extractZip(zip, gameDir, result.error);
+}
+
+bool runProcess(const fs::path& exe, const fs::path& workDir, std::string& error)
 {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -2330,8 +2360,6 @@ bool runProcess(const fs::path& exe, const fs::path& workDir, std::string& error
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    if (outCode)
-        *outCode = code;
     if (code != 0)
     {
         if (code == 0xE0434352u)
@@ -3115,20 +3143,10 @@ UnityLaunchResult UnityAutoTranslator::launch(const std::string& gamePath)
     try
     {
         const auto detected = detect(gamePath);
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         if (!item.isUnity)
         {
@@ -3191,20 +3209,10 @@ UnityLaunchResult UnityAutoTranslator::launchPatchAndRun(const std::string& game
     try
     {
         const auto detected = detect(gamePath);
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         result.gameDir = targetDir;
         result.gameExe = item.gameExe;
@@ -3269,20 +3277,10 @@ UnitySelfCheckResult UnityAutoTranslator::selfCheck(const std::string& gamePath)
     try
     {
         const auto detected = detect(gamePath);
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         result.gameDir = targetDir;
         result.runtime = item.runtime;
@@ -3594,20 +3592,10 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
     {
         const auto detected = detect(req.gamePath);
         result.steps.push_back("检测游戏目录");
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         if (!item.isUnity)
         {
@@ -3634,34 +3622,9 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
             return result;
         }
 
-        const std::string pkg = packageFileName(item.installMethod);
-        result.package = pkg;
-        const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
-
-        storage::TemporaryDirectory temporary("xunity");
-        const fs::path& tempDir = temporary.path;
-        const fs::path zipPath = tempDir / pathFromUtf8(pkg);
-
-        result.steps.push_back("下载 " + pkg);
-        std::string err;
-        if (!downloadFile(url, zipPath, err))
-        {
-            result.error = err;
-            return result;
-        }
-        if (!looksLikeZip(zipPath, err))
-        {
-            result.error = err;
-            return result;
-        }
-
         const fs::path gameDirPath = pathFromUtf8(targetDir);
-        result.steps.push_back("解压到游戏目录");
-        if (!extractZip(zipPath, gameDirPath, err))
-        {
-            result.error = err;
+        if (!unpackTranslatorPackage(item.installMethod, gameDirPath, result))
             return result;
-        }
 
         if (item.installMethod == "ReiPatcher" && req.runSetup)
         {
@@ -3671,9 +3634,7 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
             {
                 result.steps.push_back("运行 SetupReiPatcherAndAutoTranslator.exe");
                 std::string setupErr;
-                DWORD setupCode = 0;
-                const bool setupOk = runProcess(setup, gameDirPath, setupErr, &setupCode);
-                (void)setupCode;
+                const bool setupOk = runProcess(setup, gameDirPath, setupErr);
                 if (!setupOk)
                 {
                     // Setup frequently crashes (.NET 0xE0434352) while creating shortcuts
@@ -3755,20 +3716,10 @@ UnityInstallResult UnityAutoTranslator::fixFont(const UnityFixFontRequest& req)
     {
         const auto detected = detect(req.gamePath);
         result.steps.push_back("检测游戏目录");
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
         if (!item.isUnity)
         {
             result.error = "不是有效的 Unity 游戏";
@@ -3915,26 +3866,6 @@ UnityUninstallResult UnityAutoTranslator::uninstall(const UnityUninstallRequest&
             return result;
         }
 
-        auto tryRemove = [&](const fs::path& p) {
-            std::error_code ec;
-            if (!fs::exists(p, ec))
-                return;
-            const std::string label = pathUtf8(p.lexically_relative(gameDir));
-            const std::string shown =
-                label.empty() || label == "." ? pathUtf8(p.filename()) : label;
-            const bool isDir = fs::is_directory(p, ec);
-            if (isDir)
-                fs::remove_all(p, ec);
-            else
-                fs::remove(p, ec);
-            if (ec)
-            {
-                result.steps.push_back("删除失败：" + shown + "（" + ec.message() + "）");
-                return;
-            }
-            result.removed.push_back(pathUtf8(p));
-            result.steps.push_back(std::string("已删除 ") + (isDir ? shown + "/" : shown));
-        };
 
         result.steps.push_back("删除翻译插件及其生成文件");
 
@@ -3946,14 +3877,14 @@ UnityUninstallResult UnityAutoTranslator::uninstall(const UnityUninstallRequest&
             return pathUtf8(a).size() > pathUtf8(b).size();
         });
         for (const auto& p : targets)
-            tryRemove(p);
+            removeUninstallTarget(gameDir, p, result);
 
         // Remove Fonts/ if it became empty after deleting our Noto file
         {
             std::error_code ec;
             const fs::path fontsDir = gameDir / "Fonts";
             if (fs::is_directory(fontsDir, ec) && fs::is_empty(fontsDir, ec))
-                tryRemove(fontsDir);
+                removeUninstallTarget(gameDir, fontsDir, result);
         }
 
         if (result.removed.empty())
@@ -4012,20 +3943,10 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
     {
         const auto detected = detect(req.gamePath);
         result.steps.push_back("检测游戏目录");
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         result.gameDir = targetDir;
         const fs::path targetPath = pathFromUtf8(targetDir);
@@ -4049,32 +3970,8 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
                 return result;
             }
 
-            const std::string pkg = packageFileName("ReiPatcher");
-            result.package = pkg;
-            const std::string url = std::string(kGithubReleaseBase) + kReleaseTag + "/" + pkg;
-            storage::TemporaryDirectory temporary("xunity");
-            const fs::path& tempDir = temporary.path;
-            const fs::path zipPath = tempDir / pathFromUtf8(pkg);
-
-            result.steps.push_back("下载 " + pkg);
-            std::string err;
-            if (!downloadFile(url, zipPath, err))
-            {
-                result.error = err;
+            if (!unpackTranslatorPackage("ReiPatcher", targetPath, result))
                 return result;
-            }
-            if (!looksLikeZip(zipPath, err))
-            {
-                result.error = err;
-                return result;
-            }
-
-            result.steps.push_back("解压到游戏目录");
-            if (!extractZip(zipPath, targetPath, err))
-            {
-                result.error = err;
-                return result;
-            }
 
             const fs::path setup = targetPath / "SetupReiPatcherAndAutoTranslator.exe";
             std::error_code ec;
@@ -4082,9 +3979,7 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             {
                 result.steps.push_back("运行 Setup（注入 ReiPatcher 框架）");
                 std::string setupErr;
-                DWORD setupCode = 0;
-                const bool setupOk = runProcess(setup, targetPath, setupErr, &setupCode);
-                (void)setupCode;
+                const bool setupOk = runProcess(setup, targetPath, setupErr);
                 if (!setupOk)
                 {
                     if (detectReiPatcher(targetPath) || detectAutoTranslator(targetPath))
@@ -4184,12 +4079,6 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             }
         }
 
-        if (!looksLikeZip(zipPath, err))
-        {
-            result.error = err;
-            return result;
-        }
-
         result.steps.push_back("解压插件框架到游戏目录");
         if (!extractZip(zipPath, targetPath, err))
         {
@@ -4230,20 +4119,10 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
     {
         const auto detected = detect(req.gamePath);
         result.steps.push_back("检测游戏目录");
-        if (!detected.ok && detected.games.empty())
-        {
-            result.error = detected.error.empty() ? "检测失败" : detected.error;
-            return result;
-        }
-
         std::string targetDir;
         UnityGameItem item;
-        std::string resolveErr;
-        if (!resolveGameTarget(detected, targetDir, item, resolveErr))
-        {
-            result.error = resolveErr;
+        if (!resolveDetectedGame(detected, targetDir, item, result.error))
             return result;
-        }
 
         result.gameDir = targetDir;
         const fs::path gameDir = pathFromUtf8(targetDir);
@@ -4255,26 +4134,6 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
             return result;
         }
 
-        auto tryRemove = [&](const fs::path& p) {
-            std::error_code ec;
-            if (!fs::exists(p, ec))
-                return;
-            const std::string label = pathUtf8(p.lexically_relative(gameDir));
-            const std::string shown =
-                label.empty() || label == "." ? pathUtf8(p.filename()) : label;
-            const bool isDir = fs::is_directory(p, ec);
-            if (isDir)
-                fs::remove_all(p, ec);
-            else
-                fs::remove(p, ec);
-            if (ec)
-            {
-                result.steps.push_back("删除失败：" + shown + "（" + ec.message() + "）");
-                return;
-            }
-            result.removed.push_back(pathUtf8(p));
-            result.steps.push_back(std::string("已删除 ") + (isDir ? shown + "/" : shown));
-        };
 
         if (!item.isIl2Cpp)
         {
@@ -4292,7 +4151,7 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
                 return pathUtf8(a).size() > pathUtf8(b).size();
             });
             for (const auto& p : targets)
-                tryRemove(p);
+                removeUninstallTarget(gameDir, p, result);
 
             if (result.removed.empty())
             {
@@ -4323,7 +4182,7 @@ UnityUninstallResult UnityAutoTranslator::uninstallLoader(const UnityLoaderReque
             return pathUtf8(a).size() > pathUtf8(b).size();
         });
         for (const auto& p : targets)
-            tryRemove(p);
+            removeUninstallTarget(gameDir, p, result);
 
         if (result.removed.empty())
         {

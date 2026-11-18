@@ -30,7 +30,7 @@ import {
   removeRecentDocument,
   type LitRecentItem,
 } from "../litRecent";
-import { getEngineInfo } from "../translateEngines";
+import { translationEngineLabel } from "../translateEngines";
 import {
   DocOutlineTree,
   findActiveOutlineKeyByHref,
@@ -122,13 +122,7 @@ export function EpubPane({
   outlineOpenRef.current = outlineOpen;
   cfiRef.current = cfi;
 
-  const engineBadge = useMemo(() => {
-    if (translateProvider === "llm") {
-      return model ? `模型：${model}` : "模型：大模型";
-    }
-    const info = getEngineInfo(translateProvider);
-    return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
-  }, [model, translateProvider]);
+  const engineBadge = translationEngineLabel(translateProvider, model);
 
   const refreshRecent = useCallback(async () => {
     setRecentList(await listRecentDocuments());

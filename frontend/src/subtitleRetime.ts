@@ -1,4 +1,4 @@
-import type { AssDialogue, AssDocument, SrtCue } from "./subtitle";
+import type { AssDialogue, SrtCue } from "./subtitle";
 import { assTimeToMs, srtTimeToMs } from "./subtitleGroups";
 import {
   classifyEntryStatus,
@@ -106,49 +106,21 @@ export function packCueWindows(
   items: { text: string; startMs: number; endMs: number }[],
 ): CueWindow[] {
   const windows: CueWindow[] = [];
-  let cur: CueWindow | null = null;
   let charCount = 0;
-
-  const flush = () => {
-    if (cur) windows.push(cur);
-    cur = null;
-    charCount = 0;
-  };
-
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const len = Math.max(1, plainLen(it.text));
-    if (!cur) {
-      cur = {
-        startMs: it.startMs,
-        endMs: it.endMs,
-        texts: [it.text],
-        indexes: [i],
-      };
-      charCount = len;
-      continue;
-    }
-    const gap = Math.max(0, it.startMs - cur.endMs);
-    const wouldExceed =
-      cur.texts.length >= MAX_CUES_PER_WINDOW ||
-      charCount + len > MAX_CHARS_PER_WINDOW;
-    if (gap > GAP_MERGE_MS || wouldExceed) {
-      flush();
-      cur = {
-        startMs: it.startMs,
-        endMs: it.endMs,
-        texts: [it.text],
-        indexes: [i],
-      };
-      charCount = len;
+  for (const [index, cue] of items.entries()) {
+    const length = Math.max(1, plainLen(cue.text));
+    const current = windows.at(-1);
+    if (!current || cue.startMs - current.endMs > GAP_MERGE_MS ||
+        current.texts.length >= MAX_CUES_PER_WINDOW || charCount + length > MAX_CHARS_PER_WINDOW) {
+      windows.push({ startMs: cue.startMs, endMs: cue.endMs, texts: [cue.text], indexes: [index] });
+      charCount = length;
     } else {
-      cur.texts.push(it.text);
-      cur.indexes.push(i);
-      cur.endMs = Math.max(cur.endMs, it.endMs);
-      charCount += len;
+      current.texts.push(cue.text);
+      current.indexes.push(index);
+      current.endMs = Math.max(current.endMs, cue.endMs);
+      charCount += length;
     }
   }
-  flush();
   return windows;
 }
 
@@ -300,6 +272,38 @@ function entriesFromAss(dialogues: AssDialogue[]): TransEntry[] {
   });
 }
 
+type TimedText = { text: string; startMs: number; endMs: number };
+
+async function retimeWindows(
+  windows: CueWindow[],
+  opts: RetimeLlmOpts,
+  plainText: (text: string) => string,
+  append: (window: CueWindow, timings: TimedText[] | null) => void,
+) {
+  let skipped = 0;
+  opts.onStep?.({ phase: "pack", windowCount: windows.length });
+  opts.onProgress?.(`重组时间轴 · ${windows.length} 个窗口…`);
+  for (const [index, window] of windows.entries()) {
+    if (opts.signal?.aborted) throw new Error("已取消");
+    const joined = window.texts.map(text => plainText(text)).join(" ").replace(/\s+/g, " ").trim();
+    opts.onStep?.({ phase: "split", windowIndex: index + 1, windowTotal: windows.length, cueCount: window.texts.length, skipped });
+    opts.onProgress?.(`重组时间轴 · 窗口 ${index + 1}/${windows.length}（${window.texts.length} 条）…`);
+    let sentences: string[];
+    try {
+      sentences = await llmSplitSentences(joined, opts);
+    } catch {
+      sentences = []; // A failed window keeps its original cues and timings.
+    }
+    if (sentences.length) {
+      append(window, allocateTimings(window.startMs, window.endMs, sentences));
+    } else {
+      ++skipped;
+      append(window, null);
+    }
+  }
+  return skipped;
+}
+
 /**
  * Rebuild project cues via LLM sentence repair + proportional retiming.
  * Backs up originals once; idempotent if already retimed unless force.
@@ -315,175 +319,51 @@ export async function retimeProjectSubtitles(
     return { project, windowCount: 0, skippedWindows: 0 };
   }
 
-  let skippedWindows = 0;
-
+  let entries: TransEntry[];
+  let sourceMeta: TextProject["sourceMeta"];
+  let windows: CueWindow[];
+  let skippedWindows: number;
   if (project.format === "srt") {
-    const original =
-      project.sourceMeta?.originalSrtCues ??
-      project.sourceMeta?.srtCues ??
-      [];
-    if (!original.length) {
-      throw new Error("工程缺少 SRT 时间轴数据，无法重组");
-    }
-    const cues = original.map((c) => ({ ...c }));
-    const items = cues.map((c) => ({
-      text: c.text,
-      startMs: srtTimeToMs(c.start),
-      endMs: srtTimeToMs(c.end),
-    }));
-    const windows = packCueWindows(items);
-    opts.onStep?.({ phase: "pack", windowCount: windows.length });
-    opts.onProgress?.(`重组时间轴 · ${windows.length} 个窗口…`);
-
-    const newCues: SrtCue[] = [];
-    for (let wi = 0; wi < windows.length; wi++) {
-      if (opts.signal?.aborted) throw new Error("已取消");
-      const w = windows[wi];
-      const joined = w.texts.join(" ").replace(/\s+/g, " ").trim();
-      opts.onStep?.({
-        phase: "split",
-        windowIndex: wi + 1,
-        windowTotal: windows.length,
-        cueCount: w.texts.length,
-        skipped: skippedWindows,
-      });
-      opts.onProgress?.(
-        `重组时间轴 · 窗口 ${wi + 1}/${windows.length}（${w.texts.length} 条）…`,
-      );
-      let sentences: string[];
-      try {
-        sentences = await llmSplitSentences(joined, opts);
-      } catch {
-        skippedWindows += 1;
-        // Keep original cues in this window
-        for (const idx of w.indexes) {
-          newCues.push({
-            ...cues[idx],
-            index: newCues.length + 1,
-          });
-        }
-        continue;
-      }
-      if (!sentences.length) {
-        skippedWindows += 1;
-        for (const idx of w.indexes) {
-          newCues.push({ ...cues[idx], index: newCues.length + 1 });
-        }
-        continue;
-      }
-      const timed = allocateTimings(w.startMs, w.endMs, sentences);
-      for (const t of timed) {
-        newCues.push({
-          index: newCues.length + 1,
-          start: msToSrtTime(t.startMs),
-          end: msToSrtTime(t.endMs),
-          text: t.text,
+    const original = project.sourceMeta?.originalSrtCues ?? project.sourceMeta?.srtCues;
+    if (!original?.length) throw new Error("工程缺少 SRT 时间轴数据，无法重组");
+    windows = packCueWindows(original.map(cue => ({
+      text: cue.text, startMs: srtTimeToMs(cue.start), endMs: srtTimeToMs(cue.end),
+    })));
+    const cues: SrtCue[] = [];
+    skippedWindows = await retimeWindows(windows, opts, text => text, (window, timings) => {
+      if (timings) {
+        for (const cue of timings) cues.push({
+          index: cues.length + 1, start: msToSrtTime(cue.startMs), end: msToSrtTime(cue.endMs), text: cue.text,
         });
+      } else {
+        for (const index of window.indexes) cues.push({ ...original[index], index: cues.length + 1 });
       }
-    }
-
-    opts.onStep?.({ phase: "writeback", newCueCount: newCues.length });
-    const next: TextProject = {
-      ...project,
-      entries: entriesFromSrtCues(newCues),
-      tokens: emptyTokenStats(),
-      subtitleRetimed: true,
-      subtitleRetiming: true,
-      sourceMeta: {
-        ...project.sourceMeta,
-        originalSrtCues: project.sourceMeta?.originalSrtCues ?? original,
-        srtCues: newCues,
-      },
-    };
-    opts.onStep?.({
-      phase: "done",
-      windowCount: windows.length,
-      skippedWindows,
     });
-    return { project: next, windowCount: windows.length, skippedWindows };
-  }
-
-  // ASS
-  const originalDoc =
-    project.sourceMeta?.originalAssDoc ?? project.sourceMeta?.assDoc;
-  if (!originalDoc?.dialogues.length) {
-    throw new Error("工程缺少 ASS 对白数据，无法重组");
-  }
-  const dialogues = originalDoc.dialogues.map((d) => ({ ...d }));
-  const items = dialogues.map((d) => {
-    const m = d.prefix.match(/^Dialogue:\s*[^,]*,\s*([^,]+),\s*([^,]+),/i);
-    const startMs = m ? assTimeToMs(m[1]) : 0;
-    const endMs = m ? assTimeToMs(m[2]) : 0;
-    return { text: d.text, startMs, endMs };
-  });
-  const windows = packCueWindows(items);
-  opts.onStep?.({ phase: "pack", windowCount: windows.length });
-  opts.onProgress?.(`重组时间轴 · ${windows.length} 个窗口…`);
-
-  const newDialogues: AssDialogue[] = [];
-  for (let wi = 0; wi < windows.length; wi++) {
-    if (opts.signal?.aborted) throw new Error("已取消");
-    const w = windows[wi];
-    const joined = w.texts
-      .map((t) => t.replace(/\{[^}]*\}/g, "").replace(/\\[nNh]/g, " "))
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    opts.onStep?.({
-      phase: "split",
-      windowIndex: wi + 1,
-      windowTotal: windows.length,
-      cueCount: w.texts.length,
-      skipped: skippedWindows,
-    });
-    opts.onProgress?.(
-      `重组时间轴 · 窗口 ${wi + 1}/${windows.length}（${w.texts.length} 条）…`,
-    );
-    let sentences: string[];
-    try {
-      sentences = await llmSplitSentences(joined, opts);
-    } catch {
-      skippedWindows += 1;
-      for (const idx of w.indexes) {
-        newDialogues.push(dialogues[idx]);
+    entries = entriesFromSrtCues(cues);
+    sourceMeta = { ...project.sourceMeta, originalSrtCues: original, srtCues: cues };
+  } else {
+    const original = project.sourceMeta?.originalAssDoc ?? project.sourceMeta?.assDoc;
+    if (!original?.dialogues.length) throw new Error("工程缺少 ASS 对白数据，无法重组");
+    windows = packCueWindows(original.dialogues.map(dialogue => {
+      const match = dialogue.prefix.match(/^Dialogue:\s*[^,]*,\s*([^,]+),\s*([^,]+),/i);
+      return { text: dialogue.text, startMs: match ? assTimeToMs(match[1]) : 0, endMs: match ? assTimeToMs(match[2]) : 0 };
+    }));
+    const dialogues: AssDialogue[] = [];
+    skippedWindows = await retimeWindows(windows, opts, text => text.replace(/\{[^}]*\}/g, "").replace(/\\[nNh]/g, " "), (window, timings) => {
+      if (timings) {
+        const template = original.dialogues[window.indexes[0]];
+        for (const cue of timings) dialogues.push(rewriteAssDialogueTiming(template, cue.startMs, cue.endMs, cue.text));
+      } else {
+        for (const index of window.indexes) dialogues.push({ ...original.dialogues[index] });
       }
-      continue;
-    }
-    if (!sentences.length) {
-      skippedWindows += 1;
-      for (const idx of w.indexes) newDialogues.push(dialogues[idx]);
-      continue;
-    }
-    const timed = allocateTimings(w.startMs, w.endMs, sentences);
-    const template = dialogues[w.indexes[0]];
-    for (const t of timed) {
-      newDialogues.push(
-        rewriteAssDialogueTiming(template, t.startMs, t.endMs, t.text),
-      );
-    }
+    });
+    entries = entriesFromAss(dialogues);
+    sourceMeta = { ...project.sourceMeta, originalAssDoc: original, assDoc: { ...original, dialogues } };
   }
 
-  opts.onStep?.({ phase: "writeback", newCueCount: newDialogues.length });
-  const newDoc: AssDocument = {
-    ...originalDoc,
-    dialogues: newDialogues,
-  };
-  const next: TextProject = {
-    ...project,
-    entries: entriesFromAss(newDialogues),
-    tokens: emptyTokenStats(),
-    subtitleRetimed: true,
-    subtitleRetiming: true,
-    sourceMeta: {
-      ...project.sourceMeta,
-      originalAssDoc: project.sourceMeta?.originalAssDoc ?? originalDoc,
-      assDoc: newDoc,
-    },
-  };
-  opts.onStep?.({
-    phase: "done",
-    windowCount: windows.length,
-    skippedWindows,
-  });
-  return { project: next, windowCount: windows.length, skippedWindows };
+  opts.onStep?.({ phase: "writeback", newCueCount: entries.length });
+  const next = { ...project, entries, sourceMeta, tokens: emptyTokenStats(), subtitleRetimed: true, subtitleRetiming: true };
+  const windowCount = windows.length;
+  opts.onStep?.({ phase: "done", windowCount, skippedWindows });
+  return { project: next, windowCount, skippedWindows };
 }

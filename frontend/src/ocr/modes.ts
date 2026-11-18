@@ -1,4 +1,4 @@
-import type { OcrMode } from "../api";
+import type { OcrMode, OcrModelStatus } from "../api";
 
 export function normalizeOcrMode(value: string): OcrMode {
   return value === "precise" || value === "english" || value === "manga"
@@ -55,3 +55,10 @@ export const OCR_MODE_OPTIONS: Array<{
       "日文漫画、竖排气泡、振假名、艺术字体及图片背景上的文字；会按气泡合并并使用日文阅读顺序。",
   },
 ];
+
+export function ocrDownloadProgress(download?: OcrModelStatus["download"]) {
+  const total = Math.max(0, download?.totalBytes ?? 0);
+  const done = Math.max(0, download?.downloadedBytes ?? 0);
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  return { total, done, percent };
+}

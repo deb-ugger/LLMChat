@@ -3,7 +3,7 @@ import { api, type OcrMode, type OcrModelStatus } from "../api";
 import { toFriendlyError } from "../friendlyError";
 
 /** Model status and download polling shared by settings and image OCR. */
-export function useOcrModels() {
+export function useOcrModels(active = true) {
   const [status, setStatus] = useState<OcrModelStatus | null>(null);
   const [error, setError] = useState<{ source: "status" | "download"; message: string } | null>(null);
   const mounted = useRef(false);
@@ -39,13 +39,14 @@ export function useOcrModels() {
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
     return () => {
       mounted.current = false;
       revision.current += 1;
       if (timer.current !== null) clearTimeout(timer.current);
     };
-  }, [refresh]);
+  }, []);
+
+  useEffect(() => { if (active) void refresh(); }, [active, refresh]);
 
   const ensure = useCallback(async (mode: OcrMode) => {
     if (operation.current) throw new Error("模型操作正在进行，请稍候");

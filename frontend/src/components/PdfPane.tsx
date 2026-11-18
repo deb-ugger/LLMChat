@@ -1,3 +1,4 @@
+import { copyText } from "../clipboard";
 import "../pdfjsBootstrap";
 import { PdfBookmarksPanel } from "./PdfBookmarksPanel";
 import {
@@ -79,7 +80,7 @@ type PdfSession,
 type PdfSessionMeta,
 type ViewMode,
 } from "../pdfSession";
-import { getEngineInfo } from "../translateEngines";
+import { translationEngineLabel } from "../translateEngines";
 import {
 DocOutlineTree,
 findActiveOutlineKeyByPage,
@@ -283,27 +284,6 @@ function isViewMode(v: unknown): v is ViewMode {
     v === "double" ||
     v === "double-scroll"
   );
-}
-
-async function copyPlainText(text: string): Promise<boolean> {
-  const t = text.trim();
-  if (!t) return false;
-  try {
-    await navigator.clipboard.writeText(t);
-    return true;
-  } catch {
-    try {
-      const el = document.createElement("textarea");
-      el.value = t;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand("copy");
-      el.remove();
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }
 
 function viewModeToScrollSpread(mode: ViewMode): {
@@ -970,13 +950,7 @@ export function PdfPane({
     };
   }, []);
 
-  const engineBadge = useMemo(() => {
-    if (translateProvider === "llm") {
-      return model ? `模型：${model}` : "模型：大模型";
-    }
-    const info = getEngineInfo(translateProvider);
-    return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
-  }, [model, translateProvider]);
+  const engineBadge = translationEngineLabel(translateProvider, model);
 
   const persistMeta = useCallback((opts?: { immediate?: boolean; force?: boolean }) => {
     if (!fileMeta) return;
@@ -2520,7 +2494,7 @@ export function PdfPane({
 
   const copySelectedPdfText = useCallback(
     async (text: string) => {
-      const ok = await copyPlainText(text);
+      const ok = await copyText(text);
       showImgToast(ok ? "已复制选中文本" : "复制失败", ok);
     },
     [showImgToast],
@@ -2560,7 +2534,7 @@ export function PdfPane({
         showImgToast("当前页无可复制文本", false);
         return;
       }
-      const ok = await copyPlainText(text);
+      const ok = await copyText(text);
       showImgToast(ok ? "已复制当前页文本" : "复制失败", ok);
     },
     [clearLineBreaks, showImgToast],

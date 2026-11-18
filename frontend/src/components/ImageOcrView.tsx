@@ -1,3 +1,4 @@
+import { OcrModeOptions } from "./OcrModeOptions";
 import { invoke } from "@tauri-apps/api/core";
 import {
 useCallback,
@@ -23,7 +24,7 @@ type PaddleOcrLine,
 } from "../ocr/paddleOcr";
 import { TaskScope,isAbortError,throwIfAborted } from "../ocr/taskScope";
 import { useOcrModels } from "../ocr/useOcrModels";
-import { getEngineInfo } from "../translateEngines";
+import { translationEngineLabel } from "../translateEngines";
 import { OcrMetrics,OcrPageCard,type OcrBlock,type OcrPage,type OcrSelectionField } from "./ImageOcrPage";
 import { LangCombobox } from "./LangCombobox";
 
@@ -754,13 +755,7 @@ export function ImageOcrView({
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  const engineBadge = useMemo(() => {
-    if (translateProvider === "llm") {
-      return model ? `模型：${model}` : "模型：大模型";
-    }
-    const info = getEngineInfo(translateProvider);
-    return info ? `引擎：${info.label}` : `引擎：${translateProvider}`;
-  }, [model, translateProvider]);
+  const engineBadge = translationEngineLabel(translateProvider, model);
 
   const chooseImageOcrMode = useCallback(async (mode: OcrMode) => {
     if (ocrModeBusy) return;
@@ -777,13 +772,6 @@ export function ImageOcrView({
       void refreshOcrModels();
     }
   }, [ocrModeBusy, ensureOcrMode, refreshOcrModels, onOcrModeChange]);
-
-  const ocrDownload = ocrModelStatus?.download;
-  const ocrDownloadTotal = Math.max(0, ocrDownload?.totalBytes ?? 0);
-  const ocrDownloadDone = Math.max(0, ocrDownload?.downloadedBytes ?? 0);
-  const ocrDownloadPercent = ocrDownloadTotal
-    ? Math.min(100, Math.round((ocrDownloadDone / ocrDownloadTotal) * 100))
-    : 0;
 
   const ocrModeMenu = (
     <div className="literature-ocr-menu" ref={ocrModeMenuRef}>
@@ -805,62 +793,7 @@ export function ImageOcrView({
             <strong>图片识别模式</strong>
             <span>本地 OCR</span>
           </div>
-          <div className="literature-ocr-options">
-            {IMAGE_OCR_MODES.map((option) => {
-              const selected = normalizedOcrMode === option.id;
-              const statusItem = ocrModelStatus?.modes.find((item) => item.id === option.id);
-              const downloading =
-                ocrModeBusy === option.id ||
-                (ocrDownload?.active === true && ocrDownload.mode === option.id);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  className={`literature-ocr-option${selected ? " is-selected" : ""}`}
-                  disabled={ocrModeBusy !== null || ocrDownload?.active === true}
-                  onClick={() => void chooseImageOcrMode(option.id)}
-                >
-                  <span className="literature-ocr-option-mark" aria-hidden>
-                    {selected ? "✓" : ""}
-                  </span>
-                  <span className="literature-ocr-option-copy">
-                    <strong>{OCR_MODE_LABELS[option.id]}</strong>
-                    <small>
-                      {option.description}
-                      {option.warning ? (
-                        <>
-                          <br />
-                          <strong>{option.warning}</strong>
-                        </>
-                      ) : null}
-                    </small>
-                  </span>
-                  <span className="literature-ocr-option-state">
-                    {option.id === "fast"
-                      ? "内置"
-                      : downloading
-                        ? `${ocrDownloadPercent}%`
-                        : statusItem?.installed
-                          ? "已下载"
-                          : "需下载"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {ocrModeBusy ? (
-            <div className="literature-ocr-progress" aria-live="polite">
-              <div>
-                <span>{ocrDownload?.model || "正在建立下载连接"}</span>
-                <strong>{ocrDownloadPercent}%</strong>
-              </div>
-              <span className="ocr-download-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ocrDownloadPercent}>
-                <span className="ocr-download-progress-fill" style={{ width: `${ocrDownloadPercent}%` }} />
-              </span>
-            </div>
-          ) : null}
+          <OcrModeOptions options={IMAGE_OCR_MODES} selected={normalizedOcrMode} busy={ocrModeBusy} status={ocrModelStatus} onChoose={chooseImageOcrMode} />
           {ocrModeError || modelStatusError ? (
             <p className="literature-ocr-error">
               {ocrModeError || modelStatusError}
@@ -1749,7 +1682,10 @@ export function ImageOcrView({
     e: { stopPropagation: () => void },
   ) => {
     e.stopPropagation();
-    await copyText(text);
+    if (!await copyText(text)) {
+      showToast("复制失败");
+      return;
+    }
     setCopiedId(id);
     window.setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1200);
   };

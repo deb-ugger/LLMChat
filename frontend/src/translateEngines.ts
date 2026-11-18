@@ -215,10 +215,9 @@ export function scoreEngine(
   return score;
 }
 
-export function sortedEngines(source: string, target: string): EngineInfo[] {
-  return [...TRANSLATE_ENGINES].sort(
-    (a, b) => scoreEngine(b, source, target) - scoreEngine(a, source, target),
-  );
+export function translationEngineLabel(provider: string, model?: string): string {
+  if (provider === "llm") return `模型：${model || "大模型"}`;
+  return `引擎：${getEngineInfo(provider)?.label ?? provider}`;
 }
 
 /** Online engines only (excludes LLM). */

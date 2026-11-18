@@ -4,11 +4,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Manager};
 
 // Only small commit positions are retained; transcript bodies stay on disk.
-static POSITIONS: LazyLock<Mutex<HashMap<PathBuf, (f64, usize)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Clone, Copy)]
+enum Position { Ready(f64, usize), NeedsReplay }
+type JobPosition = Arc<Mutex<Option<Position>>>;
+static POSITIONS: LazyLock<Mutex<HashMap<PathBuf, JobPosition>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static ROOTS_LOCK: Mutex<()> = Mutex::new(());
 // Keep only file positions, not transcript text. Each folder retains its latest search.
 #[derive(Default)]
@@ -27,6 +30,19 @@ const PENDING_SIGNATURE: &[u8] = b"llmchat-speech-pending-v1\n";
 type Result<T> = std::result::Result<T, String>;
 fn err(error: impl std::fmt::Display) -> String { error.to_string() }
 
+fn write_job_json(path: &Path, bytes: &[u8]) -> Result<()> {
+    let temporary = path.with_extension("json.tmp");
+    let saved = (|| {
+        let mut file = File::create(&temporary).map_err(err)?;
+        file.write_all(bytes).map_err(err)?;
+        file.sync_data().map_err(err)?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(err)
+    })();
+    if saved.is_err() { let _ = fs::remove_file(temporary); }
+    saved
+}
+
 fn register_output_root(app: &AppHandle, root: &Path) -> Result<()> {
     if !root.is_absolute() { return Err("语音输出目录必须是绝对路径".into()); }
     let _lock = ROOTS_LOCK.lock().unwrap();
@@ -35,15 +51,7 @@ fn register_output_root(app: &AppHandle, root: &Path) -> Result<()> {
     let root = if root.exists() { fs::canonicalize(root).map_err(err)? } else { root.to_path_buf() };
     if roots.contains(&root) { return Ok(()); }
     roots.push(root);
-    let temporary = registry.with_extension("json.tmp");
-    let saved = (|| {
-        let mut file = File::create(&temporary).map_err(err)?;
-        file.write_all(&serde_json::to_vec(&roots).map_err(err)?).map_err(err)?;
-        file.sync_data().map_err(err)?; drop(file);
-        fs::rename(&temporary, &registry).map_err(err)
-    })();
-    if saved.is_err() { let _ = fs::remove_file(temporary); }
-    saved
+    write_job_json(&registry, &serde_json::to_vec(&roots).map_err(err)?)
 }
 
 struct UnpublishedJob { folder: PathBuf, published: bool }
@@ -157,30 +165,35 @@ fn load_job(folder: &Path) -> Result<Job> {
     validate_options(&job.options, job.source.duration)?;
     Ok(Job { folder: folder.to_string_lossy().into_owned(), ..job })
 }
-fn read_chunks(folder: &Path, repair: bool) -> Result<Vec<Chunk>> {
-    let file = File::open(folder.join("progress.jsonl")).map_err(err)?;
-    let mut reader = BufReader::new(file);
-    let mut chunks = Vec::new();
+fn next_chunk(reader: &mut impl BufRead, line: &mut Vec<u8>, expected: f64) -> Result<Option<Chunk>> {
+    line.clear();
+    reader.read_until(b'\n', line).map_err(err)?;
+    // A torn final append is not committed; retry that audio window on resume.
+    if line.last() != Some(&b'\n') { return Ok(None); }
+    let chunk: Chunk = serde_json::from_slice(line).map_err(|e| format!("任务进度文件损坏：{e}"))?;
+    if (chunk.from - expected).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= chunk.from {
+        return Err("任务进度不连续".into());
+    }
+    Ok(Some(chunk))
+}
+
+fn visit_chunks(folder: &Path, repair: bool, mut visit: impl FnMut(Chunk)) -> Result<(f64, usize)> {
+    let path = folder.join("progress.jsonl");
+    let mut reader = BufReader::new(File::open(&path).map_err(err)?);
+    let mut line = Vec::new();
     let mut valid_bytes = 0u64;
     let mut expected = 0.0;
-    loop {
-        let mut line = Vec::new();
-        let count = reader.read_until(b'\n', &mut line).map_err(err)?;
-        if count == 0 { break; }
-        // A torn final append is not a committed record; retry that audio window.
-        if line.last() != Some(&b'\n') { break; }
-        let chunk: Chunk = serde_json::from_slice(&line).map_err(|e| format!("任务进度文件损坏：{e}"))?;
-        if (chunk.from - expected).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= chunk.from {
-            return Err("任务进度不连续".into());
-        }
+    let mut cues = 0;
+    while let Some(chunk) = next_chunk(&mut reader, &mut line, expected)? {
         expected = chunk.to;
-        valid_bytes += count as u64;
-        chunks.push(chunk);
+        valid_bytes += line.len() as u64;
+        cues += chunk.cues.len();
+        visit(chunk);
     }
-    if repair {
-        OpenOptions::new().write(true).open(folder.join("progress.jsonl")).map_err(err)?.set_len(valid_bytes).map_err(err)?;
+    if repair && !line.is_empty() {
+        OpenOptions::new().write(true).open(path).map_err(err)?.set_len(valid_bytes).map_err(err)?;
     }
-    Ok(chunks)
+    Ok((expected, cues))
 }
 fn timestamp(seconds: f64, dot: bool) -> String {
     let ms = (seconds.max(0.0) * 1000.0).round() as u64;
@@ -203,8 +216,10 @@ fn open_outputs(job: &Job, truncate: bool) -> Result<Vec<(String, File)>> {
         Ok((format.clone(), file))
     }).collect()
 }
-fn rebuild(job: &mut Job) -> Result<()> {
-    let chunks = read_chunks(Path::new(&job.folder), true)?;
+fn restore_outputs(job: &mut Job) -> Result<()> {
+    // Validate the journal completely before truncating the user's exported files.
+    let mut chunks = Vec::new();
+    let (offset, cues) = visit_chunks(Path::new(&job.folder), true, |chunk| chunks.push(chunk))?;
     let mut files = open_outputs(job, true)?;
     let mut count = 0;
     for chunk in &chunks {
@@ -212,11 +227,35 @@ fn rebuild(job: &mut Job) -> Result<()> {
         count += chunk.cues.len();
     }
     for (_, file) in files { file.sync_data().map_err(err)?; }
-    job.offset = chunks.last().map_or(0.0, |c| c.to); job.cue_count = count;
-    let mut positions = POSITIONS.lock().unwrap();
-    if job.offset >= job.source.duration - 0.01 { positions.remove(Path::new(&job.folder)); }
-    else { positions.insert(PathBuf::from(&job.folder), (job.offset, count)); }
+    job.offset = offset;
+    job.cue_count = cues;
     Ok(())
+}
+
+// Same-job operations serialize, while different files can flush their subtitles concurrently.
+fn with_position<T>(folder: &Path, work: impl FnOnce(&mut Option<Position>) -> Result<T>) -> Result<T> {
+    let slot = POSITIONS.lock().unwrap().entry(folder.to_owned()).or_default().clone();
+    let mut position = slot.lock().unwrap();
+    let result = work(&mut position);
+    if position.is_none() {
+        let mut positions = POSITIONS.lock().unwrap();
+        // Keep the slot while a caller is already waiting on its lock.
+        if Arc::strong_count(&slot) == 2 { positions.remove(folder); }
+    }
+    result
+}
+
+fn position_after(job: &Job) -> Option<Position> {
+    (job.offset < job.source.duration - 0.01).then_some(Position::Ready(job.offset, job.cue_count))
+}
+
+fn rebuild(job: &mut Job) -> Result<()> {
+    with_position(&PathBuf::from(&job.folder), |position| {
+        *position = Some(Position::NeedsReplay);
+        restore_outputs(job)?;
+        *position = position_after(job);
+        Ok(())
+    })
 }
 fn create_job(root: &Path, id: String, source: Source, options: Options, output_date: &str) -> Result<Job> {
     if id.len() > 64 || id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { return Err("无效任务 ID".into()); }
@@ -245,65 +284,68 @@ fn create_job(root: &Path, id: String, source: Source, options: Options, output_
     File::create(folder.join("progress.jsonl")).map_err(err)?.sync_data().map_err(err)?;
     rebuild(&mut job)?;
     // Publish the task only after its journal and output headers exist.
-    let mut metadata = File::create(folder.join("job.json.tmp")).map_err(err)?;
-    metadata.write_all(&serde_json::to_vec_pretty(&job).map_err(err)?).map_err(err)?; metadata.sync_data().map_err(err)?;
-    drop(metadata);
-    fs::rename(folder.join("job.json.tmp"), folder.join("job.json")).map_err(err)?;
+    write_job_json(&folder.join("job.json"), &serde_json::to_vec_pretty(&job).map_err(err)?)?;
     pending.published = true;
     if let Err(error) = fs::remove_file(folder.join(PENDING_MARKER)) { eprintln!("Speech pending marker cleanup failed: {error}"); }
     Ok(job)
 }
-fn commit(folder: &Path, chunk: Chunk) -> Result<Job> {
-    let mut job = load_job(folder)?;
-    let mut positions = POSITIONS.lock().unwrap();
-    let (offset, count) = if let Some(position) = positions.get(folder) { *position }
-        else { let chunks = read_chunks(folder, false)?; (chunks.last().map_or(0.0, |c| c.to), chunks.iter().map(|c| c.cues.len()).sum()) };
-    if (chunk.from - offset).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= offset || chunk.to > job.source.duration + 0.1 {
-        return Err("保存位置与任务断点不一致".into());
+fn commit(folder: &Path, chunk: Chunk, elapsed_ms: Option<u64>) -> Result<Job> {
+    with_position(folder, |position| {
+        let mut job = load_job(folder)?;
+        let (offset, count) = match *position {
+            Some(Position::Ready(offset, count)) => (offset, count),
+            Some(Position::NeedsReplay) => {
+                restore_outputs(&mut job)?;
+                *position = position_after(&job);
+                (job.offset, job.cue_count)
+            }
+            None => visit_chunks(folder, true, |_| {})?,
+        };
+        if (chunk.from - offset).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= offset || chunk.to > job.source.duration + 0.1 {
+            return Err("保存位置与任务断点不一致".into());
+        }
+        if chunk.cues.iter().any(|cue| !cue.start.is_finite() || !cue.end.is_finite() || cue.start < chunk.from - 0.001 || cue.end > chunk.to + 0.001 || cue.end <= cue.start
+            || job.options.ranges.as_ref().is_some_and(|ranges| !ranges.iter().any(|range| cue.start >= range.start - 0.001 && cue.end <= range.end + 0.001))) {
+            return Err("字幕时间超出当前音频片段".into());
+        }
+        let mut record = serde_json::to_vec(&chunk).map_err(err)?; record.push(b'\n');
+        let mut journal = OpenOptions::new().append(true).open(folder.join("progress.jsonl")).map_err(err)?;
+        *position = Some(Position::NeedsReplay);
+        journal.write_all(&record).map_err(err)?; journal.sync_data().map_err(err)?;
+        // Journal is authoritative. Resume rebuilds outputs if power fails during writes.
+        for (format, mut file) in open_outputs(&job, false)? {
+            file.write_all(chunk_text(&chunk, &format, count).as_bytes()).map_err(err)?; file.sync_data().map_err(err)?;
+        }
+        if let Some(elapsed) = elapsed_ms { update_elapsed(folder, &mut job, elapsed)?; }
+        job.offset = chunk.to; job.cue_count = count + chunk.cues.len();
+        *position = position_after(&job);
+        Ok(job)
+    })
+}
+fn update_elapsed(folder: &Path, job: &mut Job, elapsed_ms: u64) -> Result<u64> {
+    if elapsed_ms > job.elapsed_ms {
+        job.elapsed_ms = elapsed_ms;
+        write_job_json(&folder.join("job.json"), &serde_json::to_vec_pretty(job).map_err(err)?)?;
     }
-    if chunk.cues.iter().any(|cue| !cue.start.is_finite() || !cue.end.is_finite() || cue.start < chunk.from - 0.001 || cue.end > chunk.to + 0.001 || cue.end <= cue.start
-        || job.options.ranges.as_ref().is_some_and(|ranges| !ranges.iter().any(|range| cue.start >= range.start - 0.001 && cue.end <= range.end + 0.001))) {
-        return Err("字幕时间超出当前音频片段".into());
-    }
-    let mut record = serde_json::to_vec(&chunk).map_err(err)?; record.push(b'\n');
-    let mut journal = OpenOptions::new().append(true).open(folder.join("progress.jsonl")).map_err(err)?;
-    journal.write_all(&record).map_err(err)?; journal.sync_data().map_err(err)?;
-    // Journal is authoritative. Resume rebuilds outputs if power fails during writes.
-    for (format, mut file) in open_outputs(&job, false)? {
-        file.write_all(chunk_text(&chunk, &format, count).as_bytes()).map_err(err)?; file.sync_data().map_err(err)?;
-    }
-    job.offset = chunk.to; job.cue_count = count + chunk.cues.len();
-    if job.offset >= job.source.duration - 0.01 { positions.remove(folder); }
-    else { positions.insert(folder.to_path_buf(), (job.offset, job.cue_count)); }
-    Ok(job)
+    Ok(job.elapsed_ms)
 }
 fn save_elapsed(folder: &Path, elapsed_ms: u64) -> Result<u64> {
-    let _positions = POSITIONS.lock().unwrap();
-    let mut job = load_job(folder)?;
-    job.elapsed_ms = job.elapsed_ms.max(elapsed_ms);
-    let temporary = folder.join("job.json.tmp");
-    let saved = (|| {
-        let mut file = File::create(&temporary).map_err(err)?;
-        file.write_all(&serde_json::to_vec_pretty(&job).map_err(err)?).map_err(err)?;
-        file.sync_data().map_err(err)?; drop(file);
-        fs::rename(&temporary, folder.join("job.json")).map_err(err)
-    })();
-    if saved.is_err() { let _ = fs::remove_file(temporary); }
-    saved?; Ok(job.elapsed_ms)
+    with_position(folder, |_| update_elapsed(folder, &mut load_job(folder)?, elapsed_ms))
 }
 fn cancel_job(folder: &Path) -> Result<()> {
-    let job = load_job(folder)?;
-    let mut positions = POSITIONS.lock().unwrap();
-    for format in &job.options.formats {
-        let file = output_path(&job, format)?;
-        if file.exists() { fs::remove_file(file).map_err(err)?; }
-    }
-    fs::remove_file(folder.join("progress.jsonl")).map_err(err)?;
-    fs::remove_file(folder.join("job.json")).map_err(err)?;
-    positions.remove(folder);
-    PREVIEW_INDEXES.lock().unwrap().remove(folder);
-    // Do not recursively delete unexpected/user-added files.
-    match fs::remove_dir(folder) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()), Err(e) => Err(err(e)) }
+    with_position(folder, |position| {
+        let job = load_job(folder)?;
+        for format in &job.options.formats {
+            let file = output_path(&job, format)?;
+            if file.exists() { fs::remove_file(file).map_err(err)?; }
+        }
+        fs::remove_file(folder.join("progress.jsonl")).map_err(err)?;
+        fs::remove_file(folder.join("job.json")).map_err(err)?;
+        *position = None;
+        PREVIEW_INDEXES.lock().unwrap().remove(folder);
+        // Do not recursively delete unexpected/user-added files.
+        match fs::remove_dir(folder) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()), Err(e) => Err(err(e)) }
+    })
 }
 fn decode_duration(job: &Job, offset: f64) -> Result<f64> {
     if !offset.is_finite() || offset < 0.0 || offset >= job.source.duration { return Err("无效解码位置".into()); }
@@ -352,8 +394,7 @@ fn list_jobs(root: &Path) -> Result<Vec<Job>> {
         if !folder.is_dir() { continue; }
         if !folder.join("job.json").is_file() { continue; }
         let mut job = load_job(&folder)?;
-        let chunks = read_chunks(&folder, false)?;
-        job.offset = chunks.last().map_or(0.0, |c| c.to); job.cue_count = chunks.iter().map(|c| c.cues.len()).sum();
+        (job.offset, job.cue_count) = visit_chunks(&folder, false, |_| {})?;
         jobs.push(job);
     }
     Ok(jobs)
@@ -379,11 +420,7 @@ pub async fn speech_decode_chunk(app: AppHandle, folder: String, offset: f64) ->
 }
 #[tauri::command]
 pub async fn speech_commit_chunk(folder: String, chunk: Chunk, elapsed_ms: Option<u64>) -> Result<Job> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut job = commit(Path::new(&folder), chunk)?;
-        if let Some(elapsed) = elapsed_ms { job.elapsed_ms = save_elapsed(Path::new(&folder), elapsed)?; }
-        Ok(job)
-    }).await.map_err(err)?
+    tauri::async_runtime::spawn_blocking(move || commit(Path::new(&folder), chunk, elapsed_ms)).await.map_err(err)?
 }
 #[tauri::command]
 pub async fn speech_save_elapsed(folder: String, elapsed_ms: u64) -> Result<u64> {
@@ -408,21 +445,14 @@ fn read_preview(folder: &Path, page: usize, query: &str) -> Result<Preview> {
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(index.committed)).map_err(err)?;
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        let count = reader.read_until(b'\n', &mut line).map_err(err)?;
-        if count == 0 || line.last() != Some(&b'\n') { break; }
-        let chunk: Chunk = serde_json::from_slice(&line).map_err(|e| format!("任务进度文件损坏：{e}"))?;
-        if (chunk.from - index.end).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= chunk.from {
-            return Err("任务进度不连续".into());
-        }
+    while let Some(chunk) = next_chunk(&mut reader, &mut line, index.end)? {
         for (cue_index, cue) in chunk.cues.iter().enumerate() {
             if index.query.is_empty() || cue.text.to_lowercase().contains(&index.query) {
                 index.matches.push((index.committed, cue_index));
             }
         }
         index.end = chunk.to;
-        index.committed += count as u64;
+        index.committed += line.len() as u64;
     }
     index.length = metadata.len();
     index.modified = metadata.modified().ok();
@@ -459,6 +489,11 @@ mod tests {
         let options = Options { model: "fixture".into(), language: "chinese".into(), chinese_script: "simplified".into(), formats: vec!["srt".into(), "vtt".into(), "txt".into()], processing: None, ranges: None };
         let job = create_job(&root, "test-id".into(), source, options, "2026-10-22").unwrap(); (root, job)
     }
+    fn committed_records(folder: &Path) -> usize {
+        let mut records = 0;
+        visit_chunks(folder, false, |_| records += 1).unwrap();
+        records
+    }
     fn cleanup(root: PathBuf) {
         let resolved = root.canonicalize().unwrap();
         assert_eq!(resolved.parent().unwrap(), std::env::temp_dir().canonicalize().unwrap());
@@ -471,7 +506,7 @@ mod tests {
         let folder = Path::new(&job.folder);
         let cues = (0..205).map(|index| Cue { start: index as f64 * 0.2, end: index as f64 * 0.2 + 0.1,
             text: format!("测试 {} {index}", if index % 2 == 0 { "KEYWORD" } else { "普通字幕" }) }).collect();
-        commit(folder, Chunk { from: 0.0, to: 60.0, cues, text: "fixture".into() }).unwrap();
+        commit(folder, Chunk { from: 0.0, to: 60.0, cues, text: "fixture".into() }, None).unwrap();
         let first = read_preview(folder, 0, " keyword ").unwrap();
         assert_eq!(first.total, 103); assert_eq!(first.cues.len(), 100);
         let last = read_preview(folder, 1, "kEyWoRd").unwrap();
@@ -488,10 +523,10 @@ mod tests {
         let folder = Path::new(&job.folder);
         let make_chunk = |from: f64, to: f64, count: usize| Chunk { from, to,
             cues: (0..count).map(|i| Cue { start: from, end: to, text: format!("match {from} {i}") }).collect(), text: "fixture".into() };
-        commit(folder, make_chunk(0.0, 20.0, 105)).unwrap();
+        commit(folder, make_chunk(0.0, 20.0, 105), None).unwrap();
         assert_eq!(read_preview(folder, 1, "match").unwrap().cues.len(), 5);
         let committed = PREVIEW_INDEXES.lock().unwrap()[folder].committed;
-        commit(folder, make_chunk(20.0, 40.0, 10)).unwrap();
+        commit(folder, make_chunk(20.0, 40.0, 10), None).unwrap();
         let preview = read_preview(folder, 1, "MATCH").unwrap();
         assert_eq!(preview.total, 115);
         assert_eq!(preview.cues.len(), 15);
@@ -563,7 +598,7 @@ mod tests {
         job.output_stem = None;
         fs::write(legacy_folder.join("job.json"), serde_json::to_vec(&job).unwrap()).unwrap();
         let chunk = Chunk { from: 0.0, to: 20.0, cues: vec![Cue { start: 1.0, end: 3.0, text: "旧任务续写".into() }], text: "旧任务续写".into() };
-        let mut restored = commit(&legacy_folder, chunk).unwrap();
+        let mut restored = commit(&legacy_folder, chunk, None).unwrap();
         rebuild(&mut restored).unwrap();
         assert_eq!(fs::read_to_string(legacy_folder.join("原音频.txt")).unwrap(), "旧任务续写\n");
         assert_eq!(list_jobs(&root).unwrap().len(), 1);
@@ -574,14 +609,14 @@ mod tests {
     fn incremental_resume_and_cancel() {
         let (root, mut job) = fixture(); let folder = PathBuf::from(&job.folder);
         let chunk = Chunk { from: 0.0, to: 20.0, cues: vec![Cue { start: 1.0, end: 3.5, text: "简体字幕".into() }], text: "简体字幕".into() };
-        job = commit(&folder, chunk.clone()).unwrap(); assert_eq!(job.offset, 20.0);
+        job = commit(&folder, chunk.clone(), None).unwrap(); assert_eq!(job.offset, 20.0);
         assert!(fs::read_to_string(output_path(&job, "srt").unwrap()).unwrap().contains("00:00:01,000 --> 00:00:03,500"));
-        assert!(commit(&folder, chunk).is_err(), "duplicate append must not duplicate output");
+        assert!(commit(&folder, chunk, None).is_err(), "duplicate append must not duplicate output");
         OpenOptions::new().append(true).open(folder.join("progress.jsonl")).unwrap().write_all(b"{\"from\":20").unwrap();
         fs::write(output_path(&job, "txt").unwrap(), b"partial write").unwrap();
         rebuild(&mut job).unwrap(); assert_eq!(job.offset, 20.0);
         assert_eq!(fs::read_to_string(output_path(&job, "txt").unwrap()).unwrap(), "简体字幕\n");
-        assert_eq!(read_chunks(&folder, false).unwrap().len(), 1);
+        assert_eq!(committed_records(&folder), 1);
         fs::write(folder.join("user-added.txt"), b"keep").unwrap();
         cancel_job(&folder).unwrap(); assert!(!output_path(&job, "srt").unwrap().exists());
         assert!(folder.join("user-added.txt").exists()); assert!(Path::new(&job.source.path).exists());
@@ -592,7 +627,7 @@ mod tests {
         let (root, job) = fixture(); let folder = PathBuf::from(&job.folder);
         assert!(!folder.join("job.json.tmp").exists());
         let chunk = Chunk { from: 0.0, to: 20.0, cues: vec![Cue { start: 1.0, end: 3.0, text: "第一段".into() }], text: "第一段".into() };
-        commit(&folder, chunk).unwrap();
+        commit(&folder, chunk, None).unwrap();
         // Simulate process loss: no in-memory position and an interrupted final write.
         POSITIONS.lock().unwrap().remove(&folder);
         assert_eq!(load_job(&folder).unwrap().offset, 0.0);
@@ -604,10 +639,10 @@ mod tests {
         let mut resumed = load_job(&folder).unwrap(); rebuild(&mut resumed).unwrap();
         assert_eq!(resumed.offset, 20.0); assert_eq!(resumed.cue_count, 1);
         assert_eq!(fs::read_to_string(output_path(&job, "txt").unwrap()).unwrap(), "第一段\n");
-        let saved = commit(&folder, Chunk { from: 20.0, to: 40.0, cues: vec![Cue { start: 21.0, end: 23.0, text: "第二段".into() }], text: "第二段".into() }).unwrap();
+        let saved = commit(&folder, Chunk { from: 20.0, to: 40.0, cues: vec![Cue { start: 21.0, end: 23.0, text: "第二段".into() }], text: "第二段".into() }, None).unwrap();
         assert_eq!(saved.offset, 40.0); assert_eq!(saved.cue_count, 2);
         assert_eq!(fs::read_to_string(output_path(&job, "txt").unwrap()).unwrap(), "第一段\n第二段\n");
-        assert_eq!(read_chunks(&folder, false).unwrap().len(), 2);
+        assert_eq!(committed_records(&folder), 2);
         POSITIONS.lock().unwrap().remove(&folder);
         cleanup(root);
     }

@@ -20,6 +20,18 @@ public static class FontCoverage
             var record = cmap + 4 + i * 8; var platform = U16(record); var encoding = U16(record + 2);
             if (platform == 0 || platform == 3 && encoding is 1 or 10) tables.Add(checked(cmap + (int)U32(record + 4)));
         }
+        // Both supported cmap formats store ranges ordered by their inclusive end code.
+        int FirstRangeEndingAtOrAfter(int code, int count, int ends, bool format12)
+        {
+            int low = 0, high = count;
+            while (low < high) {
+                int mid = low + (high - low) / 2;
+                uint end = format12 ? U32(checked(ends + mid * 12)) : U16(ends + mid * 2);
+                if (end < code) low = mid + 1;
+                else high = mid;
+            }
+            return low;
+        }
         bool Present(int code)
         {
             foreach (var t in tables)
@@ -27,25 +39,23 @@ public static class FontCoverage
                 var format = U16(t);
                 if (format == 12)
                 {
-                    var groups = U32(t + 12);
-                    for (var i = 0; i < groups; i++)
-                    {
-                        var p = checked(t + 16 + i * 12); var start = U32(p); var end = U32(p + 4);
-                        if (code >= start && code <= end && U32(p + 8) + code - start != 0) return true;
-                    }
+                    var groups = checked((int)U32(t + 12));
+                    var i = FirstRangeEndingAtOrAfter(code, groups, t + 20, true);
+                    if (i == groups) continue;
+                    var p = checked(t + 16 + i * 12); var start = U32(p);
+                    if (code >= start && U32(p + 8) + code - start != 0) return true;
                 }
                 else if (format == 4 && code <= 0xFFFF)
                 {
                     var count = U16(t + 6) / 2;
-                    for (var i = 0; i < count; i++)
-                    {
-                        var end = U16(t + 14 + i * 2); var start = U16(t + 16 + count * 2 + i * 2);
-                        if (code < start || code > end) continue;
-                        var delta = U16(t + 16 + count * 4 + i * 2); var offsetPos = t + 16 + count * 6 + i * 2; var offset = U16(offsetPos);
-                        var glyph = offset == 0 ? code : U16(offsetPos + offset + (code - start) * 2);
-                        if (offset != 0 && glyph == 0) continue;
-                        if ((glyph + delta & 0xFFFF) != 0) return true;
-                    }
+                    var i = FirstRangeEndingAtOrAfter(code, count, t + 14, false);
+                    if (i == count) continue;
+                    var start = U16(t + 16 + count * 2 + i * 2);
+                    if (code < start) continue;
+                    var delta = U16(t + 16 + count * 4 + i * 2); var offsetPos = t + 16 + count * 6 + i * 2; var offset = U16(offsetPos);
+                    var glyph = offset == 0 ? code : U16(offsetPos + offset + (code - start) * 2);
+                    if (offset != 0 && glyph == 0) continue;
+                    if ((glyph + delta & 0xFFFF) != 0) return true;
                 }
             }
             return false;

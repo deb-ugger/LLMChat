@@ -6,7 +6,6 @@
 #include "OcrModelStore.h"
 #include "UsageStore.h"
 
-#include <memory>
 
 class HttpServer {
 public:
@@ -16,7 +15,7 @@ public:
 private:
     ConfigStore& config_;
     ConversationManager& conversations_;
-    std::unique_ptr<UsageStore> usage_;
-    std::unique_ptr<PricingStore> pricing_;
-    std::unique_ptr<OcrModelStore> ocrModels_;
+    UsageStore usage_;
+    PricingStore pricing_;
+    OcrModelStore ocrModels_;
 };

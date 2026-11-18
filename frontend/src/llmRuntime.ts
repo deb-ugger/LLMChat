@@ -3,9 +3,6 @@ type RuntimeSettings = { maxOutputTokens: number; batchInputTokens: number };
 export function loadLlmRuntime(): RuntimeSettings {
   try { const v = JSON.parse(localStorage.getItem("llmchat-llm-runtime") || "{}"); return { maxOutputTokens: Number.isInteger(v.maxOutputTokens) && v.maxOutputTokens >= 0 && v.maxOutputTokens <= 1048576 ? v.maxOutputTokens : 0, batchInputTokens: Number.isInteger(v.batchInputTokens) && v.batchInputTokens >= 512 && v.batchInputTokens <= 32768 ? v.batchInputTokens : 2400 }; } catch { return { maxOutputTokens: 0, batchInputTokens: 2400 }; }
 }
-export type ModelRate = { model: string; active: boolean; rate?: number; generationRate?: number };
-export const modelRates = new Map<string, ModelRate>();
-function publish() { window.dispatchEvent(new Event("llmchat-model-rate")); }
 /** Serialize local service work across text, vision and layout. Queue time is not request time. */
 export async function runModelRequest<T extends { completionTokens?: number; generationTokensPerSecond?: number }>(connection: { model?: string; apiUrl?: string; localModel?: boolean; llmConcurrency?: number; performanceScope?: string; performanceStep?: string }, signal: AbortSignal | null | undefined, request: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const model = connection.model || "大模型";
@@ -18,12 +15,15 @@ export async function runModelRequest<T extends { completionTokens?: number; gen
   }
   try {
     signal?.throwIfAborted();
-    const started = performance.now(); modelRates.set(model, { model, active: true, rate: modelRates.get(model)?.rate, generationRate: modelRates.get(model)?.generationRate }); publish();
+    const started = performance.now();
     const timeout = AbortSignal.timeout(330000); const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const stopTracking = trackGameModel(connection, model);
-    try { const result = await measureGameAsync(connection, "modelRequestMs", () => request(combined)); const elapsed = (performance.now() - started) / 1000;
-      recordGameRequest(connection, model, result.completionTokens || 0, elapsed * 1000, result.generationTokensPerSecond);
-      modelRates.set(model, { model, active: false, generationRate: result.generationTokensPerSecond && result.generationTokensPerSecond > 0 ? result.generationTokensPerSecond : undefined, rate: result.completionTokens && result.completionTokens > 0 ? result.completionTokens / elapsed : undefined }); return result;
-    } finally { stopTracking?.(); const value = modelRates.get(model); if (value) modelRates.set(model, { ...value, active: false }); publish(); }
+    try {
+      const result = await measureGameAsync(connection, "modelRequestMs", () => request(combined));
+      recordGameRequest(connection, model, result.completionTokens || 0, performance.now() - started, result.generationTokensPerSecond);
+      return result;
+    } finally {
+      stopTracking?.();
+    }
   } finally { release?.(); }
 }

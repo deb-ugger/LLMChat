@@ -169,18 +169,8 @@ export function effectivePresets(
   return out;
 }
 
-export function effectiveGroupPresets(
-  overrides: VendorModelsOverride = {},
-): { group: string; models: ModelPreset[] }[] {
-  return groupModelPresets(effectivePresets(overrides));
-}
-
 /** In-memory cache of dataDir vendor-models.json (kept in sync by Settings). */
 let vendorModelsOverrideCache: VendorModelsOverride = {};
-
-export function getVendorModelsOverrideCache(): VendorModelsOverride {
-  return vendorModelsOverrideCache;
-}
 
 export function setVendorModelsOverrideCache(overrides: VendorModelsOverride) {
   vendorModelsOverrideCache = overrides || {};
@@ -310,16 +300,6 @@ export function saveLocalModelProfiles(profiles: Record<string, ModelProfile>) {
   } catch {
     // ignore
   }
-}
-
-/** @deprecated Prefer loadVendorProfiles + loadLocalModelProfiles */
-export function loadModelProfiles(): Record<string, ModelProfile> {
-  return loadLocalModelProfiles();
-}
-
-/** @deprecated Prefer saveLocalModelProfiles */
-export function saveModelProfiles(profiles: Record<string, ModelProfile>) {
-  saveLocalModelProfiles(profiles);
 }
 
 export function resolveModelApi(

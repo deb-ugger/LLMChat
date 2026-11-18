@@ -1725,7 +1725,6 @@ export function SettingsView({
       const fallback =
         activePresets[0]?.model ||
         Object.keys(nextProfiles).find((m) => !presetIds.has(m)) ||
-        activePresets[0]?.model ||
         "";
       const resolved = resolveModelApi(
         fallback,
@@ -1771,174 +1770,50 @@ export function SettingsView({
     const t0 = performance.now();
     const ac = new AbortController();
     const timer = window.setTimeout(() => ac.abort(), 15000);
+    let provider: TranslateProvider = "llm";
     try {
-      let nextForm = form;
-      if (kind === "lit") {
-        const classic =
-          form.translateProvider !== "llm"
-            ? form.translateProvider
-            : litClassicProvider;
-        nextForm = { ...form, translateProvider: classic };
-        setLitClassicProvider(classic);
-        setForm(nextForm);
-        await onSave(nextForm);
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: classic,
-          source: nextForm.translateSource,
-          target: nextForm.translateTarget,
-          maxLength: nextForm.translateMaxLength || 200,
-          autoChunk: nextForm.translateAutoChunk,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文，请换引擎或检查网络/代理");
-        }
-      } else if (kind === "litLlm") {
-        nextForm = { ...form, translateProvider: "llm" };
-        setForm(nextForm);
-        await onSave(nextForm);
-        const llm = resolveFeatureLlm(
-          nextForm,
-          nextForm.translateModel,
-          profilesWithCurrent(),
-          vendorsWithCurrent(),
-          activePresets,
-        );
-        if (!llm.apiUrl.trim()) {
-          throw new Error("请先在「通用」为所选模型填写 API URL");
-        }
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: "llm",
-          source: nextForm.translateSource,
-          target: nextForm.translateTarget,
-          maxLength: nextForm.translateMaxLength || 200,
-          autoChunk: false,
-          apiUrl: llm.apiUrl,
-          apiKey: llm.apiKey,
-          model: llm.model,
-          ...(nextForm.translatePromptId !== GENERAL_PROMPT_ID &&
-          (nextForm.translatePrompt || "").trim() &&
-          !String(nextForm.translatePrompt).includes("【内置，不可修改】")
-            ? { prompt: nextForm.translatePrompt }
-            : {}),
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "ocr") {
-        const classic =
-          form.ocrTranslateProvider !== "llm"
-            ? form.ocrTranslateProvider
-            : ocrClassicProvider;
-        nextForm = { ...form, ocrTranslateProvider: classic };
-        setOcrClassicProvider(classic);
-        setForm(nextForm);
-        await onSave(nextForm);
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: classic,
-          source: nextForm.ocrTranslateSource || "en",
-          target: nextForm.ocrTranslateTarget,
-          maxLength: nextForm.ocrTranslateMaxLength || 200,
-          autoChunk: nextForm.ocrTranslateAutoChunk,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "ocrLlm") {
-        nextForm = { ...form, ocrTranslateProvider: "llm" };
-        setForm(nextForm);
-        await onSave(nextForm);
-        const llm = resolveFeatureLlm(
-          nextForm,
-          nextForm.ocrTranslateModel,
-          profilesWithCurrent(),
-          vendorsWithCurrent(),
-          activePresets,
-        );
-        if (!llm.apiUrl.trim()) {
-          throw new Error("请先在「通用」为所选模型填写 API URL");
-        }
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: "llm",
-          source: nextForm.ocrTranslateSource || "en",
-          target: nextForm.ocrTranslateTarget,
-          maxLength: nextForm.ocrTranslateMaxLength || 200,
-          autoChunk: false,
-          apiUrl: llm.apiUrl,
-          apiKey: llm.apiKey,
-          model: llm.model,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "text") {
-        const classic =
-          form.textTranslateProvider !== "llm"
-            ? form.textTranslateProvider
-            : textClassicProvider;
-        nextForm = { ...form, textTranslateProvider: classic };
-        setTextClassicProvider(classic);
-        setForm(nextForm);
-        await onSave(nextForm);
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: classic,
-          source: nextForm.textTranslateSource,
-          target: nextForm.textTranslateTarget,
-          maxLength: 200,
-          autoChunk: true,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else if (kind === "textLlm") {
-        nextForm = { ...form, textTranslateProvider: "llm" };
-        setForm(nextForm);
-        await onSave(nextForm);
-        const llm = resolveFeatureLlm(
-          nextForm,
-          nextForm.textTranslateModel,
-          profilesWithCurrent(),
-          vendorsWithCurrent(),
-          activePresets,
-        );
-        if (!llm.apiUrl.trim()) {
-          throw new Error("请先在「通用」为所选模型填写 API URL");
-        }
-        const res = await settingsTranslate("Hello", { signal: ac.signal }, {
-          provider: "llm",
-          source: nextForm.textTranslateSource,
-          target: nextForm.textTranslateTarget,
-          maxLength: 200,
-          autoChunk: true,
-          apiUrl: llm.apiUrl,
-          apiKey: llm.apiKey,
-          model: llm.model,
-          prompt: nextForm.textTranslatePrompt,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
-        }
-      } else {
-        await onSave(form);
-      }
-
+      let options: TranslateOptions;
       if (kind === "llm") {
-        if (!form.apiUrl.trim()) {
-          throw new Error("请先填写 API URL");
+        await onSave(form);
+        if (!form.apiUrl.trim()) throw new Error("请先填写 API URL");
+        options = { provider, source: "en", target: "zh-CN", apiUrl: form.apiUrl, apiKey: form.apiKey,
+          model: form.model, maxLength: 32, autoChunk: false };
+      } else {
+        const configs = {
+          lit: { field: "translateProvider", classic: litClassicProvider, remember: setLitClassicProvider,
+            source: form.translateSource, target: form.translateTarget, model: form.translateModel,
+            maxLength: form.translateMaxLength || 200, autoChunk: form.translateAutoChunk },
+          ocr: { field: "ocrTranslateProvider", classic: ocrClassicProvider, remember: setOcrClassicProvider,
+            source: form.ocrTranslateSource || "en", target: form.ocrTranslateTarget, model: form.ocrTranslateModel,
+            maxLength: form.ocrTranslateMaxLength || 200, autoChunk: form.ocrTranslateAutoChunk },
+          text: { field: "textTranslateProvider", classic: textClassicProvider, remember: setTextClassicProvider,
+            source: form.textTranslateSource, target: form.textTranslateTarget, model: form.textTranslateModel,
+            maxLength: 200, autoChunk: true },
+        } as const;
+        const feature = kind === "litLlm" ? "lit" : kind === "ocrLlm" ? "ocr" : kind === "textLlm" ? "text" : kind;
+        const config = configs[feature];
+        if (kind === feature) {
+          const selected = form[config.field];
+          provider = selected === "llm" ? config.classic : selected;
+          config.remember(provider);
         }
-        const res = await settingsTranslate("ping", { signal: ac.signal }, {
-          provider: "llm",
-          source: "en",
-          target: "zh-CN",
-          apiUrl: form.apiUrl,
-          apiKey: form.apiKey,
-          model: form.model,
-          maxLength: 32,
-          autoChunk: false,
-        });
-        if (!(res.translation || "").trim()) {
-          throw new Error("引擎返回空译文");
+        const nextForm = { ...form, [config.field]: provider };
+        setForm(nextForm);
+        await onSave(nextForm);
+        options = { provider, source: config.source, target: config.target, maxLength: config.maxLength, autoChunk: config.autoChunk };
+        if (kind !== feature) {
+          const llm = resolveFeatureLlm(nextForm, config.model, profilesWithCurrent(), vendorsWithCurrent(), activePresets);
+          if (!llm.apiUrl.trim()) throw new Error("请先在「通用」为所选模型填写 API URL");
+          Object.assign(options, { apiUrl: llm.apiUrl, apiKey: llm.apiKey, model: llm.model, autoChunk: feature === "text" });
+          if (feature === "text") options.prompt = nextForm.textTranslatePrompt;
+          if (feature === "lit" && nextForm.translatePromptId !== GENERAL_PROMPT_ID &&
+              nextForm.translatePrompt?.trim() && !nextForm.translatePrompt.includes("【内置，不可修改】"))
+            options.prompt = nextForm.translatePrompt;
         }
       }
+      const res = await settingsTranslate(kind === "llm" ? "ping" : "Hello", { signal: ac.signal }, options);
+      if (!(res.translation || "").trim())
+        throw new Error(kind === "lit" ? "引擎返回空译文，请换引擎或检查网络/代理" : "引擎返回空译文");
       const ms = Math.round(performance.now() - t0);
       setTestMsg((m) => ({
         ...m,
@@ -1947,25 +1822,6 @@ export function SettingsView({
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
       const aborted = ac.signal.aborted;
-      const provider =
-        kind === "llm" ||
-        kind === "litLlm" ||
-        kind === "ocrLlm" ||
-        kind === "textLlm"
-          ? "llm"
-          : kind === "lit"
-            ? form.translateProvider !== "llm"
-              ? form.translateProvider
-              : litClassicProvider
-            : kind === "ocr"
-              ? form.ocrTranslateProvider !== "llm"
-                ? form.ocrTranslateProvider
-                : ocrClassicProvider
-              : kind === "text"
-                ? form.textTranslateProvider !== "llm"
-                  ? form.textTranslateProvider
-                  : textClassicProvider
-                : form.ocrTranslateProvider;
       let msg = toFriendlyError(e, "Test failed（测试失败）");
       if (aborted) {
         msg =

@@ -1,10 +1,12 @@
+import { useOcrModels } from "../ocr/useOcrModels";
+import { normalizePdfExtractedText as normalizePdfSelectionText } from "./PdfSelection";
+import { OcrModeOptions } from "./OcrModeOptions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   lookupDictionary,
   type DictionaryEntry,
   type OcrMode,
-  type OcrModelStatus,
 } from "../api";
 import { toFriendlyError } from "../friendlyError";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
@@ -42,22 +44,6 @@ function loadDocKind(): DocKind {
     /* ignore */
   }
   return "pdf";
-}
-
-/** Normalize PDF selection text, optionally preserving code-sensitive line breaks. */
-function normalizePdfSelectionText(
-  text: string,
-  clearLineBreaks = true,
-): string {
-  const normalized = text.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n");
-  if (!clearLineBreaks) {
-    return normalized.replace(/^\n+|\n+$/g, "");
-  }
-  return normalized
-    .replace(/-\s*[\r\n]+/g, "")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/[ \t\f\v]+/g, " ")
-    .trim();
 }
 
 /** Pull a single English word from selection / query (strip punctuation). */
@@ -169,12 +155,11 @@ export function LiteratureView({
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
   const promptMenuRef = useRef<HTMLDivElement | null>(null);
   const [ocrModeMenuOpen, setOcrModeMenuOpen] = useState(false);
-  const [ocrModelStatus, setOcrModelStatus] = useState<OcrModelStatus | null>(null);
   const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
   const [ocrModeError, setOcrModeError] = useState<string | null>(null);
   const ocrModeMenuRef = useRef<HTMLDivElement | null>(null);
-  const ocrProgressPollRef = useRef<number | null>(null);
   const [docKind, setDocKind] = useState<DocKind>(loadDocKind);
+  const { status: ocrModelStatus, ensure, refresh } = useOcrModels(visible && docKind === "pdf");
   const [pdfSeed, setPdfSeed] = useState<LocalDocFile | null>(null);
   const [pdfSeedPage, setPdfSeedPage] = useState<number | null>(null);
   const [epubSeed, setEpubSeed] = useState<LocalDocFile | null>(null);
@@ -261,9 +246,6 @@ export function LiteratureView({
       if (languageSavedTimerRef.current !== null) {
         window.clearTimeout(languageSavedTimerRef.current);
       }
-      if (ocrProgressPollRef.current !== null) {
-        window.clearInterval(ocrProgressPollRef.current);
-      }
     };
   }, []);
 
@@ -278,10 +260,6 @@ export function LiteratureView({
     }, 2400);
   }, []);
 
-  useEffect(() => {
-    if (!visible || docKind !== "pdf") return;
-    void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
-  }, [docKind, visible]);
 
   useEffect(() => {
     if (!ocrModeMenuOpen) return;
@@ -547,51 +525,24 @@ export function LiteratureView({
       if (ocrModeBusy) return;
       setOcrModeError(null);
       try {
-        let status = ocrModelStatus;
-        if (!status) {
-          status = await api.getOcrModelStatus();
-          setOcrModelStatus(status);
-        }
-        const installed =
-          mode === "fast" || status.modes.find((item) => item.id === mode)?.installed;
-        if (!installed) {
+        const status = ocrModelStatus ?? await api.getOcrModelStatus();
+        if (mode !== "fast" && !status.modes.find(item => item.id === mode)?.installed) {
           setOcrModeBusy(mode);
-          const poll = async () => {
-            try {
-              setOcrModelStatus(await api.getOcrModelStatus());
-            } catch {
-              /* keep the download request authoritative */
-            }
-          };
-          void poll();
-          ocrProgressPollRef.current = window.setInterval(() => void poll(), 350);
-          const next = await api.ensureOcrMode(mode);
-          setOcrModelStatus(next);
+          await ensure(mode);
         }
         await onOcrModeChange?.(mode);
         setOcrModeMenuOpen(false);
       } catch (error) {
         setOcrModeError(toFriendlyError(error, "识别模型切换失败"));
       } finally {
-        if (ocrProgressPollRef.current !== null) {
-          window.clearInterval(ocrProgressPollRef.current);
-          ocrProgressPollRef.current = null;
-        }
         setOcrModeBusy(null);
-        void api.getOcrModelStatus().then(setOcrModelStatus).catch(() => undefined);
+        void refresh();
       }
     },
-    [ocrModeBusy, ocrModelStatus, onOcrModeChange],
+    [ocrModeBusy, ocrModelStatus, ensure, refresh, onOcrModeChange],
   );
 
   const activeOcrMode = normalizeOcrMode(ocrMode);
-  const ocrDownload = ocrModelStatus?.download;
-  const ocrDownloadTotal = Math.max(0, ocrDownload?.totalBytes ?? 0);
-  const ocrDownloadDone = Math.max(0, ocrDownload?.downloadedBytes ?? 0);
-  const ocrDownloadPercent = ocrDownloadTotal
-    ? Math.min(100, Math.round((ocrDownloadDone / ocrDownloadTotal) * 100))
-    : 0;
-
   const ocrModeMenu = (
     <div className="literature-ocr-menu" ref={ocrModeMenuRef}>
       <button
@@ -633,54 +584,7 @@ export function LiteratureView({
             <strong>作用范围：</strong>
             扫描页、智能提取的 OCR 回退及 Shift+提取本页。
           </p>
-          <div className="literature-ocr-options">
-            {LITERATURE_OCR_MODES.map((option) => {
-              const selected = activeOcrMode === option.id;
-              const status = ocrModelStatus?.modes.find((item) => item.id === option.id);
-              const downloading =
-                ocrModeBusy === option.id ||
-                (ocrDownload?.active === true && ocrDownload.mode === option.id);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  className={`literature-ocr-option${selected ? " is-selected" : ""}`}
-                  disabled={ocrModeBusy !== null || ocrDownload?.active === true}
-                  onClick={() => void chooseLiteratureOcrMode(option.id)}
-                >
-                  <span className="literature-ocr-option-mark" aria-hidden>
-                    {selected ? "✓" : ""}
-                  </span>
-                  <span className="literature-ocr-option-copy">
-                    <strong>{OCR_MODE_LABELS[option.id]}</strong>
-                    <small>{option.description}</small>
-                  </span>
-                  <span className="literature-ocr-option-state">
-                    {option.id === "fast"
-                      ? "内置"
-                      : downloading
-                        ? `${ocrDownloadPercent}%`
-                        : status?.installed
-                          ? "已下载"
-                          : "需下载"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {ocrModeBusy ? (
-            <div className="literature-ocr-progress" aria-live="polite">
-              <div>
-                <span>{ocrDownload?.model || "正在建立下载连接"}</span>
-                <strong>{ocrDownloadPercent}%</strong>
-              </div>
-              <span className="ocr-download-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ocrDownloadPercent}>
-                <span className="ocr-download-progress-fill" style={{ width: `${ocrDownloadPercent}%` }} />
-              </span>
-            </div>
-          ) : null}
+          <OcrModeOptions options={LITERATURE_OCR_MODES} selected={activeOcrMode} busy={ocrModeBusy} status={ocrModelStatus} onChoose={chooseLiteratureOcrMode} />
           {ocrModeError ? <p className="literature-ocr-error">{ocrModeError}</p> : null}
         </div>
       ) : null}

@@ -320,18 +320,6 @@ std::string withZhHint(const std::string& english, const std::string& zh)
     return english + "（" + zh + "）";
 }
 
-std::string truncateErr(const std::string& s, size_t maxLen = 220)
-{
-    if (s.size() <= maxLen) return s;
-    return s.substr(0, maxLen) + "...";
-}
-
-/** Full upstream body for diagnostics — never truncate or strip HTML. */
-std::string safeErrDetail(const std::string& body, size_t /*maxLen*/ = 160)
-{
-    return body;
-}
-
 bool isMyMemoryLimitError(const std::string& msg)
 {
     const std::string upper = toLower(msg);
@@ -400,15 +388,6 @@ std::string mapLangForBing(std::string lang)
     if (lang == "zh-cn" || lang == "zh" || lang == "cn") return "zh-Hans";
     if (lang == "zh-tw") return "zh-Hant";
     if (lang == "auto") return "";
-    return lang;
-}
-
-std::string mapLangSimple(std::string lang)
-{
-    lang = toLower(lang);
-    if (lang == "zh-cn" || lang == "zh-hans") return "zh";
-    if (lang == "zh-tw" || lang == "zh-hant") return "cht";
-    if (lang == "auto") return "auto";
     return lang;
 }
 
@@ -800,9 +779,8 @@ HttpResult winHttpRequest(
     result.ok = (status >= 200 && status < 300);
     if (!result.ok)
     {
-        const std::string detail = safeErrDetail(result.body, 160);
         const std::string en = "HTTP " + std::to_string(status)
-            + (detail.empty() ? "" : (": " + detail));
+            + (result.body.empty() ? "" : (": " + result.body));
         if (status == 429)
             result.error = withZhHint(en, "请求过于频繁或额度不足，请稍后再试或更换引擎");
         else if (status == 401 || status == 403)
@@ -814,18 +792,17 @@ HttpResult winHttpRequest(
         else
             result.error = withZhHint(en, "翻译服务请求失败，请稍后重试或更换引擎");
 
-        if (status == 429
-            || toLower(result.body).find("mymemory warning") != std::string::npos
-            || toLower(result.body).find("used all available") != std::string::npos
-            || result.body.find("429001") != std::string::npos
-            || toLower(result.body).find("exceeded request limits") != std::string::npos)
+        const auto lowerBody = toLower(result.body);
+        const bool bingLimited = result.body.find("429001") != std::string::npos
+            || lowerBody.find("exceeded request limits") != std::string::npos;
+        if (status == 429 || bingLimited
+            || lowerBody.find("mymemory warning") != std::string::npos
+            || lowerBody.find("used all available") != std::string::npos)
         {
-            if (result.body.find("429001") != std::string::npos
-                || toLower(result.body).find("exceeded request limits") != std::string::npos)
+            if (bingLimited)
             {
-                const std::string bingDetail = safeErrDetail(result.body);
                 result.error = withZhHint(
-                    bingDetail.empty() ? en : bingDetail,
+                    result.body.empty() ? en : result.body,
                     "Bing 请求过于频繁，请稍后再试");
             }
             else

@@ -953,6 +953,39 @@ export function UnityTranslateView({
     setHelpMenuPos(null);
   };
 
+  async function changePluginInstallation<T extends { ok: boolean; error?: string; steps: string[] }>(
+    gameDir: string,
+    action: "install-plugin" | "uninstall-plugin" | "install-framework" | "uninstall-framework",
+    request: () => Promise<T>,
+    successMessage: (result: T) => string,
+  ) {
+    const label = {
+      "install-plugin": "安装",
+      "uninstall-plugin": "卸载",
+      "install-framework": "安装插件框架",
+      "uninstall-framework": "卸载插件框架",
+    }[action];
+    setBusyAction(action);
+    setError(null);
+    reportSteps(["准备" + label]);
+    try {
+      const result = await request();
+      reportSteps(result.steps || []);
+      if (!result.ok) {
+        reportError(result.error || label + "失败");
+        return;
+      }
+      reportSuccess(successMessage(result));
+      await refreshGame(gameDir);
+      setSelectedGameDir(gameDir);
+      if (action === "install-plugin") await loadConfigForGame(gameDir);
+    } catch (error) {
+      reportError(toFriendlyError(error, label + "失败"));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const onInstall = async () => {
     const gameDir = selected?.gameDir;
     if (!gameDir) {
@@ -979,8 +1012,6 @@ export function UnityTranslateView({
     ) {
       return;
     }
-    setBusyAction("install-plugin");
-    setError(null);
     // Keep Service/General in sync with quick fields before install
     let sections = configSections;
     sections = setIniValue(sections, "Service", "Endpoint", endpoint);
@@ -993,9 +1024,8 @@ export function UnityTranslateView({
     sections = setIniValue(sections, "General", "Language", targetLang);
     sections = setIniValue(sections, "General", "FromLanguage", fromLang);
     setConfigSections(sections);
-    reportSteps(["准备安装"]);
-    try {
-      const res = await api.unityInstall({
+    await changePluginInstallation(gameDir, "install-plugin",
+      () => api.unityInstall({
         path: gameDir,
         language: targetLang,
         fromLanguage: fromLang,
@@ -1003,23 +1033,9 @@ export function UnityTranslateView({
         fallbackEndpoint,
         runSetup: true,
         configIni: serializeIniSections(sections),
-      });
-      reportSteps(res.steps || []);
-      if (!res.ok) {
-        reportError(res.error || "安装失败");
-        return;
-      }
-      reportSuccess(
-        `安装完成（${res.installMethod} / v${res.version}）。配置已写入：${res.configPath}`,
-      );
-      await refreshGame(gameDir);
-      setSelectedGameDir(gameDir);
-      await loadConfigForGame(gameDir);
-    } catch (e) {
-      reportError(toFriendlyError(e, "安装失败"));
-    } finally {
-      setBusyAction(null);
-    }
+      }),
+      result => `安装完成（${result.installMethod} / v${result.version}）。配置已写入：${result.configPath}`,
+    );
   };
 
   const onUninstall = () => {
@@ -1042,27 +1058,9 @@ export function UnityTranslateView({
     });
   };
 
-  const doUninstallPlugin = async (gameDir: string) => {
-    setBusyAction("uninstall-plugin");
-    setError(null);
-    reportSteps(["准备卸载"]);
-    try {
-      const res = await api.unityUninstall(gameDir);
-      reportSteps(res.steps || []);
-      if (!res.ok) {
-        reportError(res.error || "卸载失败");
-        return;
-      }
-      const n = res.removed?.length ?? 0;
-      reportSuccess(`卸载完成，已移除 ${n} 项。`);
-      await refreshGame(gameDir);
-      setSelectedGameDir(gameDir);
-    } catch (e) {
-      reportError(toFriendlyError(e, "卸载失败"));
-    } finally {
-      setBusyAction(null);
-    }
-  };
+  const doUninstallPlugin = (gameDir: string) =>
+    changePluginInstallation(gameDir, "uninstall-plugin", () => api.unityUninstall(gameDir),
+      result => `卸载完成，已移除 ${result.removed?.length ?? 0} 项。`);
 
   const onInstallLoader = async () => {
     const gameDir = selected?.gameDir;
@@ -1087,28 +1085,11 @@ export function UnityTranslateView({
     ) {
       return;
     }
-    setBusyAction("install-framework");
-    setError(null);
-    reportSteps(["准备安装插件框架"]);
-    try {
-      const res = await api.unityInstallLoader(gameDir);
-      reportSteps(res.steps || []);
-      if (!res.ok) {
-        reportError(res.error || "安装插件框架失败");
-        return;
-      }
-      reportSuccess(
-        selected.isIl2Cpp
-          ? `插件框架安装完成（BepInEx ${res.version}）。建议先启动一次游戏完成初始化，再安装翻译插件。`
-          : `插件框架安装完成（ReiPatcher）。请再点「安装翻译插件」。`,
-      );
-      await refreshGame(gameDir);
-      setSelectedGameDir(gameDir);
-    } catch (e) {
-      reportError(toFriendlyError(e, "安装插件框架失败"));
-    } finally {
-      setBusyAction(null);
-    }
+    await changePluginInstallation(gameDir, "install-framework", () => api.unityInstallLoader(gameDir),
+      result => selected.isIl2Cpp
+        ? `插件框架安装完成（BepInEx ${result.version}）。建议先启动一次游戏完成初始化，再安装翻译插件。`
+        : "插件框架安装完成（ReiPatcher）。请再点「安装翻译插件」。",
+    );
   };
 
   const onUninstallLoader = () => {
@@ -1136,27 +1117,9 @@ export function UnityTranslateView({
     });
   };
 
-  const doUninstallFramework = async (gameDir: string) => {
-    setBusyAction("uninstall-framework");
-    setError(null);
-    reportSteps(["准备卸载插件框架"]);
-    try {
-      const res = await api.unityUninstallLoader(gameDir);
-      reportSteps(res.steps || []);
-      if (!res.ok) {
-        reportError(res.error || "卸载插件框架失败");
-        return;
-      }
-      const n = res.removed?.length ?? 0;
-      reportSuccess(`插件框架卸载完成，已移除 ${n} 项。`);
-      await refreshGame(gameDir);
-      setSelectedGameDir(gameDir);
-    } catch (e) {
-      reportError(toFriendlyError(e, "卸载插件框架失败"));
-    } finally {
-      setBusyAction(null);
-    }
-  };
+  const doUninstallFramework = (gameDir: string) =>
+    changePluginInstallation(gameDir, "uninstall-framework", () => api.unityUninstallLoader(gameDir),
+      result => `插件框架卸载完成，已移除 ${result.removed?.length ?? 0} 项。`);
 
   const confirmUninstall = async () => {
     if (!uninstallConfirm) return;

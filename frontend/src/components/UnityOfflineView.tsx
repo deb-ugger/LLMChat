@@ -45,7 +45,7 @@ import { loadLocalModelProfiles, resolveFeatureLlm } from "../modelPresets";
 import { engineReady, parseEngineKeys } from "../translateEngines";
 import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, restoreUnityTranslationLines, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
-import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
+import { countMissingGlyphEntries, legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
 import { UNITY_STAGE_TABS, unityImagesReady, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
@@ -135,6 +135,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [inspectionError, setInspectionError] = useState("");
   const [fontPlan, setFontPlan] = useState<UnityFontPlan | null>(null);
   const [activeStep, setActiveStep] = useState(1);
+  const fontEntries = project?.entries;
+  const missingGlyphs = fontPlan?.missing;
+  const glyphReferenceCounts = useMemo(
+    () => activeStep === 3 && fontEntries && missingGlyphs?.length
+      ? countMissingGlyphEntries(fontEntries, missingGlyphs)
+      : undefined,
+    [activeStep, fontEntries, missingGlyphs],
+  );
   const followProgress = useRef(true);
   const [fontPath, setFontPath] = useState("");
   const [search, setSearch] = useState("");
@@ -611,7 +619,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       });
       return;
     }
-    const cleanup = step === 2 && imagePart ? "图片识别结果、图片译文和后续补丁，保留文本译文及原图" : step === 1 ? "当前游戏的扫描工程、译文、字库检查及补丁" : step === 2 ? "当前工程的文本译文、字库检查及补丁，保留扫描、图片识别结果和译图" : step === 3 ? "当前工程的字库检查、补丁及应用记录，保留扫描和译文" : "应用记录，恢复游戏原件，保留校验通过的补丁、扫描和译文";
+    const cleanup = step === 2 && imagePart ? "图片识别结果、图片译文和后续补丁，保留文本译文及原图" : step === 2 ? "当前工程的文本译文、字库检查及补丁，保留扫描、图片识别结果和译图" : step === 3 ? "当前工程的字库检查、补丁及应用记录，保留扫描和译文" : "应用记录，恢复游戏原件，保留校验通过的补丁、扫描和译文";
     if (step === 2) {
       if (!await confirmation.ask(imagePart ? restart ? "重新识别" : "清理图片缓存" : restart ? "重新翻译" : "清理译文缓存", imagePart ? "将清空图片识别、译文和译图，恢复到未识别状态。" : "将删除已有译文和排版草稿。")) return;
     } else if (!await confirm(`重做此步骤将清除${cleanup}，已安装补丁保留至下次应用。`, { title: "重做步骤", kind: "warning", okLabel: "清理", cancelLabel: "取消" })) return;
@@ -1074,14 +1082,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setBusy("生成补丁");
     const ids = unityLanguageScope(p.entries, run?.source || source, run?.onlySourceLanguage ?? onlySourceLanguage).ids;
     const selectedIds = run?.partial || p.textSkipped ? p.entries.filter(e => e.selected && ids.has(e.id) && !e.error && e.translation && textTranslationMatchesTarget(e, run?.target ?? target) && !unityTranslationError(e.source, e.translation)).map(e => e.id) : [...ids];
-    const fontSourceIds = run?.partial || p.textSkipped ? p.entries.filter(e => e.selected && ids.has(e.id)).map(e => e.id) : undefined;
     const patchTarget = run?.target ?? target;
     const patchProject = {
       ...p,
       entries: p.entries.map(entry => entry.selected && !textTranslationMatchesTarget(entry, patchTarget) ? { ...entry, selected: false } : entry),
       images: p.images?.map(image => image.selected && !unityImageReadyForTarget(image, patchTarget) ? { ...image, selected: false } : image),
     };
-    const fontRequest = { project: patchProject, selectedIds, fontPath: run?.fontPath ?? fontPath, extraCharacters: run?.extraCharacters ?? extraCharacters, fontSourceIds };
+    const fontRequest = { project: patchProject, selectedIds, fontPath: run?.fontPath ?? fontPath, extraCharacters: run?.extraCharacters ?? extraCharacters };
     let result: UnityPatch;
     try { result = await unityRun<UnityPatch>("export", { ...fontRequest, path: run?.patchFolder || "" }, onProgress, signal); }
     catch (error) {
@@ -1559,12 +1566,22 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setImportPreview(null); importPreviewRef.current = null; setRowIssue(null); setRowJump(null);
     setFileStatus({ action: "import", state: "cancelled", detail: "已取消导入预览，原工程与源文件保持不变。" });
   };
+  async function resetGeneratedPatch(current: UnityProject) {
+    const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", {
+      root, step: 3, path: current.folder, task: checkpointRef.current || projectCheckpoint(current),
+    });
+    setPatch(null);
+    setFontPlan(null);
+    setInstalled(reset.workspace.installed);
+    setApplied(false);
+    onInstallationChange?.(root, reset.workspace.installed);
+  }
   const applyImportPreview = async (choice: UnityTranslationImportMode = importMode) => {
     const preview = importPreviewRef.current;
     if (!preview || !project || busy || restoring || saving) return false;
     setImportMode(choice);
     const result = checkImportPreview(preview, choice);
-    if (!preview || !result || !project) return false;
+    if (!result) return false;
     if (!result.changed) {
       setImportPreview(null); importPreviewRef.current = null; setRowIssue(null);
       setFileStatus({ action: "import", state: "done", path: preview.path, detail: "没有需要应用的修改，当前工程和补丁保持不变。" });
@@ -1575,16 +1592,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setFileStatus({ action: "import", state: "working", path: preview.path, detail: `正在应用并保存 ${result.changed} 条译文…` });
       if (dirty) await save(undefined, "text");
       await taskWrites.current;
-      {
-        const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
-        setPatch(null); setFontPlan(null); setInstalled(reset.workspace.installed); setApplied(false); onInstallationChange?.(root, reset.workspace.installed);
-      }
+      await resetGeneratedPatch(project);
       const previous = latest.current || project;
       const oldTranslations = new Map(previous.entries.map(entry => [entry.id, entry.translation]));
       for (const entry of result.entries) if (entry.translation !== oldTranslations.get(entry.id)) entry.translationTarget = target;
       const next = { ...previous, entries: result.entries };
       await unityRun("save", { project: { ...next, images: next.images?.map(image => imageDraftOriginals.current.get(image.id) || image) } });
-      publish(next); textDraftOriginals.current.clear(); for (const key of pendingEdits.current) if (key.startsWith("文本与译文：") || key.startsWith("文本勾选：")) pendingEdits.current.delete(key); setDirty(pendingEdits.current.size > 0); setPatch(null); setFontPlan(null); setRowIssue(null);
+      publish(next); textDraftOriginals.current.clear(); for (const key of pendingEdits.current) if (key.startsWith("文本与译文：") || key.startsWith("文本勾选：")) pendingEdits.current.delete(key); setDirty(pendingEdits.current.size > 0); setRowIssue(null);
       setImportPreview(null); importPreviewRef.current = null;
       const stats = unityTranslationStats(next.entries.filter(entry => entry.selected && scope.ids.has(entry.id)), unityTranslationError, unityTranslationContextKey);
       const progress: GenerationProgress = { ...stats, step: 2, state: stats.completed === stats.total ? "done" : "pending", detail: "导入译文已保存，后续步骤进度已清空" };
@@ -1646,10 +1660,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if ((patch || applied) && !await confirm(applied ? "请先关闭游戏。重新断行将保留已安装补丁，清理未安装的旧产物；完成后需重新生成并应用补丁。继续？" : "重新断行会清理现有补丁，保留扫描和译文；排版完成后需重新生成补丁。继续？", { title: "重新断行", okLabel: "清理并继续", cancelLabel: "取消" })) return;
     await operation("仅重新断行", async () => {
       if (dirty) await save(); await taskWrites.current;
-      if (patch || applied) {
-        const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
-        setPatch(null); setFontPlan(null); setInstalled(reset.workspace.installed); setApplied(false); onInstallationChange?.(root, reset.workspace.installed);
-      }
+      if (patch || applied) await resetGeneratedPatch(project);
       const next = structuredClone(latest.current || project);
       for (const entry of next.entries) if (entry.selected && scope.ids.has(entry.id) && /[\r\n]/.test(entry.source) && entry.translation && !unityTranslationError(entry.source, entry.translation)) {
         entry.layoutDraft = entry.translation; entry.error = "";
@@ -1962,7 +1973,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
           </div>
           <div className="unity-offline-fields"><label>补充字符<input value={extraCharacters} disabled={parametersLocked} placeholder="角色名等动态内容" onChange={event => { setExtraCharacters(event.target.value); setFontPlan(null); }} /></label><button className="unity-btn" disabled={!!busy || restoring || !project} onClick={() => void checkFontPlan()}>字库检查与字符集</button>{busy === "字库检查" && <button className="unity-btn" onClick={stop} disabled={abort.current?.signal.aborted}>中止检查</button>}</div>
-          {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "保留游戏原字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <ul>{fontPlan.missing.map(code => { const character = String.fromCodePoint(code); const matches = (project?.entries || []).filter(entry => (entry.translation || entry.source).includes(character)); return <li key={code}><strong>{character} · U+{code.toString(16).toUpperCase().padStart(4, "0")}</strong> · {matches.length ? `${matches.length} 条文本` : "补充字符或动态字形"}{matches.length > 0 && <button className="unity-btn" onClick={() => { setActiveStep(2); setImagePart(false); setReviewFilter("all"); setSearch(character); setPage(0); followProgress.current = false; }}>定位文本</button>}</li>; })}</ul>}<p><code>{fontPlan.folder}/字库检查.txt</code></p><button className="unity-btn" onClick={() => void openTranslationFile(fontPlan.folder + "/字库检查.txt")}>打开检查报告</button><button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
+          {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "保留游戏原字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <ul>{fontPlan.missing.map(code => { const character = String.fromCodePoint(code); const matches = glyphReferenceCounts?.get(character) ?? 0; return <li key={code}><strong>{character} · U+{code.toString(16).toUpperCase().padStart(4, "0")}</strong> · {matches ? `${matches} 条文本` : "补充字符或动态字形"}{matches > 0 && <button className="unity-btn" onClick={() => { setActiveStep(2); setImagePart(false); setReviewFilter("all"); setSearch(character); setPage(0); followProgress.current = false; }}>定位文本</button>}</li>; })}</ul>}<p><code>{fontPlan.folder}/字库检查.txt</code></p><button className="unity-btn" onClick={() => void openTranslationFile(fontPlan.folder + "/字库检查.txt")}>打开检查报告</button><button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
 
           {project?.fonts.some(font => /^(TMP|NGUI)/.test(font.kind)) && <p className="hint">已检测到 TMP / NGUI 字体。替换时生成字形和独立图集，无需 Unity Editor；共享图集或不支持的布局会说明具体原因。</p>}
         </>}

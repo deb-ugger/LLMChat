@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
@@ -34,10 +34,13 @@ pub async fn unity_offline_run(app: AppHandle, action: String, mut request: serd
             command.creation_flags(0x08000000);
         }
         let mut child = command.spawn().map_err(|e| format!("无法启动嵌字组件：{e}"))?;
-        let input = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         // Drain output while sending a potentially large saved project to avoid a full pipe.
-        let mut stdin = child.stdin.take().ok_or("无法打开组件输入")?;
-        let send = std::thread::spawn(move || stdin.write_all(&input));
+        let stdin = child.stdin.take().ok_or("无法打开组件输入")?;
+        let send = std::thread::spawn(move || -> Result<(), String> {
+            let mut writer = BufWriter::new(stdin);
+            serde_json::to_writer(&mut writer, &request).map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())
+        });
         let stderr = child.stderr.take().ok_or("无法打开组件进度输出")?;
         let progress = std::thread::spawn(move || -> Result<String, String> {
             let mut errors = Vec::new();
@@ -51,11 +54,12 @@ pub async fn unity_offline_run(app: AppHandle, action: String, mut request: serd
             Ok(errors.join("\n"))
         });
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        send.join().map_err(|_| "写入嵌字请求失败")?.map_err(|e| e.to_string())?;
+        let sent = send.join().map_err(|_| "写入嵌字请求失败")?;
         let errors = progress.join().map_err(|_| "读取嵌字进度失败")??;
         if !output.status.success() {
-            return Err(errors);
+            return Err(if errors.is_empty() { format!("嵌字组件退出：{}", output.status) } else { errors });
         }
+        sent?;
         serde_json::from_slice(&output.stdout).map_err(|e| format!("嵌字组件响应无效：{e}"))
     }).await;
     if let Some(path) = stop { let _ = std::fs::remove_file(path); }

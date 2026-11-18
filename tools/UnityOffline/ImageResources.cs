@@ -271,9 +271,13 @@ public static class ImageResources
         var selected = project.Images.Where(i => i.Selected).ToArray();
         if (!project.ImagesSkipped && selected.Any(i => !i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0))) throw new Exception("请完成步骤 2.2 或明确跳过未完成的图片");
         var ready = selected.Where(i => i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0) && i.RenderedFile.Length > 0).ToArray();
+        var dependencies = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var image in ready) {
             if (Program.Hash(Program.Within(project.Folder, image.RenderedFile)) != image.RenderedHash) throw new Exception("译图缓存已变化，请重新生成译图：" + image.Name);
-            if (image.DependencyFile.Length > 0 && Program.Hash(Program.Within(project.Root, image.DependencyFile)) != image.DependencyHash) throw new Exception("原图的 resS 数据已变化，请重新扫描：" + image.Name);
+            if (image.DependencyFile.Length == 0) continue;
+            if (!dependencies.TryGetValue(image.DependencyFile, out var hash))
+                dependencies[image.DependencyFile] = hash = Program.Hash(Program.Within(project.Root, image.DependencyFile));
+            if (hash != image.DependencyHash) throw new Exception("原图的 resS 数据已变化，请重新扫描：" + image.Name);
         }
         return ready;
     }

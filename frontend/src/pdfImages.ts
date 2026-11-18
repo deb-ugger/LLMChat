@@ -135,12 +135,10 @@ export async function collectPageImageRects(
   return (await collectPageImages(page)).map((i) => i.pdfRect);
 }
 
-function pdfRectToCss(
-  page: PDFPageProxy,
+function viewportRect(
+  viewport: ReturnType<PDFPageProxy["getViewport"]>,
   pdfRect: PdfRect,
-  cssScale: number,
 ): { left: number; top: number; width: number; height: number } {
-  const viewport = page.getViewport({ scale: cssScale });
   const [x1, y1] = viewport.convertToViewportPoint(pdfRect.xMin, pdfRect.yMin);
   const [x2, y2] = viewport.convertToViewportPoint(pdfRect.xMax, pdfRect.yMax);
   const left = Math.min(x1, x2);
@@ -158,7 +156,8 @@ export async function listPageImageCssRects(
   const pageRect = pageEl.getBoundingClientRect();
   const cssScale = pageRect.width / page.getViewport({ scale: 1 }).width;
   const images = await collectPageImages(page);
-  return images.map((img) => pdfRectToCss(page, img.pdfRect, cssScale));
+  const viewport = page.getViewport({ scale: cssScale });
+  return images.map(img => viewportRect(viewport, img.pdfRect));
 }
 
 /**
@@ -412,18 +411,7 @@ async function cropImageHiRes(
   });
   await task.promise;
 
-  const [x1, y1] = viewport.convertToViewportPoint(pdfRect.xMin, pdfRect.yMin);
-  const [x2, y2] = viewport.convertToViewportPoint(pdfRect.xMax, pdfRect.yMax);
-  const left = Math.min(x1, x2);
-  const top = Math.min(y1, y2);
-  const width = Math.abs(x2 - x1);
-  const height = Math.abs(y2 - y1);
-  return cropImageFromPageCanvas(canvas, {
-    left,
-    top,
-    width,
-    height,
-  });
+  return cropImageFromPageCanvas(canvas, viewportRect(viewport, pdfRect));
 }
 
 async function extractImageBlob(
@@ -491,8 +479,9 @@ export async function findImageAtPoint(
     area: number;
   } | null = null;
 
+  const viewport = page.getViewport({ scale: cssScale });
   for (const collected of images) {
-    const cssRect = pdfRectToCss(page, collected.pdfRect, cssScale);
+    const cssRect = viewportRect(viewport, collected.pdfRect);
     if (
       cssX >= cssRect.left &&
       cssX <= cssRect.left + cssRect.width &&
