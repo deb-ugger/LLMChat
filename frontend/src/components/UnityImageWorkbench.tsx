@@ -104,10 +104,11 @@ export function unityGalleryRect(start: { x: number; y: number }, point: { x: nu
 
 function ImageGallery({ query, project, images, allImages, filterKey, refreshKey, hidden, disabled, onSelect, onView, onOpen }: { query: string; project: UnityProject; images: UnityImage[]; allImages: UnityImage[]; filterKey: string; refreshKey:number; hidden: boolean; disabled: boolean; onSelect: (images: UnityImage[], value: boolean) => void; onView: (id: string) => void; onOpen: (id: string) => void }) {
   const [selected, setSelected] = useState(new Set<string>()), [page, setPage] = useState(0);
+  const [jumpPage, setJumpPage] = useState("");
   const [snapshot, setSnapshot] = useState(() => images.map(image => ({ id: image.id, selected: image.selected })));
   const [history, setHistory] = useState<{ id: string; selected: boolean }[][]>([]);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set());setHistory([]); setPage(0); };
+  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set());setHistory([]); setPage(0); setJumpPage(""); };
   useEffect(applyFilter, [filterKey]);
   useEffect(()=>{setSnapshot(images.map(image=>({id:image.id,selected:image.selected})));setSelected(new Set());setHistory([]);},[refreshKey]);
   const currentImages = useMemo(() => new Map(allImages.map(image => [image.id, image])), [allImages]);
@@ -129,9 +130,22 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
   useEffect(() => { if (!hidden) { const frame = requestAnimationFrame(() => { if (scroller.current) scroller.current.scrollTop = scrollPosition.current; }); return () => cancelAnimationFrame(frame); } }, [hidden]);
   const drag = useRef<{ x: number; y: number; base: Set<string>; moved: boolean; onCard: boolean } | null>(null);
   const pages = Math.max(1, Math.ceil(displayed.length / 24)), currentPage = Math.min(page, pages - 1), visible = displayed.slice(currentPage * 24, (currentPage + 1) * 24);
+  useLayoutEffect(() => {
+    scrollPosition.current = 0;
+    if (scroller.current) scroller.current.scrollTop = 0;
+  }, [currentPage]);
+  const changePage = (next: number) => setPage(Math.max(0, Math.min(pages - 1, next)));
+  const requestedPage = Number(jumpPage);
+  const canJump = pages > 1 && jumpPage.trim() !== "" && Number.isInteger(requestedPage);
+  const jumpToPage = () => {
+    if (!canJump) return;
+    changePage(requestedPage - 1);
+    setJumpPage("");
+  };
   const chosen = displayed.filter(image => selected.has(image.id));
   const point = (event: React.PointerEvent) => { const rect = grid.current!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
   return <div className="unity-image-gallery" data-tooltip="Ctrl+A 选择当前页图片；Ctrl 多选；拖动框选；双击查看原图；右键查看详情；Ctrl+Z 撤销批量操作" style={hidden ? { display: "none" } : undefined} onClick={() => setMenu(null)} onKeyDown={event => {
+    if ((event.target as HTMLElement).matches("input")) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); setSelected(new Set(visible.map(image => image.id))); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); }
     if (event.key === "Escape") { if (menu) setMenu(null); else setSelected(new Set()); drag.current = null; setBox(null); }
@@ -163,7 +177,17 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
       </div>)}
       {box && <div className="unity-gallery-selection-box" style={{ left: box.left, top: box.top, width: box.right - box.left, height: box.bottom - box.top }} />}
     </div></div>
-    <div className="unity-gallery-pages"><button className="unity-btn" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>上一页</button><span>{currentPage + 1} / {pages}</span><button className="unity-btn" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button></div>
+    <div className="unity-offline-pagination unity-gallery-pages" role="group" aria-label="图片分页">
+      <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => changePage(currentPage - 10)}>-10 页</button>
+      <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => changePage(currentPage - 1)}>上一页</button>
+      <span aria-live="polite">{currentPage + 1} / {pages}</span>
+      <button type="button" className="unity-btn" disabled={currentPage === pages - 1} onClick={() => changePage(currentPage + 1)}>下一页</button>
+      <button type="button" className="unity-btn" disabled={currentPage === pages - 1} onClick={() => changePage(currentPage + 10)}>+10 页</button>
+      <input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pages} placeholder="页码" value={jumpPage} disabled={pages === 1} onChange={event => setJumpPage(event.target.value)} onKeyDown={event => {
+        if (event.key === "Enter") { event.preventDefault(); jumpToPage(); }
+      }} />
+      <button type="button" className="unity-btn" disabled={!canJump} onClick={jumpToPage}>跳转</button>
+    </div>
     {menu && <div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: menu.x, top: menu.y }}><button role="menuitem" onClick={() => { setMenu(null); onOpen(menu.id); }}>查看原图</button><button role="menuitem" onClick={() => { setMenu(null); onView(menu.id); }}>查看详情</button></div>}
   </div>;
 }

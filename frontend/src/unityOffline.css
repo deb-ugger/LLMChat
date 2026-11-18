@@ -367,7 +367,7 @@
 .unity-gallery-card strong, .unity-gallery-card small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 5px; }
 .unity-gallery-card small { color: var(--muted,#667589); }
 .unity-gallery-selection-box { position: absolute; box-sizing: border-box; border: 1px solid #3979dc; background: #3979dc25; pointer-events: none; }
-.unity-gallery-pages { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 0 14px; }
+.unity-gallery-pages { padding: 0 14px; cursor: default; }
 .unity-image-regions { display:flex; flex-direction:column; gap:8px; }
 .unity-image-region { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; border:1px solid var(--border,#d6dfe9); border-radius:8px; padding:10px; container-type:inline-size; }
 .unity-image-region > p, .unity-image-region-header { grid-column:1 / -1; }
