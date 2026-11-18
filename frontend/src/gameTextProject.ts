@@ -1,5 +1,5 @@
 import type { GameWrapMode } from "./gameTextLayout";
-import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
+import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
 import { API_BASE } from "./api";
 import type { UnityEntry } from "./unityOffline";
 import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRow, type UnityTranslationImportMode } from "./unityTranslationFiles";
@@ -75,6 +75,18 @@ export function gameTextProblem(source: string, translation: string, messageCore
   if (missing) return missing;
   return gameControlSignature(source) === gameControlSignature(translation) ? "" : "游戏控制符发生变化，请保留原文中的反斜杠指令及参数";
 }
+
+export function createGameTextValidator(messageCore: boolean, target: string) {
+  const checked = new Map<string, { translation: string; problem: string }>();
+  return (source: string, translation: string) => {
+    const last = checked.get(source);
+    if (last?.translation === translation) return last.problem;
+    const problem = gameTextProblem(source, translation, messageCore) || gameJapaneseTextIssue(source, translation, target);
+    checked.set(source, { translation, problem });
+    return problem;
+  };
+}
+
 export const translateGameControls = translateGameDisplayText;
 export async function gameTextRequest<T>(action: "load" | "save" | "workflow" | "checkpoint", body: object): Promise<T> {
   const { dialoguePages: _, ...saved } = body as Partial<GameTextProject>;

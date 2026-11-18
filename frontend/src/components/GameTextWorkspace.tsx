@@ -19,7 +19,7 @@ import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
 import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
 import { GameTextFileMenu, GAME_TEXT_IMPORT_CHOICES } from "./GameTextFileMenu";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
@@ -27,7 +27,7 @@ import { api, type Settings, type TranslateProvider } from "../api";
 import { loadLocalModelProfiles } from "../modelPresets";
 import { readFileBytes } from "../localDocFile";
 import { saveOutputFile } from "../outputFiles";
-import { gameTextRequest, gameTextProblem as validateGameText, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions } from "../gameTextProject";
+import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions } from "../gameTextProject";
 import { translateUnitySession, unityTranslationStats, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
 import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
@@ -114,7 +114,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       const selectionScreened = isTextSelectionScreened(value.entries, screenedIds);
       value.workflow = { screened: selectionScreened, screenedIds };
       setScreened(selectionScreened); setScreenStarted(screenedIds.length > 0);
-      const completed = selected.filter(entry => entry.translation && !entry.error && textTranslationMatchesTarget(entry, value.options.target) && !validateGameText(entry.source, entry.translation, !!value.messageCore)).length;
+      const validate = createGameTextValidator(!!value.messageCore, value.options.target || "zh-CN");
+      const completed = selected.filter(entry => entry.translation && !entry.error && textTranslationMatchesTarget(entry, value.options.target) && !validate(entry.source, entry.translation)).length;
       const failed = selected.filter(entry => !!entry.error).length;
       const recordedRun = stepPerformance(promptState.scope + ":text", "translate");
       const restored = restoreGameTextState(selectionScreened, selected.length, completed, failed, !!recordedRun.taskId && !recordedRun.endedAt);
@@ -149,7 +150,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   useEffect(() => { saveGameWorkflowEngines(promptState.scope, engines); }, [engines, promptState.scope]);
   const entries = project?.entries || [];
   const messageCore = !!project?.messageCore;
-  const gameTextProblem = useCallback((source: string, translation: string) => validateGameText(source, translation, messageCore), [messageCore]);
+  const gameTextProblem = useMemo(() => createGameTextValidator(messageCore, options.target), [gamePath, sourcePath, messageCore, options.target]);
   const detectedSource = useMemo(() => unityLanguageScope(entries, options.source).language, [entries, options.source]);
   const sourceFilter = options.onlySourceLanguage === false ? "auto" : detectedSource;
   const selected = useMemo(() => entries.filter(entry => entry.selected), [entries]);
@@ -176,7 +177,12 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     if (!value?.sourcePath) throw new Error("请先在步骤 1 扫描资源");
     const timingScope = promptState.scope + ":text";
     const snapshot = measureGameWork(timingScope, "processingMs", () => ({
-      ...value, options, entries: value.entries.map(entry => ({ ...entry, error: entry.error || (entry.translation ? gameTextProblem(entry.source, entry.translation) : "") })),
+      ...value, options, entries: value.entries.map(entry => ({
+        ...entry,
+        error: entry.error || (entry.translation ? textTranslationMatchesTarget(entry, options.target)
+          ? gameTextProblem(entry.source, entry.translation)
+          : validateGameText(entry.source, entry.translation, messageCore) : ""),
+      })),
     }));
     const job = writes.current.then(async () => {
       // A running step keeps its settings for processing. Its result writes retain newer UI options.
@@ -508,7 +514,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     if (dirty && membership.current?.key === key) return entries.filter(entry => membership.current!.ids.has(entry.id));
     const rows = entries.filter(entry => matchesGameTextFilters(textFilters, entry.selected, !(textFilters.pending && textFilters.failed && textFilters.done) && !!entry.translation && !gameTextProblem(entry.source, entry.translation), !!entry.error, qualityIssues.has(entry.id), targetTextIds.has(entry.id)) && (filter === "all" || filter === "target" && targetTextIds.has(entry.id) || filter === "quality" && qualityIssues.has(entry.id) || filter === "unfinished" && (!!entry.error || !!gameTextProblem(entry.source, entry.translation))) && (!search || `#${entry.id}\n${entry.source}\n${entry.translation}\n${entry.file}`.toLowerCase().includes(search.toLowerCase())));
     membership.current = { key, ids: new Set(rows.map(entry => entry.id)) }; return rows;
-  }, [entries, search, filter, dirty, targetTextIds, qualityIssues, textFilters]);
+  }, [entries, search, filter, dirty, targetTextIds, qualityIssues, textFilters, gameTextProblem]);
   const filtered = useMemo(() => limitGameText(matched, textFilters.limit), [matched, textFilters.limit]);
   const checkedCount = filtered.reduce((count, entry) => count + Number(entry.selected), 0);
   const hasMixedSelection = checkedCount > 0 && checkedCount < filtered.length;
