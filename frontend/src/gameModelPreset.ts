@@ -7,15 +7,11 @@ import { loadUnityEngines, normalizeUnityEngines, UNITY_ENGINE_CHOICES_KEY, type
 import type { UnityLineMode } from "./unityLineLayout";
 
 const testModels = {
-  hy: { label: "Hy-MT2 7B Q8", pattern: /(?:^|\/)Hy-MT2-7B-GGUF:Q8_0$/i },
-  gal: { label: "GalTransl 4B 2601 Q5", pattern: /(?:^|\/)GalTransl-v4-4B-2601:Q5_K_S$/i },
-  qwen: { label: "Qwen3.5 9B", pattern: /^qwen3\.5(?::(?:latest|9b(?:-q4_k_m)?))?$/i },
+  hy: { id: "hf.co/tencent/Hy-MT2-7B-GGUF:Q8_0", pattern: /(?:^|\/)Hy-MT2-7B-GGUF:Q8_0$/i },
+  gal: { id: "hf.co/SakuraLLM/GalTransl-v4-4B-2601:Q5_K_S", pattern: /(?:^|\/)GalTransl-v4-4B-2601:Q5_K_S$/i },
+  qwen: { id: "qwen3.5:latest", pattern: /^qwen3\.5(?::(?:latest|9b(?:-q4_k_m)?))?$/i },
+  vision: { id: "qwen3-vl:4b-instruct", pattern: /^qwen3-vl:4b-instruct$/i },
 } as const;
-
-type RecommendedGameTestModels = {
-  text: string; dialogue: string; names: string; image: string; review: string;
-  ocrMode: "precise"; ocrConcurrency: 2;
-};
 
 export type GameTestRole = { model?: string; prompt: string; concurrency: number };
 export type GameTestRoles = Partial<Record<GamePromptScene, GameTestRole>>;
@@ -35,6 +31,7 @@ export type GameTestConfigurationAccess = {
   scope: string; models: string[]; capture: () => GameTestConfiguration; apply: (value: GameTestConfiguration) => Promise<void>;
 };
 export type SavedGameTestConfiguration = { id: string; name: string; value: GameTestConfiguration };
+export const DEFAULT_GAME_TEST_CONFIGURATION_ID = "builtin:default";
 
 const configurationsKey = (scope: string) => "llmchat-game-test-configurations:" + scope.replaceAll("\\", "/").toLowerCase();
 export function readGameTestConfigurations(scope: string): SavedGameTestConfiguration[] {
@@ -111,32 +108,39 @@ export function recommendedGameModels() {
   const text = models.find(model => testModels.hy.pattern.test(model));
   const dialogue = models.find(model => testModels.gal.pattern.test(model));
   const review = models.find(model => testModels.qwen.pattern.test(model));
-  const vision = models.find(model => /^qwen3-vl:4b-instruct$/i.test(model));
+  const vision = models.find(model => testModels.vision.pattern.test(model));
   return text && review ? { text, dialogue: dialogue || text, names: text, review, vision } : null;
 }
 
-export async function loadGameTestConfiguration(japaneseToSimplified: boolean): Promise<RecommendedGameTestModels> {
-  const required = japaneseToSimplified ? [testModels.hy, testModels.gal, testModels.qwen] : [testModels.hy, testModels.qwen];
-  let profiles = loadLocalModelProfiles();
-  const configured = () => Object.keys(profiles).filter(model => profiles[model].apiUrl?.trim());
-  const missing = () => required.filter(spec => !configured().some(model => spec.pattern.test(model)));
-  if (missing().length) {
-    const endpoint = gameOllamaEndpoint();
-    const available = await listGameTestOllamaModels();
-    profiles = loadLocalModelProfiles();
-    const uninstalled = missing().filter(spec => !available.some(model => spec.pattern.test(model)));
-    if (uninstalled.length) throw new Error(`测试配置缺少模型：${uninstalled.map(spec => spec.label).join("、")}。请在 Ollama 安装后再应用。`);
-    for (const spec of missing()) {
-      const model = available.find(id => spec.pattern.test(id))!;
-      profiles[model] = { apiUrl: endpoint, apiKey: "" };
-    }
-    saveLocalModelProfiles(profiles);
-    profiles = loadLocalModelProfiles();
-    if (missing().length) throw new Error("Ollama 模型配置保存失败");
-  }
-  const models = configured();
-  const text = models.find(model => testModels.hy.pattern.test(model))!;
-  const dialogue = japaneseToSimplified ? models.find(model => testModels.gal.pattern.test(model))! : text;
-  const review = models.find(model => testModels.qwen.pattern.test(model))!;
-  return { text, dialogue, names: text, image: text, review, ocrMode: "precise", ocrConcurrency: 2 };
+export function defaultGameTestConfiguration(current: GameTestConfiguration): GameTestConfiguration {
+  const value = structuredClone(current);
+  const profiles = loadLocalModelProfiles();
+  const configured = Object.keys(profiles).filter(model => profiles[model].apiUrl?.trim());
+  const modelId = (spec: typeof testModels[keyof typeof testModels]) => configured.find(model => spec.pattern.test(model)) || spec.id;
+  const normal = modelId(testModels.hy);
+  const japanese = (options: Pick<GameTestTextOptions, "source" | "target">) =>
+    (options.source === "auto" ? value.detectedSource : options.source) === "ja" && options.target === "zh-CN";
+  const setRole = (roles: GameTestRoles, scene: GamePromptScene, model?: string, concurrency = 1) => {
+    if (roles[scene]) roles[scene] = { model, concurrency, prompt: "builtin:" + scene };
+  };
+  const text = value.text;
+  text.options.kind = "llm";
+  text.options.includeContext = true;
+  if (text.options.lineMode) text.options.lineMode = "local";
+  setRole(text.roles, "textScreen"); setRole(text.roles, "line");
+  setRole(text.roles, "text", normal); setRole(text.roles, "names", normal);
+  setRole(text.roles, "dialogue", japanese(text.options) ? modelId(testModels.gal) : normal);
+  const images = value.images;
+  if (!images) return value;
+  const imageLanguage = images.options.translation ?? text.options;
+  images.options.mode = imageLanguage.source === "ja" || imageLanguage.source === "auto" ? "manga" : "precise";
+  images.options.concurrency = 2;
+  if (images.options.strategy) images.options.strategy = "staged";
+  if (images.options.refine) Object.assign(images.options.refine, { method: "local", mode: "precise", concurrency: 2 });
+  if (images.options.translation) Object.assign(images.options.translation, { kind: "llm", provider: "llm" });
+  setRole(images.roles, "screen"); setRole(images.roles, "refine"); setRole(images.roles, "layout");
+  setRole(images.roles, "recognize", modelId(testModels.vision), 2);
+  setRole(images.roles, "image", japanese(imageLanguage) ? modelId(testModels.gal) : normal);
+  setRole(images.roles, "review", modelId(testModels.qwen));
+  return value;
 }

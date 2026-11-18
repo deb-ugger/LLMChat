@@ -960,7 +960,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if(phase==="recognize"&&run.imageVisionModel!==undefined&&!run.imageVisionModel)throw new Error("请选择识字视觉模型");
     if(phase==="translate"&&run.imageLayoutModel!==undefined&&!run.imageLayoutModel)throw new Error("请选择断行排版模型");
     if (!(p.images || []).some(image => image.selected && (phase === "recognize" ? !image.ocrCompleted : image.ocrCompleted && !unityImageWorkDone(image, run.target)))) { onProgress({ completed: 0, total: 0, detail: "图片已完成或没有选中的图片" }); return p; }
-    const options: UnityTranslationOptions = phase === "translate" ? await translationOptions(run, true) : { provider: "llm" }, ocrCount=Math.max(1,Math.min(8,run.imageConcurrency||imageConcurrency)),deviceMessages=new Set<string>(),
+    const visionModel = phase === "recognize" ? run.imageVisionModel : undefined;
+    const ocrCount = visionModel ? modelConcurrency(promptState.scope, "recognize", visionModel) : Math.max(1, Math.min(8, run.imageConcurrency || imageConcurrency));
+    const options: UnityTranslationOptions = phase === "translate" ? await translationOptions(run, true) : { provider: "llm" }, deviceMessages=new Set<string>(),
       ocr=Array.from({length:ocrCount},()=>createUnityImageOcr(run.imageOcrMode||"fast","auto",(message)=>{if(!deviceMessages.has(message)){deviceMessages.add(message);setMessage(message);}}));
     const primaryProvider = options.provider; if (!primaryProvider) throw new Error("未选择图片翻译引擎");
     const request = (provider: string, text: string) => requestImageTranslation(options, provider, text, controller.signal);
@@ -974,13 +976,16 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if(phase==="recognize"&&run.imageVisionModel===undefined){await ocr[0].prepare();await Promise.all(ocr.slice(1,ocr[0].isGpu?Math.min(2,ocrCount):ocrCount).map(engine=>engine.prepare()));}
       current = await processUnityImages(p, controller.signal, {
         timingScope: promptState.scope + ":images",
-        concurrency: run.imageVisionModel ? modelConcurrency(promptState.scope, "recognize", run.imageVisionModel) : ocrCount,
+        concurrency: ocrCount,
         translationConcurrency: Math.max(translationLanes, layoutLanes), regionConcurrency: translationLanes,
         targetLanguage: options.target,
         includeRegion: phase === "translate" ? gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN",
           !!options.onlySourceLanguage, !!options.skipTargetLanguage) : undefined,
         read: image => measureGameAsync(promptState.scope + ":images", "processingMs", () => readUnitySourceImage(p, image, controller.signal)),
-        recognize:(blob,stage,worker=0)=>run.imageVisionModel?recognizeGameImage(settings,run.imageVisionModel,blob,controller.signal,"recognize",promptState.selection,{source:run.source,target:run.target},logAction,image=>ocr[worker%ocr.length].recognize(image,stage)):measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu?worker%Math.min(2,ocr.length):worker].recognize(blob,stage)), translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: (blob,regions)=>renderGameImage(settings,run.imageLayoutModel||"",blob,regions,controller.signal,promptState.selection,{source:run.source,target:run.target},logAction),
+        recognize: (blob, stage, worker = 0) => visionModel ? ocr[worker % ocr.length].recognizeVision(blob, stage, controller.signal,
+          fallback => recognizeGameImage(settings, visionModel, blob, controller.signal, "recognize", promptState.selection, { source: run.source, target: run.target }, logAction, fallback),
+          message => logAction(message, "warning")) : measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(blob, stage)),
+        translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: (blob,regions)=>renderGameImage(settings,run.imageLayoutModel||"",blob,regions,controller.signal,promptState.selection,{source:run.source,target:run.target},logAction),
         write: (project, image, blob) => measureGameAsync(promptState.scope + ":images", "saveMs", () => writeImage(project, image, blob)),
         persist: async (next, image) => { current = next;if(performance.now()-lastPublish>=100){lastPublish=performance.now();publishTranslation({ ...next, images: [...(next.images || [])] }, "images");} const snapshot = structuredClone(image); await queueProjectWrite(() => measureGameAsync(promptState.scope + ":images", "saveMs", () => unityRun("save-image", { project: imageRequest(next, snapshot), imageId: snapshot.id }))); },
         validate: unityTranslationError,
@@ -1045,7 +1050,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const cancel = () => { void ocr.dispose(); }; controller.signal.addEventListener("abort", cancel, { once: true });
     try {
       showLocalActivity(`${image.name || image.id} · 正在读取原图`, "running", true, 0, 1);
-      const lines = imageVisionModel!==undefined ? await recognizeGameImage(settings,imageVisionModel,await readUnitySourceImage(latest.current || project!,image,controller.signal),controller.signal,"recognize",promptState.selection,{source,target},logAction,image=>ocr.recognize(image, setMessage)) : await ocr.recognize(await readUnitySourceImage(latest.current || project!, image, controller.signal), detail => { setMessage(detail); showLocalActivity(`${image.name || image.id} · ${detail}`, "running", true, 0, 1); });
+      const blob = await readUnitySourceImage(latest.current || project!, image, controller.signal);
+      const stage = (detail: string) => { setMessage(detail); showLocalActivity(`${image.name || image.id} · ${detail}`, "running", true, 0, 1); };
+      const lines = imageVisionModel !== undefined ? await ocr.recognizeVision(blob, stage, controller.signal,
+        fallback => recognizeGameImage(settings, imageVisionModel, blob, controller.signal, "recognize", promptState.selection, { source, target }, logAction, fallback),
+        message => logAction(message, "warning")) : await ocr.recognize(blob, stage);
       controller.signal.throwIfAborted();
       editImage({ ...image, completed: false, ocrCompleted: true, renderedFile: "", renderedHash: "", error: "", regions: lines.filter(line => line.text.trim()).map(line => ({ ...line, translation: "", error: "", selected: line.confidence >= imageConfidenceThreshold })) });
       setMessage("图片识别完成");
@@ -1868,7 +1877,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const imageModels = translationKind !== "engine" ? [imageModel, prompt("image"), imageReviewModel, prompt("review")] : [];
   const configuration = imagePart ? {
     recognize: JSON.stringify(imageVisionModel === undefined
-      ? [imageOcrMode, imageConcurrency, imageConfidenceThreshold] : [imageVisionModel, prompt("recognize")]),
+      ? [imageOcrMode, imageConcurrency, imageConfidenceThreshold] : [imageVisionModel, prompt("recognize"), imageOcrMode === "manga"]),
     translate: JSON.stringify([...sharedConfiguration, ...imageModels, imageLayoutModel,
       imageLayoutModel !== undefined ? prompt("layout") : null]),
   } : {
@@ -2004,6 +2013,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {translationKind === "engine" && <UnityEngineList choices={engineChoices} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={flowConfigLocked} expanded={engineListExpanded} onExpandedChange={setEngineListExpanded} onChange={updateEngineChoices} />}</GameTranslationTabs>}
           {imagePart && flowConfig === "translate" && <GameProcessingTabs label="译图排版" localLabel="本地原位排版" disabled={flowConfigLocked} value={imageLayoutModel!==undefined?"llm":"local"} onChange={value=>setImageLayoutModel(value==="llm"?"":undefined)}>{imageLayoutModel!==undefined&&<div className="unity-offline-fields"><GameModelSelect label="断行排版模型" promptKey="layout" models={gameModels} value={imageLayoutModel} disabled={flowConfigLocked} onChange={setImageLayoutModel}/></div>}</GameProcessingTabs>}
           {imagePart && flowConfig === "recognize" && <GameProcessingTabs label="识别方式" localLabel="本地 OCR" disabled={flowConfigLocked} value={imageVisionModel!==undefined?"llm":"local"} onChange={value=>setImageVisionModel(value==="llm"?"":undefined)}>{imageVisionModel!==undefined&&<div className="unity-offline-fields"><GameModelSelect label="视觉模型（需支持图片输入）" promptKey="recognize" models={gameModels} value={imageVisionModel} disabled={flowConfigLocked} onChange={setImageVisionModel}/></div>}
+          {imageVisionModel !== undefined && <label className="unity-inline-check"><input type="checkbox" checked={imageOcrMode === "manga"} disabled={flowConfigLocked}
+            onChange={event => setImageOcrMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
           {imagePart && flowConfig === "recognize" && imageVisionModel===undefined && <><div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={flowConfigLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><label>识别并发<select aria-label="Unity 图片识别并发" value={imageConcurrency} disabled={flowConfigLocked} onChange={event=>setImageConcurrency(Number(event.target.value))}>{[1,2,3,4,6,8].map(value=><option key={value} value={value}>{value}</option>)}</select></label><label data-tooltip="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。">翻译置信度阈值<input aria-label="图片翻译置信度阈值" type="number" min={0} max={100} step={1} value={imageConfidenceThreshold} disabled={flowConfigLocked} onBlur={event => { event.currentTarget.value = String(imageConfidenceThreshold); }} onChange={event => { const value = Number(event.currentTarget.value); const next = Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0; event.currentTarget.value = String(next); if (next !== imageConfidenceThreshold) { setImageConfidenceThreshold(next); } }} />%</label><span>底图处理：纯色覆盖后嵌字</span></div></>}
           </GameProcessingTabs>}
           {!imagePart && flowConfig === "translate" && <><div className="unity-control-group unity-line-group" role="group" aria-label="换行参数">

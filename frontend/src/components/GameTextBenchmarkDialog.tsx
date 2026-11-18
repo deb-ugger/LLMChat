@@ -447,6 +447,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             }} />{engine.id}
           </label>)}
         </div>}
+        {step === "recognize" && config.models.text.id && <label className="unity-inline-check"><input type="checkbox" checked={(config.imageMode || images?.mode) === "manga"}
+          onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.checked ? "manga" : "precise" }))} />用 Manga OCR 复读日文竖排</label>}
         {step === "recognize" && images?.confidence !== undefined && <div className="game-benchmark-toolbar"><label>置信度阈值（%）
           <input type="number" min={0} max={100} value={config.imageConfidence ?? images.confidence}
             onChange={event => update(config.id, previous => ({ ...previous, imageConfidence: Math.min(100, Math.max(0, Number(event.target.value))) }))} />

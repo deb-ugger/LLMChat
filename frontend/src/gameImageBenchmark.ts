@@ -115,7 +115,8 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   }
 
   const localLanes = config.localLanes || setup.concurrency;
-  const workers = step === "recognize" && !model ? Array.from({ length: localLanes }, () => createUnityImageOcr(config.imageMode || setup.mode)) : [];
+  const mode = config.imageMode || setup.mode;
+  const workers = step === "recognize" && (!model || mode === "manga") ? Array.from({ length: model ? lanes : localLanes }, () => createUnityImageOcr(mode)) : [];
   const request = async (provider: TranslateProvider, text: string) => {
     if (!gameTextMatchesSource(text, source) || skipTarget && gameTextNeedsNoTranslation(text, target)) return text;
     const options = buildUnityTranslateOptions(settings, provider, source, target, model, false, !!loadLocalModelProfiles()[model],
@@ -129,15 +130,20 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   const pool = engines.length ? createUnityEnginePool(engines, signal, request, { timingScope: scope }) : null;
   let processed = 0, failed = 0;
   try {
-    if (workers.length) {
+    if (workers.length && !model) {
       await workers[0].prepare();
       await Promise.all(workers.slice(1, workers[0].isGpu ? 2 : workers.length).map(worker => worker.prepare()));
     }
     await processUnityImages(project, signal, {
       timingScope: scope, concurrency: model ? lanes : localLanes, translationConcurrency: pool?.concurrency || lanes,
       regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read,
-      recognize: (blob, stage, index = 0) => model ? vision(blob, "recognize").then(result => result.lines) :
-        measureGameAsync(scope, "processingMs", () => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(blob, stage)),
+      recognize: (blob, stage, index = 0) => {
+        if (!model) return measureGameAsync(scope, "processingMs", () => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(blob, stage));
+        const worker = workers[index];
+        return worker ? worker.recognizeVision(blob, stage, signal,
+          fallback => recognizeGameImage(settings, model, blob, signal, "recognize", prompts, { source, target }, report, fallback),
+          message => report(message, "error")) : vision(blob, "recognize").then(result => result.lines);
+      },
       translate: text => pool ? pool.translate(text) : request("llm", text),
       render: (blob, regions) => renderGameImage(settings, model, blob, regions, signal, prompts, { source, target }, report),
       write: async () => ({ path: "benchmark", hash: "" }), validate: unityTranslationError,

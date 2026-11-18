@@ -51,6 +51,22 @@ export async function maskUnityImageRegions(source: Blob, translated: Blob, regi
   } finally { original.close(); rendered?.close(); }
 }
 const mangaCache=new ImageRecognitionCache<PaddleOcrLine[]>();
+async function readMangaRegion(manga: LocalMangaOcr, bitmap: ImageBitmap, box: PaddleOcrLine, padding = 0) {
+  const x = Math.max(0, box.x0 - padding), y = Math.max(0, box.y0 - padding);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.min(bitmap.width - x, Math.ceil(box.x1 - x + padding)));
+  canvas.height = Math.max(1, Math.min(bitmap.height - y, Math.ceil(box.y1 - y + padding)));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("无法裁剪图片文字区域");
+  context.drawImage(bitmap, x, y, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  return manga.recognize(await createImageBitmap(canvas));
+}
+
+function isVerticalJapaneseRegion(box: PaddleOcrLine) {
+  return box.y1 - box.y0 >= 1.4 * Math.max(1, box.x1 - box.x0) &&
+    /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(box.text) && !/[\p{Script=Latin}\p{N}]/u.test(box.text);
+}
+
 export function createUnityImageOcr(mode: OcrMode,backend:"auto"|"wasm"|"webgpu"="auto",onDevice?:(message:string,fallback:boolean)=>void) {
   const paddle = new LocalPaddleOcr(mode, mode === "fast" ? { upscale: false, maxSide: 1280,backend,onDevice } : {backend,onDevice}), manga = mode === "manga" ? new LocalMangaOcr(onDevice) : null;
   return {
@@ -65,15 +81,40 @@ export function createUnityImageOcr(mode: OcrMode,backend:"auto"|"wasm"|"webgpu"
       try {
         const lines: PaddleOcrLine[] = [];
         for (const box of result.lines) {
-          const canvas = document.createElement("canvas"); canvas.width = Math.max(1, Math.ceil(box.x1 - box.x0)); canvas.height = Math.max(1, Math.ceil(box.y1 - box.y0));
-          const context = canvas.getContext("2d"); if (!context) throw new Error("无法裁剪图片文字区域");
-          context.drawImage(bitmap, box.x0, box.y0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
           stage(`日文增强识别 ${lines.length + 1} / ${result.lines.length}`);
-          lines.push({ ...box, text: await manga.recognize(await createImageBitmap(canvas)) });
+          lines.push({ ...box, text: await readMangaRegion(manga, bitmap, box) });
         }
         return mergeUnityOcrLines(lines);
       } finally { bitmap.close(); }
       });
+    },
+    async recognizeVision(blob: Blob, stage: (value: string) => void, signal: AbortSignal,
+      vision: (fallback: (blob: Blob) => Promise<PaddleOcrLine[]>) => Promise<PaddleOcrLine[]>, onRereadError: (message: string) => void) {
+      let usedLocal = false;
+      const lines = await vision(async source => {
+        usedLocal = true;
+        return mergeUnityOcrLines((await paddle.recognize(source, stage)).lines);
+      });
+      if (!manga || usedLocal) return lines;
+      const candidates = lines.map((box, index) => ({ box, index })).filter(({ box }) => isVerticalJapaneseRegion(box));
+      if (!candidates.length) return lines;
+      const reread = [...lines];
+      let bitmap: ImageBitmap | undefined;
+      try {
+        signal.throwIfAborted();
+        bitmap = await createImageBitmap(blob);
+        for (const [number, { box, index }] of candidates.entries()) {
+          signal.throwIfAborted();
+          stage(`Manga OCR 复读日文竖排 ${number + 1} / ${candidates.length}`);
+          const text = (await readMangaRegion(manga, bitmap, box, 3)).trim();
+          signal.throwIfAborted();
+          if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) reread[index] = { ...box, text };
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        onRereadError(`Manga OCR 复读未完成，保留其余视觉识别结果：${error instanceof Error ? error.message : String(error)}`);
+      } finally { bitmap?.close(); }
+      return reread;
     },
     async dispose() { await Promise.all([paddle.dispose(), manga?.dispose()]); },
   };

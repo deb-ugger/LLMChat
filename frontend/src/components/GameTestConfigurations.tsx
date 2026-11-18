@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { GameDialog } from "./GameActionConfirm";
 import { GAME_PROMPT_SCENES, useGamePromptCatalog, type GamePromptScene } from "../gamePrompts";
-import { listGameTestOllamaModels, loadGameTestConfiguration, prepareGameTestModels, readGameTestConfigurations, saveGameTestConfigurations,
-  type GameTestConfigurationAccess, type GameTestRole, type GameTestRoles, type GameTestTextOptions, type SavedGameTestConfiguration } from "../gameModelPreset";
+import { DEFAULT_GAME_TEST_CONFIGURATION_ID, defaultGameTestConfiguration, listGameTestOllamaModels, prepareGameTestModels, readGameTestConfigurations, saveGameTestConfigurations,
+  type GameTestConfigurationAccess, type GameTestRole, type GameTestTextOptions, type SavedGameTestConfiguration } from "../gameModelPreset";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { classicEngines, getEngineInfo } from "../translateEngines";
@@ -51,7 +51,8 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
   access: GameTestConfigurationAccess; initialPart: "text" | "images"; onApply: (row: SavedGameTestConfiguration) => Promise<void>; onClose: () => void;
 }) {
   const [rows, setRows] = useState(() => readGameTestConfigurations(access.scope));
-  const [draft, setDraft] = useState<SavedGameTestConfiguration | undefined>(() => rows[0]);
+  const makeDefault = (): SavedGameTestConfiguration => ({ id: DEFAULT_GAME_TEST_CONFIGURATION_ID, name: "默认配置", value: defaultGameTestConfiguration(access.capture()) });
+  const [draft, setDraft] = useState(makeDefault);
   const [part, setPart] = useState(initialPart);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [working, setWorking] = useState(false);
@@ -65,10 +66,13 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
     catch (error) { showAppNotice(error instanceof Error ? error.message : String(error), "error"); }
     finally { setWorking(false); }
   };
-  const create = () => {
+  const newConfiguration = (value: SavedGameTestConfiguration["value"]) => {
     let counter = 1;
     while (rows.some(row => row.name === `配置单 ${counter}`)) counter++;
-    setDraft({ id: crypto.randomUUID(), name: `配置单 ${counter}`, value: structuredClone(access.capture()) });
+    return { id: crypto.randomUUID(), name: `配置单 ${counter}`, value };
+  };
+  const create = () => {
+    setDraft(newConfiguration(structuredClone(access.capture())));
     setPart(initialPart);
   };
   const save = (row: SavedGameTestConfiguration) => {
@@ -77,7 +81,7 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
     saveGameTestConfigurations(access.scope, next);
     setRows(next); setDraft(row);
   };
-  const updateValue = (next: NonNullable<typeof value>) => setDraft(previous => previous && { ...previous, value: next });
+  const updateValue = (next: NonNullable<typeof value>) => setDraft(previous => previous.id === DEFAULT_GAME_TEST_CONFIGURATION_ID ? newConfiguration(next) : { ...previous, value: next });
   const text = value?.text, images = value?.images;
   const updateText = (patch: Partial<GameTestTextOptions>) => { if (value && text) updateValue({ ...value, text: { ...text, options: { ...text.options, ...patch } } }); };
   const updateImages = (patch: Partial<NonNullable<typeof images>["options"]>) => { if (value && images) updateValue({ ...value, images: { ...images, options: { ...images.options, ...patch } } }); };
@@ -100,36 +104,20 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
       change={method => updateRole(where, scene, { model: method === "local" ? undefined : "" })} />
     {value?.[where]?.roles[scene]?.model !== undefined && roleFields(where, scene, `${GAME_PROMPT_SCENES[scene]}模型`)}
   </>;
-  const recommend = async () => {
-    if (!value || !text) return;
-    const detected = text.options.source === "auto" ? value.detectedSource : text.options.source;
-    const recommended = await loadGameTestConfiguration(detected === "ja" && text.options.target === "zh-CN");
-    setOllamaModels(previous => [...new Set([...previous, recommended.text, recommended.dialogue, recommended.review])]);
-    const assign = (roles: GameTestRoles, overrides: Partial<Record<GamePromptScene, string | undefined>>) => {
-      const next = { ...roles };
-      for (const scene of Object.keys(overrides) as GamePromptScene[]) if (next[scene]) next[scene] = { ...next[scene]!, model: overrides[scene] };
-      return next;
-    };
-    const next = { ...value, text: { options: { ...text.options, kind: "llm" as const, includeContext: true },
-      roles: assign(text.roles, { textScreen: undefined, text: recommended.text, dialogue: recommended.dialogue, names: recommended.names }) } };
-    if (images) next.images = { options: { ...images.options, mode: recommended.ocrMode, concurrency: recommended.ocrConcurrency,
-      ...(images.options.strategy ? { strategy: "staged" as const } : {}),
-      ...(images.options.refine ? { refine: { ...images.options.refine, method: "local" as const, mode: recommended.ocrMode, concurrency: recommended.ocrConcurrency } } : {}),
-      ...(images.options.translation ? { translation: { ...images.options.translation, kind: "llm" as const, provider: "llm" as const } } : {}) },
-      roles: assign(images.roles, { screen: undefined, recognize: undefined, layout: undefined, image: recommended.image, review: recommended.review }) };
-    updateValue(next);
-  };
-
   const textOptions = text?.options, imageOptions = images?.options;
   const imageTranslation = imageOptions?.translation;
   const refine = imageOptions?.refine;
-  const edited = draft && !rows.some(row => row.id === draft.id);
-  const duplicateName = draft && rows.some(row => row.id !== draft.id && row.name === draft.name.trim());
+  const usingDefault = draft.id === DEFAULT_GAME_TEST_CONFIGURATION_ID;
+  const edited = !usingDefault && !rows.some(row => row.id === draft.id);
+  const duplicateName = !usingDefault && rows.some(row => row.id !== draft.id && row.name === draft.name.trim());
   const named = draft && draft.name.trim() && !duplicateName ? { ...draft, name: draft.name.trim() } : undefined;
   return <GameDialog className="game-test-dialog" title="测试配置" description="配置单用于当前工程。新建会复制当前文本和图片设置。" onCancel={onClose} disabled={working} details={<>
     <div className="game-test-picker">
-      <label>配置单<select disabled={working} value={draft?.id || ""} onChange={event => setDraft(rows.find(row => row.id === event.target.value))}>
-        {!draft && <option value="">暂无配置单</option>}
+      <label>配置单<select disabled={working} value={draft.id} onChange={event => {
+        if (event.target.value === DEFAULT_GAME_TEST_CONFIGURATION_ID) setDraft(makeDefault());
+        else { const row = rows.find(row => row.id === event.target.value); if (row) setDraft(row); }
+      }}>
+        <option value={DEFAULT_GAME_TEST_CONFIGURATION_ID}>默认配置（内置）</option>
         {edited && <option value={draft.id}>{draft.name || "新配置单"}（草稿）</option>}
         {rows.map(row => <option value={row.id} key={row.id}>{row.name}</option>)}
       </select></label>
@@ -137,9 +125,9 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
     </div>
     {draft && value && textOptions && <fieldset className="game-test-editor" disabled={working}>
       <div className="game-test-picker">
-        <label>名称<input value={draft.name} maxLength={80} aria-invalid={!!duplicateName} onChange={event => setDraft({ ...draft, name: event.target.value })} />{duplicateName && <small>已存在同名配置单</small>}</label>
+        <label>名称<input value={draft.name} readOnly={usingDefault} maxLength={80} aria-invalid={!!duplicateName} onChange={event => setDraft({ ...draft, name: event.target.value })} />{duplicateName && <small>已存在同名配置单</small>}</label>
         <button type="button" className="unity-btn" onClick={() => void run(async () => { const installed = await listGameTestOllamaModels(); setOllamaModels(installed); showAppNotice(`已读取 ${installed.length} 个 Ollama 模型`); })}>读取 Ollama 模型</button>
-        <button type="button" className="unity-btn" onClick={() => void run(recommend)}>填入推荐模型</button>
+        {!usingDefault && <button type="button" className="unity-btn" onClick={() => updateValue(defaultGameTestConfiguration(value))}>填入默认配置</button>}
       </div>
       {images && <div className="game-translation-tabs" role="group" aria-label="配置步骤">
         <button type="button" aria-pressed={part === "text"} onClick={() => setPart("text")}>文本翻译</button>
@@ -183,6 +171,8 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
           {toggleModel("images", "recognize", "识字方式", "本地 OCR")}
           {images.roles.recognize?.model === undefined && <><Select label="本地 OCR" value={imageOptions.mode} choices={ocrChoices} change={mode => updateImages({ mode })} />
             <Count label="识字并发" value={imageOptions.concurrency} choices={lanes} change={concurrency => updateImages({ concurrency })} /></>}
+          {images.roles.recognize?.model !== undefined && <Flag label="用 Manga OCR 复读日文竖排" value={imageOptions.mode === "manga"}
+            change={enabled => updateImages({ mode: enabled ? "manga" : "precise" })} />}
           {imageOptions.confidence !== undefined && <label>翻译置信度阈值<input type="number" min={0} max={100} value={imageOptions.confidence} onChange={event => updateImages({ confidence: Math.max(0, Math.min(100, Number(event.target.value))) })} /></label>}
         </Group>
         <Group title="翻译图片文字">
@@ -196,10 +186,11 @@ export function GameTestConfigurations({ access, initialPart, onApply, onClose }
       </>}
     </fieldset>}
   </>}>
-    <button type="button" disabled={!named || working} onClick={() => named && void run(async () => { save(named); showAppNotice("已保存测试配置单"); })}>保存配置单</button>
+    <button type="button" disabled={!named || usingDefault || working} onClick={() => named && void run(async () => { save(named); showAppNotice("已保存测试配置单"); })}>保存配置单</button>
     <button type="button" className="game-confirm-primary" disabled={!named || working} onClick={() => named && void run(async () => {
       await prepareGameTestModels(named.value, access.models);
-      save(named); await onApply(named); showAppNotice(`已应用「${named.name}」`); onClose();
+      if (!usingDefault) save(named);
+      await onApply(named); showAppNotice(`已应用「${named.name}」`); onClose();
     })}>应用所选配置</button>
     <button type="button" className="game-confirm-cancel" disabled={working} onClick={onClose}>关闭</button>
   </GameDialog>;

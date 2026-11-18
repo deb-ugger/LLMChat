@@ -350,7 +350,9 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
       if (skipped) onMessage(`${skipped} 张图片没有需要翻译的文字，已移入「无需翻译」`, "info");
     }
     if(outputMode==="review")input.images=input.images?.map(image=>image.selected?{...image,regions:image.regions.map((region:ReviewedRegion)=>region.selected&&includesRegion(region.text)&&(!region.translation||region.error||unityTranslationError(region.text,region.translation))?{...region,beforeReview:region.beforeReview||{translation:region.translation,error:region.error}}:region)}:image);
-    const ocr = Array.from({ length: phase === "recognize" ? concurrency : 1 }, () => createUnityImageOcr(ocrMode, backend, reportDevice));
+    const visionModel = phase === "recognize" ? stageModels.recognize : undefined;
+    const recognitionLanes = visionModel ? modelConcurrency(promptState.scope, "recognize", visionModel) : concurrency;
+    const ocr = Array.from({ length: phase === "recognize" ? recognitionLanes : 1 }, () => createUnityImageOcr(ocrMode, backend, reportDevice));
     let pendingWrites:UnityImage[]=[];let writes=Promise.resolve();let lastWrite=performance.now();
     const flushWrites=()=>{if(pendingWrites.length){const batch=pendingWrites;pendingWrites=[];lastWrite=performance.now();writes=writes.then(()=>persistMany(batch));}return writes;};
     const translator=createTranslator(controller.signal, outputMode === "review" ? "review" : outputMode === "translate-only" ? "initial" : "combined");
@@ -377,8 +379,14 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
         }
         controller.signal.throwIfAborted();
       }
-      await processUnityImages(input,controller.signal,{timingScope:promptState.scope + ":images",cachedRecognition: image => currentCache.has(image.id) ? mergeUnityOcrLines(image.screening!.recognition!.lines) : undefined,concurrency:phase==="recognize"&&stageModels.recognize?modelConcurrency(promptState.scope,"recognize",stageModels.recognize):concurrency,translationConcurrency:outputMode==="render"&&stageModels.render?modelConcurrency(promptState.scope,"layout",stageModels.render):outputMode==="review"?modelConcurrency(promptState.scope,"review",reviewModel):translator.concurrency,regionConcurrency:translator.regions,reuseTranslations,targetLanguage:target,includeRegion:includesRegion,onTranslationFailures:!only&&outputMode==='translate-only'&&reviewModel?count=>onMessage(`${count} 张图片有待复核的区域，已保留成功译文。`,"warning"):undefined,read:image=>measureGameAsync(promptState.scope + ":images", "processingMs", () => readImage(image,false,false,controller.signal)),recognize:(blob,stage,worker=0,image)=>{
-      if(stageModels.recognize){stage("大模型识字与定位");return recognizeGameImage(settings,stageModels.recognize,blob,controller.signal,"recognize",promptState.selection,{source,target},(message,level)=>onMessage(image ? `${image.name} · ${message}` : message,level),image=>ocr[worker%ocr.length].recognize(image,stage));}
+      await processUnityImages(input,controller.signal,{timingScope:promptState.scope + ":images",cachedRecognition: image => currentCache.has(image.id) ? mergeUnityOcrLines(image.screening!.recognition!.lines) : undefined,concurrency:recognitionLanes,translationConcurrency:outputMode==="render"&&stageModels.render?modelConcurrency(promptState.scope,"layout",stageModels.render):outputMode==="review"?modelConcurrency(promptState.scope,"review",reviewModel):translator.concurrency,regionConcurrency:translator.regions,reuseTranslations,targetLanguage:target,includeRegion:includesRegion,onTranslationFailures:!only&&outputMode==='translate-only'&&reviewModel?count=>onMessage(`${count} 张图片有待复核的区域，已保留成功译文。`,"warning"):undefined,read:image=>measureGameAsync(promptState.scope + ":images", "processingMs", () => readImage(image,false,false,controller.signal)),recognize:(blob,stage,worker=0,image)=>{
+      if (visionModel) {
+        stage("大模型识字与定位");
+        const report = (message: string, level: "info" | "error" | "success" | "warning") => onMessage(image ? `${image.name} · ${message}` : message, level);
+        return ocr[worker % ocr.length].recognizeVision(blob, stage, controller.signal,
+          fallback => recognizeGameImage(settings, visionModel, blob, controller.signal, "recognize", promptState.selection, { source, target }, report, fallback),
+          message => report(message, "warning"));
+      }
       return measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu?worker%Math.min(2,ocr.length):worker].recognize(blob,stage));
     },translate:translator.translate,render:(blob,regions)=>renderGameImage(settings,stageModels.render||"",blob,regions,controller.signal,promptState.selection,{source,target},onMessage),write:(_project,image,blob)=>measureGameAsync(promptState.scope + ":images", "saveMs", () => write(image,blob)),persist:async(_project,image)=>{const value=only?{...image,selected:image.ocrCompleted&&!image.regions.some(region=>region.text.trim())?false:only.selected}:image;pendingWrites.push(value);if(pendingWrites.length>=32||performance.now()-lastWrite>=750)await flushWrites();},validate:unityTranslationError},publishProgress,50,phase === "recognize" ? phase : outputMode === "review" ? "translate-only" : outputMode);await flushWrites();onMessage(phase==="recognize"?"图片识别完成":"图片翻译完成","success");}finally{try{await flushWrites();}finally{translator.dispose();await Promise.all(ocr.map(engine=>engine.dispose()));}}
   },{kind:phase==="recognize"?"recognize":outputMode==="review"?"review":outputMode==="render"?"render":"translate",imageId:only?.id,mode:ocrMode});
@@ -636,7 +644,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const configuration = {
     filter: JSON.stringify(stageModels.filter === undefined ? [strategy] : [stageModels.filter, prompt("screen")]),
     refine: JSON.stringify([refineMethod, refineOcr.id, refineConcurrency, refineConfidence, refineModel, refineMethod === "llm" ? prompt("refine") : null]),
-    recognize: JSON.stringify(stageModels.recognize === undefined ? [mode, concurrency] : [stageModels.recognize, prompt("recognize")]),
+    recognize: JSON.stringify(stageModels.recognize === undefined ? [mode, concurrency] : [stageModels.recognize, prompt("recognize"), mode === "manga"]),
     translate: JSON.stringify([source, target, onlySourceLanguage, skipTargetLanguage,
       translationKind === "engine" ? ["engine", engines] : [translationKind, translationModel, prompt("image")]]),
     review: JSON.stringify([reviewModel, reviewModel ? prompt("review") : null]),
@@ -711,6 +719,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
         <p className="hint">复筛「待复核」和「待正式识别」的图片。{refineMethod === "llm" && "只判断文字是否存在，先用 1024 尺寸，判断把握低时再以 1600 尺寸复查。"}</p>
       </div>}
       {["filter","recognize","render"].includes(configured||"") && <GameProcessingTabs label="处理方式" localLabel={configured==="render"?"本地原位排版":configured==="filter"?"本地筛选":"本地 OCR"} disabled={configLocked} value={stageModels[configured!]!==undefined?"llm":"local"} onChange={value=>setStageModels(previous=>{const next={...previous};if(value==="llm")next[configured!]="";else delete next[configured!];return next;})}>{stageModels[configured!]!==undefined && <div className="unity-offline-fields"><GameModelSelect promptKey={configured==="render"?"layout":configured==="filter"?"screen":"recognize"} label={configured==="render"?"断行排版模型":"视觉模型（需支持图片输入）"} value={stageModels[configured!]||""} models={models} disabled={configLocked} onChange={value=>setStageModels(previous=>({...previous,[configured!]:value}))}/></div>}
+      {configured === "recognize" && stageModels.recognize !== undefined && <label className="unity-inline-check"><input type="checkbox" checked={mode === "manga"} disabled={configLocked}
+        onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
       {(configured === "filter" || configured === "recognize") && stageModels[configured]===undefined && <div className="unity-offline-fields">{configured === "filter" && <label>筛选策略<UnityDescriptionSelect label="筛选策略" value={strategy} disabled={configLocked} onChange={value=>setStrategy(value as typeof strategy)} choices={[
 {value:"staged",label:"分级快速筛选",description:"先按资源目录跳过常规动画、角色和瓦片素材，再用快速模型检测文字；疑似文字使用更高分辨率复核。",warning:"可能跳过含有文字的素材；可手动改选，或改用完整范围筛选。"},
 {value:"full",label:"完整范围筛选",description:"逐张检测全部未完成图片，包括动画、角色和瓦片素材，使用更高分辨率的快速模型。",warning:"检测范围更广，耗时通常更长。"}
