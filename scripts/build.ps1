@@ -76,11 +76,17 @@ try {
             $workers += Start-Job -ArgumentList $shell,$PSScriptRoot,($group -join '|'),$Proxy -ScriptBlock {
                 param($executor,$scripts,$names,$proxy)
                 $ErrorActionPreference = 'Stop'
+                $PSNativeCommandUseErrorActionPreference = $false
                 . (Join-Path $scripts 'build-incremental.ps1')
                 foreach ($name in $names.Split('|')) {
                     $clock = [Diagnostics.Stopwatch]::StartNew()
                     $arguments = if ($name -eq 'prepare-speech-tools.ps1' -and $proxy) { @('-Proxy',$proxy) } else { @() }
-                    & $executor -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts $name) @arguments
+                    # Native tools can report progress and warnings on stderr.
+                    $global:LASTEXITCODE = -1
+                    try {
+                        $ErrorActionPreference = 'Continue'
+                        & $executor -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts $name) @arguments 2>&1 | ForEach-Object { [string]$_ }
+                    } finally { $ErrorActionPreference = 'Stop' }
                     if ($LASTEXITCODE -ne 0) { throw "$name failed (exit $LASTEXITCODE)." }
                     Write-Output ('{0}: {1:N1}s' -f $name,$clock.Elapsed.TotalSeconds)
                 }
