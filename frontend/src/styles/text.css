@@ -9,8 +9,6 @@
 }
 .text-home-grid {
   display: grid;
-  min-height: 100%;
-  align-content: safe center;
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: var(--panel-gap);
   align-items: start;
