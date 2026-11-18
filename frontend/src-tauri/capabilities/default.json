@@ -15,6 +15,7 @@
     "allow-unity-jobs",
     "allow-runtime-log",
     "allow-ollama-service",
+    "allow-style-redraw",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-style-redraw"
+description = "Allow local ComfyUI discovery, queue inspection and image redraw"
+commands.allow = [
+  "find_redraw_directories",
+  "inspect_redraw_directory",
+  "read_redraw_queue",
+  "prepare_redraw_ui",
+  "run_style_redraw"
+]
