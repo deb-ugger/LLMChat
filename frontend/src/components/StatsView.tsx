@@ -1,3 +1,4 @@
+import { writeOutput } from "../appOutput";
 
 
 import { useCallback,useEffect,useMemo,useRef,useState } from "react";
@@ -740,11 +741,13 @@ export function StatsView({ active = true }: { active?: boolean }) {
         loadedReportKeyRef.current = reportKey;
       }
       setDetailEvents(report.events ?? []);
+      if (!detailsOnly) writeOutput(["统计", "用量报告"], `已刷新 · ${report.pagination?.total || 0} 条记录`, "success", false, reportKey);
       setDetailTotal(report.pagination?.total ?? 0);
       setDetailPages(report.pagination?.pages ?? 0);
     } catch (error) {
       if (controller.signal.aborted) return;
-      setError(toFriendlyError(error, "加载统计失败"));
+      const detail = toFriendlyError(error, "加载统计失败");
+      setError(detail); writeOutput(["统计", "用量报告"], detail, "error", true, reportKey);
       if (!detailsOnly) {
         setSummary([]);
         setEvents([]);

@@ -1,3 +1,4 @@
+import { writeOutput, type OutputLevel } from "../appOutput";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
@@ -84,10 +85,25 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [pendingAction,setPendingAction]=useState("");
   const [fontPath,setFontPath]=useState("");
   const [status, setStatus] = useState<Status>({ state: "idle" }), [error, setError] = useState(""), [pending, setPending] = useState(false);
-  const [logs,setLogs]=useState<Array<{id:number;text:string;level:"info"|"warning"|"error"|"success"}>>([]);const logKey=useRef("");const logId=useRef(0);
-  const appendLog=(text:string,level:"info"|"warning"|"error"|"success"="info")=>setLogs(current=>{const last=current[current.length-1];return last?.text===text&&last.level===level?current:[...current,{id:++logId.current,text,level}].slice(-200);});
+  const logKey = useRef("");
+  const appendLog = useCallback((text: string, level: OutputLevel = "info", stage = "工程操作") =>
+    writeOutput(["游戏翻译", game.engine, stage], text, level, level === "warning" || level === "error",
+      level === "error" ? JSON.stringify([game.path, text]) : undefined), [game.engine, game.path]);
+  const textLog = useCallback((text: string, level?: OutputLevel) => appendLog(text, level, "文本翻译"), [appendLog]);
+  const imageLog = useCallback((text: string, level?: OutputLevel) => appendLog(text, level, "图片翻译"), [appendLog]);
   const confirmation = useGameActionConfirm(text => appendLog(text)); const confirm = confirmation.confirm;
-  useEffect(()=>{const text=error||status.detail;if(!text)return;const level=error||status.state==="error"?"error":status.state==="done"?"success":"info";const key=`${level}:${text}`;if(logKey.current===key)return;logKey.current=key;appendLog(text,level);},[error,status.action,status.state,status.detail]);
+  useEffect(() => {
+    const text = error || status.detail;
+    if (!text) { logKey.current = ""; return; }
+    const level = error || status.state === "error" ? "error" : status.state === "done" ? "success" : "info";
+    const action = status.action || "";
+    const key = JSON.stringify([action, level, text]);
+    if (logKey.current === key) return;
+    logKey.current = key;
+    const stages: Record<string, string> = { extract: "扫描资源", inspect: "检查译文", embed: "生成补丁", apply: "应用补丁", backup: "备份", rollback: "恢复" };
+    writeOutput(["游戏翻译", game.engine, stages[action] || "工程操作"], text, level, level === "error",
+      !error && action ? JSON.stringify([game.path, action]) : undefined);
+  }, [error, status.action, status.state, status.detail, game.engine, game.path]);
   useEffect(()=>{if(status.state!=="running"&&status.state!=="idle"){void loadPatch();}},[game.path,status.state]);
   const [backups, setBackups] = useState<Backup[]>([]), [backupId, setBackupId] = useState("");
   const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
@@ -382,7 +398,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const logPanel=<UnityOutputPanel key={game.path} errorCount={errors.length}
     results={<GameBatchResults errors={errors} refined={supportsImages ? imageBatch.refined : undefined} repairs={textRepairs} onLocate={locateBatch}
       onRetry={textFailures.length && !busy && textHandle.current?.canRetryFailures ? () => textHandle.current?.retryFailures?.() : undefined} />}
-    output={<div className="embed-log-lines" role="log" aria-live="polite">{logs.map(entry=><p key={entry.id} className={`is-${entry.level}`}>{entry.text}</p>)}</div>} resources={<>{workDirectory}
+    resources={<>{workDirectory}
     <p>游戏类型：{game.engine}</p><p>已扫描文本：{textInfo.count} 条</p>{textInfo.messageCore && <p>已启用 YEP Message Core。可在译文末尾用 <code>{"\\nc<人物名>"}</code> 补充居中姓名。</p>}<p>图片资源：{imageWorkflow.count===null?"未读取":`${imageWorkflow.count} 张`}</p>
     {textInfo.sourcePath&&<p>扫描文本：<code className="game-resource-path" data-tooltip={textInfo.sourcePath}>{textInfo.sourcePath}</code></p>}
     {imageWorkflow.folder&&<p>图片工程：<code className="game-resource-path" data-tooltip={imageWorkflow.folder}>{imageWorkflow.folder}</code></p>}
@@ -416,8 +432,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
 
         {textStep===1?progress(["extract"],{step:"1",title:"扫描资源",done:!!scanPath||textInfo.count>0}):textStep===3?progress(["embed"],{step:"3",title:"生成补丁",done:generated}):null}
         {textStep===3&&output("补丁目录",status.patchPath)}</div></div>,controlsTarget)}
-      <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={appendLog}/>
-      {supportsImages&&<GameImageWorkbench testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={appendLog}/>}
+      <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
+      {supportsImages&&<GameImageWorkbench testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
 
     </main>
 

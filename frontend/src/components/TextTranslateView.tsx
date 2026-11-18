@@ -1,3 +1,4 @@
+import { useOutputMessage } from "../appOutput";
 import { showAppNotice } from "./AppNotice";
 import { registerAppCloseGuard } from "../appClose";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
@@ -307,6 +308,8 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
   }, [project, savedProject, busy, promptDraft, textLlm.model, elapsedMs]);
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useOutputMessage(["文本翻译工程", "翻译任务"], statusLine);
+  useOutputMessage(["文本翻译工程", "翻译任务"], error, "error");
   const [onlyUntranslated, setOnlyUntranslated] = useState(true);
   const [filter, setFilter] = useState("");
   const [qualityOnly, setQualityOnly] = useState(false);

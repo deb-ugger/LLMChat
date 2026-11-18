@@ -1040,22 +1040,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
-  unityAppendOutputLog: (text: string) =>
+  appendOutputLog: (text: string) =>
     request<{ ok: boolean; logPath?: string; error?: string }>(
-      "/api/unity/output-log",
+      "/api/output-log",
       {
         method: "POST",
         body: JSON.stringify({ text }),
       },
     ),
-  unityReadOutputLog: (lines = 200) =>
+  readOutputLog: (lines = 500, legacy = false) =>
     request<{
       ok: boolean;
+      issues?: import("./appOutput").OutputRow[];
       logPath?: string;
       exists?: boolean;
       text?: string;
       error?: string;
-    }>(`/api/unity/output-log?lines=${encodeURIComponent(String(lines))}`),
+    }>(`/api/${legacy ? "unity/" : ""}output-log?lines=${encodeURIComponent(String(lines))}`),
 };
 
 export type DictionaryPhonetic = {

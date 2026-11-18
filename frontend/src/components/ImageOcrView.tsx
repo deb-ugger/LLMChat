@@ -1,3 +1,4 @@
+import { useOutputMessage } from "../appOutput";
 import { OcrModeOptions } from "./OcrModeOptions";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -629,6 +630,10 @@ export function ImageOcrView({
   const { status: ocrModelStatus, error: modelStatusError, refresh: refreshOcrModels, ensure: ensureOcrMode } = useOcrModels();
   const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
   const [ocrModeError, setOcrModeError] = useState<string | null>(null);
+  useOutputMessage(["图片文字识别", "处理进度"], status);
+  useOutputMessage(["图片文字识别", "处理结果"], error, "error");
+  useOutputMessage(["图片文字识别", "模型加载"], ocrModeError || modelStatusError, "error");
+  useOutputMessage(["图片文字识别", "操作结果"], toast?.message, toast?.ok ? "success" : "error");
   const [srcQuery, setSrcQuery] = useState("");
   const [dstQuery, setDstQuery] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);

@@ -34,7 +34,7 @@ inline std::string startupError;
 inline const std::vector<std::string> keys{"data", "projects", "ocr", "unity", "temp", "webview"};
 inline const std::vector<std::string> dataNames{
     "config.ini", "conversations.json", "conversations.sqlite3", "usage.db",
-    "usage-events.jsonl", "pricing.json", "vendor-models.json", "unity-output.log", "speech-output-roots.json"};
+    "usage-events.jsonl", "pricing.json", "vendor-models.json", "unity-output.log", "app-output.jsonl", "app-output-issues.json", "speech-output-roots.json"};
 
 inline fs::path normalized(const fs::path& p) { return fs::weakly_canonical(fs::absolute(p)); }
 inline std::string pathKey(const fs::path& p)
@@ -298,7 +298,7 @@ inline std::vector<fs::path> cleanTargets(const std::string& id)
             auto name = utf8path::pathUtf8(p.filename());
             if ((id == "chats" && name.starts_with("conversations.")) ||
                 (id == "usage" && (name.starts_with("usage.db") || name.starts_with("usage-events.jsonl"))) ||
-                (id == "logs" && name.starts_with("unity-output.log"))) out.push_back(p);
+                (id == "logs" && (name.starts_with("app-output.jsonl") || name.starts_with("unity-output.log")))) out.push_back(p);
         }
     } else if (id == "projects") {
         auto root = get("projects");
@@ -426,7 +426,7 @@ inline json status(bool includeSizes = true)
     DirectorySizes sizes;
     const std::vector<std::string> labels{"软件数据", "翻译工程", "OCR 模型", "Unity 资源缓存", "临时文件", "WebView 用户数据"};
     const std::vector<std::string> descriptions{
-        "config.ini（含 API 配置）、conversations.sqlite3、usage.db、旧版 JSON/JSONL、pricing.json、vendor-models.json、unity-output.log、语音输出目录索引，以及 .bak/.tmp 和 SQLite 辅助文件。仅迁移这些软件数据文件。",
+        "config.ini（含 API 配置）、conversations.sqlite3、usage.db、旧版 JSON/JSONL、pricing.json、vendor-models.json、全局输出和历史游戏日志、语音输出目录索引，以及 .bak/.tmp 和 SQLite 辅助文件。仅迁移这些软件数据文件。",
         "每个工程的 project.lcproj、原文、译文和导出文件。可清理带工程标识的子目录；用户在其他位置另存的文件不会被清理。",
         "下载的 PaddleOCR / Manga OCR 模型、分词器与下载中 .part 文件。内置快速模型打包在程序中。",
         "resources 下的 bepinex 安装包、fonts 字体 / TMP 资源包、tools 工具。游戏目录内的补丁和配置由 Unity 页面管理。",

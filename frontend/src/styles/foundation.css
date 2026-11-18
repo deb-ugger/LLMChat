@@ -523,13 +523,28 @@ select:not([hidden], [multiple], [size]):focus-visible {
   display: flex;
   flex: 1;
   flex-direction: column;
-  justify-content: safe center;
+  justify-content: flex-start;
   min-height: 0;
   gap: 3px;
   padding: 8px 4px;
   overflow-y: auto;
 }
+.nav-utilities { display:flex; flex-direction:column; flex:none; gap:3px; padding:5px 4px 8px; border-top:1px solid #ffffff24; }
+.global-output { flex:1; min-width:0; height:100%; min-height:0; box-sizing:border-box; display:flex; flex-direction:column; padding:16px; color:var(--text); }
+.global-output header { display:flex; align-items:center; gap:16px; min-width:0; }
+.global-output h1 { margin:0; font-size:18px; }
+.global-output header code { color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.global-output ul { min-height:0; overflow:auto; list-style:none; padding:10px 0; line-height:1.6; font:13px/1.6 var(--font-mono,monospace); }
+.global-output li { display:grid; grid-template-columns:8ch minmax(0,1fr) auto; align-items:baseline; gap:12px; padding:3px 6px; }
+.global-output button { flex:none; font:inherit; padding:3px 8px; border:1px solid var(--border); border-radius:5px; background:var(--bg-panel); color:var(--text); cursor:pointer; }
+.global-output button[aria-pressed=true] { color:var(--accent); border-color:var(--accent); }
+.global-output li span { white-space:pre-wrap; overflow-wrap:anywhere; }
+.global-output time { color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.global-output .level-error, .global-output [role=alert] { color:var(--danger,#b63e3e); }
+.global-output .level-warning { color:var(--warning,#9a6419); }
+.global-output .level-success { color:var(--accent); }
 .nav-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -550,6 +565,8 @@ select:not([hidden], [multiple], [size]):focus-visible {
 }
 
 .nav-item svg { flex: none; }
+.output-badge { position:absolute; top:2px; right:5px; box-sizing:border-box; min-width:17px; padding:0 4px; border-radius:12px; background:#b5353a; color:white; font:600 11px/17px system-ui,sans-serif; text-align:center; font-variant-numeric:tabular-nums; }
+.nav-rail-toggle .output-badge { top:-9px; right:-6px; }
 .nav-item:hover { background: #294940; color: white; }
 .nav-item.active { background: #d9eee2; color: #173e32; font-weight: 700; }
 .nav-item:focus-visible { outline: 2px solid #9cddc2; outline-offset: -2px; }

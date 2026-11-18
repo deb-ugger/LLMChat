@@ -1,6 +1,6 @@
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { GameImageDownloadsButton } from "./GameImageDownloadsButton";
-import { useFollowLatest } from "../hooks/useFollowLatest";
+import { writeOutput } from "../appOutput";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
 import { gameSelectionDropPath, openDroppedGameDirectly } from "../gameSelectionDrop";
@@ -43,9 +43,9 @@ import { UnityExitDialog,type UnityExitChoice } from "./UnityExitDialog";
 import { UnityIconButton } from "./UnityIconButton";
 import { JsonEmbeddingView, type EmbeddingGame } from "./JsonEmbeddingView";
 import { UnityOfflineView,type UnityOfflineHandle } from "./UnityOfflineView";
-import { archLabel,emptyScanState,gameTitle,getIniValue,joinGameExePath,parseLogLine,runtimeLabel,serializeIniSections,type OutputLevel,type OutputLine,type ScanState } from "./UnityViewHelpers";
+import { archLabel,emptyScanState,gameTitle,getIniValue,joinGameExePath,runtimeLabel,serializeIniSections,type OutputLevel,type ScanState } from "./UnityViewHelpers";
 
-const OUTPUT_UI_MAX = 200;
+
 const LAST_PICK_DIR_KEY = "llmchat-unity-last-pick-dir";
 
 /** Directory to open in the native picker (parent if path is a .exe). */
@@ -244,10 +244,8 @@ export function UnityTranslateView({
   const [scanning, setScanning] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [outputLines, setOutputLines] = useState<OutputLine[]>([]);
-  const [outputLogPath, setOutputLogPath] = useState("");
   const [selfCheckTabs, setSelfCheckTabs] = useState<SelfCheckTab[]>([]);
-  const [activeBottomTab, setActiveBottomTab] = useState<string>("output");
+  const [activeBottomTab, setActiveBottomTab] = useState<string>("");
   const [selfCheckTabMenu, setSelfCheckTabMenu] = useState<{
     x: number;
     y: number;
@@ -285,7 +283,6 @@ export function UnityTranslateView({
   } = usePersistedHeight("llmchat-unity-status-height", 220, 120, 520, {
     collapseBelow: 72,
   });
-  const outputScroll = useFollowLatest<HTMLUListElement>(active && activeBottomTab === "output" && !statusCollapsed);
   const {
     width: detailWidth,
     setWidth: setDetailWidth,
@@ -334,59 +331,8 @@ export function UnityTranslateView({
       });
   }, []);
 
-  useEffect(() => {
-    void api
-      .unityReadOutputLog(OUTPUT_UI_MAX)
-      .then((res) => {
-        if (!res.ok) return;
-        if (res.logPath) setOutputLogPath(res.logPath);
-        const text = (res.text || "").trim();
-        if (!text) return;
-        const rows = text
-          .split(/\r?\n/)
-          .filter((line) => line.trim().length > 0)
-          .slice(-OUTPUT_UI_MAX);
-        setOutputLines(rows.map((raw, i) => parseLogLine(raw, `hist-${i}`)));
-      })
-      .catch(() => {
-        // ignore history load failures
-      });
-  }, []);
-
-  const pushOutput = useCallback((text: string, level: OutputLevel = "step") => {
-    const line: OutputLine = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      time: formatClock(),
-      level,
-      text,
-    };
-    setOutputLines((prev) => {
-      const next = [...prev, line];
-      return next.length > OUTPUT_UI_MAX
-        ? next.slice(next.length - OUTPUT_UI_MAX)
-        : next;
-    });
-    void api
-      .unityAppendOutputLog(`[${line.time}] [${level}] ${text}`)
-      .then((res) => {
-        if (res.logPath) setOutputLogPath(res.logPath);
-      })
-      .catch(() => {
-        // keep UI history even if disk log write fails
-      });
-  }, []);
-
-  /** Write to unity-output.log only; do not show in the 输出 tab. */
-  const appendLogOnly = useCallback((text: string, level: OutputLevel = "info") => {
-    const time = formatClock();
-    void api
-      .unityAppendOutputLog(`[${time}] [${level}] ${text}`)
-      .then((res) => {
-        if (res.logPath) setOutputLogPath(res.logPath);
-      })
-      .catch(() => {
-        // ignore
-      });
+  const pushOutput = useCallback((text: string, level: OutputLevel = "step", detail = "插件管理") => {
+    writeOutput(detail === "检测游戏" ? ["游戏翻译", detail] : ["游戏翻译", "Unity 运行时", detail], text, level === "ok" ? "success" : level);
   }, []);
 
   const formatSelfCheckForLog = useCallback((tab: SelfCheckTab) => {
@@ -410,52 +356,33 @@ export function UnityTranslateView({
     return lines;
   }, []);
 
-  const focusOutputTab = useCallback(() => {
-    setActiveBottomTab("output");
-  }, []);
-
-  const archiveSelfCheckTab = useCallback(
-    (tab: SelfCheckTab) => {
-      for (const line of formatSelfCheckForLog(tab)) {
-        appendLogOnly(line, "info");
-      }
-    },
-    [appendLogOnly, formatSelfCheckForLog],
-  );
-
   const closeSelfCheckTab = useCallback(
     (tabId: string) => {
       setSelfCheckTabs((prev) => {
-        const closing = prev.find((t) => t.id === tabId);
-        if (closing) archiveSelfCheckTab(closing);
         const next = prev.filter((t) => t.id !== tabId);
         setActiveBottomTab((cur) => {
           if (cur !== tabId) return cur;
-          return next.length > 0 ? next[next.length - 1].id : "output";
+          return next.length > 0 ? next[next.length - 1].id : "";
         });
         return next;
       });
       setSelfCheckTabMenu(null);
     },
-    [archiveSelfCheckTab],
+    [],
   );
 
   const closeAllSelfCheckTabs = useCallback(() => {
-    setSelfCheckTabs((prev) => {
-      for (const tab of prev) archiveSelfCheckTab(tab);
-      return [];
-    });
-    setActiveBottomTab("output");
+    setSelfCheckTabs([]);
+    setActiveBottomTab("");
     setSelfCheckTabMenu(null);
-  }, [archiveSelfCheckTab]);
+  }, []);
 
   const reportError = useCallback(
     (message: string) => {
       setError(message);
       pushOutput(message, "error");
-      focusOutputTab();
     },
-    [focusOutputTab, pushOutput],
+    [pushOutput],
   );
 
   const applyConfigSections = useCallback((sections: UnityIniSection[]) => {
@@ -505,9 +432,8 @@ export function UnityTranslateView({
     (message: string) => {
       setError(null);
       pushOutput(message, "ok");
-      focusOutputTab();
     },
-    [focusOutputTab, pushOutput],
+    [pushOutput],
   );
 
   const showConfigToast = useCallback((message: string, ok: boolean) => {
@@ -532,9 +458,8 @@ export function UnityTranslateView({
   const reportSteps = useCallback(
     (steps: string[]) => {
       for (const step of steps) pushOutput(step, "step");
-      focusOutputTab();
     },
-    [focusOutputTab, pushOutput],
+    [pushOutput],
   );
 
   useEffect(() => {
@@ -724,7 +649,7 @@ export function UnityTranslateView({
     setMode("offline");
     setSearchQuery("");
     setError(null);
-    setActiveBottomTab("output");
+    setActiveBottomTab("");
     setSelfCheckTabs([]);
     setSelfCheckTabMenu(null);
   }, [stopDetection]);
@@ -762,8 +687,7 @@ export function UnityTranslateView({
     setSelectedGameDir(null);
     setScanState(emptyScanState(trimmed));
     detectGamesAccRef.current = [];
-    pushOutput(`开始检测：${trimmed}`, "info");
-    focusOutputTab();
+    pushOutput(`开始检测：${trimmed}`, "info", "检测游戏");
     try {
       const response = await fetch(`${API_BASE}/api/json-embedding/detect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: trimmed }), signal: ac.signal });
       const detected = await response.json(); if (!response.ok) throw new Error(detected.error);
@@ -771,7 +695,7 @@ export function UnityTranslateView({
       const nonUnity = (detected as EmbeddingGame[]).filter(game => game.engine !== "Unity");
       setOtherGames(nonUnity);
       if (nonUnity.length && !detected.some((game: EmbeddingGame) => game.engine === "Unity")) {
-        pushOutput(`检测完成，找到 ${nonUnity.length} 个游戏`, "ok");
+        pushOutput(`检测完成，找到 ${nonUnity.length} 个游戏`, "ok", "检测游戏");
         if (openDirectly && nonUnity.length === 1 && nonUnity[0].supported) openEmbeddingGame(nonUnity[0]);
         return;
       }
@@ -820,7 +744,7 @@ export function UnityTranslateView({
             if ((!result.ok || found === 0) && nonUnity.length === 0) {
               reportError(result.error || "未找到 Unity 游戏");
             } else {
-              pushOutput(`检测完成，找到 ${found + nonUnity.length} 个游戏`, "ok");
+              pushOutput(`检测完成，找到 ${found + nonUnity.length} 个游戏`, "ok", "检测游戏");
               if (openDirectly && detectGamesAccRef.current.length === 1 && nonUnity.length === 0) {
                 const game = detectGamesAccRef.current[0];
                 openGameDetail(game.gameDir, gameTitle(game));
@@ -841,7 +765,7 @@ export function UnityTranslateView({
         setScanning(false);
       }
     }
-  }, [focusOutputTab, pushOutput, reportError, openGameDetail, openEmbeddingGame, stopDetection]);
+  }, [pushOutput, reportError, openGameDetail, openEmbeddingGame, stopDetection]);
 
   useEffect(() => {
     return () => {
@@ -1193,7 +1117,6 @@ export function UnityTranslateView({
     }
     setBusyAction("launch");
     setError(null);
-    focusOutputTab();
     try {
       const res = await api.unityLaunch(gameDir);
       if (!res.ok) {
@@ -1220,7 +1143,6 @@ export function UnityTranslateView({
     }
     setBusyAction("launch-patch");
     setError(null);
-    focusOutputTab();
     try {
       const res = await api.unityLaunchPatch(gameDir);
       if (!res.ok) {
@@ -1362,6 +1284,8 @@ export function UnityTranslateView({
         title: `自检 ${checkedAt}`,
         result,
       };
+      writeOutput(["游戏翻译", "Unity 运行时", "启动自检"], formatSelfCheckForLog(tab).join("\n"),
+        result.verdict === "ok" ? "success" : "error", result.verdict !== "ok", gameDir);
       setSelfCheckTabs((prev) => [...prev, tab]);
       setActiveBottomTab(tabId);
     } catch (e) {
@@ -2828,7 +2752,7 @@ export function UnityTranslateView({
         ) : null}
       </div>
 
-      <div
+      {selfCheckTabs.length > 0 && <div
         hidden={showDetail && mode !== "runtime"}
         className={
           "unity-bottom-dock" + (statusCollapsed ? " is-collapsed" : "")
@@ -2839,8 +2763,8 @@ export function UnityTranslateView({
             className="unity-row-resizer unity-status-resizer"
             aria-label={
               statusCollapsed
-                ? "向上拖动以展开输出区域"
-                : "调整输出区域高度；拖到底可隐藏"
+                ? "向上拖动以展开自检结果"
+                : "调整自检结果高度"
             }
             onMouseDown={(e) => beginStatusResize(e, "grow-up")}
           />
@@ -2853,27 +2777,8 @@ export function UnityTranslateView({
             <div
               className="unity-bottom-tabs"
               role="tablist"
-              aria-label="输出与自检"
+              aria-label="启动自检"
             >
-              <div
-                className={
-                  "unity-bottom-tab-wrap" +
-                  (activeBottomTab === "output" ? " is-active" : "")
-                }
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeBottomTab === "output"}
-                  className={
-                    "unity-bottom-tab" +
-                    (activeBottomTab === "output" ? " is-active" : "")
-                  }
-                  onClick={() => setActiveBottomTab("output")}
-                >
-                  输出
-                </button>
-              </div>
               {selfCheckTabs.map((tab) => {
                 const isActive = activeBottomTab === tab.id;
                 return (
@@ -2922,41 +2827,9 @@ export function UnityTranslateView({
               })}
             </div>
 
-            {activeBottomTab === "output" ? (
-              <section className="unity-status" aria-label="输出历史">
-                {outputLines.length === 0 ? (
-                  <p className="unity-status-live">
-                    暂无输出。操作结果会显示在这里。
-                  </p>
-                ) : (
-                  <ul ref={outputScroll} className="unity-output-log" tabIndex={0}>
-                    {outputLines.map(line => (
-                      <li
-                        key={line.id}
-                        className={"level-" + line.level}
-                      >
-                        <time>{line.time || "—"}</time>
-                        <span>{line.text}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {outputLogPath ? (
-                  <p className="unity-output-logpath">
-                    界面最多保留 {OUTPUT_UI_MAX}{" "}
-                    条；更早记录见完整日志：
-                    <code data-tooltip={outputLogPath}>{outputLogPath}</code>
-                  </p>
-                ) : null}
-              </section>
-            ) : (
-              (() => {
-                const tab = selfCheckTabs.find((t) => t.id === activeBottomTab);
-                return tab ? renderSelfCheckPanel(tab.result) : null;
-              })()
-            )}
+            {selfCheckTabs.filter(tab => tab.id === activeBottomTab).map(tab => <section key={tab.id}>{renderSelfCheckPanel(tab.result)}</section>)}
           </div>
-      </div>
+      </div>}
 
       {selfCheckTabMenu &&
         createPortal(

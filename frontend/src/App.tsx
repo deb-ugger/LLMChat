@@ -1,4 +1,6 @@
 import { FeatureIcon } from "./components/FeatureIcon";
+import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
+import { initializeAppOutput, writeOutput } from "./appOutput";
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -34,11 +36,15 @@ const pageLabels = {
   speech: "语音转文字",
   text: "文本翻译工程",
   unity: "游戏翻译",
+  output: "输出",
   stats: "统计",
   settings: "设置",
 } as const;
 type Page = keyof typeof pageLabels;
-const navigation = Object.entries(pageLabels) as [Page, string][];
+const navigation: readonly Page[][] = [
+  ["chat", "literature", "image", "speech", "text", "unity"],
+  ["output", "stats", "settings"],
+];
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
@@ -61,6 +67,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [search, setSearch] = useState("");
   const [sending, setSending] = useState(false);
+  useEffect(() => { if (backendReady) void initializeAppOutput(); }, [backendReady]);
   const [displayOffset, setDisplayOffset] = useState(0);
   const [ocrIncoming, setOcrIncoming] = useState<{
     file: File;
@@ -72,7 +79,11 @@ export default function App() {
     let cancelled = false;
     void import("./unityOffline").then(module => module.unityRun<{ unfinished: boolean }>("resume-info", { root }))
       .then(info => { if (!cancelled && !startupInteracted.current && info.unfinished) setPage("unity"); })
-      .catch(error => { if (!cancelled) setBackendError(toFriendlyError(error, "读取上次 Unity 工程状态失败")); });
+      .catch(error => {
+        if (cancelled) return;
+        const detail = toFriendlyError(error, "读取上次 Unity 工程状态失败");
+        setBackendError(detail); writeOutput(["游戏翻译", "Unity", "工程恢复"], detail, "error");
+      });
     return () => { cancelled = true; };
   }, [backendReady]);
   const ocrIncomingSeq = useRef(0);
@@ -106,6 +117,7 @@ export default function App() {
     let cancelled = false;
 
     const waitForBackend = async () => {
+      let lastFailure = "";
       while (!cancelled) {
         try {
           await api.health();
@@ -142,13 +154,15 @@ export default function App() {
           setCurrent(conv);
           setBackendError(null);
           setBackendReady(true);
+          writeOutput(["系统", "后端连接"], "服务已就绪", "success", false, "启动");
           return;
         } catch (err) {
           if (cancelled) return;
           setBackendReady(false);
-          setBackendError(
-            err instanceof Error ? err.message : "后端未就绪",
-          );
+          const detail = err instanceof Error ? err.message : "后端未就绪";
+          setBackendError(detail);
+          if (detail !== lastFailure) writeOutput(["系统", "后端连接"], detail, "error", true, "启动");
+          lastFailure = detail;
           await new Promise((r) => setTimeout(r, 800));
         }
       }
@@ -245,6 +259,7 @@ export default function App() {
 
     try {
       const res = await api.chat(current.id, content, settings.apiUrl);
+      writeOutput(["对话", "模型回复"], "已收到回复", "success");
       setCurrent(res.conversation);
       setDisplayOffset(
         Math.max(
@@ -254,6 +269,7 @@ export default function App() {
       );
       await refreshList();
     } catch (err) {
+      writeOutput(["对话", "模型回复"], toFriendlyError(err), "error");
       setCurrent({
         ...optimistic,
         messages: [
@@ -276,7 +292,11 @@ export default function App() {
     try {
       const page = await api.getConversation(current.id, settings.messagePageSize, current.messageOffset);
       setCurrent(value => value?.id === current.id && value.messageOffset === current.messageOffset ? { ...value, messages: [...page.messages, ...value.messages], messageOffset: page.messageOffset } : value);
-    } catch (error) { setBackendError(toFriendlyError(error, "加载历史消息失败")); }
+      writeOutput(["对话", "历史消息"], "已加载较早的消息", "success", false, current.id);
+    } catch (error) {
+      const detail = toFriendlyError(error, "加载历史消息失败");
+      setBackendError(detail); writeOutput(["对话", "历史消息"], detail, "error", true, current.id);
+    }
     finally { loadingEarlierRef.current = false; }
   };
 
@@ -320,18 +340,18 @@ export default function App() {
   return (
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
-        <div className="nav-links">
-          {navigation.map(([id, label]) => (
+        {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
+          {group.map(id => (
             <button key={id} type="button" className={page === id ? "nav-item active" : "nav-item"}
-              aria-current={page === id ? "page" : undefined} aria-label={label} data-tooltip={label}
+              aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
               onClick={() => {
                 if (id === "settings") setSettingsInitialTab(undefined);
                 setPage(id);
               }}>
-              <FeatureIcon feature={id} size={20} /><span>{label}</span>
+              <FeatureIcon feature={id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
             </button>
           ))}
-        </div>
+        </div>)}
         <button
           type="button"
           className="nav-rail-toggle"
@@ -340,6 +360,7 @@ export default function App() {
           data-tooltip={navRailHidden ? "显示左侧导航栏" : "隐藏左侧导航栏"}
           onClick={() => setNavRailHidden((hidden) => !hidden)}
         >
+          {navRailHidden && <OutputBadge />}
           <span
             className={`nav-rail-toggle-icon${navRailHidden ? " is-expand" : ""}`}
             aria-hidden="true"
@@ -348,6 +369,7 @@ export default function App() {
       </nav>
 
       <div className="app-main">
+        {page === "output" && <GlobalOutputView />}
         <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"} inert={page !== "chat"}>
           <div className="chat-layout">
             <Sidebar

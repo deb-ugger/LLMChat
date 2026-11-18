@@ -1,3 +1,4 @@
+import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { GameBatchResults, gameImageBatchRows, type BatchRow } from "./GameBatchResults";
 import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
@@ -155,11 +156,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState("");
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
-  const [actionLog, setActionLog] = useState<{ text: string; level: "info" | "success" | "error" | "warning" }[]>([]);
+  const outputStage = activeStep === 2 ? imagePart ? "图片翻译" : "文本翻译" : GENERATION_STEPS[activeStep - 1] || "工程";
   const [localActivity, setLocalActivity] = useState<{ images: boolean; value: GenerationProgress } | null>(null);
-  const logAction = (text: string, level: "info" | "success" | "error" | "warning" = "info") => setActionLog(rows => [...rows.slice(-199), { text, level }]);
+  const lastOperationError = useRef("");
+  const logAction = (text: string, level: OutputLevel = "info", stage = outputStage, task?: string) =>
+    writeOutput(["游戏翻译", "Unity", "嵌入翻译", stage], text, level, level === "error" || level === "warning", task);
+  const textLog = (text: string, level?: OutputLevel) => logAction(text, level, "文本翻译");
+  const imageLog = (text: string, level?: OutputLevel) => logAction(text, level, "图片翻译");
   const showLocalActivity = (detail: string, state: GenerationProgress["state"] = "running", images = imagePart, completed = 0, total: number | null = null) => setLocalActivity({ images, value: { step: activeStep, detail, state, completed, total } });
-  useEffect(() => { setActionLog([]); setLocalActivity(null); }, [root]);
+  useEffect(() => { setLocalActivity(null); }, [root]);
   const [imageEditorBusy,setImageEditorBusy]=useState("");
   const imageEditorWork=useRef<Promise<void>|null>(null),imageEditorAbort=useRef<AbortController|null>(null);
   const [error, setError] = useState("");
@@ -190,7 +195,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [generationState, setGeneration] = useState<GenerationProgress | null>(null);
   const [applied, setApplied] = useState(false);
   const [installed, setInstalled] = useState(false);
-  const [installationMessages, setInstallationMessages] = useState<string[]>([]);
+
   const [checkpoint, setCheckpoint] = useState<RunCheckpoint | null>(null);
   const checkpointRef = useRef<RunCheckpoint | null>(null);
   const translationJobs = useRef<ReturnType<typeof createUnityTranslationJobs> | null>(null);
@@ -199,7 +204,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const imageThreshold = useRef(imageConfidenceThreshold); imageThreshold.current = imageConfidenceThreshold;
   const [restoring, setRestoring] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState("");
-  const [restoreNotices, setRestoreNotices] = useState<string[]>([]);
+  const reportRestore = (notices: string[]) => {
+    for (const notice of notices) writeOutput(["游戏翻译", "Unity", "工程恢复"], notice);
+  };
+  useOutputMessage(["游戏翻译", "Unity", "工程状态"], message);
+  const taskError = error || actionError;
+  useOutputMessage(["游戏翻译", "Unity", "任务错误"], taskError !== lastOperationError.current ? taskError : "", "error");
+  useOutputMessage(["游戏翻译", "Unity", "文本翻译", fileStatus?.action === "import" ? "导入" : "下载"], fileStatus?.detail,
+    fileStatus?.state === "error" ? "error" : "info", fileStatus?.state === "error" || fileStatus?.state === "preview");
+  useOutputMessage(["游戏翻译", "Unity", "生成补丁", "字体"], patch?.fontMappings?.join("\n"));
   const [workRoot, setWorkRoot] = useState("");
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
   const [rowJump, setRowJump] = useState<{ id: string; sequence: number; error: boolean } | null>(null);
@@ -294,11 +307,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
     setLineMode("local"); setLineModel("");
     setImageConfidenceThreshold(50);
-    setGeneration(null); setApplied(false); setInstalled(false); setInstallationMessages([]);
+    setGeneration(null); setApplied(false); setInstalled(false);
     setTextMode("smart"); setCodeAssemblies(null); setTypeDirectory(""); setExtraCharacters(""); setFontPlan(null);
     setPreparingRescan(false);
     setActiveStep(1); setImagePart(false); followProgress.current = true;
-    setRestoreNotices([]);
+
     setWorkRoot(""); setOutput(""); setRowIssue(null); queuedSignature.current = "";
     setCheckpoint(null); checkpointRef.current = null;
     let cancelled = false;
@@ -310,7 +323,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       try {
         const workspace = await unityRun<UnityWorkspace<RunCheckpoint>>("workspace", { root, outputRoot: await legacyUnityOutputDirectory(), task: saved ? JSON.parse(saved) : null }, progress => { if (!cancelled) setLoadingDetail(progress.detail); });
         if (cancelled) return;
-        setWorkRoot(workspace.workRoot); setOutput(workspace.projectsRoot); setRestoreNotices(workspace.saved.notices);
+        setWorkRoot(workspace.workRoot); setOutput(workspace.projectsRoot); reportRestore(workspace.saved.notices);
         let value = workspace.task;
         const folder = value?.projectFolder || value?.scanFolder;
         let p: UnityProject | null;
@@ -318,7 +331,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         else {
           const found = workspace.saved;
           if (cancelled) return;
-          setRestoreNotices(found.notices); p = found.project;
+          reportRestore(found.notices); p = found.project;
           if (p) {
             const incomplete = found.scanTotal !== null;
             if (!value) value = projectCheckpoint(p, incomplete, found.scanCompleted, found.scanTotal);
@@ -474,6 +487,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   });
   const readiness = useMemo(() => unityTranslationReadiness(project, selected, unityTranslationError, !!checkpoint?.partial, target), [project, selected, checkpoint?.partial, target]);
   const done = readiness.validText;
+  useOutputMessage(["游戏翻译", "Unity", "恢复任务"], checkpoint?.translationFailure, "error");
+  useOutputMessage(["游戏翻译", "Unity", "生成补丁"], checkpoint?.partial ? `仅回写 ${done} 条有效译文，其余 ${selected.length - done} 条保持原文。` : null);
   const currentParts = checkpoint?.translationRuns && {
     text: unityCurrentPartProgress(checkpoint.translationRuns.text, "text", readiness, !!checkpoint.layoutOnly)!,
     images: unityCurrentPartProgress(checkpoint.translationRuns.images, "images", readiness)!,
@@ -586,8 +601,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (importPreviewRef.current && label !== "应用导入预览" && label !== "导入翻译文件") { setActionError("请先应用或取消右侧的导入预览"); return false; }
     if (!keepProgress) setGeneration(null);
     setBusy(label); setError(""); setActionError(""); setMessage(""); logAction(`开始${label}`); if (label === "准备任务") setLocalActivity(null); else showLocalActivity(`${label}：正在准备…`);
+    const taskKey = label === "准备任务" ? undefined : JSON.stringify([root, outputStage, label]);
+    lastOperationError.current = "";
     const work = task(); running.current = work;
-    try { await work; logAction(`${label}完成`, "success"); if (label !== "准备任务") showLocalActivity(`${label}完成${label === "重新识别准备" ? "，请点击开始识别" : ""}`, /准备|清理/.test(label) ? "pending" : "done", imagePart, /准备|清理/.test(label) ? 0 : 1, 1); return true; } catch (e) { const text = e instanceof Error ? e.message : String(e); reportError(text); logAction(`${label}失败：${text}`, "error"); showLocalActivity(`${label}失败：${text}`, "error"); return false; }
+    try { await work; logAction(`${label}完成`, "success", outputStage, taskKey); if (label !== "准备任务") showLocalActivity(`${label}完成${label === "重新识别准备" ? "，请点击开始识别" : ""}`, /准备|清理/.test(label) ? "pending" : "done", imagePart, /准备|清理/.test(label) ? 0 : 1, 1); return true; } catch (e) { const text = e instanceof Error ? e.message : String(e); lastOperationError.current = text; reportError(text); logAction(`${label}失败：${text}`, "error", outputStage, taskKey); showLocalActivity(`${label}失败：${text}`, "error"); return false; }
     finally { running.current = null; setBusy(""); }
   }
   function projectCheckpoint(p: UnityProject, incomplete = false, completed: number | null = 1, total: number | null = 1): RunCheckpoint {
@@ -637,7 +654,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         checkpointRef.current = workspace.task; setCheckpoint(workspace.task); queuedSignature.current = "";
         setPatch(workspace.task?.patch || null); setInstalled(workspace.installed); setApplied(false); onInstallationChange?.(root, workspace.installed); setGeneration(null); setDirty(false); setPage(0); setRowIssue(null);
         setFontPlan(null);
-        setRestoreNotices(workspace.saved.notices);
+        reportRestore(workspace.saved.notices);
       };
       try {
         const result = await unityRun<{ step: number; workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step, imageOnly: step === 2 && imagePart, path: project?.folder || "", task: task && { ...task, translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices, source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage, lineMode, lineModel, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters } }, progress => { setMessage(progress.detail); showLocalActivity(progress.detail, "running", imagePart, progress.completed, progress.total); });
@@ -814,7 +831,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if (!response) {
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]);
         try {
-          const result = await translateGameWithOllama(unityLineModelInput(original, plan), { signal }, {...helperOptions!,llmBatch:false}, logAction);
+          const result = await translateGameWithOllama(unityLineModelInput(original, plan), { signal }, {...helperOptions!,llmBatch:false}, textLog);
           if (!result.ok) throw new Error(result.code || "断行辅助请求失败");
           response = result.translation;
         } catch (error) {
@@ -843,7 +860,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const seconds = provider === "llm" ? 120 : 30;
         const signal = provider === "llm" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
         const background = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
-        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, logAction); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code }); return response.translation; }
+        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, textLog); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code }); return response.translation; }
         catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
       };
       return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology,
@@ -927,7 +944,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const { imageReviewOptions, ...primary } = options;
     const translate = async (config: ReturnType<typeof buildUnityTranslateOptions>) => {
       const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(provider === "llm" ? 120000 : 30000)]);
-      const response = await translateGameWithOllama(text, { signal }, { ...config, provider }, logAction);
+      const response = await translateGameWithOllama(text, { signal }, { ...config, provider }, imageLog);
       if (!response.ok) throw Object.assign(new Error(response.error || response.code || "图片文字翻译失败"), { code: response.code });
       return response.translation;
     };
@@ -984,9 +1001,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           !!options.onlySourceLanguage, !!options.skipTargetLanguage) : undefined,
         read: image => measureGameAsync(promptState.scope + ":images", "processingMs", () => readUnitySourceImage(p, image, controller.signal)),
         recognize: (blob, stage, worker = 0) => visionModel ? ocr[worker % ocr.length].recognizeVision(blob, stage, controller.signal,
-          fallback => recognizeGameImage(settings, visionModel, blob, controller.signal, "recognize", promptState.selection, { source: run.source, target: run.target }, logAction, fallback),
-          message => logAction(message, "warning")) : measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(blob, stage)),
-        translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: (blob,regions)=>renderGameImage(settings,run.imageLayoutModel||"",blob,regions,controller.signal,promptState.selection,{source:run.source,target:run.target},logAction),
+          fallback => recognizeGameImage(settings, visionModel, blob, controller.signal, "recognize", promptState.selection, { source: run.source, target: run.target }, imageLog, fallback),
+          message => imageLog(message, "warning")) : measureGameAsync(promptState.scope + ":images", "processingMs", () => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(blob, stage)),
+        translate: text => pool ? pool.translate(text) : request(primaryProvider, text), render: (blob,regions)=>renderGameImage(settings,run.imageLayoutModel||"",blob,regions,controller.signal,promptState.selection,{source:run.source,target:run.target},imageLog),
         write: (project, image, blob) => measureGameAsync(promptState.scope + ":images", "saveMs", () => writeImage(project, image, blob)),
         persist: async (next, image) => { current = next;if(performance.now()-lastPublish>=100){lastPublish=performance.now();publishTranslation({ ...next, images: [...(next.images || [])] }, "images");} const snapshot = structuredClone(image); await queueProjectWrite(() => measureGameAsync(promptState.scope + ":images", "saveMs", () => unityRun("save-image", { project: imageRequest(next, snapshot), imageId: snapshot.id }))); },
         validate: unityTranslationError,
@@ -1118,9 +1135,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function applyPatch(result: UnityPatch, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal) {
     setBusy("应用到游戏");
-    setInstallationMessages([]);
     const response = await unityRun<{ restoredPatches: number }>("apply", { root, path: result.folder }, progress => {
-      if (progress.detail.includes("旧补丁")) setInstallationMessages(previous => previous.includes(progress.detail) ? previous : [...previous, progress.detail]);
+      if (progress.detail.includes("旧补丁")) logAction(progress.detail, "info", "补丁恢复");
       onProgress?.(progress);
     }, signal).catch(async cause => {
       try {
@@ -1770,16 +1786,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (row.kind === "text" && imagePart && imageLeaveGuard.current) imageLeaveGuard.current(show); else show();
   };
   const projectDetails = <UnityOutputPanel key={root} errorCount={batchErrors.length}
-    results={<GameBatchResults errors={batchErrors} onLocate={locateBatch}
+    results={<><GameBatchResults errors={batchErrors} onLocate={locateBatch}
       onRetry={translationFailures.length && !busy && !restoring && connectionReady && !applied ? () => {
         retryFailureIds.current = new Set(translationFailures.map(entry => entry.id));
         startTranslationPart("text");
-      } : undefined} />} output={<>
-      {actionLog.map((row, index) => <p key={index} className={row.level === "error" ? "unity-offline-error" : undefined} style={row.level === "success" ? {color:"#238b73"} : row.level === "warning" ? {color:"#a66b08"} : undefined}>{row.text}</p>)}
-    {!!installationMessages.length && <div role="log" aria-label="旧补丁卸载记录">{installationMessages.map((detail, index) => <p key={index}>{detail}</p>)}</div>}
-    {!!patch?.fontMappings?.length && <div role="log" aria-label="特殊字符补字记录">{patch.fontMappings.map((mapping, index) => <p key={index}>{mapping}</p>)}</div>}
-    {restoreNotices.map((notice,index)=><p key={`restore-${index}`}>{notice}</p>)}
-      {preparingRescan ? <p role="status">确认上方参数后开始扫描。</p> : <>
+      } : undefined} />
       {errorPanel}
       {fileStatus && <details className={`unity-transfer-output${fileStatus.state === "error" ? " unity-offline-error" : ""}${fileStatus.state === "preview" ? " is-pending" : ""}`} open aria-label="翻译文件处理结果">
         <summary>{fileStatus.action === "download" ? "翻译文件下载" : "翻译文件导入"} · {fileStatus.state === "preview" ? <span className="unity-transfer-pending-state" role="status">待应用</span> : fileStatus.state === "working" ? "处理中" : fileStatus.state === "error" ? "失败" : fileStatus.state === "cancelled" ? "已取消" : "已完成"}</summary>
@@ -1802,11 +1813,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {fileStatus.folder && <a href="#" data-tooltip={fileStatus.folder} aria-label={fileStatus.folder} onClick={event => { event.preventDefault(); void openFolder(fileStatus.folder!); }}>文件夹：{fileStatus.folder}</a>}
         </div>}
       </details>}
-      {(!fileStatus || message || busy && !["导入翻译文件", "下载翻译文件"].includes(busy)) && !error && (!generation || activeStep !== generation.step) && <p role="status">{busy ? generation?.state === "running" ? generation.detail : message || `${busy}…` : message || "等待操作"}</p>}
-      {checkpoint?.translationFailure && <p className="unity-offline-error" role="alert">待重试的翻译错误：{explainUnityFailure(checkpoint.translationFailure).reason} 重新扫描完成后将重试翻译。</p>}
-      {actionError && <p className="unity-offline-error" role="alert">{actionError}</p>}
-      {checkpoint?.partial && <p className="hint">仅回写 {done} 条有效译文，其余 {selected.length - done} 条保持原文。</p>}
-      </>}
     </>} resources={<><GameWorkDirectory path={workRoot} onOpen={path=>void openFolder(path)}/>{!preparingRescan&&<>
       {!!project?.resources?.length && <p className="hint">目标资源：{project.resources.filter(resource => resource.state === "ready").length} 个可读取 · {project.resources.filter(resource => resource.state === "empty").length} 个无正文或字体 · {project.resources.filter(resource => resource.state === "partial").length} 个部分解析 · {project.resources.filter(resource => resource.state === "failed").length} 个失败</p>}
       {!!project?.diagnostics?.length && <details><summary>未提取的资源与原因 · {project.diagnostics.length} 项</summary>{project.diagnostics.map((issue, index) => <div key={index} className="unity-warning-item"><strong>{issue.file}{issue.container ? ` / ${issue.container}` : ""}{issue.objectId ? ` / 对象 ${issue.objectId}` : ""}</strong><p>{issue.reason}</p><p>{issue.action}</p></div>)}</details>}

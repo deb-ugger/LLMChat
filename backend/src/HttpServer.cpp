@@ -20,6 +20,7 @@
 
 #include <httplib.h>
 #include <algorithm>
+#include <mutex>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -215,6 +216,41 @@ void appendFileUtf8(const fs::path& path, const std::string& content)
         throw std::runtime_error("无法写入日志文件");
     }
     out << content;
+    out.close();
+    if (!out) throw std::runtime_error("输出日志写入失败");
+}
+
+json readOutputIssues(const fs::path& folder) {
+    const auto file = folder / "app-output-issues.json";
+    if (!fs::exists(file)) return json::object();
+    std::ifstream input(file, std::ios::binary);
+    return json::parse(input);
+}
+
+void updateOutputIssues(const fs::path& folder, const std::string& records) {
+    std::istringstream input(records);
+    json issues;
+    bool changed = false;
+    for (std::string line; std::getline(input, line);) {
+        if (line.empty()) continue;
+        const auto row = json::parse(line);
+        const auto key = row.value("issue", "");
+        const auto resolved = row.value("resolves", "");
+        if (key.empty() && resolved.empty()) continue;
+        if (issues.is_null()) issues = readOutputIssues(folder);
+        if (!key.empty()) {
+            issues[key] = row;
+            changed = true;
+        }
+        const auto previous = issues.find(resolved);
+        if (previous != issues.end() && (!row.contains("resolvesId") || row.at("resolvesId") == previous->at("id"))) {
+            issues.erase(previous);
+            changed = true;
+        }
+    }
+    std::string error;
+    if (changed && !atomicfile::writeText(folder / "app-output-issues.json", issues.dump(), &error))
+        throw std::runtime_error(error);
 }
 
 /** Return last `maxLines` of a text file (UTF-8), best-effort for large logs. */
@@ -2733,7 +2769,8 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/output-log", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    static std::mutex outputLogMutex;
+    svr.Post(R"(/api/(?:unity/)?output-log)", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
@@ -2744,10 +2781,16 @@ int HttpServer::run()
                 res.set_content(errorJson("text 不能为空").dump(), "application/json");
                 return;
             }
-            const fs::path logPath = dataDirectory(config_) / "unity-output.log";
-            appendFileUtf8(logPath, text);
-            if (!text.empty() && text.back() != '\n')
-                appendFileUtf8(logPath, "\n");
+            const bool global = req.path == "/api/output-log";
+            const fs::path logPath = dataDirectory(config_) / (global ? "app-output.jsonl" : "unity-output.log");
+            std::lock_guard lock(outputLogMutex);
+            if (global) updateOutputIssues(logPath.parent_path(), text);
+            if (global && fs::exists(logPath) && fs::file_size(logPath) >= 4 * 1024 * 1024) {
+                const auto archive = fs::path(logPath).concat(".bak");
+                fs::remove(archive);
+                fs::rename(logPath, archive);
+            }
+            appendFileUtf8(logPath, text.back() == '\n' ? text : text + "\n");
             res.set_content(
                 json{{"ok", true}, {"logPath", utf8path::pathUtf8(logPath)}}.dump(),
                 "application/json");
@@ -2759,7 +2802,7 @@ int HttpServer::run()
         }
     }));
 
-    svr.Get("/api/unity/output-log", withCors([this](const httplib::Request& req, httplib::Response& res) {
+    svr.Get(R"(/api/(?:unity/)?output-log)", withCors([this](const httplib::Request& req, httplib::Response& res) {
         try
         {
             int lines = 200;
@@ -2778,19 +2821,25 @@ int HttpServer::run()
                 lines = 1;
             if (lines > 2000)
                 lines = 2000;
-            const fs::path logPath = dataDirectory(config_) / "unity-output.log";
+            const bool global = req.path == "/api/output-log";
+            const fs::path logPath = dataDirectory(config_) / (global ? "app-output.jsonl" : "unity-output.log");
+            std::lock_guard lock(outputLogMutex);
             std::error_code ec;
             const bool exists = fs::exists(logPath, ec);
-            const std::string text = exists ? readFileTailLines(logPath, lines) : "";
-            res.set_content(
-                json{
-                    {"ok", true},
-                    {"logPath", utf8path::pathUtf8(logPath)},
-                    {"exists", exists},
-                    {"text", text},
+            std::string text = exists ? readFileTailLines(logPath, lines) : "";
+            if (global) {
+                const int count = static_cast<int>(std::count(text.begin(), text.end(), '\n')) + (!text.empty() && text.back() != '\n');
+                if (count < lines) {
+                    const auto older = readFileTailLines(fs::path(logPath).concat(".bak"), lines - count);
+                    if (!older.empty()) text = older + "\n" + text;
                 }
-                    .dump(),
-                "application/json");
+            }
+            json result = {{"ok", true}, {"logPath", utf8path::pathUtf8(logPath)}, {"exists", exists}, {"text", text}};
+            if (global) {
+                result["issues"] = json::array();
+                for (const auto& row : readOutputIssues(logPath.parent_path())) result["issues"].push_back(row);
+            }
+            res.set_content(result.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {

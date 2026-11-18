@@ -1,3 +1,4 @@
+import { useOutputMessage, writeOutput } from "../appOutput";
 import { useOcrModels } from "../ocr/useOcrModels";
 import { normalizePdfExtractedText as normalizePdfSelectionText } from "./PdfSelection";
 import { OcrModeOptions } from "./OcrModeOptions";
@@ -157,6 +158,9 @@ export function LiteratureView({
   const [ocrModeMenuOpen, setOcrModeMenuOpen] = useState(false);
   const [ocrModeBusy, setOcrModeBusy] = useState<OcrMode | null>(null);
   const [ocrModeError, setOcrModeError] = useState<string | null>(null);
+  useOutputMessage(["文献翻译", "选段翻译"], error, "error");
+  useOutputMessage(["文献翻译", "OCR 模型"], ocrModeError, "error");
+  useOutputMessage(["文献翻译", "语言设置"], languageSaved ? "设置已保存" : null, "success");
   const ocrModeMenuRef = useRef<HTMLDivElement | null>(null);
   const [docKind, setDocKind] = useState<DocKind>(loadDocKind);
   const { status: ocrModelStatus, ensure, refresh } = useOcrModels(visible && docKind === "pdf");
@@ -398,6 +402,7 @@ export function LiteratureView({
           return;
         }
         setTranslation(out);
+        writeOutput(["文献翻译", "选段翻译"], "译文已生成", "success");
         segmentHistoryRef.current = upsertLitSegment(
           segmentHistoryRef.current,
           trimmed,

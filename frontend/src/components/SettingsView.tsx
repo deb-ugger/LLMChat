@@ -1,3 +1,4 @@
+import { writeOutput } from "../appOutput";
 import { normalizeProvider, ocrLangToTranslateSource, withDefaults } from "../settingsDefaults";
 import { LlmRuntimeSettings } from "./LlmRuntimeSettings";
 import { FeatureIcon } from "./FeatureIcon";
@@ -836,6 +837,7 @@ export function SettingsView({
 
   const notify = (message: string, ok = true) => {
     setToast({ message, ok });
+    writeOutput(["设置", TAB_LABELS[tab]], message, ok ? "success" : "error");
     if (toastTimerRef.current) {
       window.clearTimeout(toastTimerRef.current);
     }

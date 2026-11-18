@@ -1,3 +1,4 @@
+import { writeOutput } from "../appOutput";
 import { useSyncExternalStore } from "react";
 import { SpeechClient } from "./client";
 import { speechNative, type SpeechJob, type SpeechJobOptions } from "./native";
@@ -33,12 +34,19 @@ export class SpeechQueue {
   private imports = Promise.resolve();
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
-  private publish(patch: Partial<Snapshot>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener(); }
+  private publish(patch: Partial<Snapshot>) {
+    if (patch.error) writeOutput(["语音转文字", "任务队列"], patch.error, "error");
+    this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener(); }
   private patch(id: string, patch: Partial<SpeechQueueItem>) {
     const index = this.state.items.findIndex(item => item.id === id);
     if (index < 0) return;
     const items = this.state.items.slice();
-    items[index] = { ...items[index], ...patch };
+    const item = items[index];
+    if (patch.status && patch.message && (patch.status !== item.status || patch.message !== item.message)) {
+      writeOutput(["语音转文字", "任务队列"], `${item.source.name} · ${patch.message}`,
+        patch.status === "error" ? "error" : patch.status === "done" ? "success" : "info", patch.status === "error", id);
+    }
+    items[index] = { ...item, ...patch };
     this.publish({ items });
   }
   clearError() { this.publish({ error: "" }); }
