@@ -94,13 +94,17 @@ def workflow(upload, reference, translation, steps, matte, profile):
             raise ValueError("工作流需要 {{draft}} 和 {{prompt}} 或 {{translation}} 输入")
         return graph
     if kind == "turbo":
-        return {
+        if reference is None:
+            text = (f"The input is finished lettering on a solid RGB{matte} background. "
+                    "Very subtly refine the existing ink color and texture in its current palette. "
+                    "Keep the exact glyph shapes, line breaks, position and slant. Preserve the exact background.")
+        graph = {
             "1": node("UNETLoader", unet_name=profile["model"], weight_dtype="default"),
             "2": node("CLIPLoader", clip_name=profile["clip"], type="qwen_image", device="default"),
             "3": node("VAELoader", vae_name=profile["vae"]),
-            "4": node("LoadImage", image=upload), "16": node("LoadImage", image=reference),
+            "4": node("LoadImage", image=upload),
             "5": node("TextEncodeQwenImage21", clip=["2",0], vae=["3",0], prompt=text, negative_prompt="",
-                      resolution=1024, **{"images.image_1":["4",0], "images.image_2":["16",0]}),
+                      resolution=1024, **{"images.image_1":["4",0]}),
             "6": node("QwenImage21Cache", model=["1",0], device="auto", dtype="default"),
             "7": node("CFGGuider", model=["6",0], positive=["5",0], negative=["5",1], cfg=1.0),
             "8": node("RandomNoise", noise_seed=secrets.randbits(48)),
@@ -109,6 +113,10 @@ def workflow(upload, reference, translation, steps, matte, profile):
             "13": node("SamplerCustomAdvanced", noise=["8",0], guider=["7",0], sampler=["9",0], sigmas=["10",0], latent_image=["5",2]),
             "14": node("VAEDecode", samples=["13",0], vae=["3",0]), "15": node("PreviewImage", images=["14",0]),
         }
+        if reference is not None:
+            graph["16"] = node("LoadImage", image=reference)
+            graph["5"]["inputs"]["images.image_2"] = ["16",0]
+        return graph
     return {
         "16": node("LoadImage", image=reference),
         "1": node("UnetLoaderGGUF", unet_name=profile["model"]),
@@ -190,7 +198,8 @@ async def render(session, crop, draft, translation, steps, label, profile):
     else:
         draft_input = draft.convert("RGB")
     draft_name = await upload_image(session, draft_input)
-    ref_name = await upload_image(session, reference)
+    # A complete Japanese reference tends to replace the Chinese draft on transparent sprites.
+    ref_name = None if matte and profile["kind"] == "turbo" else await upload_image(session, reference)
     graph = workflow(draft_name, ref_name, translation, steps, matte, profile)
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = profile.get("output") or (outputs[0] if len(outputs)==1 else "")
