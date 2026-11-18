@@ -167,6 +167,34 @@ async def upload_image(session, reference):
     return name
 
 
+def refine_transparent_lettering(crop, draft, layer, protected):
+    from scipy import ndimage
+
+    original = np.asarray(crop)
+    guide = np.asarray(draft)
+    candidate = np.array(layer, dtype=np.float32)
+    guide_alpha = np.where(protected, 0, guide[:, :, 3]).astype(np.float32)
+    model_alpha = np.minimum(candidate[:, :, 3], ndimage.maximum_filter(guide_alpha, size=3))
+    model_alpha[protected] = 0
+    guide_ink = guide_alpha.sum()
+    if model_alpha.sum() < guide_ink * .25:
+        raise ValueError("模型笔画与中文字形底稿偏差过大，请采用程序版或重新生成")
+
+    # Keep the draft strokes readable while allowing a one-pixel variation at the edges.
+    base_alpha = guide_alpha * .65
+    style_alpha = np.maximum(model_alpha - base_alpha, 0)
+    ink_budget = guide_ink * 1.12 - base_alpha.sum()
+    candidate[:, :, 3] = base_alpha + style_alpha * min(1., ink_budget / max(1., style_alpha.sum()))
+    candidate[model_alpha < base_alpha, :3] = guide[model_alpha < base_alpha, :3]
+
+    visible = original[(original[:, :, 3] >= 128) & ~protected, :3].astype(np.float32)
+    if visible.size:
+        color = np.median(visible, axis=0)
+        if np.mean(np.max(np.abs(visible - color), axis=1) <= 25) >= .7:
+            candidate[:, :, :3] = candidate[:, :, :3] * .28 + color * .72
+    return Image.fromarray(np.rint(candidate).astype(np.uint8))
+
+
 async def render(session, crop, draft, translation, steps, label, profile):
     reference, matte = prepare(crop)
     if matte:
@@ -343,10 +371,11 @@ async def run(data):
     for region in regions:
         box = tuple(region["box"])
         crop = original.crop(box)
-        protected = ink_components(crop) if crop.getchannel("A").getextrema()[0] < 255 else np.zeros((crop.height,crop.width),dtype=bool)
+        transparent = crop.getchannel("A").getextrema()[0] < 255
+        protected = ink_components(crop) if transparent else np.zeros((crop.height,crop.width),dtype=bool)
         draft, lettering = program_layer(crop, region["translation"], font, protected)
         lettering_canvas.paste(lettering, box)
-        drafts.append((crop, lettering if crop.getchannel("A").getextrema()[0] < 255 else draft, protected))
+        drafts.append((crop, lettering if transparent else draft, protected, transparent))
         composed.paste(draft, box)
     if data["mode"] == "program":
         emit("result", {"image": base64.b64encode(png(composed)).decode("ascii"), "layer": base64.b64encode(png(lettering_canvas)).decode("ascii")})
@@ -358,8 +387,10 @@ async def run(data):
             box = tuple(region["box"])
             label = f"区域 {i} / {len(regions)}"
             try:
-                crop, draft, protected = drafts[i-1]
+                crop, draft, protected, transparent = drafts[i-1]
                 layer = await render(session, crop, draft, region["translation"].strip(), steps, label, profile)
+                if transparent:
+                    layer = refine_transparent_lettering(crop, draft, layer, protected)
                 layer.paste(crop, (0,0), Image.fromarray(protected))
             except Exception as exc:
                 raise RuntimeError(f"{label}：{exc}") from exc
