@@ -1,4 +1,4 @@
-import { createContext, useLayoutEffect, useRef, useState, useContext, useEffect, type ReactNode, type RefObject } from "react";
+import { createContext, useId, useLayoutEffect, useRef, useState, useContext, useEffect, type ReactNode, type RefObject } from "react";
 import { GamePromptContext } from "../gamePrompts";
 import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
@@ -27,7 +27,7 @@ export const GameConcurrencyDraft = createContext<{
   updateFilter: (role: string, filter: ModelFilter) => void;
 } | null>(null);
 
-type Activity = { step: string; state: string; progress?: ReactNode };
+type Activity = { step: string; state: string; progress?: ReactNode; details?: ReactNode };
 const stateLabels: Record<string, string> = {
   done: "已完成", current: "未完成", waiting: "等待上一步",
   running: "正在处理", error: "失败", stopped: "已中止",
@@ -38,7 +38,7 @@ const settingsHeights = new Map<string, number>();
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
-export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision }: {
+export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision, compact = false }: {
   configurationCommit?: RefObject<GameStepConfigurationCommit | null>;
   steps: GameFlowStep[];
   configured: string | null;
@@ -54,6 +54,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   actions?: ReactNode;
   activity?: Activity;
   children?: ReactNode;
+  compact?: boolean;
 }) {
   const promptContext = useContext(GamePromptContext);
   const imageFlow = steps.some(step => step.id === "filter" || step.id === "recognize");
@@ -70,6 +71,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     return () => { window.removeEventListener("llmchat-game-performance", refresh); window.clearInterval(timer); };
   }, [performanceScope, activity?.state, benchmarkRunning]);
   const [savingConfiguration, setSavingConfiguration] = useState(false);
+  const [showFlow, setShowFlow] = useState(false);
+  const flowId = useId();
   const pendingSave = useRef<Promise<boolean> | null>(null);
   const applyingPreset = useRef(false);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
@@ -196,16 +199,29 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     const observer = new ResizeObserver(grow);
     observer.observe(body);
     return () => observer.disconnect();
-  }, [configured, layoutKey]);
+  }, [configured, layoutKey, showFlow]);
+  const stopStep = compact ? steps.find(step => step.stop) : undefined;
   return <div className="game-flow">
     {testDialogOpen && testConfigurations && <GameTestConfigurations access={{ ...testConfigurations, capture: captureTestConfiguration }} initialPart={imageFlow ? "images" : "text"}
       onApply={applyTestConfiguration} onClose={() => setTestDialogOpen(false)} />}
-    <div className="game-flow-list">
-      {(onRun || actions || testConfigurations) && <div className="game-flow-run">
+    {compact && <div className="game-flow-compact-header">
+      {activity?.progress}
+      <div className="game-flow-compact-actions">
+        <button type="button" className="unity-btn" aria-expanded={showFlow} aria-controls={flowId}
+          onClick={() => setShowFlow(value => !value)}>运行详情</button>
+        {stopStep ? <button type="button" className="unity-btn unity-btn-primary" aria-label={`中止${stopStep.title}`}
+          disabled={stopStep.runDisabled || savingConfiguration} onClick={stopStep.stop}>中止</button> :
+          onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration}
+            onClick={() => void withConfiguration(onRun)}>运行流程</button>}
+      </div>
+    </div>}
+    <div id={flowId} className="game-flow-list" hidden={compact && !showFlow}>
+      {((!compact && onRun) || actions || testConfigurations) && <div className="game-flow-run">
         {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={() => setTestDialogOpen(true)}>应用测试配置</button>}
-        {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
+        {!compact && onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
         {actions}
       </div>}
+      {compact && activity?.details}
       <ol>{steps.map(step => {
         const benchmarkStep = benchmarkQueue?.benchmark?.step || "translate";
         const showingBenchmark = benchmarkRunning && (benchmarkStep === step.id || benchmarkStep === "imageTranslate" && step.id === "translate");
@@ -271,7 +287,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
               </small>}
             </div>
             <div className="game-flow-actions">
-              {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
+              {(!compact || !step.stop) && (step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
                 aria-label={`${step.stop ? "中止" : runLabel}${step.title}`} disabled={step.runDisabled||savingConfiguration}
                 onClick={step.stop || (()=>void withConfiguration(step.run, step.id))}>{step.stop ? "中止" : runLabel}</button>}
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
@@ -291,6 +307,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
       })}</ol>
     </div>
     {configurationError&&<p className="unity-offline-error" role="alert">配置保存失败：{configurationError}</p>}
-    {activity?.progress && <div className="game-flow-progress">{activity.progress}</div>}
+    {!compact && activity?.progress && <div className="game-flow-progress">{activity.progress}</div>}
   </div>;
 }

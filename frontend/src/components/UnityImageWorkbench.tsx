@@ -1,6 +1,7 @@
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GamePageNumber } from "./GamePageNumber";
+import type { BatchRow } from "./GameBatchResults";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
@@ -187,17 +188,22 @@ const imageListGroups = [
   ["empty", "未检测到文字"], ["review", "待复核"], ["excluded", "无需翻译"],
 ] as const;
 const imageListPageSize = 60;
-function imageListStatus(image: UnityImage) {
+function imageListStatus(image: UnityImage, compact = false) {
   const status = image.completed ? (unityImageHasText(image) ? "已完成" : "未识别出文字") :
     image.error ? "识别或处理失败" : image.ocrCompleted ? "已识别" :
     imageListGroups.find(([group]) => group === unityImageResultGroup(image))?.[1] ?? "未执行 OCR";
+  if (compact) {
+    const detail = !image.error && !image.completed ? image.screening?.reason : undefined;
+    return `${image.width} × ${image.height} · ${detail || status}`;
+  }
   return `${image.width} × ${image.height} · ${status}${image.screening?.reason ? ` · ${image.screening.reason}` : ""}`;
 }
 export function imagePageIndex(index: number, page: number, count: number) {
   return Math.min(count - 1, page * imageListPageSize + Math.max(0, index) % imageListPageSize);
 }
-export function UnityImageWorkbench({ project, disabled, imageTarget, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
+export function UnityImageWorkbench({ project, disabled, imageTarget, compactLayout, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, leaveGuard,onImportArchive,onArchiveMessage }: {
   project: UnityProject | null; disabled: boolean; imageTarget?: { id: string; sequence: number }; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
+  compactLayout?: { failures: readonly BatchRow[]; onLocate: (row: BatchRow) => void };
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
   onImport: (image: UnityImage,source?:GameImportSource) => Promise<unknown>; onSave: () => Promise<boolean>;onDiscard:()=>Promise<boolean>;leaveGuard?:{current:((change:()=>void)=>void)|null};
@@ -243,11 +249,14 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
   const [groupMenu,setGroupMenu]=useState<{group:string;label:string;x:number;y:number}|null>(null);
   useEffect(()=>{if(!groupMenu)return;const close=()=>setGroupMenu(null);const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close();};window.addEventListener("click",close);window.addEventListener("scroll",close,true);window.addEventListener("resize",close);window.addEventListener("keydown",key);return()=>{window.removeEventListener("click",close);window.removeEventListener("scroll",close,true);window.removeEventListener("resize",close);window.removeEventListener("keydown",key);};},[groupMenu]);
   const [gallery, setGallery] = useState(false), [galleryVisited, setGalleryVisited] = useState(false), [returnToGallery, setReturnToGallery] = useState(false), [activeRegion, setActiveRegion] = useState(-1);
+  const [failurePage, setFailurePage] = useState(0);
+  const [coordinateRegion, setCoordinateRegion] = useState(-1);
   const [selectedRegions,setSelectedRegions]=useState<ReadonlySet<number>>(new Set());
   const [regionMenu,setRegionMenu]=useState<{x:number;y:number}|null>(null);
   useEffect(()=>{if(!regionMenu)return;const close=()=>setRegionMenu(null);window.addEventListener("click",close);window.addEventListener("resize",close);window.addEventListener("scroll",close,true);return()=>{window.removeEventListener("click",close);window.removeEventListener("resize",close);window.removeEventListener("scroll",close,true);};},[regionMenu]);
   const workbench = useRef<HTMLElement>(null);
   useEffect(() => { setSelectedId(""); setSearch(""); setGalleryScope(null); setGroupMenu(null); setCollapsed({ empty: true }); setImageFilters(allFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
+    setFailurePage(0);
     if (!disabled) {const changed=(project?.images||[]).filter(image=>image.ocrCompleted&&!unityImageHasText(image)&&!image.renderedFile&&image.selected&&!image.selectionManual).map(image=>({...image,selected:false}));if(onChangeMany)onChangeMany(changed);else changed.forEach(onChange);} }, [project?.folder]);
   const viewBaseline=useRef(new Map<string,{selected:boolean;completed:boolean;error:string;group:ReturnType<typeof unityImageResultGroup>}>());
   const baselineFolder=useRef(project?.folder);
@@ -299,7 +308,8 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     selectListImage(group, groups[group].items.findIndex(item => item.id === target.id), true);
   }, [active, imageTarget, images, groups]);
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).matches("input[type=text]")) return;
+    if ((event.target as HTMLElement).matches("input[type=text], input[type=search]") ||
+      (event.target as HTMLElement).closest(".unity-image-list-failures")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
@@ -331,7 +341,7 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     node?.focus({ preventScroll: true });
     node?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [keyboardTarget]);
-  useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setRegionMenu(null); setDetailMode(ocrMode); }, [image?.id, ocrMode]);
+  useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setRegionMenu(null);setCoordinateRegion(-1);setDetailMode(ocrMode); }, [image?.id, ocrMode]);
   const locateRegion = (index: number) => { setActiveRegion(index);setSelectedRegions(new Set([index])); workbench.current?.querySelector<HTMLElement>(`[data-region-index="${index}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
   const selectImages = (items: UnityImage[], selected: boolean) => {const changed=items.filter(item=>item.sourceFile&&item.selected!==selected).map(item=>({...item,selected}));if(onChangeMany)onChangeMany(changed);else changed.forEach(onChange);};
   const edit = (index: number, patch: Partial<UnityImageRegion>) => image && onChange({ ...image, completed: image.renderedKind==="imported"?image.completed:false, error: "", regions: image.regions.map((region, i) => i === index ? { ...region, ...patch, error: "" } : region) });
@@ -359,18 +369,50 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
   const showDetails = (id: string) => requestView(()=>{ setViewer(null); setSelectedId(id); setReturnToGallery(true); setGallery(false); });
   const toggleGallery=()=>requestView(()=>{if(gallery){setGallery(false);setReturnToGallery(false);}else{setGalleryVisited(true);setGallery(true);}});
 
-  return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className="unity-offline-workbench unity-image-workbench" aria-label="图片识别与翻译结果">{confirmation.dialog}
+  const sidebarTools = !!compactLayout && !gallery && !focusedDetail && !!images.length && (project?.scanRevision || 0) >= 5;
+  const failures = compactLayout?.failures;
+  const failurePageSize = 20;
+  const failurePages = Math.max(1, Math.ceil((failures?.length || 0) / failurePageSize));
+  const currentFailurePage = Math.min(failurePage, failurePages - 1);
+  const statistics = <span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张
+    {(!sidebarTools || counts.done > 0) && ` · 已完成 ${counts.done} 张`}
+    {!sidebarTools && counts.failed > 0 && ` · 失败 ${counts.failed} 张`}</span>;
+  const searchControl = <input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} />;
+  const filterButton = <button type="button" className="unity-image-filter-trigger" aria-label="筛选图片" aria-controls={filterId} aria-haspopup="dialog" data-tooltip="筛选图片" onClick={event=>{const menu=filterMenu.current!;if(menu.matches(":popover-open")){menu.hidePopover();return;}const rect=event.currentTarget.getBoundingClientRect();Object.assign(menu.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-248))}px`,top:`${Math.min(rect.bottom+6,window.innerHeight-320)}px`});menu.showPopover();}}><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></button>;
+
+  return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className={`unity-offline-workbench unity-image-workbench${compactLayout ? " is-compact" : ""}`} aria-label="图片识别与翻译结果">{confirmation.dialog}
     {createPortal(<div ref={downloadMenu} id={downloadId} popover="auto" role="menu" aria-label="图片下载范围" className="unity-image-filter-menu unity-download-menu">
       <button type="button" role="menuitem" disabled={!images.some(image => image.sourceFile)} onClick={() => { downloadMenu.current?.hidePopover(); void exportArchive("all"); }}>下载全部</button>
       <button type="button" role="menuitem" disabled={!filtered.some(image => image.sourceFile)} onClick={() => { downloadMenu.current?.hidePopover(); void exportArchive("filtered"); }}>下载筛选内容</button>
     </div>, document.body)}
-    {focusedDetail ? null : <div className="unity-offline-toolbar unity-image-toolbar"><button className="unity-btn" onClick={toggleGallery} data-tooltip={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"} aria-label={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"}>{gallery ? "返回文字区域" : returnToGallery ? "返回缩略图位置" : "原图批量阅览"}</button><button className="unity-btn unity-text-action" aria-label="下载图片" disabled={disabled||!!archiveBusy||!images.some(image=>image.sourceFile)} data-tooltip="选择下载全部图片或当前筛选结果及定位清单" aria-haspopup="menu" popoverTarget={downloadId} popoverTargetAction="toggle" onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();Object.assign(downloadMenu.current!.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-160))}px`,top:`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-110))}px`});}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>下载</button><button className="unity-btn unity-text-action" aria-label="导入图片" disabled={disabled||!!archiveBusy} data-tooltip="导入本软件导出的 ZIP，校验定位信息、原资源版本和 PNG 尺寸后替换译图" onClick={()=>requestFilter(()=>void importArchive())}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4"/></svg>导入</button><button type="button" className="unity-image-filter-trigger" aria-label="筛选图片" aria-controls={filterId} aria-haspopup="dialog" data-tooltip="筛选图片" onClick={event=>{const menu=filterMenu.current!;if(menu.matches(":popover-open")){menu.hidePopover();return;}const rect=event.currentTarget.getBoundingClientRect();Object.assign(menu.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-248))}px`,top:`${Math.min(rect.bottom+6,window.innerHeight-320)}px`});menu.showPopover();}}><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></button>
+    {focusedDetail ? null : <div className="unity-offline-toolbar unity-image-toolbar"><button className="unity-btn" onClick={toggleGallery} data-tooltip={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"} aria-label={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"}>{gallery ? "返回文字区域" : returnToGallery ? "返回缩略图位置" : "原图批量阅览"}</button><button className="unity-btn unity-text-action" aria-label="下载图片" disabled={disabled||!!archiveBusy||!images.some(image=>image.sourceFile)} data-tooltip="选择下载全部图片或当前筛选结果及定位清单" aria-haspopup="menu" popoverTarget={downloadId} popoverTargetAction="toggle" onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();Object.assign(downloadMenu.current!.style,{left:`${Math.max(8,Math.min(rect.left,window.innerWidth-160))}px`,top:`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-110))}px`});}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>下载</button><button className="unity-btn unity-text-action" aria-label="导入图片" disabled={disabled||!!archiveBusy} data-tooltip="导入本软件导出的 ZIP，校验定位信息、原资源版本和 PNG 尺寸后替换译图" onClick={()=>requestFilter(()=>void importArchive())}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4"/></svg>导入</button>{!sidebarTools && filterButton}
 {createPortal(<div ref={filterMenu} id={filterId} popover="auto" role="dialog" aria-label="图片筛选" className="unity-image-filter-menu">
 <div className="unity-image-filter-presets"><button type="button" onClick={()=>requestFilter(()=>setImageFilters(allFilters))}>全部选取</button><button type="button" onClick={()=>requestFilter(()=>setImageFilters({checked:false,unchecked:false,done:false,pending:false,failed:false}))}>取消全部选取</button></div>
 {([["checked","已勾选"],["unchecked","未勾选"],["pending","未完成"],["failed","失败"],["done","已完成"]] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={imageFilters[key]} onChange={event=>{const checked=event.currentTarget.checked;requestFilter(()=>setImageFilters(current=>({...current,[key]:checked})));}}/>{label}</label>)}
-</div>,document.body)}{archiveBusy&&<span role="status">{archiveBusy}</span>}<span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张 · 已完成 {counts.done} 张{counts.failed ? ` · 失败 ${counts.failed} 张` : ""}</span><input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} /><button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
+</div>,document.body)}{archiveBusy&&<span role="status">{archiveBusy}</span>}{!sidebarTools && <>{statistics}{searchControl}</>}<button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
     {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <div ref={setImageBody} className="unity-image-body">
-      {!focusedDetail && <><div id={imageListId} ref={listRef} className="unity-image-list" style={{ width: listWidth.width }} aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>{imageListGroups.map(([group, label]) => {
+      {!focusedDetail && <><div id={imageListId} ref={listRef} className="unity-image-list" style={{ width: listWidth.width }} aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>
+        {sidebarTools && <div className="unity-image-list-tools">
+          <div className="unity-image-list-search">{searchControl}{filterButton}</div>
+          {statistics}
+          {!!failures?.length && <details className="unity-image-list-failures">
+            <summary>失败 {failures.length} 张</summary>
+            <ul>{failures.slice(currentFailurePage * failurePageSize, (currentFailurePage + 1) * failurePageSize).map(row => <li key={row.id}>
+              <button type="button" className="unity-progress-locate" data-tooltip={row.label + "\n" + row.detail}
+                aria-label={"定位 " + row.label} onClick={event => {
+                  const details = event.currentTarget.closest("details");
+                  if (details) details.open = false;
+                  compactLayout?.onLocate(row);
+                }}>{row.label}</button>
+            </li>)}</ul>
+            {failurePages > 1 && <div className="unity-image-list-pages" aria-label="失败图片分页">
+              <button type="button" disabled={currentFailurePage === 0} onClick={() => setFailurePage(currentFailurePage - 1)}>上一页</button>
+              <GamePageNumber page={currentFailurePage} pages={failurePages} onPage={setFailurePage} />
+              <button type="button" disabled={currentFailurePage === failurePages - 1} onClick={() => setFailurePage(currentFailurePage + 1)}>下一页</button>
+            </div>}
+          </details>}
+        </div>}
+        <div className="unity-image-groups">{imageListGroups.map(([group, label]) => {
         const {items,eligible,checked}=groups[group];const pages = Math.max(1, Math.ceil(items.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
         const visible = collapsed[group] ? [] : items.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
         const changePage = (next: number) => selectListImage(group, imagePageIndex(items.findIndex(item => item.id === image?.id), next, items.length), false);
@@ -378,12 +420,12 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
         <input type="checkbox" aria-label={`选择图片 ${item.name}`} disabled={disabled || !!archiveBusy || !item.sourceFile} checked={item.selected} onChange={event => onChange({ ...item, selected: event.target.checked })} />
         <button data-image-row={item.id} onClick={() => setSelectedId(item.id)}
           data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item), item.error].filter(Boolean).join("\n")}
-          aria-label={item.file || item.name}>
+          aria-label={item.file || item.name} aria-current={item.id === image?.id ? "true" : undefined}>
           <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
-          <small>{imageListStatus(item)}</small>
+          {!compactLayout && <small>{imageListStatus(item)}</small>}
         </button>
       </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><GamePageNumber page={page} pages={pages} onPage={changePage} /><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
-      })}</div>
+      })}</div></div>
       <button type="button" role="separator" aria-orientation="vertical" aria-controls={imageListId} aria-label="调整图片列表宽度"
         aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
         className="unity-image-list-divider" data-tooltip="拖动调整图片列表宽度"
@@ -395,7 +437,7 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
         }} /></>}
       {!focusedDetail && !filtered.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}
       {image && <div className="unity-image-detail" tabIndex={0} aria-label="当前图片详情" onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="a"){event.preventDefault();event.stopPropagation();setSelectedRegions(new Set(image.regions.map((_,index)=>index)));setActiveRegion(-1);}if(event.key==="Escape")setRegionMenu(null);}} onContextMenu={event=>{event.preventDefault();event.stopPropagation();setRegionMenu({x:Math.max(8,Math.min(event.clientX,window.innerWidth-190)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-90))});}}>
-        <div className="unity-image-actions">{focusedDetail && <button className="unity-btn unity-image-back" aria-label="返回缩略图位置" data-tooltip="返回原来的缩略图位置" onClick={() => requestView(()=>setGallery(true))}>←</button>}<strong data-tooltip={image.file}><SearchHighlight text={image.name} query={deferredSearch} />{deferredSearch && image.file.toLowerCase().includes(deferredSearch) && <small className="search-matched-field"><SearchHighlight text={image.file} query={deferredSearch} /></small>}</strong><div className="unity-image-button-group">
+        <div className="unity-image-actions">{focusedDetail && <button className="unity-btn unity-image-back" aria-label="返回缩略图位置" data-tooltip="返回原来的缩略图位置" onClick={() => requestView(()=>setGallery(true))}>←</button>}<div className="unity-image-title"><strong data-tooltip={image.file}><SearchHighlight text={image.name} query={deferredSearch} />{deferredSearch && image.file.toLowerCase().includes(deferredSearch) && <small className="search-matched-field"><SearchHighlight text={image.file} query={deferredSearch} /></small>}</strong>{compactLayout && <small>{imageListStatus(image, true)}{!image.renderedFile && ` · ${image.noTranslationNeeded ? "无需生成译图" : "译图待生成"}`}</small>}</div><div className="unity-image-button-group">
           {image.screening && image.sourceFile && (!image.completed || image.ocrCompleted) && <select aria-label="移动图片到分组" disabled={disabled || !!archiveBusy}
             data-tooltip="移动图片到指定分组并保留已有识字结果"
             value={image.screening.manualGroup ? image.screening.state : ""}
@@ -408,18 +450,47 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
           </select>}
           <select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label={reuseRecognition ? "识字与定位" : "重新识别"} data-tooltip={reuseRecognition && image.ocrCompleted ? "已有识字结果" : "使用所选模型识别当前图片"} disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile || reuseRecognition && image.ocrCompleted} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
         {image.error && <p className="unity-offline-error" role="alert">{image.error}</p>}
-        <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, x, y })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, x, y }) : undefined} /></div>
-        <div className="unity-image-regions">{unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
+        <div className={`unity-image-previews${compactLayout && !image.renderedFile ? " is-single" : ""}`}><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, x, y })} />{(!compactLayout || image.renderedFile) && <ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, x, y }) : undefined} />}</div>
+        <div className="unity-image-regions">
+          {compactLayout && image.regions.length > 0 && <div className="unity-image-region-columns" aria-hidden="true">
+            <span>区域</span><span>原文</span><span>译文</span>
+          </div>}
+          {unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
           const error = region.error || (region.selected ? gameImageJapaneseTextIssue(region.text, region.translation, region.translationTarget) : "");
+          const lowConfidence = region.confidence < confidenceThreshold;
+          const confidence = (Math.floor(region.confidence * 10) / 10).toFixed(1) + "%";
+          const coordinatesOpen = coordinateRegion === index;
+          const coordinates = <div className="unity-image-coordinates" role="group" aria-label={`区域 ${index + 1} 的位置`}>
+            {([["x0", "左", "左边界"], ["y0", "上", "上边界"], ["x1", "右", "右边界"], ["y1", "下", "下边界"]] as const).map(([key, label, description]) =>
+              <label key={key}>{label}<input aria-label={`区域 ${index + 1} ${description}`} type="number" step={1}
+                min={0} max={key.startsWith("x") ? image.width : image.height} value={Math.round(region[key])}
+                disabled={disabled || !!archiveBusy} onChange={event => edit(index, { [key]: Number(event.target.value) })} /></label>)}
+          </div>;
           return <div key={index} data-region-index={index} tabIndex={0} className={`unity-image-region${activeRegion === index||selectedRegions.has(index) ? " is-active" : ""}`} onClick={() => {setActiveRegion(index);setSelectedRegions(new Set([index]));}} onFocus={() => setActiveRegion(index)}>
-          <div className="unity-image-region-header">
-          <label className="unity-image-region-heading" data-tooltip="低于置信度阈值的区域不自动翻译，可手动勾选后处理"><input type="checkbox" checked={region.selected && (region.confidence >= confidenceThreshold || !!region.manualSelected)} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { selected: event.target.checked, manualSelected: event.target.checked })} /><span>区域 {index + 1} · 置信度 {(Math.floor(region.confidence * 10) / 10).toFixed(1)}%{region.reviewReason ? ` · 待复核：${region.reviewReason}` : ""}{region.confidence < confidenceThreshold ? " · 低于阈值" : ""}</span></label>
-            <div className="unity-image-coordinates" role="group" aria-label={`区域 ${index + 1} 的位置`}>{(["x0", "y0", "x1", "y1"] as const).map(key => <label key={key}>{({ x0: "左", y0: "上", x1: "右", y1: "下" })[key]}<input aria-label={`区域 ${index + 1} ${({ x0: "左边界", y0: "上边界", x1: "右边界", y1: "下边界" })[key]}`} type="number" step={1} min={0} max={key.startsWith("x") ? image.width : image.height} value={Math.round(region[key])} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { [key]: Number(event.target.value) })} /></label>)}</div>
-          </div>
-          <label>原文<SearchTextarea query={deferredSearch} value={region.text} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { text: event.target.value, translation: "" })} /></label>
-          <label>译文<SearchTextarea query={deferredSearch} value={region.translation} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { translation: event.target.value })} /></label>
-          {error && <p className="unity-offline-error">{error}</p>}
-        </div>; })}</div>
+            <div className="unity-image-region-header">
+              <label className="unity-image-region-heading" data-tooltip="低于置信度阈值的区域不自动翻译，可手动勾选后处理">
+                <input type="checkbox" aria-label={compactLayout ? `勾选区域 ${index + 1}` : undefined}
+                  checked={region.selected && (!lowConfidence || !!region.manualSelected)}
+                  disabled={disabled || !!archiveBusy} onChange={event => edit(index, { selected: event.target.checked, manualSelected: event.target.checked })} />
+                <span>{compactLayout ? index + 1 : `区域 ${index + 1} · 置信度 ${confidence}${region.reviewReason ? ` · 待复核：${region.reviewReason}` : ""}${lowConfidence ? " · 低于阈值" : ""}`}</span>
+              </label>
+              {compactLayout ? <button type="button" className="unity-image-coordinate-toggle" aria-label={`区域 ${index + 1} 坐标与置信度`}
+                aria-expanded={coordinatesOpen} onClick={() => setCoordinateRegion(coordinatesOpen ? -1 : index)}>坐标</button> : coordinates}
+              {compactLayout && lowConfidence && <small className="unity-image-low-confidence">低置信度</small>}
+            </div>
+            <label><span className="unity-image-region-field-label">原文</span><SearchTextarea query={deferredSearch} value={region.text} rows={1}
+              aria-label={compactLayout ? `区域 ${index + 1} 原文` : undefined}
+              disabled={disabled || !!archiveBusy} onChange={event => edit(index, { text: event.target.value, translation: "" })} /></label>
+            <label><span className="unity-image-region-field-label">译文</span><SearchTextarea query={deferredSearch} value={region.translation} rows={1}
+              aria-label={compactLayout ? `区域 ${index + 1} 译文` : undefined}
+              disabled={disabled || !!archiveBusy} onChange={event => edit(index, { translation: event.target.value })} /></label>
+            {compactLayout && coordinatesOpen && <div className="unity-image-region-details">
+              <span>置信度 {confidence}</span>{coordinates}
+            </div>}
+            {compactLayout && region.reviewReason && <p className="unity-image-review-reason">待复核 · {region.reviewReason}</p>}
+            {error && <p className="unity-offline-error">{error}</p>}
+          </div>;
+        })}</div>
       </div>}
     </div>}</>}
 
