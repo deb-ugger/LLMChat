@@ -29,7 +29,7 @@ import { readFileBytes } from "../localDocFile";
 import { saveOutputFile } from "../outputFiles";
 import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions } from "../gameTextProject";
 import { translateUnitySession, unityTranslationStats, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
-import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
+import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, prepareUnityTranslationText, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { gameFormatTokens, gameJapaneseTextIssue, gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateRpgSystemMessage } from "../gameDisplayText";
@@ -417,19 +417,23 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           const input = messageCore ? repairMessageCoreNameLineBreak(repairMessageCorePositionPrefix(text)) : text;
           const scene = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
           const config = getOptions(provider, scene);
+          const preserveDialogueLines = provider === "llm" && scene === "dialogue";
           const signal = provider === "llm" ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
           return translateGameControls(input, async (protectedText, originalContext, retryReason) => {
             try {
               const context = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
               const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
               if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译失败"), { code: response.code });
-              return response.translation;
+              // The protected request already carries the original display breaks as tokens.
+              return preserveDialogueLines && !/[\r\n]/.test(protectedText) && /[\r\n]/.test(response.translation)
+                ? prepareUnityTranslationText(response.translation)
+                : response.translation;
             } catch (error) {
               abort.signal.throwIfAborted();
               if (provider !== "llm") throw error;
               throw new Error(`${config.model || provider}：${signal.reason?.name === "TimeoutError" ? "请求超时" : error instanceof Error ? error.message : String(error)}`);
             }
-          }, options.target, sourceFilter, terminology, options.skipTargetLanguage !== false, provider === "llm" && scene === "dialogue");
+          }, options.target, sourceFilter, terminology, options.skipTargetLanguage !== false, preserveDialogueLines);
         };
         if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { timingScope: promptState.scope + ":text", onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
         const preparedTerms = await prepareGameTerms(next.entries.filter(entry => (retryIds ? retryIds.has(entry.id) : entry.selected) && (!entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || gameTextProblem(entry.source, entry.translation))), next.entries, options.target, general.textGlossary,
