@@ -243,13 +243,49 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
   // This lane only changes images; retain the read-only text/resource collections.
   const next = { ...project, images: (project.images||[]).map(image=>image.selected&&!imageDone(image)?structuredClone(image):image), imagesSkipped: false };
   const images = (next.images || []).filter(image => image.selected && unityImageParticipates(image) && (mode !== "translate" || image.ocrCompleted)), cache = new Map<string, string>();
-  if (mode !== "recognize" && services.reuseTranslations !== false) {
-    for (const entry of next.entries) if (entry.translation && matchesTarget(entry.translationTarget) && !entry.error && !validate(entry.source, entry.translation)) cache.set(entry.source, entry.translation);
-    for (const image of next.images) for (const region of image.regions) if (region.translation && matchesTarget(region.translationTarget) && !region.error && !validate(region.text, region.translation)) cache.set(region.text, region.translation);
-  }
+  let savedTranslations: Map<string, string[]> | undefined;
+  const findSavedTranslation = (text: string) => {
+    if (services.reuseTranslations === false) return;
+    if (!savedTranslations) {
+      const index = new Map<string, string[]>();
+      const remember = (source: string, value: { translation: string; translationTarget?: string; error?: string }) => {
+        if (!value.translation || value.error || !matchesTarget(value.translationTarget)) return;
+        const candidates = index.get(source);
+        if (candidates) candidates.push(value.translation);
+        else index.set(source, [value.translation]);
+      };
+      // Read the input project so edits made by this run cannot become saved candidates.
+      for (const entry of project.entries) remember(entry.source, entry);
+      for (const image of project.images || []) for (const region of image.regions) remember(region.text, region);
+      savedTranslations = index;
+    }
+    const values = savedTranslations.get(text);
+    savedTranslations.delete(text);
+    // Keep the existing priority: the last valid saved translation wins.
+    if (!values) return;
+    for (let i = values.length - 1; i >= 0; --i) {
+      if (!validate(text, values[i])) return values[i];
+    }
+  };
   const pendingTranslations=new Map<string,Promise<string>>();
-  const translateText=(text:string)=>{const existing=cache.get(text);if(existing!==undefined)return Promise.resolve(existing);
-    let pending=pendingTranslations.get(text);if(!pending){pending=services.translate(text).then(value=>{const error=validate(text,value);if(error)throw new Error(error);cache.set(text,value);return value;}).finally(()=>pendingTranslations.delete(text));pendingTranslations.set(text,pending);}return pending;
+  const translateText = (text: string) => {
+    const existing = cache.get(text);
+    if (existing !== undefined) return Promise.resolve(existing);
+    const pending = pendingTranslations.get(text);
+    if (pending) return pending;
+    const saved = findSavedTranslation(text);
+    if (saved !== undefined) {
+      cache.set(text, saved);
+      return Promise.resolve(saved);
+    }
+    const request = services.translate(text).then(value => {
+      const error = validate(text, value);
+      if (error) throw new Error(error);
+      cache.set(text, value);
+      return value;
+    }).finally(() => pendingTranslations.delete(text));
+    pendingTranslations.set(text, request);
+    return request;
   };
   let completed = images.filter(imageDone).length;
   const samples=[{time:performance.now(),completed}];
@@ -283,8 +319,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
           const translation = await translateText(region.text); signal.throwIfAborted();
-          const problem = validate(region.text, translation); if (problem) throw new Error(problem);
-          region.translation = translation; region.translationTarget = target; region.error = ""; cache.set(region.text, translation);
+          region.translation = translation; region.translationTarget = target; region.error = "";
         } catch (error) {
           if (signal.aborted) throw error;
           region.error = error instanceof Error ? error.message : String(error);

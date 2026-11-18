@@ -167,6 +167,41 @@ function classifyGameImage(image: UnityImage, result: Recognition, options: Opti
 }
 
 export class ScreeningModelError extends Error {}
+
+/** Share successful results only for byte-identical inputs within the current stage. */
+function reuseScreenRecognition(images: UnityImage[], signal: AbortSignal, timingScope?: string) {
+  const dimensions = (image: UnityImage) => `${image.width}x${image.height}`;
+  const sizes = new Map<string, number>();
+  for (const image of images) {
+    const key = dimensions(image);
+    sizes.set(key, (sizes.get(key) ?? 0) + 1);
+  }
+  const results = new Map<string, Promise<Recognition>>();
+  return async (image: UnityImage, blob: Blob, recognize: () => Promise<Recognition>) => {
+    if ((sizes.get(dimensions(image)) ?? 0) < 2 || !globalThis.crypto?.subtle) return recognize();
+    const digest = await measureGameAsync(timingScope, "processingMs", async () =>
+      crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+    signal.throwIfAborted();
+    const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    const existing = results.get(key);
+    if (existing) {
+      try { return await existing; }
+      catch (error) {
+        // A failed request must not turn identical files into failed matches.
+        signal.throwIfAborted();
+        if (error instanceof ScreeningModelError) throw error;
+        return recognize();
+      }
+    }
+    const pending = Promise.resolve().then(recognize).catch(error => {
+      results.delete(key);
+      throw error;
+    });
+    results.set(key, pending);
+    return pending;
+  };
+}
+
 export async function screenGameImages(project:UnityProject,signal:AbortSignal,options:Options,services:{
   read:(image:UnityImage)=>Promise<Blob>;
   recognize:(image:Blob,stage:(value:string)=>void,worker?:number)=>Promise<Recognition>;
@@ -194,6 +229,7 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
     else work.push(image);
   }
   report(`素材粗筛完成 · ${work.length} 张进入文字检测`);await flush();
+  const recognizeBytes = reuseScreenRecognition(work, signal, options.timingScope);
   let failure:unknown;
   const take=()=>{if(failure||signal.aborted||next>=work.length)return null;const original=work[next++];return {original,read:original.ocrCompleted?null:services.read(original).then(blob=>({blob,error:undefined}),error=>({blob:undefined,error}))};};
   const worker=async(workerId:number)=>{let item=take();while(!failure&&item){signal.throwIfAborted();const {original,read}=item;item=take();let image:UnityImage={...original};report(`检测文字：${image.name}`);
@@ -207,9 +243,12 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
         return value.blob!;
       });
       const stage = (detail: string) => report(image.name + " · " + detail);
-      const result: Recognition = reuse
-        ? { lines: image.regions, detectedBoxes: image.screening?.boxes ?? image.regions.length }
-        : await services.recognize(await blobForImage(), stage, workerId);
+      let result: Recognition;
+      if (reuse) result = { lines: image.regions, detectedBoxes: image.screening?.boxes ?? image.regions.length };
+      else {
+        const blob = await blobForImage();
+        result = await recognizeBytes(image, blob, () => services.recognize(blob, stage, workerId));
+      }
       signal.throwIfAborted();
       const classification = classifyGameImage(image, result, options, reuse);
       const screening = policy(image, classification.state, classification.reason, result.detectedBoxes);
@@ -264,6 +303,7 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
   persist: (images: UnityImage[]) => Promise<void>;
 }, progress: (value: { completed: number; total: number; detail: string }) => void) {
   const queue = images.filter(image => needsGameImageRefinement(image, options.refineKey));
+  const recognizeBytes = reuseScreenRecognition(queue, signal, options.timingScope);
   const total = queue.length;
   let next = 0, completed = 0;
   let pending: UnityImage[] = [], writes = Promise.resolve();
@@ -287,7 +327,8 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
         const initial = image.screening!;
         let screening: ImageScreening;
         try {
-          const result = await services.recognize(await services.read(image), worker);
+          const blob = await services.read(image);
+          const result = await recognizeBytes(image, blob, () => services.recognize(blob, worker));
           signal.throwIfAborted();
           const classification = classifyGameImage(image, result, { ...options, source: options.source ?? initial.source, target: options.target ?? initial.target });
           screening = { ...initial, ...classification, presence: result.presence, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
