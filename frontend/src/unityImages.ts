@@ -6,7 +6,8 @@ import type { UnityImage, UnityImageRegion, UnityProject, UnityProgress } from "
 import { LocalPaddleOcr, type PaddleOcrLine } from "./ocr/paddleOcr";
 import { LocalMangaOcr } from "./ocr/mangaOcr";
 import { isTranslationRefusal, TRANSLATION_REFUSAL } from "./unityTokens";
-import { imageTranslationMatchesTarget } from "./unityWorkflow";
+import { imageTranslationMatchesTarget, unityImageHasUntranslatedJapanese } from "./unityWorkflow";
+import { gameImageJapaneseTextIssue } from "./gameDisplayText";
 
 async function png(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
@@ -189,7 +190,7 @@ export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSi
   const selected=next.regions.filter(region=>region.selected&&(includeRegion?.(region.text)??true));let cursor=0;
   const worker=async()=>{while(cursor<selected.length){const region=selected[cursor++];
     signal.throwIfAborted();region.translation="";region.error="";
-    try{if(!region.text.trim())throw new Error("原文为空，请填写该区域原文");let request=cache.get(region.text);if(!request){request=translate(region.text);cache.set(region.text,request);}const value=await request;signal.throwIfAborted();if(!value.trim())throw new Error("翻译结果为空");const error=validate(region.text,value);if(error)throw new Error(error);region.translation=value;region.translationTarget=targetLanguage;}
+    try{if(!region.text.trim())throw new Error("原文为空，请填写该区域原文");let request=cache.get(region.text);if(!request){request=translate(region.text);cache.set(region.text,request);}const value=await request;signal.throwIfAborted();if(!value.trim())throw new Error("翻译结果为空");const error=validate(region.text,value)||gameImageJapaneseTextIssue(region.text,value,targetLanguage);if(error)throw new Error(error);region.translation=value;region.translationTarget=targetLanguage;}
     catch(error){if(signal.aborted)throw error;region.error=error instanceof Error?error.message:String(error);failures++;}
   }};
   const results=await Promise.allSettled(Array.from({length:Math.min(selected.length,Math.max(1,concurrency))},worker));const failure=results.find((value):value is PromiseRejectedResult=>value.status==="rejected");if(failure)throw failure.reason;
@@ -231,12 +232,13 @@ export function unityImageResultGroup(image: UnityImage) {
 export function unityImageUsesRegionMask(image:UnityImage):boolean{return image.renderedKind==="generated"||!image.renderedKind&&image.regions.some(region=>!!region.translation.trim());}
 export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number, size?:{width:number;height:number}) {return applyImageTextRules(regions,threshold,size);}
 export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress & {etaMs?:number}) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" | "translate-only" | "render" = "all") {
-  const validate = (source: string, translation: string) => measureGameWork(services.timingScope, "processingMs", () => services.validate(source, translation));
-  const selectedForTranslation = (region: UnityImageRegion) => region.selected && (services.includeRegion?.(region.text) ?? true);
   const target = services.targetLanguage;
+  const validate = (source: string, translation: string) => measureGameWork(services.timingScope, "processingMs", () =>
+    services.validate(source, translation) || gameImageJapaneseTextIssue(source, translation, target));
+  const selectedForTranslation = (region: UnityImageRegion) => region.selected && (services.includeRegion?.(region.text) ?? true);
   const matchesTarget = (value?: string) => !target || !value || value === target;
   const imageDone = (image: UnityImage) => mode === "recognize" ? image.ocrCompleted :
-    image.completed && (!!image.renderedFile || !!image.noTranslationNeeded) && imageTranslationMatchesTarget(image, target);
+    image.completed && (!!image.renderedFile || !!image.noTranslationNeeded) && imageTranslationMatchesTarget(image, target) && !unityImageHasUntranslatedJapanese(image, target);
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
   // This lane only changes images; retain the read-only text/resource collections.
   const next = { ...project, images: (project.images||[]).map(image=>image.selected&&!imageDone(image)?structuredClone(image):image), imagesSkipped: false };

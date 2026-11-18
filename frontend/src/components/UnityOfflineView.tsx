@@ -7,6 +7,7 @@ import { sameTextEdit } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork } from "../gameModelPerformance";
 import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
+import { GamePageNumber } from "./GamePageNumber";
 import { recognizeGameImage, renderGameImage } from "../gameImageModel";
 import { applyGameTestRoles, captureGameTestRoles, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
@@ -27,7 +28,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, 
 import { createPortal } from "react-dom";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { gameImageRegionLanguageFilter } from "../gameImageScreening";
-import { gameTextHasSpeaker, gameDisplayTextProblem, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
+import { gameTextHasSpeaker, gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -152,7 +153,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [qualityIssueId, setQualityIssueId] = useState<string | null>(null);
   const [importMode, setImportMode] = useState<UnityTranslationImportMode>("fill");
   const [page, setPage] = useState(0);
-  const [jumpPage, setJumpPage] = useState("");
   const [busy, setBusy] = useState("");
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
   const [actionLog, setActionLog] = useState<{ text: string; level: "info" | "success" | "error" | "warning" }[]>([]);
@@ -289,7 +289,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }, []);
 
   useEffect(() => {
-    setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setJumpPage(""); setSearch(""); setFileStatus(null); setRowJump(null); setImageTarget(undefined);
+    setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setSearch(""); setFileStatus(null); setRowJump(null); setImageTarget(undefined);
     setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill");
     setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
     setLineMode("local"); setLineModel("");
@@ -517,7 +517,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const checkedCount = filtered.reduce((count, entry) => count + Number(entry.selected), 0);
   const hasMixedSelection = checkedCount > 0 && checkedCount < filtered.length;
   const pageCount = Math.max(1, Math.ceil(filtered.length / 40));
-  const rows = filtered.slice(Math.min(page, pageCount - 1) * 40, (Math.min(page, pageCount - 1) + 1) * 40);
+  const visiblePage = Math.max(0, Math.min(page, pageCount - 1));
+  const rows = filtered.slice(visiblePage * 40, (visiblePage + 1) * 40);
   const translationFailures = useMemo(() => project?.entries.filter(entry => !!entry.error) || [], [project?.entries]);
   const locateTranslationFailure = (id: string) => {
     const item = tableEntries.find(entry => entry.id === id);
@@ -531,7 +532,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       textSearchSnapshot.current = null;
       setSearch(""); setReviewFilter("all"); setTextFilters({ ...defaultGameTextFilters });
     }
-    setJumpPage(""); setRowIssue(null); setQualityIssueId(null);
+    setRowIssue(null); setQualityIssueId(null);
     setPage(Math.floor(index / 40));
     setRowJump(previous => ({ id, sequence: (previous?.sequence || 0) + 1, error: !!(entryProblem(item) || fileStatus?.issues?.some(issue => issue.id === id)) }));
   };
@@ -933,7 +934,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     let primaryError: unknown;
     try {
       const translated = await translate(primary);
-      const issue = unityTranslationError(text, translated);
+      const issue = unityTranslationError(text, translated) || gameImageJapaneseTextIssue(text, translated, options.target);
       if (!issue) return translated;
       primaryError = new Error(issue);
     } catch (error) {
@@ -943,7 +944,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (provider !== "llm" || !imageReviewOptions) throw primaryError;
     try {
       const reviewed = await translate(imageReviewOptions);
-      const issue = unityTranslationError(text, reviewed);
+      const issue = unityTranslationError(text, reviewed) || gameImageJapaneseTextIssue(text, reviewed, options.target);
       if (issue) throw new Error(issue);
       return reviewed;
     }
@@ -1064,7 +1065,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const base=latest.current;if(!base)return;
     let blob: Blob;
     if (imported) { const selected = importSource||await open({ filters: [{ name: "静态图片", extensions: ["png","jpg","jpeg","webp","bmp"] }] }); if (!selected) return; blob = await imageImportPng(selected,image); }
-    else {const controller=new AbortController();imageEditorAbort.current=controller;try{if(imageLayoutModel!==undefined&&!imageLayoutModel)throw new Error("请选择断行排版模型");const include=gameImageRegionLanguageFilter(source,target,onlySourceLanguage,skipTargetLanguage);const regions=unityImageTranslationRegions(image.regions,imageConfidenceThreshold,image).map(region=>include(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");blob=await renderGameImage(settings,imageLayoutModel||"",await readUnitySourceImage(base,image,controller.signal),regions,controller.signal,promptState.selection,{source,target},logAction);}finally{imageEditorAbort.current=null;}}
+    else {const controller=new AbortController();imageEditorAbort.current=controller;try{if(imageLayoutModel!==undefined&&!imageLayoutModel)throw new Error("请选择断行排版模型");const include=gameImageRegionLanguageFilter(source,target,onlySourceLanguage,skipTargetLanguage);const regions=unityImageTranslationRegions(image.regions,imageConfidenceThreshold,image).map(region=>include(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");const issue=regions.filter(region=>region.selected).map(region=>gameImageJapaneseTextIssue(region.text,region.translation,target)).find(Boolean);if(issue)throw new Error(issue);blob=await renderGameImage(settings,imageLayoutModel||"",await readUnitySourceImage(base,image,controller.signal),regions,controller.signal,promptState.selection,{source,target},logAction);}finally{imageEditorAbort.current=null;}}
     const result = await writeImage(base, image, blob);
     pendingImageMasks.current.delete(image.id);
     const current=latest.current||base;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);const next = { ...current, imagesSkipped: false, images: (current.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash,renderedKind:imported?"imported" as const:"generated" as const,renderedTarget:imported?undefined:target,noTranslationNeeded:false } : item) };
@@ -1480,7 +1481,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const scanStarted = !!project || !!(checkpoint?.projectFolder || checkpoint?.scanFolder) || checkpoint?.step === 1 && !checkpoint.finished;
   useEffect(() => {
-    if (!scanReady) { setSearch(""); setReviewFilter("all"); setQualityIssueId(null); setPage(0); setJumpPage(""); setRowIssue(null); setRowJump(null); setImageTarget(undefined); }
+    if (!scanReady) { setSearch(""); setReviewFilter("all"); setQualityIssueId(null); setPage(0); setRowIssue(null); setRowJump(null); setImageTarget(undefined); }
   }, [scanReady]);
   const textReady = scanReady && readiness.textReady;
   const imagesReady = scanReady && readiness.imagesReady;
@@ -1793,7 +1794,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               <p>{issue.reason}</p>
               {(issue.source || issue.translation) && <details className="unity-import-comparison"><summary>查看原文与导入译文</summary><dl><dt>原文</dt><dd>{issue.source}</dd><dt>{fileStatus.needsValidation ? "上次校验译文" : importPreview ? "当前预览译文" : "导入译文"}</dt><dd>{issue.translation}</dd></dl></details>}
             </li>)}</ul>
-            {importIssuePages > 1 && <div className="unity-import-issue-pages"><button type="button" className="unity-btn" disabled={visibleImportIssuePage === 0} onClick={() => setImportIssuePage(visibleImportIssuePage - 1)}>上一页</button><span>第 {visibleImportIssuePage + 1} / {importIssuePages} 页</span><button type="button" className="unity-btn" disabled={visibleImportIssuePage + 1 >= importIssuePages} onClick={() => setImportIssuePage(visibleImportIssuePage + 1)}>下一页</button></div>}
+            {importIssuePages > 1 && <div className="unity-import-issue-pages"><button type="button" className="unity-btn" disabled={visibleImportIssuePage === 0} onClick={() => setImportIssuePage(visibleImportIssuePage - 1)}>上一页</button><GamePageNumber page={visibleImportIssuePage} pages={importIssuePages} onPage={setImportIssuePage} /><button type="button" className="unity-btn" disabled={visibleImportIssuePage + 1 >= importIssuePages} onClick={() => setImportIssuePage(visibleImportIssuePage + 1)}>下一页</button></div>}
           </div>}
         </> : <p role="status">{fileStatus.detail}</p>}
         {fileStatus.state === "done" && fileStatus.path && <div className="unity-transfer-links">
@@ -2092,7 +2093,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         </tr>)}</tbody></table>{!filtered.length && <div className="game-text-no-matches" role="status"><strong>没有匹配的文本</strong><span>请修改搜索词或筛选条件后重试。</span></div>}</div>
         <div className="unity-results-footer">
         {scanReady && <span aria-label="文本范围与选择统计">{locateAcrossLanguages ? "查看全部语言" : scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}
-        <div className="unity-offline-pagination"><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => Math.max(0, p - 10))}>-10 页</button><button className="unity-btn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>上一页</button><span>{Math.min(page + 1, pageCount)} / {pageCount}</span><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => p + 1)}>下一页</button><button className="unity-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(p => Math.min(pageCount - 1, p + 10))}>+10 页</button><input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pageCount} placeholder="页码" value={jumpPage} onChange={e => setJumpPage(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && Number.isInteger(Number(jumpPage)) && jumpPage.trim()) { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); } }} /><button className="unity-btn" disabled={!jumpPage.trim() || !Number.isInteger(Number(jumpPage))} onClick={() => { setPage(Math.max(0, Math.min(pageCount - 1, Number(jumpPage) - 1))); setJumpPage(""); }}>跳转</button></div>
+        <div className="unity-offline-pagination" aria-label="文本结果分页"><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(Math.max(0, visiblePage - 10))}>-10 页</button><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>上一页</button><GamePageNumber page={visiblePage} pages={pageCount} onPage={setPage} /><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(visiblePage + 1)}>下一页</button><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(Math.min(pageCount - 1, visiblePage + 10))}>+10 页</button></div>
         </div>
       {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions">{importPreview ? <button className="unity-btn" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>校验当前预览</button> : <button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} disabled={rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} data-tooltip={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button>}<button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{importPreview ? "请修改右侧预览译文，再校验或应用此次导入。" : rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
       {qualityIssue && <div className="unity-row-error-panel" style={{ borderColor: "#d6b56a", background: "#fffaf0" }} role="dialog" aria-label={`第 ${qualityIssueId} 条疑似问题详情`}><div className="unity-row-error-actions"><button className="unity-btn" onClick={() => locateTranslationFailure(qualityIssueId!)}>定位此条</button><button className="unity-btn" onClick={() => setQualityIssueId(null)}>关闭</button></div><strong>第 {qualityIssueId} 条疑似问题</strong>{qualityIssue.map(issue => <p key={issue}>{issue}</p>)}<p>请结合原文和上下文复核；这些提示不会阻止生成补丁。</p></div>}

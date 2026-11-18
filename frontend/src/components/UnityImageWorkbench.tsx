@@ -1,5 +1,7 @@
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
+import { GamePageNumber } from "./GamePageNumber";
+import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { importSourceName,type GameImportSource } from "../gameImageImport";
@@ -104,11 +106,10 @@ export function unityGalleryRect(start: { x: number; y: number }, point: { x: nu
 
 function ImageGallery({ query, project, images, allImages, filterKey, refreshKey, hidden, disabled, onSelect, onView, onOpen }: { query: string; project: UnityProject; images: UnityImage[]; allImages: UnityImage[]; filterKey: string; refreshKey:number; hidden: boolean; disabled: boolean; onSelect: (images: UnityImage[], value: boolean) => void; onView: (id: string) => void; onOpen: (id: string) => void }) {
   const [selected, setSelected] = useState(new Set<string>()), [page, setPage] = useState(0);
-  const [jumpPage, setJumpPage] = useState("");
   const [snapshot, setSnapshot] = useState(() => images.map(image => ({ id: image.id, selected: image.selected })));
   const [history, setHistory] = useState<{ id: string; selected: boolean }[][]>([]);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set());setHistory([]); setPage(0); setJumpPage(""); };
+  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set());setHistory([]); setPage(0); };
   useEffect(applyFilter, [filterKey]);
   useEffect(()=>{setSnapshot(images.map(image=>({id:image.id,selected:image.selected})));setSelected(new Set());setHistory([]);},[refreshKey]);
   const currentImages = useMemo(() => new Map(allImages.map(image => [image.id, image])), [allImages]);
@@ -135,13 +136,6 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
     if (scroller.current) scroller.current.scrollTop = 0;
   }, [currentPage]);
   const changePage = (next: number) => setPage(Math.max(0, Math.min(pages - 1, next)));
-  const requestedPage = Number(jumpPage);
-  const canJump = pages > 1 && jumpPage.trim() !== "" && Number.isInteger(requestedPage);
-  const jumpToPage = () => {
-    if (!canJump) return;
-    changePage(requestedPage - 1);
-    setJumpPage("");
-  };
   const chosen = displayed.filter(image => selected.has(image.id));
   const point = (event: React.PointerEvent) => { const rect = grid.current!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
   return <div className="unity-image-gallery" data-tooltip="Ctrl+A 选择当前页图片；Ctrl 多选；拖动框选；双击查看原图；右键查看详情；Ctrl+Z 撤销批量操作" style={hidden ? { display: "none" } : undefined} onClick={() => setMenu(null)} onKeyDown={event => {
@@ -180,13 +174,9 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
     <div className="unity-offline-pagination unity-gallery-pages" role="group" aria-label="图片分页">
       <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => changePage(currentPage - 10)}>-10 页</button>
       <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => changePage(currentPage - 1)}>上一页</button>
-      <span aria-live="polite">{currentPage + 1} / {pages}</span>
+      <GamePageNumber page={currentPage} pages={pages} onPage={changePage} />
       <button type="button" className="unity-btn" disabled={currentPage === pages - 1} onClick={() => changePage(currentPage + 1)}>下一页</button>
       <button type="button" className="unity-btn" disabled={currentPage === pages - 1} onClick={() => changePage(currentPage + 10)}>+10 页</button>
-      <input type="number" inputMode="numeric" aria-label="跳转页码" min={1} max={pages} placeholder="页码" value={jumpPage} disabled={pages === 1} onChange={event => setJumpPage(event.target.value)} onKeyDown={event => {
-        if (event.key === "Enter") { event.preventDefault(); jumpToPage(); }
-      }} />
-      <button type="button" className="unity-btn" disabled={!canJump} onClick={jumpToPage}>跳转</button>
     </div>
     {menu && <div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: menu.x, top: menu.y }}><button role="menuitem" onClick={() => { setMenu(null); onOpen(menu.id); }}>查看原图</button><button role="menuitem" onClick={() => { setMenu(null); onView(menu.id); }}>查看详情</button></div>}
   </div>;
@@ -309,6 +299,7 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     selectListImage(group, groups[group].items.findIndex(item => item.id === target.id), true);
   }, [active, imageTarget, images, groups]);
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).matches("input[type=text]")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
@@ -391,7 +382,7 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
           <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
           <small>{imageListStatus(item)}</small>
         </button>
-      </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><span>{page+1} / {pages}</span><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
+      </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><GamePageNumber page={page} pages={pages} onPage={changePage} /><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
       })}</div>
       <button type="button" role="separator" aria-orientation="vertical" aria-controls={imageListId} aria-label="调整图片列表宽度"
         aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
@@ -418,15 +409,17 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
           <select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label={reuseRecognition ? "识字与定位" : "重新识别"} data-tooltip={reuseRecognition && image.ocrCompleted ? "已有识字结果" : "使用所选模型识别当前图片"} disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile || reuseRecognition && image.ocrCompleted} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
         {image.error && <p className="unity-offline-error" role="alert">{image.error}</p>}
         <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, x, y })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, x, y }) : undefined} /></div>
-        <div className="unity-image-regions">{unityImageTranslationRegions(image.regions,confidenceThreshold,image).map((region, index) => <div key={index} data-region-index={index} tabIndex={0} className={`unity-image-region${activeRegion === index||selectedRegions.has(index) ? " is-active" : ""}`} onClick={() => {setActiveRegion(index);setSelectedRegions(new Set([index]));}} onFocus={() => setActiveRegion(index)}>
+        <div className="unity-image-regions">{unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
+          const error = region.error || (region.selected ? gameImageJapaneseTextIssue(region.text, region.translation, region.translationTarget) : "");
+          return <div key={index} data-region-index={index} tabIndex={0} className={`unity-image-region${activeRegion === index||selectedRegions.has(index) ? " is-active" : ""}`} onClick={() => {setActiveRegion(index);setSelectedRegions(new Set([index]));}} onFocus={() => setActiveRegion(index)}>
           <div className="unity-image-region-header">
           <label className="unity-image-region-heading" data-tooltip="低于置信度阈值的区域不自动翻译，可手动勾选后处理"><input type="checkbox" checked={region.selected && (region.confidence >= confidenceThreshold || !!region.manualSelected)} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { selected: event.target.checked, manualSelected: event.target.checked })} /><span>区域 {index + 1} · 置信度 {(Math.floor(region.confidence * 10) / 10).toFixed(1)}%{region.reviewReason ? ` · 待复核：${region.reviewReason}` : ""}{region.confidence < confidenceThreshold ? " · 低于阈值" : ""}</span></label>
             <div className="unity-image-coordinates" role="group" aria-label={`区域 ${index + 1} 的位置`}>{(["x0", "y0", "x1", "y1"] as const).map(key => <label key={key}>{({ x0: "左", y0: "上", x1: "右", y1: "下" })[key]}<input aria-label={`区域 ${index + 1} ${({ x0: "左边界", y0: "上边界", x1: "右边界", y1: "下边界" })[key]}`} type="number" step={1} min={0} max={key.startsWith("x") ? image.width : image.height} value={Math.round(region[key])} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { [key]: Number(event.target.value) })} /></label>)}</div>
           </div>
           <label>原文<SearchTextarea query={deferredSearch} value={region.text} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { text: event.target.value, translation: "" })} /></label>
           <label>译文<SearchTextarea query={deferredSearch} value={region.translation} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { translation: event.target.value })} /></label>
-          {region.error && <p className="unity-offline-error">{region.error}</p>}
-        </div>)}</div>
+          {error && <p className="unity-offline-error">{error}</p>}
+        </div>; })}</div>
       </div>}
     </div>}</>}
 

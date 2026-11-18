@@ -32,6 +32,7 @@ import { UnityEngineList } from "./UnityEngineList";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { createUnityImageOcr, translateCurrentUnityImage, mergeUnityOcrLines, processUnityImages, unityImageTranslationRegions } from "../unityImages";
 import { unityTranslationError, type UnityImage, type UnityImageRegion, type UnityProject } from "../unityOffline";
+import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { unityImageReadyForTarget, unityImageWorkDone, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget } from "../unityWorkflow";
 import { ImagePreviewReaderContext, UnityImageWorkbench } from "./UnityImageWorkbench";
 import "../unityOffline.css";
@@ -307,7 +308,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
         return result.translation;
       };
       const translated = await translate(options);
-      if (stage !== "combined" || engine !== "llm" || !reviewModel || !unityTranslationError(text, translated)) return translated;
+      if (stage !== "combined" || engine !== "llm" || !reviewModel) return translated;
+      if (!unityTranslationError(text, translated) && !gameImageJapaneseTextIssue(text, translated, target)) return translated;
       return translate(buildUnityTranslateOptions(settings, "llm", source, target, reviewModel, false, !!loadLocalModelProfiles()[reviewModel],gameTaskPrompt("review",promptState.selection,{source,target}), "keep", {selection:promptState.selection,role:"review"}));
     };
     const pool=translationKind==="engine"&&stage!=="review"?createUnityEnginePool(engines.filter(row=>engineReady(parseEngineKeys(settings.translateEngineKeys),row.id)),signal,request,{timingScope:promptState.scope + ":images"}):null;
@@ -349,7 +351,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
       }
       if (skipped) onMessage(`${skipped} 张图片没有需要翻译的文字，已移入「无需翻译」`, "info");
     }
-    if(outputMode==="review")input.images=input.images?.map(image=>image.selected?{...image,regions:image.regions.map((region:ReviewedRegion)=>region.selected&&includesRegion(region.text)&&(!region.translation||region.error||unityTranslationError(region.text,region.translation))?{...region,beforeReview:region.beforeReview||{translation:region.translation,error:region.error}}:region)}:image);
+    if(outputMode==="review")input.images=input.images?.map(image=>image.selected?{...image,regions:image.regions.map((region:ReviewedRegion)=>region.selected&&includesRegion(region.text)&&(!region.translation||region.error||unityTranslationError(region.text,region.translation)||gameImageJapaneseTextIssue(region.text,region.translation,target))?{...region,beforeReview:region.beforeReview||{translation:region.translation,error:region.error}}:region)}:image);
     const visionModel = phase === "recognize" ? stageModels.recognize : undefined;
     const recognitionLanes = visionModel ? modelConcurrency(promptState.scope, "recognize", visionModel) : concurrency;
     const ocr = Array.from({ length: phase === "recognize" ? recognitionLanes : 1 }, () => createUnityImageOcr(ocrMode, backend, reportDevice));
@@ -410,7 +412,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
       await persist(next);if(next.error)throw new Error(next.error);onMessage("当前图片译文已更新","success");
     } finally { translator.dispose(); }
   });
-  const render=(image:UnityImage)=>void execute("生成译图",async()=>{const controller=new AbortController();abort.current=controller;if(stageModels.render!==undefined&&!stageModels.render)throw new Error("请选择断行排版模型");const regions=unityImageTranslationRegions(image.regions,50,image).map(region=>includesRegion(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");const blob=await renderGameImage(settings,stageModels.render||"",await readImage(image),regions,abort.current!.signal,promptState.selection,{source,target},(message,level)=>onMessage(`${image.name} · ${message}`,level));const result=await write(image,blob);await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"generated",renderedTarget:target,noTranslationNeeded:false,completed:true,error:""});onMessage("译图已保存","success");});
+  const render=(image:UnityImage)=>void execute("生成译图",async()=>{const controller=new AbortController();abort.current=controller;if(stageModels.render!==undefined&&!stageModels.render)throw new Error("请选择断行排版模型");const regions=unityImageTranslationRegions(image.regions,50,image).map(region=>includesRegion(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");const issue=regions.filter(region=>region.selected).map(region=>gameImageJapaneseTextIssue(region.text,region.translation,target)).find(Boolean);if(issue)throw new Error(issue);const blob=await renderGameImage(settings,stageModels.render||"",await readImage(image),regions,abort.current!.signal,promptState.selection,{source,target},(message,level)=>onMessage(`${image.name} · ${message}`,level));const result=await write(image,blob);await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"generated",renderedTarget:target,noTranslationNeeded:false,completed:true,error:""});onMessage("译图已保存","success");});
   const importImage=(image:UnityImage,source?:GameImportSource)=>execute("替换译图",async()=>{const path=source||await open({multiple:false,filters:[{name:"静态图片",extensions:["png","jpg","jpeg","webp","bmp"]}]});if(!path)return;const result=await write(image,await imageImportPng(path,image));await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"imported",completed:true,error:""});onMessage("替换译图已保存","success");});
   const images=project?.images||EMPTY_GAME_IMAGES;
   useEffect(() => { onBatchImages?.(gameImageBatchRows(images)); }, [images, onBatchImages]);
@@ -567,10 +569,12 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
     .filter(region => region.selected && includesRegion(region.text));
   const requiresInitial = (image: UnityImage) => image.renderedKind !== "imported" &&
     (groupByLanguage(mergeRecognizedRegions(image)).selected !== image.selected ||
-      translationRegions(image).some(region => (!region.translation.trim() || region.translationTarget && region.translationTarget !== target) && !region.error));
+      translationRegions(image).some(region => !region.error && (!region.translation.trim() || region.translationTarget && region.translationTarget !== target ||
+        gameImageJapaneseTextIssue(region.text, region.translation, target))));
   const translated = (image: UnityImage) => image.ocrCompleted && (image.renderedKind === "imported" ||
     (groupByLanguage(mergeRecognizedRegions(image)).selected === image.selected &&
-      translationRegions(image).every(region => !!region.translation.trim() && (!region.translationTarget || region.translationTarget === target) && !unityTranslationError(region.text, region.translation))));
+      translationRegions(image).every(region => !!region.translation.trim() && (!region.translationTarget || region.translationTarget === target) &&
+        !(unityTranslationError(region.text, region.translation) || gameImageJapaneseTextIssue(region.text, region.translation, target)))));
   const recognitionReady = complete.filter && complete.refine && complete.recognize;
   const { textDone, reviewReady } = gameImageTranslationReadiness(recognitionReady,
     initialInterrupted || selected.some(requiresInitial), selected.some(image => !translated(image)), !!reviewModel);

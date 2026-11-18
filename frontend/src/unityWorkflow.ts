@@ -1,6 +1,6 @@
 import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
 import { isTranslationRefusal, unityTranslationTokens } from "./unityTokens";
-import { gameTextMatchesSource } from "./gameDisplayText";
+import { gameImageJapaneseTextIssue, gameTextMatchesSource } from "./gameDisplayText";
 
 export const UNITY_STEPS = ["扫描资源", "翻译文本", "生成补丁", "应用到游戏"];
 export const UNITY_STAGE_TABS = [
@@ -12,10 +12,12 @@ export const UNITY_STAGE_TABS = [
 ] as const;
 export const unityImageHasRefusal = (image: UnityImage) => image.renderedKind !== "imported" && image.regions.some(region => region.selected && isTranslationRefusal(region.text, region.translation));
 export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
+export const unityImageHasUntranslatedJapanese = (image: UnityImage, target?: string) => !!image.renderedFile && image.renderedKind !== "imported" &&
+  image.regions.some(region => region.selected && gameImageJapaneseTextIssue(region.text, region.translation, target || region.translationTarget || image.renderedTarget));
 export const imageTranslationMatchesTarget = (image: UnityImage, target?: string) =>
   !target || !image.renderedTarget || image.renderedTarget === target || image.renderedKind === "imported";
 export const unityImageReadyForTarget = (image: UnityImage, target?: string) =>
-  unityImageResultReady(image) && imageTranslationMatchesTarget(image, target);
+  unityImageResultReady(image) && imageTranslationMatchesTarget(image, target) && !unityImageHasUntranslatedJapanese(image, target);
 export const unityImageWorkDone = (image: UnityImage, target?: string) =>
   unityImageReadyForTarget(image, target) || !!image.noTranslationNeeded && image.completed && !image.error && imageTranslationMatchesTarget(image, target);
 export const unityImagesReady = (project: UnityProject | null, target?: string) => !!project && (!!project.imagesSkipped || !(project.images || []).some(i => i.selected) || (project.scanRevision || 0) >= 5 && (project.images || []).filter(i => i.selected).every(image => unityImageWorkDone(image, target)));

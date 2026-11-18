@@ -265,7 +265,8 @@
 .unity-failure-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .unity-offline-error, .unity-offline-table .unity-offline-error { color: #b93636; white-space: normal; }
 .unity-offline-pagination { justify-content:center; flex-wrap:wrap; gap:6px; margin:0; }
-.unity-offline-pagination input { width: 70px; min-width: 0; padding: 7px 6px !important; }
+.game-page-number { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.game-page-number input { box-sizing: content-box; min-width: 0; padding: 3px 5px; font: inherit; text-align: center; }
 .unity-offline-empty { padding: 40px 12px; color: var(--text-muted); }
 .unity-offline-font { flex-wrap: wrap; }
 .unity-offline-font label { flex: 1; min-width: 240px; }
@@ -551,7 +552,7 @@
 .game-batch-list .unity-progress-locate { flex: 0 1 auto; max-width: 42%; white-space: nowrap; text-align: start; }
 .game-batch-detail { flex: 0 1 auto; }
 .game-batch-page-controls { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-.game-batch-page-controls small { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.game-batch-page-controls .game-page-number { color: var(--text-muted); }
 .game-batch-page-controls button { display: grid; place-items: center; width: 24px; height: 24px; padding: 2px; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
 .game-batch-page-controls button:hover:enabled { color: var(--text); }
 .game-batch-page-controls button:disabled { opacity: .35; cursor: default; }

@@ -1,5 +1,6 @@
 
 import { useState } from "react";
+import { GamePageNumber } from "./GamePageNumber";
 import type { UnityImage } from "../unityOffline";
 import { imageManuallyExcluded, IMAGE_PRESENCE_CONFLICT, IMAGE_PRESENCE_REVIEW_HINT, type ImageScreening } from "../gameImageScreening";
 
@@ -65,7 +66,7 @@ function BatchGroup({ title, rows, onLocate }: { title: string; rows: BatchRow[]
         onClick={() => onLocate(row)}>{row.label}</button>
       <span className="game-batch-detail" data-tooltip={row.detail}>{row.detail}</span>
       {pages > 1 && index === visible.length - 1 && <span className="game-batch-page-controls" aria-label={title + "翻页"}>
-        <small>{current + 1} / {pages}</small>
+        <GamePageNumber page={current} pages={pages} onPage={setPage} />
         <button type="button" aria-label="上一页" data-tooltip="上一页" disabled={current === 0} onClick={() => setPage(current - 1)}>
           <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
         </button>

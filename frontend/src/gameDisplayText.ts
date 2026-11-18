@@ -27,6 +27,13 @@ export function gameJapaneseTextIssue(source: string, translation: string, targe
   return japaneseKana.test(visible) || japaneseOnlyHan.test(visible) ? "译文仍含日文，请检查正文和说话人姓名" : "";
 }
 
+export function gameImageJapaneseTextIssue(source: string, translation: string, target?: string) {
+  if (!target?.startsWith("zh") || !japaneseKana.test(languageText(source)) ||
+    !japaneseKana.test(languageText(translation).replace(/[っッー]/g, ""))) return "";
+  return source.normalize("NFKC").trim() === translation.normalize("NFKC").trim()
+    ? "模型原样返回了日文，请重译此区域" : "译文仍含日文，请重译此区域";
+}
+
 const rpgSystemTranslations = new Map<string, [string, string]>([
   ["Recovery", ["%1は%2を%3回復した！", "%1恢复了%3点%2！"]],
   ["Loss", ["%1は%2を%3失った！", "%1失去了%3点%2！"]],
