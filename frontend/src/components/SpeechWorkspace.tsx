@@ -3,6 +3,7 @@ import { copyText } from "../clipboard";
 import { speechQueue, type SpeechQueueItem } from "../speech/queue";
 import { speechNative } from "../speech/native";
 import { formatSpeechTime, type SpeechCue, type SpeechRange } from "../speech/transcription";
+import { showAppNotice } from "./AppNotice";
 import { SpeechRangePage, type SpeechRangePageHandle } from "./SpeechRangeEditor";
 
 const friendly = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -40,7 +41,6 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
   const query = search.trim();
   const [preview, setPreview] = useState<{ id: string; query: string; page: number; cues: SpeechCue[]; total: number } | null>(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const rangePages = useRef(new Map<string, SpeechRangePageHandle>());
   const [tabMenu, setTabMenu] = useState<{ mode: "results" | "ranges"; id: string; x: number; y: number } | null>(null);
   const byId = new Map(items.map(item => [item.id, item]));
@@ -117,12 +117,12 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
         </div>{layoutControl}</div>
         {fileTabs.length > 0 && <div className="speech-result-tabs" role="tablist" aria-label={workspaceMode === "ranges" ? "识别范围文件" : "转写结果文件"}>{fileTabs.map((item, index) => <div className="speech-file-tab" key={item.id}>
           <button type="button" role="tab" id={`${id}-${workspaceMode}-tab-${item.id}`} aria-controls={workspaceMode === "ranges" ? `${id}-range-page-${item.id}` : `${id}-result-page`} aria-selected={item.id === selectedTabId} tabIndex={item.id === selectedTabId || (!selectedTabId && index === 0) ? 0 : -1} data-tooltip={item.source.name} aria-label={item.source.name}
-            onClick={() => { if (workspaceMode === "ranges") openRange(item); else selectFile(item); setNotice(""); }}
+            onClick={() => { if (workspaceMode === "ranges") openRange(item); else selectFile(item); }}
             onContextMenu={event => { event.preventDefault(); setTabMenu({ mode: workspaceMode, id: item.id, x: Math.max(0, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(0, Math.min(event.clientY, window.innerHeight - 168)) }); }}
             onKeyDown={event => {
               const next = event.key === "ArrowRight" ? (index + 1) % fileTabs.length : event.key === "ArrowLeft" ? (index + fileTabs.length - 1) % fileTabs.length : event.key === "Home" ? 0 : event.key === "End" ? fileTabs.length - 1 : -1;
               if (next < 0) return;
-              event.preventDefault(); if (workspaceMode === "ranges") openRange(fileTabs[next]); else selectFile(fileTabs[next]); setNotice("");
+              event.preventDefault(); if (workspaceMode === "ranges") openRange(fileTabs[next]); else selectFile(fileTabs[next]);
               event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
             }}>{item.source.name}</button>
           <button type="button" className="speech-tab-close" aria-label={`关闭标签页：${item.source.name}`} data-tooltip="关闭标签页" onClick={() => void closeTabs(workspaceMode, [item.id])}>×</button>
@@ -134,7 +134,6 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
           <button role="menuitem" autoFocus={menuItems.length === 1} className="speech-tab-menu-current" onClick={() => void closeTabs(tabMenu.mode, [tabMenu.id])}>关闭标签页</button>
         </div></>}
         {error && <div className="speech-error" role="alert">{error}<button onClick={() => setError("")}>关闭</button></div>}
-        {notice && <div className="speech-notice" role="status">{notice}</div>}
         {rangeItems.map(item => <div key={item.id} id={`${id}-range-page-${item.id}`} role="tabpanel" aria-labelledby={`${id}-ranges-tab-${item.id}`} className="speech-range-tab-page" hidden={workspaceMode !== "ranges" || rangeWorkspace.activeId !== item.id}>
           <SpeechRangePage ref={page => { if (page) rangePages.current.set(item.id, page); else rangePages.current.delete(item.id); }} name={item.source.name} duration={item.source.duration} ranges={item.options.ranges} disabled={!!item.folder || ["queued", "running", "pausing", "resetting", "cancelling"].includes(item.status)} sharedDraft={drafts.get(item.id)} onDraftChange={ranges => changeDraft(item.id, ranges)} onDiscard={() => changeDraft(item.id)} onChange={ranges => speechQueue.setRanges(item.id, ranges)} onClose={() => closeRange(item.id)} />
         </div>)}
@@ -142,7 +141,7 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
         {workspaceMode === "results" && (result ? <div className="speech-result-page" id={`${id}-result-page`} role="tabpanel" aria-labelledby={`${id}-results-tab-${result.id}`}>
           <div className="speech-result-tools"><div className="speech-display-switch" role="radiogroup" aria-label="结果显示方式"><button role="radio" aria-checked={view === "cues"} onClick={() => setView("cues")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M9 5h12M9 12h12M9 19h12"/><circle cx="3" cy="5" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="19" r="1"/></svg>时间轴</button><button role="radio" aria-checked={view === "text"} onClick={() => setView("text")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h16M4 20h10"/></svg>纯文本</button></div>
           <div className="speech-search" role="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" aria-label="搜索" data-tooltip="搜索当前音频转写结果" placeholder="搜索" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} />{query && <>{!!resultPreview?.total && <span role="status">找到 {resultPreview.total} 段</span>}<button aria-label="清除搜索" onClick={() => { setSearch(""); setPage(0); }}>×</button></>}</div>
-          <button disabled={!pageText} onClick={() => void copyText(pageText).then(ok => setNotice(ok ? "已复制本页文本" : "复制失败"))}>复制本页文本</button></div>
+          <button disabled={!pageText} onClick={() => void copyText(pageText).then(ok => showAppNotice(ok ? "已复制本页文本" : "复制失败", ok ? "success" : "error"))}>复制本页文本</button></div>
           {!resultPreview?.cues.length ? <div className="speech-empty">{query ? resultPreview ? "未找到匹配内容。" : "正在搜索…" : "每段识别完成并写入文件后，结果会显示在这里。"}</div> : view === "text" ? <pre className="speech-preview">{highlight(pageText, query)}</pre> : <div className="speech-cues">{resultPreview.cues.map((cue, index) => <div className="speech-cue" key={page * 100 + index}><span><b>{page * 100 + index + 1}</b><time>{formatSpeechTime(cue.start, ".")}<br />{formatSpeechTime(cue.end, ".")}</time></span><p>{highlight(cue.text, query)}</p></div>)}</div>}
           {pages > 1 && <div className="speech-pagination"><button disabled={!page} onClick={() => setPage(value => value - 1)}>上一页</button><span>{page + 1} / {pages}</span><button disabled={page + 1 >= pages} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
         </div> : <div className="speech-empty">开始处理并开启文件的结果显示后，可在这里切换查看转写结果。</div>)}

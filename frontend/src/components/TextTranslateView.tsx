@@ -1120,6 +1120,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
           overwrite: true,
         });
         setStatusLine(`工程已保存到 ${saved.folderPath}`);
+        showAppNotice("工程已保存");
       } catch (e) {
         setError(toFriendlyError(e, "保存工程失败"));
       } finally {
@@ -1141,6 +1142,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
         const check = byId.get(entry.id); return check ? { ...entry, status: check.error ? "error" : "done", error: check.error || undefined, warning: check.warning || undefined } : entry;
       }) }));
       setStatusLine(`检查完成 · ${checks.length} 条`);
+      showAppNotice(`译文检查完成 · ${checks.length} 条`);
     } catch (error) { if (!controller.signal.aborted) setError(toFriendlyError(error, "检查译文失败")); }
     finally { setBusy(false); busyRef.current = false; if (abortRef.current === controller) abortRef.current = null; }
   };
@@ -1174,6 +1176,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
       return null;
     }
     setStatusLine(`${payload.kind} 已导出：${savedName}`);
+    showAppNotice(`${payload.kind} 已导出`);
     return savedName;
   };
 

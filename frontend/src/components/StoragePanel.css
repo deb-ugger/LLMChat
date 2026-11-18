@@ -31,7 +31,6 @@
 .storage-timing-note .storage-icon { width: 15px; height: 15px; }
 .storage-timing-note strong { color: #415f8d; font-weight: 600; margin: 0 2px; }
 .storage-notice { display: flex; gap: 10px; align-items: flex-start; padding: 12px 15px; border: 1px solid; border-radius: 9px; font-size: 13px; line-height: 1.6; }
-.storage-notice.is-success { color: #21704f; background: #eef8f3; border-color: #c9e8d8; }
 .storage-notice.is-error { color: #a23737; background: #fff3f3; border-color: #efd2d2; }
 .storage-section { display: grid; gap: 13px; min-width: 0; }
 .storage-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

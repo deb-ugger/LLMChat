@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type StorageStatus } from "../api";
 import { toFriendlyError } from "../friendlyError";
+import { showAppNotice } from "./AppNotice";
 import "./StoragePanel.css";
 
 const ICONS = {
@@ -18,7 +19,6 @@ const ICONS = {
   trash: ["M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"],
   warning: ["m12 3 10 18H2L12 3Z", "M12 9v5M12 17h.01"],
   arrow: ["M5 12h14M14 7l5 5-5 5"],
-  check: ["m5 12 4 4L19 6"],
   close: ["m6 6 12 12M6 18 18 6"],
 } as const;
 type IconName = keyof typeof ICONS;
@@ -57,7 +57,6 @@ export function StoragePanel({ active }: { active: boolean }) {
   const [status, setStatus] = useState<StorageStatus>();
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState<{ kind: "paths" } | { kind: "cleanup"; id: string } | null>(null);
   const current = status ? Object.fromEntries(status.entries.map(e => [e.id, e.path])) : {};
@@ -82,19 +81,19 @@ export function StoragePanel({ active }: { active: boolean }) {
   useEffect(() => { if (active && !status && !busy) void refresh(); }, [active]);
 
   async function savePaths(cancel = false) {
-    setBusy(true); setError(""); setMessage(""); setConfirm(null);
+    setBusy(true); setError(""); setConfirm(null);
     try {
       accept(await api.saveStoragePaths(cancel ? current : paths));
-      setMessage(cancel ? "已取消路径迁移。" : "路径已保存，下次启动时迁移。原位置文件会保留为备份。");
+      showAppNotice(cancel ? "已取消路径迁移" : "路径已保存，下次启动时迁移");
     } catch (e) { setError(toFriendlyError(e, "保存存储路径失败")); }
     finally { setBusy(false); }
   }
   async function scheduleCleanup(id: string, queue: boolean) {
-    setBusy(true); setError(""); setMessage(""); setConfirm(null);
+    setBusy(true); setError(""); setConfirm(null);
     try {
       const ids = queue ? [...new Set([...status!.cleanup, id])] : status!.cleanup.filter(e => e !== id);
       accept(await api.scheduleStorageCleanup(ids));
-      setMessage(queue ? `已安排清理${CLEANUP_COPY[id].title}，完全退出软件并重新启动后执行。` : `已取消${CLEANUP_COPY[id].title}清理。`);
+      showAppNotice(queue ? `已安排清理${CLEANUP_COPY[id].title}，下次启动时执行` : `已取消${CLEANUP_COPY[id].title}清理`);
     } catch (e) { setError(toFriendlyError(e, "设置清理计划失败")); }
     finally { setBusy(false); }
   }
@@ -109,7 +108,6 @@ export function StoragePanel({ active }: { active: boolean }) {
       <div><span>清理计划</span><strong>{status ? status.cleanup.length : "—"}<em>项</em></strong><small>{status?.cleanup.length ? "下次启动时执行" : "暂无待执行清理"}</small></div>
     </div>
     <div className="storage-timing-note"><StorageIcon name="clock" /><span>路径迁移与文件清理均在<strong>下次启动</strong>时执行，执行前可以取消。</span></div>
-    {message && <div role="status" className="storage-notice is-success"><StorageIcon name="check" /><span>{message}</span></div>}
     {(error || status?.error) && <div role="alert" className="storage-notice is-error"><StorageIcon name="warning" /><span>{error || status?.error}</span></div>}
     {!status && !busy && <button className="storage-button" type="button" onClick={() => void refresh()}>重新读取</button>}
 

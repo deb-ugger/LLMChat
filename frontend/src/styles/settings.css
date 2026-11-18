@@ -2978,8 +2978,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  inset: 16px 16px auto auto;
+  inset: 50% auto auto 50%;
   z-index: 10000;
+  width: max-content;
   max-width: min(520px, calc(100% - 32px));
   box-sizing: border-box;
   max-height: 45vh;
@@ -2992,17 +2993,12 @@
   line-height: 1.4;
   box-shadow: 0 8px 24px color-mix(in srgb, #000 16%, transparent);
   pointer-events: none;
+  translate: -50% -50%;
   animation: settings-toast-in 0.18s ease-out;
 }
 
 .settings-toast strong {
   font-weight: 800;
-}
-
-.settings-toast.app-notice.is-ok {
-  inset: 50% auto auto 50%;
-  width: max-content;
-  translate: -50% -50%;
 }
 
 :is(.settings-toast, .unity-config-toast, .pricing-modal-toast).is-ok {
@@ -3018,8 +3014,8 @@
 }
 
 @keyframes settings-toast-in {
-  from { opacity: 0; transform: translateY(-5px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.settings-toast, .unity-config-toast, .pricing-modal-toast) { animation: none; }
