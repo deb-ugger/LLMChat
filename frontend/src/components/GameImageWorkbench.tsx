@@ -6,7 +6,7 @@ import { UnityProjectLoading } from "./UnityProjectLoading";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu } from "../gameOllama";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { classifyGameImagePresence, mergeGameImageFieldLines, recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { recommendedGameModels, gameModelPresetKey } from "../gameModelPreset";
+import type { GameTestConfiguration } from "../gameModelPreset";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { logRuntimeError } from "../runtimeLog";
@@ -39,8 +39,8 @@ import "../unityOffline.css";
 type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;error:string}};
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 export type GameImageInfo = {state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number};
-export type GameImageHandle = { benchmark: () => BenchmarkImageSource; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; prepare: () => Promise<boolean>; apply: () => Promise<boolean>; uninstall: () => Promise<boolean> };
-export function GameImageWorkbench({ handle, gamePath, settings, backupMode, backupScopes, workflowSteps,workflowStage,onTaskStateChange,onBatchImages,imageTarget,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;onBatchImages?:(value:ReturnType<typeof gameImageBatchRows>)=>void;imageTarget?:{id:string;sequence:number};backupScopes:string[];workflowSteps:ReactNode;workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void }) {
+export type GameImageHandle = { benchmark: () => BenchmarkImageSource; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; prepare: () => Promise<boolean>; apply: () => Promise<boolean>; uninstall: () => Promise<boolean>; applyTestConfiguration: (preset: GameTestConfiguration) => Promise<void> };
+export function GameImageWorkbench({ handle, gamePath, settings, backupMode, backupScopes, workflowSteps,workflowStage,onTaskStateChange,onBatchImages,imageTarget,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage, onApplyTestConfiguration, testConfigurationDisabled }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;onBatchImages?:(value:ReturnType<typeof gameImageBatchRows>)=>void;imageTarget?:{id:string;sequence:number};backupScopes:string[];workflowSteps:ReactNode;workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void;onApplyTestConfiguration?:()=>Promise<void>;testConfigurationDisabled?:boolean }) {
   const promptState=useGamePromptSelection(gamePath + ":images");
   const {phase:closingPhase,show:showClosing,clear:clearClosing}=useClosingProgress();
   const operationWork=useRef<Promise<boolean>|null>(null),reading=useRef(false);
@@ -63,6 +63,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const [step,setStep]=useState<"filter"|"refine"|"recognize"|"translate"|"restore">(()=>pendingPhase==="review"||pendingPhase==="render"?"translate":pendingPhase||"filter");
   const configurationCommit = useRef<GameStepConfigurationCommit | null>(null);
   const [configured, setConfigured] = useState<string | null>(null);
+  const [configurationRevision, setConfigurationRevision] = useState(0);
   const backend="auto" as const;
   const deviceMessages=useRef(new Set<string>());
   const reportDevice=(text:string,fallback:boolean)=>{if(!deviceMessages.current.has(text)){deviceMessages.current.add(text);onMessage(text,fallback?"warning":"info");}};
@@ -92,16 +93,6 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const [stageModels,setStageModels] = useState<Record<string,string>>(()=>{try{return JSON.parse(localStorage.getItem("llmchat-image-stage-models:"+gamePath)||"{}");}catch{return {};}});
   useEffect(()=>{localStorage.setItem("llmchat-image-stage-models:"+gamePath,JSON.stringify(stageModels));},[gamePath,stageModels]);
   const [reviewModel, setReviewModel] = useState(task.task?.options?.reviewModel || savedOptions.reviewModel || "");
-  useEffect(() => {
-    const preset = recommendedGameModels(), key = gameModelPresetKey(gamePath, "images");
-    if (!preset || !gamePath || !active || busy || clearing || localStorage.getItem(key)) return;
-    setStageModels({ recognize: preset.vision }); setTranslationKind("llm"); setProvider("llm");
-    setTranslationModel(preset.text); setReviewModel(preset.review); setStrategy("staged"); setConcurrency(2);
-    setTarget("zh-CN"); setOnlySourceLanguage(true); setSkipTargetLanguage(true);
-    committedSource.current = { source, onlySourceLanguage: true, filter: source === "auto" ? "" : source, targetFilter: "zh-CN", target: "zh-CN" };
-    if (task.task) task.select({ ...task.task, options: { backend, strategy: "staged", mode, source, target: "zh-CN", concurrency: 2, provider: "llm", translationKind: "llm", translationModel: preset.text, reviewModel: preset.review, onlySourceLanguage: true, skipTargetLanguage: true } });
-    localStorage.setItem(key, "configured");
-  }, [gamePath, active, busy, clearing]);
   useEffect(()=>{try{localStorage.setItem("llmchat-game-image-options:"+gamePath,JSON.stringify({strategy,concurrency,mode,provider,source:committedSource.current.source,target:committedSource.current.target,translationKind,translationModel,reviewModel,onlySourceLanguage:committedSource.current.onlySourceLanguage,skipTargetLanguage}));}catch(error){onMessage(`图片参数自动保存失败：${String(error)}`,"error");}},[gamePath,strategy,concurrency,mode,provider,source,target,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage]);
   const saveConfiguration=async()=>{
     if (sourceFilter !== committedSource.current.filter || targetFilter !== committedSource.current.targetFilter) {
@@ -478,6 +469,20 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
     onMessage(`已卸载 ${result.files} 张译图`, "success");
   });
   if (handle) handle.current = {
+    applyTestConfiguration: async preset => {
+      if (disabled || busy || clearing || operationActive.current || !current.current) throw new Error("请先完成图片工程读取或等待当前任务结束");
+      await saveConfiguration();
+      const { filter: _filter, recognize: _recognize, render: _render, ...stages } = stageModels;
+      const nextStages = { ...stages, refineMethod: "local", refineOcr: preset.ocrMode, refineConcurrency: String(preset.ocrConcurrency) };
+      const nextOptions = { backend, strategy: "staged" as const, mode: preset.ocrMode, source, target, concurrency: preset.ocrConcurrency,
+        provider: "llm" as const, translationKind: "llm" as const, translationModel: preset.image, reviewModel: preset.review, onlySourceLanguage, skipTargetLanguage };
+      localStorage.setItem("llmchat-game-image-options:" + gamePath, JSON.stringify(nextOptions));
+      localStorage.setItem("llmchat-image-stage-models:" + gamePath, JSON.stringify(nextStages));
+      if (task.task) task.select({ ...task.task, mode: preset.ocrMode, options: nextOptions });
+      setStageModels(nextStages); setMode(preset.ocrMode); setStrategy(nextOptions.strategy); setConcurrency(preset.ocrConcurrency);
+      setProvider("llm"); setTranslationKind("llm"); setTranslationModel(preset.image); setReviewModel(preset.review);
+      setConfigurationRevision(value => value + 1);
+    },
     benchmark: () => ({
       setup: { scope: promptState.scope, source: onlySourceLanguage ? source : "auto", target, skipTarget: skipTargetLanguage,
         prompts: promptState.selection, mode, strategy, concurrency, engines, refineMode: refineOcr.id, refineConcurrency, refineConfidence,
@@ -652,7 +657,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const configLocked = clearing || !project || !!busy && (configured === operationStep.current || imageFlow.some(step => step.id === configured && step.state === "done"));
   const operationContent=<>
     {workflowSteps}
-    <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} onSaveConfiguration={saveConfiguration} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
+    <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} onApplyTestConfiguration={onApplyTestConfiguration} testConfigurationDisabled={testConfigurationDisabled || flowBusy || !project} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
       {configured === "translate" && <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => { setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm"); }}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
         {translationKind !== "engine" && <>
           {configured === "translate" && <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked} models={models} onChange={setTranslationModel} />}

@@ -8,7 +8,7 @@ import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, cl
 import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { recommendedGameModels, gameModelPresetKey } from "../gameModelPreset";
+import { loadGameTestConfiguration } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
@@ -179,6 +179,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [patch, setPatch] = useState<UnityPatch | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false), [saveNotice, setSaveNotice] = useState("");
+  const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
+  const [configurationRevision, setConfigurationRevision] = useState(0);
   const [saveComplete, setSaveComplete] = useState(false);
   const [savedChanges, setSavedChanges] = useState<string[]>([]);
   const imageDraftOriginals=useRef(new Map<string,UnityImage>());
@@ -374,7 +376,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     })();
     return () => { cancelled = true; };
   }, [root]);
-  useEffect(() => { onBusyChange?.(!!busy || restoring); }, [busy, restoring, onBusyChange]);
+  useEffect(() => { onBusyChange?.(!!busy || restoring || applyingTestConfiguration); }, [busy, restoring, applyingTestConfiguration, onBusyChange]);
   useEffect(() => {
     if (!saveComplete) return;
     const timer = window.setTimeout(() => setSaveComplete(false), 4500);
@@ -1126,7 +1128,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false, part?: UnityTranslationPart) {
     if (importPreviewRef.current) { setActionError("请先应用或取消右侧的导入预览"); return; }
-    if (busy || imageEditorWork.current || restoring || running.current) return;
+    if (busy || applyingTestConfiguration || imageEditorWork.current || restoring || running.current) return;
     const changedScanOptions = resume && checkpointRef.current?.step === 1
       ? unityScanOptionChanges(checkpointRef.current, { includeCode, textMode, typeDirectory, codeAssemblies }) : [];
     const rescan = (needsScan || updateScan || preparingRescan || changedScanOptions.length > 0) && (resume ? checkpointRef.current?.step ?? startStep : startStep) <= 2;
@@ -1346,7 +1348,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const resumable = !preparingRescan && !!checkpoint && !checkpoint.finished;
   const pausedScan = checkpoint?.step === 1 && !checkpoint.finished && (checkpoint.progress.state === "stopped" || checkpoint.progress.state === "error");
   const scanOptionsChanged = !!pausedScan && unityScanOptionChanges(checkpoint!, { includeCode, textMode, typeDirectory, codeAssemblies }).length > 0;
-  const locked = !!busy || restoring || resumable || saving || !!importPreview;
+  const locked = !!busy || restoring || resumable || saving || applyingTestConfiguration || !!importPreview;
   const entriesLocked = !!busy || restoring || saving || resumable && (checkpoint.step !== 2 || !!checkpoint.imageOnly);
   const resumeTask = () => checkpoint && void startWorkflow(checkpoint.step, checkpoint.endStep, true, checkpoint.automatic);
   async function skipRemaining() { await skipTranslationPart(!!checkpoint?.imageOnly); }
@@ -1480,14 +1482,33 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const executingStep = generation && generation.state !== "done" ? generation.step : completedThrough < 4 ? completedThrough + 1 : undefined;
   const scanParametersLocked = !!busy || restoring || scanStarted && !preparingRescan && !pausedScan;
   const parametersLocked = activeStep === 1 ? scanParametersLocked : locked || activeStep <= completedThrough || activeStep === 2 && (imagePart ? imagesReady : textReady);
-  useEffect(() => {
-    const preset = recommendedGameModels(), key = gameModelPresetKey(root, "unity");
-    if (!preset || !root || !project || busy || restoring || saving || localStorage.getItem(key)) return;
-    setTranslationKind("llm"); setLlmModel(preset.text); setDialogueModel(scope.language === "ja" ? preset.dialogue : preset.text); setNameModel(preset.names);
-    setImageModel(preset.text); setImageReviewModel(preset.review); setImageVisionModel(preset.vision); setImageLayoutModel(undefined);
-    setTarget("zh-CN"); setIncludeContext(true); setJoinLines(true);setWrapMode("join"); setImageConfidenceThreshold(50); setImageConcurrency(2);
-    localStorage.setItem(key, "configured");
-  }, [root, project, busy, restoring, saving]);
+  const testConfigurationDisabled = !scanReady || !project || !!busy || restoring || saving || applyingTestConfiguration || !!importPreview || !!imageEditorBusy;
+  const applyTestConfiguration = async () => {
+    if (testConfigurationDisabled || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
+    setApplyingTestConfiguration(true);
+    try {
+      const preset = await loadGameTestConfiguration(scope.language === "ja" && target === "zh-CN");
+      const current = latest.current;
+      if (!current || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
+      parameterWrite.current?.();
+      const previous = checkpointRef.current;
+      remember({ ...(previous || projectCheckpoint(current)), ...execution.current.parameters,
+        translationKind: "llm", llmModel: preset.text, dialogueModel: preset.dialogue, nameModel: preset.names, includeContext: true, textScreenModel: undefined,
+        imageModel: preset.image, imageReviewModel: preset.review, imageVisionModel: undefined, imageLayoutModel: undefined,
+        imageOcrMode: preset.ocrMode, imageConcurrency: preset.ocrConcurrency });
+      try { await taskWrites.current; }
+      catch (error) {
+        checkpointRef.current = previous; setCheckpoint(previous); setGeneration(previous?.progress ?? null);
+        throw error;
+      }
+      setTranslationKind("llm"); setLlmModel(preset.text); setDialogueModel(preset.dialogue); setNameModel(preset.names);
+      setTextScreenModel(undefined); setIncludeContext(true);
+      setImageModel(preset.image); setImageReviewModel(preset.review); setImageVisionModel(undefined); setImageLayoutModel(undefined);
+      setImageOcrMode(preset.ocrMode); setImageConcurrency(preset.ocrConcurrency);
+      setConfigurationRevision(value => value + 1);
+      logAction("已应用文本和图片测试配置", "success");
+    } finally { setApplyingTestConfiguration(false); }
+  };
   const viewingProgress = !!generation && activeStep === generation.step && (activeStep !== 2 || (!!checkpoint?.translationRuns || imagePart === !!checkpoint?.imageOnly));
   const currentExecution = {
     parameters: { translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices,
@@ -1807,10 +1828,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     (imagePart ? imagesReady : textReady) ? "done" : currentParts?.[currentPart]?.state ??
     (generation?.step === 2 && progressIsImage === imagePart ? generation.state : "pending");
   const runningFlowStep = imagePart ? imageTask.current : textScreening || currentParts?.text.textStage === "screening" || !screenComplete ? "screen" : "translate";
-  const sharedLanguageLocked = !!busy || textScreening || restoring || saving || !scanReady || !!importPreview;
+  const sharedLanguageLocked = !!busy || textScreening || restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview;
   const flowConfigComplete = imagePart ? flowConfig === "recognize" ? !imagesNeedRecognition : imagesReady :
     flowConfig === "screen" ? screenComplete : textReady;
-  const flowConfigLocked = restoring || saving || !scanReady || !!importPreview ||
+  const flowConfigLocked = restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview ||
     (!!busy || textScreening) && (flowConfigComplete || flowProgressState === "running" && flowConfig === runningFlowStep);
 
   const prompt = (scene: keyof typeof promptState.selection) => promptState.selection[scene] || "builtin:" + scene;
@@ -1908,7 +1929,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
           {pausedScan && !preparingRescan && scanOptionsChanged && <p className="hint">扫描参数已变化，继续时需从头重新扫描；确认后保留可匹配复用的旧结果。</p>}
         </>}
-        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig}
+        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} onApplyTestConfiguration={imagePart ? applyTestConfiguration : undefined} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig}
           steps={imagePart ? [
             { id: "recognize", title: "识字与定位", models: [{role:"recognize",id:imageVisionModel}], summary: imageVisionModel!==undefined?"大模型识别":OCR_MODE_OPTIONS.find(item => item.id === imageOcrMode)?.title, state: imagesNeedRecognition ? "current" : "done", run: imagesNeedRecognition ? () => startTranslationPart("images", "recognize") : undefined,
               stop: partRunning && imageTask.current === "recognize" ? () => translationJobs.current?.stop("images") : undefined,

@@ -9,7 +9,7 @@ import { showAppNotice } from "./AppNotice";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
-import { recommendedGameModels, gameModelPresetKey } from "../gameModelPreset";
+import type { GameTestConfiguration } from "../gameModelPreset";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { unityLanguageScope } from "../unityWorkflow";
@@ -42,7 +42,7 @@ import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import type { GameImportSource } from "../gameImageImport";
 
 export type GameTextInfo = { count: number; selected: number; done: number; changed: number; sourcePath: string; dirty: boolean; running: boolean; state: string; translationPath: string; loadResult?: { path: string; error?: string }; messageCore?: boolean; positionRepairs?: number; target?: string };
-export type GameTextHandle = { benchmark?: () => BenchmarkInput; locate?: (id: string) => void; findText?: (source: string, translation: string) => string | undefined; retryFailures?: () => void; canRetryFailures?: boolean; prepare: () => Promise<string | false>; leave: () => Promise<boolean>; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void };
+export type GameTextHandle = { benchmark?: () => BenchmarkInput; locate?: (id: string) => void; findText?: (source: string, translation: string) => string | undefined; retryFailures?: () => void; canRetryFailures?: boolean; prepare: () => Promise<string | false>; leave: () => Promise<boolean>; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; applyTestConfiguration: (preset: GameTestConfiguration) => Promise<void>; japaneseToSimplified: boolean };
 type Props = { gamePath: string; settings: Settings; sourcePath: string; controls: HTMLElement | null; results: HTMLElement | null; visible: boolean; step: number; active: boolean; disabled: boolean; steps: ReactNode; skipped:boolean; onSkip:()=>void; handle: { current: GameTextHandle | null }; onInfo: (info: GameTextInfo) => void; onBatchFailures?: (rows: BatchRow[]) => void; onBatchCorrections?: (rows: BatchRow[]) => void; onMessage: (text: string, level?: "info" | "warning" | "error" | "success") => void };
 
 export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, results, visible, step, active, disabled, steps, skipped, onSkip, handle, onInfo, onBatchFailures, onBatchCorrections, onMessage }: Props) {
@@ -59,6 +59,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   latestOptions.current = options;
   const configurationCommit = useRef<GameStepConfigurationCommit | null>(null);
   const [configured, setConfigured] = useState<string | null>(null);
+  const [configurationRevision, setConfigurationRevision] = useState(0);
   const wrapMode=options.wrapMode||(options.joinLines?"join":"keep");
   const [screened, setScreened] = useState(false);
   const [screenStarted, setScreenStarted] = useState(false);
@@ -85,9 +86,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const controller = useRef<AbortController | null>(null), work = useRef<Promise<boolean> | null>(null), writes = useRef(Promise.resolve());
   const callbacks = useRef({ onMessage, onInfo }); callbacks.current = { onMessage, onInfo };
   const publish = (value: GameTextProject) => { current.current = value; setProject(value); };
-  const saveConfiguration=async()=>{
+  const saveConfiguration=async(nextOptions = options)=>{
     optionWrite.current?.();
-    const job=writes.current.then(async()=>{const saved=baseline.current;if(!saved?.sourcePath)throw new Error("请先扫描资源");if(JSON.stringify(saved.options)!==JSON.stringify(options)){await gameTextRequest("save",{gamePath,...saved,options});baseline.current={...saved,options};}});
+    const job=writes.current.then(async()=>{const saved=baseline.current;if(!saved?.sourcePath)throw new Error("请先扫描资源");if(JSON.stringify(saved.options)!==JSON.stringify(nextOptions)){await gameTextRequest("save",{gamePath,...saved,options:nextOptions});baseline.current={...saved,options:nextOptions};}});
     writes.current=job.then(()=>{},()=>{});await job;
   };
   const report = (text: string, level: "info" | "warning" | "error" | "success" = "info") => callbacks.current.onMessage(text, level);
@@ -112,14 +113,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       setState(restored);
       setProgress(restored !== "idle" ? { completed, total: selected.length, detail: `已恢复工程 · 有效译文 ${completed}/${selected.length} 条 · 失败 ${failed} 条` } : null);
       setProgressFailure("");
-      const preset = recommendedGameModels(), key = gameModelPresetKey(gamePath, "text");
-      const applyPreset = preset && !localStorage.getItem(key);
-      const japanese = unityLanguageScope(value.entries, value.options.source || "auto").language === "ja";
-      setOptions(() => {
-        const merged: GameTextOptions = { kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true, ...value.options, ...(applyPreset ? { kind: "llm", model: preset.text, dialogueModel: japanese ? preset.dialogue : preset.text, nameModel: preset.names, target: "zh-CN", joinLines: true, wrapMode:"join", onlySourceLanguage: true, skipTargetLanguage: true } : {}) };
-        baseline.current = { ...value, options: applyPreset ? value.options : merged }; return merged;
-      });
-      if (applyPreset) localStorage.setItem(key, "configured");
+      const merged: GameTextOptions = { kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true, ...value.options };
+      baseline.current = { ...value, options: merged };
+      setOptions(merged);
       setLoadResult({ path: sourcePath });
     }).catch(error => { if (alive) { const message = `读取文本工程失败：${String(error)}`; setLoadResult({ path: sourcePath, error: message }); setState("error"); setProgressFailure(message); report(message, "error"); } }).finally(() => { if (alive) { openedGame.current = gamePath; setLoading(false); } });
     return () => { alive = false; };
@@ -197,7 +193,16 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     if (choice === "save") return !!await save();
     discard(); return true;
   };
-  handle.current = { prepare: async () => { if (controller.current || loading) return false; return save(); }, leave, stop: () => controller.current?.abort(), automatic: async signal => {
+  handle.current = { japaneseToSimplified: detectedSource === "ja" && options.target === "zh-CN",
+    applyTestConfiguration: async preset => {
+      if (busy || controller.current || !baseline.current?.sourcePath) throw new Error("请先完成文本工程读取或等待当前任务结束");
+      const next: GameTextOptions = { ...latestOptions.current, kind: "llm", model: preset.text, dialogueModel: preset.dialogue,
+        nameModel: preset.names, screeningModel: undefined, includeContext: true };
+      await saveConfiguration(next);
+      setOptions(next);
+      setConfigurationRevision(value => value + 1);
+    },
+    prepare: async () => { if (controller.current || loading) return false; return save(); }, leave, stop: () => controller.current?.abort(), automatic: async signal => {
     const stop = () => controller.current?.abort(); signal.addEventListener("abort", stop, { once: true });
     try {
       if (!current.current?.entries.length) return true;
@@ -612,7 +617,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     {progress && (!screeningProgress || progress.textStage === "screening") && <UnityTranslationProgress progress={progress} running={running || state === "screening"} failure={state === "error" ? progressFailure : undefined} onLocate={locateEntry} />}
     {!progress && state === "error" && progressFailure && <p className="game-text-progress-failure" role="alert">{progressFailure}</p>}
   </div>;
-  return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}>{steps}<div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{step: currentPhase, state: state === "screening" || running ? "running" : state === "screen-stopped" ? "stopped" : state, progress: progressContent}} configured={configured} onConfigure={setConfigured}
+  return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}>{steps}<div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{step: currentPhase, state: state === "screening" || running ? "running" : state === "screen-stopped" ? "stopped" : state, progress: progressContent}} configured={configured} onConfigure={setConfigured}
     onRun={!busy && !textReady && selected.length ? () => void handle.current?.automatic(new AbortController().signal) : undefined}
     steps={[
       { id: "screen", title: "筛选文本", models: [{role:"textScreen",id:options.screeningModel}], summary: options.screeningModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选",

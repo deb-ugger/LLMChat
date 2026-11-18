@@ -3,6 +3,7 @@ import { GamePromptContext } from "../gamePrompts";
 import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
+import { GAME_TEST_CONFIGURATION_HINT } from "../gameModelPreset";
 
 export type GameFlowStep = {
   id: string;
@@ -36,12 +37,15 @@ const settingsHeights = new Map<string, number>();
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
-export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration }: {
+export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, onApplyTestConfiguration, testConfigurationDisabled, configurationRevision }: {
   configurationCommit?: RefObject<GameStepConfigurationCommit | null>;
   steps: GameFlowStep[];
   configured: string | null;
   onConfigure: (step: string | null) => void;
   onRun?: () => void;
+  onApplyTestConfiguration?: () => Promise<void>;
+  testConfigurationDisabled?: boolean;
+  configurationRevision?: number;
   onSaveConfiguration?:()=>void|Promise<void>;
   configurationScope: string | null;
   configuration: Readonly<Partial<Record<string, string>>>;
@@ -66,6 +70,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   }, [performanceScope, activity?.state, benchmarkRunning]);
   const [savingConfiguration, setSavingConfiguration] = useState(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
+  const applyingPreset = useRef(false);
   const [configurationError, setConfigurationError] = useState("");
   const [concurrencyDrafts, setConcurrencyDrafts] = useState<Record<string, ConcurrencyEdit[]>>({});
   const [filterDrafts, setFilterDrafts] = useState<Record<string, Record<string, ModelFilter>>>({});
@@ -88,11 +93,11 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     }),
   });
   const snapshot = {
-    scope: configurationScope, values: configuration, restore: Object.fromEntries(steps.map(step => [step.id, restoreConfiguration])),
+    scope: configurationScope, revision: configurationRevision, values: configuration, restore: Object.fromEntries(steps.map(step => [step.id, restoreConfiguration])),
     models: Object.fromEntries(steps.map(step => [step.id, step.models])),
   };
   const [saved, setSaved] = useState(snapshot);
-  if (saved.scope !== configurationScope) {
+  if (saved.scope !== configurationScope || saved.revision !== configurationRevision) {
     setSaved(snapshot);
     setConcurrencyDrafts({});
     setFilterDrafts({});
@@ -104,6 +109,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const configurationLocked = (step: GameFlowStep) => activity?.state === "running" &&
     (activity.step === step.id || step.state === "done");
   const withConfiguration = async (action?: () => void, stepId?: string, announce = false) => {
+    if (applyingPreset.current) return false;
     if (pendingSave.current && !await pendingSave.current) return false;
     const draftSteps = (stepId ? [stepId] : steps.map(step => step.id)).filter(changed);
     if (!onSaveConfiguration || !draftSteps.length) { action?.(); return true; }
@@ -137,6 +143,20 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     if (success) action?.();
     return success;
   };
+  const applyTestConfiguration = async () => {
+    if (!onApplyTestConfiguration || testConfigurationDisabled || applyingPreset.current || pendingSave.current) return;
+    applyingPreset.current = true;
+    setSavingConfiguration(true);
+    try {
+      await onApplyTestConfiguration();
+      showAppNotice("已应用文本和图片测试配置");
+    } catch (error) {
+      showAppNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      applyingPreset.current = false;
+      setSavingConfiguration(false);
+    }
+  };
   useLayoutEffect(() => {
     if (!configurationCommit) return;
     configurationCommit.current = step => withConfiguration(undefined, step);
@@ -168,7 +188,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   }, [configured, layoutKey]);
   return <div className="game-flow">
     <div className="game-flow-list">
-      {(onRun || actions) && <div className="game-flow-run">
+      {(onRun || actions || onApplyTestConfiguration) && <div className="game-flow-run">
+        {onApplyTestConfiguration && <button type="button" className="unity-btn" data-tooltip={GAME_TEST_CONFIGURATION_HINT} disabled={testConfigurationDisabled || savingConfiguration} onClick={() => void applyTestConfiguration()}>应用测试配置</button>}
         {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
         {actions}
       </div>}
