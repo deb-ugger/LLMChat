@@ -1,7 +1,7 @@
 import { GameBatchResults, gameImageBatchRows, type BatchRow } from "./GameBatchResults";
 import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
-import { createGameTranslationContext, GAME_CONTEXT_HINT } from "../gameTranslationContext";
+import { createGameTranslationContext, GAME_CONTEXT_HINT, gameTranslationRetry } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { sameTextEdit } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork } from "../gameModelPerformance";
@@ -836,13 +836,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const context = provider === "llm" ? contextForEntry(entry, nameContext) : undefined;
       const relevantText = text + (context || []).map(item => item.source).join("\n");
       const terms = glossary.filter(term => term.src?.trim() && term.dst?.trim() && relevantText.includes(term.src));
-      const request = async (block: string, originalContext?: string) => {
+      const request = async (block: string, originalContext?: string, retryReason?: string) => {
         const seconds = provider === "llm" ? 120 : 30;
         const signal = provider === "llm" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
-        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, context: provider === "llm" ? contextForEntry(entry, nameContext, originalContext) : undefined, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, logAction); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code }); return response.translation; }
+        const background = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
+        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...(nameContext && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, logAction); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code }); return response.translation; }
         catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
       };
-      return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology);
+      return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology,
+        !!options.skipTargetLanguage, provider === "llm" && gameTextHasSpeaker(text));
     };
     const measure = (text: string) => [...prepareUnityTranslationRequest(text, mergeLines)].length;
     const engineTargetCharacters = !layoutOnly && options.provider !== "llm" ? unityTranslationCharacters(selectedEntries, next.entries, unityTranslationError, text => prepareUnityTranslationRequest(text, mergeLines), mergeLines ? canReuseUnityStructuredDraft : undefined, unityTranslationContextKey).pendingCharacters : 0;
@@ -898,7 +900,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         concurrency: (options.localModel || options.dialogueOptions?.localModel || options.nameOptions?.localModel) ? 8 : options.provider==="llm"?16:pool?.concurrency||1,
         timingScope: promptState.scope + ":text", modelFormats: breakMode === "model" && options.wrapMode !== "natural",
         canReuseDraft: mergeLines ? canReuseUnityStructuredDraft : undefined,
-        preserveLayout: mergeLines?undefined:gameTextHasSpeaker, format: mergeLines ? queuedFormat : undefined, retainDraft: mergeLines, persistDraftBeforeFormat: breakMode === "model" || breakMode === "wtp",
+        preserveLayout: options.provider === "llm" || !mergeLines ? gameTextHasSpeaker : undefined, format: mergeLines ? queuedFormat : undefined, retainDraft: mergeLines, persistDraftBeforeFormat: breakMode === "model" || breakMode === "wtp",
         translate: pool ? (text, entry) => pool.translate(text, entry?.id) : (text, entry) => requestTranslation(text, options.provider, entry),
         persist: async () => { await saveTranslation({ ...next, entries: [...next.entries] }, "text"); },
       });
@@ -1943,7 +1945,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               : <>
                 <GameModelSelect label="常规文本模型" promptKey="text" models={gameModels} value={llmModel} disabled={flowConfigLocked} onChange={setLlmModel} />
                 <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={gameModels} value={dialogueModel} disabled={flowConfigLocked} onChange={setDialogueModel} />
-                <GameModelSelect optional label="缺失姓名模型（可选）" promptKey="names" models={gameModels} value={nameModel} disabled={flowConfigLocked} onChange={setNameModel} />
+                <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={gameModels} value={nameModel} disabled={flowConfigLocked} onChange={setNameModel} />
               </>)}
     <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={skipTargetLanguage} disabled={sharedLanguageLocked} onChange={event => setSkipTargetLanguage(event.target.checked)} />跳过目标语言</label></div><select aria-label="目标语言" value={target} disabled={flowConfigLocked} onChange={e => { setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></div>
           </div><div className="unity-run-options">

@@ -15,6 +15,7 @@ struct LlmRequest {
     bool requireComplete = false;
     bool nativeOllama = false;
     int ollamaContextLength = 0;
+    bool ollamaRawChat = false;
 };
 
 struct LlmResponse {

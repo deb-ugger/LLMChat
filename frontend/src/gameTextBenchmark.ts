@@ -3,7 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText, translateRpgSystemMessage } from "./gameDisplayText";
 import { validateGameNaturalLines, wrapGameTextToSource, type GameWrapMode } from "./gameTextLayout";
 import { gameTextProblem } from "./gameTextProject";
-import { createGameTranslationContext, gameDialogueReuseKey, type GameDialoguePage } from "./gameTranslationContext";
+import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetry, isGameDialogue, type GameDialoguePage } from "./gameTranslationContext";
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareBenchmarkOllama, translateGameWithOllama } from "./gameOllama";
@@ -85,7 +85,7 @@ export function inspectBenchmarkSample(entries: UnityEntry[], configs: Benchmark
         const outsideSource = !gameTextMatchesSource(entry.source, config.source, entry.locale);
         const alreadyTarget = config.skipTarget && gameTextNeedsNoTranslation(entry.source, config.target);
         if (outsideSource || alreadyTarget) sample.retained++;
-        else if (gameTextHasSpeaker(entry.source)) sample.dialogue++;
+        else if (isGameDialogue(entry.source, entry)) sample.dialogue++;
         else sample.text++;
       }
       byLanguage.set(key, sample);
@@ -125,16 +125,16 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   const request = (input: string, entry?: UnityEntry, nameContext?: string) => {
     const systemTranslation = translateRpgSystemMessage(entry, config.target);
     if (systemTranslation !== undefined) return Promise.resolve(systemTranslation);
-    const role = nameContext ? "names" : gameTextHasSpeaker(input) ? "dialogue" : "text";
+    const role = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
     const model = models[role];
-    return translateGameDisplayText(input, async (text, reference) => {
+    return translateGameDisplayText(input, async (text, reference, retryReason) => {
       const prepared = prepareUnityTranslationRequest(text, config.wrap !== "keep");
       if (pool) return pool.translate(prepared);
       const result = await translateGameWithOllama(prepared, { signal },
-        { ...model, context: context(entry, nameContext, reference), ollamaReasoningOff: !!nameContext && canDisableOllamaNameThinking(model) }, report);
+        { ...model, ...gameTranslationRetry(context(entry, nameContext, reference), retryReason), ollamaReasoningOff: !!nameContext && canDisableOllamaNameThinking(model) }, report);
       if (!result.ok) throw new Error(result.error || result.code || "翻译请求失败");
       return result.translation;
-    }, config.target, config.source, terms, config.skipTarget);
+    }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue");
   };
   try {
     const preparedTerms = await prepareGameTerms(rows.filter(entry => !entry.translation), references, config.target, settings.textGlossary,
@@ -147,7 +147,7 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
       translate: (text, entry) => request(text, entry),
       format: config.wrap === "natural" ? validateGameNaturalLines : config.wrap === "join" ? (source, translated) =>
         wrapGameTextToSource(source, gameTextHasSpeaker(source) ? translated : restoreUnityTranslationLines(source, translated)) : undefined,
-      preserveLayout: config.wrap === "keep" ? gameTextHasSpeaker : undefined, progress,
+      preserveLayout: !pool ? isGameDialogue : config.wrap === "keep" ? gameTextHasSpeaker : undefined, progress,
     });
   } finally { pool?.dispose(); }
   signal.throwIfAborted();
@@ -212,7 +212,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
       const metadata = { queueId, round, unobservedModels, label: config.label, selected, config, translated: 0, failed: 0, status: "运行中", detail: undefined as string | undefined, summary: undefined as string | undefined };
       beginGameStep(scope, step, metadata);
       onStart(round, config);
-      const roleNames = { text: "正文", dialogue: "对白", names: "姓名" };
+      const roleNames = { text: "正文", dialogue: "对白", names: "术语" };
       const modelDetails = (target || config.models.text.id ? activeRoles : []).map(role => {
         const model = config.models[role].id ? config.models[role] : config.models.text;
         return model.id ? `${roleNames[role]} ${model.id} · 并发 ${model.lanes}` : "";

@@ -1,5 +1,6 @@
 import { gameModelExecution } from "./gameModelPerformance";
-import { gameTextHasSpeaker } from "./gameDisplayText";
+import { isGameDialogue } from "./gameTranslationContext";
+import type { UnityEntry } from "./unityOffline";
 import { gameTaskPrompt } from "./gamePrompts";
 import type { GameWrapMode } from "./gameTextLayout";
 import type { Settings, TranslateOptions, TranslateProvider } from "./api";
@@ -133,7 +134,7 @@ export function buildUnityTranslateOptions(
 }
 
 /** Keep each local model resident for a contiguous run when both share one service. */
-export function localTextRequestGroup(main: TranslateOptions, dialogue?: TranslateOptions): ((text: string) => string) | undefined {
+export function localTextRequestGroup(main: TranslateOptions, dialogue?: TranslateOptions): ((entry: UnityEntry) => string) | undefined {
   if (!main.localModel || !dialogue?.localModel || !main.model || !dialogue.model || main.model === dialogue.model) return;
   const origin = (address?: string) => {
     if (!address) return;
@@ -144,7 +145,7 @@ export function localTextRequestGroup(main: TranslateOptions, dialogue?: Transla
   try {
     if (!main.apiUrl || origin(main.apiUrl) !== origin(dialogue.apiUrl)) return;
   } catch { return; }
-  return text => gameTextHasSpeaker(text) ? dialogue.model! : main.model!;
+  return entry => isGameDialogue(entry.source, entry) ? dialogue.model! : main.model!;
 }
 
 export function sameUnityGamePath(left: string, right: string) {

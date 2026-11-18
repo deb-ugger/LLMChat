@@ -510,8 +510,21 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
         if (options.contains("max_tokens")) { options["num_predict"] = options["max_tokens"]; options.erase("max_tokens"); }
         if (options.value("reasoning_effort", "") == "none") nativeBody["think"] = false;
         options.erase("reasoning_effort"); nativeBody["options"] = options;
+        const char* endpoint = "/api/chat";
+        if (request.ollamaRawChat) {
+            // This Sakura GGUF is trained with a plain ChatML assistant prefix.
+            // Ollama's inferred Qwen3 template inserts an incompatible thinking prefix.
+            std::string prompt;
+            for (const auto& message : request.messages)
+                prompt += "<|im_start|>" + message.at("role").get<std::string>() + "\n" + message.at("content").get<std::string>() + "<|im_end|>\n";
+            nativeBody.erase("messages");
+            nativeBody["raw"] = true;
+            nativeBody["think"] = false;
+            nativeBody["prompt"] = prompt + "<|im_start|>assistant\n";
+            endpoint = "/api/generate";
+        }
         json output;
-        auto result = winHttpPost(baseUrl + "/api/chat", request.apiKey,
+        auto result = winHttpPost(baseUrl + endpoint, request.apiKey,
             nativeBody.dump(), request.proxyMode, request.httpProxy, false, &output);
         if (!result.ok) {
             auto message = result.error;
@@ -526,7 +539,7 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
             }
             return result;
         }
-        const auto message = output.value("message", json::object());
+        const auto message = request.ollamaRawChat ? json{{"content", output.value("response", "")}} : output.value("message", json::object());
         const auto doneReason = output.value("done_reason", "");
         const bool explicitContextStop = doneReason == "context_length";
         const json compatible = {{"choices", json::array({json{{"message", message}, {"finish_reason", explicitContextStop ? "length" : doneReason}}})},

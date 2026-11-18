@@ -11,6 +11,8 @@ export type UnityEntry = {
   localizationKey?: string;
   dialoguePosition?: { page: number; line: number };
   rpgSystemMessage?: string;
+  rpgTextKind?: "character" | "place" | "skill" | "item" | "interface";
+  rpgTextContext?: string;
   layoutDraft?: string;
   translationTarget?: string;
   layoutDraftTarget?: string;

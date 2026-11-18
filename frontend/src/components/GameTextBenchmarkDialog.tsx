@@ -15,7 +15,7 @@ import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { showAppNotice } from "./AppNotice";
 
-const roleLabels = { text: "正文", dialogue: "对白", names: "姓名" };
+const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type Target = "translate" | "screen" | ImageBenchmarkStep;
 export type BenchmarkImageSource = {
   setup: ImageBenchmarkSetup;

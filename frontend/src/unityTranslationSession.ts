@@ -10,7 +10,7 @@ type Session = {
   timingScope?: string;
   modelFormats?: boolean;
   references?: UnityEntry[];
-  requestGroup?: (source: string) => string;
+  requestGroup?: (entry: UnityEntry) => string;
   key?: (entry: UnityEntry) => string;
   targetLanguage?: string;
   entryProblem?: (entry: UnityEntry) => string | undefined;
@@ -19,7 +19,7 @@ type Session = {
   translate: (source: string, entry?: UnityEntry) => Promise<string>;
   format?: (source: string, translated: string) => string | Promise<string>;
   retainDraft?: boolean;
-  preserveLayout?: (source: string) => boolean;
+  preserveLayout?: (source: string, entry?: UnityEntry) => boolean;
   persistDraftBeforeFormat?: boolean;
   canReuseDraft?: (source: string, translation: string) => boolean;
   validate: (source: string, translated: string) => string;
@@ -97,7 +97,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
     if (!group) return [...groups];
     const batches = new Map<string, [string, UnityEntry[]][]>();
     for (const item of groups) {
-      const id = group(item[1][0].source);
+      const id = group(item[1][0]);
       const batch = batches.get(id);
       if (batch) batch.push(item); else batches.set(id, [item]);
     }
@@ -181,7 +181,7 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
       for (const item of group) {
         if (session.signal.aborted) throw session.signal.reason || new Error("任务已中止");
         if (translated === item.source) { formatted.push(translated); continue; }
-        if (session.preserveLayout?.(item.source)) { formatted.push((item.source.match(/^\s*/)?.[0] || "") + translated.trim() + (item.source.match(/\s*$/)?.[0] || "")); continue; }
+        if (session.preserveLayout?.(item.source, item)) { formatted.push((item.source.match(/^\s*/)?.[0] || "") + translated.trim() + (item.source.match(/\s*$/)?.[0] || "")); continue; }
         const leading = item.source.match(/^\s*/)?.[0] || "";
         const trailing = item.source.match(/\s*$/)?.[0] || "";
         const source = item.source.trim();
@@ -216,13 +216,20 @@ export async function translateUnitySession(entries: UnityEntry[], cache: Map<st
   };
   report(`已完成 ${completed}/${initial.total} 种原文 · 已有有效译文覆盖 ${covered}/${entries.length} 处`);
   let cursor = 0, inFlight = 0;
+  let activeRequestGroup: string | undefined;
   const worker = async () => {
     while (!session.signal.aborted && !saveFailure) {
       if (cursor >= pending.length) {
         if (!inFlight) return;
         await new Promise<void>(resolve => waitingWorkers.add(resolve)); continue;
       }
-      const group = pending[cursor++]; states.set(group[0], "active"); inFlight++;
+      const group = pending[cursor];
+      const requestGroup = session.requestGroup?.(group[1][0]);
+      if (inFlight && requestGroup !== activeRequestGroup) {
+        await new Promise<void>(resolve => waitingWorkers.add(resolve)); continue;
+      }
+      activeRequestGroup = requestGroup;
+      cursor++; states.set(group[0], "active"); inFlight++;
       try { await commit(group); } finally { inFlight--; wake(); }
     }
   };

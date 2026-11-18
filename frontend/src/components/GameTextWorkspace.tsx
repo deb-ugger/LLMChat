@@ -4,7 +4,7 @@ import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, g
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
-import { createGameTranslationContext, gameDialogueReuseKey, GAME_CONTEXT_HINT } from "../gameTranslationContext";
+import { createGameTranslationContext, gameDialogueReuseKey, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
 import { showAppNotice } from "./AppNotice";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
@@ -379,17 +379,17 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           if (provider === "llm") llmOptions.set(scene, config);
           return config;
         };
-        const requestGroup = options.kind === "engine" || !options.dialogueModel || options.dialogueModel === options.model
-          || !localProfiles[options.dialogueModel] || !localProfiles[options.model]
+        const requestGroup = options.kind === "engine" || !options.dialogueModel
           ? undefined : localTextRequestGroup(getOptions("llm", "text"), getOptions("llm", "dialogue"));
         const request = async (provider: TranslateProvider, text: string, nameContext?: string, entry?: UnityEntry) => {
           const input = messageCore ? repairMessageCoreNameLineBreak(repairMessageCorePositionPrefix(text)) : text;
-          const scene = nameContext ? "names" : gameTextHasSpeaker(input) ? "dialogue" : "text";
+          const scene = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
           const config = getOptions(provider, scene);
           const signal = provider === "llm" ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
-          return translateGameControls(input, async (protectedText, originalContext) => {
+          return translateGameControls(input, async (protectedText, originalContext, retryReason) => {
             try {
-              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, context: provider === "llm" ? contextForEntry(entry, nameContext, originalContext) : undefined, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
+              const context = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
+              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
               if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译失败"), { code: response.code });
               return response.translation;
             } catch (error) {
@@ -397,7 +397,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
               if (provider !== "llm") throw error;
               throw new Error(`${config.model || provider}：${signal.reason?.name === "TimeoutError" ? "请求超时" : error instanceof Error ? error.message : String(error)}`);
             }
-          }, options.target, sourceFilter, terminology, options.skipTargetLanguage !== false);
+          }, options.target, sourceFilter, terminology, options.skipTargetLanguage !== false, provider === "llm" && scene === "dialogue");
         };
         if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { timingScope: promptState.scope + ":text", onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
         const preparedTerms = await prepareGameTerms(next.entries.filter(entry => (retryIds ? retryIds.has(entry.id) : entry.selected) && (!entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || gameTextProblem(entry.source, entry.translation))), next.entries, options.target, general.textGlossary,
@@ -410,7 +410,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
             if (systemTranslation !== undefined) return Promise.resolve(systemTranslation);
             return options.kind !== "engine" ? request("llm", text, undefined, entry) : pool!.translate(text, entry?.id);
           },
-          format: wrapMode === "natural" ? validateGameNaturalLines : options.joinLines ? (original,translated)=>wrapGameTextToSource(original,gameTextHasSpeaker(original)?translated:restoreUnityTranslationLines(original,translated)) : undefined, preserveLayout: options.joinLines ? undefined : gameTextHasSpeaker,
+          format: wrapMode === "natural" ? validateGameNaturalLines : options.joinLines ? (original,translated)=>wrapGameTextToSource(original,gameTextHasSpeaker(original)?translated:restoreUnityTranslationLines(original,translated)) : undefined,
+          preserveLayout: options.kind !== "engine" ? isGameDialogue : options.joinLines ? undefined : gameTextHasSpeaker,
           timingScope: promptState.scope + ":text", requestGroup,
           key: gameDialogueReuseKey, targetLanguage: options.target, entryProblem: entry => gameTermProblem(entry.source, preparedTerms.issues),
           retainDraft: wrapMode === "natural",
@@ -643,7 +644,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     {configured === "translate" && options.kind !== "engine" && <>
       <GameModelSelect label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={configLocked} onChange={model => setOptions({ ...options, model })} />
       <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={configLocked} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
-      <GameModelSelect optional label="缺失姓名模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
+      <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
     </>}
     {languageFields}
     </div>

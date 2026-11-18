@@ -147,8 +147,9 @@ export function createLlmTranslationScheduler(raw: Raw) {
   };
   return (text: string, init?: RequestInit, options?: TranslateOptions): Promise<TranslateResponse> => {
     if (options?.provider !== "llm") return raw(text, init, options);
-    // Sakura is a translation model; JSON batch instructions can be translated as source.
-    if (/sakura/i.test(options.model || "")) options = { ...options, llmBatch: false };
+    // Translation-specific prompts use a single source and its background.
+    if (/sakura|galtransl/i.test(options.model || "") || options.feature === "unity" && /hy-mt2/i.test(options.model || ""))
+      options = { ...options, llmBatch: false };
     const signal = init?.signal;
     if (signal?.aborted) return Promise.reject(signal.reason);
     let resourceKey = JSON.stringify([options.apiUrl || "", options.apiKey || "", options.model || "", options.vendor || ""]);

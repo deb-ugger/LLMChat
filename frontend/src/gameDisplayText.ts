@@ -5,6 +5,7 @@ const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^>
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
 const rpgArguments = String.raw`%[1-9]\d*(?![\d$])`;
 const rpgConditions = String.raw`(?:if|en)\([^)\r\n]+\)`;
+const termPatterns = new WeakMap<ReadonlyMap<string, string>, RegExp | null>();
 const formats = () => new RegExp(`${speaker.replace("([^>", "(?:[^>")}|${controls}|${rpgConditions}|${unityTranslationTokens().source}|${rpgArguments}`, "gi");
 export const gameFormatTokens = formats;
 export const gameSpeakerNames = (text: string) => [...text.matchAll(new RegExp(speaker, "gi"))].map(match => match[1].trim());
@@ -168,7 +169,7 @@ export function gameTextScreeningResult(source: string, target: string, sourceLa
 }
 
 /** Keep the whole body and speaker together instead of translating tag-separated fragments. */
-export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true) {
+export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string, retryReason?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true, preserveDialogueLines = false) {
   const tokens: string[] = [];
   const protect = (value: string) => `{LLMCHAT_FORMAT_${tokens.push(value) - 1}}`;
   const keepTarget = !!target && skipTarget;
@@ -185,7 +186,9 @@ export async function translateGameDisplayText(source: string, translate: (text:
   }
   const remaining = source.slice(offset);
   prepared += !gameTextMatchesSource(remaining, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
-  const text = prepared.replace(formats(), (token: string) => {
+  const pattern = formats();
+  const structure = preserveDialogueLines ? new RegExp(pattern.source + String.raw`|[\t \u3000]*(?:\r\n|\r|\n)[\t \u3000]*`, pattern.flags) : pattern;
+  const text = prepared.replace(structure, (token: string) => {
     if (/^\{LLMCHAT_FORMAT_\d+\}$/.test(token)) return token;
     const name = new RegExp(`^${speaker}$`, "i").exec(token)?.[1];
     if (name !== undefined) {
@@ -198,12 +201,20 @@ export async function translateGameDisplayText(source: string, translate: (text:
     return protect(token);
   });
   const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !keepTarget || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
-  const escape = (value: string) => [...value].map(char => ".*+?^${}()|[]\\".includes(char) ? "\\" + char : char).join("");
-  const replacements = [...terms].filter(([from, to]) => from !== to).sort((a, b) => b[0].length - a[0].length);
-  const termPattern = replacements.length ? new RegExp(replacements.map(([from]) => escape(from)).join("|"), "gu") : null;
+  let termPattern = termPatterns.get(terms);
+  if (termPattern === undefined) {
+    const escaped = [...terms].filter(([from, to]) => from !== to).map(([from]) => from)
+      .sort((a, b) => b.length - a.length).map(value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    termPattern = escaped.length ? new RegExp(escaped.join("|"), "gu") : null;
+    termPatterns.set(terms, termPattern);
+  }
+  const appliedTerms = new Map<string, string>();
   const protectedText = termPattern ? screenedText.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) ? part : part.replace(termPattern, (term: string, offset: number, input: string) => {
     if (/^[A-Za-z0-9_]/.test(term) && offset > 0 && /[A-Za-z0-9_]/.test(input[offset - 1]) || /[A-Za-z0-9_]$/.test(term) && /[A-Za-z0-9_]/.test(input[offset + term.length] || "")) return term;
-    return protect(terms.get(term)!);
+    if (/^\p{Script=Han}$/u.test(term) && part.trim() !== term) return term;
+    const translation = terms.get(term)!;
+    appliedTerms.set(term, translation);
+    return protect(translation);
   })).join("") : screenedText;
   const visibleText = protectedText.replace(/\{LLMCHAT_FORMAT_\d+\}/g, "");
   // Deterministic edge controls and retained names never need model output.
@@ -213,11 +224,12 @@ export async function translateGameDisplayText(source: string, translate: (text:
   const body = rest.slice(0, rest.length - suffix.length);
   const referenceText = source.replace(new RegExp(speaker, "gi"), "（说话人：$1）").replace(formats(), "");
   let result = protectedText;
+  let retryReason = "";
   if (/\p{L}/u.test(visibleText)) {
     try { result = prefix + await translate(body, referenceText.trim() !== body.trim() ? referenceText : undefined) + suffix; }
     catch (error) {
       if (!/token repeat limit reached|模型重复生成/.test(error instanceof Error ? error.message : String(error))) throw error;
-      result = ""; // Retry once below with only visible source spans.
+      retryReason = "模型输出发生重复";
     }
   }
   // Specialized translation models can drop opaque markers. Retry visible spans
@@ -231,14 +243,16 @@ export async function translateGameDisplayText(source: string, translate: (text:
   const qualityProblem = (value: string) => {
     const residue = gameJapaneseTextIssue(source, value, target);
     if (residue) return residue;
-    const duplicated = replacements.find(([from, to]) => to.length >= 2 && source.includes(from) &&
+    if (preserveDialogueLines && JSON.stringify(value.match(/\r\n|\r|\n/g)) !== JSON.stringify(source.match(/\r\n|\r|\n/g))) return "译文改变了对白的换行或空行";
+    const duplicated = [...appliedTerms].find(([from, to]) => to.length >= 2 && source.includes(from) &&
       !source.includes(from + from) && !source.includes(to + to) && value.includes(to + to));
     return duplicated ? `译文重复了术语「${duplicated[1]}」` : "";
   };
-  const restored = restoreMarkers(result);
-  if (JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ||
-      unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(restored)) ||
-      gameDisplayTextProblem(source, restored) || rpgTextControlProblem(source, restored) || qualityProblem(restored)) {
+  const problemWith = (value: string) => unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(value)) ||
+    gameDisplayTextProblem(source, value) || rpgTextControlProblem(source, value) || qualityProblem(value);
+  retryReason ||= JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ?
+    "译文中的格式标记丢失、重复或顺序错误" : problemWith(restoreMarkers(result));
+  if (retryReason) {
     const pieces = protectedText.split(/(\{LLMCHAT_FORMAT_\d+\})/);
     const translatedPieces: string[] = [];
     const retriedSpans = new Map<string, string>();
@@ -248,7 +262,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
       const trailing = piece.match(/\s*$/)?.[0] || "";
       const input = piece.trim();
       let translated = retriedSpans.get(input);
-      if (translated === undefined) { translated = (await translate(input, referenceText.trim() !== input ? referenceText : undefined)).trim(); retriedSpans.set(input, translated); }
+      if (translated === undefined) { translated = (await translate(input, referenceText.trim() !== input ? referenceText : undefined, retryReason)).trim(); retriedSpans.set(input, translated); }
       if (!translated || /\{LLMCHAT_FORMAT_\d+\}/.test(translated)) throw new Error("正文重译未返回有效内容，请检查模型与提示词；此条译文未保存");
       translatedPieces.push(leading + translated + trailing);
     }
@@ -258,9 +272,9 @@ export async function translateGameDisplayText(source: string, translate: (text:
     const token = tokens[index];
     const marker = `{LLMCHAT_FORMAT_${index}}`;
     if (result.split(marker).length !== 2) throw new Error(`翻译结果未保留格式控制符 ${token}（保护标记 ${marker} 缺失或重复）。此条译文未保存。请重试此条，或在译文中保留原控制符及参数后手动填写。`);
-    result = result.replace(marker, token);
+    result = result.replace(marker, () => token);
   }
-  const problem = unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(result)) || gameDisplayTextProblem(source, result) || rpgTextControlProblem(source, result) || qualityProblem(result);
+  const problem = problemWith(result);
   if (problem) throw new Error(problem);
   return result;
 }

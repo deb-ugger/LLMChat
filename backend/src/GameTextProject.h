@@ -157,6 +157,7 @@ struct DialogueContexts {
     Json pages = Json::array();
     std::map<std::string, std::pair<size_t, size_t>> positions;
     std::set<std::string> repeated;
+    std::set<std::string> mapNames;
 };
 inline DialogueContexts collectDialogueContexts(const fs::path& directory, const Json& originals) {
     DialogueContexts result;
@@ -171,19 +172,26 @@ inline DialogueContexts collectDialogueContexts(const fs::path& directory, const
     for (const auto& file : files) {
         auto data = read(file);
         const auto name = utf8path::pathUtf8(file.filename());
+        if (name.starts_with("Map")) {
+            const auto title = data.value("displayName", "");
+            if (originals.contains(title)) result.mapNames.insert(title);
+        }
         rpgtext::visitDialoguePages(name, data, [&](int event, size_t page, const Json& commands) {
-            Json lines = Json::array(), indexes = Json::array();
+            Json lines = Json::array(), indexes = Json::array(), speakers = Json::object();
             const auto flush = [&] {
                 if (lines.empty()) return;
                 result.pages.push_back({{"file", name}, {"event", event}, {"page", page},
                                         {"commands", indexes}, {"lines", lines}});
+                if (!speakers.empty()) result.pages.back()["speakers"] = std::move(speakers);
                 lines.clear();
                 indexes.clear();
+                speakers = Json::object();
             };
-            const auto append = [&](size_t command, const std::string& text) {
+            const auto append = [&](size_t command, const std::string& text, const std::string& speaker = {}) {
                 if (text.empty()) return;
                 if (originals.contains(text) && !result.positions.try_emplace(text, result.pages.size(), lines.size()).second)
                     result.repeated.insert(text);
+                if (!speaker.empty()) speakers[std::to_string(lines.size())] = speaker;
                 lines.push_back(text);
                 indexes.push_back(command);
             };
@@ -198,7 +206,12 @@ inline DialogueContexts collectDialogueContexts(const fs::path& directory, const
                 if (code == 401 || code == 405) {
                     const auto command = i;
                     const auto message = rpgtext::messageBlock(commands, i);
-                    append(command, message);
+                    std::string speaker;
+                    if (code == 401 && command > 0 && commands[command - 1].value("code", 0) == 101) {
+                        const auto parameters = commands[command - 1].value("parameters", Json::array());
+                        if (parameters.is_array() && parameters.size() > 4 && parameters[4].is_string()) speaker = parameters[4].get<std::string>();
+                    }
+                    append(command, message, speaker);
                 } else if (code == 102 && item.contains("parameters") && !item["parameters"].empty() && item["parameters"][0].is_array()) {
                     for (const auto& choice : item["parameters"][0])
                         if (choice.is_string()) append(i, choice.get_ref<const std::string&>());
@@ -227,6 +240,19 @@ inline Json load(const Json& request) {
     }
     const auto dialogue = collectDialogueContexts(contextData, originals);
     std::map<std::string, std::string> systemMessages;
+    std::map<std::string, std::string> textKinds, textContexts;
+    const auto addKind = [&](const std::string& text, const std::string& kind) {
+        if (!originals.contains(text)) return;
+        const auto [entry, inserted] = textKinds.try_emplace(text, kind);
+        if (!inserted && entry->second != kind) entry->second.clear();
+    };
+    for (const auto& title : dialogue.mapNames) addKind(title, "place");
+    for (const auto& [name, kind] : {std::pair{"Actors.json", "character"}, {"Skills.json", "skill"},
+                                   {"Items.json", "item"}, {"Weapons.json", "item"}, {"Armors.json", "item"}}) {
+        const auto file = contextData / name;
+        if (!fs::is_regular_file(file)) continue;
+        for (const auto& record : read(file)) if (record.is_object()) addKind(record.value("name", ""), kind);
+    }
     const auto systemFile = contextData / "System.json";
     if (fs::is_regular_file(systemFile)) {
         const auto system = read(systemFile);
@@ -234,6 +260,18 @@ inline Json load(const Json& request) {
         const auto messages = terms.value("messages", Json::object());
         for (const auto& [key, value] : messages.items())
             if (value.is_string()) systemMessages.try_emplace(value.get_ref<const std::string&>(), key);
+        for (const auto* field : {"basic", "params", "commands"}) {
+            if (!terms.contains(field) || !terms[field].is_array()) continue;
+            const auto& labels = terms[field];
+            for (size_t index = 0; index < labels.size(); ++index) {
+                if (!labels[index].is_string()) continue;
+                const auto& label = labels[index].get_ref<const std::string&>();
+                if (label.empty()) continue;
+                addKind(label, "interface");
+                if (std::string_view(field) == "commands" && index == 16)
+                    textContexts[label] = "装备菜单命令：自动选择属性最优的装备。";
+            }
+        }
     }
     const auto layout = rpgmessage::messageLayout(base.parent_path());
     const bool messageCore = layout.enabled;
@@ -265,6 +303,10 @@ inline Json load(const Json& request) {
             row["dialoguePosition"] = {{"page", position->second.first}, {"line", position->second.second}};
         else if (const auto message = systemMessages.find(it.key()); message != systemMessages.end() && !dialogue.repeated.contains(it.key()))
             row["rpgSystemMessage"] = message->second;
+        else if (const auto kind = textKinds.find(it.key()); kind != textKinds.end() && !kind->second.empty() && !dialogue.repeated.contains(it.key())) {
+            row["rpgTextKind"] = kind->second;
+            if (const auto context = textContexts.find(it.key()); context != textContexts.end()) row["rpgTextContext"] = context->second;
+        }
         if (previous.contains(it.key())) for (const auto& key : {"translation", "selected", "error"}) row[key] = previous[it.key()].at(key);
         if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
         flagPromptLeak(row, it.key());
@@ -309,6 +351,8 @@ inline Json save(const Json& request) {
     for (auto& row : rows) {
         row.erase("dialoguePosition");
         row.erase("rpgSystemMessage");
+        row.erase("rpgTextKind");
+        row.erase("rpgTextContext");
         row.erase("dialogueRepairPreview");
         row.erase("dialogueRepairs");
         const auto text = row.at("source").get<std::string>();

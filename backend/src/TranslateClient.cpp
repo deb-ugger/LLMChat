@@ -2372,7 +2372,7 @@ TranslateResult TranslateClient::translateWithLlm(
     const std::string& customPrompt,
     const std::string& glossaryJson,
     const std::string& contextJson,
-    bool ollamaReasoningOff, int maxOutputTokens, bool nativeOllama, int ollamaContextLength)
+    bool ollamaReasoningOff, int maxOutputTokens, bool nativeOllama, int ollamaContextLength, bool gameTranslation)
 {
     TranslateResult result;
     result.provider = "llm";
@@ -2397,6 +2397,10 @@ TranslateResult TranslateClient::translateWithLlm(
 
     const std::string src = source.empty() ? "en" : source;
     const std::string dst = target.empty() ? "zh-CN" : target;
+    const auto lowerModel = toLower(model);
+    const bool hyMt = lowerModel.find("hy-mt") != std::string::npos;
+    const bool sakura = lowerModel.find("sakura") != std::string::npos;
+    const bool galTransl = lowerModel.find("galtransl") != std::string::npos;
 
     std::string systemPrompt = customPrompt;
     if (systemPrompt.empty())
@@ -2413,6 +2417,7 @@ TranslateResult TranslateClient::translateWithLlm(
             + ". Output only the translation text with no quotes, notes, or explanations.";
     }
 
+    std::string glossaryText;
     if (!glossaryJson.empty() && glossaryJson != "[]")
     {
         try
@@ -2439,12 +2444,13 @@ TranslateResult TranslateClient::translateWithLlm(
                         oss << "\n\nGlossary (use these translations consistently):\n";
                         hasMatchedTerm = true;
                     }
-                    oss << "- " << gSrc << " => " << gDst;
+                    oss << (galTransl ? "" : "- ") << gSrc << (galTransl ? "->" : " => ") << gDst;
                     if (!info.empty())
                         oss << " (" << info << ")";
                     oss << "\n";
                 }
-                systemPrompt += oss.str();
+                glossaryText = oss.str();
+                systemPrompt += glossaryText;
             }
         }
         catch (...)
@@ -2490,9 +2496,31 @@ TranslateResult TranslateClient::translateWithLlm(
             // ignore bad context JSON
         }
     }
-    const auto lowerModel = toLower(model);
-    const bool plainTextModel = lowerModel.find("sakura") != std::string::npos || lowerModel.find("hy-mt") != std::string::npos;
-    if (!referenceSources.empty() && !plainTextModel)
+    const bool withGameBackground = gameTranslation && !referenceSources.empty() && messages.size() == 1;
+    if (withGameBackground && lowerModel.find("hy-mt2") != std::string::npos)
+    {
+        std::string language = dst;
+        if (dst == "zh-CN") language = "简体中文";
+        else if (dst == "zh-TW") language = "繁体中文";
+        else if (dst == "ja") language = "日语";
+        else if (dst == "en") language = "英语";
+        else if (dst == "ko") language = "韩语";
+        std::string input = "〖背景信息〗\n下列背景仅用于理解原文：\n";
+        for (const auto& reference : referenceSources) input += reference.get_ref<const std::string&>() + "\n";
+        input += glossaryText;
+        if (!customPrompt.empty()) input += "\n译文要求：" + customPrompt + "\n";
+        input += "\n请结合背景信息将以下文本翻译为" + language + "，仅输出译文。\n〖待翻译文本〗\n" + text;
+        messages = json::array({{{"role", "user"}, {"content", input}}});
+    }
+    else if (withGameBackground && (sakura || galTransl) && (src == "ja" || src == "auto") && dst == "zh-CN")
+    {
+        std::string input = "背景（仅供理解）：\n";
+        for (const auto& reference : referenceSources) input += reference.get_ref<const std::string&>() + "\n";
+        if (galTransl && !glossaryText.empty()) input += "参考以下术语表（原文->译文）：" + glossaryText;
+        input += "\n只将下面的日文翻译成简体中文：\n" + text;
+        messages.push_back({{"role", "user"}, {"content", input}});
+    }
+    else if (!referenceSources.empty() && !sakura && !hyMt && !galTransl)
     {
         messages.front()["content"] = systemPrompt +
             "\nThe final user message is a JSON object. Translate only its text field. "
@@ -2515,6 +2543,7 @@ TranslateResult TranslateClient::translateWithLlm(
     req.requireComplete = true;
     req.nativeOllama = nativeOllama;
     req.ollamaContextLength = ollamaContextLength;
+    req.ollamaRawChat = gameTranslation && nativeOllama && lowerModel.find("sakura-14b-qwen3-v1.5") != std::string::npos;
     if (maxOutputTokens > 0 && maxOutputTokens <= 1048576) req.options["max_tokens"] = maxOutputTokens;
     if (ollamaReasoningOff) req.options["reasoning_effort"] = "none";
 

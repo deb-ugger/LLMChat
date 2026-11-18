@@ -1,7 +1,7 @@
 import { rememberPromptSelection } from "./gameModelPerformance";
 import { createContext, useMemo, useSyncExternalStore } from "react";
 
-export const GAME_PROMPT_SCENES = { textScreen: "文本筛选", text: "正文翻译", dialogue: "对白翻译", names: "姓名统一", image: "图片文字翻译", screen: "图片筛选", refine: "图片复筛", recognize: "识字与定位", review: "校验失败重译", layout: "译图断行排版", line: "文本断行辅助" } as const;
+export const GAME_PROMPT_SCENES = { textScreen: "文本筛选", text: "正文翻译", dialogue: "对白翻译", names: "统一术语", image: "图片文字翻译", screen: "图片筛选", refine: "图片复筛", recognize: "识字与定位", review: "校验失败重译", layout: "译图断行排版", line: "文本断行辅助" } as const;
 export type GamePromptScene = keyof typeof GAME_PROMPT_SCENES;
 export const GAME_PROMPT_GROUPS: {id:string;name:string;steps:{id:string;name:string;scenes:GamePromptScene[]}[]}[] = [
   {id:"text",name:"文本",steps:[{id:"text-screen",name:"筛选文本",scenes:["textScreen"]},{id:"text-translate",name:"翻译正文",scenes:["names","text","dialogue","line"]}]},
@@ -12,8 +12,8 @@ export type GamePromptSelection = Partial<Record<GamePromptScene, string>>;
 const defaults: Record<GamePromptScene,string> = {
   textScreen: "判断游戏原文是否已经完整使用目标语言。只有明确无需翻译时才判定为保留，混合语言、仅有共用汉字或无法确认的内容继续翻译。",
   text: "将游戏文本从{source}翻译为{target}。完整理解上下文，准确保留事实、人物关系和语气，不删减、不增加解释。已符合目标语言的片段原样保留，术语和人物译名保持一致。",
-  dialogue: "将游戏对白从{source}翻译为{target}。结合说话人和上下文理解省略、指代、敬语、情绪及人物关系，表达自然、口语化；保留人物个性和原文含义，不自行弱化或扩写内容，沿用已有译名。",
-  names: "将游戏人物姓名或称呼从{source}译为{target}。依据上下文区分姓名、绰号和身份称呼，优先沿用给定术语及已有译名；不将身份称呼误译为亲属关系，不附加解释，只返回一个译名。",
+  dialogue: "将游戏对白从{source}翻译为{target}。依据已知的说话人和听话人理解指代，保留原说话视角。原文省略主语且语境仍无法确认时，译文保留省略。保留敬语、停顿、口吃、人物语气和原意，沿用已有译名。",
+  names: "将游戏术语从{source}译为{target}。按已知用途处理人名、称呼、地名、技能或物品名。沿用指定术语及已有译名，区分姓名、绰号和身份称呼，只输出一个译名。",
   image: "将图片中识别出的游戏文字从{source}翻译为{target}。兼顾完整含义和界面空间，使用简洁自然的表达，保留数值、等级、快捷键和人物译名，不凭空补全未识别内容。",
   screen: "逐一检查图片中的可读文字并给出位置。不要将纹理、图案或装饰误识别为文字，不猜测无法辨认的内容；文字不是目标语言也应如实识别，不翻译。",
   refine: "判断图片是否存在真实可读文字。忽略装饰、衣物纹理和重复图案，不猜测模糊内容，不抄录文字。",

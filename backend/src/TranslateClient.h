@@ -50,7 +50,7 @@ public:
         const std::string& customPrompt = "",
         const std::string& glossaryJson = "",
         const std::string& contextJson = "",
-        bool ollamaReasoningOff = false, int maxOutputTokens = 0, bool nativeOllama = false, int ollamaContextLength = 0);
+        bool ollamaReasoningOff = false, int maxOutputTokens = 0, bool nativeOllama = false, int ollamaContextLength = 0, bool gameTranslation = false);
 
     /** JSON: {ok, entry?, error?, provider?} — Bing webpage dictionary. */
     static std::string lookupDictionaryJson(

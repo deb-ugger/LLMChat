@@ -2,7 +2,7 @@ import type { UnityProgress } from "../unityOffline";
 import { getEngineInfo } from "../translateEngines";
 
 const engineColors: Record<string, string> = { bing: "#326df0", google: "#238b73", mymemory: "#c58a16", youdao: "#9254c8", baidu: "#d95765", sogou: "#238baf", niutrans: "#7a8545" };
-export const gameTextStageLabels = { screening: "筛选文本", names: "姓名统一", layout: "断行与校验" };
+export const gameTextStageLabels = { screening: "筛选文本", names: "统一术语", layout: "断行与校验" };
 const activityLabels = { translating: "翻译正文", reusing: "复用译文", formatting: "断行与校验", saving: "提交结果" } as const;
 
 export function UnityTranslationProgress({ progress, running, failure, onLocate }: {

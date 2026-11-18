@@ -2156,7 +2156,8 @@ int HttpServer::run()
                     text, apiUrl, apiKey, model, source, target,
                     body.value("localModel", false) ? "direct" : cfg.proxyMode, cfg.httpProxy, prompt, glossary, contextJson,
                     body.value("localModel", false) && body.value("ollamaReasoningOff", false), body.value("maxOutputTokens", 0),
-                    body.value("localModel", false) && body.value("ollamaNative", false), body.value("ollamaContextLength", 0));
+                    body.value("localModel", false) && body.value("ollamaNative", false), body.value("ollamaContextLength", 0),
+                    body.value("feature", "") == "unity");
             }
             else
             {
