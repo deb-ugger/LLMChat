@@ -30,6 +30,21 @@ export const TRANSLATION_REFUSAL = "模型未提供译文。请检查识别文�
 
 export const TRANSLATION_PROMPT_LEAK = "译文混入了参考语境或模型提示，请重译此条";
 
+/** Undefined means plain output. Null means the model returned a template without a usable translation. */
+export function readGameTranslationEnvelope(source: string, output: string): string | null | undefined {
+  const translationKey = /"translation"\s*:/;
+  if (!translationKey.test(output) || translationKey.test(source)) return;
+  const trimmed = output.trim();
+  const body = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1] ?? trimmed;
+  if (!body.startsWith("{") || !body.endsWith("}")) return;
+  let envelope: { translation?: unknown };
+  try { envelope = JSON.parse(body); } catch { return; }
+  if (!Object.hasOwn(envelope, "translation") ||
+      Object.keys(envelope).some(key => key !== "translation" && key !== "original_text" && key !== "translation_instructions")) return;
+  const translation = envelope.translation;
+  return typeof translation === "string" && translation.trim() ? translation : null;
+}
+
 export function hasTranslationPromptLeak(source: string, translation: string) {
   if (!translation || source === translation) return false;
   const original = source.normalize("NFKC");
@@ -43,6 +58,7 @@ export function hasTranslationPromptLeak(source: string, translation: string) {
 
 export function unityTranslationProblem(source: string, translation: string) {
   if (!translation.trim()) return "译文为空";
+  if (readGameTranslationEnvelope(source, translation) === null) return "模型返回的 JSON 翻译模板中没有有效译文，请重译此条";
   if (hasTranslationPromptLeak(source, translation)) return TRANSLATION_PROMPT_LEAK;
   if (isTranslationRefusal(source, translation)) return TRANSLATION_REFUSAL;
   const sourceGlyphs = source.match(unityGlyphTokens()) || [], targetGlyphs = translation.match(unityGlyphTokens()) || [];

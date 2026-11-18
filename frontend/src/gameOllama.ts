@@ -2,8 +2,10 @@ import { acquireLocalModel, maximumModelConcurrency } from "./gameModelPerforman
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { api, type TranslateOptions } from "./api";
 import { showAppNotice } from "./components/AppNotice";
+import { readGameTranslationEnvelope } from "./unityTokens";
 
 export type OllamaOutput = (message: string, level: "info" | "success" | "error") => void;
+export type GameTranslateOptions = TranslateOptions & { unwrapImageTranslation?: boolean };
 type ModelConnection = Pick<TranslateOptions, "apiUrl" | "model" | "localModel">;
 type OllamaRuntime = { running: boolean; parallel: number | null; models: { name: string; size: number; size_vram: number }[] };
 const starting = new Map<string, Promise<void>>();
@@ -129,8 +131,13 @@ export async function reportRefinementGpu(connection: ModelConnection, signal: A
 
 export function gameOllamaNative(connection: ModelConnection) { return !!ollamaAddress(connection) && new URL(connection.apiUrl!).pathname.replace(/\/$/, "") === "/v1/chat/completions"; }
 
-export function translateGameWithOllama(text: string, init: RequestInit, options: TranslateOptions, report: OllamaOutput) {
-  return withGameOllama(options, init.signal ?? undefined, report, () => api.translate(text, init, { ...options, ollamaNative: !!ollamaAddress(options) && new URL(options.apiUrl!).pathname.replace(/\/$/, "") === "/v1/chat/completions" }));
+export async function translateGameWithOllama(text: string, init: RequestInit, options: GameTranslateOptions, report: OllamaOutput) {
+  const { unwrapImageTranslation, ...request } = options;
+  const result = await withGameOllama(request, init.signal ?? undefined, report,
+    () => api.translate(text, init, { ...request, ollamaNative: gameOllamaNative(request) }));
+  if (!result.ok || request.provider !== "llm" || !unwrapImageTranslation) return result;
+  const translation = readGameTranslationEnvelope(text, result.translation);
+  return translation == null ? result : { ...result, translation };
 }
 
 export function canDisableOllamaNameThinking(connection: ModelConnection) {

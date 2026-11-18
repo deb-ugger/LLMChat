@@ -1,4 +1,5 @@
 import { gameModelExecution } from "./gameModelPerformance";
+import type { GameTranslateOptions } from "./gameOllama";
 import { isGameDialogue } from "./gameTranslationContext";
 import type { UnityEntry } from "./unityOffline";
 import { gameTaskPrompt } from "./gamePrompts";
@@ -119,7 +120,7 @@ export function buildUnityTranslateOptions(
   customPrompt?: string,
   wrapMode: GameWrapMode = joinLines ? "join" : "keep",
   execution?: { selection: object; role: string },
-): TranslateOptions {
+): GameTranslateOptions {
   if (provider !== "llm") return { provider, source, target, feature: "unity", maxLength: 0, autoChunk: false };
   const connection = local ? gameLocalModelConnection(model || settings.model) : resolveFeatureLlm(settings, model);
   if (local && (!connection.model.trim() || !connection.apiUrl.trim())) throw new Error("请在通用设置添加本地模型，再选择翻译模型");
@@ -128,6 +129,7 @@ export function buildUnityTranslateOptions(
   return {
     provider: "llm", source, target, feature: "unity", maxLength: 0, autoChunk: false,
     ...connection, ...(execution ? gameModelExecution(execution.selection, execution.role, connection.model) : {}), ...(local ? { localModel: true } : {}),
+    ...(execution?.role === "image" || execution?.role === "review" ? { unwrapImageTranslation: true } : {}),
     glossary: settings.textGlossary,
     prompt: (customPrompt || gameTaskPrompt("text",undefined,{source,target:language})) + `\n仅返回译文，不要解释或代码围栏。保留全部格式占位符、富文本标签、控制符及分页符，不翻译标识符和路径。` + (wrapMode === "natural" ? "保留原段落空行和列表条目边界，允许按译文语义重新安排段内换行，不强制保留原文行数。" : wrapMode === "join" ? "保留段落、列表编号和项目顺序；段内输出连贯译文，显示折行由程序计算。" : "保留原换行和空行。"),
   };
