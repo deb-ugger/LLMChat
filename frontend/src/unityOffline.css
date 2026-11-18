@@ -496,6 +496,21 @@
 .game-action-confirm button:disabled { opacity:.5; cursor:default; }
 .game-confirm-details { max-height:220px; overflow:auto; margin-top:16px; padding:12px 14px; border-radius:8px; background:var(--accent-soft,#f2f6fc); font-size:14px; line-height:1.7; }
 .game-confirm-details ul { margin:6px 0; padding-left:20px; }
+.game-test-dialog { width:min(800px,calc(100vw - 32px)); }
+.game-test-dialog .game-confirm-details { max-height:min(62vh,680px); background:transparent; padding:8px 3px; }
+.game-test-picker { display:flex; align-items:end; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.game-test-picker > label { flex:1 1 225px; min-width:0; }
+.game-test-dialog label { display:grid; gap:4px; min-width:0; }
+.game-test-dialog input:not([type=checkbox]), .game-test-dialog select { box-sizing:border-box; width:100%; min-width:0; }
+.game-test-editor { margin:0; padding:0; border:0; min-width:0; }
+.game-test-editor > fieldset { min-width:0; margin:10px 0 0; padding:8px 12px 12px; border:1px solid var(--border); border-radius:8px; }
+.game-test-editor legend { padding:0 5px; font-weight:600; }
+.game-test-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; }
+.game-test-role { grid-column:1 / -1; display:grid; grid-template-columns:minmax(0,1.7fr) minmax(0,1fr) minmax(72px,.4fr); gap:8px; }
+.game-test-engines { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px 14px; }
+.game-test-dialog .unity-inline-check { display:flex; align-items:center; }
+.game-test-dialog .game-translation-tabs button[aria-pressed=true] { color:var(--accent); background:var(--accent-soft); }
+@media (max-width:580px) { .game-test-fields, .game-test-role { grid-template-columns:minmax(0,1fr); } }
 
 .unity-language-setting { display:grid; gap:6px; min-width:0; }
 .unity-language-setting > select { width:100%; min-width:0; box-sizing:border-box; }

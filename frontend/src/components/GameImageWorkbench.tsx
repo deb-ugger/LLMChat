@@ -6,7 +6,7 @@ import { UnityProjectLoading } from "./UnityProjectLoading";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu } from "../gameOllama";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { classifyGameImagePresence, mergeGameImageFieldLines, recognizeGameImage, renderGameImage } from "../gameImageModel";
-import type { GameTestConfiguration } from "../gameModelPreset";
+import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { logRuntimeError } from "../runtimeLog";
@@ -27,7 +27,7 @@ import { API_BASE, type OcrMode, type Settings } from "../api";
 import { engineReady, parseEngineKeys } from "../translateEngines";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "../modelPresets";
 import { buildUnityTranslateOptions, UNITY_LANGUAGES } from "../unityTranslation";
-import { createUnityEnginePool, loadUnityEngines, UNITY_ENGINE_CHOICES_KEY } from "../unityEnginePool";
+import { createUnityEnginePool, normalizeUnityEngines } from "../unityEnginePool";
 import { UnityEngineList } from "./UnityEngineList";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { createUnityImageOcr, translateCurrentUnityImage, mergeUnityOcrLines, processUnityImages, unityImageTranslationRegions } from "../unityImages";
@@ -39,8 +39,9 @@ import "../unityOffline.css";
 type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;error:string}};
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 export type GameImageInfo = {state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number};
-export type GameImageHandle = { benchmark: () => BenchmarkImageSource; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; prepare: () => Promise<boolean>; apply: () => Promise<boolean>; uninstall: () => Promise<boolean>; applyTestConfiguration: (preset: GameTestConfiguration) => Promise<void> };
-export function GameImageWorkbench({ handle, gamePath, settings, backupMode, backupScopes, workflowSteps,workflowStage,onTaskStateChange,onBatchImages,imageTarget,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage, onApplyTestConfiguration, testConfigurationDisabled }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;onBatchImages?:(value:ReturnType<typeof gameImageBatchRows>)=>void;imageTarget?:{id:string;sequence:number};backupScopes:string[];workflowSteps:ReactNode;workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void;onApplyTestConfiguration?:()=>Promise<void>;testConfigurationDisabled?:boolean }) {
+type ImageTestConfiguration = NonNullable<GameTestConfiguration["images"]>;
+export type GameImageHandle = { benchmark: () => BenchmarkImageSource; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; prepare: () => Promise<boolean>; apply: () => Promise<boolean>; uninstall: () => Promise<boolean>; captureTestConfiguration: () => ImageTestConfiguration; applyTestConfiguration: (preset: ImageTestConfiguration) => Promise<void> };
+export function GameImageWorkbench({ handle, gamePath, settings, backupMode, backupScopes, workflowSteps,workflowStage,onTaskStateChange,onBatchImages,imageTarget,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage, testConfigurations, testConfigurationDisabled }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;onBatchImages?:(value:ReturnType<typeof gameImageBatchRows>)=>void;imageTarget?:{id:string;sequence:number};backupScopes:string[];workflowSteps:ReactNode;workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void;testConfigurations?:GameTestConfigurationAccess;testConfigurationDisabled?:boolean }) {
   const promptState=useGamePromptSelection(gamePath + ":images");
   const {phase:closingPhase,show:showClosing,clear:clearClosing}=useClosingProgress();
   const operationWork=useRef<Promise<boolean>|null>(null),reading=useRef(false);
@@ -74,8 +75,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const [provider,setProvider]=useState(task.task?.options?.provider||savedOptions.provider||settings.ocrTranslateProvider),[source,setSource]=useState(savedOptions.source||task.task?.options?.source||settings.ocrTranslateSource||"auto"),[target,setTarget]=useState(savedOptions.target||task.task?.options?.target||settings.ocrTranslateTarget||"zh-CN");
   const [translationKind,setTranslationKind]=useState<"llm"|"local"|"engine">(task.task?.options?.translationKind||savedOptions.translationKind||(provider==="llm"?"llm":"engine"));
   const [translationModel,setTranslationModel]=useState(task.task?.options?.translationModel||savedOptions.translationModel||"");
-  const [engines,setEngines]=useState(loadUnityEngines),[engineExpanded,setEngineExpanded]=useState(false);
-  useEffect(()=>{localStorage.setItem(UNITY_ENGINE_CHOICES_KEY,JSON.stringify(engines));},[engines]);
+  const [engines,setEngines]=useState(() => loadGameWorkflowEngines(promptState.scope)),[engineExpanded,setEngineExpanded]=useState(false);
+  useEffect(() => { saveGameWorkflowEngines(promptState.scope, engines); }, [engines, promptState.scope]);
   const [onlySourceLanguage,setOnlySourceLanguage]=useState(savedOptions.onlySourceLanguage??false),[skipTargetLanguage,setSkipTargetLanguage]=useState(savedOptions.skipTargetLanguage??true);
   const sourceFilter = onlySourceLanguage && source !== "auto" ? source : "";
   const includesSource = (text: string) => !sourceFilter || gameImageMatchesSource(text, sourceFilter);
@@ -94,16 +95,20 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   useEffect(()=>{localStorage.setItem("llmchat-image-stage-models:"+gamePath,JSON.stringify(stageModels));},[gamePath,stageModels]);
   const [reviewModel, setReviewModel] = useState(task.task?.options?.reviewModel || savedOptions.reviewModel || "");
   useEffect(()=>{try{localStorage.setItem("llmchat-game-image-options:"+gamePath,JSON.stringify({strategy,concurrency,mode,provider,source:committedSource.current.source,target:committedSource.current.target,translationKind,translationModel,reviewModel,onlySourceLanguage:committedSource.current.onlySourceLanguage,skipTargetLanguage}));}catch(error){onMessage(`图片参数自动保存失败：${String(error)}`,"error");}},[gamePath,strategy,concurrency,mode,provider,source,target,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage]);
-  const saveConfiguration=async()=>{
-    if (sourceFilter !== committedSource.current.filter || targetFilter !== committedSource.current.targetFilter) {
+  const imageSettings = () => ({ backend, strategy, concurrency, mode, provider, source, target, translationKind, translationModel, reviewModel, onlySourceLanguage, skipTargetLanguage });
+  const saveConfiguration = async (options = imageSettings(), stages = stageModels) => {
+    const filter = options.onlySourceLanguage && options.source !== "auto" ? options.source : "";
+    const targetLanguageFilter = options.skipTargetLanguage ? options.target : "";
+    if (current.current && (filter !== committedSource.current.filter || targetLanguageFilter !== committedSource.current.targetFilter)) {
       await save(true);
       flushImages();
       const previous = committedSource.current;
+      const includesNext = (text: string) => (!filter || gameImageMatchesSource(text, filter)) && (!targetLanguageFilter || !gameImageAlreadyTarget(text, targetLanguageFilter));
       const rows = (current.current?.images || []).filter(image => image.selected || image.screening?.sourceSkip);
-      const restored = rows.map(image => image.regions.some(region => includesRegion(region.text)) ? restoreGameImageSourceSkip(image) : image);
-      const rerender = restored.filter(image => target === previous.target && image.selected && (image.completed || image.renderedFile) && image.renderedKind !== "imported" &&
+      const restored = rows.map(image => image.regions.some(region => includesNext(region.text)) ? restoreGameImageSourceSkip(image) : image);
+      const rerender = restored.filter(image => options.target === previous.target && image.selected && (image.completed || image.renderedFile) && image.renderedKind !== "imported" &&
         unityImageTranslationRegions(image.regions, 50, image).some(region => region.selected &&
-          includesRegion(region.text) !== ((!previous.filter || gameImageMatchesSource(region.text, previous.filter)) &&
+          includesNext(region.text) !== ((!previous.filter || gameImageMatchesSource(region.text, previous.filter)) &&
             (!previous.targetFilter || !gameImageAlreadyTarget(region.text, previous.targetFilter)))));
       const rerenderIds = new Set(rerender.map(image => image.id));
       const reselected = restored.filter((image, index) => image !== rows[index] && !rerenderIds.has(image.id));
@@ -111,9 +116,9 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
       for (let offset = 0; offset < reselected.length; offset += 64) await persistMany(reselected.slice(offset, offset + 64));
       flushImages();
     }
-    localStorage.setItem("llmchat-game-image-options:"+gamePath,JSON.stringify({strategy,concurrency,mode,provider,source,target,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage}));
-    localStorage.setItem("llmchat-image-stage-models:"+gamePath,JSON.stringify(stageModels));
-    committedSource.current = { source, onlySourceLanguage, filter: sourceFilter, targetFilter, target };
+    localStorage.setItem("llmchat-game-image-options:" + gamePath, JSON.stringify(options));
+    localStorage.setItem("llmchat-image-stage-models:" + gamePath, JSON.stringify(stages));
+    committedSource.current = { source: options.source, onlySourceLanguage: options.onlySourceLanguage, filter, targetFilter: targetLanguageFilter, target: options.target };
   };
   const post=useCallback(async <T,>(operation:string,body:unknown={},signal?:AbortSignal):Promise<T>=>{const response=await fetch(`${API_BASE}/api/game-images/${operation}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({gamePath,...body as object}),signal});const value=await response.json();if(!response.ok)throw new Error(value.error||"图片操作失败");return value;},[gamePath]);
   const uiUpdates=useRef(new Map<string,UnityImage>()),uiTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
@@ -469,18 +474,31 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
     onMessage(`已卸载 ${result.files} 张译图`, "success");
   });
   if (handle) handle.current = {
+    captureTestConfiguration: () => ({
+      options: { mode, concurrency, strategy, refine: { method: refineMethod === "llm" || refineMethod === "local" ? refineMethod : "off", mode: refineOcr.id, concurrency: refineConcurrency, confidence: refineConfidence },
+        translation: { kind: translationKind, provider, source, target, onlySourceLanguage, skipTargetLanguage, engines } },
+      roles: captureGameTestRoles({ screen: stageModels.filter, refine: stageModels.filterRefine, recognize: stageModels.recognize,
+        image: translationModel, review: reviewModel, layout: stageModels.render }, promptState,
+        { screen: stageModels.filter, refine: stageModels.filterRefine, recognize: stageModels.recognize, image: translationModel || settings.model, review: reviewModel, layout: stageModels.render }),
+    }),
     applyTestConfiguration: async preset => {
-      if (disabled || busy || clearing || operationActive.current || !current.current) throw new Error("请先完成图片工程读取或等待当前任务结束");
-      await saveConfiguration();
-      const { filter: _filter, recognize: _recognize, render: _render, ...stages } = stageModels;
-      const nextStages = { ...stages, refineMethod: "local", refineOcr: preset.ocrMode, refineConcurrency: String(preset.ocrConcurrency) };
-      const nextOptions = { backend, strategy: "staged" as const, mode: preset.ocrMode, source, target, concurrency: preset.ocrConcurrency,
-        provider: "llm" as const, translationKind: "llm" as const, translationModel: preset.image, reviewModel: preset.review, onlySourceLanguage, skipTargetLanguage };
-      localStorage.setItem("llmchat-game-image-options:" + gamePath, JSON.stringify(nextOptions));
-      localStorage.setItem("llmchat-image-stage-models:" + gamePath, JSON.stringify(nextStages));
-      if (task.task) task.select({ ...task.task, mode: preset.ocrMode, options: nextOptions });
-      setStageModels(nextStages); setMode(preset.ocrMode); setStrategy(nextOptions.strategy); setConcurrency(preset.ocrConcurrency);
-      setProvider("llm"); setTranslationKind("llm"); setTranslationModel(preset.image); setReviewModel(preset.review);
+      if (disabled || busy || clearing || operationActive.current) throw new Error("请等待当前图片任务结束");
+      const { mode, concurrency, strategy, refine, translation } = preset.options;
+      const nextStages = { ...stageModels };
+      for (const [key, model] of [["filter", preset.roles.screen?.model], ["filterRefine", preset.roles.refine?.model], ["recognize", preset.roles.recognize?.model], ["render", preset.roles.layout?.model]] as const) {
+        if (model === undefined) delete nextStages[key]; else nextStages[key] = model;
+      }
+      if (refine) Object.assign(nextStages, { refineMethod: refine.method, refineOcr: refine.mode, refineConcurrency: String(refine.concurrency), refineConfidence: String(refine.confidence) });
+      const nextOptions = { ...imageSettings(), mode, concurrency, strategy: strategy || "staged", translationModel: preset.roles.image?.model || "", reviewModel: preset.roles.review?.model || "",
+        ...(translation ? { source: translation.source, target: translation.target, onlySourceLanguage: translation.onlySourceLanguage !== false,
+          skipTargetLanguage: translation.skipTargetLanguage !== false, translationKind: translation.kind, provider: translation.provider } : {}) };
+      await saveConfiguration(nextOptions, nextStages);
+      if (task.task) task.select({ ...task.task, mode, options: nextOptions });
+      setStageModels(nextStages); setMode(mode); setStrategy(nextOptions.strategy); setConcurrency(concurrency);
+      setSource(nextOptions.source); setTarget(nextOptions.target); setOnlySourceLanguage(nextOptions.onlySourceLanguage); setSkipTargetLanguage(nextOptions.skipTargetLanguage);
+      setProvider(nextOptions.provider); setTranslationKind(nextOptions.translationKind); setTranslationModel(nextOptions.translationModel); setReviewModel(nextOptions.reviewModel);
+      if (translation) setEngines(normalizeUnityEngines(translation.engines));
+      applyGameTestRoles(preset.roles, promptState, { image: nextOptions.translationModel || settings.model });
       setConfigurationRevision(value => value + 1);
     },
     benchmark: () => ({
@@ -657,7 +675,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, bac
   const configLocked = clearing || !project || !!busy && (configured === operationStep.current || imageFlow.some(step => step.id === configured && step.state === "done"));
   const operationContent=<>
     {workflowSteps}
-    <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} onApplyTestConfiguration={onApplyTestConfiguration} testConfigurationDisabled={testConfigurationDisabled || flowBusy || !project} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
+    <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || flowBusy} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
       {configured === "translate" && <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => { setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm"); }}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
         {translationKind !== "engine" && <>
           {configured === "translate" && <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked} models={models} onChange={setTranslationModel} />}

@@ -3,7 +3,8 @@ import { GamePromptContext } from "../gamePrompts";
 import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
-import { GAME_TEST_CONFIGURATION_HINT } from "../gameModelPreset";
+import type { GameTestConfigurationAccess, SavedGameTestConfiguration } from "../gameModelPreset";
+import { GameTestConfigurations } from "./GameTestConfigurations";
 
 export type GameFlowStep = {
   id: string;
@@ -37,13 +38,13 @@ const settingsHeights = new Map<string, number>();
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
-export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, onApplyTestConfiguration, testConfigurationDisabled, configurationRevision }: {
+export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision }: {
   configurationCommit?: RefObject<GameStepConfigurationCommit | null>;
   steps: GameFlowStep[];
   configured: string | null;
   onConfigure: (step: string | null) => void;
   onRun?: () => void;
-  onApplyTestConfiguration?: () => Promise<void>;
+  testConfigurations?: GameTestConfigurationAccess;
   testConfigurationDisabled?: boolean;
   configurationRevision?: number;
   onSaveConfiguration?:()=>void|Promise<void>;
@@ -71,6 +72,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const [savingConfiguration, setSavingConfiguration] = useState(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
   const applyingPreset = useRef(false);
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [configurationError, setConfigurationError] = useState("");
   const [concurrencyDrafts, setConcurrencyDrafts] = useState<Record<string, ConcurrencyEdit[]>>({});
   const [filterDrafts, setFilterDrafts] = useState<Record<string, Record<string, ModelFilter>>>({});
@@ -143,19 +145,28 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     if (success) action?.();
     return success;
   };
-  const applyTestConfiguration = async () => {
-    if (!onApplyTestConfiguration || testConfigurationDisabled || applyingPreset.current || pendingSave.current) return;
+  const applyTestConfiguration = async (row: SavedGameTestConfiguration) => {
+    if (!testConfigurations || testConfigurationDisabled || applyingPreset.current || pendingSave.current) throw new Error("请等待当前任务结束后应用配置");
     applyingPreset.current = true;
     setSavingConfiguration(true);
     try {
-      await onApplyTestConfiguration();
-      showAppNotice("已应用文本和图片测试配置");
-    } catch (error) {
-      showAppNotice(error instanceof Error ? error.message : String(error), "error");
+      await testConfigurations.apply(row.value);
     } finally {
       applyingPreset.current = false;
       setSavingConfiguration(false);
     }
+  };
+  const captureTestConfiguration = () => {
+    const value = testConfigurations!.capture();
+    const roles = imageFlow ? value.images?.roles : value.text.roles;
+    if (roles) for (const step of steps) {
+      for (const edit of concurrencyDrafts[step.id] || []) {
+        const role = Object.keys(roles).find(key => key === edit.role) as keyof typeof roles | undefined;
+        const activeModel = step.models?.find(model => model.role === edit.role)?.id;
+        if (role && roles[role] && (roles[role]?.model || activeModel) === edit.model) roles[role] = { ...roles[role]!, concurrency: edit.count };
+      }
+    }
+    return value;
   };
   useLayoutEffect(() => {
     if (!configurationCommit) return;
@@ -187,9 +198,11 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     return () => observer.disconnect();
   }, [configured, layoutKey]);
   return <div className="game-flow">
+    {testDialogOpen && testConfigurations && <GameTestConfigurations access={{ ...testConfigurations, capture: captureTestConfiguration }} initialPart={imageFlow ? "images" : "text"}
+      onApply={applyTestConfiguration} onClose={() => setTestDialogOpen(false)} />}
     <div className="game-flow-list">
-      {(onRun || actions || onApplyTestConfiguration) && <div className="game-flow-run">
-        {onApplyTestConfiguration && <button type="button" className="unity-btn" data-tooltip={GAME_TEST_CONFIGURATION_HINT} disabled={testConfigurationDisabled || savingConfiguration} onClick={() => void applyTestConfiguration()}>应用测试配置</button>}
+      {(onRun || actions || testConfigurations) && <div className="game-flow-run">
+        {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={() => setTestDialogOpen(true)}>应用测试配置</button>}
         {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
         {actions}
       </div>}

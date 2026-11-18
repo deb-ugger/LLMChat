@@ -1,6 +1,7 @@
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { showAppNotice } from "./AppNotice";
-import { loadGameTestConfiguration } from "../gameModelPreset";
+import type { GameTestConfigurationAccess } from "../gameModelPreset";
+import { gameAvailableModels } from "./GameTranslationTabs";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { UnityIconButton } from "./UnityIconButton";
@@ -92,19 +93,26 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const touched = useRef(false), busy = applyingTestConfiguration || automatic === "running" || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
   const latestWorkflow = useRef({text:textInfo,images:imageWorkflow,pending,detecting}); latestWorkflow.current={text:textInfo,images:imageWorkflow,pending,detecting};
   const busyRef = useRef(busy); busyRef.current = busy;
-  const applyTestConfiguration = async () => {
-    const text = textHandle.current;
-    if (busyRef.current || !text || !imageHandle.current || !textInfo.sourcePath || !imageWorkflow.loaded) throw new Error("请先完成文本和图片工程读取");
-    setApplyingTestConfiguration(true);
-    try {
-      const preset = await loadGameTestConfiguration(text.japaneseToSimplified);
-      const currentText = textHandle.current, currentImages = imageHandle.current;
-      if (!currentText || !currentImages) throw new Error("游戏工程已关闭");
-      await currentText.applyTestConfiguration(preset);
-      try { await currentImages.applyTestConfiguration(preset); }
-      catch (error) { throw new Error(`文本测试配置已保存，图片配置保存失败：${error instanceof Error ? error.message : String(error)}`); }
-      appendLog("已应用文本和图片测试配置", "success");
-    } finally { setApplyingTestConfiguration(false); }
+  const testConfigurations: GameTestConfigurationAccess = {
+    scope: "embedded:" + game.path, models: gameAvailableModels(settings),
+    capture: () => {
+      const text = textHandle.current;
+      if (!text) throw new Error("请先读取文本工程");
+      return { text: text.captureTestConfiguration(), images: imageHandle.current?.captureTestConfiguration(), detectedSource: text.detectedSource };
+    },
+    apply: async preset => {
+      const text = textHandle.current, images = imageHandle.current;
+      if (busyRef.current || !text || !textInfo.sourcePath || preset.images && !images) throw new Error("请等待工程读取或当前任务结束");
+      setApplyingTestConfiguration(true);
+      try {
+        await text.applyTestConfiguration(preset.text);
+        if (preset.images && images) {
+          try { await images.applyTestConfiguration(preset.images); }
+          catch (error) { throw new Error(`文本测试配置已保存，图片配置保存失败：${error instanceof Error ? error.message : String(error)}`); }
+        }
+        appendLog("已应用测试配置", "success");
+      } finally { setApplyingTestConfiguration(false); }
+    },
   };
   useEffect(() => { let alive = true; void call<Status>("status").then(async value => {
     if (alive && !touched.current && value.gamePath === game.path) { setFile(value.jsonPath || "");setStatus(value);if(value.action?.includes("images"))setPart("images"); }
@@ -407,8 +415,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
 
         {textStep===1?progress(["extract"],{step:"1",title:"扫描资源",done:!!scanPath||textInfo.count>0}):textStep===3?progress(["embed"],{step:"3",title:"生成补丁",done:generated}):null}
         {textStep===3&&output("补丁目录",status.patchPath)}</div></div>,controlsTarget)}
-      <GameTextWorkspace gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={appendLog}/>
-      {supportsImages&&<GameImageWorkbench onApplyTestConfiguration={applyTestConfiguration} testConfigurationDisabled={busy || !textInfo.sourcePath || !imageWorkflow.loaded} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={appendLog}/>}
+      <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={appendLog}/>
+      {supportsImages&&<GameImageWorkbench testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={appendLog}/>}
 
     </main>
 

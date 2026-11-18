@@ -8,7 +8,7 @@ import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, cl
 import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { loadGameTestConfiguration } from "../gameModelPreset";
+import { applyGameTestRoles, captureGameTestRoles, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
@@ -1483,31 +1483,58 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const scanParametersLocked = !!busy || restoring || scanStarted && !preparingRescan && !pausedScan;
   const parametersLocked = activeStep === 1 ? scanParametersLocked : locked || activeStep <= completedThrough || activeStep === 2 && (imagePart ? imagesReady : textReady);
   const testConfigurationDisabled = !scanReady || !project || !!busy || restoring || saving || applyingTestConfiguration || !!importPreview || !!imageEditorBusy;
-  const applyTestConfiguration = async () => {
-    if (testConfigurationDisabled || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
-    setApplyingTestConfiguration(true);
-    try {
-      const preset = await loadGameTestConfiguration(scope.language === "ja" && target === "zh-CN");
+  const testConfigurations: GameTestConfigurationAccess = {
+    scope: "unity:" + root, models: gameModels,
+    capture: () => ({
+      detectedSource: scope.language,
+      text: { options: { kind: translationKind, source, target, onlySourceLanguage, skipTargetLanguage, includeContext, joinLines, wrapMode, lineMode, engines: engineChoices },
+        roles: captureGameTestRoles({ textScreen: textScreenModel, text: llmModel, dialogue: dialogueModel, names: nameModel, line: lineModel }, promptState,
+          { textScreen: textScreenModel, text: llmModel || settings.model, dialogue: dialogueModel || llmModel || settings.model,
+            names: nameModel || llmModel || settings.model, line: lineModel || settings.model }) },
+      images: { options: { mode: imageOcrMode, concurrency: imageConcurrency, confidence: imageConfidenceThreshold },
+        roles: captureGameTestRoles({ recognize: imageVisionModel, image: imageModel, review: imageReviewModel, layout: imageLayoutModel }, promptState,
+          { recognize: imageVisionModel, image: imageModel || settings.model, review: imageReviewModel, layout: imageLayoutModel }) },
+    }),
+    apply: async preset => {
       const current = latest.current;
-      if (!current || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
-      parameterWrite.current?.();
-      const previous = checkpointRef.current;
-      remember({ ...(previous || projectCheckpoint(current)), ...execution.current.parameters,
-        translationKind: "llm", llmModel: preset.text, dialogueModel: preset.dialogue, nameModel: preset.names, includeContext: true, textScreenModel: undefined,
-        imageModel: preset.image, imageReviewModel: preset.review, imageVisionModel: undefined, imageLayoutModel: undefined,
-        imageOcrMode: preset.ocrMode, imageConcurrency: preset.ocrConcurrency });
-      try { await taskWrites.current; }
-      catch (error) {
-        checkpointRef.current = previous; setCheckpoint(previous); setGeneration(previous?.progress ?? null);
-        throw error;
-      }
-      setTranslationKind("llm"); setLlmModel(preset.text); setDialogueModel(preset.dialogue); setNameModel(preset.names);
-      setTextScreenModel(undefined); setIncludeContext(true);
-      setImageModel(preset.image); setImageReviewModel(preset.review); setImageVisionModel(undefined); setImageLayoutModel(undefined);
-      setImageOcrMode(preset.ocrMode); setImageConcurrency(preset.ocrConcurrency);
-      setConfigurationRevision(value => value + 1);
-      logAction("已应用文本和图片测试配置", "success");
-    } finally { setApplyingTestConfiguration(false); }
+      if (testConfigurationDisabled || !current || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
+      setApplyingTestConfiguration(true);
+      try {
+        const { options, roles } = preset.text;
+        const images = preset.images;
+        const next = {
+          translationKind: options.kind, source: options.source, target: options.target, joinLines: options.joinLines,
+          wrapMode: options.wrapMode || (options.joinLines ? "join" as const : "keep" as const), lineMode: options.lineMode || "local" as const,
+          onlySourceLanguage: options.onlySourceLanguage !== false, skipTargetLanguage: options.skipTargetLanguage !== false,
+          includeContext: !!options.includeContext, engines: normalizeUnityEngines(options.engines),
+          llmModel: roles.text?.model || "", dialogueModel: roles.dialogue?.model || "", nameModel: roles.names?.model || "",
+          textScreenModel: roles.textScreen?.model, lineModel: roles.line?.model || "",
+          imageModel: images ? images.roles.image?.model || "" : imageModel, imageReviewModel: images ? images.roles.review?.model || "" : imageReviewModel,
+          imageVisionModel: images ? images.roles.recognize?.model : imageVisionModel, imageLayoutModel: images ? images.roles.layout?.model : imageLayoutModel,
+          imageOcrMode: images?.options.mode ?? imageOcrMode, imageConcurrency: images?.options.concurrency ?? imageConcurrency,
+          imageConfidenceThreshold: images?.options.confidence ?? imageConfidenceThreshold,
+        };
+        parameterWrite.current?.();
+        const previous = checkpointRef.current;
+        remember({ ...(previous || projectCheckpoint(current)), ...execution.current.parameters, ...next });
+        try { await taskWrites.current; }
+        catch (error) {
+          checkpointRef.current = previous; setCheckpoint(previous); setGeneration(previous?.progress ?? null);
+          throw error;
+        }
+        setTranslationKind(next.translationKind); setLlmModel(next.llmModel); setDialogueModel(next.dialogueModel); setNameModel(next.nameModel);
+        setSource(next.source); setTarget(next.target); setOnlySourceLanguage(next.onlySourceLanguage); setSkipTargetLanguage(next.skipTargetLanguage);
+        setTextScreenModel(next.textScreenModel); setIncludeContext(next.includeContext); setEngineChoices(next.engines);
+        setWrapMode(next.wrapMode); setJoinLines(next.joinLines); setLineMode(next.lineMode); setLineModel(next.lineModel);
+        setImageModel(next.imageModel); setImageReviewModel(next.imageReviewModel); setImageVisionModel(next.imageVisionModel); setImageLayoutModel(next.imageLayoutModel);
+        setImageOcrMode(next.imageOcrMode); setImageConcurrency(next.imageConcurrency); setImageConfidenceThreshold(next.imageConfidenceThreshold);
+        const main = next.llmModel || settings.model;
+        applyGameTestRoles(roles, promptState, { text: main, dialogue: next.dialogueModel || main, names: next.nameModel || main, line: next.lineModel || settings.model });
+        if (images) applyGameTestRoles(images.roles, promptState, { image: next.imageModel || settings.model });
+        setConfigurationRevision(value => value + 1);
+        logAction("已应用文本和图片测试配置", "success");
+      } finally { setApplyingTestConfiguration(false); }
+    },
   };
   const viewingProgress = !!generation && activeStep === generation.step && (activeStep !== 2 || (!!checkpoint?.translationRuns || imagePart === !!checkpoint?.imageOnly));
   const currentExecution = {
@@ -1929,7 +1956,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
           {pausedScan && !preparingRescan && scanOptionsChanged && <p className="hint">扫描参数已变化，继续时需从头重新扫描；确认后保留可匹配复用的旧结果。</p>}
         </>}
-        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} onApplyTestConfiguration={imagePart ? applyTestConfiguration : undefined} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig}
+        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig}
           steps={imagePart ? [
             { id: "recognize", title: "识字与定位", models: [{role:"recognize",id:imageVisionModel}], summary: imageVisionModel!==undefined?"大模型识别":OCR_MODE_OPTIONS.find(item => item.id === imageOcrMode)?.title, state: imagesNeedRecognition ? "current" : "done", run: imagesNeedRecognition ? () => startTranslationPart("images", "recognize") : undefined,
               stop: partRunning && imageTask.current === "recognize" ? () => translationJobs.current?.stop("images") : undefined,
