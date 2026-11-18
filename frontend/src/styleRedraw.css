@@ -1,0 +1,21 @@
+.style-redraw { box-sizing: border-box; width: 100%; height: 100%; overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: stretch; gap: 12px; color: var(--text); background: var(--bg-panel); }
+.style-redraw header, .style-redraw-tools, .style-redraw-box { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.style-redraw header { justify-content: space-between; }
+.style-redraw h2 { margin: 0; font-size: 18px; }
+.style-redraw fieldset, .style-redraw-settings { display: grid; gap: 12px; min-width: 0; padding: 0; margin: 0; border: 0; }
+.style-redraw label { display: grid; gap: 4px; }
+.style-redraw input, .style-redraw textarea, .style-redraw button, .style-redraw-dialog footer button { box-sizing: border-box; font: inherit; background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; }
+.style-redraw input[type=number] { width: 84px; }
+.style-redraw button, .style-redraw-dialog footer button { width: fit-content; cursor: pointer; }
+.style-redraw button:disabled { opacity: .5; cursor: default; }
+.style-redraw p, .style-redraw figure { margin: 0; }
+.style-redraw-previews { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 12px; }
+.style-redraw-previews figure { min-width: 0; }
+.style-redraw-previews img { display: block; max-height: 48vh; max-width: 100%; margin-top: 4px; background: repeating-conic-gradient(#d6dae0 0% 25%, #f1f2f4 0% 50%) 0 0 / 16px 16px; }
+.style-redraw-dialog { width: min(840px, 90vw); max-height: 88vh; padding: 0; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; }
+.style-redraw-dialog::backdrop { background: #0005; }
+.style-redraw-dialog footer { display: flex; justify-content: flex-end; padding: 8px 16px 12px; }
+.style-redraw-canvas { position: relative; display: inline-block; max-width: 100%; margin-top: 4px; }
+.style-redraw-canvas img { margin-top: 0; }
+.style-redraw-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+.style-redraw-canvas rect { fill: transparent; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }

@@ -1,6 +1,7 @@
 mod build_close;
 mod clipboard;
 mod game_image_zip;
+mod style_redraw;
 mod speech;
 mod unity_offline;
 mod ollama;
@@ -341,6 +342,8 @@ pub fn run() {
             ollama::ollama_service_stop,
             clipboard::clipboard_read_image_png,
             write_file_bytes,
+            style_redraw::run_style_redraw,
+            style_redraw::missing_redraw_weights,
             begin_game_image_zip,
             append_game_image_zip,
             finish_game_image_zip,

@@ -12,6 +12,7 @@ import { DeferredPanel } from "./components/DeferredPanel";
 import { isTauri } from "@tauri-apps/api/core";
 import { lastUnityGameDir } from "./unityLastGame";
 import { ChatView } from "./components/ChatView";
+const StyleRedraw = lazy(() => import("./components/StyleRedraw"));
 const ImageOcrView = lazy(() => import("./components/ImageOcrView").then(module => ({ default: module.ImageOcrView })));
 const LiteratureView = lazy(async () => {
   await import("./pdfjsBootstrap");
@@ -33,6 +34,7 @@ const pageLabels = {
   chat: "对话",
   literature: "文献翻译",
   image: "图片文字识别",
+  redraw: "AI 风格重绘",
   speech: "语音转文字",
   text: "文本翻译工程",
   unity: "游戏翻译",
@@ -42,7 +44,7 @@ const pageLabels = {
 } as const;
 type Page = keyof typeof pageLabels;
 const navigation: readonly Page[][] = [
-  ["chat", "literature", "image", "speech", "text", "unity"],
+  ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "stats", "settings"],
 ];
 
@@ -348,7 +350,7 @@ export default function App() {
                 if (id === "settings") setSettingsInitialTab(undefined);
                 setPage(id);
               }}>
-              <FeatureIcon feature={id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
+              <FeatureIcon feature={id === "redraw" ? "image" : id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
             </button>
           ))}
         </div>)}
@@ -469,6 +471,7 @@ export default function App() {
         <PagePanel feature="text" active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
           }} /></PagePanel>
+        <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw /></PagePanel>
         <PagePanel feature="speech" active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
         <PagePanel feature="unity" active={page === "unity"}><UnityTranslateView
             active={page === "unity"}

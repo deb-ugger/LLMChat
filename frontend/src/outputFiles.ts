@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { join, resourceDir } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 
-export type OutputModule = "literature" | "text";
+export type OutputModule = "literature" | "text" | "redraw";
 
 export async function getOutputDirectory(module: OutputModule): Promise<string> {
   return localStorage.getItem(`llmchat-output-directory-${module}`) || await resourceDir();
