@@ -44,7 +44,7 @@ function sourceBlocks(source: string) {
   return offsets.slice(0, -1).map((start, i) => source.slice(start, offsets[i + 1]));
 }
 export function prepareUnityStructuredText(source: string, flatten: (text: string) => string) {
-  return sourceBlocks(source).map(flatten).filter(Boolean).join("\n\n");
+  return sourceBlocks(source).map(block => flatten(block)).filter(Boolean).join("\n\n");
 }
 export async function translateUnityStructuredText(source: string, translate: (source: string) => Promise<string>) {
   const blocks = sourceBlocks(source).filter(block => block.trim());

@@ -1781,12 +1781,12 @@ export function UnityTranslateView({
             {mode === "runtime" && helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code data-tooltip={selected.gameDir}>{selected.gameDir}</code></div>}
+          <div ref={setOfflineToolbar} className="unity-header-primary unity-header-icons" hidden={mode !== "offline"} />
           <nav className="unity-mode-nav" aria-label="游戏翻译模式">
             <button role="tab" aria-selected={mode === "offline"} disabled={busy || offlineBusy} onClick={() => void changeMode("offline")}>嵌字翻译</button>
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
           </nav>
             <div className="unity-top-actions unity-header-icon-group">
-              <div ref={setOfflineToolbar} className="unity-header-primary unity-header-icons" hidden={mode !== "offline"} />
               {onOpenUnitySettings && <UnityIconButton
                 type="button"
                 aria-label="Unity 设置"

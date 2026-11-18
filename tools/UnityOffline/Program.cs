@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -839,10 +840,23 @@ public static class Program
         report($"重读校验完成：{file} · {entries.Length} 条译文", true);
     }
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern uint GetShortPathNameW(string path, StringBuilder? buffer, uint capacity);
+
     static void CheckGameClosed(string root)
     {
-        var names = Directory.EnumerateFiles(root, "*.exe", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint })
-            .Select(System.IO.Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in Directory.EnumerateFiles(root, "*.exe", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint })) {
+            names.Add(System.IO.Path.GetFileNameWithoutExtension(path));
+            if (!OperatingSystem.IsWindows()) continue;
+            // ProcessName can itself be the 8.3 alias when launched from a shortcut.
+            var capacity = GetShortPathNameW(path, null, 0);
+            if (capacity == 0) continue;
+            var shortPath = new StringBuilder(checked((int)capacity));
+            var written = GetShortPathNameW(path, shortPath, capacity);
+            if (written > 0 && written < capacity)
+                names.Add(System.IO.Path.GetFileNameWithoutExtension(shortPath.ToString()));
+        }
         foreach (var process in Process.GetProcesses())
         {
             using (process)
@@ -852,7 +866,7 @@ public static class Program
                 try { executable = process.MainModule?.FileName; }
                 catch (InvalidOperationException) { continue; } // The process exited during inspection.
                 catch (Exception e) { throw new Exception($"无法确认 {process.ProcessName} 是否为当前游戏，请关闭该程序后重试：{e.Message}"); }
-                if (executable != null && executable.StartsWith(root.TrimEnd('\\', '/') + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                if (executable != null && System.IO.Path.GetFullPath(executable).StartsWith(root.TrimEnd('\\', '/') + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     throw new Exception("游戏仍在运行，请关闭游戏后再应用补丁");
             }
         }

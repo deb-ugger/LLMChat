@@ -424,7 +424,8 @@ class JsonEmbedding {
     gameresourcebackup::Snapshot scopedBackup() {
         detail("按范围备份资源");
         const auto data=rpgDirectory_.empty()?Path("Data"):rpgDirectory_;
-        return gameresourcebackup::snapshot(game_,data,jobRequest_.value("backupScopes",json::array({"text"})),
+        const auto scopes=jobRequest_.value("backupScopes",json::array({jobRequest_.value("backupScope","text")}));
+        return gameresourcebackup::snapshot(game_,data,scopes,
             [&](size_t completed,size_t total){checkStop();progress(completed,total);});
     }
     void finishBackupMode(const std::string& action) {

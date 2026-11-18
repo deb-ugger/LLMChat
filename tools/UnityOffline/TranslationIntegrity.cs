@@ -5,7 +5,7 @@ namespace LLMChat.UnityOffline;
 public static class TranslationIntegrity
 {
     static readonly Regex Markup = new(@"\{[^{}\r\n]+\}|%%|(?<![0-9０-９])%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc]|</?[A-Za-z][A-Za-z0-9-]*(?:[ \t=][^>\r\n]*)?/?>|<#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?>|\\[nrt]", RegexOptions.Compiled);
-    static readonly Regex Glyphs = new(@"[\u0400-\u052f]{2,}[\u19d0-\u19df\u27c0-\u27ef][\u0400-\u05ff\u19d0-\u19df\u27c0-\u27ef]*|([\u0400-\u052f])\1+(?=[\s!?！？…。、]*[♡♥])", RegexOptions.Compiled);
+    static readonly Regex Glyphs = new(@"[\u0400-\u052f]{2,}[\u19d0-\u19df\u27c0-\u27ef][\u0400-\u05ff\u19d0-\u19df\u27c0-\u27ef]*|([\u0400-\u052f])\1+(?=[\s.!?！？…。、]*[♡♥])", RegexOptions.Compiled);
     public static readonly Regex Tokens = new(Markup + "|" + Glyphs, RegexOptions.Compiled);
     public static string Validate(string source, string translation)
     {

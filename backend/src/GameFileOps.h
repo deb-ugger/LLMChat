@@ -7,6 +7,7 @@
 #include <chrono>
 #include <optional>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <vector>
 namespace gamefiles {
@@ -23,6 +24,10 @@ inline void restore(const fs::path& game,const fs::path& backup){auto j=Json::pa
  for(auto& item:j["resources"]){if(item.value("restored",false))continue;auto name=relative(item.at("name"));auto target=game/name;
  if(fs::exists(target)){auto saved=backup/"retained"/name;int n=2;while(fs::exists(saved))saved=backup/"retained"/utf8path::pathFromUtf8(key(name)+"-"+std::to_string(n++));fs::create_directories(saved.parent_path());fs::rename(target,saved);}
  if(item.value("existed",false))copyResource(backup/"original"/name,target);item["restored"]=true;ledger(backup,j);}
+ for(const auto& dir:j.value("createdDirectories",Json::array())) {
+     const auto path=game/relative(dir.get<std::string>());
+     if(fs::is_directory(path)&&fs::is_empty(path)) fs::remove(path);
+ }
  j["state"]="rolledBack";ledger(backup,j);
 }
 template<class Prepare>
@@ -31,6 +36,7 @@ inline fs::path applyPrepared(const fs::path& game, Prepare prepare) {
     bool created=false;
     Json journal={{"engine","files"},{"state","applying"},{"resources",Json::array()}};
     std::vector<std::pair<fs::path,bool>> staged;
+    std::set<fs::path> newDirectories;
     try {
         prepare([&](const fs::path& name,const std::string* bytes) {
             relative(key(name));
@@ -41,6 +47,8 @@ inline fs::path applyPrepared(const fs::path& game, Prepare prepare) {
                 created=true;
             }
             const bool existed=fs::exists(game/name);
+            for(auto dir=name.parent_path();!dir.empty()&&!fs::exists(game/dir);dir=dir.parent_path())
+                newDirectories.insert(dir);
             if(existed) copyResource(game/name,backup/"original"/name);
             if(bytes) write(backup/"staging"/name,*bytes);
             journal["resources"].push_back({{"name",key(name)},{"existed",existed}});
@@ -54,24 +62,30 @@ inline fs::path applyPrepared(const fs::path& game, Prepare prepare) {
         throw;
     }
     if(staged.empty()) return {};
+    for(auto dir=newDirectories.rbegin();dir!=newDirectories.rend();++dir)
+        journal["createdDirectories"].push_back(key(*dir));
     ledger(backup,journal);
+    size_t applied=0;
     try {
         for(const auto& [name,hasBytes]:staged) {
             const auto target=game/name;
             fs::create_directories(target.parent_path());
-            if(!hasBytes) { fs::remove(target); continue; }
+            if(!hasBytes) { fs::remove(target); ++applied; continue; }
 #ifdef _WIN32
             if(!MoveFileExW((backup/"staging"/name).c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
                 throw std::runtime_error("无法替换资源："+utf8path::pathUtf8(name));
 #else
             fs::rename(backup/"staging"/name,target);
 #endif
+            ++applied;
         }
         journal["state"]="applied";
         ledger(backup,journal);
-    } catch(...) {
+    } catch(const std::exception& error) {
+        for(size_t i=applied;i<staged.size();++i) journal["resources"][i]["restored"]=true;
+        ledger(backup,journal);
         restore(game,backup);
-        throw;
+        throw std::runtime_error(std::string(error.what())+"；原资源已恢复");
     }
     return backup;
 }

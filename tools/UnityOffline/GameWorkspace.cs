@@ -144,10 +144,12 @@ public static class GameWorkspace
     {
         Program.Progress("正在检查游戏工作目录");
         var root = Full(request.Root); var work = WorkRoot(root); var projects = Path.Combine(work, "projects");
+        SavedProject? discovered = null;
         if (!File.Exists(Path.Combine(work,"workspace.json"))) {
             if(!Directory.Exists(root))throw new Exception("游戏目录不存在");
-            var existing=Program.FindSaved(new Request {Root=root,OutputRoot=string.IsNullOrWhiteSpace(request.OutputRoot)?projects:request.OutputRoot});
-            return new(work,projects,existing,request.Task?.DeepClone(),PatchInstallation.Status(root).Installed);
+            discovered=Program.FindSaved(new Request {Root=root,OutputRoot=string.IsNullOrWhiteSpace(request.OutputRoot)?projects:request.OutputRoot});
+            if (discovered.Project == null || string.IsNullOrWhiteSpace(request.OutputRoot) || IsProjectsRoot(root, request.OutputRoot))
+                return new(work,projects,discovered,request.Task?.DeepClone(),PatchInstallation.Status(root).Installed);
         }
         work=Ensure(root);
         var markerPath = Path.Combine(work, "workspace.json");
@@ -163,7 +165,7 @@ public static class GameWorkspace
             // patchFolder is a child of a project, not a project in its own right.
             sources = sources.Where(path => File.Exists(Path.Combine(path, "unity-project.json"))).ToList();
             if (sources.Count == 0 && !string.IsNullOrWhiteSpace(request.OutputRoot)) {
-                var found = Program.FindSaved(new Request { Root = root, OutputRoot = request.OutputRoot });
+                var found = discovered ?? Program.FindSaved(new Request { Root = root, OutputRoot = request.OutputRoot });
                 if (found.Project != null) sources.Add(found.Project.Folder);
             }
             var mapped = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

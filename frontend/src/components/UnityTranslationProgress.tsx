@@ -25,9 +25,11 @@ export function UnityTranslationProgress({ progress, running, failure, onLocate 
       <div className="unity-engine-stack" role="img" aria-label={`各引擎累计处理 ${characters.toLocaleString("zh-CN")} 字符`} style={{ height: 8 }}>
         {progress.engineStats.map(engine => <span key={engine.id} className="unity-engine-segment" data-tooltip={`${getEngineInfo(engine.id)?.label || engine.id}：${engine.characters.toLocaleString("zh-CN")} 字符`} style={{ width: `${characters ? engine.characters / characters * 100 : 0}%`, backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />)}
       </div>
-      <div style={{ display: "flex", gap: "0 16px", overflowX: "auto", whiteSpace: "nowrap" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px" }}>
         {progress.engineStats.map(engine => <div className="unity-engine-meter" key={engine.id} style={{ flexShrink: 0 }}>
           <div><strong><span className="unity-engine-swatch" aria-hidden="true" style={{ backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />{getEngineInfo(engine.id)?.label || engine.id}</strong></div>
+          <span>{engine.characters.toLocaleString("zh-CN")} 字符 · {(characters ? engine.characters * 100 / characters : 0).toFixed(1)}%{running && engine.speed != null && ` · 当前 ${engine.speed.toFixed(1)} 字符/秒`}</span>
+          {engine.entryId && <button type="button" className="unity-progress-locate" onClick={() => onLocate(engine.entryId!)}>条目 #{engine.entryId}</button>}
         </div>)}
       </div>
     </section>}

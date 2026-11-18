@@ -2,7 +2,7 @@
 const pattern = String.raw`\{[^{}\r\n]+\}|%%|(?<![0-9０-９])%(?:\d+\$)?[-+0 #]*\d*(?:\.\d+)?[sdifouxXeEgGc]|<\/?[A-Za-z][A-Za-z0-9-]*(?:[ \t=][^>\r\n]*)?\/?>|<#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?>|\\[nrt]`;
 
 // Mixed-script/repeated symbol runs next to hearts are game glyph codes, not prose.
-const glyphPattern = String.raw`[\u0400-\u052f]{2,}[\u19d0-\u19df\u27c0-\u27ef][\u0400-\u05ff\u19d0-\u19df\u27c0-\u27ef]*|([\u0400-\u052f])\1+(?=[\s!?！？…。、]*[♡♥])`;
+const glyphPattern = String.raw`[\u0400-\u052f]{2,}[\u19d0-\u19df\u27c0-\u27ef][\u0400-\u05ff\u19d0-\u19df\u27c0-\u27ef]*|([\u0400-\u052f])\1+(?=[\s.!?！？…。、]*[♡♥])`;
 export const unityGlyphTokens = () => new RegExp(glyphPattern, "g");
 export const unityTranslationTokens = () => new RegExp(`${pattern}|${glyphPattern}`, "g");
 
