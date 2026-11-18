@@ -129,7 +129,7 @@
 .unity-description-trigger svg { flex-shrink: 0; }
 .unity-description-trigger:disabled { opacity: .6; cursor: default; }
 .unity-description-trigger:focus-visible { outline: 2px solid #608fe0; outline-offset: 1px; }
-.unity-description-menu { position: fixed; margin: 0; padding: 5px; box-sizing: border-box; overflow: auto; border: 1px solid var(--border, #cdd9eb); border-radius: 9px; background: var(--bg-panel); color: var(--text, #203149); box-shadow: 0 8px 24px #20314926; font-family: inherit; font-size: 14px; line-height: 1.5; }
+.unity-description-menu { position: fixed; margin: 0; padding: 5px; box-sizing: border-box; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-panel); color: var(--text); box-shadow: var(--shadow-md); font-family: inherit; font-size: 14px; line-height: 1.5; }
 .unity-description-option { display: flex; flex-direction: column; align-items: stretch; gap: 5px; width: 100%; padding: 10px 12px; text-align: left; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; white-space: normal; cursor: pointer; }
 .unity-description-option > span { font-size: 13px; line-height: 1.6; color: var(--text-muted); }
 .unity-description-option > b { font-size: 13px; line-height: 1.5; }
@@ -425,8 +425,8 @@
 .unity-description-menu .unity-description-option > strong { color:var(--text,#203149); font-size:15px; font-weight:700; }
 .unity-description-menu .unity-description-option > span { color:var(--text-muted,#718096); font-size:13px; font-weight:400; }
 .unity-description-menu .unity-description-option > b { color:var(--text,#203149); font-size:13px; font-weight:700; }
-.unity-description-menu .unity-description-option[aria-selected=true] { background:#edf3ff; }
-.unity-description-menu .unity-description-option:hover,.unity-description-menu .unity-description-option:focus-visible { background:#edf3ff; }
+.unity-description-menu .unity-description-option:hover,.unity-description-menu .unity-description-option:focus-visible { background:var(--bg-hover); }
+.unity-description-menu .unity-description-option[aria-selected=true] { background:var(--accent-soft); }
 
 .unity-step-tab.is-paused-task { animation:game-task-pending 2.4s ease-in-out infinite; }
 @keyframes game-task-pending { 0%,100% { box-shadow:inset 0 0 0 1px #326df033; } 50% { box-shadow:inset 0 0 0 3px #326df0aa; } }

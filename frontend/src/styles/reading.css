@@ -392,10 +392,10 @@
   max-height: min(320px, 50vh);
   overflow: auto;
   padding: 6px;
-  border: 1px solid #d0d5dd;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 12px 28px color-mix(in srgb, #000 14%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-md);
 }
 
 .status-select-search {
@@ -466,7 +466,7 @@
 
 .status-select-option:hover,
 .status-select-option.is-active {
-  background: color-mix(in srgb, var(--accent) 10%, #f5f7fa);
+  background: var(--accent-soft);
 }
 
 .status-select-option .settings-engine-badge {
@@ -502,10 +502,10 @@
   margin: 0;
   padding: 4px;
   list-style: none;
-  background: #fff;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
 }
 
 .lang-combobox-option {
@@ -521,10 +521,8 @@
   font-size: 13px;
 }
 
-.lang-combobox-option:hover,
-.lang-combobox-option.active {
-  background: var(--bg-muted);
-}
+.lang-combobox-option:hover { background: var(--bg-hover); }
+.lang-combobox-option.active { background: var(--accent-soft); }
 
 .lang-code {
   min-width: 64px;
@@ -2111,11 +2109,8 @@ body.row-resizing .textLayer {
 
 .settings-engine-card.is-selected,
 .settings-engine-card.is-open {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-panel));
-  box-shadow:
-    inset 4px 0 0 var(--accent),
-    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
 }
 
 .settings-card.is-mode-active {
@@ -2173,12 +2168,8 @@ body.row-resizing .textLayer {
 }
 
 .settings-mode-panel.is-active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
-  box-shadow:
-    inset 5px 0 0 var(--accent),
-    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 6px 18px color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
 }
 
 .settings-mode-panel.is-idle {
@@ -2195,9 +2186,8 @@ body.row-resizing .textLayer {
 }
 
 .settings-mode-panel:focus-visible {
-  box-shadow:
-    inset 5px 0 0 var(--accent),
-    0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .settings-mode-panel .settings-mode-head {

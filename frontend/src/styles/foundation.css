@@ -382,6 +382,80 @@ textarea {
   font: inherit;
 }
 
+select:not([hidden], [multiple], [size]) {
+  box-sizing: border-box;
+  min-height: 30px;
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+select:not([hidden], [multiple], [size]):enabled { cursor: pointer; }
+select:not([hidden], [multiple], [size]):disabled { opacity: .65; }
+select:not([hidden], [multiple], [size]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The picker uses the same native select and change events after opting into styling. */
+@supports (appearance: base-select) {
+  select:not([hidden], [multiple], [size]),
+  select:not([hidden], [multiple], [size])::picker(select) {
+    appearance: base-select;
+  }
+
+  select:not([hidden], [multiple], [size]) { align-items: center; gap: 8px; }
+  select:open { border-color: var(--accent); }
+  select::picker-icon {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-inline-start: auto;
+    border-inline-end: 1.5px solid;
+    border-block-end: 1.5px solid;
+    color: var(--text-muted);
+    transform: translateY(-2px) rotate(45deg);
+  }
+  select:open::picker-icon { transform: translateY(2px) rotate(225deg); }
+
+  select::picker(select) {
+    box-sizing: border-box;
+    max-inline-size: calc(100vw - 16px);
+    max-block-size: min(320px, 60vh);
+    margin-block: 4px;
+    padding: 5px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-panel);
+    color: var(--text);
+    box-shadow: var(--shadow-md);
+    font: inherit;
+  }
+
+  select:not([hidden], [multiple], [size]) option {
+    min-height: 32px;
+    gap: 10px;
+    padding: 5px 9px;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+    white-space: normal;
+  }
+  select option:checked { background: var(--accent-soft); color: var(--accent-ink); }
+  select option:enabled:is(:hover, :focus-visible) { background: var(--bg-hover); }
+  select option:checked:enabled:is(:hover, :focus-visible) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--accent-soft));
+  }
+  select option:disabled { color: var(--text-muted); opacity: .65; cursor: default; }
+  select option::checkmark { order: 1; margin-inline-start: auto; color: var(--accent); }
+}
+
 .app-shell {
   display: flex;
   height: 100%;
@@ -397,11 +471,47 @@ textarea {
   position: relative;
   display: flex;
   background: var(--bg-panel);
+}
 
+.page-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  background: var(--bg-app);
+}
+
+.page-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-main > .literature-host:not(.is-hidden) > :not(.page-loading) {
+    animation: page-enter 160ms ease-out;
+  }
+  .page-loading-spinner { animation: page-loading-spin 700ms linear infinite; }
+  .nav-item { transition: transform 100ms ease-out; }
+  .nav-item:active { transform: scale(.97); }
+}
+
+@keyframes page-enter {
+  from { opacity: .78; }
+  to { opacity: 1; }
+}
+
+@keyframes page-loading-spin {
+  to { transform: rotate(360deg); }
 }
 
 .nav-rail {
-  flex: 0 0 148px;
+  flex: 0 0 80px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -411,41 +521,32 @@ textarea {
   z-index: 2;
 }
 
-.nav-brand {
+.nav-links {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 18px 14px;
-  color: white;
+  flex: 1;
+  flex-direction: column;
+  justify-content: safe center;
+  min-height: 0;
+  gap: 3px;
+  padding: 8px 4px;
+  overflow-y: auto;
 }
-
-.nav-brand > span {
-  display: grid;
-  place-items: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 7px;
-  background: #bde5ce;
-  color: #17392e;
-  font-size: 19px;
-  font-weight: 750;
-}
-
-.nav-brand strong { font-size: 17px; letter-spacing: -.04em; }
-.nav-links { display: flex; flex-direction: column; gap: 3px; padding: 0 8px 12px; overflow-y: auto; }
 .nav-item {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 9px;
+  justify-content: center;
+  gap: 3px;
   flex: none;
-  min-height: 39px;
-  padding: 6px 10px;
+  min-height: 51px;
+  padding: 6px 1px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
-  text-align: start;
-  font-size: 13px;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 11px;
   font-weight: 550;
   cursor: pointer;
 }
@@ -456,14 +557,6 @@ textarea {
 .nav-item:focus-visible { outline: 2px solid #9cddc2; outline-offset: -2px; }
 .nav-rail.is-collapsed { flex-basis: 5px; }
 .nav-rail.is-collapsed > :not(.nav-rail-toggle) { display: none; }
-
-@media (max-width: 1200px) {
-  .nav-rail { flex-basis: 80px; }
-  .nav-brand { justify-content: center; padding: 12px 0; }
-  .nav-brand strong { display: none; }
-  .nav-links { padding-inline: 4px; }
-  .nav-item { flex-direction: column; justify-content: center; gap: 3px; padding: 6px 1px; font-size: 11px; white-space: nowrap; }
-}
 
 .nav-rail-toggle {
   position: absolute;

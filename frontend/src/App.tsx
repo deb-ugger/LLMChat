@@ -27,21 +27,22 @@ import { stringifyLiteraturePromptCatalog } from "./literaturePrompt";
 import { defaultSettings, withDefaults } from "./settingsDefaults";
 import { resolveFeatureLlm, setVendorModelsOverrideCache } from "./modelPresets";
 
-const navigation = [
-  ["chat", "对话"],
-  ["literature", "文献翻译"],
-  ["image", "图片文字识别"],
-  ["speech", "语音转文字"],
-  ["text", "文本翻译工程"],
-  ["unity", "游戏翻译"],
-  ["stats", "统计"],
-  ["settings", "设置"],
-] as const;
-type Page = typeof navigation[number][0];
+const pageLabels = {
+  chat: "对话",
+  literature: "文献翻译",
+  image: "图片文字识别",
+  speech: "语音转文字",
+  text: "文本翻译工程",
+  unity: "游戏翻译",
+  stats: "统计",
+  settings: "设置",
+} as const;
+type Page = keyof typeof pageLabels;
+const navigation = Object.entries(pageLabels) as [Page, string][];
 
-function PagePanel({ active, children }: { active: boolean; children: React.ReactNode }) {
+function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
-    <DeferredPanel active={active}>{children}</DeferredPanel>
+    <DeferredPanel active={active} label={pageLabels[feature]}>{children}</DeferredPanel>
   </div>;
 }
 
@@ -319,7 +320,6 @@ export default function App() {
   return (
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
-        <div className="nav-brand" aria-label="LLMChat"><span aria-hidden="true">L</span><strong>LLMChat</strong></div>
         <div className="nav-links">
           {navigation.map(([id, label]) => (
             <button key={id} type="button" className={page === id ? "nav-item active" : "nav-item"}
@@ -372,7 +372,7 @@ export default function App() {
         </div>
         {/* Keep mounted so PDF + reading position survive nav switches.
             Hidden panes use visibility (not display:none) so PDF layout stays valid. */}
-        <PagePanel active={page === "literature"}><LiteratureView
+        <PagePanel feature="literature" active={page === "literature"}><LiteratureView
             visible={page === "literature"}
             ocrMode={settings.ocrMode}
             translateProvider={settings.translateProvider}
@@ -414,7 +414,7 @@ export default function App() {
               });
             }}
           /></PagePanel>
-        <PagePanel active={page === "image"}><ImageOcrView
+        <PagePanel feature="image" active={page === "image"}><ImageOcrView
             active={page === "image"}
             ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
@@ -444,11 +444,11 @@ export default function App() {
               await onSaveSettings({ ...settings, ocrTranslateTarget });
             }}
           /></PagePanel>
-        <PagePanel active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
+        <PagePanel feature="text" active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
           }} /></PagePanel>
-        <PagePanel active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
-        <PagePanel active={page === "unity"}><UnityTranslateView
+        <PagePanel feature="speech" active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
+        <PagePanel feature="unity" active={page === "unity"}><UnityTranslateView
             active={page === "unity"}
             settings={settings}
             onRestoreWorkspace={() => { if (!startupInteracted.current) setPage("unity"); }}
@@ -461,8 +461,8 @@ export default function App() {
               setPage("settings");
             }}
           /></PagePanel>
-        <PagePanel active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
-        <PagePanel active={page === "settings"}><SettingsView
+        <PagePanel feature="stats" active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
+        <PagePanel feature="settings" active={page === "settings"}><SettingsView
             settings={settings}
             onSave={onSaveSettings}
             initialTab={settingsInitialTab}
