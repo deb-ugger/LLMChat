@@ -61,20 +61,20 @@ function BatchGroup({ title, rows, onLocate }: { title: string; rows: BatchRow[]
   return <details className="game-batch-group">
     <summary>{title} · {rows.length}</summary>
     {title === imagePresenceConflictGroup && <p className="hint">{IMAGE_PRESENCE_REVIEW_HINT}</p>}
-    <ul>{visible.map((row, index) => <li key={row.kind + ":" + row.id}>
+    <ul>{visible.map(row => <li key={row.kind + ":" + row.id}>
       <button type="button" className="unity-progress-locate" aria-label={"定位 " + row.label} data-tooltip={row.label}
         onClick={() => onLocate(row)}>{row.label}</button>
       <span className="game-batch-detail" data-tooltip={row.detail}>{row.detail}</span>
-      {pages > 1 && index === visible.length - 1 && <span className="game-batch-page-controls" aria-label={title + "翻页"}>
-        <GamePageNumber page={current} pages={pages} onPage={setPage} />
-        <button type="button" aria-label="上一页" data-tooltip="上一页" disabled={current === 0} onClick={() => setPage(current - 1)}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
-        </button>
-        <button type="button" aria-label="下一页" data-tooltip="下一页" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
-        </button>
-      </span>}
     </li>)}</ul>
+    {pages > 1 && <div className="game-batch-page-controls" role="group" aria-label={title + "翻页"}>
+      <button type="button" aria-label="上一页" data-tooltip="上一页" disabled={current === 0} onClick={() => setPage(current - 1)}>
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
+      </button>
+      <GamePageNumber page={current} pages={pages} onPage={setPage} />
+      <button type="button" aria-label="下一页" data-tooltip="下一页" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>
+      </button>
+    </div>}
   </details>;
 }
 

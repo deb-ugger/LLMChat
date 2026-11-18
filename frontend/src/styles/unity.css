@@ -3156,3 +3156,18 @@ dialog.game-workflow-help::backdrop { background: #0f172a66; }
   position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); width: min(850px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px));
   z-index: 120; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; overflow: hidden;
 }
+
+.game-batch-group > .game-batch-page-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-block: 5px 2px;
+  border-top: 1px solid var(--border);
+}
+.game-batch-group > .game-batch-page-controls .game-page-number input {
+  box-sizing: content-box;
+  min-inline-size: 1.5ch;
+  block-size: 24px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+}

@@ -2,10 +2,11 @@ import { acquireLocalModel, maximumModelConcurrency } from "./gameModelPerforman
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { api, type TranslateOptions } from "./api";
 import { showAppNotice } from "./components/AppNotice";
+import { gameImageJapaneseTextIssue } from "./gameDisplayText";
 import { readGameTranslationEnvelope } from "./unityTokens";
 
 export type OllamaOutput = (message: string, level: "info" | "success" | "error") => void;
-export type GameTranslateOptions = TranslateOptions & { unwrapImageTranslation?: boolean };
+export type GameTranslateOptions = TranslateOptions & { imageTranslationRole?: "image" | "review" };
 type ModelConnection = Pick<TranslateOptions, "apiUrl" | "model" | "localModel">;
 type OllamaRuntime = { running: boolean; parallel: number | null; models: { name: string; size: number; size_vram: number }[] };
 const starting = new Map<string, Promise<void>>();
@@ -132,12 +133,21 @@ export async function reportRefinementGpu(connection: ModelConnection, signal: A
 export function gameOllamaNative(connection: ModelConnection) { return !!ollamaAddress(connection) && new URL(connection.apiUrl!).pathname.replace(/\/$/, "") === "/v1/chat/completions"; }
 
 export async function translateGameWithOllama(text: string, init: RequestInit, options: GameTranslateOptions, report: OllamaOutput) {
-  const { unwrapImageTranslation, ...request } = options;
-  const result = await withGameOllama(request, init.signal ?? undefined, report,
-    () => api.translate(text, init, { ...request, ollamaNative: gameOllamaNative(request) }));
-  if (!result.ok || request.provider !== "llm" || !unwrapImageTranslation) return result;
-  const translation = readGameTranslationEnvelope(text, result.translation);
-  return translation == null ? result : { ...result, translation };
+  const { imageTranslationRole, ...request } = options;
+  const translate = async (config: TranslateOptions) => {
+    const result = await withGameOllama(config, init.signal ?? undefined, report,
+      () => api.translate(text, init, { ...config, ollamaNative: gameOllamaNative(config) }));
+    if (!result.ok || config.provider !== "llm" || !imageTranslationRole) return result;
+    const translation = readGameTranslationEnvelope(text, result.translation);
+    return translation == null ? result : { ...result, translation };
+  };
+  const result = await translate(request);
+  if (imageTranslationRole !== "review" || request.provider !== "llm" || !result.ok ||
+    !gameImageJapaneseTextIssue(text, result.translation, request.target)) return result;
+
+  init.signal?.throwIfAborted();
+  const correction = "上次译文仍含日文。请把日文正文译成目标语言。已有术语优先，未收录的人名可音译。保留原有符号、格式和换行，只输出译文。";
+  return translate({ ...request, prompt: [request.prompt, correction].filter(Boolean).join("\n") });
 }
 
 export function canDisableOllamaNameThinking(connection: ModelConnection) {

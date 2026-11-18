@@ -28,8 +28,7 @@ export function gameJapaneseTextIssue(source: string, translation: string, targe
 }
 
 export function gameImageJapaneseTextIssue(source: string, translation: string, target?: string) {
-  if (!target?.startsWith("zh") || !japaneseKana.test(languageText(source)) ||
-    !japaneseKana.test(languageText(translation).replace(/[っッー]/g, ""))) return "";
+  if (!target || !gameJapaneseTextIssue(source, translation, target)) return "";
   return source.normalize("NFKC").trim() === translation.normalize("NFKC").trim()
     ? "模型原样返回了日文，请重译此区域" : "译文仍含日文，请重译此区域";
 }
@@ -82,7 +81,7 @@ export function gameTextNeedsNoTranslation(source: string, target: string) {
   const chinese = /(?:你[们們的好]|我[们們的]|[这這][个個里裡些]|[那哪][个個里裡]|[吗嗎么麼]|什么|什麼|已经|已經|没有|沒有|[获獲]得了|到手了|收到了|完成了|要不要|是否|请[选選按稍]|請[選按稍]|正在|保存成功|不行|不要|注意|[发發][现現]|[继繼][续續]|的[话話]|无法|無法|[呜嗚]|好[热熱]|怎[么麼]|[请請]等)/u.test(visible);
   if (target.startsWith("zh")) {
     const speakerOnly = !/\p{L}/u.test(body) && new RegExp(speaker, "i").test(source);
-    const simplified = /[这们吗么没获请选认开关档读买卖钱为与体罚颤紧缩给既处门会让后从]/u.test(visible);
+    const simplified = /[这们吗么没获请选认开关档读买卖钱为与体罚颤紧缩给既处门会让后从图]/u.test(visible);
     const chineseSyntax = /(?:还是|既然|这样|就得|失去意识|一边|另一边|知道是|来了|着呢|的话|太多了|太少了|(?:条件|條件|地点|地點)[：:]|之[后後前]|[你您][的已]|[这這]是)/u.test(visible);
     const hanCount = (visible.match(/\p{Script=Han}/gu) || []).length;
     const latinCount = latin.join("").length;
@@ -92,7 +91,7 @@ export function gameTextNeedsNoTranslation(source: string, target: string) {
     const chineseWithLoanwords = chineseEvidence && hanCount >= 4 && hanCount >= latinCount * .6;
     if (kana || japaneseOnlyHan.test(visible) || hangul || foreign || prose && !chineseWithLoanwords || !han || !(chineseEvidence || speakerOnly)) return false;
     // Do not skip obvious script conversion between simplified and traditional output.
-    const opposite = target === "zh-TW" ? /[这们吗么没获请选认开关档读买卖钱为与体]/u : /[這們嗎麼沒獲請選認開關檔讀買賣錢為與體]/u;
+    const opposite = target === "zh-TW" ? /[这们吗么没获请选认开关档读买卖钱为与体图]/u : /[這們嗎麼沒獲請選認開關檔讀買賣錢為與體圖]/u;
     return !opposite.test(visible);
   }
   if (target === "ja") return kana && !hangul && !foreign && !prose && !chinese;
