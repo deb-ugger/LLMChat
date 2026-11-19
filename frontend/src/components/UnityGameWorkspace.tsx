@@ -3,7 +3,7 @@ import {usePersistedWidth} from "../hooks/usePersistedWidth";
 import "../unityOffline.css";
 /** Unity's workspace DOM, sizing keys and styles, with engine-specific contents. */
 export function UnityGameWorkspace({steps,controls,results}:{steps:ReactNode;controls:ReactNode;results:ReactNode}){
- const width=usePersistedWidth("unity-offline-panel-width",480,300,900);
+ const width=usePersistedWidth("unity-offline-panel-width",480,300,900,"guide");
  return <div className="unity-offline">
  <aside className="unity-offline-config" style={{width:width.width}}>
  <div className="unity-offline-upper unity-workflow-layout">{steps}<section className="unity-generation unity-workflow" aria-label="分步设置与当前任务">{controls}</section></div>

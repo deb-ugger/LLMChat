@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type SetStateAction } from "react";
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+type ResizeGuide = { handle: HTMLElement; startSize: number; maxSize: number };
 
 /** One frame update while dragging, final storage write, and unified cleanup. */
 export function usePersistedSize(
@@ -34,12 +35,16 @@ export function usePersistedSize(
   }, [finishValue, save]);
   useEffect(() => () => { cleanup.current?.(); }, []);
 
-  const beginResize = useCallback((event: MouseEvent, direction: 1 | -1, fromSize?: number) => {
+  const beginResize = useCallback((event: MouseEvent, direction: 1 | -1, guide?: ResizeGuide) => {
     event.preventDefault();
     event.stopPropagation();
     cleanup.current?.();
     const origin = axis === "x" ? event.clientX : event.clientY;
-    const initialSize = fromSize ?? current.current;
+    const initialSize = guide?.startSize ?? current.current;
+    const handle = guide?.handle;
+    const previousTranslate = handle?.style.translate ?? "";
+    const previousZIndex = handle?.style.zIndex ?? "";
+    if (handle) handle.style.zIndex = "2";
     let latest = initialSize;
     let frame = 0;
     const className = axis === "x" ? "col-resizing" : "row-resizing";
@@ -48,11 +53,16 @@ export function usePersistedSize(
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", finish);
       window.removeEventListener("blur", finish);
+      if (handle) {
+        handle.style.translate = previousTranslate;
+        handle.style.zIndex = previousZIndex;
+      }
       document.body.classList.remove(className);
       cleanup.current = null;
     };
     const finish = () => {
       remove();
+      if (guide && latest === initialSize) return;
       const finalSize = finishValue(latest);
       current.current = finalSize;
       setPreferredSize(finalSize);
@@ -60,13 +70,19 @@ export function usePersistedSize(
     };
     const move = (event: globalThis.MouseEvent) => {
       const position = axis === "x" ? event.clientX : event.clientY;
-      latest = clamp(initialSize + (position - origin) * direction, collapseBelow != null ? 0 : min, max);
+      latest = clamp(initialSize + (position - origin) * direction, collapseBelow != null ? 0 : min, guide?.maxSize ?? max);
       if (!frame) frame = requestAnimationFrame(() => {
         frame = 0;
-        setPreferredSize(latest);
+        if (handle) {
+          const offset = (latest - initialSize) * direction;
+          handle.style.translate = axis === "x" ? `${offset}px 0` : `0 ${offset}px`;
+        } else setPreferredSize(latest);
       });
     };
-    cleanup.current = () => { remove(); save(finishValue(latest)); };
+    cleanup.current = () => {
+      remove();
+      if (!guide) save(finishValue(latest));
+    };
     document.body.classList.add(className);
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", finish);

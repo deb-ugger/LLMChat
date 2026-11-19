@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, scanMosaic, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
+import { GamePageNumber } from "./GamePageNumber";
 import { GameStepProgress, type GameProgressState } from "./GameStepProgress";
 import "../gameMosaic.css";
 
@@ -28,6 +29,7 @@ type Props = {
 };
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
+const mosaicPageSize = 40;
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -77,6 +79,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     });
   }, [images, storage?.index]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const listRef = useRef<HTMLUListElement>(null);
   const [scope, setScope] = useState<"scenes" | "all">("scenes");
   const [detectorKind, setDetectorKind] = useState<"grid" | "lada">("grid");
   const [detectorFile, setDetectorFile] = useState<File>();
@@ -107,7 +111,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }, [usable]);
   const scoped = scope === "scenes" ? scenes : usable;
   const needle = query.trim().toLowerCase();
-  const matches = scoped.filter(image => !needle || (image.name + " " + image.file).toLowerCase().includes(needle));
+  const matches = useMemo(() => needle ? scoped.filter(image => (image.name + " " + image.file).toLowerCase().includes(needle)) : scoped, [needle, scoped]);
   const active = usable.find(image => image.id === activeId) ?? matches[0];
   const activeResult = active && resultFor(rows, active);
   const group = active && (activeResult?.group || active.id);
@@ -123,10 +127,16 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const members = group ? imageGroup.get(group) || [] : [];
   const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
   const currentScope = sceneFilter && group ? members : matches;
-  const visible = currentScope.filter(image => {
+  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image => {
     const row = resultFor(rows, image);
-    return statusFilter === "all" || (statusFilter === "candidate" ? row.boxes.length > 0 : statusFilter === "unknown" ? !row.scanned || !!row.reason : row.scanned && !row.reason && !row.boxes.length);
-  });
+    return statusFilter === "candidate" ? row.boxes.length > 0 : statusFilter === "unknown" ? !row.scanned || !!row.reason : row.scanned && !row.reason && !row.boxes.length;
+  }), [currentScope, rows, statusFilter]);
+  const pages = Math.max(1, Math.ceil(visible.length / mosaicPageSize));
+  const currentPage = Math.min(page, pages - 1);
+  const pageImages = visible.slice(currentPage * mosaicPageSize, (currentPage + 1) * mosaicPageSize);
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [currentPage, needle, scope, sceneFilter, statusFilter]);
   const selected = members.filter(image => resultFor(rows, image).checked);
   const saved = selected.filter(image => resultFor(rows, image).saved);
   const included = saved.filter(image => storage?.index[image.id]?.included);
@@ -399,7 +409,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             onClick={screen}>开始筛选</button>
         </>)}
         <div className="game-mosaic-step-settings">
-          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => setScope(event.target.value as typeof scope)}>
+          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { setScope(event.target.value as typeof scope); setPage(0); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => setDetectorKind(event.target.value as typeof detectorKind)}>
@@ -437,13 +447,13 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     <div className="game-mosaic-body-grid">
       <aside className="game-mosaic-list">
         <div className="game-mosaic-toolbar">
-          <input type="search" aria-label="筛选文件名" placeholder="筛选文件名" value={query} disabled={!!busy} onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); }} />
-          <select aria-label="筛选状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value as typeof statusFilter)}>
+          <input type="search" aria-label="筛选文件名" placeholder="筛选文件名" value={query} disabled={!!busy} onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setPage(0); }} />
+          <select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }}>
             <option value="all">全部状态</option><option value="candidate">疑似打码</option><option value="unknown">待复核</option><option value="clear">未发现</option>
           </select>
-          <label><input type="checkbox" checked={sceneFilter} disabled={!group} onChange={event => setSceneFilter(event.target.checked)} />仅本组</label>
+          <label><input type="checkbox" checked={sceneFilter} disabled={!group} onChange={event => { setSceneFilter(event.target.checked); setPage(0); }} />仅本组</label>
         </div>
-        <ul>{visible.slice(0, 350).map(image => {
+        <ul ref={listRef}>{pageImages.map(image => {
           const row = resultFor(rows, image);
           const groupSize = imageGroup.get(row.group || image.id)?.length || 1;
           return <li key={image.id} className={image.id === active?.id ? "is-current" : undefined}>
@@ -454,7 +464,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             </button>
           </li>;
         })}</ul>
-        {visible.length > 350 && <p>显示前 350 张，请用文件名或状态缩小范围。</p>}
+        {pages > 1 && <nav className="unity-image-list-pages" aria-label="去码图片列表分页">
+          <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+          <GamePageNumber page={currentPage} pages={pages} onPage={setPage} />
+          <button type="button" disabled={currentPage === pages - 1} onClick={() => setPage(currentPage + 1)}>下一页</button>
+        </nav>}
       </aside>
       {active && activeResult && <section className="game-mosaic-preview" aria-label="去码预览">
         <div className="game-mosaic-toolbar">
