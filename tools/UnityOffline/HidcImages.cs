@@ -60,17 +60,39 @@ public static class HidcImages
         TextureOperations.FlipBGRA32Vertically(rgba, h.Width, h.Height); return rgba;
     }
     static string Digest(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
-    public static void Scan(Project project, AssetsManager manager, AssetsFileInstance instance, string file, string container) {
-        var chunks = new Dictionary<string, (long Id, byte[] Data)>();
-        foreach (var info in instance.file.Metadata.AssetInfos.Where(i => i.TypeId == 49)) {
-            var field = manager.GetBaseField(instance, info); var bytes = field["m_Script"].AsByteArray;
-            if (IsChunk(bytes)) chunks.Add(field["m_Name"].AsString, (info.PathId, bytes));
+    internal sealed class ScanIndex {
+        readonly List<(string Name, long Id, byte[] Data)> chunks = [];
+        readonly List<AssetTypeValueField> manifests = [];
+        public bool HasChunks => chunks.Count > 0;
+        public bool AddChunk(string name, long id, byte[] bytes) {
+            if (!IsChunk(bytes)) return false;
+            chunks.Add((name, id, bytes));
+            return true;
         }
+        public void AddManifest(AssetTypeValueField manifest) {
+            if (!manifest["frames"].IsDummy && !manifest["chunks"].IsDummy && !manifest["sequenceId"].IsDummy)
+                manifests.Add(manifest);
+        }
+        public void Publish(Project project, string file, string container, int firstImage) =>
+            PublishScan(project, file, container, firstImage, chunks.ToDictionary(chunk => chunk.Name, chunk => (chunk.Id, chunk.Data)), manifests);
+    }
+    public static void Scan(Project project, AssetsManager manager, AssetsFileInstance instance, string file, string container) {
+        var index = new ScanIndex();
+        foreach (var info in instance.file.Metadata.AssetInfos.Where(info => info.TypeId == 49)) {
+            var field = manager.GetBaseField(instance, info);
+            index.AddChunk(field["m_Name"].AsString, info.PathId, field["m_Script"].AsByteArray);
+        }
+        if (!index.HasChunks) return;
+        foreach (var info in instance.file.Metadata.AssetInfos.Where(info => info.TypeId == 114))
+            index.AddManifest(manager.GetBaseField(instance, info));
+        index.Publish(project, file, container, project.Images.Count);
+    }
+    static void PublishScan(Project project, string file, string container, int firstImage,
+        Dictionary<string, (long Id, byte[] Data)> chunks, List<AssetTypeValueField> manifests) {
         if (chunks.Count == 0) return;
         var used = new HashSet<long>();
-        foreach (var info in instance.file.Metadata.AssetInfos.Where(i => i.TypeId == 114)) {
-            var manifest = manager.GetBaseField(instance, info);
-            if (manifest["frames"].IsDummy || manifest["chunks"].IsDummy || manifest["sequenceId"].IsDummy) continue;
+        var images = new List<ImageResource>();
+        foreach (var manifest in manifests) {
             var sequence = manifest["sequenceId"].AsString; var frames = manifest["frames"]["Array"].Children; var metadata = manifest["chunks"]["Array"].Children;
             for (var c = 0; c < metadata.Count; c++) {
                 project.CheckCancellation?.Invoke();
@@ -82,7 +104,7 @@ public static class HidcImages
                 for (var f = h.First; f < h.First + h.Count; f++) {
                     if (frames[f]["chunkIndex"].AsInt != c) throw new InvalidDataException("HIDC 帧索引不匹配");
                     var id = Digest(Encoding.UTF8.GetBytes(file + "\n" + container + "\n" + chunk.Id + ":" + f));
-                    project.Images.Add(new ImageResource { Id = id, Kind = "hidc", File = file, Container = container, ObjectId = chunk.Id.ToString(), Name = frames[f]["frameKey"].AsString,
+                    images.Add(new ImageResource { Id = id, Kind = "hidc", File = file, Container = container, ObjectId = chunk.Id.ToString(), Name = frames[f]["frameKey"].AsString,
                         Width = h.Width, Height = h.Height, HidcFrame = f, HidcPayload = payload, SourceFile = "images/source/" + id + ".png", SourceHash = Digest(Encoding.UTF8.GetBytes(hash + ":" + f)) });
                 }
                 used.Add(chunk.Id);
@@ -90,6 +112,7 @@ public static class HidcImages
             }
         }
         if (used.Count != chunks.Count) throw new InvalidDataException("HIDC 图片块缺少匹配的序列 manifest，未将二进制内容作为文本提取");
+        project.Images.InsertRange(firstImage, images);
     }
     public static void EnsureSource(Project project, ImageResource image, Action? cancel = null) {
         if (image.Kind != "hidc") return;

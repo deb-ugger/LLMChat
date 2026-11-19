@@ -62,9 +62,10 @@ const imageRoles = new Set(["screen", "refine", "recognize", "image", "review", 
 const steps: Record<string, string> = { textScreen: "screen", text: "translate", dialogue: "translate", names: "translate", line: "translate", screen: "filter", refine: "refine", recognize: "recognize", image: "translate", review: "review", layout: "render" };
 export function rememberPromptSelection(selection: object, scope: string) { selectionScopes.set(selection, scope); }
 export function modelConcurrency(scope: string, role: string, model: string) {
-  const defaultLanes = role === "refine" && /^qwen3-vl:4b-instruct$/i.test(model) ? 2 : 1;
-  const isTextRole = role === "text" || role === "dialogue" || role === "names";
-  const fallback = isTextRole && gameDefaultTextModel.pattern.test(model) ? gameDefaultTextModel.concurrency : defaultLanes;
+  const defaultLanes = role === "refine" && /^qwen3-vl:[48]b-instruct$/i.test(model) ||
+    role === "recognize" && /^qwen3-vl:8b-instruct$/i.test(model) ? 2 : 1;
+  const translationRole = role === "text" || role === "dialogue" || role === "names" || role === "image";
+  const fallback = translationRole && gameDefaultTextModel.pattern.test(model) ? gameDefaultTextModel.concurrency : defaultLanes;
   const value = Number(localStorage.getItem(concurrencyPrefix + JSON.stringify([scope, role, model])) ?? fallback);
   return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 1;
 }

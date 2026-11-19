@@ -5,6 +5,13 @@ import {applyImageTextRules, IMAGE_TEXT_RULE_VERSION} from "./imageTextRules";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 import type { UnityImage, UnityProject } from "./unityOffline";
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "./gameDisplayText";
+import { blobSha256Hex } from "./fileFingerprint";
+
+export const GAME_IMAGE_SCREENING_LANES = 4;
+
+export function localGameImageScreeningLanes(lanes: number) {
+  return Math.max(1, Math.min(GAME_IMAGE_SCREENING_LANES, Math.trunc(lanes) || 1));
+}
 
 export const IMAGE_PRESENCE_CONFLICT = "复筛结果同时包含无文字判断和文字证据";
 export const IMAGE_PRESENCE_REVIEW_HINT = "可将「复筛方式」切换为「本地筛选」，选择 PP-OCRv6 Medium，保存后运行复筛；也可打开原图手动确认，有字移到「待正式识别」，无字移到「未检测到文字」，再继续复筛。";
@@ -16,8 +23,13 @@ export type ImageScreening = {
   boxes: number; reason: string;
   refineKey?: string; refineFailed?: boolean;
   manualGroup?: boolean;
+  reviewSelected?: boolean;
+  redrawSelected?: boolean;
+  redrawError?: string;
   presence?: ImagePresence;
   beforeRefine?: Pick<ImageScreening, "state" | "reason" | "boxes">;
+  initial?: Pick<ImageScreening, "state" | "reason" | "boxes">;
+  reviewEvidenceMissing?: boolean;
   sourceSkip?: string;
 };
 type Options = { timingScope?: string; resume?:boolean; source:string;target:string;strategy?:"staged"|"full";concurrency?:number;model?:string; confidenceThreshold?: number };
@@ -62,7 +74,8 @@ export function needsGameImageRefinement(image: UnityImage, key: string) {
   const screening = image.screening;
   const state = screening?.beforeRefine?.state ?? screening?.state;
   return !!image.sourceFile && !image.completed && !image.ocrCompleted && !imageManuallyExcluded(image) && !screening?.manualGroup &&
-    selectedScreeningState(state) && (!imageRefinementKeyMatches(screening?.refineKey, key) || !!screening?.refineFailed);
+    selectedScreeningState(state) && (screening?.state !== "review" || screening.reviewSelected !== false) &&
+    (!imageRefinementKeyMatches(screening?.refineKey, key) || !!screening?.refineFailed);
 }
 
 export function imageRefinementKeyMatches(saved: string | undefined, current: string) {
@@ -117,6 +130,7 @@ export const imageManuallyExcluded = (image: UnityImage) => image.selectionManua
 export const needsGameImageScreening = (image: UnityImage) => !!image.sourceFile && !image.completed &&
   (!image.screening || image.screening.state === "failed" && !imageManuallyExcluded(image));
 const selectedScreeningState = (state: ImageScreening["state"] | undefined) => state === "candidate" || state === "review";
+const inactiveScreeningState = (state: ImageScreening["state"]) => state === "no-text" || state === "not-needed";
 
 export type ManualImageGroup = Exclude<ImageScreening["state"], "failed">;
 
@@ -124,14 +138,17 @@ export function moveScreenedImageToGroup(image: UnityImage, state: ManualImageGr
   if (!image.sourceFile || !image.screening || image.completed && !image.ocrCompleted) return image;
   const hasRecognizedText = image.regions.some(region => !!region.text.trim());
   if (state === "candidate" && image.ocrCompleted && !hasRecognizedText) return image;
-  const { beforeRefine, refineKey, refineFailed, presence, sourceSkip, ...screening } = image.screening;
+  const { beforeRefine, refineKey, refineFailed, presence, sourceSkip, reviewSelected, redrawSelected, redrawError, ...screening } = image.screening;
+  const reactivating = selectedScreeningState(state) && !!image.noTranslationNeeded;
   return { ...image, selected: selectedScreeningState(state) && (!image.ocrCompleted || hasRecognizedText), selectionManual: true,
+    ...(reactivating ? { noTranslationNeeded: false, completed: false } : {}),
     error: screening.state === "failed" ? "" : image.error,
     screening: { ...screening, state, reason: "手动调整分组", manualGroup: true } };
 }
 
 export function restoreReviewSelection(image: UnityImage): UnityImage {
-  if (image.sourceFile && image.screening?.state === "review" && !image.selected && !image.selectionManual && !image.ocrCompleted && !image.completed) {
+  if (image.sourceFile && image.screening?.state === "review" && !image.screening.refineKey && image.screening.reviewSelected !== false &&
+      !image.selected && !image.selectionManual && !image.ocrCompleted && !image.completed) {
     return { ...image, selected: true };
   }
   return image;
@@ -140,9 +157,10 @@ export function restoreReviewSelection(image: UnityImage): UnityImage {
 export function clearGameImageRefinement(image: UnityImage): UnityImage {
   const screening = image.screening;
   if (!screening?.refineKey) return image;
-  const { beforeRefine, refineKey, refineFailed, presence, ...result } = screening;
+  const { beforeRefine, refineKey, refineFailed, presence, reviewSelected, ...result } = screening;
   const initial = beforeRefine ? { ...result, ...beforeRefine } : result;
-  return { ...image, screening: initial, selected: image.selectionManual ? image.selected : selectedScreeningState(initial.state) };
+  return { ...image, screening: initial,
+    selected: !inactiveScreeningState(initial.state) && (image.selectionManual ? image.selected : selectedScreeningState(initial.state)) };
 }
 
 function classifyGameImage(image: UnityImage, result: Recognition, options: Options, reuse = false) {
@@ -179,10 +197,8 @@ function reuseScreenRecognition(images: UnityImage[], signal: AbortSignal, timin
   const results = new Map<string, Promise<Recognition>>();
   return async (image: UnityImage, blob: Blob, recognize: () => Promise<Recognition>) => {
     if ((sizes.get(dimensions(image)) ?? 0) < 2 || !globalThis.crypto?.subtle) return recognize();
-    const digest = await measureGameAsync(timingScope, "processingMs", async () =>
-      crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+    const key = await measureGameAsync(timingScope, "processingMs", () => blobSha256Hex(blob));
     signal.throwIfAborted();
-    const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
     const existing = results.get(key);
     if (existing) {
       try { return await existing; }
@@ -208,9 +224,9 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
   persist:(images:UnityImage[])=>Promise<void>;
 },progress:(value:{completed:number;total:number;detail:string;etaMs?:number})=>void) {
   const images=(project.images||[]).filter(image=>image.sourceFile&&!image.completed),strategy=options.strategy||"full";
-  const pending:UnityImage[]=[];let completed=0,writeQueue=Promise.resolve(),next=0,deepDone=0;
+  const pending:UnityImage[]=[];let completed=0,writeQueue=Promise.resolve(),next=0,deepDone=0,lastWrite=performance.now();
   const counts={candidate:0,"no-text":0,review:0,"not-needed":0,failed:0},work:UnityImage[]=[];
-  const flush=()=>{if(pending.length){const rows=pending.splice(0);writeQueue=writeQueue.then(()=>services.persist(rows));}return writeQueue;};
+  const flush=()=>{if(pending.length){const rows=pending.splice(0);lastWrite=performance.now();writeQueue=writeQueue.then(()=>services.persist(rows));}return writeQueue;};
   const policy=(image:UnityImage,state:ImageScreening["state"],reason:string,boxes=0):ImageScreening=>({version:1,rules:IMAGE_TEXT_RULE_VERSION,strategy,model:options.model||"fast",sourceHash:image.sourceHash,source:options.source,target:options.target,state,reason,boxes});
   const samples:Array<{time:number;done:number}>=[];
   const eta=()=>{if(deepDone===work.length)return 0;if(samples.length<3)return undefined;const first=samples[0],last=samples[samples.length-1],rate=(last.done-first.done)/(last.time-first.time);return rate>0?Math.max(0,(work.length-deepDone)/rate):undefined;};
@@ -256,9 +272,13 @@ export async function screenGameImages(project:UnityProject,signal:AbortSignal,o
         screening.recognition = { profile: result.profile, lines: result.lines, detectedBoxes: result.detectedBoxes };
       }
       image = { ...image, error: "", screening };
-      if (!image.selectionManual) image.selected = selectedScreeningState(classification.state);
+      if (inactiveScreeningState(classification.state) && image.selected) {
+        image.selected = false; image.selectionManual = false;
+      } else if (!image.selectionManual) image.selected = selectedScreeningState(classification.state);
     }catch(error){if(signal.aborted||error instanceof ScreeningModelError)throw error;image={...image,screening:policy(image,"failed",String(error)),error:String(error)};if(!image.selectionManual)image.selected=false;}
-    counts[image.screening!.state]++;pending.push(image);completed++;deepDone++;samples.push({time:performance.now(),done:deepDone});if(samples.length>64)samples.shift();if(pending.length>=16)await flush();report(`文字筛选 ${completed} / ${images.length}`);
+    counts[image.screening!.state]++;pending.push(image);completed++;deepDone++;samples.push({time:performance.now(),done:deepDone});if(samples.length>64)samples.shift();
+    if(pending.length>=64||performance.now()-lastWrite>=750)await flush();
+    report(`文字筛选 ${completed} / ${images.length}`);
   }};
   const concurrency = Math.max(1, Math.min(8, options.concurrency || 1));
   const runWorkers = async (count: number, run: (index: number) => Promise<void>) => {
@@ -283,17 +303,31 @@ export const LOCAL_REFINE_MODELS: { id: LocalRefineMode; title: string; descript
 ];
 
 export function createLocalImageRefiner(mode: LocalRefineMode, concurrency: number, timingScope?: string,
-  onDevice?: (message: string, fallback: boolean) => void) {
-  const workers = Array.from({ length: concurrency }, () => new LocalPaddleOcr(mode, {
+  onDevice?: (message: string, fallback: boolean) => void, signal?: AbortSignal) {
+  const options = {
     upscale: false, maxSide: 1600, boxThresh: .3, onDevice,
-  }));
+  };
+  const workers = [new LocalPaddleOcr(mode, options)];
+  const dispose = async () => {
+    signal?.removeEventListener("abort", cancel);
+    await Promise.all(workers.map(worker => worker.dispose()));
+  };
+  const cancel = () => { void dispose(); };
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener("abort", cancel, { once: true });
   return {
-    prepare: () => workers[0].prepare(),
+    prepare: async () => {
+      await workers[0].prepare();
+      signal?.throwIfAborted();
+      if (!workers[0].isGpu && workers.length === 1) {
+        for (let i = 1; i < concurrency; i++) workers.push(new LocalPaddleOcr(mode, { ...options, backend: "wasm" }));
+      }
+    },
     recognize: (blob: Blob, index: number) => {
-      const worker = workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index];
+      const worker = workers[index % workers.length];
       return measureGameAsync(timingScope, "processingMs", () => worker.recognize(blob));
     },
-    dispose: async () => { await Promise.all(workers.map(worker => worker.dispose())); },
+    dispose,
   };
 }
 
@@ -305,12 +339,13 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
   const queue = images.filter(image => needsGameImageRefinement(image, options.refineKey));
   const recognizeBytes = reuseScreenRecognition(queue, signal, options.timingScope);
   const total = queue.length;
-  let next = 0, completed = 0;
+  let next = 0, completed = 0, lastWrite = performance.now();
   let pending: UnityImage[] = [], writes = Promise.resolve();
   const flush = () => {
     if (pending.length) {
       const batch = pending;
       pending = [];
+      lastWrite = performance.now();
       writes = writes.then(() => services.persist(batch));
     }
     return writes;
@@ -331,7 +366,7 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
           const result = await recognizeBytes(image, blob, () => services.recognize(blob, worker));
           signal.throwIfAborted();
           const classification = classifyGameImage(image, result, { ...options, source: options.source ?? initial.source, target: options.target ?? initial.target });
-          screening = { ...initial, ...classification, presence: result.presence, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
+          screening = { ...initial, ...classification, reviewSelected: false, presence: result.presence, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
             beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes }, refineKey: options.refineKey };
         } catch (error) {
           signal.throwIfAborted();
@@ -339,7 +374,9 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
             beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes },
             reason: method + "未完成：" + (error instanceof Error ? error.message : String(error)) };
         }
-        pending.push({ ...image, screening, selected: image.selectionManual ? image.selected : selectedScreeningState(screening.state) });
+        const becameInactive = image.selected && inactiveScreeningState(screening.state);
+        pending.push({ ...image, screening, selectionManual: becameInactive ? false : image.selectionManual,
+          selected: screening.state === "candidate" && (image.selectionManual ? image.selected : true) });
         const state = screening.state;
         counts[screening.refineFailed ? "failed" : state]++;
         if (!screening.refineFailed && initial.state !== state) {
@@ -349,7 +386,7 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
         } else if (!screening.refineFailed) unchanged++;
         completed++;
         progress({ completed, total, detail: method + " " + completed + " / " + total });
-        if (pending.length >= 16) await flush();
+        if (pending.length >= 16 || performance.now() - lastWrite >= 4000) await flush();
       }
     }));
     const rejected = results.find(result => result.status === "rejected");

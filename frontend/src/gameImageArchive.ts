@@ -2,7 +2,11 @@ import JSZip from "jszip";
 import type {UnityImage} from "./unityOffline";
 export type ImageArchiveReplacement={image:UnityImage;blob:Blob};
 type Entry={id:string;file:string;container:string;objectId:string;sourceHash:string;width:number;height:number;path:string};
-export class ImageArchiveError extends Error {constructor(public issues:string[]){super("图片压缩包校验失败，尚未替换任何图片："+issues.join("；"));}}
+export class ImageArchiveError extends Error {
+  constructor(public issues: string[], public imageIssues: { id: string; detail: string }[] = []) {
+    super("图片压缩包校验失败，尚未替换任何图片：" + issues.join("；"));
+  }
+}
 const locator=(image:Pick<UnityImage,"file"|"container"|"objectId">)=>JSON.stringify([image.file.replaceAll("\\","/"),image.container,image.objectId]);
 const prefixKey=(image:UnityImage)=>image.name.normalize("NFKC").toLocaleLowerCase();
 export function sortGameImages(images:UnityImage[],selected?:ReadonlyMap<string,boolean>):UnityImage[]{
@@ -150,16 +154,18 @@ export async function validateGameImageArchive(bytes:ArrayBuffer,images:UnityIma
  let data;try{data=JSON.parse(await manifest.async("string"));}catch{throw new ImageArchiveError(["定位清单不是有效 JSON"]);}
  if(data?.format!=="llmchat-images"||data.version!==1||!Array.isArray(data.images))throw new ImageArchiveError(["定位清单格式或版本不受支持"]);
  const current=new Map(images.map(image=>[image.id,image])),seen=new Set<string>(),paths=new Set<string>(),issues:string[]=[],replacements:ImageArchiveReplacement[]=[];
+ const imageIssues: ImageArchiveError["imageIssues"] = [];
  let ignored=0,missing=0;
  for(const row of data.images){
   const image=current.get(row?.id);if(!image){ignored++;continue;}
   const label=`${image.name}（资源 ${image.file}，容器 ${image.container||"无"}，对象 ${image.objectId}，编号 ${image.id}）`;
-  if(seen.has(image.id)){issues.push(label+"：定位清单重复编号");continue;}seen.add(image.id);
-  if(typeof row.path!=="string"||!row.path.startsWith("images/")||row.path.includes("\\")||row.path.split("/").some((part:string)=>part===".."||part===".")){issues.push(label+"：压缩包内部路径无效");continue;}
-  if(paths.has(row.path)){issues.push(label+"：多个对象指向同一个压缩包文件 "+row.path);continue;}paths.add(row.path);
-  if(row.file!==image.file||row.container!==image.container||row.objectId!==image.objectId){issues.push(label+"：资源路径、容器或对象编号不匹配，拒绝按同名文件替换");continue;}
-  if(row.sourceHash!==image.sourceHash){issues.push(label+"：原资源版本不匹配，请从当前工程重新导出");continue;}
-  if(row.width!==image.width||row.height!==image.height){issues.push(label+"：清单尺寸与当前图片不匹配");continue;}
+  const report = (detail: string) => { issues.push(label + "：" + detail); imageIssues.push({ id: image.id, detail }); };
+  if(seen.has(image.id)){report("定位清单重复编号");continue;}seen.add(image.id);
+  if(typeof row.path!=="string"||!row.path.startsWith("images/")||row.path.includes("\\")||row.path.split("/").some((part:string)=>part===".."||part===".")){report("压缩包内部路径无效");continue;}
+  if(paths.has(row.path)){report("多个对象指向同一个压缩包文件 "+row.path);continue;}paths.add(row.path);
+  if(row.file!==image.file||row.container!==image.container||row.objectId!==image.objectId){report("资源路径、容器或对象编号不匹配，拒绝按同名文件替换");continue;}
+  if(row.sourceHash!==image.sourceHash){report("原资源版本不匹配，请从当前工程重新导出");continue;}
+  if(row.width!==image.width||row.height!==image.height){report("清单尺寸与当前图片不匹配");continue;}
   const entry=zip.file(row.path);if(!entry){missing++;continue;}
   try{
    const content=await entry.async("uint8array"),head=new Uint8Array(content.buffer,content.byteOffset,Math.min(8,content.byteLength));
@@ -171,8 +177,8 @@ export async function validateGameImageArchive(bytes:ArrayBuffer,images:UnityIma
    const blob=new Blob([new Uint8Array(content)],{type:"image/png"}),bitmap=await decode(blob);
    try{if(bitmap.width!==image.width||bitmap.height!==image.height)throw new Error(`图片尺寸为 ${bitmap.width}×${bitmap.height}，必须为 ${image.width}×${image.height}`);}finally{bitmap.close();}
    replacements.push({image,blob});
-  }catch(error){issues.push(label+"，文件 "+row.path+"："+(error instanceof Error?error.message:String(error)));}
+  }catch(error){report("文件 "+row.path+"："+(error instanceof Error?error.message:String(error)));}
  }
- if(issues.length)throw new ImageArchiveError(issues);
+ if(issues.length)throw new ImageArchiveError(issues,imageIssues);
  return {replacements,ignored,missing};
 }

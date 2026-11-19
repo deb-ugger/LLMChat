@@ -49,10 +49,11 @@ export function hasTranslationPromptLeak(source: string, translation: string) {
   if (!translation || source === translation) return false;
   const original = source.normalize("NFKC");
   const output = translation.normalize("NFKC");
-  const markers = /<[ \t]*\/?[ \t]*reference[_ -]context[ \t]*>|"reference_context"[ \t]*:/gi;
+  const markers = /<[ \t]*\/?[ \t]*reference[_ -]context[ \t]*>|"reference_context"[ \t]*:|[〖【](?:背景信息|待翻译文本)[〗】]/gi;
   const count = output.match(markers)?.length ?? 0;
   if (count > 0 && count > (original.match(markers)?.length ?? 0)) return true;
   return ["原文语境(仅参考)", "以下仅为参考上下文,不要翻译或输出此部分", "只输出最后一条用户消息的译文",
+    "下列背景仅用于理解原文", "以下背景信息仅用于理解原文", "以下背景仅用于理解原文",
     "Use reference_context as read-only reference"].some(phrase => output.includes(phrase) && !original.includes(phrase));
 }
 

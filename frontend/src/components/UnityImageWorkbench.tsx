@@ -1,6 +1,7 @@
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GameStyleRedrawButton } from "./StyleRedraw";
+import { gameImageRedrawSelected } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
@@ -8,16 +9,21 @@ import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { importSourceName,type GameImportSource } from "../gameImageImport";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
-import { sortGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
+import { ImageArchiveError, sortGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
 import { downloadGameImages, type GameImageDownloadRange } from "../gameImageDownloads";
 import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { readUnitySourceImage, acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey, type ImagePreviewReader } from "../unityImagePreview";
-import type { OcrMode } from "../api";
+import { api, type OcrMode } from "../api";
+import { showAppNotice } from "./AppNotice";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { moveScreenedImageToGroup, type ManualImageGroup } from "../gameImageScreening";
+import { imageGroupHistory, insertImageOrigins, type ImageGroupRow, type ImageIndexIssue } from "../gameImageGroupChanges";
+import { gameImageBatchErrors } from "./GameBatchResults";
+import { rememberRecentGameFailures } from "../unityLastGame";
 import { type UnityImage, type UnityImageRegion, type UnityProject } from "../unityOffline";
-import { unityImageParticipates, unityImageUsesRegionMask, unityImageHasText, unityImageResultGroup, unityImageTranslationRegions, maskUnityImageRegions } from "../unityImages";
+import { canSelectUnityImage, unityImageParticipates, unityImageUsesRegionMask, unityImageHasText, unityImageResultGroup, unityImageTranslationRegions, maskUnityImageRegions } from "../unityImages";
+import { isUnityImageReviewable, unityImageReviewChecked } from "../unityImageFiltering";
 
 export const ImagePreviewReaderContext = createContext<ImagePreviewReader | undefined>(undefined);
 
@@ -59,8 +65,11 @@ export function unityImageFit(width: number, height: number, availableWidth: num
   return Math.min(1, Math.max(1, availableWidth - 24) / Math.max(1, width), Math.max(1, availableHeight - 52) / Math.max(1, height));
 }
 
-function ImageViewer({ project, image, translated, allowDetails, threshold, onClose, onDetails }: { project: UnityProject; image: UnityImage; translated: boolean; allowDetails: boolean; threshold: number; onClose: () => void; onDetails: () => void }) {
+function ImageViewer({ project, image, translated: initiallyTranslated, allowDetails, threshold, onClose, onDetails }: { project: UnityProject; image: UnityImage; translated: boolean; allowDetails: boolean; threshold: number; onClose: () => void; onDetails: () => void }) {
   const [zoom, setZoom] = useState(1), [panning, setPanning] = useState(false);
+  const [showTranslation, setShowTranslation] = useState(initiallyTranslated);
+  const hasTranslation = !!image.renderedFile;
+  const translated = hasTranslation && showTranslation;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const body = useRef<HTMLDivElement>(null), pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   useLayoutEffect(() => { if (body.current) setZoom(unityImageFit(image.width, image.height, body.current.clientWidth, body.current.clientHeight)); }, [image.width, image.height]);
@@ -69,9 +78,27 @@ function ImageViewer({ project, image, translated, allowDetails, threshold, onCl
     const wheel = (event: WheelEvent) => { event.preventDefault(); setZoom(value => Math.max(.01, Math.min(8, value * Math.exp(-event.deltaY * .002)))); };
     element.addEventListener("wheel", wheel, { passive: false }); return () => element.removeEventListener("wheel", wheel);
   }, []);
-  return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={translated ? "查看译图" : "查看原图"} aria-modal="true" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (event.target === event.currentTarget) onClose(); else setMenu(null); }} onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        !["Escape", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        onClose();
+      } else {
+        setMenu(null);
+        setShowTranslation(hasTranslation && event.key === "ArrowRight");
+      }
+    };
+    window.addEventListener("keydown", handleKey, true);
+    return () => window.removeEventListener("keydown", handleKey, true);
+  }, [hasTranslation, onClose]);
+  return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={translated ? "查看译图" : "查看原图"}
+    aria-modal="true" aria-keyshortcuts={hasTranslation ? "Escape ArrowLeft ArrowRight" : "Escape"}
+    onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (event.target === event.currentTarget) onClose(); else setMenu(null); }}>
     <section className="unity-original-viewer-window">
-      <div className="unity-original-viewer-header"><strong>{image.name} · {translated ? "译图" : "原图"}</strong><div className="unity-image-button-group"><button className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button><button className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button><button className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button></div></div>
+      <div className="unity-original-viewer-header"><strong data-tooltip={hasTranslation ? "← 原图 · → 译图" : undefined}>{image.name} · {translated ? "译图" : "原图"}</strong><div className="unity-image-button-group"><button className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button><button className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button><button className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button></div></div>
       <div ref={body} className={`unity-original-viewer-body${panning ? " is-panning" : ""}`} onPointerDown={event => {
         if (event.button !== 0 || !(event.target as Element).closest("img")) return;
         event.preventDefault(); event.stopPropagation(); const element = event.currentTarget;
@@ -96,8 +123,21 @@ export function unityGalleryBox(items: { id: string; left: number; top: number; 
   return next;
 }
 
+const imageWorkChecked = (image: UnityImage) => isUnityImageReviewable(image) ? unityImageReviewChecked(image) :
+  image.ocrCompleted ? gameImageRedrawSelected(image) : image.selected;
+const imageWorkSelectable = (image: UnityImage) => isUnityImageReviewable(image) ||
+  canSelectUnityImage(image) && (!image.ocrCompleted || unityImageResultGroup(image) === "text");
+function setImageWorkChecked(image: UnityImage, checked: boolean): UnityImage {
+  const review = isUnityImageReviewable(image);
+  if (!review && !image.ocrCompleted) return { ...image, selected: checked };
+  const screening = image.screening || { version: 1 as const, sourceHash: image.sourceHash, source: "", target: "", state: "review" as const,
+    reason: "待自动复筛", boxes: image.regions.length };
+  return { ...image, screening: review ? { ...screening, reviewSelected: checked } : {
+    ...screening, ...(image.screening ? {} : { state: "candidate" as const, reason: "正式识别完成" }), redrawSelected: checked,
+  } };
+}
 export function unityGalleryChanges(images: UnityImage[], selected: Set<string>, value: boolean) {
-  return images.filter(image => selected.has(image.id) && !!image.sourceFile && image.selected !== value).map(image => ({ id: image.id, selected: image.selected }));
+  return images.filter(image => selected.has(image.id) && (!value || imageWorkSelectable(image)) && imageWorkChecked(image) !== value).map(image => ({ id: image.id, selected: imageWorkChecked(image) }));
 }
 export function unityGalleryRect(start: { x: number; y: number }, point: { x: number; y: number }, width: number, height: number) {
   const x = (value: number) => Math.max(0, Math.min(width, value));
@@ -107,12 +147,12 @@ export function unityGalleryRect(start: { x: number; y: number }, point: { x: nu
 
 function ImageGallery({ query, project, images, allImages, filterKey, refreshKey, hidden, disabled, onSelect, onView, onOpen }: { query: string; project: UnityProject; images: UnityImage[]; allImages: UnityImage[]; filterKey: string; refreshKey:number; hidden: boolean; disabled: boolean; onSelect: (images: UnityImage[], value: boolean) => void; onView: (id: string) => void; onOpen: (id: string) => void }) {
   const [selected, setSelected] = useState(new Set<string>()), [page, setPage] = useState(0);
-  const [snapshot, setSnapshot] = useState(() => images.map(image => ({ id: image.id, selected: image.selected })));
+  const [snapshot, setSnapshot] = useState(() => images.map(image => ({ id: image.id, selected: imageWorkChecked(image) })));
   const [history, setHistory] = useState<{ id: string; selected: boolean }[][]>([]);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: image.selected }))); setSelected(new Set());setHistory([]); setPage(0); };
+  const applyFilter = () => { setSnapshot(images.map(image => ({ id: image.id, selected: imageWorkChecked(image) }))); setSelected(new Set());setHistory([]); setPage(0); };
   useEffect(applyFilter, [filterKey]);
-  useEffect(()=>{setSnapshot(images.map(image=>({id:image.id,selected:image.selected})));setSelected(new Set());setHistory([]);},[refreshKey]);
+  useEffect(()=>{setSnapshot(images.map(image=>({id:image.id,selected:imageWorkChecked(image)})));setSelected(new Set());setHistory([]);},[refreshKey]);
   const currentImages = useMemo(() => new Map(allImages.map(image => [image.id, image])), [allImages]);
   const displayed = useMemo(() => snapshot.map(item => currentImages.get(item.id)).filter((image): image is UnityImage => !!image), [snapshot, currentImages]);
   const baseline = useMemo(() => new Map(snapshot.map(item => [item.id, item.selected])), [snapshot]);
@@ -165,9 +205,9 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
       const viewport = scroller.current?.getBoundingClientRect();
       if (viewport && scroller.current) { if (event.clientY < viewport.top + 24) scroller.current.scrollTop -= 24; else if (event.clientY > viewport.bottom - 24) scroller.current.scrollTop += 24; }
     }} onPointerUp={() => { if (drag.current?.moved) suppressClick.current = true; else if (drag.current && !drag.current.onCard) setSelected(drag.current.base); drag.current = null; setBox(null); }} onPointerCancel={() => { drag.current = null; setBox(null); }}>
-    <div className="unity-gallery-actions"><span>已选 {chosen.length} 张</span><div className="unity-image-button-group"><button className="unity-btn" disabled={disabled || !chosen.length} data-tooltip="勾选所选图片，允许后续处理和生成补丁；保留当前列表位置" aria-label="勾选所选图片，允许后续处理和生成补丁；保留当前列表位置" onClick={() => change(true)}>批量勾选</button><button className="unity-btn" disabled={disabled || !chosen.length} data-tooltip="取消所选图片的处理与补丁勾选，保留识别结果和译文" aria-label="取消所选图片的处理与补丁勾选，保留识别结果和译文" onClick={() => change(false)}>批量取消勾选</button></div></div>
+    <div className="unity-gallery-actions"><span>已选 {chosen.length} 张</span><div className="unity-image-button-group"><button className="unity-btn" disabled={disabled || !chosen.some(image => imageWorkSelectable(image) && !imageWorkChecked(image))} data-tooltip="勾选所选图片，加入当前处理步骤；已识别图片加入 AI 风格重绘" aria-label="勾选所选图片，加入当前处理步骤；已识别图片加入 AI 风格重绘" onClick={() => change(true)}>批量勾选</button><button className="unity-btn" disabled={disabled || !chosen.some(image => imageWorkChecked(image))} data-tooltip="取消所选图片的任务勾选，保留识别结果和译文" aria-label="取消所选图片的任务勾选，保留识别结果和译文" onClick={() => change(false)}>批量取消勾选</button></div></div>
     <div ref={scroller} className="unity-gallery-scroll" onScroll={event => { if (!hidden) scrollPosition.current = event.currentTarget.scrollTop; }}><div ref={grid} className="unity-gallery-grid">
-      {visible.map(image => <div key={image.id} data-gallery-id={image.id} role="option" aria-selected={selected.has(image.id)} tabIndex={0} className={`unity-gallery-card${baseline.get(image.id) !== image.selected ? image.selected ? " became-checked" : " became-unchecked" : ""}${selected.has(image.id) ? " is-selected" : ""}`} onClick={event => setSelected(current => unityGalleryToggle(current, image.id, event.ctrlKey || event.metaKey))} onDoubleClick={() => onOpen(image.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setSelected(current => current.has(image.id) ? current : new Set([image.id])); setMenu({ id: image.id, x: Math.min(event.clientX, window.innerWidth - 170), y: Math.min(event.clientY, window.innerHeight - 110) }); }} onKeyDown={event => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); setSelected(current => unityGalleryToggle(current, image.id, event.ctrlKey || event.metaKey)); } }}>
+      {visible.map(image => <div key={image.id} data-gallery-id={image.id} role="option" aria-selected={selected.has(image.id)} tabIndex={0} className={`unity-gallery-card${baseline.get(image.id) !== imageWorkChecked(image) ? imageWorkChecked(image) ? " became-checked" : " became-unchecked" : ""}${selected.has(image.id) ? " is-selected" : ""}`} onClick={event => setSelected(current => unityGalleryToggle(current, image.id, event.ctrlKey || event.metaKey))} onDoubleClick={() => onOpen(image.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setSelected(current => current.has(image.id) ? current : new Set([image.id])); setMenu({ id: image.id, x: Math.min(event.clientX, window.innerWidth - 170), y: Math.min(event.clientY, window.innerHeight - 110) }); }} onKeyDown={event => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); setSelected(current => unityGalleryToggle(current, image.id, event.ctrlKey || event.metaKey)); } }}>
         <ImagePreview project={project} image={image} translated={false} compact enabled={!hidden} /><strong data-tooltip={image.name}><SearchHighlight text={image.name} query={query} /></strong><small>{image.width} × {image.height} · {image.selected ? "已勾选" : "未勾选"}</small>
       </div>)}
       {box && <div className="unity-gallery-selection-box" style={{ left: box.left, top: box.top, width: box.right - box.left, height: box.bottom - box.top }} />}
@@ -185,10 +225,12 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
 
 const imageListGroups = [
   ["candidate", "待正式识别"], ["text", "识别到文字"], ["pending", "未执行 OCR"], ["failed", "识别失败"],
-  ["empty", "未检测到文字"], ["review", "待复核"], ["excluded", "无需翻译"],
+  ["empty", "未检测到文字"], ["review", "待复核"], ["manual-review", "待人工确认"], ["excluded", "无需翻译"],
 ] as const;
+const imageGroupLabels = new Map(imageListGroups);
 const imageListPageSize = 60;
 function imageListStatus(image: UnityImage) {
+  if (image.screening?.redrawError) return `${image.width} × ${image.height} · 风格重绘失败 · ${image.screening.redrawError}`;
   const status = image.completed ? (unityImageHasText(image) ? "已完成" : "未识别出文字") :
     image.error ? "识别或处理失败" : image.ocrCompleted ? "已识别" :
     imageListGroups.find(([group]) => group === unityImageResultGroup(image))?.[1] ?? "未执行 OCR";
@@ -197,8 +239,31 @@ function imageListStatus(image: UnityImage) {
 export function imagePageIndex(index: number, page: number, count: number) {
   return Math.min(count - 1, page * imageListPageSize + Math.max(0, index) % imageListPageSize);
 }
-export function UnityImageWorkbench({ project, disabled, imageTarget, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
-  project: UnityProject | null; disabled: boolean; imageTarget?: { id: string; sequence: number }; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
+function ImageErrorGroup({ title, issues, names, selected, onSelect, onMenu }: {
+  title: string; issues: readonly ImageIndexIssue[]; names: ReadonlyMap<string, string>;
+  selected?: ImageIndexIssue; onSelect: (issue: ImageIndexIssue) => void; onMenu: (event: React.MouseEvent, id: string) => void;
+}) {
+  const [open, setOpen] = useState(false), [page, setPage] = useState(0);
+  const pages = Math.ceil(issues.length / imageListPageSize);
+  const current = Math.min(page, pages - 1);
+  return <details onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{title} <span className="unity-image-error-count">{issues.length}</span></summary>
+    {open && issues.slice(current * imageListPageSize, (current + 1) * imageListPageSize).map((issue, index) =>
+      <button type="button" key={issue.id + ":" + index} className="unity-image-error-row" data-tooltip={issue.detail}
+        aria-current={selected === issue || undefined} onClick={() => onSelect(issue)} onContextMenu={event => onMenu(event, issue.id)}>
+        <strong>{names.get(issue.id)}</strong><small>{issue.detail}</small>
+      </button>)}
+    {open && pages > 1 && <div className="unity-image-list-pages" aria-label={title + "分页"}>
+      <button type="button" disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button>
+      <GamePageNumber page={current} pages={pages} onPage={setPage} />
+      <button type="button" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>下一页</button>
+    </div>}
+  </details>;
+}
+export function UnityImageWorkbench({ project, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
+  project: UnityProject | null; disabled: boolean; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
+  patchIssues?: readonly ImageIndexIssue[];
+  initialScreeningComplete: boolean;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onRedrawFailure: (image: UnityImage, reason: string) => Promise<void>;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
@@ -223,9 +288,11 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
   const [viewer, setViewer] = useState<{ id: string; translated: boolean; allowDetails: boolean } | null>(null);
   const [previewMenu, setPreviewMenu] = useState<{ id: string; translated: boolean; x: number; y: number } | null>(null);
   const openViewer = (id: string, translated: boolean, allowDetails: boolean) => { setPreviewMenu(null); setViewer({ id, translated, allowDetails }); };
-  useEffect(() => { if (!active) { setViewer(null); setPreviewMenu(null); } }, [active]);
+  useEffect(() => { if (!active) { setViewer(null); setPreviewMenu(null); setListMenu(null); } }, [active]);
   const [detailMode, setDetailMode] = useState<OcrMode>(ocrMode);
   const [selectedId, setSelectedId] = useState(""), [search, setSearch] = useState("");
+  const [selectedFailure, setSelectedFailure] = useState<ImageIndexIssue>();
+  const selectImage = (id: string) => { setSelectedFailure(undefined); setSelectedId(id); };
   const [pendingFilter,setPendingFilter]=useState<null|(()=>void)>(null),[resolvingFilter,setResolvingFilter]=useState(false),[filterRevision,setFilterRevision]=useState(0);
   const requestChange=(change:()=>void,refresh=true)=>{const apply=()=>{change();if(refresh)setFilterRevision(value=>value+1);};if(dirty){filterMenu.current?.hidePopover();setPendingFilter(()=>apply);}else apply();};
   const requestFilter=(change:()=>void)=>requestChange(change);
@@ -242,22 +309,54 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ empty: true });
   const [galleryScope,setGalleryScope]=useState<string|null>(null);
-  const [groupMenu,setGroupMenu]=useState<{group:string;label:string;x:number;y:number}|null>(null);
-  useEffect(()=>{if(!groupMenu)return;const close=()=>setGroupMenu(null);const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close();};window.addEventListener("click",close);window.addEventListener("scroll",close,true);window.addEventListener("resize",close);window.addEventListener("keydown",key);return()=>{window.removeEventListener("click",close);window.removeEventListener("scroll",close,true);window.removeEventListener("resize",close);window.removeEventListener("keydown",key);};},[groupMenu]);
+  const [listMenu, setListMenu] = useState<(({ kind: "group"; group: string; label: string } |
+    { kind: "image"; file?: string; id: string; jump?: "origin" | "current" }) & { x: number; y: number }) | null>(null);
+  const groupMenu = listMenu?.kind === "group" ? listMenu : null;
+  const imageMenu = listMenu?.kind === "image" ? listMenu : null;
+  const openImageFolder = async (file: string) => {
+    setListMenu(null);
+    if (!project?.root) return;
+    try { await api.revealPath(project.root.replace(/[\\/]+$/, "") + "/" + file); }
+    catch (error) { showAppNotice("无法打开图片所在文件夹：" + (error instanceof Error ? error.message : String(error)), "error"); }
+  };
+  useEffect(()=>{if(!listMenu)return;const close=()=>setListMenu(null);const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close();};window.addEventListener("click",close);window.addEventListener("scroll",close,true);window.addEventListener("resize",close);window.addEventListener("keydown",key);return()=>{window.removeEventListener("click",close);window.removeEventListener("scroll",close,true);window.removeEventListener("resize",close);window.removeEventListener("keydown",key);};},[listMenu]);
   const [gallery, setGallery] = useState(false), [galleryVisited, setGalleryVisited] = useState(false), [returnToGallery, setReturnToGallery] = useState(false), [activeRegion, setActiveRegion] = useState(-1);
   const [selectedRegions,setSelectedRegions]=useState<ReadonlySet<number>>(new Set());
+  const [openRegionDetails, setOpenRegionDetails] = useState<ReadonlySet<number>>(new Set());
   const [regionMenu,setRegionMenu]=useState<{x:number;y:number}|null>(null);
   useEffect(()=>{if(!regionMenu)return;const close=()=>setRegionMenu(null);window.addEventListener("click",close);window.addEventListener("resize",close);window.addEventListener("scroll",close,true);return()=>{window.removeEventListener("click",close);window.removeEventListener("resize",close);window.removeEventListener("scroll",close,true);};},[regionMenu]);
   const workbench = useRef<HTMLElement>(null);
-  useEffect(() => { setSelectedId(""); setSearch(""); setGalleryScope(null); setGroupMenu(null); setCollapsed({ empty: true }); setImageFilters(allFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
-    if (!disabled) {const changed=(project?.images||[]).filter(image=>image.ocrCompleted&&!unityImageHasText(image)&&!image.renderedFile&&image.selected&&!image.selectionManual).map(image=>({...image,selected:false}));if(onChangeMany)onChangeMany(changed);else changed.forEach(onChange);} }, [project?.folder]);
+  const [archiveIssues, setArchiveIssues] = useState<{ folder: string; rows: ImageIndexIssue[] }>();
+  useEffect(() => { selectImage(""); setSearch(""); setGalleryScope(null); setListMenu(null); setCollapsed({ empty: true }); setImageFilters(allFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
+  }, [project?.folder]);
   const viewBaseline=useRef(new Map<string,{selected:boolean;completed:boolean;error:string;group:ReturnType<typeof unityImageResultGroup>}>());
   const baselineFolder=useRef(project?.folder);
   const images=useMemo(()=>{
     const rows=(project?.images||[]).filter(unityImageParticipates);
-    if(!dirty||baselineFolder.current!==project?.folder){viewBaseline.current=new Map(rows.map(image=>[image.id,{selected:image.selected,completed:image.completed,error:image.error,group:unityImageResultGroup(image)}]));baselineFolder.current=project?.folder;}
+    if(!dirty||baselineFolder.current!==project?.folder){viewBaseline.current=new Map(rows.map(image=>[image.id,{selected:imageWorkChecked(image),completed:image.completed,error:image.error,group:unityImageResultGroup(image)}]));baselineFolder.current=project?.folder;}
     return sortGameImages(rows,new Map([...viewBaseline.current].map(([id,value])=>[id,value.selected])));
   },[project?.images,project?.folder,dirty]);
+  const groupHistory = useMemo(() => imageGroupHistory(project?.folder), [project?.folder]);
+  const imageErrors = useMemo(() => gameImageBatchErrors(images), [images]);
+  useEffect(() => {
+    if (project?.root && !dirty && !saving) rememberRecentGameFailures(project.root, "images", imageErrors.length);
+  }, [project?.root, dirty, saving, imageErrors.length]);
+  const errorIndex = useMemo(() => {
+    const categories = [
+      ["图片失败", imageErrors],
+      ["导入校验", archiveIssues?.folder === project?.folder ? archiveIssues?.rows : undefined],
+      ["补丁冲突", patchIssues],
+    ] as const;
+    const ids = new Set(categories.flatMap(([, issues]) => issues?.map(issue => issue.id) || []));
+    const names = new Map<string, string>();
+    if (ids.size) for (const image of images) if (ids.has(image.id)) names.set(image.id, image.name || image.file);
+    const sections = categories.map(([title, rows]) => ({ title, rows: rows?.filter(row => names.has(row.id)) || [] }));
+    return { sections, names, count: sections.reduce((total, section) => total + section.rows.length, 0) };
+  }, [images, imageErrors, archiveIssues, project?.folder, patchIssues]);
+  const [groupChangesRevision, setGroupChangesRevision] = useState(0);
+  useLayoutEffect(() => {
+    if (!dirty && groupHistory.record(images, initialScreeningComplete)) setGroupChangesRevision(value => value + 1);
+  }, [dirty, groupHistory, images, initialScreeningComplete]);
   const searchCache=useRef(new WeakMap<UnityImage,string>());
   const searchIndex=useMemo(()=>images.map(image=>{let text=searchCache.current.get(image);if(text===undefined){text=(image.name+" "+image.file+" "+image.regions.map(region=>region.text+" "+region.translation).join(" ")).toLowerCase();searchCache.current.set(image,text);}return {image,text};}),[images]);
   const deferredSearch=useDeferredValue(search.trim().toLowerCase());
@@ -268,75 +367,125 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     const ids=new Set(searchIndex.filter(item=>!deferredSearch||item.text.includes(deferredSearch)).map(item=>item.image.id));
     imageSearchSnapshot.current={key:imageSearchKey,ids};return ids;
   },[searchIndex,deferredSearch,dirty,imageSearchKey]);
-  const filtered=useMemo(()=>images.filter(image=>{const view=viewBaseline.current.get(image.id)||image;return (view.selected?imageFilters.checked:imageFilters.unchecked)&&(view.error?imageFilters.failed:view.completed?imageFilters.done:imageFilters.pending)&&searchMatches.has(image.id);}),[images,searchMatches,imageFilters,dirty]);
-  const groups=useMemo(()=>{const result:{[key:string]:{items:UnityImage[];eligible:number;checked:number}}={candidate:{items:[],eligible:0,checked:0},text:{items:[],eligible:0,checked:0},pending:{items:[],eligible:0,checked:0},failed:{items:[],eligible:0,checked:0},empty:{items:[],eligible:0,checked:0},review:{items:[],eligible:0,checked:0},excluded:{items:[],eligible:0,checked:0}};for(const item of filtered){const group=result[dirty?viewBaseline.current.get(item.id)?.group||unityImageResultGroup(item):unityImageResultGroup(item)];group.items.push(item);if(item.sourceFile){group.eligible++;if(item.selected)group.checked++;}}return result;},[filtered,dirty]);
+  const filtered=useMemo(()=>images.filter(image=>{const view=viewBaseline.current.get(image.id)||image;return ((view===image?imageWorkChecked(image):view.selected)?imageFilters.checked:imageFilters.unchecked)&&(view.error?imageFilters.failed:view.completed?imageFilters.done:imageFilters.pending)&&searchMatches.has(image.id);}),[images,searchMatches,imageFilters,dirty]);
+  const groups = useMemo(() => {
+    const result: Record<string, { items: UnityImage[]; rows: ImageGroupRow[]; removed: Extract<ImageGroupRow, { removed: true }>[];
+      added: number; eligible: number; checked: number }> = Object.fromEntries(
+      imageListGroups.map(([group]) => [group, { items: [], rows: [], removed: [], added: 0, eligible: 0, checked: 0 }]));
+    for (const item of filtered) {
+      const currentGroup = unityImageResultGroup(item);
+      const eligible = imageWorkSelectable(item);
+      const previousGroup = viewBaseline.current.get(item.id)?.group;
+      const group = dirty && eligible && !item.screening?.manualGroup && previousGroup &&
+        previousGroup !== "empty" && previousGroup !== "excluded" ? previousGroup : currentGroup;
+      const list = result[group];
+      list.items.push(item);
+      const origin = initialScreeningComplete ? groupHistory.origins.get(item.id) : undefined;
+      const from = origin?.group === group ? undefined : origin;
+      list.rows.push({ id: item.id, image: item, from });
+      if (from !== undefined) list.added++;
+      if (from) result[from.group].removed.push({ id: item.id, name: item.name, group, index: from.index, removed: true });
+      if (eligible) { list.eligible++; if (imageWorkChecked(item)) list.checked++; }
+    }
+    for (const list of Object.values(result)) list.rows = insertImageOrigins(list.rows, list.removed);
+    return result;
+  }, [filtered, dirty, groupHistory, groupChangesRevision, initialScreeningComplete]);
   const [groupPages,setGroupPages]=useState<Record<string,number>>({});
   useEffect(()=>setGroupPages({}),[deferredSearch,imageFilters,project?.folder]);
-  const counts=useMemo(()=>({selected:images.filter(item=>item.selected).length,done:images.filter(item=>item.selected&&item.completed).length,failed:images.filter(item=>item.error).length}),[images]);
-  const image = (returnToGallery ? images : filtered).find(image => image.id === selectedId) || filtered.find(item=>item.screening?.state==="candidate") || filtered.find(unityImageHasText) || filtered[0];
+  const counts = useMemo(() => ({
+    selected: images.filter(item => imageWorkSelectable(item) && imageWorkChecked(item)).length,
+    done: images.filter(item => item.completed && item.renderedFile).length,
+    failed: images.filter(item => item.error || item.screening?.redrawError).length,
+  }), [images]);
+  const image = (returnToGallery || selectedFailure ? images : filtered).find(image => image.id === selectedId) || filtered.find(item=>item.screening?.state==="candidate") || filtered.find(unityImageHasText) || filtered[0];
+  const failureDetail = selectedFailure?.id === image?.id && selectedFailure &&
+    errorIndex.sections.some(({ rows }) => rows.some(row => row.id === selectedFailure.id && row.detail === selectedFailure.detail))
+    ? selectedFailure.detail : "";
   const listRef = useRef<HTMLDivElement>(null);
-  const [keyboardTarget, setKeyboardTarget] = useState<{ id: string }>();
-  const selectListImage = (group: string, index: number, focus: boolean) => {
-    const item = groups[group].items[index];
+  const [keyboardTarget, setKeyboardTarget] = useState<{ id: string; removed?: true }>();
+  const [listTarget, setListTarget] = useState<{ id: string; origin: boolean }>();
+  const selectListRow = (group: string, index: number, focus: boolean) => {
+    const item = groups[group].rows[index];
     if (!item) return;
     setGroupPages(previous => ({ ...previous, [group]: Math.floor(index / imageListPageSize) }));
-    setSelectedId(item.id);
-    if (focus) setKeyboardTarget({ id: item.id });
+    selectImage(item.id);
+    if (focus) setKeyboardTarget({ id: item.id, removed: item.removed });
   };
-  const handledTarget = useRef<typeof imageTarget>(undefined);
   useEffect(() => {
-    if (!active || !imageTarget || handledTarget.current === imageTarget) return;
-    const target = images.find(item => item.id === imageTarget.id);
-    if (!target) return;
-    const group = Object.keys(groups).find(id => groups[id].items.some(item => item.id === target.id));
+    const target = listTarget;
+    if (!active) return;
+    if (!target || !images.some(item => item.id === target.id)) return;
+    const matches = (row: ImageGroupRow) => row.id === target.id && !!row.removed === target.origin;
+    const group = Object.keys(groups).find(id => groups[id].rows.some(matches));
     if (!group) {
+      if (Object.values(imageFilters).every(Boolean) && !deferredSearch) {
+        setListTarget(undefined);
+        return;
+      }
       setSearch("");
-      setImageFilters(previous => Object.values(previous).every(Boolean) ? previous : { checked: true, unchecked: true, done: true, pending: true, failed: true });
+      setImageFilters(previous => Object.values(previous).every(Boolean) ? previous : allFilters);
       return;
     }
-    handledTarget.current = imageTarget;
+    setListTarget(undefined);
     setGallery(false);
     setReturnToGallery(false);
     setCollapsed(previous => ({ ...previous, [group]: false }));
-    selectListImage(group, groups[group].items.findIndex(item => item.id === target.id), true);
-  }, [active, imageTarget, images, groups]);
+    selectListRow(group, groups[group].rows.findIndex(matches), true);
+  }, [active, listTarget, images, groups, deferredSearch, imageFilters]);
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).matches("input[type=text]")) return;
+    const eventTarget = event.target as HTMLElement;
+    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
+    const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].rows.length);
     if (!expanded.length) return;
     event.preventDefault();
-    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row]")?.dataset.imageRow;
-    const id = focused || image?.id;
-    const groupIndex = expanded.findIndex(([group]) => groups[group].items.some(item => item.id === id));
-    if (groupIndex < 0) { selectListImage(expanded[0][0], 0, true); return; }
+    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row], [data-image-origin]")?.dataset;
+    const id = focused?.imageOrigin || focused?.imageRow || image?.id;
+    const matches = (row: ImageGroupRow) => row.id === id && !!row.removed === !!focused?.imageOrigin;
+    const groupIndex = expanded.findIndex(([group]) => groups[group].rows.some(matches));
+    if (groupIndex < 0) { selectListRow(expanded[0][0], 0, true); return; }
     const [group] = expanded[groupIndex];
-    const items = groups[group].items;
-    const index = items.findIndex(item => item.id === id);
+    const items = groups[group].rows;
+    const index = items.findIndex(matches);
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       const page = Math.floor(index / imageListPageSize) + (event.key === "ArrowRight" ? 1 : -1);
-      if (page >= 0 && page * imageListPageSize < items.length) selectListImage(group, imagePageIndex(index, page, items.length), true);
+      if (page >= 0 && page * imageListPageSize < items.length) selectListRow(group, imagePageIndex(index, page, items.length), true);
       return;
     }
     const offset = event.key === "ArrowDown" ? 1 : -1;
     const next = index + offset;
-    if (next >= 0 && next < items.length) selectListImage(group, next, true);
+    if (next >= 0 && next < items.length) selectListRow(group, next, true);
     else {
       const adjacent = expanded[groupIndex + offset]?.[0];
-      if (adjacent) selectListImage(adjacent, offset > 0 ? 0 : groups[adjacent].items.length - 1, true);
+      if (adjacent) selectListRow(adjacent, offset > 0 ? 0 : groups[adjacent].rows.length - 1, true);
     }
   };
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
-    const node = listRef.current?.querySelector<HTMLButtonElement>('button[data-image-row="' + CSS.escape(keyboardTarget.id) + '"]');
+    const attribute = keyboardTarget.removed ? "data-image-origin" : "data-image-row";
+    const node = listRef.current?.querySelector<HTMLButtonElement>(`button[${attribute}="${CSS.escape(keyboardTarget.id)}"]`);
     node?.focus({ preventScroll: true });
     node?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [keyboardTarget]);
-  useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setRegionMenu(null); setDetailMode(ocrMode); }, [image?.id, ocrMode]);
+  const openRowMenu = (event: React.MouseEvent, id: string, file?: string, jump?: "origin" | "current") => {
+    if (!file && !jump) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setListMenu({ kind: "image", id, file, jump, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 175)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - (file && jump ? 85 : 52))) });
+  };
+  useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setOpenRegionDetails(new Set());setRegionMenu(null); setDetailMode(ocrMode); }, [image?.id, ocrMode]);
   const locateRegion = (index: number) => { setActiveRegion(index);setSelectedRegions(new Set([index])); workbench.current?.querySelector<HTMLElement>(`[data-region-index="${index}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
-  const selectImages = (items: UnityImage[], selected: boolean) => {const changed=items.filter(item=>item.sourceFile&&item.selected!==selected).map(item=>({...item,selected}));if(onChangeMany)onChangeMany(changed);else changed.forEach(onChange);};
-  const edit = (index: number, patch: Partial<UnityImageRegion>) => image && onChange({ ...image, completed: image.renderedKind==="imported"?image.completed:false, error: "", regions: image.regions.map((region, i) => i === index ? { ...region, ...patch, error: "" } : region) });
+  const selectImages = (items: UnityImage[], selected: boolean) => {
+    const changed = items.filter(item => (!selected || imageWorkSelectable(item)) && imageWorkChecked(item) !== selected)
+      .map(item => setImageWorkChecked(item, selected));
+    if (!changed.length) return;
+    if (onChangeMany) onChangeMany(changed); else changed.forEach(onChange);
+  };
+  const edit = (index: number, patch: Partial<UnityImageRegion>) => image && onChange({ ...image,
+    selected: image.selected || !!patch.manualSelected && !canSelectUnityImage(image),
+    completed: image.renderedKind==="imported"?image.completed:false, error: "", regions: image.regions.map((region, i) => i === index ? { ...region, ...patch, error: "" } : region) });
   const renderRegions=image?unityImageTranslationRegions(image.regions,confidenceThreshold,image).filter(region=>region.selected):[];
   const renderHint=!image?.ocrCompleted?"请先识别图片":!renderRegions.length?"没有勾选区域，将保留原图生成译图":renderRegions.some(region=>!region.translation.trim())?"勾选区域还有空译文，请先翻译图片或填写译文":"使用当前勾选区域与现有译文重新嵌字，不重新识别或翻译";
   const focusedDetail = returnToGallery && !gallery;
@@ -352,7 +501,7 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     return {
       all,
       filtered: filtered.filter(image => !!image.sourceFile),
-      checked: all.filter(image => image.selected),
+      checked: all.filter(image => imageWorkSelectable(image) && imageWorkChecked(image)),
     };
   }, [images, filtered]);
   const exportArchive = (range: GameImageDownloadRange) => {
@@ -361,15 +510,19 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
     void downloadGameImages(range, downloadable[range], (image, signal) =>
       reader ? reader(image, false, false, signal) : readUnitySourceImage(project, image, signal));
   };
-  const importArchive=async(source?:GameImportSource)=>{const path=source||await open({multiple:false,filters:[{name:"图片压缩包",extensions:["zip"]}]});if(!path)return;setArchiveBusy("校验压缩包");
-    try{const result=await validateGameImageArchive(typeof path==="string"?await readFileBytes(path):await path.arrayBuffer(),images);if(result.replacements.length&&!await onImportArchive(result.replacements))return;onArchiveMessage(`图片包导入：替换 ${result.replacements.length} 张，忽略不存在的对象 ${result.ignored} 个，跳过未提供的图片 ${result.missing} 张`);}catch(error){onArchiveMessage(error instanceof Error?error.message:String(error),true);}finally{setArchiveBusy("");}};
+  const importArchive=async(source?:GameImportSource)=>{const path=source||await open({multiple:false,filters:[{name:"图片压缩包",extensions:["zip"]}]});if(!path)return;setArchiveBusy("校验压缩包");setArchiveIssues(undefined);
+    try{const result=await validateGameImageArchive(typeof path==="string"?await readFileBytes(path):await path.arrayBuffer(),images);if(result.replacements.length&&!await onImportArchive(result.replacements))return;onArchiveMessage(`图片包导入：替换 ${result.replacements.length} 张，忽略不存在的对象 ${result.ignored} 个，跳过未提供的图片 ${result.missing} 张`);}
+    catch(error){
+      if (project && error instanceof ImageArchiveError && error.imageIssues.length) setArchiveIssues({ folder: project.folder, rows: error.imageIssues });
+      onArchiveMessage(error instanceof Error?error.message:String(error),true);
+    }finally{setArchiveBusy("");}};
   const fileDrop=useGameFileDrop({active:active&&!disabled&&!archiveBusy,webImages:true,root:workbench,
     match:(target,names)=>{if(names.length>1)return null;const name=names[0]||"";if(!name||/\.(png|jpe?g|webp|bmp)$/i.test(name)){const detail=target?.closest<HTMLElement>(".unity-image-detail");if(detail&&image)return detail;}return /\.zip$/i.test(name)||!name?workbench.current:null;},
     label:target=>target.classList.contains("unity-image-detail")?"松开以替换当前图片的译图":"松开以导入图片 ZIP",
     drop:async(source,target)=>{if(/\.zip$/i.test(importSourceName(source))){if(dirty)await new Promise<void>(resolve=>{droppedImportDone.current=resolve;requestFilter(()=>void importArchive(source).finally(()=>{droppedImportDone.current=null;resolve();}));});else await importArchive(source);}else if(image&&target.classList.contains("unity-image-detail"))await onImport(image,source);},
     error:text=>onArchiveMessage(text,true)
   });
-  const showDetails = (id: string) => requestView(()=>{ setViewer(null); setSelectedId(id); setReturnToGallery(true); setGallery(false); });
+  const showDetails = (id: string) => requestView(()=>{ setViewer(null); selectImage(id); setReturnToGallery(true); setGallery(false); });
   const toggleGallery=()=>requestView(()=>{if(gallery){setGallery(false);setReturnToGallery(false);}else{setGalleryVisited(true);setGallery(true);}});
 
   return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className="unity-offline-workbench unity-image-workbench" aria-label="图片识别与翻译结果">{confirmation.dialog}
@@ -386,19 +539,56 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
 </div>,document.body)}{archiveBusy&&<span role="status">{archiveBusy}</span>}<span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张 · 已完成 {counts.done} 张{counts.failed ? ` · 失败 ${counts.failed} 张` : ""}</span><input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} /><button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
     {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <div ref={setImageBody} className="unity-image-body">
       {!focusedDetail && <><div id={imageListId} ref={listRef} className="unity-image-list" style={{ width: listWidth.width }} aria-label="游戏图片列表" tabIndex={0} onKeyDown={navigateImageList}>{imageListGroups.map(([group, label]) => {
-        const {items,eligible,checked}=groups[group];const pages = Math.max(1, Math.ceil(items.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
-        const visible = collapsed[group] ? [] : items.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
-        const changePage = (next: number) => selectListImage(group, imagePageIndex(items.findIndex(item => item.id === image?.id), next, items.length), false);
-        return items.length > 0 && <details key={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => { const closed = !event.currentTarget.open; setCollapsed(previous => previous[group] === closed ? previous : { ...previous, [group]: closed }); }}><summary onContextMenu={event=>{event.preventDefault();setGroupMenu({group,label,x:Math.max(8,Math.min(event.clientX,window.innerWidth-200)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-52))});}}><span>{label} · {items.length}</span><input className="unity-image-group-check" type="checkbox" aria-label={`${checked===eligible&&eligible>0?"取消全选":"全选"}：${label}`} data-tooltip={`${checked===eligible&&eligible>0?"取消本组全部勾选":"勾选本组全部图片"}（包含其他分页）`} disabled={disabled || !!archiveBusy || !eligible} checked={eligible>0&&checked===eligible} ref={node=>{if(node)node.indeterminate=checked>0&&checked<eligible;}} onClick={event=>event.stopPropagation()} onChange={event=>selectImages(items,event.target.checked)}/></summary>{visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}`}>
-        <input type="checkbox" aria-label={`选择图片 ${item.name}`} disabled={disabled || !!archiveBusy || !item.sourceFile} checked={item.selected} onChange={event => onChange({ ...item, selected: event.target.checked })} />
-        <button data-image-row={item.id} onClick={() => setSelectedId(item.id)}
+        const { items, rows, removed, added, eligible, checked } = groups[group];
+        const pages = Math.max(1, Math.ceil(rows.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
+        const visible = collapsed[group] ? [] : rows.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
+        const changePage = (next: number) => selectListRow(group, imagePageIndex(rows.findIndex(row => row.id === image?.id), next, rows.length), false);
+        return rows.length > 0 && <details key={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => {
+          const closed = !event.currentTarget.open;
+          setCollapsed(previous => previous[group] === closed ? previous : { ...previous, [group]: closed });
+        }}>
+          <summary onContextMenu={event => {
+            if (!items.length) return;
+            event.preventDefault();
+            setListMenu({ kind: "group", group, label, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 52)) });
+          }}>
+            <span>{label} · {items.length}</span>
+            {(added > 0 || removed.length > 0) && <span className="unity-image-change-counts">
+              {added > 0 && <span className="is-added" aria-label={`移入或新增 ${added} 张`}>+{added}</span>}
+              {removed.length > 0 && <span className="is-removed" aria-label={`移出 ${removed.length} 张`}>−{removed.length}</span>}
+            </span>}
+            <input className="unity-image-group-check" type="checkbox" aria-label={`${checked === eligible && eligible > 0 ? "取消全选" : "全选"}：${label}`}
+              disabled={disabled || !!archiveBusy || !eligible} checked={eligible > 0 && checked === eligible} ref={node => { if (node) node.indeterminate = checked > 0 && checked < eligible; }}
+              onClick={event => event.stopPropagation()} onChange={event => selectImages(items, event.target.checked)} />
+          </summary>
+          {visible.map(row => {
+            if (row.removed) return <div key={row.id} className={`unity-image-item is-removed${row.id === image?.id ? " is-selected" : ""}`}
+              onContextMenu={event => openRowMenu(event, row.id, undefined, "current")}>
+              <button type="button" data-image-origin={row.id} onClick={() => selectImage(row.id)}>
+                <strong><SearchHighlight text={row.name} query={deferredSearch} /></strong>
+                <small>已移至 {imageGroupLabels.get(row.group)}</small>
+              </button>
+            </div>;
+            const item = row.image;
+            return <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}${row.from !== undefined ? " is-added" : ""}`}
+              onContextMenu={event => openRowMenu(event, item.id, item.file, row.from ? "origin" : undefined)}>
+        <input type="checkbox" aria-label={(isUnityImageReviewable(item) ? "复筛图片 " : item.ocrCompleted ? "AI 风格重绘 " : "选择图片 ") + item.name}
+          data-tooltip={item.ocrCompleted && imageWorkSelectable(item) ? "勾选后加入 AI 风格重绘" : undefined}
+          disabled={disabled || !!archiveBusy || !imageWorkSelectable(item)} checked={imageWorkChecked(item) && imageWorkSelectable(item)}
+          onChange={event => onChange(setImageWorkChecked(item, event.target.checked))} />
+        <button data-image-row={item.id} onClick={() => selectImage(item.id)}
           data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item), item.error].filter(Boolean).join("\n")}
           aria-label={item.file || item.name}>
           <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
           <small>{imageListStatus(item)}</small>
         </button>
-      </div>)}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><GamePageNumber page={page} pages={pages} onPage={changePage} /><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
-      })}</div>
+      </div>; })}{!collapsed[group]&&pages>1&&<div className="unity-image-list-pages" aria-label={`${label}列表分页`}><button type="button" disabled={page===0} onClick={()=>changePage(page-1)}>上一页</button><GamePageNumber page={page} pages={pages} onPage={changePage} /><button type="button" disabled={page===pages-1} onClick={()=>changePage(page+1)}>下一页</button></div>}</details>;
+      })}{errorIndex.count > 0 && <details key={project.folder} className="unity-image-result-group unity-image-error-index">
+        <summary><span>失败条目 <span className="unity-image-error-count">{errorIndex.count}</span></span></summary>
+        {errorIndex.sections.map(({ title, rows }) => rows.length > 0 && <ImageErrorGroup key={title} title={title} issues={rows} names={errorIndex.names}
+          selected={selectedFailure} onSelect={issue => { setSelectedId(issue.id); setSelectedFailure(issue); }}
+          onMenu={(event, id) => openRowMenu(event, id, undefined, "current")} />)}
+      </details>}</div>
       <button type="button" role="separator" aria-orientation="vertical" aria-controls={imageListId} aria-label="调整图片列表宽度"
         aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
         className="unity-image-list-divider" data-tooltip="拖动调整图片列表宽度"
@@ -427,26 +617,66 @@ export function UnityImageWorkbench({ project, disabled, imageTarget, active = t
             })), load: () => reader ? reader(image, false, false, new AbortController().signal) : readUnitySourceImage(project, image),
             apply: file => onImport(image, file), failure: reason => onRedrawFailure(image, reason) }} />
           <select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label={reuseRecognition ? "识字与定位" : "重新识别"} data-tooltip={reuseRecognition && image.ocrCompleted ? "已有识字结果" : "使用所选模型识别当前图片"} disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile || reuseRecognition && image.ocrCompleted} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
-        {image.error && <p className="unity-offline-error" role="alert">{image.error}</p>}
+        {image.ocrCompleted && canSelectUnityImage(image) && unityImageResultGroup(image) === "text" && <button className="unity-btn"
+          disabled={disabled || !!archiveBusy} onClick={() => onChange({ ...image, selected: !image.selected, selectionManual: true })}>
+          {image.selected ? "从补丁中排除" : "加入补丁"}
+        </button>}
+        {(failureDetail || image.error || image.screening?.redrawError) && <p className="unity-offline-error" role="alert">{failureDetail || image.error || image.screening?.redrawError}</p>}
         <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, x, y })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, x, y }) : undefined} /></div>
         <div className="unity-image-regions">{unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
-          const error = region.error || (region.selected ? gameImageJapaneseTextIssue(region.text, region.translation, region.translationTarget) : "");
+          const expanded = openRegionDetails.has(index);
+          const error = expanded && (region.error || (region.selected ? gameImageJapaneseTextIssue(region.text, region.translation, region.translationTarget) : ""));
+          const detailId = `${imageListId}-region-${index}`;
+          const toggleLabel = `${expanded ? "折叠" : "展开"}区域 ${index + 1} 详情`;
           return <div key={index} data-region-index={index} tabIndex={0} className={`unity-image-region${activeRegion === index||selectedRegions.has(index) ? " is-active" : ""}`} onClick={() => {setActiveRegion(index);setSelectedRegions(new Set([index]));}} onFocus={() => setActiveRegion(index)}>
-          <div className="unity-image-region-header">
-          <label className="unity-image-region-heading" data-tooltip="低于置信度阈值的区域不自动翻译，可手动勾选后处理"><input type="checkbox" checked={region.selected && (region.confidence >= confidenceThreshold || !!region.manualSelected)} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { selected: event.target.checked, manualSelected: event.target.checked })} /><span>区域 {index + 1} · 置信度 {(Math.floor(region.confidence * 10) / 10).toFixed(1)}%{region.reviewReason ? ` · 待复核：${region.reviewReason}` : ""}{region.confidence < confidenceThreshold ? " · 低于阈值" : ""}</span></label>
-            <div className="unity-image-coordinates" role="group" aria-label={`区域 ${index + 1} 的位置`}>{(["x0", "y0", "x1", "y1"] as const).map(key => <label key={key}>{({ x0: "左", y0: "上", x1: "右", y1: "下" })[key]}<input aria-label={`区域 ${index + 1} ${({ x0: "左边界", y0: "上边界", x1: "右边界", y1: "下边界" })[key]}`} type="number" step={1} min={0} max={key.startsWith("x") ? image.width : image.height} value={Math.round(region[key])} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { [key]: Number(event.target.value) })} /></label>)}</div>
-          </div>
-          <label>原文<SearchTextarea query={deferredSearch} value={region.text} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { text: event.target.value, translation: "" })} /></label>
-          <label>译文<SearchTextarea query={deferredSearch} value={region.translation} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { translation: event.target.value })} /></label>
-          {error && <p className="unity-offline-error">{error}</p>}
-        </div>; })}</div>
+            <div className="unity-image-region-header">
+              <span>置信度 {(Math.floor(region.confidence * 10) / 10).toFixed(1)}%</span>
+              <button type="button" className="unity-image-region-toggle" aria-label={toggleLabel} data-tooltip={toggleLabel}
+                aria-expanded={expanded} aria-controls={expanded ? detailId : undefined}
+                onClick={() => setOpenRegionDetails(previous => {
+                  const next = new Set(previous);
+                  if (!next.delete(index)) next.add(index);
+                  return next;
+                })}>
+                <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 7 5 5 5-5" /></svg>
+              </button>
+            </div>
+            <label>原文<SearchTextarea query={deferredSearch} value={region.text} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { text: event.target.value, translation: "" })} /></label>
+            <label>译文<SearchTextarea query={deferredSearch} value={region.translation} rows={1} disabled={disabled||!!archiveBusy} onChange={event => edit(index, { translation: event.target.value })} /></label>
+            {expanded && <div id={detailId} className="unity-image-region-details">
+              <label className="unity-image-region-heading" data-tooltip="低于置信度阈值的区域不自动翻译，可手动勾选后处理">
+                <input type="checkbox" checked={region.selected && (region.confidence >= confidenceThreshold || !!region.manualSelected)} disabled={disabled||!!archiveBusy}
+                  onChange={event => edit(index, { selected: event.target.checked, manualSelected: event.target.checked })} />
+                参与翻译
+              </label>
+              <div className="unity-image-coordinates" role="group" aria-label={`区域 ${index + 1} 的位置`}>
+                {(["x0", "y0", "x1", "y1"] as const).map(key => <label key={key}>{({ x0: "左", y0: "上", x1: "右", y1: "下" })[key]}
+                  <input aria-label={`区域 ${index + 1} ${({ x0: "左边界", y0: "上边界", x1: "右边界", y1: "下边界" })[key]}`}
+                    type="number" step={1} min={0} max={key.startsWith("x") ? image.width : image.height} value={Math.round(region[key])}
+                    disabled={disabled||!!archiveBusy} onChange={event => edit(index, { [key]: Number(event.target.value) })} />
+                </label>)}
+              </div>
+              {(region.reviewReason || region.confidence < confidenceThreshold) && <p className="unity-image-region-notes">
+                {[region.reviewReason && `待复核：${region.reviewReason}`, region.confidence < confidenceThreshold && "低于阈值"].filter(Boolean).join(" · ")}
+              </p>}
+              {error && <p className="unity-offline-error">{error}</p>}
+            </div>}
+          </div>;
+        })}</div>
       </div>}
     </div>}</>}
 
     {regionMenu&&createPortal(<div className="unity-gallery-menu" role="menu" aria-label="当前图片区域操作" style={{left:regionMenu.x,top:regionMenu.y}}><button type="button" role="menuitem" disabled={disabled||!image?.regions.length} onClick={()=>checkAllRegions(true)}>全部勾选</button><button type="button" role="menuitem" disabled={disabled||!image?.regions.length} onClick={()=>checkAllRegions(false)}>全部取消勾选</button></div>,document.body)}
     {fileDrop.overlay}
     {pendingFilter&&<GameDialog title="图片修改尚未保存" description="保存修改后继续，或放弃尚未保存的图片修改。" onCancel={cancelPending} disabled={resolvingFilter}><button type="button" className="game-confirm-cancel" autoFocus disabled={resolvingFilter} onClick={cancelPending}>返回</button><button type="button" className="game-confirm-accept" disabled={resolvingFilter} onClick={()=>void resolveFilter("discard")}>放弃修改</button><button type="button" className="game-confirm-primary" disabled={resolvingFilter} onClick={()=>void resolveFilter("save")}>保存后继续</button></GameDialog>}
-    {groupMenu&&createPortal(<div className="unity-gallery-menu" role="menu" aria-label={`${groupMenu.label}图片操作`} style={{left:groupMenu.x,top:groupMenu.y}}><button role="menuitem" onClick={()=>{const group=groupMenu.group;setGroupMenu(null);requestFilter(()=>{setGalleryScope(group);setGalleryVisited(true);setGallery(true);setReturnToGallery(false);});}}>批量查看：{groupMenu.label}</button></div>,document.body)}
+    {groupMenu&&createPortal(<div className="unity-gallery-menu" role="menu" aria-label={`${groupMenu.label}图片操作`} style={{left:groupMenu.x,top:groupMenu.y}}><button role="menuitem" onClick={()=>{const group=groupMenu.group;setListMenu(null);requestFilter(()=>{setGalleryScope(group);setGalleryVisited(true);setGallery(true);setReturnToGallery(false);});}}>批量查看：{groupMenu.label}</button></div>,document.body)}
+    {imageMenu && createPortal(<div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: imageMenu.x, top: imageMenu.y }}>
+      {imageMenu.jump && <button type="button" role="menuitem" onClick={() => {
+        setListMenu(null);
+        setListTarget({ id: imageMenu.id, origin: imageMenu.jump === "origin" });
+      }}>{imageMenu.jump === "origin" ? "跳到原分组" : "跳到当前分组"}</button>}
+      {imageMenu.file && <button type="button" role="menuitem" onClick={() => void openImageFolder(imageMenu.file!)}>在文件夹中打开</button>}
+    </div>, document.body)}
     {previewMenu && <div className="unity-gallery-menu" role="menu" aria-label="预览图片操作" style={{ left: Math.min(previewMenu.x, window.innerWidth - 170), top: Math.min(previewMenu.y, window.innerHeight - 70) }}><button role="menuitem" onClick={() => openViewer(previewMenu.id, previewMenu.translated, false)}>{previewMenu.translated ? "查看译图" : "查看原图"}</button></div>}
     {active && project && viewer && viewerImage && <ImageViewer key={viewer.id + String(viewer.translated)} project={project} image={viewerImage} translated={viewer.translated} allowDetails={viewer.allowDetails} threshold={confidenceThreshold} onClose={() => setViewer(null)} onDetails={() => showDetails(viewer.id)} />}
   </section>;

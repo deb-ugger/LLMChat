@@ -45,16 +45,26 @@ public static class GameLocalization
             if (field.TemplateField.Type.StartsWith("PPtr<", StringComparison.Ordinal) || field.TemplateField.ValueType == AssetValueType.ByteArray) return;
             if (field.TemplateField.ValueType == AssetValueType.String) {
                 var named = field.FieldName;
-                foreach (var prefix in new[] { "Chinese", "Japanese", "English", "Korean" }) if (named.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) locale = NamedLocale(prefix);
-                if (GameText.Visible(named, field.AsString)) visit(path, field.AsString, locale, key);
+                var text = field.AsString;
+                if (!GameText.Visible(named, text)) return;
+                if (named.StartsWith("Chinese", StringComparison.OrdinalIgnoreCase)) locale = "zh-CN";
+                else if (named.StartsWith("Japanese", StringComparison.OrdinalIgnoreCase)) locale = "ja";
+                else if (named.StartsWith("English", StringComparison.OrdinalIgnoreCase)) locale = "en";
+                else if (named.StartsWith("Korean", StringComparison.OrdinalIgnoreCase)) locale = "ko";
+                visit(path, text, locale, key);
                 return;
             }
-            var language = field["language"];
+            if (field.Children.Count == 0) return;
             if (field.TemplateField.Type == "DialogueLine" && locale.Length == 0) locale = defaultLocale;
-            if (!language.IsDummy && languages.TryGetValue(field.TemplateField.Type, out var map) && map.TryGetValue(language.AsInt, out var resolved)) locale = resolved;
-            if (!field["key"].IsDummy && field["key"].TemplateField.ValueType == AssetValueType.String && !field["values"].IsDummy) key = field["key"].AsString;
+            if (languages.TryGetValue(field.TemplateField.Type, out var map)) {
+                var language = field["language"];
+                if (!language.IsDummy && map.TryGetValue(language.AsInt, out var resolved)) locale = resolved;
+            }
+            var keyField = field["key"];
+            if (!keyField.IsDummy && keyField.TemplateField.ValueType == AssetValueType.String && !field["values"].IsDummy) key = keyField.AsString;
             for (var i = 0; i < field.Children.Count; i++) {
                 var child = field.Children[i];
+                if (child.Children.Count == 0 && child.TemplateField.ValueType != AssetValueType.String) continue;
                 var part = field.TemplateField.IsArray ? i.ToString() : child.FieldName.Replace("~", "~0").Replace("/", "~1");
                 Walk(child, path + "/" + part, locale, key);
             }

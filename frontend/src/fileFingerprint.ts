@@ -8,3 +8,17 @@ export async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   }
   return out;
 }
+
+const blobFingerprints = new WeakMap<Blob, Promise<string>>();
+
+/** Reuse the digest when more than one stage receives the same immutable bytes. */
+export function blobSha256Hex(blob: Blob): Promise<string> {
+  const existing = blobFingerprints.get(blob);
+  if (existing) return existing;
+  const digest = blob.arrayBuffer().then(sha256Hex).catch(error => {
+    blobFingerprints.delete(blob);
+    throw error;
+  });
+  blobFingerprints.set(blob, digest);
+  return digest;
+}

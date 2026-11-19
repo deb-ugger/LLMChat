@@ -1,5 +1,5 @@
 import { type UnityGameInfo,type UnityIniSection } from "../api";
-type OutputLevel = "step" | "ok" | "error" | "info";
+type OutputLevel = "step" | "ok" | "fail" | "error" | "warning" | "info";
 
 type OutputLine = {
   id: string;
@@ -59,7 +59,7 @@ function joinGameExePath(gameDir: string, gameExe?: string | null): string {
 
 function parseLogLine(raw: string, id: string): OutputLine {
   const m = raw.match(
-    /^\[([^\]]+)\]\s*\[(step|ok|error|info)\]\s*(.*)$/i,
+    /^\[([^\]]+)\]\s*\[(step|ok|fail|error|warning|info)\]\s*(.*)$/i,
   );
   if (m) {
     return {

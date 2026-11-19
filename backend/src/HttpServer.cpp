@@ -297,8 +297,9 @@ std::string readFileTailLines(const fs::path& path, int maxLines)
     if (start > 0)
     {
         const auto nl = buf.find('\n');
-        if (nl != std::string::npos)
-            buf.erase(0, nl + 1);
+        if (nl == std::string::npos)
+            return {};
+        buf.erase(0, nl + 1);
     }
 
     std::vector<std::string> lines;
@@ -2056,7 +2057,16 @@ int HttpServer::run()
                     })schema");
                 }
             }
-            if (request.nativeOllama && !imageClassification && !image.empty() && body.value("imageOcr", false)) {
+            if (request.nativeOllama && !imageClassification && !image.empty() && body.value("groupedImageOcr", false)) {
+                request.options["temperature"] = 0;
+                request.options["format"] = json::parse(R"schema({
+                    "type":"object","required":["regions"],"additionalProperties":false,
+                    "properties":{"regions":{"type":"array","maxItems":10,"items":{
+                        "type":"object","required":["index","text","confidence"],"additionalProperties":false,
+                        "properties":{"index":{"type":"integer","minimum":1,"maximum":10},
+                            "text":{"type":"string","minLength":1},"confidence":{"type":"number","minimum":0,"maximum":100}}
+                    }}}})schema");
+            } else if (request.nativeOllama && !imageClassification && !image.empty() && body.value("imageOcr", false)) {
                 request.options["format"] = json::parse(R"schema({
                     "type":"object","required":["regions"],"additionalProperties":false,
                     "properties":{"regions":{"type":"array","items":{
@@ -2382,7 +2392,6 @@ int HttpServer::run()
             }
         }));
     }
-
     svr.Post("/api/json-embedding/launch", withCors([](const httplib::Request& req, httplib::Response& res) {
         try {
             const auto game = utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());
@@ -2877,24 +2886,32 @@ int HttpServer::run()
             if (lines > 2000)
                 lines = 2000;
             const bool global = req.path == "/api/output-log";
+            const bool full = global && req.get_param_value("full") == "1";
             const fs::path logPath = dataDirectory(config_) / (global ? "app-output.jsonl" : "unity-output.log");
             std::lock_guard lock(outputLogMutex);
             std::error_code ec;
             const bool exists = fs::exists(logPath, ec);
-            std::string text = exists ? readFileTailLines(logPath, lines) : "";
-            if (global) {
+            const auto archive = fs::path(logPath).concat(".bak");
+            std::string text = exists ? (full ? readFileUtf8(logPath) : readFileTailLines(logPath, lines)) : "";
+            if (full && fs::is_regular_file(archive)) {
+                auto older = readFileUtf8(archive);
+                if (!older.empty()) {
+                    if (!text.empty() && older.back() != '\n') older += '\n';
+                    text = std::move(older) + text;
+                }
+            } else if (global && !full) {
                 const int count = static_cast<int>(std::count(text.begin(), text.end(), '\n')) + (!text.empty() && text.back() != '\n');
                 if (count < lines) {
-                    const auto older = readFileTailLines(fs::path(logPath).concat(".bak"), lines - count);
+                    const auto older = readFileTailLines(archive, lines - count);
                     if (!older.empty()) text = older + "\n" + text;
                 }
             }
             json result = {{"ok", true}, {"logPath", utf8path::pathUtf8(logPath)}, {"exists", exists}, {"text", text}};
-            if (global) {
+            if (global && !full) {
                 result["issues"] = json::array();
                 for (const auto& row : readOutputIssues(logPath.parent_path())) result["issues"].push_back(row);
             }
-            res.set_content(result.dump(), "application/json");
+            res.set_content(result.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
         }
         catch (const std::exception& ex)
         {

@@ -188,7 +188,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       selectedModels[role] = { id: model, lanes: modelConcurrency(scope, step === "translate" ? role : mainRole, model || modelIds.text) };
     }
     return { ...settings, ...(images ? { source: images.source, target: images.target, skipTarget: images.skipTarget,
-      imageMode: imageStep === "refine" ? images.refineMode || "precise" : images.mode, imageStrategy: images.strategy, localLanes: imageStep === "refine" ? images.refineConcurrency || 2 : images.concurrency, imageConfidence: images.confidence, engines: images.engines } : {}),
+      imageMode: imageStep === "refine" ? images.refineMode || "precise" : images.mode, imageStrategy: images.strategy, localLanes: imageStep === "refine" ? images.refineConcurrency || 2 : images.concurrency,
+      imageConfidence: imageStep === "refine" ? images.refineConfidence : images.confidence, engines: images.engines } : {}),
       prompts: { ...(images?.prompts || settings.prompts) }, id: crypto.randomUUID(), label: "配置 " + number, models: selectedModels };
   };
   const [saved] = useState<{ configs?: BenchmarkConfig[]; rounds?: number }>(() => {
@@ -449,8 +450,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </div>}
         {step === "recognize" && config.models.text.id && <label className="unity-inline-check"><input type="checkbox" checked={(config.imageMode || images?.mode) === "manga"}
           onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.checked ? "manga" : "precise" }))} />用 Manga OCR 复读日文竖排</label>}
-        {step === "recognize" && images?.confidence !== undefined && <div className="game-benchmark-toolbar"><label>置信度阈值（%）
-          <input type="number" min={0} max={100} value={config.imageConfidence ?? images.confidence}
+        {(step === "refine" || step === "recognize" && images?.confidence !== undefined) && <div className="game-benchmark-toolbar"><label>置信度阈值（%）
+          <input type="number" min={0} max={100} value={config.imageConfidence ?? (step === "refine" ? images?.refineConfidence : images?.confidence) ?? 50}
             onChange={event => update(config.id, previous => ({ ...previous, imageConfidence: Math.min(100, Math.max(0, Number(event.target.value))) }))} />
         </label></div>}
         <div className="game-benchmark-toolbar">

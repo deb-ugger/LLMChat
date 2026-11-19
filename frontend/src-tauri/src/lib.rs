@@ -9,6 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use std::io::Write;
 
 const BENCHMARK_WINDOW: &str = "game-benchmark";
+const GAME_HELP_WINDOW: &str = "game-help";
+const GAME_CONFIGURATION_WINDOW: &str = "game-configuration";
 static WEBVIEW_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_WRITE: Mutex<()> = Mutex::new(());
@@ -70,7 +72,20 @@ use tauri_plugin_shell::ShellExt;
 
 #[tauri::command]
 async fn open_game_benchmark_window(window: tauri::WebviewWindow) -> Result<bool, String> {
-    if window.label() != "main" { return Err("只能从游戏工程打开测试队列".into()); }
+    open_game_window(window, BENCHMARK_WINDOW, "测试队列 · LLMChat", 930.0, 760.0)
+}
+
+#[tauri::command]
+async fn open_game_aux_window(window: tauri::WebviewWindow, kind: String) -> Result<bool, String> {
+    match kind.as_str() {
+        "help" => open_game_window(window, GAME_HELP_WINDOW, "游戏翻译流程 · LLMChat", 760.0, 730.0),
+        "configuration" => open_game_window(window, GAME_CONFIGURATION_WINDOW, "测试配置 · LLMChat", 980.0, 740.0),
+        _ => Err("未知的游戏翻译窗口".into()),
+    }
+}
+
+fn open_game_window(window: tauri::WebviewWindow, label: &str, title: &str, width: f64, height: f64) -> Result<bool, String> {
+    if window.label() != "main" { return Err("只能从主窗口打开游戏翻译窗口".into()); }
     let app = window.app_handle();
     let center = |child: &tauri::WebviewWindow| -> Result<(), String> {
         let location = window.outer_position().map_err(|error| error.to_string())?;
@@ -81,16 +96,16 @@ async fn open_game_benchmark_window(window: tauri::WebviewWindow) -> Result<bool
             location.y + (main.height as i32 - size.height as i32) / 2,
         )).map_err(|error| error.to_string())
     };
-    if let Some(existing) = app.get_webview_window(BENCHMARK_WINDOW) {
+    if let Some(existing) = app.get_webview_window(label) {
         existing.unminimize().map_err(|error| error.to_string())?;
-        center(&existing)?;
+        if label == BENCHMARK_WINDOW { center(&existing)?; }
         existing.set_focus().map_err(|error| error.to_string())?;
         return Ok(false);
     }
     let profile = WEBVIEW_DIRECTORY.get().ok_or("窗口数据目录尚未初始化")?;
-    let child = tauri::WebviewWindowBuilder::new(app, BENCHMARK_WINDOW, tauri::WebviewUrl::default())
-        .title("测试队列 · LLMChat")
-        .inner_size(930.0, 760.0)
+    let child = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
+        .title(title)
+        .inner_size(width, height)
         .min_inner_size(520.0, 420.0)
         .resizable(true)
         .visible(false)
@@ -272,8 +287,10 @@ fn arm_close_watchdog() {
 async fn finish_app_close(window: tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" { return Err("只允许主窗口退出应用".into()); }
     let _ = runtime_log("shutdown-native-begin", &format!("window={}; frontend close guards accepted", window.label()));
-    if let Some(benchmark) = window.app_handle().get_webview_window(BENCHMARK_WINDOW) {
-        benchmark.destroy().map_err(|error| error.to_string())?;
+    for label in [BENCHMARK_WINDOW, GAME_HELP_WINDOW, GAME_CONFIGURATION_WINDOW] {
+        if let Some(child) = window.app_handle().get_webview_window(label) {
+            child.destroy().map_err(|error| error.to_string())?;
+        }
     }
     stop_backend(window.app_handle())?;
     game_image_zip::cancel_all()?;
@@ -343,7 +360,16 @@ pub fn run() {
             clipboard::clipboard_read_image_png,
             write_file_bytes,
             style_redraw::run_style_redraw,
-            style_redraw::missing_redraw_weights,
+            style_redraw::find_redraw_directories,
+            style_redraw::inspect_redraw_directory,
+            style_redraw::prepare_redraw_ui,
+            style_redraw::sync_redraw_editor,
+            style_redraw::read_redraw_queue,
+            style_redraw::read_redraw_thumbnail,
+            style_redraw::list_redraw_workflows,
+            style_redraw::read_redraw_workflow,
+            style_redraw::save_redraw_workflow,
+            style_redraw::submit_redraw_workflow,
             begin_game_image_zip,
             append_game_image_zip,
             finish_game_image_zip,
@@ -354,6 +380,7 @@ pub fn run() {
             append_game_performance,
             read_game_performance,
             open_game_benchmark_window,
+            open_game_aux_window,
             finish_app_close,
             unity_offline::unity_offline_run,
             unity_offline::unity_offline_stop,

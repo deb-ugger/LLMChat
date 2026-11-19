@@ -1,10 +1,16 @@
 [[permission]]
 identifier = "allow-style-redraw"
-description = "Allow local ComfyUI discovery, queue inspection and image redraw"
+description = "Allow the main window to manage local ComfyUI redraw and saved workflows"
 commands.allow = [
   "find_redraw_directories",
   "inspect_redraw_directory",
   "read_redraw_queue",
+  "read_redraw_thumbnail",
   "prepare_redraw_ui",
+  "sync_redraw_editor",
+  "list_redraw_workflows",
+  "read_redraw_workflow",
+  "save_redraw_workflow",
+  "submit_redraw_workflow",
   "run_style_redraw"
 ]

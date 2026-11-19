@@ -44,7 +44,7 @@ export class SpeechQueue {
     const item = items[index];
     if (patch.status && patch.message && (patch.status !== item.status || patch.message !== item.message)) {
       writeOutput(["语音转文字", "任务队列"], `${item.source.name} · ${patch.message}`,
-        patch.status === "error" ? "error" : patch.status === "done" ? "success" : "info", patch.status === "error", id);
+        patch.status === "error" ? "fail" : patch.status === "done" ? "success" : "info", patch.status === "error", id);
     }
     items[index] = { ...item, ...patch };
     this.publish({ items });

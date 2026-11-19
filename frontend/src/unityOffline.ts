@@ -19,14 +19,20 @@ export type UnityEntry = {
   screeningDraft?: string;
   parentId?: string; parentLocator?: string; sourceStart?: number;
 };
-export type UnityImageRegion = { text: string; translation: string; translationTarget?: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; reviewReason?: string; error: string };
+export type UnityImageRegion = { text: string; translation: string; translationTarget?: string; confidence: number; x0: number; y0: number; x1: number; y1: number; selected: boolean; manualSelected?: boolean; ocrConfirmed?: boolean; reviewReason?: string; error: string;
+  beforeReview?: { translation: string; translationTarget?: string; error: string } };
 export type UnityImage = { selectionManual?: boolean; screening?: ImageScreening; id: string; file: string; container: string; objectId: string; kind: string; name: string; width: number; height: number; sourceFile: string; sourceHash: string; renderedFile: string; renderedHash: string; renderedKind?:"generated"|"imported"; renderedTarget?: string; noTranslationNeeded?: boolean; selected: boolean; ocrCompleted: boolean; completed: boolean; error: string; regions: UnityImageRegion[] };
 export type UnityFont = { file: string; container: string; objectId: string; name: string; kind: string; references?: { field: string; fileId: number; pathId: string }[] };
 export type UnityInspection = { runtime: string; assemblies: { path: string; writable: boolean; reason: string }[]; catalogs: string[] };
 export type UnityFontPlan = { folder: string; characterCount: number; originalReferences: number; translatedReferences: number; fontChecked: boolean; missing: number[]; fonts: UnityFont[]; requirements: string[] };
+export type UnityScanMetrics = {
+  parsed: number; reused: number; totalMs: number; prepareMs: number; checkMs: number; openMs: number;
+  parseMs: number; decodeMs: number; reuseMs: number; saveMs: number; restoreMs: number; otherMs: number;
+};
 export type UnityProject = {
   version: number; root: string; folder: string; entries: UnityEntry[];
   scanRevision?: number;
+  scanMetrics?: UnityScanMetrics;
   images?: UnityImage[]; imagesSkipped?: boolean; textSkipped?: boolean;
   segmentSources?: Record<string, string>;
   textMode?: "lines" | "paragraphs" | "smart";

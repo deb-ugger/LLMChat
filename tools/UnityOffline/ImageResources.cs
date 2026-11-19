@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AssetsTools.NET;
 using AssetsTools.NET.Extra;
 using AssetsTools.NET.Texture;
@@ -8,6 +10,8 @@ using StbImageSharp;
 using StbImageWriteSharp;
 
 namespace LLMChat.UnityOffline;
+
+public sealed record ImageReviewSnapshot(string Translation, string? TranslationTarget, string Error);
 
 public sealed class ImageRegion
 {
@@ -19,8 +23,11 @@ public sealed class ImageRegion
     public double X1 { get; set; } public double Y1 { get; set; }
     public bool Selected { get; set; } = true;
     public bool ManualSelected { get; set; }
+    public bool? OcrConfirmed { get; set; }
     public string ReviewReason { get; set; } = "";
     public string Error { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ImageReviewSnapshot? BeforeReview { get; set; }
 }
 public sealed class ImageResource
 {
@@ -44,6 +51,8 @@ public sealed class ImageResource
     public string DependencyFile { get; set; } = "";
     public string DependencyHash { get; set; } = "";
     public bool Selected { get; set; } = true;
+    public bool? SelectionManual { get; set; }
+    public System.Text.Json.Nodes.JsonNode? Screening { get; set; }
     public bool OcrCompleted { get; set; }
     public bool Completed { get; set; }
     public string Error { get; set; } = "";
@@ -65,7 +74,6 @@ public static class ImageResources
         readonly string folder;
         readonly Index index;
         readonly Dictionary<string, ImageResource> images;
-        readonly Dictionary<string, bool> files = new(StringComparer.OrdinalIgnoreCase);
         public int Hits { get; private set; }
         public TextureScanCache(string root, string previousFolder)
         {
@@ -77,14 +85,12 @@ public static class ImageResources
             if (!Path.GetFullPath(index.Root).Equals(Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase)) throw new Exception("原图缓存属于其他游戏");
             images = index.Images.Where(image => image.SourceFile.Length > 0).ToDictionary(image => image.Id);
         }
-        public bool Copy(Project project, ImageResource image)
+        public bool Copy(Project project, ImageResource image) =>
+            Copy(project, image, new Lazy<string>(() => Program.Hash(Program.Within(project.Root, image.File))));
+        public bool Copy(Project project, ImageResource image, Lazy<string> sourceDigest)
         {
             if (!images.TryGetValue(image.Id, out var saved) || saved.Width != image.Width || saved.Height != image.Height || saved.DependencyHash != image.DependencyHash) return false;
-            if (!files.TryGetValue(image.File, out var unchanged)) {
-                unchanged = index.Hashes.TryGetValue(image.File, out var hash) && Program.Hash(Program.Within(project.Root, image.File)) == hash;
-                files[image.File] = unchanged;
-            }
-            if (!unchanged) return false;
+            if (!index.Hashes.TryGetValue(image.File, out var hash) || sourceDigest.Value != hash) return false;
             var source = Program.Within(folder, saved.SourceFile);
             if (!File.Exists(source) || Program.Hash(source) != saved.SourceHash) return false;
             var relative = "images/source/" + image.Id + ".png";
@@ -139,10 +145,14 @@ public static class ImageResources
         return new { data = Convert.ToBase64String(bytes), opaque, fullyTransparent };
     }
     static string Id(string file, string container, string id) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(file + "\n" + container + "\n" + id))).ToLowerInvariant();
-    static void Png(byte[] rgba, int width, int height, string path) {
+    static string Png(byte[] rgba, int width, int height, string path) {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var output = File.Create(path);
-        FastPng.Write(rgba, width, height, output);
+        using var sha = SHA256.Create();
+        using var hashing = new CryptoStream(output, sha, CryptoStreamMode.Write, leaveOpen: true);
+        FastPng.Write(rgba, width, height, hashing);
+        hashing.FlushFinalBlock();
+        return Convert.ToHexString(sha.Hash!);
     }
     static void Dimensions(int width, int height) {
         if (width <= 0 || height <= 0 || (long)width * height > 64 * 1024 * 1024) throw new Exception("图片尺寸无效或超过 6400 万像素，未解码");
@@ -173,7 +183,7 @@ public static class ImageResources
         }
         return result;
     }
-    public static void ScanTexture(Project project, AssetsFileInstance instance, AssetTypeValueField field, string file, string container, long objectId, bool fontAtlas, Dictionary<string, string> dependencyHashes, TextureScanCache? cache, Action<string>? report = null) {
+    internal static void ScanTexture(Project project, AssetsFileInstance instance, AssetTypeValueField field, string file, string container, long objectId, bool fontAtlas, Dictionary<string, string> dependencyHashes, TextureScanCache? cache, Lazy<string> sourceDigest, Action<string>? report, ScanClock clock) {
         var image = new ImageResource { Id = Id(file, container, objectId.ToString()), File = file, Container = container, ObjectId = objectId.ToString(), Name = field["m_Name"].IsDummy ? objectId.ToString() : field["m_Name"].AsString };
         if (fontAtlas || Regex.IsMatch(image.Name, @"(?:font|sdf|lightmap|normalmap|_nrm(?:_|$))", RegexOptions.IgnoreCase)) return;
         project.Images.Add(image);
@@ -188,21 +198,25 @@ public static class ImageResources
                 // Hundreds of textures can share a multi-gigabyte resS file.
                 // Keep only its digest, scoped to this resource scan, never the file bytes.
                 if (!dependencyHashes.TryGetValue(dependency, out var hash)) {
+                    using var check = clock.Measure(ScanPhase.Check);
                     report?.Invoke("校验外部纹理数据");
                     dependencyHashes[dependency] = hash = Program.Hash(dependency);
                 }
                 image.DependencyHash = hash;
             }
             report?.Invoke("检查原图缓存");
-            if (cache?.Copy(project, image) == true) { report?.Invoke("已复用原图缓存"); return; }
+            if (cache != null) {
+                using var reuse = clock.Measure(ScanPhase.Reuse);
+                if (cache.Copy(project, image, sourceDigest)) { report?.Invoke("已复用原图缓存"); return; }
+            }
+            using var decode = clock.Measure(ScanPhase.Decode);
             report?.Invoke($"解码图片 {image.Width}×{image.Height}");
             var encoded = texture.FillPictureData(instance) ?? throw new Exception("未找到纹理的外部 resS 数据");
             var rgba = texture.DecodeTextureRaw(encoded, false) ?? throw new Exception("当前纹理压缩格式不能解码");
             TextureOperations.FlipBGRA32Vertically(rgba, image.Width, image.Height);
             image.SourceFile = "images/source/" + image.Id + ".png";
             report?.Invoke($"编码并保存 PNG {image.Width}×{image.Height}");
-            Png(rgba, image.Width, image.Height, Program.Within(project.Folder, image.SourceFile));
-            image.SourceHash = Program.Hash(Program.Within(project.Folder, image.SourceFile));
+            image.SourceHash = Png(rgba, image.Width, image.Height, Program.Within(project.Folder, image.SourceFile));
         } catch (Exception error) { image.Error = error.Message; image.Selected = false; image.SourceFile = ""; }
     }
     public static void ScanFile(Project project, string path, string relative) {
@@ -214,8 +228,7 @@ public static class ImageResources
             var pixels = ImageResult.FromStream(input, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
             image.Width = pixels.Width; image.Height = pixels.Height; Dimensions(image.Width, image.Height);
             image.SourceFile = "images/source/" + image.Id + ".png";
-            Png(pixels.Data, pixels.Width, pixels.Height, Program.Within(project.Folder, image.SourceFile));
-            image.SourceHash = Program.Hash(Program.Within(project.Folder, image.SourceFile));
+            image.SourceHash = Png(pixels.Data, pixels.Width, pixels.Height, Program.Within(project.Folder, image.SourceFile));
         } catch (Exception error) { image.Error = error.Message; image.Selected = false; image.SourceFile = ""; }
     }
     public static object SaveRendered(Request request) {
@@ -225,8 +238,7 @@ public static class ImageResources
         if (!Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) throw new Exception("无效图片标识");
         if (!File.Exists(Path.Combine(project.Folder, "unity-project.json"))) throw new Exception("图片工程尚未保存");
         if (request.ImageData.Length == 0) {
-            var state = Program.Within(project.Folder, "images/state/" + image.Id + ".json");
-            Directory.CreateDirectory(Path.GetDirectoryName(state)!); Program.WriteJson(state, image);
+            WriteState(project.Folder, image);
             return new { path = image.RenderedFile, hash = image.RenderedHash };
         }
         HidcImages.EnsureSource(project, image);
@@ -238,9 +250,22 @@ public static class ImageResources
         if (pixels.Width != image.Width || pixels.Height != image.Height) throw new Exception("译图尺寸必须与原图一致");
         var revision=Convert.ToHexString(SHA256.HashData(png)).ToLowerInvariant();
         var relative = "images/rendered/" + image.Id + "-" + revision + ".png"; var path = Program.Within(project.Folder, relative);
-        Png(pixels.Data, pixels.Width, pixels.Height, path);
+        var hash = Png(pixels.Data, pixels.Width, pixels.Height, path);
         var cleanup=CleanupDraft(project,image,relative,request.SavedRenderedFile);
-        return new { path = relative, hash = Program.Hash(path),cacheErrors=cleanup.Errors };
+        return new { path = relative, hash,cacheErrors=cleanup.Errors };
+    }
+    static void WriteState(string folder, ImageResource image) {
+        var state = Program.Within(folder, "images/state/" + image.Id + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(state)!);
+        Program.WriteJson(state, image);
+    }
+    public static object SaveStates(Request request) {
+        var project = request.Project ?? throw new Exception("缺少图片工程");
+        if (!File.Exists(Program.Within(project.Folder, "unity-project.json"))) throw new Exception("图片工程尚未保存");
+        if (project.Images.Count > 128 || project.Images.Any(image => !Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")))
+            throw new Exception("图片状态批次无效");
+        foreach (var image in project.Images) { Program.CheckStop(request, project.Folder); WriteState(project.Folder, image); }
+        return new { saved = project.Images.Count };
     }
     public static ImageCacheCleanup CleanupCache(Project project)=>SweepRendered(project,project.Images.Select(image=>image.RenderedFile).Where(path=>path.Length>0),null);
     static ImageCacheCleanup CleanupDraft(Project project,ImageResource image,string path,string? savedRenderedFile){
@@ -306,21 +331,83 @@ public static class ImageResources
         TextureOperations.FlipBGRA32Vertically(expected.Data, expected.Width, expected.Height);
         if (texture.m_Width != image.Width || texture.m_Height != image.Height || raw == null || !raw.SequenceEqual(expected.Data)) throw new Exception("译图重读像素校验失败：" + image.Name);
     }
-    public static void Reset(Project project) {
+    public static void Reset(Project project, string phase) {
         Directory.CreateDirectory(Path.GetDirectoryName(RecoveryMarker(project))!);
         Program.WriteJson(RecoveryMarker(project), new { manualReset = true });
         foreach (var image in project.Images) {
-            if (Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) {
-                var state = Program.Within(project.Folder, "images/state/" + image.Id + ".json");
-                if (File.Exists(state)) File.Delete(state);
+            if (phase is "review" or "render") {
+                if (image.RenderedFile.Length > 0) {
+                    ClearRendered(image);
+                    image.Completed = false;
+                }
+                if (phase == "review") {
+                    var restored = false;
+                    foreach (var region in image.Regions) {
+                        if (region.BeforeReview is not { } first) continue;
+                        (region.Translation, region.TranslationTarget, region.Error) = (first.Translation, first.TranslationTarget, first.Error);
+                        region.BeforeReview = null;
+                        restored = true;
+                    }
+                    if (restored) {
+                        var failures = image.Regions.Count(region => region.Selected && region.Error.Length > 0);
+                        image.Error = failures == 0 ? "" : $"{failures} 个文字区域翻译失败，已保留初译结果";
+                    }
+                }
+                continue;
             }
-            image.RenderedFile = ""; image.RenderedHash = ""; image.RenderedKind = ""; image.RenderedTarget = null;
-            image.OcrCompleted = false; image.Completed = false; image.NoTranslationNeeded = false; image.Regions.Clear();
+            ClearRendered(image);
+            image.OcrCompleted = false; image.Completed = false; image.NoTranslationNeeded = false;
             if (image.SourceFile.Length > 0) image.Error = "";
+            if (phase == "filter") {
+                image.Screening = null;
+                image.Selected = image.SourceFile.Length > 0;
+                image.SelectionManual = null;
+                image.Regions.Clear();
+            } else if (phase == "refine") {
+                RestoreInitialScreening(image);
+            } else image.Regions.Clear();
         }
-        var cleanup = CleanupCache(project);
-        if (cleanup.Errors.Count > 0) throw new IOException("清理译图缓存失败：" + string.Join("；", cleanup.Errors));
         project.ImagesSkipped = false;
+    }
+
+    static void ClearRendered(ImageResource image) {
+        image.RenderedFile = ""; image.RenderedHash = ""; image.RenderedKind = ""; image.RenderedTarget = null;
+    }
+
+    static void RestoreInitialScreening(ImageResource image) {
+        if (image.Screening is not JsonObject screening) { image.Regions.Clear(); return; }
+        var wasRefined = screening["refineKey"] is not null;
+        var state = screening["state"]?.GetValue<string>();
+        var manual = screening["manualGroup"]?.GetValue<bool>() == true;
+        if (!manual) {
+            var initial = screening["initial"] ?? screening["beforeRefine"];
+            if (initial is not null) {
+                foreach (var key in new[] { "state", "reason", "boxes" }) screening[key] = initial[key]?.DeepClone();
+            } else if (wasRefined) {
+                screening["state"] = "review";
+                screening["reason"] = "检测到疑似文字，待自动复筛";
+            } else if (screening["reason"]?.GetValue<string>() is "正式识别完成" or "识别结果需复核" or "未识别出文字") {
+                screening["state"] = "candidate";
+                screening["reason"] = "检测到可信的文字";
+            }
+        }
+        foreach (var key in new[] { "refineKey", "refineFailed", "beforeRefine", "presence", "sourceSkip" }) screening.Remove(key);
+        if (wasRefined) screening.Remove("reviewSelected");
+        var restored = screening["state"]?.GetValue<string>();
+        var initialRegions = screening["recognition"]?["lines"]?.Deserialize<List<ImageRegion>>(Program.Json);
+        if (restored == "review" && (initialRegions?.Count ?? 0) == 0) {
+            // Older runs retained the proposed regions unless the model promoted the image.
+            if (state == "review" || wasRefined && state == "no-text")
+                initialRegions = image.Regions.Where(region => region.OcrConfirmed != true).ToList();
+            if ((initialRegions?.Count ?? 0) == 0) screening["reviewEvidenceMissing"] = true;
+        }
+        image.Regions = initialRegions ?? [];
+        foreach (var region in image.Regions) {
+            region.Translation = ""; region.TranslationTarget = null; region.Error = "";
+            region.BeforeReview = null; region.OcrConfirmed = null;
+        }
+        if (!manual && image.SelectionManual != true) image.Selected = restored == "candidate";
+        if (restored == "failed" && image.SourceFile.Length > 0) image.Error = screening["reason"]?.GetValue<string>() ?? image.Error;
     }
     public static void LoadStates(Project project, DateTime projectTime) {
         for (var index = 0; index < project.Images.Count; index++) {
@@ -364,6 +451,7 @@ public static class ImageResources
                 }
             }
             image.Selected = saved.Selected; image.OcrCompleted = saved.OcrCompleted; image.Completed = saved.Completed; image.Error = saved.Error;
+            image.SelectionManual = saved.SelectionManual; image.Screening = saved.Screening?.DeepClone();
             image.RenderedTarget = saved.RenderedTarget; image.NoTranslationNeeded = saved.NoTranslationNeeded;
             image.Regions = saved.Regions;
             if (saved.RenderedFile.Length > 0) {

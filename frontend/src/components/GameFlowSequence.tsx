@@ -3,8 +3,8 @@ import { GamePromptContext } from "../gamePrompts";
 import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
-import type { GameTestConfigurationAccess, SavedGameTestConfiguration } from "../gameModelPreset";
-import { GameTestConfigurations } from "./GameTestConfigurations";
+import type { GameTestConfigurationAccess } from "../gameModelPreset";
+import { openGameAuxWindow } from "../gameAuxWindows";
 
 export type GameFlowStep = {
   id: string;
@@ -17,6 +17,7 @@ export type GameFlowStep = {
   stop?: () => void;
   runLabel?: string;
   runDisabled?: boolean;
+  stopDisabled?: boolean;
   clear?: () => void;
 };
 type ConcurrencyEdit = { role: string; model: string; count: number };
@@ -71,8 +72,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   }, [performanceScope, activity?.state, benchmarkRunning]);
   const [savingConfiguration, setSavingConfiguration] = useState(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
-  const applyingPreset = useRef(false);
-  const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [configurationError, setConfigurationError] = useState("");
   const [concurrencyDrafts, setConcurrencyDrafts] = useState<Record<string, ConcurrencyEdit[]>>({});
   const [filterDrafts, setFilterDrafts] = useState<Record<string, Record<string, ModelFilter>>>({});
@@ -111,7 +110,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const configurationLocked = (step: GameFlowStep) => activity?.state === "running" &&
     (activity.step === step.id || step.state === "done");
   const withConfiguration = async (action?: () => void, stepId?: string, announce = false) => {
-    if (applyingPreset.current) return false;
     if (pendingSave.current && !await pendingSave.current) return false;
     const draftSteps = (stepId ? [stepId] : steps.map(step => step.id)).filter(changed);
     if (!onSaveConfiguration || !draftSteps.length) { action?.(); return true; }
@@ -145,17 +143,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     if (success) action?.();
     return success;
   };
-  const applyTestConfiguration = async (row: SavedGameTestConfiguration) => {
-    if (!testConfigurations || testConfigurationDisabled || applyingPreset.current || pendingSave.current) throw new Error("请等待当前任务结束后应用配置");
-    applyingPreset.current = true;
-    setSavingConfiguration(true);
-    try {
-      await testConfigurations.apply(row.value);
-    } finally {
-      applyingPreset.current = false;
-      setSavingConfiguration(false);
-    }
-  };
   const captureTestConfiguration = () => {
     const value = testConfigurations!.capture();
     const roles = imageFlow ? value.images?.roles : value.text.roles;
@@ -167,6 +154,13 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
       }
     }
     return value;
+  };
+  const openTestConfiguration = () => {
+    if (!testConfigurations) return;
+    try {
+      openGameAuxWindow({ kind: "configuration", scope: testConfigurations.scope, models: testConfigurations.models,
+        current: captureTestConfiguration(), initialPart: imageFlow ? "images" : "text" });
+    } catch (error) { showAppNotice(error instanceof Error ? error.message : String(error), "error"); }
   };
   useLayoutEffect(() => {
     if (!configurationCommit) return;
@@ -198,11 +192,9 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     return () => observer.disconnect();
   }, [configured, layoutKey]);
   return <div className="game-flow">
-    {testDialogOpen && testConfigurations && <GameTestConfigurations access={{ ...testConfigurations, capture: captureTestConfiguration }} initialPart={imageFlow ? "images" : "text"}
-      onApply={applyTestConfiguration} onClose={() => setTestDialogOpen(false)} />}
     <div className="game-flow-list">
       {(onRun || actions || testConfigurations) && <div className="game-flow-run">
-        {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={() => setTestDialogOpen(true)}>应用测试配置</button>}
+        {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={openTestConfiguration}>应用测试配置</button>}
         {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
         {actions}
       </div>}
@@ -227,6 +219,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
         const current = showingBenchmark || !benchmarkRunning && (state === "running" || activity?.state !== "running" && state === "current");
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
+        const actionLabel = step.stop ? step.stopDisabled ? "正在中止" : "中止" : runLabel;
         const expanded = configured === step.id;
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
@@ -272,8 +265,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
             </div>
             <div className="game-flow-actions">
               {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
-                aria-label={`${step.stop ? "中止" : runLabel}${step.title}`} disabled={step.runDisabled||savingConfiguration}
-                onClick={step.stop || (()=>void withConfiguration(step.run, step.id))}>{step.stop ? "中止" : runLabel}</button>}
+                aria-label={`${actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : step.runDisabled || savingConfiguration}
+                onClick={step.stop || (()=>void withConfiguration(step.run, step.id))}>{actionLabel}</button>}
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
             </div>
           </div>

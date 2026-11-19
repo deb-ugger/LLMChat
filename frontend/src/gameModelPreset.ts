@@ -5,11 +5,13 @@ import type { GamePromptScene, GamePromptSelection } from "./gamePrompts";
 import type { GameTextOptions } from "./gameTextProject";
 import { loadUnityEngines, normalizeUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "./unityEnginePool";
 import type { UnityLineMode } from "./unityLineLayout";
+import { defaultGameImageVision } from "./gameImagePlacement";
+import { GAME_IMAGE_SCREENING_LANES } from "./gameImageScreening";
 
 const testModels = {
   hy: gameDefaultTextModel,
   qwen: { id: "qwen3.5:latest", pattern: /^qwen3\.5(?::(?:latest|9b(?:-q4_k_m)?))?$/i },
-  vision: { id: "qwen3-vl:4b-instruct", pattern: /^qwen3-vl:4b-instruct$/i },
+  vision: { id: "qwen3-vl:8b-instruct", pattern: /^qwen3-vl:8b-instruct$/i },
 } as const;
 
 export type GameTestRole = { model?: string; prompt: string; concurrency: number };
@@ -31,8 +33,10 @@ export type GameTestConfigurationAccess = {
 };
 export type SavedGameTestConfiguration = { id: string; name: string; value: GameTestConfiguration };
 export const DEFAULT_GAME_TEST_CONFIGURATION_ID = "builtin:default";
+export const JAPANESE_GAME_TEST_CONFIGURATION_ID = "builtin:japanese";
 
-const configurationsKey = (scope: string) => "llmchat-game-test-configurations:" + scope.replaceAll("\\", "/").toLowerCase();
+const configurationsPrefix = "llmchat-game-test-configurations:";
+const configurationsKey = (scope: string) => configurationsPrefix + scope.replaceAll("\\", "/").toLowerCase();
 export function readGameTestConfigurations(scope: string): SavedGameTestConfiguration[] {
   try {
     const value = JSON.parse(localStorage.getItem(configurationsKey(scope)) || "[]");
@@ -129,14 +133,48 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   const images = value.images;
   if (!images) return value;
   const imageLanguage = images.options.translation ?? text.options;
-  images.options.mode = imageLanguage.source === "ja" || imageLanguage.source === "auto" ? "manga" : "precise";
-  images.options.concurrency = 2;
-  if (images.options.strategy) images.options.strategy = "staged";
+  const hasScreeningStep = images.options.strategy !== undefined;
+  images.options.mode = hasScreeningStep ? (imageLanguage.source === "ja" || imageLanguage.source === "auto" ? "manga" : "precise") : "fast";
+  images.options.concurrency = GAME_IMAGE_SCREENING_LANES;
+  if (hasScreeningStep) images.options.strategy = "staged";
   if (images.options.refine) Object.assign(images.options.refine, { method: "local", mode: "precise", concurrency: 2 });
   if (images.options.translation) Object.assign(images.options.translation, { kind: "llm", provider: "llm" });
   setRole(images.roles, "screen"); setRole(images.roles, "refine"); setRole(images.roles, "layout");
-  setRole(images.roles, "recognize", modelId(testModels.vision), 2);
-  setRole(images.roles, "image", japanese(imageLanguage) ? modelId(testModels.gal) : normal);
+  setRole(images.roles, "recognize", hasScreeningStep ? defaultGameImageVision(configured) || modelId(testModels.vision) : undefined, 2);
+  setRole(images.roles, "image", normal, gameDefaultTextModel.concurrency);
   setRole(images.roles, "review", modelId(testModels.qwen));
   return value;
+}
+
+export function refreshSavedGameTestConfigurations() {
+  const revision = "llmchat-game-test-config-throughput-v1";
+  if (localStorage.getItem(revision) !== null) return;
+  const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
+  let refreshed = 0;
+  for (const key of keys) {
+    if (!key?.startsWith(configurationsPrefix)) continue;
+    let rows: SavedGameTestConfiguration[];
+    try { rows = JSON.parse(localStorage.getItem(key) || "[]"); }
+    catch { continue; }
+    if (!Array.isArray(rows)) continue;
+    const next = rows.map(row => {
+      if (!row?.id || !row.name || !row.value?.text?.options || !row.value.text.roles) return row;
+      refreshed++;
+      return { ...row, value: defaultGameTestConfiguration(row.value) };
+    });
+    localStorage.setItem(key, JSON.stringify(next));
+  }
+  localStorage.setItem(revision, String(refreshed));
+}
+
+export function builtinGameTestConfigurations(current: GameTestConfiguration): SavedGameTestConfiguration[] {
+  const value = defaultGameTestConfiguration(current);
+  const japanese = structuredClone(value);
+  const language = { source: "ja", onlySourceLanguage: true };
+  Object.assign(japanese.text.options, language);
+  if (japanese.images?.options.translation) Object.assign(japanese.images.options.translation, language);
+  return [
+    { id: DEFAULT_GAME_TEST_CONFIGURATION_ID, name: "默认配置", value },
+    { id: JAPANESE_GAME_TEST_CONFIGURATION_ID, name: "日语配置", value: japanese },
+  ];
 }

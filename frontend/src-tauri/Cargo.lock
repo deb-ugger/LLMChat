@@ -1826,6 +1826,7 @@ dependencies = [
  "arboard",
  "clipboard-win",
  "image",
+ "reqwest",
  "serde",
  "serde_json",
  "tauri",

@@ -12,6 +12,31 @@ export type RecentUnityGame = {
   engine?: string;
 };
 
+type GameFailureKind = "text" | "images" | "patch";
+const failureSummaryKey = (path: string) =>
+  "llmchat-game-failures:" + path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+export function recentGameFailureCount(path: string) {
+  try {
+    const counts: Partial<Record<GameFailureKind, number>> =
+      JSON.parse(localStorage.getItem(failureSummaryKey(path)) || "{}");
+    return (counts.text || 0) + (counts.images || 0) + (counts.patch || 0);
+  } catch { return 0; }
+}
+
+export function rememberRecentGameFailures(path: string, kind: GameFailureKind, count: number) {
+  if (!path) return;
+  try {
+    const key = failureSummaryKey(path);
+    const counts: Partial<Record<GameFailureKind, number>> = JSON.parse(localStorage.getItem(key) || "{}");
+    if ((counts[kind] || 0) === count) return;
+    if (count) counts[kind] = count;
+    else delete counts[kind];
+    if (Object.keys(counts).length) localStorage.setItem(key, JSON.stringify(counts));
+    else localStorage.removeItem(key);
+  } catch { /* Storage can be unavailable. */ }
+}
+
 export function rememberLastUnityGameDir(path: string) {
   const dir = path.trim().replace(/[\\/]+$/, "");
   if (!dir) return;

@@ -1,0 +1,55 @@
+import { useLayoutEffect } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { GameTestConfiguration, GameTestConfigurationAccess, SavedGameTestConfiguration } from "./gameModelPreset";
+
+export type GameAuxKind = "help" | "configuration";
+export type GameHelpSetup = { kind: "help"; mode: "unity-offline" | "unity-runtime" | "embedded"; supportsImages: boolean };
+export type GameConfigurationSetup = {
+  kind: "configuration"; scope: string; models: string[]; current: GameTestConfiguration; initialPart: "text" | "images";
+};
+export type GameAuxSetup = (GameHelpSetup | GameConfigurationSetup) & { session: string };
+export type GameAuxRequest = { action: "setup"; kind: GameAuxKind } |
+  { action: "capture"; session: string } | { action: "apply"; session: string; row: SavedGameTestConfiguration };
+
+export const gameAuxOpenEvent = "llmchat:open-game-aux";
+export const gameAuxChannel = "llmchat:game-auxiliary";
+const testSources = new Map<string, GameTestConfigurationAccess>();
+
+export function useGameTestConfigurationSource(access: GameTestConfigurationAccess) {
+  useLayoutEffect(() => {
+    testSources.set(access.scope, access);
+    return () => { if (testSources.get(access.scope) === access) testSources.delete(access.scope); };
+  }, [access]);
+}
+
+export function gameTestSource(scope: string) {
+  const source = testSources.get(scope);
+  if (!source) throw new Error("原游戏工程已关闭，请从工程重新打开测试配置");
+  return source;
+}
+
+export function currentGameAuxWindow(): GameAuxKind | undefined {
+  const label = isTauri() ? getCurrentWindow().label : new URLSearchParams(window.location.search).get("game-window");
+  if (label === "game-help") return "help";
+  if (label === "game-configuration") return "configuration";
+}
+
+export function openGameAuxWindow(setup: GameConfigurationSetup | GameHelpSetup) {
+  window.dispatchEvent(new CustomEvent(gameAuxOpenEvent, { detail: setup }));
+}
+
+export function requestGameAux<T>(channel: BroadcastChannel, request: GameAuxRequest, timeout = 15000) {
+  return new Promise<T>((resolve, reject) => {
+    const id = crypto.randomUUID();
+    const finish = () => { window.clearTimeout(timer); channel.removeEventListener("message", receive); };
+    const receive = (event: MessageEvent) => {
+      if (event.data?.type !== "response" || event.data.id !== id) return;
+      finish();
+      if (event.data.error) reject(new Error(event.data.error)); else resolve(event.data.value as T);
+    };
+    const timer = window.setTimeout(() => { finish(); reject(new Error("游戏翻译窗口与主窗口通信超时")); }, timeout);
+    channel.addEventListener("message", receive);
+    channel.postMessage({ type: "request", id, request });
+  });
+}

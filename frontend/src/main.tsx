@@ -1,6 +1,9 @@
 import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
+import { currentGameAuxWindow } from "./gameAuxWindows";
+import { GameAuxiliaryHost, GameAuxiliaryWindow } from "./components/GameAuxWindows";
 import { GameTextBenchmarkHost, GameTextBenchmarkWindow } from "./components/GameTextBenchmarkDialog";
 import { recoverGamePerformanceArchives } from "./gameModelPerformance";
+import { refreshSavedGameTestConfigurations } from "./gameModelPreset";
 import { AppNotice } from "./components/AppNotice";
 import { initializeAppClose } from "./appClose";
 import { installControlLabelBehavior } from "./controlLabels";
@@ -21,12 +24,18 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 installRuntimeLogging();
-recoverGamePerformanceArchives();
-if (!isGameBenchmarkWindow) void initializeAppClose().catch(error=>logRuntimeError("app-close-init-error",error));
+const auxiliary = currentGameAuxWindow();
+if (!auxiliary) recoverGamePerformanceArchives();
+if (!auxiliary && !isGameBenchmarkWindow) {
+  try { refreshSavedGameTestConfigurations(); }
+  catch (error) { logRuntimeError("game-test-config-refresh", error); }
+  void initializeAppClose().catch(error=>logRuntimeError("app-close-init-error",error));
+}
 installControlLabelBehavior();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {isGameBenchmarkWindow ? <GameTextBenchmarkWindow /> : <><App /><GameTextBenchmarkHost /></>}
+    {auxiliary ? <GameAuxiliaryWindow kind={auxiliary} /> : isGameBenchmarkWindow ? <GameTextBenchmarkWindow />
+      : <><App /><GameTextBenchmarkHost /><GameAuxiliaryHost /></>}
     <AppTooltip />
     <AppNotice />
   </StrictMode>,

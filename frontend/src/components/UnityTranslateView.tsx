@@ -31,6 +31,7 @@ lastUnityGameDir,
 loadGameWorkspace,
 rememberGameWorkspace,
 loadRecentUnityGames,
+recentGameFailureCount,
 rememberLastUnityGameDir,
 rememberRecentUnityGame,
 removeRecentUnityGame,
@@ -2326,17 +2327,19 @@ export function UnityTranslateView({
                   </div>
                   {!recentGames.length&&<p className="hint">暂无最近打开的游戏</p>}
                   <ul className="unity-recent-games-list">
-                    {recentGames.map((r) => (
-                      <li key={r.gameDir}>
+                    {recentGames.map((r) => {
+                      const failures = recentGameFailureCount(r.gameDir);
+                      return <li key={r.gameDir}>
                         <button
                           type="button"
                           className="unity-recent-game-btn"
                           disabled={busy}
                           onClick={() => void openRecentGame(r)}
-                          data-tooltip={r.gameDir} aria-label={r.gameDir}
+                          data-tooltip={r.gameDir} aria-label={failures > 0 ? `${r.gameDir}，失败 ${failures} 项` : r.gameDir}
                         >
                           <span className="unity-recent-game-name">
                             {r.name} <small className="unity-recent-engine">{r.engine || "Unity"}</small>
+                            {failures > 0 && <small className="unity-recent-game-failures">失败 {failures} 项</small>}
                           </span>
                           <span className="unity-recent-game-path">
                             {r.gameDir}
@@ -2355,8 +2358,8 @@ export function UnityTranslateView({
                         >
                           ×
                         </button>
-                      </li>
-                    ))}
+                      </li>;
+                    })}
                   </ul>
                 </section>
               </div>

@@ -56,6 +56,7 @@ public sealed class Project
     public Dictionary<string, string> DefinitionHashes { get; set; } = [];
     public List<ScanIssue> Diagnostics { get; set; } = [];
     public List<ResourceResult> Resources { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public ScanMetrics? ScanMetrics { get; set; }
 }
 public sealed class Request
 {
@@ -75,6 +76,7 @@ public sealed class Request
     public string ImageId { get; set; } = "";
     public string ImageData { get; set; } = "";
     public bool ImageOnly { get; set; }
+    public string ImageResetPhase { get; set; } = "";
     public bool Thumbnail { get; set; }
     public bool CleanImageCache { get; set; }
     public string? SavedRenderedFile {get;set;}
@@ -146,7 +148,9 @@ public static class Program
                 "finish-rescan" => WorkflowReset.FinishRescan(request),
                 "load" => Load(request.Path),
                 "save" => SaveRequest(request),
+                "save-text-states" => SaveTextStates(request),
                 "save-image" => ImageResources.SaveRendered(request),
+                "save-image-states" => ImageResources.SaveStates(request),
                 "preview-image" => ImageResources.Preview(request),
                 "download-image" => DownloadImage(request.Url),
                 "export" => Export(request),
@@ -180,6 +184,63 @@ public static class Program
     static object SaveTask(Request request) { GameWorkspace.SaveTask(request); return new { ok = true }; }
     static object SaveRequest(Request request) { var project=request.Project ?? throw new Exception("缺少工程");Save(project);var cleanup=request.CleanImageCache?ImageResources.CleanupCache(project):new ImageCacheCleanup(0,[]);return new { ok = true, cacheRemoved=cleanup.Removed,cacheErrors=cleanup.Errors }; }
 
+    sealed record TextState(string Id, string Source, string Translation, bool Selected, string Error,
+        string? TranslationTarget, string? LayoutDraft, string? LayoutDraftTarget, string? ScreeningDraft);
+    sealed record TextStateBatch(string Revision, List<TextState> Rows);
+    static string TextStatePath(string folder) => Within(folder, "text-translation-states.jsonl");
+    static string ProjectRevision(string path) {
+        var file = new FileInfo(path);
+        return file.Length + "-" + file.LastWriteTimeUtc.Ticks;
+    }
+    static object SaveTextStates(Request request) {
+        var project = request.Project ?? throw new Exception("缺少文本工程");
+        var path = Within(project.Folder, "unity-project.json");
+        if (!File.Exists(path)) throw new Exception("文本工程尚未保存");
+        var batch = new TextStateBatch(ProjectRevision(path), project.Entries.Select(row => new TextState(row.Id, row.Source,
+            row.Translation, row.Selected, row.Error, row.TranslationTarget, row.LayoutDraft, row.LayoutDraftTarget, row.ScreeningDraft)).ToList());
+        CheckStop(request, project.Folder);
+        using var output = new FileStream(TextStatePath(project.Folder), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+        if (output.Length > 0) {
+            output.Position = output.Length - 1;
+            if (output.ReadByte() != '\n') {
+                Span<byte> tail = stackalloc byte[4096];
+                var end = output.Length;
+                long validLength = 0;
+                while (end > 0) {
+                    var length = (int)Math.Min(end, tail.Length); end -= length;
+                    output.Position = end; output.ReadExactly(tail[..length]);
+                    var newline = tail[..length].LastIndexOf((byte)'\n');
+                    if (newline >= 0) { validLength = end + newline + 1; break; }
+                }
+                output.SetLength(validLength);
+            }
+        }
+        output.Position = output.Length;
+        output.Write(Utf8.GetBytes(JsonSerializer.Serialize(batch, ProgressJson) + "\n"));
+        output.Flush(true);
+        return new { saved = batch.Rows.Count };
+    }
+    static void LoadTextStates(Project project, string manifest) {
+        var path = TextStatePath(project.Folder);
+        if (!File.Exists(path)) return;
+        var revision = ProjectRevision(manifest);
+        var entries = project.Entries.ToDictionary(row => row.Id, StringComparer.Ordinal);
+        using var reader = new StreamReader(path, Utf8);
+        while (reader.ReadLine() is { } line) {
+            TextStateBatch? batch;
+            try { batch = JsonSerializer.Deserialize<TextStateBatch>(line, ProgressJson); }
+            catch (JsonException) when (reader.EndOfStream) { break; }
+            if (batch?.Revision != revision) continue;
+            foreach (var saved in batch.Rows) {
+                if (!entries.TryGetValue(saved.Id, out var entry) || entry.Source != saved.Source) continue;
+                entry.Selected = saved.Selected; entry.Translation = saved.Translation; entry.Error = saved.Error;
+                entry.TranslationTarget = saved.TranslationTarget;
+                entry.LayoutDraft = saved.LayoutDraft; entry.LayoutDraftTarget = saved.LayoutDraftTarget;
+                entry.ScreeningDraft = saved.ScreeningDraft;
+            }
+        }
+    }
+
     public static string Within(string root, string relative)
     {
         root = System.IO.Path.GetFullPath(root).TrimEnd(System.IO.Path.DirectorySeparatorChar) + System.IO.Path.DirectorySeparatorChar;
@@ -202,6 +263,7 @@ public static class Program
         foreach (var id in project.SegmentSources.Keys.Where(id => !parents.Contains(id)).ToArray()) project.SegmentSources.Remove(id);
         var path = System.IO.Path.Combine(project.Folder, "unity-project.json");
         WriteJson(path, project);
+        File.Delete(TextStatePath(project.Folder));
         ImageResources.CommitStates(project);
         return project;
     }
@@ -215,7 +277,10 @@ public static class Program
         if (project.DefinitionHashes.Count > 0 || File.Exists(Path.Combine(definitions, ScanInspection.PendingDefinitions))) project.TypeDirectory = definitions;
         foreach (var e in project.Entries) _ = Within(project.Root, e.File);
         GameText.ProtectProject(project);
+        LoadTextStates(project, path);
         ImageResources.LoadStates(project, File.GetLastWriteTimeUtc(path));
+        var performance = Path.Combine(project.Folder, ScanMetrics.FileName);
+        if (File.Exists(performance)) project.ScanMetrics = JsonSerializer.Deserialize<ScanMetrics>(File.ReadAllText(performance), Json);
         var imageFiles = project.Images.Select(image => image.File).ToHashSet(StringComparer.OrdinalIgnoreCase);
         project.Resources = project.Resources.Select(resource => resource.State == "empty" && imageFiles.Contains(resource.File) ? resource with { State = "ready" } : resource).ToList();
         return project;
@@ -319,6 +384,7 @@ public static class Program
 
     public static Project Scan(Request request)
     {
+        var clock = new ScanClock();
         var root = System.IO.Path.GetFullPath(request.Root);
         if (!Directory.Exists(root)) throw new Exception("游戏目录不存在");
         var output = System.IO.Path.GetFullPath(request.OutputRoot);
@@ -332,37 +398,63 @@ public static class Program
         if (!string.Equals(project.Root, root, StringComparison.OrdinalIgnoreCase)) throw new Exception("扫描检查点不属于当前游戏");
         if (project.ScanRevision != CurrentScanRevision) throw new Exception("扫描检查点使用旧提取方式，请重新扫描；原工程和译文会保留");
         if (request.TextMode is not ("lines" or "paragraphs" or "smart")) throw new Exception("无效文本分段方式");
-        Save(project);
+        var priorMetrics = project.ScanMetrics;
+        using (clock.Measure(ScanPhase.Save)) Save(project);
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
         var statePath = System.IO.Path.Combine(project.Folder, "scan-state.json");
         var pathsPath = System.IO.Path.Combine(project.Folder, "scan-files.json");
         Progress("正在列出游戏资源文件", folder: project.Folder);
         var state = File.Exists(statePath) ? JsonSerializer.Deserialize<ScanCheckpoint>(File.ReadAllText(statePath, Utf8), Json)! : new ScanCheckpoint(0, request.IncludeCode) { CodeAssemblies = assemblies, TextMode = request.TextMode, TypeDirectory = request.TypeDirectory };
         if (state.IncludeCode != request.IncludeCode || state.TextMode != request.TextMode || state.TypeDirectory != request.TypeDirectory || !(state.CodeAssemblies ?? []).SequenceEqual(assemblies, StringComparer.OrdinalIgnoreCase)) throw new Exception("扫描选项或程序集范围已变化，请重新扫描或恢复原选项");
-        var workPrefix = Path.GetFullPath(GameWorkspace.WorkRoot(root)).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        var workFolder = Path.GetFullPath(GameWorkspace.WorkRoot(root)).TrimEnd('\\', '/');
         var hasFileList = File.Exists(pathsPath);
-        var paths = hasFileList ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)! : Directory.EnumerateFiles(root, "*", options).Where(path => !Path.GetFullPath(path).StartsWith(workPrefix, StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (!hasFileList) WriteJson(pathsPath, paths);
-        if (!File.Exists(statePath)) WriteJson(statePath, state);
-        if (request.TypeDirectory.Length > 0 && (project.DefinitionHashes.Count == 0 || File.Exists(Path.Combine(project.TypeDirectory, ScanInspection.PendingDefinitions)))) ScanInspection.CacheDefinitions(project, request.TypeDirectory, () => CheckStop(request, project.Folder));
-        else ScanInspection.VerifyDefinitions(project);
-        Save(project);
+        var paths = hasFileList ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(pathsPath, Utf8), Json)!
+            : new System.IO.Enumeration.FileSystemEnumerable<string>(root, (ref System.IO.Enumeration.FileSystemEntry entry) => entry.ToFullPath(), options) {
+                ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) => !entry.IsDirectory,
+                ShouldRecursePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                    !entry.ToFullPath().Equals(workFolder, StringComparison.OrdinalIgnoreCase)
+            }.ToArray();
+        using (clock.Measure(ScanPhase.Save)) {
+            if (!hasFileList) WriteJson(pathsPath, paths);
+            if (!File.Exists(statePath)) WriteJson(statePath, state);
+        }
+        using (clock.Measure(ScanPhase.Check)) {
+            if (request.TypeDirectory.Length > 0 && (project.DefinitionHashes.Count == 0 || File.Exists(Path.Combine(project.TypeDirectory, ScanInspection.PendingDefinitions)))) ScanInspection.CacheDefinitions(project, request.TypeDirectory, () => CheckStop(request, project.Folder));
+            else ScanInspection.VerifyDefinitions(project);
+        }
+        using (clock.Measure(ScanPhase.Save)) Save(project);
         var scanIndex = state.Next;
         var lastSavedIndex = state.Next;
         var dirtyScan = false; var lastScanSave = Environment.TickCount64;
+        var originals = PatchInstallation.OriginalFiles(root);
+        var incremental = new IncrementalScan(project, paths, originals, clock, request.ReusePath);
         void CommitScan(int next, bool force = false) {
-            if (dirtyScan && (force || Environment.TickCount64 - lastScanSave >= 2000)) {
-                Save(project); dirtyScan = false; lastScanSave = Environment.TickCount64;
+            if (!force && Environment.TickCount64 - lastScanSave < 2000) return;
+            using var time = clock.Measure(ScanPhase.Save);
+            if (dirtyScan) {
+                Save(project);
+                incremental.Save();
+                dirtyScan = false;
             }
             // Advance the checkpoint only after the matching project snapshot is
             // durable. A crash replays the short unsaved tail, never skips it.
-            if (!dirtyScan && next != lastSavedIndex) { WriteJson(statePath, state with { Next = next }); lastSavedIndex = next; }
+            if (next != lastSavedIndex) { WriteJson(statePath, state with { Next = next }); lastSavedIndex = next; }
+            if (force) WriteJson(Path.Combine(project.Folder, ScanMetrics.FileName), clock.Snapshot(priorMetrics));
+            lastScanSave = Environment.TickCount64;
         }
+        long nextStopCheck = 0;
         void CheckScanStop() {
-            if (request.StopFile.Length == 0 || !File.Exists(request.StopFile)) return;
+            if (request.StopFile.Length == 0) return;
+            var now = Environment.TickCount64;
+            if (now < nextStopCheck) return;
+            nextStopCheck = now + 40;
+            if (!File.Exists(request.StopFile)) return;
             CommitScan(scanIndex, true); throw new PausedException(project.Folder);
         }
-        var textureCache = request.ReusePath.Length > 0 ? new ImageResources.TextureScanCache(root, request.ReusePath) : null;
+        ImageResources.TextureScanCache? textureCache;
+        using (clock.Measure(ScanPhase.Reuse))
+            textureCache = request.ReusePath.Length > 0 ? new ImageResources.TextureScanCache(root, request.ReusePath) : null;
+        incremental.Prepare(hasFileList, state.Next);
         long lastDetailReport = 0;
         var loadingModel = false;
         void ReportScanDetail(string detail) {
@@ -377,8 +469,10 @@ public static class Program
         project.Segmenter = segmenter;
         project.CheckCancellation = CheckScanStop;
         using var types = new GameTypes(root, project.TypeDirectory);
-        var originals = PatchInstallation.OriginalFiles(root);
-        foreach (var file in project.Hashes) if (Hash(originals.GetValueOrDefault(file.Key) ?? Within(root, file.Key)) != file.Value) throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
+        foreach (var file in project.Hashes)
+            if (incremental.Hash(originals.GetValueOrDefault(file.Key) ?? Within(root, file.Key)) != file.Value)
+                throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
+        clock.Set(ScanPhase.Other);
         for (var index = state.Next; index < paths.Length; index++)
         {
             scanIndex = index;
@@ -386,7 +480,6 @@ public static class Program
             var path = paths[index];
             var rel = System.IO.Path.GetRelativePath(root, path);
             var readPath = originals.GetValueOrDefault(rel) ?? path;
-            Progress("检查资源：" + rel, index, paths.Length, project.Folder);
             var name = System.IO.Path.GetFileName(path);
             var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
             var isCode = request.IncludeCode && (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase) || assemblies.Contains(rel, StringComparer.OrdinalIgnoreCase));
@@ -394,26 +487,48 @@ public static class Program
             var raster = ext is ".png" or ".jpg" or ".jpeg" && GameText.PlainFile(root, rel);
             var plain = ext is ".txt" or ".json" or ".csv" or ".tsv" or ".xml" && GameText.PlainFile(root, rel);
             if (!isCode && !asset && !plain && !raster) { CommitScan(index + 1); continue; }
+            Progress("检查资源：" + rel, index, paths.Length, project.Folder);
             dirtyScan = true;
             // A crash between project and checkpoint saves replays only the current file.
             project.Entries.RemoveAll(e => e.File == rel); project.Fonts.RemoveAll(f => f.File == rel); project.Hashes.Remove(rel); project.Images.RemoveAll(i => i.File == rel);
             project.Diagnostics.RemoveAll(e => e.File == rel); project.Resources.RemoveAll(e => e.File == rel);
+            incremental.Sources.Remove(rel);
             var before = project.Entries.Count;
             var fonts = project.Fonts.Count; var imagesBefore = project.Images.Count;
             try
             {
-                if (isCode && ext == ".dll") ScanAssembly(readPath, rel, project);
-                else if (isCode) VisitMetadata(File.ReadAllBytes(readPath), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
-                else if (raster) ImageResources.ScanFile(project, readPath, rel);
-                else if (asset) VisitResource(readPath, (am, inst, container) => ScanAssets(am, inst, rel, container, project, textureCache), types, rel, sourcePath: path);
-                else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
-                if (project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore) project.Hashes[rel] = Hash(readPath);
+                var sourceDigest = new Lazy<string>(() => incremental.Hash(readPath));
+                if (incremental.TryReuse(rel, readPath, sourceDigest.Value, CheckScanStop)) {
+                    clock.Reused++;
+                    CommitScan(index + 1);
+                    Progress("已复用资源索引：" + rel, index + 1, paths.Length, project.Folder);
+                    continue;
+                }
+                clock.Parsed++;
+                var externals = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (clock.Measure(ScanPhase.Parse)) {
+                    if (isCode && ext == ".dll") ScanAssembly(readPath, rel, project);
+                    else if (isCode) VisitMetadata(File.ReadAllBytes(readPath), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
+                    else if (raster) { using var decode = clock.Measure(ScanPhase.Decode); ImageResources.ScanFile(project, readPath, rel); }
+                    else if (asset) VisitResource(readPath, (am, inst, container) => {
+                        foreach (var external in inst.file.Metadata.Externals) externals.Add(external.PathName);
+                        ScanAssets(am, inst, rel, container, project, textureCache, sourceDigest, clock);
+                    }, types, rel, sourcePath: path, detail: ReportScanDetail, clock: clock);
+                    else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
+                }
                 var failures = project.Diagnostics.Count(e => e.File == rel);
-                project.Resources.Add(new(rel, failures > 0 ? "partial" : project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore ? "ready" : "empty", project.Entries.Count - before, project.Fonts.Count - fonts, failures));
+                var hasResults = project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore;
+                if (hasResults) project.Hashes[rel] = sourceDigest.Value;
+                if (failures == 0) {
+                    foreach (var image in project.Images.Skip(imagesBefore)) externals.Add(image.DependencyFile);
+                    incremental.Remember(rel, sourceDigest.Value, asset, externals);
+                }
+                project.Resources.Add(new(rel, failures > 0 ? "partial" : hasResults ? "ready" : "empty", project.Entries.Count - before, project.Fonts.Count - fonts, failures));
             }
             catch (PausedException) { throw; }
             catch (Exception e)
             {
+                project.Hashes.Remove(rel);
                 project.Entries.RemoveRange(before, project.Entries.Count - before);
                 project.Fonts.RemoveRange(fonts, project.Fonts.Count - fonts); project.Images.RemoveRange(imagesBefore, project.Images.Count - imagesBefore);
                 project.Diagnostics.Add(ScanInspection.Issue(rel, "", "", e));
@@ -426,9 +541,14 @@ public static class Program
         CheckStop(request, project.Folder);
         if (inspection.Catalogs.Length > 0) project.Warnings.Add($"检测到 {inspection.Catalogs.Length} 个 Addressables Catalog（JSON / BIN / Bundle）；资源修改后需核对 Catalog / CRC 和依赖，不能将加载失败直接视为加密。");
         project.Warnings = project.Warnings.Distinct().ToList();
-        var saved = Save(project);
+        using (clock.Measure(ScanPhase.Save)) {
+            Save(project);
+            incremental.Save(complete: true);
+        }
+        project.ScanMetrics = clock.Snapshot(priorMetrics);
+        WriteJson(Path.Combine(project.Folder, ScanMetrics.FileName), project.ScanMetrics);
         Progress($"扫描完成：{project.Entries.Count} 条文本；{project.Resources.Count(r => r.State == "ready")} 个可读取，{project.Resources.Count(r => r.State == "empty")} 个无目标，{project.Resources.Count(r => r.State == "partial")} 个部分解析，{project.Resources.Count(r => r.State == "failed")} 个失败", paths.Length, paths.Length, project.Folder);
-        return saved;
+        return project;
     }
     static void ScanAssembly(string path, string rel, Project project)
     {
@@ -474,26 +594,32 @@ public static class Program
         return result;
     }
 
-    internal static void VisitResource(string path, Action<AssetsManager, AssetsFileInstance, string> visit, GameTypes types, string relative, string? destination = null, string? sourcePath = null, Action<string>? detail = null)
+    internal static void VisitResource(string path, Action<AssetsManager, AssetsFileInstance, string> visit, GameTypes types, string relative, string? destination = null, string? sourcePath = null, Action<string>? detail = null, ScanClock? clock = null)
     {
         var am = new AssetsManager();
         types.Configure(am, relative);
         try
         {
-            var tpk = System.IO.Path.Combine(AppContext.BaseDirectory, "classdata.tpk");
-            if (File.Exists(tpk)) am.LoadClassPackage(tpk);
-            using var input = File.OpenRead(path); var signature = new byte[8]; input.ReadExactly(signature); input.Position = 0;
+            using var input = File.OpenRead(path);
+            var signature = new byte[8];
+            using (clock?.Measure(ScanPhase.Open)) {
+                var tpk = System.IO.Path.Combine(AppContext.BaseDirectory, "classdata.tpk");
+                if (File.Exists(tpk)) am.LoadClassPackage(tpk);
+                input.ReadExactly(signature); input.Position = 0;
+            }
             // Read the verified backup, but resolve external MonoScript/type
             // dependencies beside the game's original resource, not the backup.
             var dependencyPath = sourcePath ?? path;
             if (Encoding.ASCII.GetString(signature).StartsWith("Unity"))
             {
                 detail?.Invoke("正在打开资源包：" + relative);
-                var bundle = am.LoadBundleFile(input, dependencyPath, true);
+                BundleFileInstance bundle;
+                using (clock?.Measure(ScanPhase.Open)) bundle = am.LoadBundleFile(input, dependencyPath, true);
                 for (var i = 0; i < bundle.file.BlockAndDirInfo.DirectoryInfos.Count; i++)
                 {
                     detail?.Invoke($"正在读取资源块 {i + 1}/{bundle.file.BlockAndDirInfo.DirectoryInfos.Count}：{bundle.file.GetFileName(i)}");
-                    var inst = am.LoadAssetsFileFromBundle(bundle, i, false);
+                    AssetsFileInstance? inst;
+                    using (clock?.Measure(ScanPhase.Open)) inst = am.LoadAssetsFileFromBundle(bundle, i, false);
                     if (inst == null) continue;
                     visit(am, inst, bundle.file.GetFileName(i));
                     if (destination != null) bundle.file.BlockAndDirInfo.DirectoryInfos[i].SetNewData(inst.file);
@@ -503,7 +629,9 @@ public static class Program
             else
             {
                 detail?.Invoke("正在读取资源文件：" + relative);
-                var inst = am.LoadAssetsFile(input, dependencyPath, false); visit(am, inst, "");
+                AssetsFileInstance inst;
+                using (clock?.Measure(ScanPhase.Open)) inst = am.LoadAssetsFile(input, dependencyPath, false);
+                visit(am, inst, "");
                 if (destination != null) { using var writer = new AssetsFileWriter(destination); inst.file.Write(writer); }
             }
         }
@@ -545,19 +673,26 @@ public static class Program
         }
         return type + " / Unity " + instance.file.Metadata.UnityVersion;
     }
-    static void ScanAssets(AssetsManager am, AssetsFileInstance inst, string rel, string container, Project project, ImageResources.TextureScanCache? textureCache)
+    static void ScanAssets(AssetsManager am, AssetsFileInstance inst, string rel, string container, Project project, ImageResources.TextureScanCache? textureCache, Lazy<string> sourceDigest, ScanClock clock)
     {
         project.ReportScanDetail?.Invoke($"读取类型与纹理索引：{rel} / {container}");
         PrepareTypes(am, inst);
         var fontTextures = ImageResources.FontTextures(am, inst);
-        HidcImages.Scan(project, am, inst, rel, container);
+        var hidc = new HidcImages.ScanIndex();
+        var firstImage = project.Images.Count;
         var dependencyHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var objectIndex = 0;
+        long nextObjectReport = 0;
         foreach (var info in inst.file.Metadata.AssetInfos)
         {
             project.CheckCancellation?.Invoke();
             objectIndex++;
-            project.ReportScanDetail?.Invoke($"读取资源对象：{rel} / {container} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count} · 已提取 {project.Entries.Count} 条文本");
+            var now = Environment.TickCount64;
+            if (now >= nextObjectReport) {
+                nextObjectReport = now + 260;
+                var location = container.Length > 0 ? rel + " / " + container : rel;
+                project.ReportScanDetail?.Invoke($"读取资源对象：{location} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count} · 已提取 {project.Entries.Count} 条文本");
+            }
             var type = info.TypeId;
             if (type is not (28 or 49 or 128 or 114)) continue;
             var textCount = project.Entries.Count; var fontCount = project.Fonts.Count;
@@ -569,13 +704,17 @@ public static class Program
                 }
                 var field = am.GetBaseField(inst, info);
                 var name = field["m_Name"].IsDummy ? info.PathId.ToString() : field["m_Name"].AsString;
-                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache,
-                    stage => project.ReportScanDetail?.Invoke($"{stage}：{name} · {rel} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count}"));
+                if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache, sourceDigest,
+                    stage => project.ReportScanDetail?.Invoke($"{stage}：{name} · {rel} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count}"), clock);
                 if (type == 128) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "UGUI") { References = FontPreparation.References(field) });
-                if (type == 49 && GameText.TextAsset(name) && !HidcImages.IsChunk(field["m_Script"].AsByteArray))
-                    TextDocuments.Process(Utf8.GetString(field["m_Script"].AsByteArray), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
+                if (type == 49) {
+                    var bytes = field["m_Script"].AsByteArray;
+                    if (!hidc.AddChunk(name, info.PathId, bytes) && GameText.TextAsset(name))
+                        TextDocuments.Process(Utf8.GetString(bytes), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
+                }
                 if (type == 114)
                 {
+                    hidc.AddManifest(field);
                     var fontKind = BitmapFontGenerator.FontKind(field);
                     if (fontKind != null) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, fontKind) { References = FontPreparation.References(field) });
                     else GameLocalization.Visit(field, project.Root, rel, (loc, text, locale, key) => {
@@ -592,6 +731,7 @@ public static class Program
                 project.Diagnostics.Add(ScanInspection.Issue(rel, container, info.PathId.ToString(), e, ObjectDescription(am, inst, info)));
             }
         }
+        hidc.Publish(project, rel, container, firstImage);
     }
 
     public static object Export(Request request)

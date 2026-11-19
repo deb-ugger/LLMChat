@@ -5,7 +5,7 @@ import { API_BASE, type Settings } from "./api";
 import { resolveFeatureLlm, loadLocalModelProfiles } from "./modelPresets";
 import { ollamaRequestContext } from "./ollamaContext";
 
-export async function requestGameModelJson(settings: Settings, model: string, prompt: string, signal: AbortSignal, image?: string, endpoint: "game-images" | "game-text" = "game-images", report?: OllamaOutput, execution?: { selection?: object; role: string; imageClassification?: boolean }): Promise<unknown> {
+export async function requestGameModelJson(settings: Settings, model: string, prompt: string, signal: AbortSignal, image?: string, endpoint: "game-images" | "game-text" = "game-images", report?: OllamaOutput, execution?: { selection?: object; role: string; imageClassification?: boolean; groupedImageOcr?: boolean }): Promise<unknown> {
   if (!model) throw new Error("请选择处理模型");
   const connection = { ...resolveFeatureLlm(settings, model), ...(execution ? gameModelExecution(execution.selection, execution.role, model) : {}) };
   if (!connection.apiUrl) throw new Error("所选模型未配置接口地址");
@@ -18,6 +18,7 @@ export async function requestGameModelJson(settings: Settings, model: string, pr
       const response = await fetch(`${API_BASE}/api/${endpoint}/model`, { method: "POST", signal,
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...connection, taskId, prompt, image, localModel,
           imageClassification: execution?.imageClassification === true,
+          groupedImageOcr: execution?.groupedImageOcr === true,
           imageLayout: execution?.role === "layout",
           imageOcr: !!image && !execution?.imageClassification && (execution?.role === "recognize" || execution?.role === "screen" || execution?.role === "refine"),
           ollamaNative: gameOllamaNative({ ...connection, localModel }), ...(localModel ? ollamaRequestContext(connection.apiUrl) : {}),

@@ -1,5 +1,5 @@
-import { useId, useRef } from "react";
-import { createPortal } from "react-dom";
+import { useId } from "react";
+import { openGameAuxWindow, type GameHelpSetup } from "../gameAuxWindows";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { UnityIconButton } from "./UnityIconButton";
 
@@ -89,22 +89,22 @@ const runtimeGuide: Section[] = [
 ];
 
 export function GameWorkflowHelp({ mode, supportsImages = true }: {
-  mode: "unity-offline" | "unity-runtime" | "embedded";
+  mode: GameHelpSetup["mode"];
   supportsImages?: boolean;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
+  return <UnityIconButton title="游戏翻译流程帮助" onClick={() => openGameAuxWindow({ kind: "help", mode, supportsImages })}>
+    <UnityActionIcon kind="help" />
+  </UnityIconButton>;
+}
+
+export function GameWorkflowHelpPage({ mode, supportsImages, onClose }: Omit<GameHelpSetup, "kind"> & { onClose: () => void }) {
   const id = useId();
   const runtime = mode === "unity-runtime";
   const sections = runtime ? runtimeGuide : offlineGuide(mode === "unity-offline", supportsImages);
-  return <>
-    <UnityIconButton title="游戏翻译流程帮助" aria-haspopup="dialog" aria-controls={id}
-      onClick={() => dialog.current?.showModal()}>
-      <UnityActionIcon kind="help" />
-    </UnityIconButton>
-    {createPortal(<dialog ref={dialog} id={id} className="game-workflow-help" aria-labelledby={id + "-title"}>
+  return <main className="game-workflow-help" aria-labelledby={id + "-title"}>
       <header className="game-workflow-help-header">
-        <h2 id={id + "-title"}>{runtime ? "Unity 运行时翻译流程" : "游戏翻译流程"}</h2>
-        <button type="button" className="unity-btn" aria-label="关闭流程帮助" onClick={() => dialog.current?.close()}>关闭</button>
+        <h1 id={id + "-title"}>{runtime ? "Unity 运行时翻译流程" : "游戏翻译流程"}</h1>
+        <button type="button" className="unity-btn" aria-label="关闭流程帮助" onClick={onClose}>关闭</button>
       </header>
       <div className="game-workflow-help-content">
         {!runtime && <p className="game-workflow-help-summary">
@@ -127,6 +127,5 @@ export function GameWorkflowHelp({ mode, supportsImages = true }: {
           )}</dl>}
         </section>)}
       </div>
-    </dialog>, document.body)}
-  </>;
+  </main>;
 }

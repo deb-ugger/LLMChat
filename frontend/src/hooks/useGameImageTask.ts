@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type {OcrMode,TranslateProvider} from "../api";
-export type GameImageTask={kind:"scan"|"screen"|"refine"|"recognize"|"translate"|"review"|"render";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider;translationKind?:"llm"|"local"|"engine";translationModel?:string;reviewModel?:string;onlySourceLanguage?:boolean;skipTargetLanguage?:boolean}};
+export type GameImageTask={kind:"scan"|"screen"|"refine"|"recognize"|"translate"|"review"|"render"|"redraw";imageId?:string;mode?:OcrMode;options?:{backend?:"auto"|"wasm"|"webgpu";strategy:"staged"|"full";mode:OcrMode;source:string;target:string;concurrency:number;provider:TranslateProvider;translationKind?:"llm"|"local"|"engine";translationModel?:string;reviewModel?:string;onlySourceLanguage?:boolean;skipTargetLanguage?:boolean}};
 function restoreClock(key: string) {
   let saved: { total?: number; task?: GameImageTask } | null = null;
   try { saved = JSON.parse(localStorage.getItem(key) || "null"); }

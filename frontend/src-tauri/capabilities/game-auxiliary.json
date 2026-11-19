@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "game-auxiliary",
+  "description": "Permissions for the game help and test configuration windows",
+  "windows": ["game-help", "game-configuration"],
+  "permissions": ["core:default", "core:window:allow-close", "allow-runtime-log"]
+}

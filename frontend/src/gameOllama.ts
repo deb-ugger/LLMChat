@@ -133,6 +133,8 @@ export function gameOllamaNative(connection: ModelConnection) { return !!ollamaA
 
 export async function translateGameWithOllama(text: string, init: RequestInit, options: GameTranslateOptions, report: OllamaOutput) {
   const { imageTranslationRole, ...request } = options;
+  if (imageTranslationRole === "review" && request.provider === "llm" && canDisableOllamaNameThinking(request))
+    request.ollamaReasoningOff = true;
   const translate = async (config: TranslateOptions) => {
     const result = await withGameOllama(config, init.signal ?? undefined, report,
       () => api.translate(text, init, { ...config, ollamaNative: gameOllamaNative(config) }));

@@ -1,8 +1,9 @@
 
 import { API_BASE, type OcrMode, type Settings, type TranslateProvider } from "./api";
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "./gameDisplayText";
-import { classifyGameImagePresence, recognizeGameImage, renderGameImage } from "./gameImageModel";
-import { classifyImageText, clearGameImageRefinement, refineGameImages, screenGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, type LocalRefineMode } from "./gameImageScreening";
+import { classifyGameImagePresence, gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "./gameImageModel";
+import { recognizeLocalGameImage } from "./gameImageRecognitionInput";
+import { classifyImageText, clearGameImageRefinement, refineGameImages, screenGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, localGameImageScreeningLanes, type LocalRefineMode } from "./gameImageScreening";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu, type OllamaOutput } from "./gameOllama";
 import { gameTaskPrompt, type GamePromptScene } from "./gamePrompts";
@@ -12,7 +13,8 @@ import { LocalPaddleOcr } from "./ocr/paddleOcr";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { createUnityImageOcr, processUnityImages, unityImageParticipates } from "./unityImages";
-import { unityTranslationError, type UnityImage, type UnityProgress, type UnityProject } from "./unityOffline";
+import type { UnityImage, UnityProgress, UnityProject } from "./unityOffline";
+import { recognizeUnityReviewCrops, refineUnityImages, refineUnityImagesLocally, screenUnityImages } from "./unityImageFiltering";
 import { buildUnityTranslateOptions } from "./unityTranslation";
 
 export const imageBenchmarkSteps = {
@@ -33,7 +35,7 @@ export type ImageBenchmarkSetup = {
 export type ImageBenchmarkWorkload = { project: UnityProject | null; selected: UnityImage[]; embedded: boolean };
 
 const failedRegion = (region: UnityImage["regions"][number]) => region.selected &&
-  (!!region.error || !region.translation || !!unityTranslationError(region.text, region.translation));
+  (!!region.error || !region.translation || !!gameImageTranslationProblem(region.text, region.translation, region.translationTarget));
 
 export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImage[]) {
   return selected.filter(image => !!image.sourceFile && unityImageParticipates(image) && (
@@ -54,8 +56,17 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   const role = imageBenchmarkSteps[step].role;
   rememberBenchmarkExecution(prompts, scope, step, lanes);
   const project = { ...workload.project, entries: [], images: structuredClone(sample).map(image => {
-    const initial = step === "refine" ? clearGameImageRefinement(image) : image;
+    let initial = step === "refine" ? clearGameImageRefinement(image) : image;
+    if (step === "refine" && !workload.embedded && initial.screening) {
+      const screening = initial.screening;
+      const state = image.screening?.refineKey === "unity-region-review-v1" ? "review" : screening.state;
+      const evidence = screening.recognition?.lines;
+      initial = { ...initial, screening: { ...screening, state, reviewSelected: true,
+        reviewEvidenceMissing: state === "review" && !evidence?.length && initial.regions.every(region => region.ocrConfirmed) },
+        regions: evidence?.map(line => ({ ...line, translation: "", selected: false, error: "" })) ?? initial.regions };
+    }
     return { ...initial, selected: true, completed: false, renderedFile: "", renderedHash: "", error: "",
+      noTranslationNeeded: false,
       ...(step === "refine" ? { ocrCompleted: false } : {}),
       ...(step === "filter" || step === "recognize" ? { screening: undefined, ocrCompleted: false, regions: [] } : {}),
       ...(step === "imageTranslate" ? { regions: initial.regions.map(region => ({ ...region, translation: "", error: "" })) } : {}),
@@ -75,16 +86,30 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   if (step === "refine") {
     const concurrency = model ? lanes : config.localLanes || setup.refineConcurrency || 2;
     const mode = LOCAL_REFINE_MODELS.find(item => item.id === config.imageMode)?.id || setup.refineMode || "precise";
+    if (!workload.embedded) {
+      const confidence = config.imageConfidence ?? setup.refineConfidence ?? (model ? 70 : 50);
+      const io = { read, persist: async () => {} };
+      if (model) {
+        const connection = { ...resolveFeatureLlm(settings, model), localModel: !!loadLocalModelProfiles()[model] };
+        await prepareGameOllamaParallel(connection, concurrency, signal, report);
+      }
+      const result = model ? await refineUnityImages(project, signal, concurrency, { ...io,
+        recognize: (blob, regions) => recognizeUnityReviewCrops(settings, model, blob, regions, signal, prompts, report, confidence) }, progress)
+        : await refineUnityImagesLocally(project, signal, scope, { method: "local", mode, confidence, concurrency }, io, progress);
+      if (!result.completed) throw new Error(model ? "选择有初筛疑似文字区域的图片后，再测试 Unity 视觉复筛" : "没有可复筛的 Unity 样本图片");
+      return { translated: result.completed - result.failed, failed: result.failed };
+    }
     const local = model ? undefined : createLocalImageRefiner(mode, concurrency, scope);
     const connection = model ? { ...resolveFeatureLlm(settings, model), localModel: !!loadLocalModelProfiles()[model] } : undefined;
     let gpuChecked = false;
     try {
       if (local) { await local.prepare(); signal.throwIfAborted(); }
       if (connection) await prepareGameOllamaParallel(connection, concurrency, signal, report);
-      const result = await refineGameImages(project.images, signal, { source, target, concurrency, timingScope: scope, refineKey: "benchmark", local: !!local, confidenceThreshold: setup.refineConfidence },
+      const confidence = config.imageConfidence ?? setup.refineConfidence;
+      const result = await refineGameImages(project.images, signal, { source, target, concurrency, timingScope: scope, refineKey: "benchmark", local: !!local, confidenceThreshold: confidence },
         { read, recognize: async (blob, worker) => {
           if (local) return local.recognize(blob, worker);
-          const presence = await classifyGameImagePresence(settings, model, blob, signal, prompts, { source, target }, report, setup.refineConfidence);
+          const presence = await classifyGameImagePresence(settings, model, blob, signal, prompts, { source, target }, report, confidence);
           if (!gpuChecked && connection) { gpuChecked = true; await reportRefinementGpu(connection, signal, report); }
           return { lines: [], detectedBoxes: 0, presence };
         }, persist: async () => {} }, progress);
@@ -95,7 +120,12 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   }
   if (step === "filter") {
     const strategy = model ? "full" : config.imageStrategy || setup.strategy;
-    const count = model ? lanes : config.localLanes || setup.concurrency;
+    const count = model ? lanes : localGameImageScreeningLanes(config.localLanes || setup.concurrency);
+    if (!workload.embedded) {
+      const result = await screenUnityImages(project, signal, { source, target, strategy, model: model || undefined, concurrency: count, timingScope: scope },
+        { read, persist: async () => {}, recognize: model ? async blob => (await vision(blob, "screen")).lines : undefined }, progress);
+      return { translated: result.completed - result.failed, failed: result.failed };
+    }
     const workers = model ? [] : Array.from({ length: count }, () => new LocalPaddleOcr("fast", { upscale: false, maxSide: 1280, boxThresh: .3 }));
     let prepare: Promise<void> | undefined;
     try {
@@ -103,7 +133,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
         read, persist: async () => {},
         recognize: (blob, stage, index = 0) => model ? vision(blob, "screen") : measureGameAsync(scope, "processingMs", async () => {
           await (prepare ??= workers[0].prepare());
-          const worker = workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index];
+          const worker = workers[index];
           if (strategy === "full") return worker.recognize(blob, stage, { maxSide: 1280, boxThresh: .3 });
           const rough = await worker.recognize(blob, stage, { maxSide: 768, boxThresh: .5 });
           signal.throwIfAborted();
@@ -138,7 +168,8 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       timingScope: scope, concurrency: model ? lanes : localLanes, translationConcurrency: pool?.concurrency || lanes,
       regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read,
       recognize: (blob, stage, index = 0) => {
-        if (!model) return measureGameAsync(scope, "processingMs", () => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(blob, stage));
+        if (!model) return measureGameAsync(scope, "processingMs", () => recognizeLocalGameImage(blob,
+          input => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(input, stage), signal));
         const worker = workers[index];
         return worker ? worker.recognizeVision(blob, stage, signal,
           fallback => recognizeGameImage(settings, model, blob, signal, "recognize", prompts, { source, target }, report, fallback),
@@ -146,7 +177,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       },
       translate: text => pool ? pool.translate(text) : request("llm", text),
       render: (blob, regions) => renderGameImage(settings, model, blob, regions, signal, prompts, { source, target }, report),
-      write: async () => ({ path: "benchmark", hash: "" }), validate: unityTranslationError,
+      write: async () => ({ path: "benchmark", hash: "" }), validate: (source, translation) => gameImageTranslationProblem(source, translation, target),
       persist: async (_project, image) => { processed++; if (image.error || image.regions.some(region => !!region.error)) failed++; },
     }, progress, config.imageConfidence ?? setup.confidence ?? 50, step === "recognize" || step === "render" ? step : "translate-only");
   } catch (error) {

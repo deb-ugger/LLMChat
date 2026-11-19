@@ -45,7 +45,7 @@ const pageLabels = {
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
-type Page = Exclude<NavigationItem, "downloads">;
+type Page = Exclude<NavigationItem, "output" | "downloads">;
 const navigation: readonly NavigationItem[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "downloads", "stats", "settings"],
@@ -59,6 +59,7 @@ function PagePanel({ feature, active, children }: { feature: Page; active: boole
 
 export default function App() {
   const [page, setPage] = useState<Page>("chat");
+  const [outputExpanded, setOutputExpanded] = useState(false);
   const startupInteracted = useRef(false);
 
   const [navRailHidden, setNavRailHidden] = useState(false);
@@ -347,9 +348,12 @@ export default function App() {
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
           {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> : (
-            <button key={id} type="button" className={page === id ? "nav-item active" : "nav-item"}
+            <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
+              aria-expanded={id === "output" ? outputExpanded : undefined}
+              aria-controls={id === "output" && outputExpanded ? "app-output-drawer" : undefined}
               onClick={() => {
+                if (id === "output") { setOutputExpanded(expanded => !expanded); return; }
                 if (id === "settings") setSettingsInitialTab(undefined);
                 setPage(id);
               }}>
@@ -374,7 +378,6 @@ export default function App() {
       </nav>
 
       <div className="app-main">
-        {page === "output" && <GlobalOutputView />}
         <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"} inert={page !== "chat"}>
           <div className="chat-layout">
             <Sidebar
@@ -474,7 +477,7 @@ export default function App() {
         <PagePanel feature="text" active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
           }} /></PagePanel>
-        <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw /></PagePanel>
+        <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw active={page === "redraw"} /></PagePanel>
         <PagePanel feature="speech" active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
         <PagePanel feature="unity" active={page === "unity"}><UnityTranslateView
             active={page === "unity"}
@@ -497,6 +500,10 @@ export default function App() {
             active={page === "settings"}
             onNavigate={(p) => setPage(p)}
           /></PagePanel>
+        {outputExpanded && <GlobalOutputView onClose={() => {
+          document.querySelector<HTMLButtonElement>('[aria-controls="app-output-drawer"]')?.focus();
+          setOutputExpanded(false);
+        }} />}
       </div>
     </div>
   );

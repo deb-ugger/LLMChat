@@ -1,6 +1,6 @@
 import { measureGameWork } from "./gameModelPerformance";
 import { ImageRecognitionCache } from "./imageRecognitionCache";
-import {applyImageTextRules} from "./imageTextRules";
+import {applyImageTextRules, usesUnityImageTextEvidence} from "./imageTextRules";
 import type { OcrMode } from "./api";
 import type { UnityImage, UnityImageRegion, UnityProject, UnityProgress } from "./unityOffline";
 import { LocalPaddleOcr, type PaddleOcrLine } from "./ocr/paddleOcr";
@@ -198,7 +198,9 @@ export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSi
   return next;
 }
 export type UnityImageServices = {
+  trackReview?: boolean;
   cachedRecognition?: (image: UnityImage) => PaddleOcrLine[] | undefined;
+  recognitionGroup?: (image: UnityImage) => string;
   timingScope?: string;
   concurrency?: number;
   translationConcurrency?:number;
@@ -221,16 +223,33 @@ export function unityImageParticipates(image: UnityImage) {
 export function unityImageHasText(image: UnityImage) { return image.regions.some(region => !!region.text.trim()); }
 export function unityImageResultGroup(image: UnityImage) {
   if (image.completed && image.noTranslationNeeded) return "excluded";
-  if (image.screening?.sourceSkip && !image.selected) return "excluded";
+  if (image.screening?.sourceSkip || image.screening?.state === "not-needed") return "excluded";
+  if (image.screening?.state === "no-text") return "empty";
+  if (image.renderedKind === "imported" && image.renderedFile) return "text";
   if(image.screening?.state==="candidate"&&!image.ocrCompleted)return "candidate";
   if(image.screening?.state==="failed")return "failed";
-  if(image.screening?.state==="review")return "review";
-  if(image.screening?.state==="not-needed")return "excluded";
-  if(image.screening?.state==="no-text")return "empty";
+  if (image.screening?.state === "review") return !image.screening.manualGroup &&
+    (image.ocrCompleted || image.screening.refineKey && !image.screening.refineFailed) ? "manual-review" : "review";
+  if (image.ocrCompleted && usesUnityImageTextEvidence(image) && !image.renderedFile && unityImageHasText(image) &&
+      !unityImageTranslationRegions(image.regions, 50, image).some(region => region.selected)) return "manual-review";
   return unityImageHasText(image) ? "text" : image.error ? "failed" : image.ocrCompleted ? "empty" : "pending";
 }
+export function canSelectUnityImage(image: UnityImage, group = unityImageResultGroup(image)) {
+  return !!image.sourceFile && group !== "empty" && group !== "excluded" && group !== "manual-review" &&
+    !(group === "review" && image.ocrCompleted && usesUnityImageTextEvidence(image) &&
+      !unityImageTranslationRegions(image.regions, 50, image).some(region => region.selected));
+}
+export function normalizeUnityImageSelection(image: UnityImage): UnityImage {
+  const regions = image.ocrCompleted && !image.renderedFile && usesUnityImageTextEvidence(image)
+    ? unityImageTranslationRegions(image.regions, 50, image) : image.regions;
+  const evaluated = regions.some((region, index) => region.selected !== image.regions[index].selected ||
+    region.reviewReason !== image.regions[index].reviewReason) ? { ...image, regions } : image;
+  return evaluated.selected && !canSelectUnityImage(evaluated)
+    ? { ...evaluated, selected: false, selectionManual: !!image.screening?.manualGroup }
+    : evaluated;
+}
 export function unityImageUsesRegionMask(image:UnityImage):boolean{return image.renderedKind==="generated"||!image.renderedKind&&image.regions.some(region=>!!region.translation.trim());}
-export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number, size?:{width:number;height:number}) {return applyImageTextRules(regions,threshold,size);}
+export function unityImageTranslationRegions(regions: UnityImageRegion[], threshold: number, size?:{width:number;height:number;kind?:string}) {return applyImageTextRules(regions,threshold,size);}
 export async function processUnityImages(project: UnityProject, signal: AbortSignal, services: UnityImageServices, progress: (value: UnityProgress & {etaMs?:number}) => void, confidenceThreshold = 50, mode: "all" | "recognize" | "translate" | "translate-only" | "render" = "all") {
   const target = services.targetLanguage;
   const validate = (source: string, translation: string) => measureGameWork(services.timingScope, "processingMs", () =>
@@ -241,8 +260,23 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     image.completed && (!!image.renderedFile || !!image.noTranslationNeeded) && imageTranslationMatchesTarget(image, target) && !unityImageHasUntranslatedJapanese(image, target);
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
   // This lane only changes images; retain the read-only text/resource collections.
-  const next = { ...project, images: (project.images||[]).map(image=>image.selected&&!imageDone(image)?structuredClone(image):image), imagesSkipped: false };
-  const images = (next.images || []).filter(image => image.selected && unityImageParticipates(image) && (mode !== "translate" || image.ocrCompleted)), cache = new Map<string, string>();
+  const next = { ...project, images: (project.images || []).map(original => {
+    const image = normalizeUnityImageSelection(original);
+    return image.selected && !imageDone(image) ? structuredClone(image) : image;
+  }), imagesSkipped: false };
+  const images = (next.images || []).filter(image => image.selected && canSelectUnityImage(image) && unityImageParticipates(image) && (mode !== "translate" || image.ocrCompleted));
+  let recognitionGroups = [images];
+  if (mode === "recognize" && services.recognitionGroup) {
+    const groups = new Map<string, UnityImage[]>();
+    for (const image of images) {
+      const key = services.recognitionGroup(image);
+      const group = groups.get(key);
+      if (group) group.push(image);
+      else groups.set(key, [image]);
+    }
+    recognitionGroups = [...groups.values()];
+  }
+  const cache = new Map<string, string>();
   let savedTranslations: Map<string, string[]> | undefined;
   const findSavedTranslation = (text: string) => {
     if (services.reuseTranslations === false) return;
@@ -300,10 +334,10 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       if (!image.ocrCompleted) {
         const lines = cached ?? await services.recognize(source!, stage => report(`${image.name} · ${stage}`),worker,image); signal.throwIfAborted();
         image.regions = lines.filter(line => line.text.trim()).map(line => ({ ...line, translation: "", error: "", selected: line.confidence >= confidenceThreshold }));
-        image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));image.ocrCompleted = true; image.error = ""; if(image.screening){const candidate=image.regions.some(region=>region.selected);image.screening={...image.screening,state:candidate?"candidate":image.regions.length?"review":"no-text",reason:candidate?"正式识别完成":image.regions.length?"识别结果需复核":"未识别出文字"};}if(mode!=="recognize")await publish();
+        image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));image.ocrCompleted = true; image.error = ""; if(image.screening){const candidate=image.regions.some(region=>region.selected);image.screening={...image.screening,reviewSelected:false,state:candidate?"candidate":image.regions.length?"review":"no-text",reason:candidate?"正式识别完成":image.regions.length?"识别结果需复核":"未识别出文字"};}if(mode!=="recognize")await publish();
       }
       image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));
-      if (!unityImageHasText(image)) image.selected = false;
+      if (!unityImageHasText(image) || !canSelectUnityImage(image)) { image.selected = false; image.selectionManual = false; }
       if (mode === "recognize") { image.completed = !unityImageHasText(image); image.error = ""; completed++; await publish(); report(`已识别图片：${image.name}`); return; }
       if (services.includeRegion) for (const region of image.regions) {
         if (region.error && !services.includeRegion(region.text)) region.error = "";
@@ -316,6 +350,9 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         const existingProblem = region.translation ? matchesTarget(region.translationTarget) ? validate(region.text, region.translation) : "译文属于旧目标语言，请重新翻译" : "";
         if (region.translation && !existingProblem) { region.error = ""; continue; }
         if (mode === "render") { region.error ||= existingProblem || "请先完成此区域的翻译"; continue; }
+        if (services.trackReview) region.beforeReview ??= {
+          translation: region.translation, translationTarget: region.translationTarget, error: region.error,
+        };
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
           const translation = await translateText(region.text); signal.throwIfAborted();
@@ -332,6 +369,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       if (failedRegions.length) throw new Error(`${failedRegions.length} 个文字区域翻译失败，已保留成功译文和失败详情`);
       if (!selectedRegions.length) {
         image.completed = true; image.noTranslationNeeded = true; image.renderedTarget = target;
+        image.selected = false; image.selectionManual = false;
         image.renderedFile = ""; image.renderedHash = ""; image.error = "";
         completed++; await publish(); report(`无需生成译图：${image.name}`); return;
       }
@@ -357,17 +395,31 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     }
   };
   // Model workers can run independently. Network translation stays serialized to respect provider limits.
-  const limit=mode==="recognize"?Math.max(1,Math.min(8,services.concurrency||1)):Math.max(1,Math.min(4,services.translationConcurrency||1));let cursor=0,failure:unknown;
-  const take = () => {
-    if (failure || signal.aborted || cursor >= images.length) return null;
-    const image = images[cursor++];
-    const needsRecognition = mode === "recognize" && !image.ocrCompleted;
-    const cached = needsRecognition ? services.cachedRecognition?.(image) : undefined;
-    const read = needsRecognition && !cached ? services.read(image).then(blob => ({ blob }), error => ({ error })) : undefined;
-    return { image, read, cached };
-  };
-  const workers=Array.from({length:limit},(_,worker)=>(async()=>{let item=take();while(!failure&&item){const current=item;item=take();try{await runImage(current.image,worker,current.read,current.cached);}catch(error){failure=error;throw error;}}})());
-  const results=await Promise.allSettled(workers);const rejected=results.find((result):result is PromiseRejectedResult=>result.status==="rejected");if(rejected)throw rejected.reason;
+  const limit = mode === "recognize" ? Math.max(1, Math.min(8, services.concurrency || 1)) : Math.max(1, Math.min(4, services.translationConcurrency || 1));
+  for (const group of recognitionGroups) {
+    signal.throwIfAborted();
+    let cursor = 0, failure: unknown;
+    const take = () => {
+      if (failure || signal.aborted || cursor >= group.length) return null;
+      const image = group[cursor++];
+      const needsRecognition = mode === "recognize" && !image.ocrCompleted;
+      const cached = needsRecognition ? services.cachedRecognition?.(image) : undefined;
+      const read = needsRecognition && !cached ? services.read(image).then(blob => ({ blob }), error => ({ error })) : undefined;
+      return { image, read, cached };
+    };
+    const workers = Array.from({ length: Math.min(limit, group.length) }, async (_, worker) => {
+      let item = take();
+      while (!failure && item) {
+        const current = item;
+        item = take();
+        try { await runImage(current.image, worker, current.read, current.cached); }
+        catch (error) { failure = error; throw error; }
+      }
+    });
+    const results = await Promise.allSettled(workers);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) throw rejected.reason;
+  }
   signal.throwIfAborted();
   const failed = images.filter(image => mode === "recognize" ? !image.ocrCompleted : mode === "translate-only" ? !!image.error || image.regions.some(region=>selectedForTranslation(region)&&(!region.translation.trim()||!matchesTarget(region.translationTarget)||!!region.error||!!validate(region.text,region.translation))) : !imageDone(image));
   if (failed.length) {

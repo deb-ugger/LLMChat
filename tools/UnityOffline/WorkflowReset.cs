@@ -1,15 +1,18 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace LLMChat.UnityOffline;
 
 public sealed record ResetResult(int Step, WorkspaceResult Workspace);
-public sealed record ResetPlan(int Step, string Project, string[] Delete, string[] Restore, JsonNode Task, bool Restored = false, bool ImageOnly = false);
+public sealed record ResetPlan(int Step, string Project, string[] Delete, string[] Restore, JsonNode Task, bool Restored = false, bool ImageOnly = false, string ImageResetPhase = "");
 
 public static class WorkflowReset
 {
     static string Full(string path) => Path.GetFullPath(path).TrimEnd('\\', '/');
     static bool Same(string a, string b) => string.Equals(Full(a), Full(b), StringComparison.OrdinalIgnoreCase);
+    static bool ValidImageReset(int step, bool imageOnly, string phase) =>
+        string.IsNullOrEmpty(phase) || step == 2 && imageOnly && phase is "filter" or "refine" or "recognize" or "review" or "render";
     static void NoLinks(string path)
     {
         if (!Directory.Exists(path)) return;
@@ -47,6 +50,7 @@ public static class WorkflowReset
     public static ResetResult Start(Request request)
     {
         if (request.Step is < 1 or > 4) throw new Exception("无效重做步骤");
+        if (!ValidImageReset(request.Step, request.ImageOnly, request.ImageResetPhase)) throw new Exception("无效图片清理步骤");
         var workspace = GameWorkspace.Open(new Request { Root = request.Root });
         var root = Full(request.Root); var work = workspace.WorkRoot; var projects = workspace.ProjectsRoot;
         var step = request.Step;
@@ -70,23 +74,28 @@ public static class WorkflowReset
             if (reusable.Length == 0 || !patches.Any(p => Same(p, reusable)) || !Same(Path.GetDirectoryName(Full(reusable))!, folders[0])) throw new Exception("请先生成完整补丁，再重做应用");
             ValidateReusablePatch(root, reusable);
         }
-        var previous = Math.Max(1, step - 1);
+        var imagePhaseReset = !string.IsNullOrEmpty(request.ImageResetPhase);
+        var previous = imagePhaseReset ? 2 : Math.Max(1, step - 1);
         task["step"] = previous; task["endStep"] = previous; task["automatic"] = false; task["finished"] = true;
         task["projectFolder"] = step == 1 ? "" : folders[0]; task["scanFolder"] = ""; task["previousProjectFolder"] = "";
         task["patchFolder"] = reusable;
         if (step != 4) task["patch"] = null;
         if (step <= 2 && !request.ImageOnly) { task["partial"] = false; task["translationFailure"] = null; }
+        if (imagePhaseReset) {
+            task["imageOnly"] = true;
+            task["imageTask"] = request.ImageResetPhase;
+        }
         if (step == 2 && task["translationRuns"] is JsonObject runs) {
             task["imageOnly"] = request.ImageOnly;
             var part = request.ImageOnly ? "images" : "text";
             var retainedMeters = runs[part]?["engineStats"]?.DeepClone();
             runs[part] = new JsonObject { ["step"] = 2, ["state"] = "pending", ["completed"] = 0, ["total"] = null, ["detail"] = "可调整参数后重新开始", ["engineStats"] = retainedMeters };
         }
-        task["progress"] = new JsonObject { ["step"] = previous, ["state"] = "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
+        task["progress"] = new JsonObject { ["step"] = previous, ["state"] = imagePhaseReset ? "pending" : "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
         var installedProjects = folders.Concat(obsolete).Where(folder => Directory.GetDirectories(folder, "patch-*").Any(PatchInstallation.HasApplied)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plan = new ResetPlan(step, step == 1 ? "" : Path.GetRelativePath(work, folders[0]),
             (step == 1 ? folders : patches.Where(p => reusable.Length == 0 || !Same(p, reusable)).Where(p => !obsolete.Any(old => Same(Path.GetDirectoryName(p)!, old))).Concat(step < 4 ? fontPlans : []).Concat(obsolete)).Select(p => Path.GetRelativePath(work, p)).ToArray(),
-            restore.Select(p => Path.GetRelativePath(work, p)).ToArray(), GameWorkspace.PackTask(root, task), ImageOnly: request.ImageOnly);
+            restore.Select(p => Path.GetRelativePath(work, p)).ToArray(), GameWorkspace.PackTask(root, task), ImageOnly: request.ImageOnly, ImageResetPhase: request.ImageResetPhase);
         if (step != 4) plan = plan with { Delete = plan.Delete.Where(relative => {
             var target = Program.Within(work, relative);
             return !installedProjects.Contains(target) && !PatchInstallation.HasApplied(target);
@@ -108,6 +117,7 @@ public static class WorkflowReset
     }
     public static object FinishRescan(Request request)
     {
+        var started = Stopwatch.GetTimestamp();
         var root = Full(request.Root); var work = GameWorkspace.Ensure(root); var projects = Path.Combine(work, "projects");
         var task = request.Task ?? throw new Exception("缺少重新扫描的任务检查点");
         var current = Full(task["projectFolder"]?.GetValue<string>() ?? throw new Exception("缺少新工程目录"));
@@ -127,11 +137,18 @@ public static class WorkflowReset
         var old = Program.Load(Path.Combine(previous, "unity-project.json"));
         var reusedText = ReuseText(old, project);
         var reusedImages = ImageResources.Reuse(old, project);
+        var restoring = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var saving = Stopwatch.GetTimestamp();
         Program.Save(project);
         var retainInstalled = Directory.GetDirectories(previous, "patch-*").Any(PatchInstallation.HasApplied);
         var plan = new ResetPlan(1, "", retainInstalled ? [] : [Path.GetRelativePath(work, previous)], [], GameWorkspace.PackTask(root, task));
         Program.WriteJson(Path.Combine(work, "reset-state.json"), plan);
         ResumePending(root);
+        if (project.ScanMetrics is { } scan) {
+            var saved = Stopwatch.GetElapsedTime(saving).TotalMilliseconds;
+            project.ScanMetrics = scan with { RestoreMs = restoring, SaveMs = scan.SaveMs + saved, TotalMs = scan.TotalMs + restoring + saved };
+            Program.WriteJson(Path.Combine(current, ScanMetrics.FileName), project.ScanMetrics);
+        }
         return new { ok = true, project, reusedText, reusedImages };
     }
     public static int ReuseText(Project old, Project project)
@@ -144,10 +161,10 @@ public static class WorkflowReset
         foreach (var entry in project.Entries) {
             if (translated.TryGetValue(Key(entry), out var saved)) {
                 entry.Selected = saved.Selected;
-                if (saved.Translation.Length > 0 && TranslationIntegrity.Validate(entry.Source, saved.Translation).Length == 0) {
-                    entry.Translation = saved.Translation; entry.TranslationTarget = saved.TranslationTarget; reusedText++;
-                }
-                entry.LayoutDraft = saved.LayoutDraft; entry.LayoutDraftTarget = saved.LayoutDraftTarget; entry.Error = saved.Error;
+                entry.Translation = saved.Translation; entry.TranslationTarget = saved.TranslationTarget;
+                if (saved.Translation.Length > 0) reusedText++;
+                entry.LayoutDraft = saved.LayoutDraft; entry.LayoutDraftTarget = saved.LayoutDraftTarget;
+                entry.ScreeningDraft = saved.ScreeningDraft; entry.Error = saved.Error;
                 continue;
             }
             if (entry.Translation.Length > 0 || entry.Error.Length > 0) continue;
@@ -163,6 +180,7 @@ public static class WorkflowReset
         if (!File.Exists(marker)) return;
         var plan = JsonSerializer.Deserialize<ResetPlan>(File.ReadAllText(marker), Program.Json) ?? throw new Exception("重做清理检查点无效");
         if (plan.Step is < 1 or > 4) throw new Exception("重做清理步骤无效");
+        if (!ValidImageReset(plan.Step, plan.ImageOnly, plan.ImageResetPhase)) throw new Exception("图片清理检查点无效");
         var project = plan.Step == 1 ? "" : Program.Within(work, plan.Project);
         var projects = Path.Combine(work, "projects");
         if (plan.Step != 1) OwnedProject(root, projects, project);
@@ -185,7 +203,7 @@ public static class WorkflowReset
             plan = plan with { Restored = true }; Program.WriteJson(marker, plan);
         }
         if (plan.Step == 2) {
-            Program.Progress("正在读取工程，准备清理译文和草稿");
+            Program.Progress(plan.ImageOnly ? "正在读取工程，准备清理图片处理结果" : "正在读取工程，准备清理译文和草稿");
             var saved = Program.Load(Path.Combine(project, "unity-project.json"));
             if (!plan.ImageOnly) {
                 var clearedTranslations = 0; var clearedDrafts = 0; var clearedErrors = 0;
@@ -200,9 +218,13 @@ public static class WorkflowReset
                 }
                 saved.TextSkipped = false;
             }
-            else ImageResources.Reset(saved);
+            else ImageResources.Reset(saved, plan.ImageResetPhase);
             Program.Progress("正在保存清理后的工程");
             Program.Save(saved);
+            if (plan.ImageOnly) {
+                var cleanup = ImageResources.CleanupCache(saved);
+                if (cleanup.Errors.Count > 0) throw new IOException("清理译图缓存失败：" + string.Join("；", cleanup.Errors));
+            }
         }
         if (plan.Step == 4) {
             var retained = Program.Within(work, plan.Task["patchFolder"]!.GetValue<string>());

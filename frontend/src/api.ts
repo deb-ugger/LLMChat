@@ -1093,7 +1093,7 @@ export const api = {
         body: JSON.stringify({ text }),
       },
     ),
-  readOutputLog: (lines = 500, legacy = false) =>
+  readOutputLog: (lines = 500, legacy = false, full = false) =>
     request<{
       ok: boolean;
       issues?: import("./appOutput").OutputRow[];
@@ -1101,7 +1101,7 @@ export const api = {
       exists?: boolean;
       text?: string;
       error?: string;
-    }>(`/api/${legacy ? "unity/" : ""}output-log?lines=${encodeURIComponent(String(lines))}`),
+    }>(`/api/${legacy ? "unity/" : ""}output-log?lines=${encodeURIComponent(String(lines))}${full && !legacy ? "&full=1" : ""}`),
 };
 
 export type DictionaryPhonetic = {

@@ -3,12 +3,39 @@ import type { OllamaOutput } from "./gameOllama";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import type { Settings } from "./api";
 import { requestGameModelJson } from "./gameModelRequest";
+import { gameJapaneseTextIssue } from "./gameDisplayText";
+import { gameLetteringProof, mapGameOcrCrop, prepareGameOcrCrop, recognizeLocalGameImage } from "./gameImageRecognitionInput";
+import { gameOcrMissingTile, isGameLogoName, prepareGameOcrSheet, renderPlacedGameImage, type GameImagePlacement } from "./gameImagePlacement";
+import { correctGameLogoText, gameImageNameHint, gameLetteringCandidate, type ImageNameMemory } from "./gameImageNames";
+import { TRANSLATION_PROMPT_LEAK, unityTranslationProblem, unityTranslationTokens } from "./unityTokens";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 import { renderUnityImage, UnityImageLayoutError } from "./unityImages";
 import type { UnityImageRegion } from "./unityOffline";
 import { IMAGE_PRESENCE_CONFLICT, IMAGE_PRESENCE_REVIEW_HINT, type ImagePresence } from "./gameImageScreening";
 
 class InvalidImageRegions extends Error {}
+
+export function gameImageTranslationProblem(source: string, translation: string, target = "") {
+  const base = unityTranslationProblem(source, translation);
+  if (base) return base;
+  if (/\ufffd/.test(translation) && !/\ufffd/.test(source)) return "译文包含乱码，请重译此区域";
+  const original = source.normalize("NFKC");
+  const output = translation.normalize("NFKC");
+  const prompts = /将图片中识别出的游戏文字从|保留全部格式占位符|仅返回译文,不要解释或代码围栏|\bTranslate from [\w-]+ to [\w-]+\b|\bOutput only the translation text\b|\btranslation_instructions\b/gi;
+  if ([...output.matchAll(prompts)].some(([marker]) => !original.toLowerCase().includes(marker.toLowerCase()))) return TRANSLATION_PROMPT_LEAK;
+  if (!target.startsWith("zh")) return "";
+  const visible = output.replace(unityTranslationTokens(), "").trim();
+  const roleMarkers = /(?:^|[^\p{Script=Latin}])(user|assistant|system)(?=[ \t]*(?:\r?\n|$))/giu;
+  if ([...visible.matchAll(roleMarkers)].some(([, role]) => !original.toLowerCase().includes(role.toLowerCase()))) return TRANSLATION_PROMPT_LEAK;
+  const residue = gameJapaneseTextIssue(source, translation, target);
+  if (residue) return residue;
+  if (/[\p{Script=Cyrillic}\p{Script=Greek}]{2,}/u.test(visible) && !/[\p{Script=Cyrillic}\p{Script=Greek}]/u.test(original) ||
+      /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(original) &&
+      /\p{L}/u.test(visible) && !/\p{Script=Han}/u.test(visible) && !/^[A-Z]{1,5}(?:[0-9]+)?$/.test(visible)) {
+    return "译文不像目标语言，请核对识字原文或重译此区域";
+  }
+  return "";
+}
 
 export function parseImagePresence(value: unknown): ImagePresence {
   if (!value || typeof value !== "object") throw new Error("复筛模型未返回文字存在判断");
@@ -126,33 +153,156 @@ export function mergeGameImageFieldLines<T extends PaddleOcrLine>(lines: T[], co
 }
 
 /** Coordinates are normalized to 0–1000 so resized model input retains original pixel bounds. */
-export async function recognizeGameImage(settings: Settings, model: string, blob: Blob, signal: AbortSignal, scene: "screen" | "refine" | "recognize" = "recognize", selection?: GamePromptSelection, variables?:{source?:string;target?:string}, report?: OllamaOutput, fallback?: (blob: Blob) => Promise<PaddleOcrLine[]>): Promise<PaddleOcrLine[]> {
+export async function recognizeGameImage(settings: Settings, model: string, blob: Blob, signal: AbortSignal, scene: "screen" | "refine" | "recognize" = "recognize", selection?: GamePromptSelection, variables?:GameImagePlacement & {source?:string;target?:string;names?:ImageNameMemory}, report?: OllamaOutput, fallback?: (blob: Blob) => Promise<PaddleOcrLine[]>): Promise<PaddleOcrLine[]> {
   const execution = gameModelExecution(selection, scene, model);
   const bitmap = await measureGameAsync(execution, "processingMs", () => createImageBitmap(blob));
   try {
-    const canvas = document.createElement("canvas"), scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const image = measureGameWork(execution, "processingMs", () => {
+    const { canvas, crop } = measureGameWork(execution, "processingMs", () => {
+      const enhanced = scene === "recognize" ? prepareGameOcrCrop(bitmap) : undefined;
+      if (enhanced) return enhanced;
+      const canvas = document.createElement("canvas"), scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
       canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL("image/png");
+      return { canvas, crop: undefined };
     });
-    const prompt = gameTaskPrompt(scene, selection, variables) + '\n识别图片全部可读文字及位置，不翻译、不推测。仅返回 JSON 对象 {"regions":[...]}，每项为 {"text":"原文","confidence":95,"x0":0,"y0":0,"x1":1000,"y1":1000}。坐标以图片左上角为原点，横纵均归一化至0–1000，必须满足 0<=x0<x1<=1000、0<=y0<y1<=1000。confidence 必须为0–100的数值，不带百分号。无文字返回 {"regions":[]}，不要输出说明。' + (scene === "recognize" ? "同一段落或同一标签的内容因排版换行时，用一个区域包住整段，合成完整原文。不同列、独立标题或下一个带标签的字段分别返回。" : "");
+    const logo = scene === "recognize" && isGameLogoName(variables?.assetName);
+    const nameHint = scene === "recognize" ? gameImageNameHint(variables?.names,logo) : "";
+    if (scene === "recognize" && !logo && (crop || variables?.cleanBase) && variables?.assetName) {
+      const started = performance.now();
+      try {
+        const sheet = await prepareGameOcrSheet(blob, variables, signal);
+        if (sheet?.image && sheet.regions.length) {
+          const mode = sheet.kind === "annotated" ? "对照无批注底图定位正文" : "透明花字分组旋平";
+          report?.(`识字 · ${mode} · ${sheet.regions.length} 组`, "info");
+          const raw = await requestGameModelJson(settings, model,
+            '抄录图中每个编号下方的原文。编号是定位标记，不能写进原文。保留同组文字的换行和句尾，箭头、爱心轮廓等独立装饰不抄成文字。不确定的字不要猜。只返回 {"regions":[{"index":1,"text":"原文","confidence":90}]}，每个编号至多一项，confidence 用 0–100 的百分数。' + nameHint,
+            signal, "data:image/png;base64," + sheet.image, "game-images", report, { selection, role: scene, groupedImageOcr: true });
+          const mapped = new Map<number, PaddleOcrLine>();
+          const readRows = (value: unknown) => {
+            const rows = Array.isArray(value) ? value : value && typeof value === "object" && "regions" in value && Array.isArray(value.regions) ? value.regions : [];
+            for (const row of rows) {
+              const index = Number(row?.index) - 1;
+              const region = sheet.regions[index];
+              if (!region || mapped.has(index) || typeof row.text !== "string" || !row.text.trim()) continue;
+              const rawConfidence = Number(row.confidence);
+              const confidence = rawConfidence > 0 && rawConfidence < 1 ? rawConfidence * 100 : rawConfidence;
+              if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) continue;
+              const [x0, y0, x1, y1] = region.box;
+              mapped.set(index, { text: row.text.trim(), confidence, x0, y0, x1, y1 });
+            }
+          };
+          readRows(raw);
+          if (sheet.kind === "lettering" && mapped.size >= 2 && mapped.size === sheet.regions.length - 1) {
+            const missing = sheet.regions.findIndex((_, index) => !mapped.has(index));
+            const tile = await gameOcrMissingTile(sheet, missing);
+            if (tile) {
+              const recovered = await requestGameModelJson(settings, model,
+                `只抄录编号 ${missing + 1} 下的实际文字，保留原文和符号，辨认不清时返回空数组。JSON {"regions":[{"index":${missing + 1},"text":"原文","confidence":90}]}。`,
+                signal, tile, "game-images", report, { selection, role: scene, groupedImageOcr: true });
+              readRows(recovered);
+              if (mapped.has(missing)) report?.("花字漏框 · 已局部补读", "info");
+            }
+          }
+          if (mapped.size === sheet.regions.length) {
+            const found = [...mapped.entries()].sort(([a],[b]) => a-b).map(([,region]) => region);
+            if (sheet.kind === "lettering") {
+              const checks=found.flatMap((region,index)=>{
+                const candidate=gameLetteringCandidate(region.text,variables.names);
+                return candidate ? [{region,index,...candidate}] : [];
+              }).slice(0,2);
+              for (const {region,index,word,candidate} of checks) {
+                try {
+                  const checked=await requestGameModelJson(settings,model,
+                    '画像は同じ日本語の装飾文字を異なる方法で表示したものです。文字の形を見て判断してください。初回候補は「'+word+'」、作品内に実在する類似表記は「'+candidate+'」です。小さい濁点も確認し、画像に最も合う表記を選択してください。どちらでもない場合、初回表記を保留してください。JSON {"regions":[{"index":1,"text":"選んだ原文","confidence":95}]} だけ返してください。',
+                    signal,gameLetteringProof(bitmap,region,sheet.regions[index].angle),"game-images",report,{selection,role:scene,groupedImageOcr:true});
+                  const rows=Array.isArray(checked) ? checked : checked && typeof checked==="object" && "regions" in checked && Array.isArray(checked.regions) ? checked.regions : [];
+                  const corrected=typeof rows[0]?.text==="string" && rows[0].text.trim().replace(/[♡♥❤。！!]+$/u,"")===candidate;
+                  if (corrected) {
+                    region.text=region.text.replace(word,candidate);
+                    report?.("花字复读 · 已确认工程中已有的写法", "info");
+                  }
+                } catch (error) {
+                  signal.throwIfAborted();
+                  report?.("花字局部复读失败，已保留首次结果","info");
+                }
+              }
+            }
+            let labels: PaddleOcrLine[] = [];
+            if (sheet.contextImage) {
+              const labelResult = await requestGameModelJson(settings, model,
+                '只抄录画面上的原始页标题、按钮名及短界面标签。图案、图标和空白按钮不要猜作文字。英文照抄。每个短标签单独画框。只返回 {"regions":[{"text":"原文","confidence":90,"x0":0,"y0":0,"x1":100,"y1":100}]}，横纵坐标分别按0–1000归一化。' + nameHint,
+                signal, "data:image/png;base64," + sheet.contextImage, "game-images", report, { selection, role: scene });
+              labels = parseGameImageRegions(labelResult,bitmap.width,bitmap.height);
+              const heading = labels.find(row => /^[A-Z][A-Z '-]{7,}$/.test(row.text) && row.x1 - row.x0 >= 150);
+              if (heading) {
+                try {
+                  const previous = heading.text;
+                  const bytes = Uint8Array.from(atob(sheet.contextImage), char => char.charCodeAt(0));
+                  const clean = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+                  const height = heading.y1 - heading.y0;
+                  const x0 = Math.max(0, Math.floor(heading.x0 - height * .35));
+                  const y0 = Math.max(0, Math.floor(heading.y0 - height * .3));
+                  const x1 = Math.min(clean.width, Math.ceil(heading.x1 + height * .85));
+                  const y1 = Math.min(clean.height, Math.ceil(heading.y1 + height * .35));
+                  const focused = document.createElement("canvas");
+                  const zoom = Math.min(2, 1200 / (x1 - x0));
+                  focused.width = Math.ceil((x1 - x0) * zoom);
+                  focused.height = Math.ceil((y1 - y0) * zoom);
+                  focused.getContext("2d")!.drawImage(clean, x0, y0, x1-x0, y1-y0, 0, 0, focused.width, focused.height);
+                  clean.close();
+                  const reread = await requestGameModelJson(settings, model,
+                    'Transcribe the large stylized English heading exactly, one printed letter at a time. Return only {"regions":[{"index":1,"text":"printed heading","confidence":95}]}.',
+                    signal, focused.toDataURL("image/png"), "game-images", report, { selection, role: scene, groupedImageOcr: true });
+                  const rows = Array.isArray(reread) ? reread : reread && typeof reread === "object" && "regions" in reread && Array.isArray(reread.regions) ? reread.regions : [];
+                  const revised = typeof rows[0]?.text === "string" ? rows[0].text.trim() : "";
+                  if (/^[A-Z][A-Z '-]{7,}$/.test(revised)) {
+                    heading.text = revised;
+                    if (revised !== previous) report?.("底图英文标题已局部复读", "info");
+                  }
+                } catch (error) {
+                  signal.throwIfAborted();
+                  report?.("底图英文标题局部复读失败，已保留首次结果", "info");
+                }
+              }
+              if (!labels.length) report?.("未在底图识别到独立界面文字", "info");
+              else report?.(`无批注底图 · 另识别 ${labels.length} 个标题或标签`, "info");
+            }
+            report?.(`识字完成 · ${model} · ${mapped.size} 组 · ${((performance.now()-started)/1000).toFixed(2)} 秒`, "info");
+            return [...found,...labels];
+          }
+          report?.(`${mode}仅识别 ${mapped.size}/${sheet.regions.length} 组，回到整图核对`, "info");
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        report?.(`分组识别失败，改用整图识别 · ${String(error)}`, "info");
+      }
+    }
+    const image = measureGameWork(execution, "processingMs", () => canvas.toDataURL("image/png"));
+    const prompt = gameTaskPrompt(scene, selection, variables) + '\n识别图片全部可读文字及位置，不翻译、不推测。仅返回包含 regions 数组的 JSON 对象。每项的 text 是原文字符串，confidence、x0、y0、x1、y1 是数值。坐标以收到的图片左上角为原点，横纵均归一化至0–1000，必须满足 0<=x0<x1<=1000、0<=y0<y1<=1000。confidence 必须为0–100的数值，不带百分号。无文字返回 {"regions":[]}，不要输出说明。' + (scene === "recognize" ? "同一段落或同一标签的内容因排版换行时，用一个区域包住整段，合成完整原文。不同列、独立标题或下一个带标签的字段分别返回。" : "");
     const recognize = async (instruction: string) => {
       const value = await requestGameModelJson(settings, model, instruction, signal, image, "game-images", report, { selection, role: scene });
       return measureGameWork(execution, "processingMs", () => {
-        const lines = parseGameImageRegions(value, bitmap.width, bitmap.height, edges => {
+        const lines = parseGameImageRegions(value, crop ? canvas.width : bitmap.width, crop ? canvas.height : bitmap.height, edges => {
           const detail = edges.length === 1 ? edges[0] : `已裁正 ${edges.length} 个越界坐标（${edges[0]}）`;
           report?.(`${model} · ${detail}。已保留识别结果。`, "error");
         });
-        return scene === "recognize" ? mergeGameImageFieldLines(lines) : lines;
+        const original = crop ? mapGameOcrCrop(lines, crop, canvas.width, canvas.height) : lines;
+        return logo ? original.map(region => ({ ...region, text: correctGameLogoText(region.text,variables?.names) }))
+          : scene === "recognize" ? mergeGameImageFieldLines(original) : original;
       });
     };
-    try { return await recognize(prompt); }
+    const instruction = logo
+      ? prompt + "\n每段不同颜色、字号或位置的标题字给自己的紧框。独立的拉丁缩写及 & 也分别给框，禁止把彼此错行的字排成一个大框。坐标只包住这一组实际笔画。" + nameHint
+      : scene === "recognize"
+      ? prompt + "\n斜排、弧形或竖排的连续文字按阅读顺序抄成一个区域，不要逐字分框；不能辨认的笔画或装饰不要猜成假名。置信度按该区域字形是否清楚分别估计。" + nameHint
+      : prompt;
+    try { return await recognize(instruction); }
     catch (error) {
       signal.throwIfAborted();
       if (!(error instanceof InvalidImageRegions)) throw error;
       report?.(`${model} · ${error.message}。正在重新识别一次。`, "error");
-      return await recognize(prompt + '\n上次输出未通过校验：' + error.message + '。请重新检查所有区域的坐标范围、非零宽高和置信度，返回完整结果。');
+      return await recognize(instruction + '\n上次输出未通过校验：' + error.message + '。请重新检查所有区域的坐标范围、非零宽高和置信度，返回完整结果。');
     }
   } catch (error) {
     signal.throwIfAborted();
@@ -174,7 +324,7 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
     }
     report?.(`${model} · ${reason.replace(/。$/, "")}。软件已自动启动本地 OCR。`, "error");
     try {
-      const lines = await measureGameAsync(execution, "processingMs", () => fallback(blob));
+      const lines = await measureGameAsync(execution, "processingMs", () => scene === "recognize" ? recognizeLocalGameImage(blob, fallback, signal) : fallback(blob));
       signal.throwIfAborted();
       const regions = scene === "recognize" ? mergeGameImageFieldLines(lines) : lines;
       report?.(`本地 OCR 已完成，${regions.length ? `得到 ${regions.length} 个文字区域` : "未识别到文字"}。`, "success");
@@ -187,9 +337,22 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
   } finally { bitmap.close(); }
 }
 
-export async function renderGameImage(settings: Settings, model: string, blob: Blob, regions: UnityImageRegion[], signal: AbortSignal, selection?: GamePromptSelection, variables?:{source?:string;target?:string}, report?: OllamaOutput) {
+export async function renderGameImage(settings: Settings, model: string, blob: Blob, regions: UnityImageRegion[], signal: AbortSignal, selection?: GamePromptSelection, variables?:{source?:string;target?:string}, report?: OllamaOutput, placement?: GameImagePlacement) {
+  const failures = regions.flatMap((region, index) => {
+    if (!region.selected) return [];
+    const message = gameImageTranslationProblem(region.text, region.translation, variables?.target);
+    return message ? [{ index, message }] : [];
+  });
+  if (failures.length) throw new UnityImageLayoutError(failures);
   const execution = gameModelExecution(selection, "layout", model);
-  const render = (values: UnityImageRegion[]) => measureGameAsync(execution, "processingMs", () => renderUnityImage(blob, values));
+  const render = (values: UnityImageRegion[]) => measureGameAsync(execution, "processingMs", async () => {
+    if (placement) {
+      const image = await renderPlacedGameImage(blob, values, placement, signal, report);
+      if (image) return image;
+      report?.("未检测到本地重绘环境，使用原位嵌字", "info");
+    }
+    return renderUnityImage(blob, values);
+  });
   if (!model) return render(regions);
   const segmenter = new Intl.Segmenter(variables?.target, { granularity: "word" });
   const selected = regions.flatMap((region, index) => {
