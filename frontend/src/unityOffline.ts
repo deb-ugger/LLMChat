@@ -81,6 +81,7 @@ export type UnityProgress = {
   textStage?: "screening" | "names" | "layout";
   model?: string;
   detail: string; completed: number; total: number | null; folder?: string; coverageCompleted?: number; coverageTotal?: number; requests?: number; reused?: number;
+  redrawFailed?: number;
   translation?: { processed: number; pending: number; successful: number; failed: number; failedEntries: number; active: UnityTranslationActivity[]; last?: { id: string; failed: boolean } };
   engineStats?: UnityEngineProgress[]; engineTargetCharacters?: number;
 };

@@ -28,7 +28,7 @@ export const GameConcurrencyDraft = createContext<{
   updateFilter: (role: string, filter: ModelFilter) => void;
 } | null>(null);
 
-type Activity = { step: string; state: string; progress?: ReactNode };
+type Activity = { step: string; state: string; label?: string; progress?: ReactNode };
 const stateLabels: Record<string, string> = {
   done: "已完成", current: "未完成", waiting: "等待上一步",
   running: "正在处理", error: "失败", stopped: "已中止",
@@ -217,6 +217,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const models = chosen ? [...modelKeys].map(([key, model]) => measured.models[key] || { ...model, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 }) : Object.values(measured.models);
         const matchesActivity = activity?.step === step.id;
         const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
+        const statusLabel = matchesActivity && state === "error" ? activity.label : undefined;
         const current = showingBenchmark || !benchmarkRunning && (state === "running" || activity?.state !== "running" && state === "current");
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
         const actionLabel = step.stop ? step.stopDisabled ? "正在中止" : "中止" : runLabel;
@@ -228,7 +229,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           <div className="game-flow-row">
             <button type="button" className="game-flow-step-toggle" aria-label={`${expanded ? "收起" : "展开"}${step.title}设置`}
               aria-expanded={expanded} data-tooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"} onClick={() => onConfigure(expanded ? null : step.id)} />
-            <div className="game-flow-step-main"><strong>{step.title}</strong><small>{showingBenchmark ? "性能测试中" : (state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state]}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</small></div>
+            <div className="game-flow-step-main"><strong>{step.title}</strong><small>{showingBenchmark ? "性能测试中" : statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</small></div>
             <div className="game-flow-summary" style={{display:"block",overflow:"visible",WebkitLineClamp:"unset"}}>
               {showingBenchmark && benchmarkQueue && <div className="game-flow-model-rates">
                 <span className="game-flow-model-name">性能测试</span>

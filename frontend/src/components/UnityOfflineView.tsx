@@ -14,7 +14,7 @@ import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } fro
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
 import { gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { createGameImageOcrReuse, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
+import { createGameImageOcrReuse, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { collectGameImageNames, translateNamedImageText } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
@@ -255,7 +255,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const checkpoint = abort.current && value.step >= 2 ? { ...value, ...execution.current.parameters } : value;
     checkpointRef.current = checkpoint; setCheckpoint(checkpoint); setGeneration(checkpoint.progress);
     const { progress, translationRuns, ...fields } = checkpoint;
-    const parts = translationRuns && Object.fromEntries(Object.entries(translationRuns).map(([part, value]) => [part, { state: value.state, total: value.total, failure: value.failure, engineStats: value.engineStats?.map(({ id, characters }) => ({ id, characters })) }]));
+    const parts = translationRuns && Object.fromEntries(Object.entries(translationRuns).map(([part, value]) => [part, { state: value.state, total: value.total, failure: value.failure,
+      completed: value.redrawFailed === undefined ? undefined : value.completed, redrawFailed: value.redrawFailed,
+      engineStats: value.engineStats?.map(({ id, characters }) => ({ id, characters })) }]));
     const signature = JSON.stringify({ root, ...fields, translationRuns: parts, progress: { step: progress.step, state: progress.state, folder: progress.folder, total: progress.total, failure: progress.failure } });
     if (signature !== queuedSignature.current) {
       queuedSignature.current = signature;
@@ -489,10 +491,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   useOutputMessage(["游戏翻译", "Unity", "生成补丁"], checkpoint?.partial ? `仅回写 ${done} 条有效译文，其余 ${selected.length - done} 条保持原文。` : null);
   const currentParts = checkpoint?.translationRuns && {
     text: unityCurrentPartProgress(checkpoint.translationRuns.text, "text", readiness, !!checkpoint.layoutOnly)!,
-    images: unityCurrentPartProgress(checkpoint.translationRuns.images, "images", readiness)!,
+    images: checkpoint.imageTask === "redraw" ? checkpoint.translationRuns.images : unityCurrentPartProgress(checkpoint.translationRuns.images, "images", readiness)!,
   };
   const generation = localActivity && localActivity.value.step === activeStep && (activeStep !== 2 || localActivity.images === imagePart) ? localActivity.value : (activeStep === 2 && currentParts ? currentParts[imagePart ? "images" : "text"]
-    : generationState?.step === 2 ? unityCurrentPartProgress(generationState, checkpoint?.imageOnly ? "images" : "text", readiness, !!checkpoint?.layoutOnly) : generationState) ?? null;
+    : generationState?.step === 2 && !(checkpoint?.imageOnly && checkpoint.imageTask === "redraw")
+      ? unityCurrentPartProgress(generationState, checkpoint?.imageOnly ? "images" : "text", readiness, !!checkpoint?.layoutOnly) : generationState) ?? null;
   const qualityCache = useMemo(() => new WeakMap<UnityEntry, { source: string; translation: string; warnings: string[] }>(), [target]);
   const qualityIssues = useMemo(() => {
     const issues = new Map<string, string[]>();
@@ -1026,7 +1029,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             publishTranslation(next, "images");
             invalidatePatch();
           },
-        }, (completed, total, detail) => onProgress({ completed, total, detail }), imageLog);
+        }, onProgress, imageLog);
         if (result.failed) throw new Error(`${result.failed} / ${result.total} 张重绘失败，失败项仍可重试`);
         imageLog(`AI 风格重绘完成 · ${result.total} 张`, "success");
       } finally {
@@ -1430,7 +1433,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           const partReported = { text: 0, images: 0 };
           const reportPart = (part: UnityTranslationPart, value: UnityProgress) => {
             beginGameStep(promptState.scope + ":" + part, part === "text" ? value.textStage === "screening" ? "screen" : "translate" : run.imageTask || imageTask.current);
-            run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], ...value, textStage: value.textStage, model: value.model, step: 2, state: "running" } } };
+            run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], ...value, textStage: value.textStage, model: value.model,
+              redrawFailed: value.redrawFailed, step: 2, state: "running" } } };
             checkpointRef.current = run;
             if (value.total !== null && value.completed === value.total || performance.now() - partReported[part] >= 100) { remember(run); partReported[part] = performance.now(); }
           };
@@ -2072,10 +2076,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const partHasWork = imagePart ? imagesNeedScreen || imagesNeedRefine || imageRedrawCount > 0 || (project?.images || []).some(image => image.selected && (!image.ocrCompleted || !unityImageWorkDone(image, target))) : selected.length > 0 && !textReady;
   const partActionDisabled = restoring || saving || !scanReady || (!partRunning && !textScreening && (!!busy && !translationJobs.current || !partHasWork || (!imagePart && textScreened || imagePart && !imagesNeedRecognition && !imageRenderReady) && !connectionReady));
   const saveFeedback = saveComplete && <div className="unity-save-feedback" role="status"><strong>保存成功</strong>{savedChanges.length > 0 && <ul>{savedChanges.slice(0, 5).map((change, index) => <li key={index}>{change}</li>)}</ul>}{savedChanges.length > 5 && <small>另有 {savedChanges.length - 5} 项修改已保存</small>}</div>;
-  const flowProgressState = !imagePart && textScreening || partRunning ? "running" :
-    (imagePart ? imagesReady : textReady) ? "done" : currentParts?.[currentPart]?.state ??
-    (generation?.step === 2 && progressIsImage === imagePart ? generation.state : "pending");
   const runningFlowStep = imagePart ? imageTask.current : textScreening || currentParts?.text.textStage === "screening" || !screenComplete ? "screen" : "translate";
+  const redrawPhase = imagePart && runningFlowStep === "redraw";
+  const partProgressState = currentParts?.[currentPart]?.state ??
+    (generation?.step === 2 && progressIsImage === imagePart ? generation.state : "pending");
+  const flowProgressState = !imagePart && textScreening || partRunning ? "running" :
+    redrawPhase && partProgressState === "error" ? "error" : (imagePart ? imagesReady : textReady) ? "done" : partProgressState;
   const sharedLanguageLocked = !!busy || textScreening || restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview;
   const flowConfigComplete = imagePart ? flowConfig === "filter" ? !imagesNeedScreen : flowConfig === "refine" ? !imagesNeedRefine :
     flowConfig === "recognize" ? !imagesNeedRecognition : flowConfig === "translate" || flowConfig === "review" ? imageTextDone : imagesReady :
@@ -2139,6 +2145,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const visibleGeneration = viewingProgress ? generation : null;
   const progressState = visibleGeneration && localActivity?.value === visibleGeneration && visibleGeneration.state === "running"
     ? "running" : activeStep === 2 ? flowProgressState : visibleGeneration?.state ?? (activeStep <= completedThrough ? "done" : "pending");
+  const redrawSummary = activeStep === 2 && redrawPhase ? gameImageRedrawSummary(visibleGeneration, progressState === "error") : undefined;
+  const showProgressCount = !(activeStep === 2 && redrawPhase && progressState === "error" && !redrawSummary);
   const progressTitle = activeStep === 2
     ? imagePart ? unityImagePhaseNames[imageTask.current]
       : visibleGeneration?.textStage ? gameTextStageLabels[visibleGeneration.textStage]
@@ -2156,8 +2164,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     : undefined;
   const scanBusy = activeStep === 1 && progressState === "running";
   const progressContent = <GameStepProgress title={progressTitle} state={progressState} elapsed={elapsedLabel}
-    percent={visibleGeneration ? progressPercent : undefined}
-    count={visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined}
+    label={redrawSummary?.label}
+    percent={redrawSummary?.percent ?? (visibleGeneration && showProgressCount ? progressPercent : undefined)}
+    count={redrawSummary?.count ?? (showProgressCount && visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined)}
     actions={<>
       {activeStep !== 2 && taskAction}
       {activeStep === 1 && !busy && !restoring && <button className="unity-btn unity-btn-primary" disabled={!root || !output}
@@ -2226,7 +2235,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           </details>
           {scanResources}
         </div>}
-        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig} onRun={imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined}
+        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig} onRun={imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined}
           steps={imagePart ? [
             { id: "filter", title: "筛选图片", models: [{role:"screen",id:imageScreeningOptions.filterModel}],
               summary: imageScreeningOptions.filterModel !== undefined ? "大模型筛选" : imageScreeningOptions.strategy === "full" ? "完整范围筛选" : "分级快速筛选",

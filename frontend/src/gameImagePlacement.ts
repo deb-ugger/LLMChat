@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { UnityImage, UnityImageRegion } from "./unityOffline";
+import type { UnityImage, UnityImageRegion, UnityProgress } from "./unityOffline";
 import type { OllamaOutput } from "./gameOllama";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 
@@ -114,20 +114,33 @@ export function gameImageRedrawSelected(image: UnityImage) {
     !image.noTranslationNeeded && !!image.screening.redrawSelected;
 }
 
+export function gameImageRedrawSummary(progress: Partial<Pick<UnityProgress, "completed" | "total" | "redrawFailed">> | null, errored: boolean) {
+  if (!progress?.total || progress.completed === undefined || progress.redrawFailed === undefined) return;
+  const { total, redrawFailed: failed } = progress;
+  const succeeded = progress.completed - failed;
+  return {
+    count: `已完成 ${succeeded} / ${total} 张${failed ? ` · 失败 ${failed} 张` : ""}`,
+    percent: Math.floor(succeeded / total * 100),
+    label: errored && failed > 0 && succeeded > 0 ? "部分失败" : undefined,
+  };
+}
+
 export async function redrawGameImages(images: UnityImage[], profileId: StyleRedrawProfileId, target: string,
   signal: AbortSignal, io: {
     regions: (image: UnityImage) => UnityImageRegion[];
     read: (image: UnityImage) => Promise<Blob>;
     write: (image: UnityImage, blob: Blob) => Promise<{ path: string; hash: string }>;
     persist: (image: UnityImage) => Promise<void>;
-  }, progress: (completed: number, total: number, detail: string) => void, report: OllamaOutput) {
+  }, progress: (value: UnityProgress) => void, report: OllamaOutput) {
   const queue = images.filter(gameImageRedrawSelected);
+  let failed = 0;
+  const update = (completed: number, detail: string) => progress({ completed, total: queue.length, detail, redrawFailed: failed });
+  update(0, "正在准备重绘");
   const profile = loadStyleRedrawProfiles()[profileId];
   if (profileId === "custom" && !profile.graph) throw new Error("请先在 AI 风格重绘中配置自定义 API 工作流");
-  let failed = 0;
   for (const [index, image] of queue.entries()) {
     signal.throwIfAborted();
-    progress(index, queue.length, image.name);
+    update(index, image.name);
     let blob: Blob;
     try {
       const regions = io.regions(image).filter(region => region.selected && !region.error && region.translation.trim() &&
@@ -154,7 +167,7 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
       await io.persist({ ...image, screening: { ...image.screening!, redrawError: reason } });
       report(image.name + " · " + reason, "error");
       failed++;
-      progress(index + 1, queue.length, image.name);
+      update(index + 1, image.name);
       continue;
     }
     signal.throwIfAborted();
@@ -162,7 +175,7 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
     await io.persist({ ...image, renderedFile: saved.path, renderedHash: saved.hash, renderedKind: "generated",
       renderedTarget: target, noTranslationNeeded: false, completed: true, error: "",
       screening: { ...image.screening!, redrawSelected: false, redrawError: undefined } });
-    progress(index + 1, queue.length, image.name);
+    update(index + 1, image.name);
   }
   return { total: queue.length, failed };
 }
