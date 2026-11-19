@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SearchableSelect } from "./SearchableSelect";
 import { showAppNotice } from "./AppNotice";
 import { workflowControls, workflowEdits, type WorkflowControl } from "../comfyWorkflowFields";
+import { readFileBytes } from "../localDocFile";
 import { useGameActionConfirm } from "./GameActionConfirm";
 
 type WorkflowFile = { path: string; modified?: number | null };
@@ -13,7 +15,7 @@ type Inventory = { directory: string; model: string[]; clip: string[]; vae: stri
 const directoryKey = "llmchat-comfy-directory";
 const workflowKey = "llmchat-comfy-saved-workflow";
 
-function filePayload(file: File) {
+function filePayload(file: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
@@ -22,20 +24,53 @@ function filePayload(file: File) {
   });
 }
 
-function Control({ field, text, change, upload, canUpload }: {
-  field: WorkflowControl; text: string; change: (text: string) => void; upload: (file: File) => void; canUpload: boolean;
+function WorkflowImagePreview({ text, label }: { text: string; label: string }) {
+  const [source, setSource] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!text) return;
+    const [, path, kind = "input"] = /^(.*?)(?:\s*\[(input|output|temp)\])?$/.exec(text) ?? [];
+    if (!path) return;
+    const parts = path.split(/[\\/]/);
+    const filename = parts.pop();
+    let current = true;
+    let url = "";
+    void invoke<ArrayBuffer>("read_redraw_thumbnail", { filename, subfolder: parts.join("/"), kind }).then(bytes => {
+      if (!current) return;
+      url = URL.createObjectURL(new Blob([bytes], { type: "image/webp" }));
+      setSource(url);
+    }).catch(cause => { if (current) setError(String(cause)); });
+    return () => {
+      current = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [text]);
+  if (error) return <span className="style-redraw-error" role="status">{error}</span>;
+  if (source) return <img src={source} alt={label} draggable={false} onError={() => setError("无法读取图片预览")} />;
+  return <span className="style-redraw-hint">{text ? "正在读取预览…" : "未选择图片"}</span>;
+}
+
+function WorkflowImage({ label, text, active, canUpload, upload }: {
+  label: string; text: string; active: boolean; canUpload: boolean; upload: (file: File) => void;
 }) {
-  if (field.kind === "image") return <div className="style-redraw-input-image">
-    <span data-tooltip={text}>{text.split(/[\\/]/).at(-1) || "未选择图片"}</span>
-    <label className="style-redraw-image-pick">更换图片
-      <input type="file" aria-label={`更换${field.label}`} accept="image/png,image/jpeg,image/webp,image/bmp"
+  return <div className="style-redraw-input-image">
+    <label className="style-redraw-image-pick">
+      {active && <WorkflowImagePreview key={text} text={text} label={label} />}
+      {canUpload && <span className="style-redraw-hint">拖放或点击更换</span>}
+      <input type="file" aria-label={`更换${label}`} accept="image/png,image/jpeg,image/webp,image/bmp"
         disabled={!canUpload} onChange={event => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           if (file) upload(file);
         }} />
     </label>
+    {text && <span className="style-redraw-image-name" data-tooltip={text}>{text.split(/[\\/]/).at(-1)}</span>}
   </div>;
+}
+
+function Control({ field, text, change }: {
+  field: WorkflowControl; text: string; change: (text: string) => void;
+}) {
   if (field.kind === "prompt") return <textarea rows={3} aria-label={field.label} value={text} onChange={event => change(event.target.value)} />;
   if (field.kind === "fast") return <label className="style-redraw-toggle">
     <input type="checkbox" aria-label={field.label} checked={text === "true"} onChange={event => change(String(event.target.checked))} />
@@ -70,12 +105,43 @@ export function ComfyWorkflowEditor<Queue>({ active, renderQueue }: {
   const [working, setWorking] = useState<"run" | "save" | "upload" | "connect" | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
   const [inventory, setInventory] = useState<Inventory | null>(null);
+  const [hoveredImage, setHoveredImage] = useState<string | null>(null);
+  const fields = useRef<HTMLFieldSetElement>(null);
+  const uploading = useRef(false);
+  const dropFiles = useRef<(pointer: string, files: (File | string)[]) => void>(() => {});
   const { dialog, confirm } = useGameActionConfirm();
   const file = files?.find(file => file.path === selected);
   const current = snapshot?.path === selected ? snapshot : null;
   const dirty = Object.keys(changes).length > 0;
   const outdated = !!current && (!file || current.modified !== file.modified);
   const controls = useMemo(() => workflowControls(current?.workflow), [current?.workflow]);
+  const canUpload = active && !!inventory && !!current && !working && !loading && !outdated;
+  const visibleControls = controls.filter(({ condition }) => !condition ||
+    (changes[condition.pointer] ?? String(condition.initial)) === String(condition.value));
+
+  const imageAt = useCallback((element: Element | null) => {
+    const target = element?.closest<HTMLElement>("[data-workflow-image]");
+    return target && fields.current?.contains(target) ? target.dataset.workflowImage ?? null : null;
+  }, []);
+
+  useEffect(() => {
+    if (!active) { setHoveredImage(null); return; }
+    if (!isTauri()) return;
+    let listening = true;
+    let dispose: (() => void) | undefined;
+    void getCurrentWindow().onDragDropEvent(({ payload }) => {
+      if (!listening) return;
+      if (payload.type === "leave") { setHoveredImage(null); return; }
+      const scale = window.devicePixelRatio;
+      const pointer = imageAt(document.elementFromPoint(payload.position.x / scale, payload.position.y / scale));
+      if (payload.type === "drop") {
+        setHoveredImage(null);
+        if (pointer) dropFiles.current(pointer, payload.paths);
+      } else setHoveredImage(pointer);
+    }).then(unlisten => { if (listening) dispose = unlisten; else unlisten(); })
+      .catch(cause => { if (listening) showAppNotice(String(cause), "error"); });
+    return () => { listening = false; dispose?.(); };
+  }, [active, imageAt]);
 
   const inspect = async (path: string, announce = false) => {
     try {
@@ -149,7 +215,7 @@ export function ComfyWorkflowEditor<Queue>({ active, renderQueue }: {
         const job = await invoke<{ prompt_id: string; number?: number }>("submit_redraw_workflow", args);
         showAppNotice(`已加入 ComfyUI 队列 · ${job.number == null ? job.prompt_id.slice(0, 8) : `任务 #${job.number}`}`);
       }
-    } catch (error) { setError(String(error)); }
+    } catch (error) { showAppNotice(String(error), "error"); }
     finally { setWorking(null); }
   };
 
@@ -162,17 +228,31 @@ export function ComfyWorkflowEditor<Queue>({ active, renderQueue }: {
     });
   };
 
-  const upload = async (field: WorkflowControl, file: File) => {
-    if (!inventory || working || !current || outdated) return;
+  const upload = async (field: WorkflowControl, source: File | string) => {
+    if (!inventory || !canUpload || uploading.current) return;
+    const name = typeof source === "string" ? source.split(/[\\/]/).at(-1) ?? "" : source.name;
+    if (!/\.(?:png|jpe?g|webp|bmp)$/i.test(name)) {
+      showAppNotice("请选择 PNG、JPG、WebP 或 BMP 图片", "error");
+      return;
+    }
+    uploading.current = true;
     setWorking("upload"); setError("");
     try {
+      const file = typeof source === "string" ? new Blob([await readFileBytes(source)]) : source;
       const result = await invoke<{ name: string }>("run_style_redraw", {
         directory: inventory.directory, image: await filePayload(file), steps: 1, regions: [],
-        mode: "workflow-input", profile: { name: file.name }, progress: new Channel<string>(),
+        mode: "workflow-input", profile: { name }, progress: new Channel<string>(),
       });
       setField(field, result.name);
-    } catch (cause) { setError(String(cause)); }
-    finally { setWorking(null); }
+    } catch (cause) { showAppNotice(String(cause), "error"); }
+    finally { uploading.current = false; setWorking(null); }
+  };
+
+  dropFiles.current = (pointer, files) => {
+    const field = controls.find(field => field.pointer === pointer && field.kind === "image");
+    if (!canUpload || !field || !files.length) return;
+    if (files.length > 1) { showAppNotice("每次请拖入一张图片", "error"); return; }
+    void upload(field, files[0]);
   };
 
   const connect = async () => {
@@ -231,11 +311,30 @@ export function ComfyWorkflowEditor<Queue>({ active, renderQueue }: {
         {current && (controls.length ? <section className="style-redraw-card style-redraw-workflow-config">
           <h3>重绘参数</h3>
           {working === "upload" && <small role="status">正在上传图片…</small>}
-          <fieldset disabled={loading || !!working || outdated}>
-            {controls.map(field => <div className={"style-redraw-field style-redraw-field-" + field.kind} key={field.pointer}>
+          <fieldset ref={fields} disabled={loading || !!working || outdated}
+            onDragOver={event => {
+              if (!event.dataTransfer.types.includes("Files")) return;
+              const pointer = imageAt(event.target as Element);
+              if (!pointer) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+              setHoveredImage(pointer);
+            }}
+            onDragLeave={event => setHoveredImage(imageAt(event.relatedTarget instanceof Element ? event.relatedTarget : null))}
+            onDrop={event => {
+              const pointer = imageAt(event.target as Element);
+              setHoveredImage(null);
+              if (!pointer) return;
+              event.preventDefault();
+              dropFiles.current(pointer, Array.from(event.dataTransfer.files));
+            }}>
+            {visibleControls.map(field => <div className={"style-redraw-field style-redraw-field-" + field.kind} key={field.pointer}
+              data-workflow-image={field.kind === "image" && canUpload ? field.pointer : undefined}
+              data-image-hover={canUpload && hoveredImage === field.pointer ? "" : undefined}>
               <span data-tooltip={field.kind === "strength" ? "数值越高，生成结果可以与原图差别越大。" : field.kind === "steps" ? "增加步数通常会延长生成时间。" : undefined}>{field.label}</span>
-              <Control field={field} text={changes[field.pointer] ?? String(field.value)} canUpload={!!inventory}
-                change={value => setField(field, value)} upload={file => void upload(field, file)} />
+              {field.kind === "image" ? <WorkflowImage key={refresh} label={field.label} text={changes[field.pointer] ?? String(field.value)}
+                active={active} canUpload={canUpload} upload={file => void upload(field, file)} />
+                : <Control field={field} text={changes[field.pointer] ?? String(field.value)} change={value => setField(field, value)} />}
             </div>)}
           </fieldset>
         </section> : <p className="style-redraw-hint">这个工作流的参数可在 ComfyUI 编辑器中调整。</p>)}

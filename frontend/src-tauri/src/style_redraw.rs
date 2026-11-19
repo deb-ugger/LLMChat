@@ -315,8 +315,10 @@ pub async fn read_redraw_queue() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn read_redraw_thumbnail(filename: String, subfolder: String, kind: String, original: Option<bool>) -> Result<tauri::ipc::Response, String> {
-    if filename.is_empty() || filename.contains(['/', '\\', ':']) || matches!(filename.as_str(), "." | "..") ||
-        !matches!(kind.as_str(), "output" | "temp") || subfolder.contains(':') || subfolder.starts_with(['/', '\\']) ||
+    let asset_hash = filename.strip_prefix("blake3:")
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if filename.is_empty() || (!asset_hash && filename.contains(['/', '\\', ':'])) || matches!(filename.as_str(), "." | "..") ||
+        !matches!(kind.as_str(), "input" | "output" | "temp") || subfolder.contains(':') || subfolder.starts_with(['/', '\\']) ||
         subfolder.split(['/', '\\']).any(|part| matches!(part, "." | "..")) {
         return Err("ComfyUI 预览路径无效".into());
     }
@@ -326,12 +328,14 @@ pub async fn read_redraw_thumbnail(filename: String, subfolder: String, kind: St
         .append_pair("type", &kind);
     if !original { url.query_pairs_mut().append_pair("preview", "webp;85"); }
     let response = comfy_http()?.get(url).send().await.map_err(|e| e.to_string())?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND { return Err("此图片已不存在，可能是 ComfyUI 已清理临时文件".into()); }
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(if kind == "temp" { "此图片已不存在，可能是 ComfyUI 已清理临时文件" } else { "ComfyUI 中找不到此图片" }.into());
+    }
     if !response.status().is_success() { return Err(format!("ComfyUI 预览不可用（HTTP {}）", response.status())); }
     let limit = if original { 64 } else { 4 } * 1024 * 1024;
-    if response.content_length().is_some_and(|size| size > limit) { return Err("图片文件过大，无法在队列中预览".into()); }
+    if response.content_length().is_some_and(|size| size > limit) { return Err("图片文件过大，无法预览".into()); }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit { return Err("图片文件过大，无法在队列中预览".into()); }
+    if bytes.len() as u64 > limit { return Err("图片文件过大，无法预览".into()); }
     Ok(tauri::ipc::Response::new(bytes.to_vec()))
 }
 
@@ -408,7 +412,8 @@ fn apply_workflow_edits(workflow: &mut Value, edits: Vec<WorkflowEdit>) -> Resul
             matches!(parts.as_slice(), [_, "inputs", _])
         } else {
             matches!(parts.as_slice(),
-                ["nodes", _, "widgets_values", _] | ["definitions", "subgraphs", _, "nodes", _, "widgets_values", _])
+                ["nodes", _, "widgets_values" | "widgets_values_named", _] |
+                ["definitions", "subgraphs", _, "nodes", _, "widgets_values" | "widgets_values_named", _])
         };
         let old = workflow.pointer(&edit.pointer).filter(|old| allowed &&
             (old.is_number() && edit.value.is_number() || std::mem::discriminant(*old) == std::mem::discriminant(&edit.value)) &&

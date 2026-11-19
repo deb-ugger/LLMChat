@@ -85,17 +85,24 @@
 .style-redraw-field-prompt { grid-column: 1 / -1; }
 .style-redraw-field > input[type=text], .style-redraw-field > textarea { min-width: 0; width: 100%; }
 .style-redraw-field > .style-redraw-toggle { display: flex; align-items: center; gap: 6px; }
-.style-redraw-input-image { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.style-redraw-input-image { display: grid; gap: 5px; min-width: 0; }
 .style-redraw-strength { display: flex; align-items: center; gap: 6px; }
 .style-redraw-strength input { min-width: 0; flex: 1; padding: 0; }
 .style-redraw-strength output { min-width: 4ch; text-align: end; font-variant-numeric: tabular-nums; }
-.style-redraw-input-image > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.style-redraw-image-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .style-redraw-input-image .style-redraw-image-pick {
-  position: relative; padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer;
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 140px; box-sizing: border-box; padding: 7px; text-align: center;
+  border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--bg-panel);
+}
+.style-redraw-image-pick img { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
+.style-redraw-image-pick:has(input:not(:disabled)) { cursor: pointer; }
+.style-redraw-image-pick:has(input:not(:disabled)):hover,
+.style-redraw-field[data-image-hover] .style-redraw-image-pick {
+  border-color: var(--accent); background: var(--accent-soft);
 }
 .style-redraw-image-pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: inherit; }
 .style-redraw-image-pick:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
-.style-redraw-image-pick:has(:disabled) { opacity: .5; cursor: default; }
 .style-redraw-game-files > summary { cursor: pointer; color: var(--text-muted); }
 .style-redraw-game-files > section { margin-top: 8px; }
 .style-redraw .style-redraw-card button.style-redraw-primary { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
