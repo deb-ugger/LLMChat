@@ -2,6 +2,7 @@
 #include "GameFileOps.h"
 #include "GameResourceBackup.h"
 #include "GameImageStateStore.h"
+#include "RpgImageComposition.h"
 #include <memory>
 #include <set>
 #include <mutex>
@@ -58,6 +59,9 @@ class RpgImageProject {
     static Path installedImage(const Path& game,const std::string& imageId,bool mosaic){
         return folder(game)/(mosaic?"mosaic-installed":"installed")/(imageId+".bin");
     }
+    static Path composedImage(const Path& game,const std::string& imageId){
+        return folder(game)/"composed-installed"/(imageId+".bin");
+    }
     static bool matchesInstalled(const Path& installed,const std::string& bytes){
         return std::filesystem::is_regular_file(installed)&&gamefiles::read(installed)==bytes;
     }
@@ -69,9 +73,77 @@ class RpgImageProject {
             throw std::runtime_error("原图版本无效，请重新扫描");
         return folder(game)/"mosaic"/(imageId+"-"+revision+".png");
     }
-    static std::string storedOriginal(const Path& game,const Json& image,const std::string& key){
-        auto bytes=gamefiles::read(originalCache(game,image));
-        return image.value("encrypted",false)?codec(std::move(bytes),key,true):bytes;
+    static std::string imageBytes(const Json& image,std::string bytes,const std::string& key,bool encrypt){
+        return image.value("encrypted",false)?codec(std::move(bytes),key,encrypt):bytes;
+    }
+    struct AppliedLayers {
+        std::optional<std::string> translation;
+        std::optional<std::string> mosaic;
+        std::optional<std::string>& layer(bool isMosaic){return isMosaic?mosaic:translation;}
+        bool composed() const{return translation&&mosaic;}
+    };
+    struct ImageInstallation {
+        std::string original;
+        std::string originalFile;
+        bool cached=false;
+        AppliedLayers layers;
+    };
+    static ImageInstallation readInstallation(const Path& game,const Json& image,const Path& target,
+            const std::string& current,const std::string& key){
+        const auto imageId=image.at("id").get<std::string>();
+        const auto cache=originalCache(game,image);
+        ImageInstallation result;
+        result.cached=std::filesystem::is_regular_file(cache);
+        if(!result.cached){
+            if(stamp(target)!=image.at("sourceHash").get<std::string>())
+                throw std::runtime_error("游戏图片已改变或缺少原图备份："+image.at("name").get<std::string>());
+            result.original=imageBytes(image,current,key,false);
+            dimensions(result.original);
+            result.originalFile=current;
+            return result;
+        }
+        result.original=gamefiles::read(cache);
+        result.originalFile=imageBytes(image,result.original,key,true);
+        const auto readLayer=[&](bool isMosaic)->std::optional<std::string>{
+            const auto path=installedImage(game,imageId,isMosaic);
+            if(!std::filesystem::is_regular_file(path))return std::nullopt;
+            auto bytes=gamefiles::read(path);
+            if(bytes==result.originalFile)return std::nullopt;
+            return bytes;
+        };
+        auto translation=readLayer(false);
+        auto mosaic=readLayer(true);
+        if(translation&&mosaic&&matchesInstalled(composedImage(game,imageId),current)){
+            result.layers={std::move(translation),std::move(mosaic)};
+        }else if(current!=result.originalFile){
+            if(translation&&*translation==current)result.layers.translation=std::move(translation);
+            else if(mosaic&&*mosaic==current)result.layers.mosaic=std::move(mosaic);
+            else throw std::runtime_error("游戏图片已被其他操作修改："+image.at("name").get<std::string>());
+        }
+        return result;
+    }
+    template<class Stage>
+    static void stageInstallation(const Stage& stage,const Path& game,const Json& image,const Path& name,
+            const ImageInstallation& installation,const std::string& current,const std::string& key){
+        const auto imageId=image.at("id").get<std::string>();
+        const auto& layers=installation.layers;
+        std::string composed;
+        const std::string* next=&installation.originalFile;
+        if(layers.composed()){
+            composed=imageBytes(image,rpgimagecompose::combine(installation.original,
+                imageBytes(image,*layers.mosaic,key,false),imageBytes(image,*layers.translation,key,false)),key,true);
+            next=&composed;
+        }else if(layers.translation)next=&*layers.translation;
+        else if(layers.mosaic)next=&*layers.mosaic;
+        const auto stageMetadata=[&](const Path& path,const std::string* bytes){
+            if(bytes?!matchesInstalled(path,*bytes):std::filesystem::is_regular_file(path))
+                stage(path.lexically_relative(game),bytes);
+        };
+        if(!installation.cached)stageMetadata(originalCache(game,image),&installation.original);
+        stageMetadata(installedImage(game,imageId,false),layers.translation?&*layers.translation:nullptr);
+        stageMetadata(installedImage(game,imageId,true),layers.mosaic?&*layers.mosaic:nullptr);
+        stageMetadata(composedImage(game,imageId),layers.composed()?next:nullptr);
+        if(*next!=current)stage(name,next);
     }
 public:
     Json currentSources(const Path& game, const Json& sources) {
@@ -124,9 +196,16 @@ public:
             if(old.at("sourceHash").get<std::string>()==hash){images.push_back(old);continue;}
             const auto translation=installedImage(game,oldId,false);
             const auto mosaic=installedImage(game,oldId,true);
-            if(std::filesystem::is_regular_file(translation)||std::filesystem::is_regular_file(mosaic)){
+            const auto combined=composedImage(game,oldId);
+            const auto original=originalCache(game,old);
+            if(std::filesystem::is_regular_file(translation)||std::filesystem::is_regular_file(mosaic)||
+               std::filesystem::is_regular_file(combined)||std::filesystem::is_regular_file(original)){
                 const auto current=gamefiles::read(file);
-                if(matchesInstalled(translation,current)||matchesInstalled(mosaic,current)){images.push_back(old);continue;}
+                if(matchesInstalled(translation,current)||matchesInstalled(mosaic,current)||matchesInstalled(combined,current)||
+                   (std::filesystem::is_regular_file(original)&&current==imageBytes(old,gamefiles::read(original),key,true))){
+                    images.push_back(old);
+                    continue;
+                }
             }
         }
             std::ifstream input(file,std::ios::binary);char buffer[40];input.read(buffer,sizeof buffer);std::string bytes(buffer,static_cast<size_t>(input.gcount()));const bool encrypted=gameresourcebackup::imageExtension(file)!=".png";std::string error;uint32_t width=0,height=0;try{if(encrypted)bytes=codec(bytes,key,false);std::tie(width,height)=dimensions(bytes);}catch(const std::exception& e){error=e.what();}
@@ -188,52 +267,35 @@ public:
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组已确认的去码图");
         if(mosaic)for(const auto& imageId:ids){validId(imageId);imageIndex(game,imageId);}
-        std::vector<std::pair<Path,Path>> installedFiles;
         gameresourcebackup::Snapshot snapshot;
-        size_t unchanged=0;
+        size_t updated=0,unchanged=0,composed=0;
         const auto receipt=gamefiles::applyPrepared(game,[&](const auto& stage){
             for(const auto& image:catalog(game).at("images")){
                 if(!mosaic&&(!image.value("selected",false)||!image.value("completed",false)||image.value("renderedFile","").empty())) continue;
                 const auto imageId=image.at("id").get<std::string>();
                 if(!selectedIds.is_null()&&!ids.contains(imageId)) continue;
+                validId(imageId);
                 const auto name=gamefiles::relative(image.at("file"));
                 const auto target=game/name;
-                const auto installed=installedImage(game,imageId,mosaic);
-                const bool wasInstalled=std::filesystem::is_regular_file(installed);
-                const auto sourceHash=image.at("sourceHash").get<std::string>();
-                const bool encrypted=image.value("encrypted",false);
                 const auto current=gamefiles::read(target);
-                const bool otherApplied=matchesInstalled(installedImage(game,imageId,!mosaic),current);
-                if(otherApplied&&current!=storedOriginal(game,image,key))
-                    throw std::runtime_error("此图片已应用"+std::string(mosaic?"译图":"去码图")+"，请先恢复该图： "+image.at("name").get<std::string>());
-                if(!otherApplied&&(wasInstalled?current!=gamefiles::read(installed):stamp(target)!=sourceHash))
-                    throw std::runtime_error("游戏图片已改变，请检查后重新扫描："+image.at("name").get<std::string>());
-                auto bytes=gamefiles::read(mosaic?mosaicImage(game,image):folder(game)/"rendered"/(imageId+".png"));
-                if(encrypted) bytes=codec(std::move(bytes),key,true);
-                if(bytes==current){++unchanged;continue;}
-                const auto cache=originalCache(game,image);
-                if(!std::filesystem::is_regular_file(cache)){
-                    if(wasInstalled&&stamp(target)!=sourceHash)
-                        throw std::runtime_error("缺少卸载所需的原图备份："+image.at("name").get<std::string>());
-                    const auto decoded=encrypted?codec(current,key,false):std::string{};
-                    const auto& original=encrypted?decoded:current;
-                    dimensions(original);
-                    std::string error;
-                    if(!atomicfile::writeText(cache,original,&error))
-                        throw std::runtime_error("无法保存原图备份："+image.at("name").get<std::string>()+" · "+error);
-                }
+                auto installation=readInstallation(game,image,target,current,key);
+                auto bytes=imageBytes(image,gamefiles::read(mosaic?mosaicImage(game,image):folder(game)/"rendered"/(imageId+".png")),key,true);
+                auto& layer=installation.layers.layer(mosaic);
+                if(bytes==(layer?*layer:installation.originalFile)){++unchanged;continue;}
+                if(bytes==installation.originalFile)layer.reset();
+                else layer=std::move(bytes);
                 if(automatic&&!mosaic&&snapshot.path.empty()) snapshot=gameresourcebackup::snapshot(game,dataPath,scopes);
-                stage(name,&bytes);
-                installedFiles.emplace_back(name,installed);
+                stageInstallation(stage,game,image,name,installation,current,key);
+                ++updated;
+                if(installation.layers.composed())++composed;
             }
         });
         if(receipt.empty()){
             if(unchanged) return {{"files",0},{"unchanged",unchanged},{"backupPath",""}};
             throw std::runtime_error(mosaic?"没有可应用的去码图":"没有可应用的译图，请先识别、翻译或替换译图");
         }
-        for(const auto& [name,installed]:installedFiles) gamefiles::copyResource(game/name,installed);
         if(!automatic&&!mosaic) std::filesystem::remove_all(receipt);
-        return {{"files",installedFiles.size()},{"unchanged",unchanged},{"backupPath",utf8path::pathUtf8(mosaic?receipt:snapshot.path)},
+        return {{"files",updated},{"unchanged",unchanged},{"composed",composed},{"backupPath",utf8path::pathUtf8(mosaic?receipt:snapshot.path)},
             {"backupDetail",automatic&&!mosaic?snapshot.summary():""}};
     }
 
@@ -245,25 +307,26 @@ public:
         const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组需要恢复的图片");
-        std::vector<std::pair<Path,Path>> installedFiles;
+        size_t updated=0,retained=0;
         const auto receipt=gamefiles::applyPrepared(game,[&](const auto& stage){
             for(const auto& image:catalog(game).at("images")){
                 const auto imageId=image.at("id").get<std::string>();
                 if(mosaic&&!ids.contains(imageId))continue;
+                validId(imageId);
                 const auto installed=installedImage(game,imageId,mosaic);
                 if(!std::filesystem::is_regular_file(installed)) continue;
                 const auto name=gamefiles::relative(image.at("file"));
                 const auto current=gamefiles::read(game/name);
-                const auto original=storedOriginal(game,image,key);
-                if(current==original) continue;
-                if(matchesInstalled(installedImage(game,imageId,!mosaic),current))continue;
-                if(current!=gamefiles::read(installed)) throw std::runtime_error("游戏图片已被修改，无法卸载："+image.at("name").get<std::string>());
-                stage(name,&original);
-                installedFiles.emplace_back(name,installed);
+                auto installation=readInstallation(game,image,game/name,current,key);
+                auto& layer=installation.layers.layer(mosaic);
+                if(!layer)continue;
+                layer.reset();
+                stageInstallation(stage,game,image,name,installation,current,key);
+                ++updated;
+                if(installation.layers.layer(!mosaic))++retained;
             }
         });
         if(receipt.empty()) throw std::runtime_error(mosaic?"本组没有已应用的去码图":"没有已应用的译图可卸载");
-        for(const auto& [name,installed]:installedFiles) gamefiles::copyResource(game/name,installed);
-        return {{"files",installedFiles.size()},{"backupPath",utf8path::pathUtf8(receipt)}};
+        return {{"files",updated},{"retained",retained},{"backupPath",utf8path::pathUtf8(receipt)}};
     }
 };

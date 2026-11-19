@@ -300,8 +300,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
         body: JSON.stringify({ gamePath, imageIds: targets.map(image => image.id), backupMode }),
       }));
       const detail = await response.json();
-      showAppNotice(title + "完成 · " + detail.files + " 张");
-      setProgress(title + "完成 · " + detail.files + " 张");
+      const layers = undo && detail.retained ? ` · 保留 ${detail.retained} 张译图`
+        : detail.composed ? ` · ${detail.composed} 张与译图合成` : "";
+      const message = `${title}完成 · ${detail.files} 张${layers}`;
+      showAppNotice(message);
+      setProgress(message);
     });
   }
 

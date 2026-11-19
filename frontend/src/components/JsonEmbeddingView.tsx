@@ -339,7 +339,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {supportsImages && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} onClick={() => void applyImages()}>应用译图</button>}
         <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
         <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" disabled={busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-        {supportsImages && <IconAction name="rollback" caption="卸载译图" label="恢复已应用译图的原图" disabled={busy || !imageWorkflow.loaded} onClick={() => void imageHandle.current?.uninstall()} />}
+        {supportsImages && <IconAction name="rollback" caption="卸载译图" label={supportsMosaic ? "卸载译图并保留已应用的去码图" : "恢复已应用译图的原图"} disabled={busy || !imageWorkflow.loaded} onClick={() => void imageHandle.current?.uninstall()} />}
         <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
       </div>
     </section>

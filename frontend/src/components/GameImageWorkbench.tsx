@@ -475,14 +475,15 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     await save(true);
     const rows = current.current?.images?.filter(image => image.selected && unityImageReadyForTarget(image,target)) || [];
     if (!rows.length) return;
-    const result = await post<{ files: number; unchanged?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: rows.map(image => image.id) });
+    const result = await post<{ files: number; unchanged?: number; composed?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: rows.map(image => image.id) });
     if (result.backupDetail) onMessage(result.backupDetail, "success");
-    onMessage(result.files ? `已应用 ${result.files} 张译图` : `${result.unchanged ?? 0} 张译图已是当前版本`, "success");
+    const detail = result.composed ? ` · ${result.composed} 张与去码图合成` : "";
+    onMessage(result.files ? `已应用 ${result.files} 张译图${detail}` : `${result.unchanged ?? 0} 张译图已是当前版本`, "success");
   });
   const uninstallImages = () => execute("卸载译图", async () => {
     await save(true);
-    const result = await post<{ files: number }>("uninstall");
-    onMessage(`已卸载 ${result.files} 张译图`, "success");
+    const result = await post<{ files: number; retained?: number }>("uninstall");
+    onMessage(`已卸载 ${result.files} 张译图${result.retained ? ` · 保留 ${result.retained} 张去码图` : ""}`, "success");
   });
   if (handle) handle.current = {
     captureTestConfiguration: () => ({
