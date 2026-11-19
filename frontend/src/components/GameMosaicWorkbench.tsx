@@ -25,7 +25,7 @@ type MosaicStorage = {
 type Props = {
   gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  controls: HTMLElement; onBusy?: (busy: boolean) => void;
+  controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
 };
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
@@ -59,7 +59,7 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, onBusy }: Props) {
+export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, visible: paneVisible = true, disabled = false, onBusy }: Props) {
   const task = useRef<AbortController | null>(null);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
   const [rows, setRows] = useState<Results>(() => {
@@ -184,7 +184,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
 
   async function run(label: string, work: (signal: AbortSignal, report: (completed: number) => void) => Promise<void | boolean>,
     step?: { id: MosaicStep; total: number }) {
-    if (task.current) return;
+    if (task.current || disabled) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
@@ -400,12 +400,14 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     </GameStepProgress>;
   };
 
-  return <section className="game-mosaic-workbench" aria-label="图片去码">
+  const actionsDisabled = !!busy || disabled;
+  const hiddenStyle = paneVisible ? undefined : { display: "none" };
+  return <section className="game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
-    {createPortal(<div className="game-mosaic-controls unity-scan-layout">
+    {createPortal(<div className="game-mosaic-controls unity-scan-layout" hidden={!paneVisible} style={hiddenStyle}>
       <section className="unity-scan-progress-card" aria-label="筛选打码图片">
         {stepProgress("screen", "筛选打码图片", <>
-          <button className="unity-btn unity-btn-primary" disabled={!!busy || !currentScope.length || detectorKind === "lada" && !detectorFile}
+          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
             onClick={screen}>开始筛选</button>
         </>)}
         <div className="game-mosaic-step-settings">
@@ -420,11 +422,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       </section>
       <section className="unity-scan-progress-card" aria-label="重绘打码区域">
         {stepProgress("redraw", "重绘打码区域", <>
-          <button className="unity-btn unity-btn-primary" disabled={!!busy || !activeResult?.boxes.length}
+          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !activeResult?.boxes.length}
             onClick={() => active && generate([active], [model])}>重绘当前图</button>
-          <button className="unity-btn" disabled={!!busy || !reference || !redrawGroup.length}
+          <button className="unity-btn" disabled={actionsDisabled || !reference || !redrawGroup.length}
             onClick={() => generate(redrawGroup, [model])}>重绘本组所选</button>
-          <button className="unity-btn" disabled={!!busy || !activeResult?.boxes.length}
+          <button className="unity-btn" disabled={actionsDisabled || !activeResult?.boxes.length}
             onClick={() => active && generate([active], ["turbo", "2511"])}>对比两种模型</button>
         </>)}
         <div className="game-mosaic-step-settings">
@@ -519,13 +521,13 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           </svg>}
         </div>}
         <div className="game-mosaic-toolbar">
-          <button className="unity-btn unity-btn-primary" disabled={!!busy || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
+          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
         </div>
         <div className="game-mosaic-toolbar">
-          <button className="unity-btn" disabled={!!busy || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
+          <button className="unity-btn" disabled={actionsDisabled || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
             {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
           </button>
-          <button className="unity-btn" disabled={!!busy || (storage ? !included.length : !selected.length)} onClick={() => void patch(true)}>
+          <button className="unity-btn" disabled={actionsDisabled || (storage ? !included.length : !selected.length)} onClick={() => void patch(true)}>
             {storage ? "从生成清单移除" : "撤销本组所选"}
           </button>
         </div>
