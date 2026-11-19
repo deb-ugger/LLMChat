@@ -1684,7 +1684,7 @@ export function UnityTranslateView({
               >
                 <UnityActionIcon kind="settings" />
               </UnityIconButton>}
-              <GameWorkflowHelp mode={mode === "offline" ? "unity-offline" : "unity-runtime"} />
+              {mode === "runtime" && <GameWorkflowHelp mode="unity-runtime" />}
             </div>
         </header>
       ) : null}

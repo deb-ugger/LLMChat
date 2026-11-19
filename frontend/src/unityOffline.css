@@ -51,9 +51,8 @@
 .unity-task-detail { color: var(--muted,#667589); font-size: 13px; }
 .unity-step-tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; padding: 5px; border-bottom: 1px solid var(--border,#d6dfe9); position: sticky; top: 0; z-index: 3; background: var(--panel,#fff); }
 .unity-step-tab { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 5px 6px; font: inherit; font-size: 13px; color: #718096; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
-.unity-step-number { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; border: 1px solid #d5deeb; border-radius: 50%; font-size: 11px; }
+.unity-step-number { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
 .unity-step-tab.complete { color: #34765a; background: #e7f5ed; border-color: #c4e2d1; }
-.unity-step-tab.complete .unity-step-number { border-color: #a9d9c9; background: #edf8f3; }
 .unity-step-tab.current { color: #245ec9; border-color: #bfd5f5; background: #e8f2ff; }
 .unity-step-tab.pending { color: #98652e; border-color: #eed8b9; background: #fff0da; }
 .unity-step-tab.outdated { color: #805400; border-color: #dfae32; background: #fff4c9; }
@@ -66,10 +65,6 @@
 .unity-step-tab.outdated.is-selected { background: #966515; border-color: #966515; }
 .unity-step-tab.optional-update.is-selected { background: #346483; border-color: #346483; }
 .unity-step-tab.error.is-selected { background: #c84444; border-color: #c84444; }
-.unity-step-tab.is-selected .unity-step-number { color: #245ec9; border-color: #fff; background: #fff; }
-.unity-step-tab.complete.is-selected .unity-step-number { color: #28745a; }
-.unity-step-tab.pending.is-selected .unity-step-number { color: #b9762a; }
-.unity-step-tab.error.is-selected .unity-step-number { color: #c84444; }
 .unity-step-tab:focus-visible { outline: 2px solid #86abf5; outline-offset: 2px; }
 .unity-step-panel { flex: 0 0 auto; overflow: visible; padding: 10px; min-width: 0; min-height: 0; }
 .unity-offline .unity-btn-warning { color: #805400; background: #fff0b3; border-color: #dfae32; font-weight: 600; }
@@ -308,10 +303,8 @@
 @container (min-width: 460px) { .unity-step-tabs { grid-template-columns: repeat(5,minmax(0,1fr)); } }
 @media (max-width: 1050px) { .unity-offline { flex-direction: column; overflow: auto; gap: 8px; } .unity-offline-config { width: 100% !important; height: 50vh; max-width: none; min-width: 0; } .unity-workspace-divider { display: none; } .unity-offline-workbench { min-height: 300px; } }
 
-.unity-step-number { min-width: 22px; width: auto; padding: 0 2px; }
 .unity-step-tabs.game-workflow-steps { padding: 4px; }
 .unity-step-tabs.game-workflow-steps .unity-step-tab { min-height: 28px; gap: 4px; padding: 3px 5px; font-size: 12px; white-space: normal; text-align: center; }
-.unity-step-tabs.game-workflow-steps .unity-step-number { flex: none; min-width: 18px; height: 18px; font-size: 11px; }
 .unity-image-workbench > .unity-offline-toolbar input[type="search"] { flex: 1; min-width: 110px; margin-left: auto; }
 .unity-offline-workbench > .unity-offline-toolbar input[type="search"] { box-sizing: border-box; max-width: 230px; height: 30px; padding: 4px 8px; font-size: 13px; }
 .unity-image-toolbar > label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
