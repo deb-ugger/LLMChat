@@ -3,9 +3,12 @@
 #include "Utf8Path.h"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <set>
+#include <iostream>
 #include <utility>
 
 #ifdef _WIN32
@@ -74,6 +77,95 @@ std::string requestTypeOf(const json& row)
     return row.value("ok", false) ? "ok" : "fail";
 }
 
+constexpr std::array kTextFields{
+    "id", "date", "ts", "time", "feature", "channel", "engineId", "engineKind", "vendor", "model"};
+constexpr std::array kNumberFields{
+    "promptTokens", "completionTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens", "sourceChars"};
+constexpr std::array kOptionalTextFields{"errorCode", "apiHost", "endpoint", "note", "errorMessage"};
+const std::string kSelectUsageRow =
+    "SELECT payload,event_id,date,ts,time,feature,channel,engine_id,engine_kind,vendor,model,"
+    "prompt_tokens,completion_tokens,total_tokens,cache_read_tokens,cache_write_tokens,source_chars,"
+    "ok,request_type FROM usage_events";
+
+int usageYear(const std::string& date)
+{
+    if (date.size() < 4)
+        return 0;
+    int year = 0;
+    const auto end = date.data() + 4;
+    const auto result = std::from_chars(date.data(), end, year);
+    return result.ptr == end ? year : 0;
+}
+
+// Field order fixes the bits in the persisted missing-field mask. The JSON
+// tail only carries values that cannot be recovered from the columns/defaults.
+std::string packPayload(const json& row, const std::string& requestType)
+{
+    json extra = row;
+    std::uint32_t missing = 0;
+    std::uint32_t bit = 1;
+    auto omitStored = [&](const char* key, const json& value) {
+        const auto it = extra.find(key);
+        if (it == extra.end())
+            missing |= bit;
+        else if (*it == value)
+            extra.erase(it);
+        bit <<= 1;
+    };
+    for (const char* key : kTextFields)
+    {
+        auto value = row.value(key, "");
+        // columnText reads through the first NUL, so keep the original in the tail.
+        if (const auto nul = value.find('\0'); nul != std::string::npos)
+            value.resize(nul);
+        omitStored(key, value);
+    }
+    for (const char* key : kNumberFields)
+        omitStored(key, row.value(key, 0));
+    omitStored("ok", row.value("ok", false));
+    omitStored("requestType", requestType == "supplement" ? "supplement" : "");
+    omitStored("year", usageYear(row.value("date", "")));
+    for (const char* key : kOptionalTextFields)
+        omitStored(key, "");
+
+    if (missing == 0 && extra.empty())
+        return {};
+    return json::array({missing, std::move(extra)}).dump();
+}
+
+json readUsageRow(SqliteApi& api, sqlite3_stmt* statement)
+{
+    const auto payload = columnText(api, statement, 0);
+    if (payload.starts_with('{'))
+        return json::parse(payload);
+
+    std::uint32_t missing = 0;
+    json row = json::object();
+    if (!payload.empty())
+    {
+        auto packed = json::parse(payload);
+        missing = packed.at(0).get<std::uint32_t>();
+        row = std::move(packed.at(1));
+    }
+    std::uint32_t bit = 1;
+    auto restore = [&](const char* key, const json& value) {
+        if ((missing & bit) == 0 && !row.contains(key))
+            row[key] = value;
+        bit <<= 1;
+    };
+    int column = 1;
+    for (const char* key : kTextFields)
+        restore(key, columnText(api, statement, column++));
+    for (const char* key : kNumberFields)
+        restore(key, api.columnInt64(statement, column++));
+    restore("ok", api.columnInt64(statement, column++) != 0);
+    restore("requestType", columnText(api, statement, column) == "supplement" ? "supplement" : "");
+    restore("year", usageYear(columnText(api, statement, 2)));
+    for (const char* key : kOptionalTextFields)
+        restore(key, "");
+    return row;
+}
+
 #endif
 
 } // namespace
@@ -90,16 +182,16 @@ struct SqliteUsageDb::Impl {
         return db && sqlite_support::execute(*api, db, sql);
     }
 
-    bool writeRow(const json& row)
+    static std::string writeSql(const char* conflictColumn)
     {
-        static const char* sql =
+        return std::string(
             "INSERT INTO usage_events("
             "event_id,date,ts,time,feature,request_type,ok,channel,engine_id,"
             "engine_kind,vendor,model,prompt_tokens,completion_tokens,total_tokens,"
-            "cache_read_tokens,cache_write_tokens,source_chars,payload) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(event_id) DO UPDATE SET "
-            "date=excluded.date,ts=excluded.ts,time=excluded.time,"
+            "cache_read_tokens,cache_write_tokens,source_chars,payload,seq) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(") + conflictColumn + ") DO UPDATE SET "
+            "event_id=excluded.event_id,date=excluded.date,ts=excluded.ts,time=excluded.time,"
             "feature=excluded.feature,request_type=excluded.request_type,ok=excluded.ok,"
             "channel=excluded.channel,engine_id=excluded.engine_id,"
             "engine_kind=excluded.engine_kind,vendor=excluded.vendor,model=excluded.model,"
@@ -108,41 +200,49 @@ struct SqliteUsageDb::Impl {
             "cache_read_tokens=excluded.cache_read_tokens,"
             "cache_write_tokens=excluded.cache_write_tokens,"
             "source_chars=excluded.source_chars,payload=excluded.payload";
-        Statement statement(*api, db, sql);
-        if (!statement.valid())
-            return false;
+    }
 
+    bool writeRow(sqlite3_stmt* statement, const json& row, long long seq = 0)
+    {
         const std::string id = row.value("id", "");
         if (id.empty())
         {
-            if (api->bindNull(statement.get(), 1) != kSqliteOk)
+            if (api->bindNull(statement, 1) != kSqliteOk)
                 return false;
         }
-        else if (!bindText(*api, statement.get(), 1, id))
+        else if (!bindText(*api, statement, 1, id))
             return false;
 
-        const std::string payload = row.dump();
+        const auto requestType = requestTypeOf(row);
         int parameter = 2;
-        if (!bindText(*api, statement.get(), parameter++, row.value("date", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("ts", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("time", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("feature", ""))
-            || !bindText(*api, statement.get(), parameter++, requestTypeOf(row))
-            || !bindInt(*api, statement.get(), parameter++, row.value("ok", false) ? 1 : 0)
-            || !bindText(*api, statement.get(), parameter++, row.value("channel", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("engineId", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("engineKind", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("vendor", ""))
-            || !bindText(*api, statement.get(), parameter++, row.value("model", ""))
-            || !bindInt(*api, statement.get(), parameter++, row.value("promptTokens", 0))
-            || !bindInt(*api, statement.get(), parameter++, row.value("completionTokens", 0))
-            || !bindInt(*api, statement.get(), parameter++, row.value("totalTokens", 0))
-            || !bindInt(*api, statement.get(), parameter++, row.value("cacheReadTokens", 0))
-            || !bindInt(*api, statement.get(), parameter++, row.value("cacheWriteTokens", 0))
-            || !bindInt(*api, statement.get(), parameter++, row.value("sourceChars", 0))
-            || !bindText(*api, statement.get(), parameter++, payload))
+        if (!bindText(*api, statement, parameter++, row.value("date", ""))
+            || !bindText(*api, statement, parameter++, row.value("ts", ""))
+            || !bindText(*api, statement, parameter++, row.value("time", ""))
+            || !bindText(*api, statement, parameter++, row.value("feature", ""))
+            || !bindText(*api, statement, parameter++, requestType)
+            || !bindInt(*api, statement, parameter++, row.value("ok", false) ? 1 : 0)
+            || !bindText(*api, statement, parameter++, row.value("channel", ""))
+            || !bindText(*api, statement, parameter++, row.value("engineId", ""))
+            || !bindText(*api, statement, parameter++, row.value("engineKind", ""))
+            || !bindText(*api, statement, parameter++, row.value("vendor", ""))
+            || !bindText(*api, statement, parameter++, row.value("model", "")))
             return false;
-        return api->step(statement.get()) == kSqliteDone;
+        for (const char* key : kNumberFields)
+        {
+            if (!bindInt(*api, statement, parameter++, row.value(key, 0)))
+                return false;
+        }
+        return bindText(*api, statement, parameter++, packPayload(row, requestType))
+            && (seq ? bindInt(*api, statement, parameter, seq) : api->bindNull(statement, parameter) == kSqliteOk)
+            && api->step(statement) == kSqliteDone
+            && api->reset(statement) == kSqliteOk;
+    }
+
+    bool writeRow(const json& row)
+    {
+        static const auto sql = writeSql("event_id");
+        Statement statement(*api, db, sql);
+        return statement.valid() && writeRow(statement.get(), row);
     }
 
     bool columnExists(const std::string& name) const
@@ -167,74 +267,105 @@ struct SqliteUsageDb::Impl {
         return ::execute(*api, db, sql.c_str());
     }
 
-    bool structured() const
+    bool hasMetadata(const std::string& key) const
     {
-        Statement statement(
-            *api,
-            db,
-            "SELECT value FROM usage_metadata WHERE key='structured_columns_v2'");
-        return statement.valid() && api->step(statement.get()) == kSqliteRow;
+        Statement statement(*api, db, "SELECT 1 FROM usage_metadata WHERE key=?");
+        return statement.valid() && bindText(*api, statement.get(), 1, key)
+            && api->step(statement.get()) == kSqliteRow;
     }
 
-    bool backfillStructuredColumns()
+    bool rewriteLegacyRows()
     {
-        if (structured())
-            return true;
-
-        Statement statement(*api, db, "SELECT payload FROM usage_events ORDER BY seq");
-        if (!statement.valid())
+        const bool structured = hasMetadata("structured_columns_v2");
+        Statement write(*api, db, structured
+            ? "UPDATE usage_events SET payload=? WHERE seq=?"
+            : writeSql("seq"));
+        if (!write.valid())
             return false;
-        std::vector<json> rows;
+        long long after = 0;
+        std::vector<std::pair<long long, std::string>> batch;
+        batch.reserve(512);
         while (true)
         {
-            const int result = api->step(statement.get());
-            if (result == kSqliteDone)
-                break;
-            if (result != kSqliteRow)
-                return false;
-            try
+            batch.clear();
             {
-                rows.push_back(json::parse(columnText(*api, statement.get(), 0)));
+                Statement read(*api, db,
+                    "SELECT seq,payload FROM usage_events WHERE seq>? AND substr(payload,1,1)='{' "
+                    "ORDER BY seq LIMIT 512");
+                if (!read.valid() || !bindInt(*api, read.get(), 1, after))
+                    return false;
+                int result;
+                while ((result = api->step(read.get())) == kSqliteRow)
+                    batch.emplace_back(api->columnInt64(read.get(), 0), columnText(*api, read.get(), 1));
+                if (result != kSqliteDone)
+                    return false;
             }
-            catch (...)
+            if (batch.empty())
+                return true;
+            for (const auto& [seq, payload] : batch)
             {
+                const auto row = json::parse(payload, nullptr, false);
+                if (row.is_discarded())
+                    continue;
+                if (structured)
+                {
+                    if (!bindText(*api, write.get(), 1, packPayload(row, requestTypeOf(row)))
+                        || !bindInt(*api, write.get(), 2, seq)
+                        || api->step(write.get()) != kSqliteDone
+                        || api->reset(write.get()) != kSqliteOk)
+                        return false;
+                }
+                else if (!writeRow(write.get(), row, seq))
+                    return false;
             }
+            after = batch.back().first;
         }
-
-        if (!execute("BEGIN IMMEDIATE"))
-            return false;
-        bool ok = true;
-        for (const auto& row : rows)
-        {
-            if (!writeRow(row))
-            {
-                ok = false;
-                break;
-            }
-        }
-        if (ok)
-            ok = execute(
-                "INSERT OR REPLACE INTO usage_metadata(key,value) "
-                "VALUES('structured_columns_v2','complete')");
-        if (ok)
-            ok = execute("COMMIT");
-        else
-            execute("ROLLBACK");
-        return ok;
     }
 
-    bool migrated() const
+    bool compactStoredRows()
     {
-        Statement statement(
-            *api,
-            db,
-            "SELECT value FROM usage_metadata WHERE key='jsonl_migrated_v1'");
-        return statement.valid() && api->step(statement.get()) == kSqliteRow;
+        if (hasMetadata("compact_payload_v3"))
+            return true;
+        if (!execute("BEGIN IMMEDIATE"))
+            return false;
+        try
+        {
+            if (rewriteLegacyRows()
+                && execute("DROP INDEX IF EXISTS usage_events_date_feature_idx;"
+                    "DROP INDEX IF EXISTS usage_events_date_result_idx;"
+                    "DROP INDEX IF EXISTS usage_events_date_model_time_idx;")
+                && execute("INSERT OR REPLACE INTO usage_metadata(key,value) VALUES"
+                    "('structured_columns_v2','complete'),('compact_payload_v3','complete')")
+                && execute("COMMIT"))
+                return true;
+        }
+        catch (const json::exception& error)
+        {
+            std::cerr << "Usage database migration: " << error.what() << '\n';
+        }
+        execute("ROLLBACK");
+        return false;
+    }
+
+    bool reclaimDiskSpace() const
+    {
+        constexpr int incrementalVacuum = 2;
+        int mode;
+        {
+            Statement statement(*api, db, "PRAGMA auto_vacuum");
+            if (!statement.valid() || api->step(statement.get()) != kSqliteRow)
+                return false;
+            mode = static_cast<int>(api->columnInt64(statement.get(), 0));
+        }
+        if (mode != incrementalVacuum
+            && (!execute("PRAGMA auto_vacuum=INCREMENTAL") || !execute("VACUUM")))
+            return false;
+        return execute("PRAGMA incremental_vacuum") && execute("PRAGMA wal_checkpoint(TRUNCATE)");
     }
 
     bool migrateJsonl()
     {
-        if (migrated())
+        if (hasMetadata("jsonl_migrated_v1"))
             return true;
         if (!fs::exists(legacyPath))
             return execute(
@@ -269,11 +400,10 @@ struct SqliteUsageDb::Impl {
             ok = execute(
                 "INSERT OR REPLACE INTO usage_metadata(key,value) "
                 "VALUES('jsonl_migrated_v1','complete')");
-        if (ok)
-            ok = execute("COMMIT");
-        else
-            execute("ROLLBACK");
-        return ok;
+        if (ok && execute("COMMIT"))
+            return true;
+        execute("ROLLBACK");
+        return false;
     }
 #endif
 };
@@ -301,7 +431,8 @@ SqliteUsageDb::SqliteUsageDb(const std::string& legacyJsonlPath)
     }
 
     impl_->api->busyTimeout(impl_->db, 5000);
-    const bool ready = impl_->execute("PRAGMA journal_mode=WAL")
+    const bool ready = impl_->execute("PRAGMA auto_vacuum=INCREMENTAL")
+        && impl_->execute("PRAGMA journal_mode=WAL")
         && impl_->execute("PRAGMA synchronous=NORMAL")
         && impl_->execute(
             "CREATE TABLE IF NOT EXISTS usage_metadata("
@@ -343,19 +474,9 @@ SqliteUsageDb::SqliteUsageDb(const std::string& legacyJsonlPath)
         && impl_->ensureColumn("cache_write_tokens", "INTEGER NOT NULL DEFAULT 0")
         && impl_->ensureColumn("source_chars", "INTEGER NOT NULL DEFAULT 0")
         && impl_->migrateJsonl()
-        && impl_->backfillStructuredColumns()
         && impl_->execute(
             "CREATE INDEX IF NOT EXISTS usage_events_date_idx "
             "ON usage_events(date)")
-        && impl_->execute(
-            "CREATE INDEX IF NOT EXISTS usage_events_date_feature_idx "
-            "ON usage_events(date,feature)")
-        && impl_->execute(
-            "CREATE INDEX IF NOT EXISTS usage_events_date_result_idx "
-            "ON usage_events(date,request_type)")
-        && impl_->execute(
-            "CREATE INDEX IF NOT EXISTS usage_events_date_model_time_idx "
-            "ON usage_events(date,model,time)")
         && impl_->execute(
             "CREATE INDEX IF NOT EXISTS usage_events_newest_idx "
             "ON usage_events(ts DESC,seq DESC)");
@@ -364,6 +485,10 @@ SqliteUsageDb::SqliteUsageDb(const std::string& legacyJsonlPath)
         impl_->api->close(impl_->db);
         impl_->db = nullptr;
     }
+    else if (!impl_->compactStoredRows())
+        std::cerr << "Usage database could not migrate compact rows: " << impl_->dbPath << '\n';
+    else if (!impl_->reclaimDiskSpace())
+        std::cerr << "Usage database could not reclaim disk space: " << impl_->dbPath << '\n';
 #endif
 }
 
@@ -411,7 +536,7 @@ bool SqliteUsageDb::query(
     if (!available())
         return false;
 
-    std::string sql = "SELECT payload FROM usage_events WHERE 1=1";
+    std::string sql = kSelectUsageRow + " WHERE 1=1";
     std::vector<std::string> parameters;
     appendFilters(sql, parameters, fromDate, toDate, feature, okFilter);
     sql += " ORDER BY seq";
@@ -428,12 +553,9 @@ bool SqliteUsageDb::query(
             return true;
         if (result != kSqliteRow)
             return false;
-        const std::string text = columnText(*impl_->api, statement.get(), 0);
-        if (text.empty())
-            continue;
         try
         {
-            rows.push_back(json::parse(text));
+            rows.push_back(readUsageRow(*impl_->api, statement.get()));
         }
         catch (...)
         {
@@ -477,7 +599,7 @@ bool SqliteUsageDb::queryPage(
     {
         Statement statement(
             *impl_->api, impl_->db,
-            "SELECT payload FROM usage_events" + where + " ORDER BY ts DESC,seq DESC");
+            kSelectUsageRow + where + " ORDER BY ts DESC,seq DESC");
         if (!statement.valid()
             || !bindParameters(*impl_->api, statement.get(), parameters))
             return false;
@@ -493,7 +615,7 @@ bool SqliteUsageDb::queryPage(
             json row;
             try
             {
-                row = json::parse(columnText(*impl_->api, statement.get(), 0));
+                row = readUsageRow(*impl_->api, statement.get());
             }
             catch (const json::parse_error&)
             {
@@ -518,7 +640,7 @@ bool SqliteUsageDb::queryPage(
     totalRows = static_cast<int>(impl_->api->columnInt64(countStatement.get(), 0));
 
     const std::string sql =
-        "SELECT payload FROM usage_events" + where
+        kSelectUsageRow + where
         + " ORDER BY ts DESC,seq DESC LIMIT ? OFFSET ?";
     Statement statement(*impl_->api, impl_->db, sql);
     if (!statement.valid()
@@ -542,7 +664,7 @@ bool SqliteUsageDb::queryPage(
             return false;
         try
         {
-            rows.push_back(json::parse(columnText(*impl_->api, statement.get(), 0)));
+            rows.push_back(readUsageRow(*impl_->api, statement.get()));
         }
         catch (...)
         {
@@ -569,7 +691,7 @@ bool SqliteUsageDb::aggregateByMinute(
 {
     rows.clear();
 #ifdef _WIN32
-    if (!available())
+    if (!available() || !impl_->hasMetadata("structured_columns_v2"))
         return false;
 
     std::vector<std::string> parameters;
@@ -669,7 +791,7 @@ bool SqliteUsageDb::aggregateByMinute(
 bool SqliteUsageDb::clear()
 {
 #ifdef _WIN32
-    return available() && impl_->execute("DELETE FROM usage_events");
+    return available() && impl_->execute("DELETE FROM usage_events") && impl_->reclaimDiskSpace();
 #else
     return false;
 #endif
