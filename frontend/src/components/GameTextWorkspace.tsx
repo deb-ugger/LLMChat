@@ -2,7 +2,7 @@ import type { BatchRow } from "./GameBatchResults";
 import type { BenchmarkInput } from "./GameTextBenchmarkDialog";
 import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, gameDuration, measureGameAsync, measureGameWork } from "../gameModelPerformance";
 import { UnityProjectLoading } from "./UnityProjectLoading";
-import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
+import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
 import { createGameTranslationContext, gameDialogueReuseKey, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
 import { showAppNotice } from "./AppNotice";
@@ -10,7 +10,7 @@ import { GamePageNumber } from "./GamePageNumber";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
-import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
+import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, recommendedGameModels, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { unityLanguageScope } from "../unityWorkflow";
@@ -122,7 +122,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       setState(restored);
       setProgress(restored !== "idle" ? { completed, total: selected.length, detail: `已恢复工程 · 有效译文 ${completed}/${selected.length} 条 · 失败 ${failed} 条` } : null);
       setProgressFailure("");
-      const merged: GameTextOptions = { kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true, ...value.options };
+      const merged: GameTextOptions = { kind: "llm", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true,
+        ...value.options, model: value.options.model || recommendedGameModels().text || "" };
       baseline.current = { ...value, options: merged };
       setOptions(merged);
       setLoadResult({ path: sourcePath });
@@ -411,6 +412,12 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           if (provider === "llm") llmOptions.set(scene, config);
           return config;
         };
+        if (options.kind !== "engine") {
+          const roles: Role[] = ["text", "dialogue", "names"];
+          const connections = roles.map(role => getOptions("llm", role)).flatMap(connection =>
+            connection.llmConcurrency && connection.llmConcurrency > 1 ? [{ connection, lanes: connection.llmConcurrency }] : []);
+          await prepareGameOllamaModels(connections, abort.signal, report);
+        }
         const requestGroup = options.kind === "engine" || !options.dialogueModel
           ? undefined : localTextRequestGroup(getOptions("llm", "text"), getOptions("llm", "dialogue"));
         const request = async (provider: TranslateProvider, text: string, nameContext?: string, entry?: UnityEntry) => {

@@ -59,7 +59,7 @@ export async function withGameOllama<T>(connection: ModelConnection, signal: Abo
   }
 }
 
-export async function prepareBenchmarkOllama(connections: Array<{ connection: ModelConnection; lanes: number }>, signal: AbortSignal, report: OllamaOutput) {
+export async function prepareGameOllamaModels(connections: Array<{ connection: ModelConnection; lanes: number }>, signal: AbortSignal, report: OllamaOutput) {
   const endpoints = new Map<string, { connection: ModelConnection; parallel: number }>();
   for (const { connection, lanes } of connections) {
     const address = ollamaAddress(connection);
@@ -72,7 +72,6 @@ export async function prepareBenchmarkOllama(connections: Array<{ connection: Mo
     signal.throwIfAborted();
     await prepareGameOllamaParallel(endpoint.connection, endpoint.parallel, signal, report);
     signal.throwIfAborted();
-    report("Ollama 已就绪，开始测试", "success");
   }
 }
 

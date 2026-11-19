@@ -6,7 +6,7 @@ import { gameTextProblem } from "./gameTextProject";
 import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetry, isGameDialogue, type GameDialoguePage } from "./gameTranslationContext";
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
-import { canDisableOllamaNameThinking, prepareBenchmarkOllama, translateGameWithOllama } from "./gameOllama";
+import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "./gameOllama";
 import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, measureGameWork, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
@@ -196,7 +196,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   const step = target?.step || "translate";
   const activeRoles = target ? ["text"] as const : benchmarkRoles;
   const local = loadLocalModelProfiles();
-  await prepareBenchmarkOllama(configs.flatMap(config => (target || config.models.text.id ? activeRoles : []).map(role => config.models[role]))
+  await prepareGameOllamaModels(configs.flatMap(config => (target || config.models.text.id ? activeRoles : []).map(role => config.models[role]))
     .filter(model => !!model.id && !!local[model.id])
     .map(model => ({ connection: { ...resolveFeatureLlm(settings, model.id), localModel: true }, lanes: model.lanes })), signal, report);
   for (let round = 1; round <= rounds; round++) {

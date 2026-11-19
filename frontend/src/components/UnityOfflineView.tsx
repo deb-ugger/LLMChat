@@ -1,6 +1,6 @@
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { GameBatchResults, gameImageBatchRows, type BatchRow } from "./GameBatchResults";
-import { canDisableOllamaNameThinking, translateGameWithOllama } from "../gameOllama";
+import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
 import { createGameTranslationContext, GAME_CONTEXT_HINT, gameTranslationRetry } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
@@ -10,7 +10,7 @@ import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } fro
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
 import { recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { applyGameTestRoles, captureGameTestRoles, type GameTestConfigurationAccess } from "../gameModelPreset";
+import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
@@ -97,7 +97,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
   const [translationKind, setTranslationKind] = useState<GameTranslationKind>("llm");
-  const [llmModel, setLlmModel] = useState("");
+  const [llmModel, setLlmModel] = useState(() => recommendedGameModels().text || "");
   const [dialogueModel, setDialogueModel] = useState("");
   const [nameModel, setNameModel] = useState("");
   const [imageModel, setImageModel] = useState("");
@@ -304,7 +304,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   useEffect(() => {
     setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setSearch(""); setFileStatus(null); setRowJump(null); setImageTarget(undefined);
     setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill");
-    setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
+    setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(recommendedGameModels().text || ""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
     setLineMode("local"); setLineModel("");
     setImageConfidenceThreshold(50);
     setGeneration(null); setApplied(false); setInstalled(false);
@@ -354,7 +354,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           if ((value.lineMode as string) === "hanlp") value.lineMode = "wtp";
           if (value.scopeVersion !== 1) value = { ...value, source: value.finished && !value.patch && value.endStep < 3 ? value.source : "all", scopeVersion: 1 };
           setPatch(value.patch); setTextScreenModel(value.textScreenModel); setIncludeContext(value.includeContext ?? false); setSkipTargetLanguage(value.skipTargetLanguage ?? true); setOnlySourceLanguage(value.onlySourceLanguage ?? true);
-          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || ""); setDialogueModel(value.dialogueModel || ""); setNameModel(value.nameModel || ""); setImageModel(value.imageModel || ""); setImageReviewModel(value.imageReviewModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setJoinLines(value.joinLines ?? true); setWrapMode(value.wrapMode||(value.joinLines===false?"keep":"join")); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
+          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || recommendedGameModels().text || ""); setDialogueModel(value.dialogueModel || ""); setNameModel(value.nameModel || ""); setImageModel(value.imageModel || ""); setImageReviewModel(value.imageReviewModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setJoinLines(value.joinLines ?? true); setWrapMode(value.wrapMode||(value.joinLines===false?"keep":"join")); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
           setEngineChoices(value.engines ? normalizeUnityEngines(value.engines) : defaultUnityEngines());
           setLineMode(value.lineMode || "local"); setLineModel(value.lineModel || "");
           setTextMode(value.textMode || p?.textMode || "paragraphs"); setCodeAssemblies(value.codeAssemblies ?? null); setTypeDirectory(value.typeDirectory || ""); setExtraCharacters(value.extraCharacters || "");
@@ -882,6 +882,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }, { timingScope: promptState.scope + ":text", initialStats, measure, onStats: value => { engineStats = value; if (translationProgress) onProgress?.({ ...translationProgress, engineStats, engineTargetCharacters }); } }) : null;
     try {
       if (!layoutOnly) {
+        if (options.provider === "llm") {
+          const connections = [options, options.dialogueOptions, options.nameOptions];
+          await prepareGameOllamaModels(connections.flatMap(connection => connection?.llmConcurrency && connection.llmConcurrency > 1
+            ? [{ connection, lanes: connection.llmConcurrency }] : []), controller.signal, textLog);
+        }
         const prepared = await prepareGameTerms(selectedEntries.filter(entry => !entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || unityTranslationError(entry.source, entry.translation)), next.entries, options.target || "zh-CN", glossary,
         (name, context) => pool ? pool.translate(name) : requestTranslation(name, options.provider, undefined, context), controller.signal,
         (detail, completed, total) => onProgress?.({ detail, completed, total, textStage: "names", model: options.nameOptions?.model || options.model }));

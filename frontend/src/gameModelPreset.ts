@@ -1,14 +1,13 @@
 import { api, type OcrMode, type TranslateProvider } from "./api";
 import { loadLocalModelProfiles, saveLocalModelProfiles } from "./modelPresets";
-import { modelConcurrency, saveModelConcurrency } from "./gameModelPerformance";
+import { gameDefaultTextModel, modelConcurrency, saveModelConcurrency } from "./gameModelPerformance";
 import type { GamePromptScene, GamePromptSelection } from "./gamePrompts";
 import type { GameTextOptions } from "./gameTextProject";
 import { loadUnityEngines, normalizeUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "./unityEnginePool";
 import type { UnityLineMode } from "./unityLineLayout";
 
 const testModels = {
-  hy: { id: "hf.co/tencent/Hy-MT2-7B-GGUF:Q8_0", pattern: /(?:^|\/)Hy-MT2-7B-GGUF:Q8_0$/i },
-  gal: { id: "hf.co/SakuraLLM/GalTransl-v4-4B-2601:Q5_K_S", pattern: /(?:^|\/)GalTransl-v4-4B-2601:Q5_K_S$/i },
+  hy: gameDefaultTextModel,
   qwen: { id: "qwen3.5:latest", pattern: /^qwen3\.5(?::(?:latest|9b(?:-q4_k_m)?))?$/i },
   vision: { id: "qwen3-vl:4b-instruct", pattern: /^qwen3-vl:4b-instruct$/i },
 } as const;
@@ -106,10 +105,9 @@ export async function prepareGameTestModels(value: GameTestConfiguration, availa
 export function recommendedGameModels() {
   const models = Object.entries(loadLocalModelProfiles()).filter(([, profile]) => profile.apiUrl?.trim()).map(([model]) => model);
   const text = models.find(model => testModels.hy.pattern.test(model));
-  const dialogue = models.find(model => testModels.gal.pattern.test(model));
   const review = models.find(model => testModels.qwen.pattern.test(model));
   const vision = models.find(model => testModels.vision.pattern.test(model));
-  return text && review ? { text, dialogue: dialogue || text, names: text, review, vision } : null;
+  return { text, dialogue: text, names: text, review, vision };
 }
 
 export function defaultGameTestConfiguration(current: GameTestConfiguration): GameTestConfiguration {
@@ -118,8 +116,6 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   const configured = Object.keys(profiles).filter(model => profiles[model].apiUrl?.trim());
   const modelId = (spec: typeof testModels[keyof typeof testModels]) => configured.find(model => spec.pattern.test(model)) || spec.id;
   const normal = modelId(testModels.hy);
-  const japanese = (options: Pick<GameTestTextOptions, "source" | "target">) =>
-    (options.source === "auto" ? value.detectedSource : options.source) === "ja" && options.target === "zh-CN";
   const setRole = (roles: GameTestRoles, scene: GamePromptScene, model?: string, concurrency = 1) => {
     if (roles[scene]) roles[scene] = { model, concurrency, prompt: "builtin:" + scene };
   };
@@ -128,8 +124,8 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   text.options.includeContext = true;
   if (text.options.lineMode) text.options.lineMode = "local";
   setRole(text.roles, "textScreen"); setRole(text.roles, "line");
-  setRole(text.roles, "text", normal); setRole(text.roles, "names", normal);
-  setRole(text.roles, "dialogue", japanese(text.options) ? modelId(testModels.gal) : normal);
+  for (const scene of ["text", "dialogue", "names"] as const)
+    setRole(text.roles, scene, normal, gameDefaultTextModel.concurrency);
   const images = value.images;
   if (!images) return value;
   const imageLanguage = images.options.translation ?? text.options;

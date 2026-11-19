@@ -53,12 +53,19 @@ const checkpoints = new Map<string, ReturnType<typeof setInterval>>();
 const scopes = new Map<string, Record<string, StepPerformance>>();
 const selectionScopes = new WeakMap<object, string>();
 const concurrencyPrefix = "llmchat-game-model-concurrency:";
+export const gameDefaultTextModel = {
+  id: "hf.co/tencent/Hy-MT2-7B-GGUF:Q8_0",
+  pattern: /(?:^|\/)Hy-MT2-7B-GGUF:Q8_0$/i,
+  concurrency: 4,
+};
 const imageRoles = new Set(["screen", "refine", "recognize", "image", "review", "layout"]);
 const steps: Record<string, string> = { textScreen: "screen", text: "translate", dialogue: "translate", names: "translate", line: "translate", screen: "filter", refine: "refine", recognize: "recognize", image: "translate", review: "review", layout: "render" };
 export function rememberPromptSelection(selection: object, scope: string) { selectionScopes.set(selection, scope); }
 export function modelConcurrency(scope: string, role: string, model: string) {
   const defaultLanes = role === "refine" && /^qwen3-vl:4b-instruct$/i.test(model) ? 2 : 1;
-  const value = Number(localStorage.getItem(concurrencyPrefix + JSON.stringify([scope, role, model])) ?? defaultLanes);
+  const isTextRole = role === "text" || role === "dialogue" || role === "names";
+  const fallback = isTextRole && gameDefaultTextModel.pattern.test(model) ? gameDefaultTextModel.concurrency : defaultLanes;
+  const value = Number(localStorage.getItem(concurrencyPrefix + JSON.stringify([scope, role, model])) ?? fallback);
   return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 1;
 }
 export function saveModelConcurrency(scope: string, role: string, model: string, value: number) {
