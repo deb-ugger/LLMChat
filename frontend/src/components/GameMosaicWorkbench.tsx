@@ -11,10 +11,17 @@ type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: st
   scanned?: boolean; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: number[]; saved?: boolean; reference?: boolean };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
-type Props = {
-  gamePath: string; images: readonly UnityImage[]; backupMode: string;
+export type MosaicCandidateIndex = Record<string, { source: string; included: boolean }>;
+type MosaicStorage = {
+  index: MosaicCandidateIndex;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  controls: HTMLElement; steps: ReactNode; onBusy?: (busy: boolean) => void;
+  save: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<void>;
+  select: (images: UnityImage[], include: boolean, signal: AbortSignal) => Promise<void>;
+};
+type Props = {
+  gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
+  read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
+  controls: HTMLElement; steps?: ReactNode; onBusy?: (busy: boolean) => void;
 };
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
@@ -47,12 +54,25 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, read, controls, steps: workflowSteps, onBusy }: Props) {
+export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, steps: workflowSteps, onBusy }: Props) {
   const task = useRef<AbortController | null>(null);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
   const [rows, setRows] = useState<Results>(() => {
     try { return JSON.parse(localStorage.getItem(savedKey) || "{}") || {}; } catch { return {}; }
   });
+  useEffect(() => {
+    if (!storage) return;
+    setRows(previous => {
+      const next = { ...previous };
+      for (const image of images) {
+        const saved = storage.index[image.id]?.source === image.sourceHash;
+        const row = resultFor(previous, image);
+        if (saved !== !!row.saved)
+          next[image.id] = { ...row, saved, checked: row.manualChecked ? row.checked : saved || row.checked };
+      }
+      return next;
+    });
+  }, [images, storage?.index]);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"scenes" | "all">("scenes");
   const [detectorKind, setDetectorKind] = useState<"grid" | "lada">("grid");
@@ -104,6 +124,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
   });
   const selected = members.filter(image => resultFor(rows, image).checked);
   const saved = selected.filter(image => resultFor(rows, image).saved);
+  const included = saved.filter(image => storage?.index[image.id]?.included);
   const result = active && candidates[active.id]?.revision === active.sourceHash ? candidates[active.id] : undefined;
   const values = result?.values;
   const displayed = view === "original" ? source?.id === active?.id && source?.revision === active?.sourceHash ? source?.blob : undefined
@@ -120,7 +141,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
   const candidatePath = (image: UnityImage) => API_BASE + "/api/game-images/mosaic?" +
     new URLSearchParams({ gamePath, id: image.id, sourceHash: image.sourceHash });
   const readSaved = async (image: UnityImage, signal: AbortSignal) =>
-    (await mosaicResponse(await fetch(candidatePath(image), { signal, cache: "no-store" }))).blob();
+    storage ? storage.read(image, signal) : (await mosaicResponse(await fetch(candidatePath(image), { signal, cache: "no-store" }))).blob();
 
   useEffect(() => {
     const image = active;
@@ -208,7 +229,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
-    update(image, { boxes, manualBoxes: true, saved: false, reference: false, checked: boxes.length > 0 });
+    update(image, { boxes, manualBoxes: true, saved: storage ? resultFor(rows, image).saved : false, reference: false, checked: boxes.length > 0 });
     setCandidates(previous => {
       const next = { ...previous };
       delete next[image.id];
@@ -283,7 +304,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
 
   function approve(image: UnityImage, blob: Blob) {
     void run("保存已确认候选", async signal => {
-      await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
+      if (storage) await storage.save(image, blob, signal);
+      else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
       update(image, { saved: true, checked: true });
       setApproved({ id: image.id, revision: image.sourceHash, blob }); setView("saved");
       setProgress("已保存 · " + image.name);
@@ -291,6 +313,16 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
   }
 
   async function patch(undo: boolean) {
+    if (storage) {
+      const targets = undo ? included : saved.filter(image => !storage.index[image.id]?.included);
+      if (!targets.length) return;
+      const title = undo ? "从去码补丁移除" : "加入去码补丁";
+      void run(title, async signal => {
+        await storage.select(targets, !undo, signal);
+        setProgress(title + " · " + targets.length + " 张");
+      });
+      return;
+    }
     const targets = undo ? selected : saved;
     const title = undo ? "撤销所选去码图" : "应用所选去码图";
     if (!targets.length || !await confirmation.confirm("请关闭游戏后继续。将处理当前场景组中所选的 " + targets.length + " 张图片。", { title, okLabel: title })) return;
@@ -360,7 +392,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
             <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true })} />
             <button type="button" disabled={!!busy} onClick={() => { setActiveId(image.id); setError(""); }}>
               <strong title={image.file}>{image.name}</strong>
-              <small>{row.saved ? "已确认" : row.reason ? "待复核" : row.boxes.length ? "疑似打码 · " + row.boxes.length + " 区域" : row.scanned ? "未发现" : "未筛选"} · {groupSize} 张一组</small>
+              <small>{row.saved ? storage?.index[image.id]?.included ? "已纳入补丁" : "已确认" : row.reason ? "待复核" : row.boxes.length ? "疑似打码 · " + row.boxes.length + " 区域" : row.scanned ? "未发现" : "未筛选"} · {groupSize} 张一组</small>
             </button>
           </li>;
         })}</ul>
@@ -422,8 +454,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, read, contro
           <button className="unity-btn unity-btn-primary" disabled={!!busy || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
         </div>
         <div className="game-mosaic-toolbar">
-          <button className="unity-btn" disabled={!!busy || !saved.length} onClick={() => void patch(false)}>应用已确认 · {saved.length} 张</button>
-          <button className="unity-btn" disabled={!!busy || !selected.length} onClick={() => void patch(true)}>撤销本组所选</button>
+          <button className="unity-btn" disabled={!!busy || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
+            {storage ? `加入补丁 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
+          </button>
+          <button className="unity-btn" disabled={!!busy || (storage ? !included.length : !selected.length)} onClick={() => void patch(true)}>
+            {storage ? "从去码补丁移除" : "撤销本组所选"}
+          </button>
         </div>
       </section>}
     </div>

@@ -74,6 +74,8 @@ public sealed class Request
     public string TypeDirectory { get; set; } = "";
     public string ExtraCharacters { get; set; } = "";
     public string ImageId { get; set; } = "";
+    public string ImageSourceHash { get; set; } = "";
+    public bool IncludeMosaic { get; set; }
     public string ImageData { get; set; } = "";
     public bool ImageOnly { get; set; }
     public string ImageResetPhase { get; set; } = "";
@@ -82,6 +84,7 @@ public sealed class Request
     public string? SavedRenderedFile {get;set;}
     public int Step { get; set; }
     public string[]? SelectedIds { get; set; }
+    public string[]? PatchImageIds { get; set; }
     public JsonNode? Task { get; set; }
     public Project? Project { get; set; }
 }
@@ -152,6 +155,10 @@ public static class Program
                 "save-image" => ImageResources.SaveRendered(request),
                 "save-image-states" => ImageResources.SaveStates(request),
                 "preview-image" => ImageResources.Preview(request),
+                "mosaic-status" => UnityMosaic.Status(request),
+                "mosaic-preview" => UnityMosaic.Preview(request),
+                "mosaic-save" => UnityMosaic.Save(request),
+                "mosaic-select" => UnityMosaic.Select(request),
                 "download-image" => DownloadImage(request.Url),
                 "export" => Export(request),
                 "apply" => Apply(request),
@@ -744,8 +751,12 @@ public static class Program
         ScanInspection.VerifyDefinitions(project);
         using var types = new GameTypes(project.Root, project.TypeDirectory);
         var selected = project.Entries.Where(WritableSelection(request.SelectedIds)).ToArray();
-        var images = ImageResources.Ready(project);
-        if (selected.Length == 0 && images.Length == 0) throw new Exception("没有可回写的有效译文或译图；出错和未完成的项目已跳过，游戏原文与原图保持不变");
+        var translatedImages = ImageResources.Ready(project, request.PatchImageIds);
+        var mosaic = UnityMosaic.Included(project);
+        if (selected.Length == 0 && translatedImages.Length == 0 && mosaic.Count == 0)
+            throw new Exception("没有可回写的译文、译图或去码图");
+        ImageResource[] images = UnityMosaic.Prepare(project, translatedImages, mosaic, () => CheckStop(request, request.Path));
+        if (mosaic.Count > 0) ImageResources.VerifyDependencies(project, images.Where(image => mosaic.ContainsKey(image.Id)));
         var writable = new HashSet<Entry>(selected, ReferenceEqualityComparer.Instance);
         var (fontPlan, characters, font) = FontPreparation.Prepare(request, project, writable.Contains, false);
         if (selected.Length == 0) font = null;
@@ -877,10 +888,10 @@ public static class Program
             Progress("正在保存工程和补丁清单", manifest.Count, manifest.Count, folder);
             Save(project);
             File.WriteAllText(System.IO.Path.Combine(folder, "manifest.json"), JsonSerializer.Serialize(new { version = 1, textSafetyRevision = GameText.SafetyRevision, project.Root, files = manifest, warnings = project.Warnings, fontReplacements = fonts.Length, verification = "reopened", textureDependencies = images.Where(i => i.DependencyFile.Length > 0).GroupBy(i => i.DependencyFile).ToDictionary(g => g.Key, g => g.First().DependencyHash), fontRequirements = fontPlan.Requirements }, Json), Utf8);
-            File.WriteAllText(System.IO.Path.Combine(folder, "使用说明.txt"), "先关闭游戏。patch 目录内是按游戏相对路径排列的补丁文件；确认备份后复制到游戏目录。original 目录保存本次修改文件的原件，按相同相对路径复制回去可恢复。manifest.json 记录原件及补丁哈希。\n补丁生成成功不代表已完成游戏加载或显示验证；图片仅写回已完成且勾选的译图；支持 Texture2D、普通图片与 HIDC v2/v3。Addressables 二进制 Catalog v2 的 CRC、缓存哈希会同步更新；其他 Catalog 格式会明确停止生成。TMP / NGUI 仅处理已通过布局检查的独立字库，图集与材质已重读校验，实际显示仍需启动游戏验证。\n", Utf8);
+            File.WriteAllText(System.IO.Path.Combine(folder, "使用说明.txt"), "先关闭游戏。patch 目录内是按游戏相对路径排列的补丁文件；确认备份后复制到游戏目录。original 目录保存本次修改文件的原件，按相同相对路径复制回去可恢复。manifest.json 记录原件及补丁哈希。\n图片写回包含已完成且选中的译图，以及已纳入补丁的去码图。支持 Texture2D、普通图片与 HIDC v2/v3。Addressables 二进制 Catalog v2 的 CRC、缓存哈希会同步更新；其他 Catalog 格式会明确停止生成。TMP / NGUI 仅处理已通过布局检查的独立字库，图集与材质已重读校验，实际显示仍需启动游戏验证。\n", Utf8);
             File.Delete(marker);
             Progress("补丁与原件备份已生成", manifest.Count, manifest.Count, folder);
-            return new { folder, files = manifest.Count, entries = selected.Length, images = images.Length, fontReplacements = fonts.Length, fontMappings = fontPlan.Requirements.Where(line => line.StartsWith("真实字形补入：", StringComparison.Ordinal)).ToArray() };
+            return new { folder, files = manifest.Count, entries = selected.Length, images = translatedImages.Length, mosaicImages = mosaic.Count, fontReplacements = fonts.Length, fontMappings = fontPlan.Requirements.Where(line => line.StartsWith("真实字形补入：", StringComparison.Ordinal)).ToArray() };
         }
         catch (PausedException) { throw; }
         catch (Exception e) { File.WriteAllText(marker, "补丁生成失败，不可使用：" + e.Message, Utf8); throw new Exception($"{e.Message}；未完成输出：{folder}"); }

@@ -9,7 +9,7 @@ type PatchStatus = { destinations: Destination[]; patch?: { name: string; files:
 type PatchFile = { path: string; size: number; modified: string; replace: boolean };
 type Plan = { files: PatchFile[]; ignored: number };
 
-export function GameMosaicPatchButton({ gamePath, disabled }: { gamePath: string; disabled?: boolean }) {
+export function GameMosaicPatchButton({ gamePath, disabled, label = "去码补丁" }: { gamePath: string; disabled?: boolean; label?: string }) {
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<PatchStatus>();
@@ -73,8 +73,8 @@ export function GameMosaicPatchButton({ gamePath, disabled }: { gamePath: string
     : "管理当前 UE 或 Unity 游戏的去码补丁。只导入可信来源的文件。";
 
   return <>
-    <button type="button" className="unity-btn" disabled={disabled} onClick={show}>去码补丁</button>
-    {visible && <GameDialog title={confirm ? actionLabel : "去码补丁"} description={description} className="game-mosaic-dialog"
+    <button type="button" className="unity-btn" disabled={disabled} onClick={show}>{label}</button>
+    {visible && <GameDialog title={confirm ? actionLabel : label} description={description} className="game-mosaic-dialog"
       onCancel={() => confirm ? setConfirm(undefined) : setVisible(false)} disabled={busy}
       details={confirm ? (patch && confirm === "uninstall" ? <p>{patch.name} · {patch.files} 个文件</p> : undefined)
         : <div className="game-mosaic-body">

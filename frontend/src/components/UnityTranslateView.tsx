@@ -1,5 +1,4 @@
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
-import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { writeOutput } from "../appOutput";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
@@ -1676,7 +1675,6 @@ export function UnityTranslateView({
           </nav>
           <div ref={setOfflineToolbar} className="unity-header-primary unity-header-icons" hidden={mode !== "offline"} />
             <div className="unity-top-actions unity-header-icon-group">
-              {selected && <GameMosaicPatchButton gamePath={selected.gameDir} disabled={busy || offlineBusy} />}
               {onOpenUnitySettings && <UnityIconButton
                 type="button"
                 aria-label="Unity 设置"

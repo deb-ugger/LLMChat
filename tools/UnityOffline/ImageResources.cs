@@ -57,6 +57,13 @@ public sealed class ImageResource
     public bool Completed { get; set; }
     public string Error { get; set; } = "";
     public List<ImageRegion> Regions { get; set; } = [];
+
+    internal ImageResource ForMosaicExport(string renderedFile, string renderedHash)
+    {
+        var image = (ImageResource)MemberwiseClone();
+        image.RenderedFile = renderedFile; image.RenderedHash = renderedHash;
+        return image;
+    }
 }
 
 public sealed record ImageCacheCleanup(int Removed,List<string> Errors);
@@ -145,7 +152,7 @@ public static class ImageResources
         return new { data = Convert.ToBase64String(bytes), opaque, fullyTransparent };
     }
     static string Id(string file, string container, string id) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(file + "\n" + container + "\n" + id))).ToLowerInvariant();
-    static string Png(byte[] rgba, int width, int height, string path) {
+    internal static string Png(byte[] rgba, int width, int height, string path) {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var output = File.Create(path);
         using var sha = SHA256.Create();
@@ -292,19 +299,26 @@ public static class ImageResources
         }catch(Exception error){errors.Add(error.Message);}
         return new(removed,errors);
     }
-    public static ImageResource[] Ready(Project project) {
-        var selected = project.Images.Where(i => i.Selected).ToArray();
+    public static ImageResource[] Ready(Project project, string[]? patchImageIds = null) {
+        var scope = patchImageIds?.ToHashSet(StringComparer.Ordinal);
+        var selected = project.Images.Where(i => i.Selected && (scope == null || scope.Contains(i.Id))).ToArray();
         if (!project.ImagesSkipped && selected.Any(i => !i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0))) throw new Exception("请完成步骤 2.2 或明确跳过未完成的图片");
         var ready = selected.Where(i => i.Completed && i.Error.Length == 0 && !i.Regions.Any(r => r.Error.Length > 0) && i.RenderedFile.Length > 0).ToArray();
-        var dependencies = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var image in ready) {
             if (Program.Hash(Program.Within(project.Folder, image.RenderedFile)) != image.RenderedHash) throw new Exception("译图缓存已变化，请重新生成译图：" + image.Name);
+        }
+        VerifyDependencies(project, ready);
+        return ready;
+    }
+
+    internal static void VerifyDependencies(Project project, IEnumerable<ImageResource> images) {
+        var dependencies = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var image in images) {
             if (image.DependencyFile.Length == 0) continue;
             if (!dependencies.TryGetValue(image.DependencyFile, out var hash))
                 dependencies[image.DependencyFile] = hash = Program.Hash(Program.Within(project.Root, image.DependencyFile));
             if (hash != image.DependencyHash) throw new Exception("原图的 resS 数据已变化，请重新扫描：" + image.Name);
         }
-        return ready;
     }
     public static void ApplyTexture(Project project, ImageResource image, AssetTypeValueField field) {
         var texture = TextureFile.ReadTextureFile(field);
