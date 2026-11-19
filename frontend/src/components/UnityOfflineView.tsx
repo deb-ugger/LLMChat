@@ -248,7 +248,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [workRoot, setWorkRoot] = useState("");
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
   const [rowJump, setRowJump] = useState<{ id: string; sequence: number; error: boolean } | null>(null);
-  const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, 900);
+  const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, 900, "guide");
   const workflowRef = useRef<HTMLElement>(null);
   const sourceWidth = usePersistedWidth("unity-offline-source-width", 112, 80, 280);
   const [originalRatio, setOriginalRatio] = useState(() => Math.min(70, Math.max(20, Number(localStorage.getItem("unity-offline-original-ratio")) || 45)));
@@ -1444,7 +1444,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           const requestedPart = part || (run.imageOnly ? "images" : "text");
           run = { ...run, translationRuns: {
             text: !automatic && requestedPart !== "text" && oldParts?.text ? oldParts.text : { ...(oldParts?.text || run.progress), step: 2, state: initial.text, detail: textComplete ? "文本结果已保留" : "等待开始翻译文本" },
-            images: !automatic && requestedPart !== "images" && oldParts?.images ? oldParts.images : { ...(oldParts?.images || { completed: 0, total: null }), step: 2, state: initial.images, detail: imageComplete ? "图片结果已保留" : "等待开始图片识别与翻译" },
+            images: !automatic && requestedPart !== "images" && oldParts?.images ? oldParts.images : { ...(oldParts?.images || { completed: 0, total: null }), step: 2, state: initial.images, detail: imageComplete ? "图片结果已保留" : "等待开始图片翻译" },
           }, progress: { step: 2, state: "running", completed: 0, total: null, detail: "文本和图片任务分别处理并保存" } };
           const partReported = { text: 0, images: 0 };
           const reportPart = (part: UnityTranslationPart, value: UnityProgress) => {
@@ -1584,7 +1584,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const taskAction = translationJobs.current ? <>
     {selectedJob?.state === "running" && <button className="unity-btn" disabled={translationJobs.current.isStopping(currentPart)} onClick={() => stopPart(currentPart)}>中止 {imagePart ? "2.2" : "2.1"}</button>}
     {Object.values(checkpoint?.translationRuns || {}).filter(part => part.state === "running").length > 1 && <button className="unity-btn" onClick={stop}>中止全部</button>}
-  </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan || scanOptionsChanged ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片识别与翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn unity-btn-warning unity-important-action" disabled={restoring || needsScan} data-tooltip={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} aria-label={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
+  </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan || scanOptionsChanged ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn unity-btn-warning unity-important-action" disabled={restoring || needsScan} data-tooltip={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} aria-label={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
   const failureMessage = generation?.state === "error" ? generation.failure || error : error;
   const failure = failureMessage ? explainUnityFailure(failureMessage) : null;
   const currentRowIssue = rowIssue && tableEntries.find(entry => entry.id === rowIssue.id);
@@ -1595,7 +1595,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (currentRowIssue && currentRowIssue.translation && !entryProblem(currentRowIssue)) setRowIssue(null);
   }, [tableEntries, rowIssue?.id]);
   const errorPanel = failure && <details className="unity-current-failure" open role="alert" aria-label="当前任务失败">
-    <summary>{generation?.state === "error" ? `${generation.step === 2 && progressIsImage ? "图片识别与翻译" : GENERATION_STEPS[generation.step - 1]} · 失败` : "当前操作 · 失败"}</summary><p>{failure.reason}</p><p>处理方法：{failure.action}</p>
+    <summary>{generation?.state === "error" ? `${generation.step === 2 && progressIsImage ? "图片翻译" : GENERATION_STEPS[generation.step - 1]} · 失败` : "当前操作 · 失败"}</summary><p>{failure.reason}</p><p>处理方法：{failure.action}</p>
     {/所选字体缺少/.test(failureMessage || "") && <div className="unity-row-error-actions"><button className="unity-btn" disabled={!!busy || restoring} onClick={() => { setActiveStep(3); followProgress.current = false; if (!fontPlan) void checkFontPlan(); else requestAnimationFrame(() => workflowRef.current?.querySelector(".unity-font-plan")?.scrollIntoView({ block: "center", behavior: "smooth" })); }}>查看缺字清单</button>{fontPlan && <button className="unity-btn" onClick={() => void openTranslationFile(fontPlan.folder + "/字库检查.txt")}>打开检查报告</button>}</div>}
     {failure.technical && <details><summary>技术详情</summary><pre>{failure.technical}</pre></details>}
   </details>;
@@ -2252,9 +2252,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     <aside className="unity-offline-config" style={deploymentPage ? undefined : { width: panelWidth.width }}>
     <div className="unity-offline-upper unity-workflow-layout">
       <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" steps={UNITY_STAGE_TABS.map(tab=>{
-        const { step, number, label } = tab;
-        if (number === "2.3") return {
-          id: number, number, label, state: hasMosaic ? "complete" : scanReady ? "current" : "pending",
+        const { step, id, label } = tab;
+        if (id === "2.3") return {
+          id, label, state: hasMosaic ? "complete" : scanReady ? "current" : "pending",
           selected: mosaicPage, running: mosaicBusy, onSelect: () => {
             if (mosaicPage || busy || restoring || saving || importPreview || imageEditorBusy) return;
             const change = () => { followProgress.current = false; setWorkflowStep(2); setImagePart(false); setMosaicPage(true); };
@@ -2267,7 +2267,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           const running = deployment?.state === "running";
           const state = deployment?.state === "error" ? "error" : running ? "current" : applied ? "complete" :
             patch || patchReady || deployment?.state === "stopped" ? "current" : "pending";
-          return {id:number,number,label,state,selected:activeStep===3,running,paused:deployment?.state==="stopped",onSelect:()=>{
+          return {id,label,state,selected:activeStep===3,running,paused:deployment?.state==="stopped",onSelect:()=>{
             if(mosaicBusy)return;
             const change=()=>{followProgress.current=false;setActiveStep(3);setImagePart(false);};
             if(activeStep===2&&imagePart&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();
@@ -2275,11 +2275,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         }
         const subReady = tab.imageOnly ? imagesReady : textReady;
         const partProgress = step === 2 && !preparingRescan ? currentParts?.[tab.imageOnly ? "images" : "text"] : undefined;
-        const runningHere = step === 2 && partProgress ? partProgress.state === "running" : executingStep === step && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
+        const runningHere = partProgress ? partProgress.state === "running" :
+          generation?.step === step && generation.state === "running" && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
         const baseState = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere||scanReady ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, !preparingRescan && needsScan ? 1 : undefined, !preparingRescan && scanUpdate.level === "optional" ? 1 : undefined);
         const state = step === 1 && baseState === "pending" ? "current" : baseState;
         const selectedTab = !mosaicPage && activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
-        return {id:number,number,label:<>{label}{(state==="outdated"||state==="optional-update")&&` · ${scanUpdate.label}`}</>,state,selected:selectedTab,running:runningHere,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>{if(mosaicBusy)return;const change=()=>{followProgress.current=false;setActiveStep(step);setImagePart(tab.imageOnly);};if(activeStep===2&&imagePart&&!(step===2&&tab.imageOnly)&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}};
+        const title = state === "outdated" || state === "optional-update" ? `${label} · ${scanUpdate.label}` : undefined;
+        return {id,label,title,state,selected:selectedTab,running:runningHere,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>{if(mosaicBusy)return;const change=()=>{followProgress.current=false;setActiveStep(step);setImagePart(tab.imageOnly);};if(activeStep===2&&imagePart&&!(step===2&&tab.imageOnly)&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}};
       })}/>
     <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${mosaicPage ? "2.3" : activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" >

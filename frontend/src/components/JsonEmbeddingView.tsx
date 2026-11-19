@@ -429,7 +429,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   </section>;
   const selectWorkflow=(id:string)=>{if(mosaicBusy||id==="2.3"&&imageBusy)return;const change=()=>{if(id==="2.2"||id==="2.3"){setPart(id==="2.3"?"mosaic":"images");setTextStep(2);}else{setPart("text");setTextStep(id==="2.1"?2:Number(id));}};if(part==="images"&&id!=="2.2"&&imageLeaveGuard.current)imageLeaveGuard.current(change);else if(part==="text"&&textInfo.dirty)void textHandle.current?.leave().then(ok=>{if(ok)change();});else change();};
   const activeWorkflowId = part === "mosaic" ? "2.3" : part === "images" ? "2.2" : textStep === 2 ? "2.1" : String(textStep);
-  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"翻译文本"},...(supportsImages?[{id:"2.2",label:"图片翻译"}]:[]),...(supportsMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
+  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(supportsImages?[{id:"2.2",label:"图片翻译"}]:[]),...(supportsMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
     const selected=item.id===activeWorkflowId;
     const operationStep=(pending ? pendingAction : status.action)==="extract"?"1":"3";
     const imageStep=imageWorkflow.stage==="restore"?"3":"2.2";
@@ -439,7 +439,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&(canGenerate||generated||imageWorkflow.valid>0);
     const failed=!!scanLoadError&&item.id==="1"&&!running||!scanLoadError&&textInfo.state==="error"&&item.id==="2.1"||imageWorkflow.state==="error"&&item.id===imageStep||status.state==="error"&&operationStep===item.id;
     const state=failed?"error":running?"current":completed?"complete":ready?"current":"pending";
-    return {...item,number:item.id,state,selected,paused:!completed&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
+    return {...item,state,selected,paused:!completed&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
   })}/>;
   return <div className="json-embedding-view" onClickCapture={event => logGameButton(event, appendLog)} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>{confirmation.dialog}
     <main className="embed-workspace embed-unity-workspace">

@@ -276,7 +276,7 @@ export function UnityImageWorkbench({ project, initialScreeningComplete, disable
   const [imageBodyWidth, setImageBodyWidth] = useState(0);
   const listMaxWidth = imageBodyWidth > 0 ? Math.min(520, Math.floor(imageBodyWidth * .5)) : 520;
   const listMinWidth = Math.min(136, listMaxWidth);
-  const listWidth = usePersistedWidth("unity-image-browser-list-width", 180, listMinWidth, listMaxWidth);
+  const listWidth = usePersistedWidth("unity-image-browser-list-width", 180, listMinWidth, listMaxWidth, "guide");
   useLayoutEffect(() => {
     if (!imageBody) return;
     const update = () => { if (imageBody.clientWidth > 0) setImageBodyWidth(imageBody.clientWidth); };
@@ -525,7 +525,7 @@ export function UnityImageWorkbench({ project, initialScreeningComplete, disable
   const showDetails = (id: string) => requestView(()=>{ setViewer(null); selectImage(id); setReturnToGallery(true); setGallery(false); });
   const toggleGallery=()=>requestView(()=>{if(gallery){setGallery(false);setReturnToGallery(false);}else{setGalleryVisited(true);setGallery(true);}});
 
-  return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className="unity-offline-workbench unity-image-workbench" aria-label="图片识别与翻译结果">{confirmation.dialog}
+  return <section data-game-drop-zone="images" {...fileDrop.handlers} ref={workbench} onClick={() => setPreviewMenu(null)} className="unity-offline-workbench unity-image-workbench" aria-label="图片翻译结果">{confirmation.dialog}
     {createPortal(<div ref={downloadMenu} id={downloadId} popover="auto" role="menu" aria-label="图片下载范围" className="unity-image-filter-menu unity-download-menu">
       {([["all", "下载全部"], ["filtered", "下载筛选内容"], ["checked", "下载勾选图片"]] as const).map(([range, label]) =>
         <button key={range} type="button" role="menuitem" disabled={!downloadable[range].length}

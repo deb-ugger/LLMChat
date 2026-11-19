@@ -22,7 +22,7 @@ function offlineGuide(unity: boolean, images: boolean): Section[] {
       ],
     },
     {
-      number: "2.1", title: "翻译文本",
+      number: "2.1", title: "文本翻译",
       description: "先筛选，再翻译正文。处理后可在右侧检查原文、译文和失败条目。",
       details: [
         ["筛选文本", "根据原文与目标语言选项确定处理范围。可用本地规则或独立的大模型判断哪些内容已经符合目标语言，并将其原样保留。"],

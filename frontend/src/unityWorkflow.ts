@@ -2,13 +2,13 @@ import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
 import { isTranslationRefusal, unityTranslationTokens } from "./unityTokens";
 import { gameImageJapaneseTextIssue, gameTextMatchesSource } from "./gameDisplayText";
 
-export const UNITY_STEPS = ["扫描资源", "翻译文本", "生成补丁", "应用到游戏"];
+export const UNITY_STEPS = ["扫描资源", "文本翻译", "生成补丁", "应用到游戏"];
 export const UNITY_STAGE_TABS = [
-  { step: 1, number: "1", label: "扫描资源", imageOnly: false },
-  { step: 2, number: "2.1", label: "翻译文本", imageOnly: false },
-  { step: 2, number: "2.2", label: "图片识别与翻译", imageOnly: true },
-  { step: 2, number: "2.3", label: "图片去码", imageOnly: false },
-  { step: 3, number: "3", label: "生成与应用", imageOnly: false },
+  { step: 1, id: "1", label: "扫描资源", imageOnly: false },
+  { step: 2, id: "2.1", label: "文本翻译", imageOnly: false },
+  { step: 2, id: "2.2", label: "图片翻译", imageOnly: true },
+  { step: 2, id: "2.3", label: "图片去码", imageOnly: false },
+  { step: 3, id: "3", label: "生成与应用", imageOnly: false },
 ] as const;
 export const unityImageHasRefusal = (image: UnityImage) => image.renderedKind !== "imported" && image.regions.some(region => region.selected && isTranslationRefusal(region.text, region.translation));
 export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
