@@ -14,6 +14,7 @@
 #include "TextTaskQueue.h"
 #include "TextRunStore.h"
 #include "JsonEmbedding.h"
+#include "GameMosaicPatch.h"
 #include "GameTextProject.h"
 #include "RpgImageProject.h"
 #include "OllamaDirectories.h"
@@ -2343,6 +2344,37 @@ int HttpServer::run()
     svr.Post("/api/game-images/render",withCors([&](const httplib::Request& req,httplib::Response& res){try{res.set_content(gameImages.render(utf8path::pathFromUtf8(req.get_param_value("gamePath")),req.get_param_value("id"),req.body).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
     svr.Post("/api/json-embedding/detect-patch", withCors([&](const httplib::Request& req, httplib::Response& res){try{res.set_content(jsonEmbedding.detectPatch(utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>())).dump(),"application/json");}catch(const std::exception& e){res.status=400;res.set_content(errorJson(e.what()).dump(),"application/json");}}));
 
+    for (const std::string operation : {"status","preview","install","rule","uninstall"}) {
+        svr.Post("/api/game-mosaic/" + operation, withCors([operation](const httplib::Request& req, httplib::Response& res) {
+            try {
+                const auto body = json::parse(req.body);
+                const auto game = fs::canonical(utf8path::pathFromUtf8(body.at("gamePath").get<std::string>()));
+                const auto detected = JsonEmbedding::detect(game);
+                if (detected.size() != 1 || !fs::equivalent(game,utf8path::pathFromUtf8(detected[0].at("path").get<std::string>())))
+                    throw std::runtime_error("无法识别当前游戏目录");
+                const auto engine = detected[0].at("engine").get<std::string>();
+                const bool isUnreal = engine == unreal::engine;
+                if (!isUnreal && engine != "Unity") throw std::runtime_error("请打开 UE 或 Unity 游戏工程");
+                json result;
+                if (operation == "status") result = mosaic::status(game,isUnreal);
+                else if (operation == "uninstall") result = mosaic::uninstall(game,isUnreal);
+                else if (operation == "rule") result = mosaic::installRule(game,isUnreal,body);
+                else {
+                    const auto source = utf8path::pathFromUtf8(body.at("source").get<std::string>());
+                    const auto target = body.value("target","game");
+                    if (operation == "preview") {
+                        const auto bundle = mosaic::package(game,isUnreal,source,target);
+                        result = {{"files",bundle.list},{"ignored",bundle.ignored}};
+                    } else result = mosaic::install(game,isUnreal,source,target,body.at("files"));
+                }
+                res.set_content(result.dump(),"application/json");
+            } catch (const std::exception& e) {
+                res.status=400;
+                res.set_content(errorJson(e.what()).dump(-1,' ',false,json::error_handler_t::replace),"application/json");
+            }
+        }));
+    }
+
     svr.Post("/api/json-embedding/launch", withCors([](const httplib::Request& req, httplib::Response& res) {
         try {
             const auto game = utf8path::pathFromUtf8(json::parse(req.body).at("gamePath").get<std::string>());
@@ -2350,13 +2382,14 @@ int HttpServer::run()
             const auto games = JsonEmbedding::detect(game);
             if (games.size() != 1 || !games[0].value("supported", false) ||
                 !fs::equivalent(game, utf8path::pathFromUtf8(games[0].at("path").get<std::string>())))
-                throw std::runtime_error("无法识别当前 RPG Maker 或 WOLF RPG 游戏目录");
+                throw std::runtime_error("无法识别当前游戏目录");
             const auto root = fs::absolute(game);
-            auto exe = root / "Game.exe";
+            auto exe = games[0].at("engine").get<std::string>() == unreal::engine ? unreal::executable(root) : root / "Game.exe";
             if (!fs::is_regular_file(exe)) exe = root / (root.filename().wstring() + L".exe");
-            if (!fs::is_regular_file(exe)) throw std::runtime_error("未找到 Game.exe 或与游戏目录同名的主程序");
+            if (!fs::is_regular_file(exe) || gamefiles::reparsePoint(exe)) throw std::runtime_error("未找到有效的游戏主程序");
 #ifdef _WIN32
-            const auto result = reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, root.c_str(), SW_SHOWNORMAL));
+            const auto directory = exe.parent_path();
+            const auto result = reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL));
             if (result <= 32) throw std::runtime_error("Windows 无法启动游戏（错误 " + std::to_string(result) + "）");
             res.set_content(json{{"ok", true}, {"gameExe", utf8path::pathUtf8(exe.filename())}}.dump(), "application/json");
 #else

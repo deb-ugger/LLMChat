@@ -28,17 +28,17 @@ struct Snapshot {
         return message;
     }
 };
-inline Snapshot snapshot(const fs::path& game, const fs::path& data, const Json& selected, const std::function<void(size_t,size_t)>& progress = {}) {
+inline Snapshot snapshot(const fs::path& game, const fs::path& data, const Json& selected, const std::function<void(size_t,size_t)>& progress = {}, bool isUnreal = false) {
     const auto scopes = selected.get<std::vector<std::string>>();
     if (scopes.empty()) throw std::runtime_error("请选择至少一项备份范围");
     Snapshot result;
     std::set<fs::path> files;
     const auto prefix = data.parent_path();
-    const bool wolf = data == "Data";
+    const bool wolf = !isUnreal && data == "Data";
     for (const auto& scope : scopes) {
         std::vector<fs::path> candidates;
         if (scope == "text") {
-            if (!wolf || fs::is_directory(game / data)) candidates = gamepatch::sources(game, wolf ? fs::path{} : data);
+            if (!wolf || fs::is_directory(game / data)) candidates = gamepatch::sources(game, wolf ? fs::path{} : data, isUnreal);
         } else if (scope == "runtime" && !wolf) {
             for (const auto& name : {"js/plugins.js", "js/plugins/LLMChatTranslation.js", "LLMChat-translations.json", "fonts/LLMChat-font.ttf", "fonts/LLMChat-font.otf"}) candidates.push_back(prefix / name);
         } else if (scope == "images") {

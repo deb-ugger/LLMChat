@@ -3171,3 +3171,17 @@ dialog.game-workflow-help::backdrop { background: #0f172a66; }
   padding: 0 5px;
   border-radius: var(--radius-sm);
 }
+.game-mosaic-dialog { width:min(620px, calc(100vw - 28px)); }
+.game-mosaic-body { display:grid; gap:12px; min-width:0; }
+.game-mosaic-body p { margin:0; }
+.game-mosaic-body > label { display:grid; gap:4px; min-width:0; }
+.game-mosaic-body :is(input,select) { min-width:0; width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-panel); color:var(--text); }
+.game-mosaic-options, .game-mosaic-installed { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.game-mosaic-options > code, .game-mosaic-files code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.game-mosaic-options > code { flex:1 1 160px; }
+.game-mosaic-options button[aria-pressed="true"] { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.game-mosaic-installed { justify-content:space-between; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); }
+.game-mosaic-installed small { display:block; color:var(--text-muted); }
+.game-mosaic-files { max-height:210px; margin:0; padding:0; list-style:none; overflow:auto; border:1px solid var(--border); border-radius:var(--radius-sm); }
+.game-mosaic-files li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:5px 8px; }
+.game-mosaic-files li + li { border-top:1px solid var(--border); }

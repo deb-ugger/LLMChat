@@ -7,6 +7,7 @@ import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { UnityIconButton } from "./UnityIconButton";
 import { UnityActionIcon } from "./UnityActionIcon";
+import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { loadGameStage, rememberGameStage } from "../unityLastGame";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { gameTextRequest } from "../gameTextProject";
@@ -28,7 +29,7 @@ const paths: Record<string, string> = { back: "m14 5-7 7 7 7M7 12h14", extract: 
 function IconAction({ name, label, caption, hint, disabled, onClick }: { name: string; label: string; caption?: string; hint?: string; disabled?: boolean; onClick?: () => void }) {
   return <span className="embed-action" data-tooltip={hint || label} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? label : undefined}><button type="button" className={`embed-icon${name==="help"?" is-help":""}${caption?" has-caption":""}`} aria-label={label} disabled={disabled} onClick={onClick}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>{caption&&<span>{caption}</span>}</button></span>;
 }
-export type EmbeddingGame = { path: string; name: string; engine: string; supported: boolean };
+export type EmbeddingGame = { path: string; name: string; engine: string; supported: boolean; textSupported?: boolean };
 type Backup = { id: string; path: string; state: string; resources: number };
 type Status = { issues?: Array<{file:string;source:string;translation:string;reason:string}>; state: string; action?: string; detail?: string; gamePath?: string; jsonPath?: string; outputPath?: string; exportPath?: string; imagesPath?: string; imageManifest?: string; patchPath?: string; backupPath?: string; matched?: number; blocked?: number; dictionaryEntries?: number; completed?: number; total?: number };
 async function call<T>(action: string, body?: unknown): Promise<T> {
@@ -36,6 +37,7 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
+  const isUnreal = game.engine === "Unreal Engine";
   const supportsImages = game.engine.startsWith("RPG Maker") || game.engine === "WOLF RPG";
   const availableBackupScopes = [
     ["text", "文本资源"],
@@ -420,7 +422,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}><UnityIconButton aria-label={automatic==="running"?"中止一键流程":automatic==="stopped"||automatic==="error"?"继续一键生成并应用":"一键生成并应用"} title={automatic==="running"?"中止并保存文本和图片进度":`扫描、并行翻译文本与图片、生成并应用${game.engine}补丁`} disabled={automatic!=="running"&&busy} onClick={()=>automatic==="running"?stopAutomatic():void runAutomatic()}><UnityActionIcon kind={automatic==="running"?"cancel":"run"}/></UnityIconButton><UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
-    }}><UnityActionIcon kind="benchmark" /></UnityIconButton><GameWorkflowHelp mode="embedded" supportsImages={supportsImages} /></div></header>
+    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{isUnreal && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={supportsImages} /></div></header>
 
       <UnityGameWorkspace controls={<div ref={setControlsTarget} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} className="engine-workspace-slot engine-result-slot"/>} output={logPanel}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"&&textStep!==4||textStep===2} className="engine-workflow-content">{workflowSteps}<div className="unity-step-panel">
@@ -430,6 +432,11 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {textStep===4&&deploymentPanel}
 
         {textStep===1?progress(["extract"],{step:"1",title:"扫描资源",done:!!scanPath||textInfo.count>0}):textStep===3?progress(["embed"],{step:"3",title:"生成补丁",done:generated}):null}
+        {textStep === 1 && isUnreal && !hasTextScan && <p className="hint">
+          {game.textSupported === false
+            ? "当前目录没有散装 .locres。若本地化文件在 Pak 或 IoStore 中，先用匹配游戏版本的工具导出到对应的 Content/Localization，再扫描。"
+            : "扫描 Content/Localization 下的 .locres 文件。按游戏实际使用的原文语言筛选后再翻译。"}
+        </p>}
         {textStep===3&&output("补丁目录",status.patchPath)}</div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
       {supportsImages&&<GameImageWorkbench testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
