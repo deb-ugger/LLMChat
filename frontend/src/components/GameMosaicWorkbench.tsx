@@ -1,12 +1,15 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
+import { gameDuration } from "../gameModelPerformance";
 import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, scanMosaic, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
-import { GamePageNumber } from "./GamePageNumber";
-import { GameStepProgress, type GameProgressState } from "./GameStepProgress";
+import { GameFlowCard } from "./GameFlowCard";
+import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
+import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
@@ -14,7 +17,8 @@ type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: st
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type MosaicStep = "screen" | "redraw";
-type StepRun = { state: GameProgressState; completed: number; total: number };
+type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string };
+type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export type MosaicCandidateIndex = Record<string, { source: string; included: boolean }>;
 type MosaicStorage = {
   index: MosaicCandidateIndex;
@@ -30,20 +34,21 @@ type Props = {
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
 const mosaicPageSize = 40;
+const detectorLabels = { grid: "方格规则", lada: "Lada 专用检测" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
 }
 
 function useBlobUrl(blob?: Blob) {
-  const [url, setUrl] = useState("");
+  const [preview, setPreview] = useState<{ blob: Blob; url: string }>();
   useEffect(() => {
-    if (!blob) { setUrl(""); return; }
-    const next = URL.createObjectURL(blob);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    setPreview({ blob, url });
+    return () => URL.revokeObjectURL(url);
   }, [blob]);
-  return url;
+  return preview && preview.blob === blob ? preview.url : "";
 }
 
 async function mosaicResponse(response: Response) {
@@ -80,7 +85,10 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }, [images, storage?.index]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
+  const listId = useId();
   const listRef = useRef<HTMLUListElement>(null);
+  const filterMenu = useRef<HTMLDivElement>(null);
+  const [configured, setConfigured] = useState<MosaicStep | null>(null);
   const [scope, setScope] = useState<"scenes" | "all">("scenes");
   const [detectorKind, setDetectorKind] = useState<"grid" | "lada">("grid");
   const [detectorFile, setDetectorFile] = useState<File>();
@@ -93,12 +101,13 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
+  const [, refreshElapsed] = useState(0);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
-  const [source, setSource] = useState<{ id: string; revision: string; blob: Blob }>();
-  const [approved, setApproved] = useState<{ id: string; revision: string; blob: Blob }>();
+  const [source, setSource] = useState<ImagePreview>();
+  const [approved, setApproved] = useState<ImagePreview>();
   const [candidates, setCandidates] = useState<Record<string, { revision: string; values: Candidates; seconds: Partial<Record<MosaicModel, number>> }>>({});
-  const [view, setView] = useState<"original" | "saved" | MosaicModel>("original");
+  const [preferredResult, setPreferredResult] = useState<"saved" | MosaicModel>("saved");
   const [drawing, setDrawing] = useState(false);
   const [draft, setDraft] = useState<MosaicBox>();
   const anchor = useRef<[number, number] | null>(null);
@@ -112,9 +121,6 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const scoped = scope === "scenes" ? scenes : usable;
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => needle ? scoped.filter(image => (image.name + " " + image.file).toLowerCase().includes(needle)) : scoped, [needle, scoped]);
-  const active = usable.find(image => image.id === activeId) ?? matches[0];
-  const activeResult = active && resultFor(rows, active);
-  const group = active && (activeResult?.group || active.id);
   const imageGroup = useMemo(() => {
     const grouped = new Map<string, UnityImage[]>();
     for (const image of usable) {
@@ -124,9 +130,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     }
     return grouped;
   }, [rows, usable]);
-  const members = group ? imageGroup.get(group) || [] : [];
-  const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
-  const currentScope = sceneFilter && group ? members : matches;
+  const groupAnchor = sceneFilter ? usable.find(image => image.id === activeId) ?? matches[0] : undefined;
+  const scopedGroup = groupAnchor && (resultFor(rows, groupAnchor).group || groupAnchor.id);
+  const currentScope = scopedGroup ? imageGroup.get(scopedGroup) ?? [] : matches;
   const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image => {
     const row = resultFor(rows, image);
     return statusFilter === "candidate" ? row.boxes.length > 0 : statusFilter === "unknown" ? !row.scanned || !!row.reason : row.scanned && !row.reason && !row.boxes.length;
@@ -134,6 +140,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const pages = Math.max(1, Math.ceil(visible.length / mosaicPageSize));
   const currentPage = Math.min(page, pages - 1);
   const pageImages = visible.slice(currentPage * mosaicPageSize, (currentPage + 1) * mosaicPageSize);
+  const active = pageImages.find(image => image.id === activeId) ?? pageImages[0];
+  const activeResult = active && resultFor(rows, active);
+  const group = active && (activeResult?.group || active.id);
+  const members = group ? imageGroup.get(group) || [] : [];
+  const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
   useLayoutEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [currentPage, needle, scope, sceneFilter, statusFilter]);
@@ -142,12 +153,34 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const included = saved.filter(image => storage?.index[image.id]?.included);
   const result = active && candidates[active.id]?.revision === active.sourceHash ? candidates[active.id] : undefined;
   const values = result?.values;
-  const displayed = view === "original" ? source?.id === active?.id && source?.revision === active?.sourceHash ? source?.blob : undefined
-    : view === "saved" ? approved?.id === active?.id && approved?.revision === active?.sourceHash ? approved?.blob : undefined : values?.[view];
-  const display = useBlobUrl(displayed);
   const activeSaved = !!activeResult?.saved;
+  const resultOptions = [
+    ...(activeSaved ? [{ id: "saved" as const, label: "已确认" }] : []),
+    ...(["turbo", "2511"] as const).flatMap(id => {
+      const seconds = result?.seconds[id];
+      return values?.[id] ? [{ id, label: mosaicModelLabels[id] + (seconds == null ? "" : ` · ${seconds.toFixed(1)} 秒`) }] : [];
+    }),
+  ];
+  const view = resultOptions.find(option => option.id === preferredResult)?.id ?? resultOptions[0]?.id;
+  const candidate = view && view !== "saved" ? values?.[view] : undefined;
+  const original = source && source.id === active?.id && source.revision === active.sourceHash ? source : undefined;
+  const confirmed = approved && approved.id === active?.id && approved.revision === active.sourceHash ? approved : undefined;
+  const originalUrl = useBlobUrl(original?.blob);
+  const resultUrl = useBlobUrl(view === "saved" ? confirmed?.blob : candidate);
+  const counts = useMemo(() => visible.reduce((total, image) => {
+    const row = resultFor(rows, image);
+    if (row.checked) total.checked++;
+    if (row.saved) total.saved++;
+    return total;
+  }, { checked: 0, saved: 0 }), [visible, rows]);
 
   useEffect(() => () => { task.current?.abort(); onBusy?.(false); }, [onBusy]);
+  useEffect(() => { if (!paneVisible) filterMenu.current?.hidePopover(); }, [paneVisible]);
+  useEffect(() => {
+    if (!paneVisible || !busy || !progressStep) return;
+    const timer = window.setInterval(() => refreshElapsed(value => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [paneVisible, busy, progressStep]);
   useEffect(() => {
     try { localStorage.setItem(savedKey, JSON.stringify(rows)); }
     catch { showAppNotice("无法保存图片去码筛选记录", "error"); }
@@ -162,10 +195,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const image = active;
     if (!image) return;
     const controller = new AbortController();
-    setView("original"); setDrawing(false); setDraft(undefined); anchor.current = null;
+    setPreferredResult("saved"); setDrawing(false); setDraft(undefined); anchor.current = null;
     void read(image, controller.signal).then(blob => {
       if (!controller.signal.aborted) setSource({ id: image.id, revision: image.sourceHash, blob });
-    }).catch(cause => { if (!controller.signal.aborted) setError(String(cause)); });
+    }).catch(cause => {
+      if (!controller.signal.aborted) setSource({ id: image.id, revision: image.sourceHash, error: String(cause) });
+    });
     return () => controller.abort();
   }, [active, read]);
 
@@ -174,7 +209,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const controller = new AbortController();
     void readSaved(active, controller.signal).then(blob => {
       if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, blob });
-    }).catch(cause => { if (!controller.signal.aborted) setError(String(cause)); });
+    }).catch(cause => {
+      if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, error: String(cause) });
+    });
     return () => controller.abort();
   }, [active, activeSaved, view]);
 
@@ -183,13 +220,14 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   async function run(label: string, work: (signal: AbortSignal, report: (completed: number) => void) => Promise<void | boolean>,
-    step?: { id: MosaicStep; total: number }) {
+    step?: { id: MosaicStep; total: number; summary: string }) {
     if (task.current || disabled) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
+    const started = performance.now();
     setProgressStep(step?.id);
-    if (step) setStepRuns(previous => ({ ...previous, [step.id]: { state: "running", completed: 0, total: step.total } }));
+    if (step) setStepRuns(previous => ({ ...previous, [step.id]: { state: "running", completed: 0, total: step.total, summary: step.summary, started } }));
     setBusy(label); setProgress(label); setError("");
     const updateStep = (edit: Partial<StepRun>) => {
       if (!step) return;
@@ -201,11 +239,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     try {
       const completed = await work(controller.signal, count => updateStep({ completed: count }));
       if (controller.signal.aborted) setProgress("已停止后续任务");
-      updateStep({ state: controller.signal.aborted ? "stopped" : completed === false ? "error" : "done" });
+      updateStep({ state: controller.signal.aborted ? "stopped" : completed === false ? "error" : "done", elapsed: performance.now() - started });
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
       else setProgress("已停止后续任务");
-      updateStep({ state: controller.signal.aborted ? "stopped" : "error" });
+      updateStep({ state: controller.signal.aborted ? "stopped" : "error", elapsed: performance.now() - started });
     } finally {
       task.current = null; setBusy("");
       onBusy?.(false);
@@ -253,7 +291,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       }
       setProgress(failures ? `${failures} 张读取失败，可在待复核列表查看。` : "");
       return failures === 0;
-    }, { id: "screen", total: targets.length });
+    }, { id: "screen", total: targets.length, summary: detectorLabels[detectorKind] });
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
@@ -263,7 +301,6 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       delete next[image.id];
       return next;
     });
-    setView("original");
   }
 
   function position(event: PointerEvent<SVGSVGElement>, image: UnityImage): [number, number] {
@@ -319,7 +356,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               revision: image.sourceHash, values: { ...previous[image.id]?.values, [engine]: blob },
               seconds: { ...previous[image.id]?.seconds, [engine]: seconds },
             } }));
-            if (image.id === active?.id) setView(engine);
+            if (image.id === active?.id) setPreferredResult(engine);
           }
         } catch (cause) {
           if (signal.aborted) throw cause;
@@ -330,7 +367,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       setProgress("");
       if (failures.length) setError(failures.join("\n"));
       return failures.length === 0;
-    }, { id: "redraw", total: usableTargets.length });
+    }, { id: "redraw", total: usableTargets.length, summary: models.map(engine => mosaicModelLabels[engine]).join("、") });
   }
 
   function approve(image: UnityImage, blob: Blob) {
@@ -338,7 +375,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       if (storage) await storage.save(image, blob, signal);
       else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
       update(image, { saved: true, checked: true });
-      setApproved({ id: image.id, revision: image.sourceHash, blob }); setView("saved");
+      setApproved({ id: image.id, revision: image.sourceHash, blob }); setPreferredResult("saved");
       setProgress("已保存 · " + image.name);
     });
   }
@@ -371,65 +408,64 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     });
   }
 
-  const tabs = [
-    { id: "original" as const, label: "原图", enabled: true },
-    { id: "saved" as const, label: "已确认", enabled: activeSaved },
-    ...(["turbo", "2511"] as const).map(id => ({ id, label: (id === "turbo" ? "Turbo" : "2511") +
-      (result?.seconds[id] != null ? " · " + result.seconds[id]!.toFixed(1) + " 秒" : ""), enabled: !!values?.[id] })),
-  ];
   const activeBoxes = [...(activeResult?.boxes || []), ...(draft ? [draft] : [])];
-  const candidate = view === "turbo" || view === "2511" ? values?.[view] : undefined;
-
   const screenedCount = currentScope.filter(image => resultFor(rows, image).scanned).length;
   const idleScreen: StepRun = { state: currentScope.length && screenedCount === currentScope.length ? "done" : "pending",
     total: currentScope.length, completed: screenedCount };
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
-  const stepProgress = (id: MosaicStep, title: string, actions: ReactNode) => {
+  const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
     const status = stepRuns[id] || (id === "screen" ? idleScreen : undefined);
-    const inProgress = progressStep === id && !!busy;
+    const state = status?.state || "pending";
+    const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
-    return <GameStepProgress title={title} state={status?.state || "pending"} percent={percent}
-      count={status?.total ? `${status.completed} / ${status.total} 张` : undefined}
-      actions={inProgress ? <button className="unity-btn" disabled={task.current?.signal.aborted} onClick={() => {
+    const elapsed = status?.elapsed ?? (status?.started == null ? undefined : performance.now() - status.started);
+    const expanded = configured === id;
+    return <GameFlowCard title={title} state={state} current={running} expanded={expanded}
+      toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={() => setConfigured(expanded ? null : id)}
+      status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
+      summary={<div className="game-mosaic-step-summary">
+        <span>{running ? status?.summary : summary}</span>
+        {status?.total ? <small className="game-flow-model-rates">
+          <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
+        </small> : null}
+        {running && <GameProgressBar label={`${title}进度`} value={percent} />}
+      </div>}
+      actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {
         task.current?.abort(); setProgress("等待当前任务返回后停止后续任务");
-      }}>中止</button> : actions}>
-      {progressStep === id && (progress || error) && <>
-        {progress && <p className="game-mosaic-progress">{progress}</p>}
-        {error && <p className="game-mosaic-error" role="alert">{error}</p>}
-      </>}
-    </GameStepProgress>;
+      }}>{task.current?.signal.aborted ? "正在中止" : "中止"}</button> : actions}
+      configuration={expanded && <div className="game-mosaic-step-settings">{settings}</div>} />;
   };
 
   const actionsDisabled = !!busy || disabled;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
-  return <section className="game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
+  const previewWidth = active ? Math.min(active.width, 320 * active.width / active.height) : 0;
+  const screenSummary = detectorKind === "lada" && detectorFile
+    ? `${detectorLabels.lada} · ${detectorFile.name}` : detectorLabels[detectorKind];
+  return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
-    {createPortal(<div className="game-mosaic-controls unity-scan-layout" hidden={!paneVisible} style={hiddenStyle}>
-      <section className="unity-scan-progress-card" aria-label="筛选打码图片">
-        {stepProgress("screen", "筛选打码图片", <>
-          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
-            onClick={screen}>开始筛选</button>
-        </>)}
-        <div className="game-mosaic-step-settings">
+    {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
+      <div className="game-flow-list"><ol>
+        {stepCard("screen", "筛选打码图片", screenSummary,
+          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
+            onClick={screen}>开始筛选</button>, <>
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { setScope(event.target.value as typeof scope); setPage(0); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => setDetectorKind(event.target.value as typeof detectorKind)}>
-            <option value="grid">方格规则</option><option value="lada">Lada 专用检测</option>
+            <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option>
           </select></label>
-          {detectorKind === "lada" && <label>本地模型<input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(event.target.files?.[0])} /></label>}
-        </div>
-      </section>
-      <section className="unity-scan-progress-card" aria-label="重绘打码区域">
-        {stepProgress("redraw", "重绘打码区域", <>
-          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !activeResult?.boxes.length}
-            onClick={() => active && generate([active], [model])}>重绘当前图</button>
-          <button className="unity-btn" disabled={actionsDisabled || !reference || !redrawGroup.length}
-            onClick={() => generate(redrawGroup, [model])}>重绘本组所选</button>
-          <button className="unity-btn" disabled={actionsDisabled || !activeResult?.boxes.length}
-            onClick={() => active && generate([active], ["turbo", "2511"])}>对比两种模型</button>
+          {detectorKind === "lada" && <label>本地模型
+            <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(event.target.files?.[0])} />
+          </label>}
         </>)}
-        <div className="game-mosaic-step-settings">
+        {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model], <>
+          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !activeResult?.boxes.length}
+            onClick={() => active && generate([active], [model])}>重绘当前图</button>
+          <button type="button" className="unity-btn" disabled={actionsDisabled || !reference || !redrawGroup.length}
+            onClick={() => generate(redrawGroup, [model])}>重绘本组所选</button>
+          <button type="button" className="unity-btn" disabled={actionsDisabled || !activeResult?.boxes.length}
+            onClick={() => active && generate([active], ["turbo", "2511"])}>对比两种模型</button>
+        </>, <>
           <label>去码模型<select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => {
             const next = event.target.value as MosaicModel; setModel(next); setSteps(next === "turbo" ? 8 : 20);
           }}>
@@ -439,61 +475,71 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             onChange={event => setSteps(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} /></label>}
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={protect} disabled={!!busy}
             onChange={event => setProtect(event.target.checked)} />保护已识别文字</label>
-        </div>
-      </section>
-      {!progressStep && (progress || error) && <div className="game-mosaic-control-feedback">
+        </>)}
+      </ol></div>
+      {(progress || error) && <div className="game-flow-progress">
         {progress && <p className="game-mosaic-progress" role="status">{progress}</p>}
         {error && <p className="game-mosaic-error" role="alert">{error}</p>}
       </div>}
     </div>, controls)}
-    <div className="game-mosaic-body-grid">
-      <aside className="game-mosaic-list">
-        <div className="game-mosaic-toolbar">
-          <input type="search" aria-label="筛选文件名" placeholder="筛选文件名" value={query} disabled={!!busy} onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setPage(0); }} />
-          <select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }}>
-            <option value="all">全部状态</option><option value="candidate">疑似打码</option><option value="unknown">待复核</option><option value="clear">未发现</option>
-          </select>
-          <label><input type="checkbox" checked={sceneFilter} disabled={!group} onChange={event => { setSceneFilter(event.target.checked); setPage(0); }} />仅本组</label>
-        </div>
+    <div className="unity-offline-toolbar unity-image-toolbar">
+      <GameImageFilter menuRef={filterMenu}>
+        <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }}>
+          <option value="all">全部状态</option><option value="candidate">疑似打码</option><option value="unknown">待复核</option><option value="clear">未发现</option>
+        </select></label>
+        <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => {
+          if (event.target.checked && active) setActiveId(active.id);
+          setSceneFilter(event.target.checked);
+          setPage(0);
+        }} />仅本组</label>
+      </GameImageFilter>
+      <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已确认 {counts.saved} 张</span>
+      <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query} disabled={!!busy}
+        onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setPage(0); }} />
+    </div>
+    <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width"
+      list={<>
         <ul ref={listRef}>{pageImages.map(image => {
           const row = resultFor(rows, image);
           const groupSize = imageGroup.get(row.group || image.id)?.length || 1;
-          return <li key={image.id} className={image.id === active?.id ? "is-current" : undefined}>
+          const status = row.saved ? storage?.index[image.id]?.included ? "已纳入补丁" : "已确认"
+            : row.reason ? "待复核" : row.boxes.length ? `疑似打码 · ${row.boxes.length} 区域` : row.scanned ? "未发现" : "未筛选";
+          const detail = `${image.width} × ${image.height} · ${status}${groupSize > 1 ? ` · ${groupSize} 张一组` : ""}`;
+          return <li key={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}`}>
             <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true })} />
-            <button type="button" disabled={!!busy} onClick={() => { setActiveId(image.id); setError(""); }}>
-              <strong title={image.file}>{image.name}</strong>
-              <small>{row.saved ? storage?.index[image.id]?.included ? "已纳入补丁" : "已确认" : row.reason ? "待复核" : row.boxes.length ? "疑似打码 · " + row.boxes.length + " 区域" : row.scanned ? "未发现" : "未筛选"} · {groupSize} 张一组</small>
+            <button type="button" aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail} disabled={!!busy}
+              onClick={() => { setActiveId(image.id); setError(""); }}>
+              <strong><SearchHighlight text={image.name} query={needle} /></strong>
+              <small>{detail}</small>
             </button>
           </li>;
         })}</ul>
-        {pages > 1 && <nav className="unity-image-list-pages" aria-label="去码图片列表分页">
-          <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
-          <GamePageNumber page={currentPage} pages={pages} onPage={setPage} />
-          <button type="button" disabled={currentPage === pages - 1} onClick={() => setPage(currentPage + 1)}>下一页</button>
-        </nav>}
-      </aside>
-      {active && activeResult && <section className="game-mosaic-preview" aria-label="去码预览">
-        <div className="game-mosaic-toolbar">
-          <strong title={active.file}>{active.name}</strong>
-          <span>{members.length} 张 · 本组已选 {selected.length} 张</span>
-          <select aria-label="移动当前图片到场景组" disabled={!!busy} value="" onChange={event => {
-            const next = event.target.value;
-            if (next) update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false });
-          }}>
-            <option value="">移动当前图</option><option value="new">新建独立组</option>
-            {[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => <option key={key} value={key}>{list[0].name} · {list.length} 张</option>)}
-          </select>
-          <button className="unity-btn" disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
-            const next = { ...previous };
-            for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
-            return next;
-          })}>设为组参考</button>
-          {reference && <span>参考图 {reference.name}</span>}
+        <GameImageListPagination label="去码图片列表分页" page={currentPage} pages={pages} onPage={setPage} />
+      </>}>
+      {!visible.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}
+      {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
+        <div className="unity-image-actions">
+          <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
+          <div className="unity-image-button-group">
+            <span>{members.length} 张 · 本组已选 {selected.length} 张</span>
+            <select aria-label="移动当前图片到场景组" disabled={!!busy} value="" onChange={event => {
+              const next = event.target.value;
+              if (next) update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false });
+            }}>
+              <option value="" disabled>移动到分组…</option><option value="new">新建独立组</option>
+              {[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => <option key={key} value={key}>{list[0].name} · {list.length} 张</option>)}
+            </select>
+            <button className="unity-btn" disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
+              const next = { ...previous };
+              for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
+              return next;
+            })}>设为组参考</button>
+            {reference && <span>参考图 {reference.name}</span>}
+          </div>
         </div>
-        <div className="game-mosaic-toolbar">
-          {tabs.filter(tab => tab.enabled).map(tab => <button key={tab.id} className={"unity-btn" + (view === tab.id ? " unity-btn-primary" : "")}
-            aria-pressed={view === tab.id} disabled={!!busy} onClick={() => { setDrawing(false); setView(tab.id); }}>{tab.label}</button>)}
-          <button className="unity-btn" aria-pressed={drawing} disabled={!!busy || !source} onClick={() => { setView("original"); setDrawing(value => !value); }}>框选蒙版</button>
+        <div className="unity-image-actions">
+          <button className="unity-btn" aria-pressed={drawing} disabled={!!busy || !originalUrl}
+            onClick={() => setDrawing(value => !value)}>框选蒙版</button>
           <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, activeResult.boxes.slice(0, -1))}>删除最后一框</button>
           <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, [])}>清空蒙版</button>
           <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length || members.length < 2} onClick={() => {
@@ -502,28 +548,43 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           }}>复制蒙版到组内空白图</button>
         </div>
         {activeResult.reason && <p className="game-mosaic-error">{activeResult.reason}</p>}
-        {display && <div className="game-mosaic-stage" style={{ aspectRatio: active.width + " / " + active.height, maxWidth: active.width }}>
-          <img src={display} alt={active.name} draggable={false} />
-          {view === "original" && <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
-            aria-label="去码蒙版" onPointerDown={event => {
-              if (!drawing || busy || event.button !== 0) return;
-              anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
-            }} onPointerMove={event => {
-              if (anchor.current) setDraft(bounds(anchor.current, position(event, active)));
-            }} onPointerUp={event => {
-              if (!anchor.current) return;
-              const box = bounds(anchor.current, position(event, active));
-              anchor.current = null; setDraft(undefined);
-              if (box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
-            }} onPointerCancel={() => { anchor.current = null; setDraft(undefined); }}>
-            {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
-              fill="#f4353540" stroke="#e0393c" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
-          </svg>}
-        </div>}
-        <div className="game-mosaic-toolbar">
-          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
+        <div className="unity-image-previews">
+          <GameImagePreviewFrame caption="原图" fallback={original?.error
+            ? <p className="game-mosaic-error" role="alert">{original.error}</p> : <p className="hint">正在读取图片…</p>}>
+            {originalUrl && <div className="unity-image-stage game-mosaic-stage" style={{ width: previewWidth }}>
+              <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
+              <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
+                aria-label="去码蒙版" onPointerDown={event => {
+                  if (!drawing || busy || event.button !== 0) return;
+                  anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
+                }} onPointerMove={event => {
+                  if (anchor.current) setDraft(bounds(anchor.current, position(event, active)));
+                }} onPointerUp={event => {
+                  if (!anchor.current) return;
+                  const box = bounds(anchor.current, position(event, active));
+                  anchor.current = null; setDraft(undefined);
+                  if (box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
+                }} onPointerCancel={() => { anchor.current = null; setDraft(undefined); }}>
+                {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
+                  fill="#f4353540" stroke="#e0393c" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
+              </svg>
+            </div>}
+          </GameImagePreviewFrame>
+          <GameImagePreviewFrame caption={<>去码结果
+            {resultOptions.length > 1 ? <select aria-label="查看去码结果" value={view} disabled={!!busy}
+              onChange={event => setPreferredResult(event.target.value as "saved" | MosaicModel)}>
+              {resultOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select> : resultOptions[0] && <small>{resultOptions[0].label}</small>}
+          </>} fallback={view === "saved" && confirmed?.error
+            ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p>
+            : <p className="hint">{view ? "正在读取图片…" : "尚未生成去码结果"}</p>}>
+            {resultUrl && <div className="unity-image-stage" style={{ width: previewWidth }}>
+              <img src={resultUrl} alt={`${active.name} 去码结果`} draggable={false} />
+            </div>}
+          </GameImagePreviewFrame>
         </div>
-        <div className="game-mosaic-toolbar">
+        <div className="unity-image-actions">
+          <button className="unity-btn unity-btn-primary" disabled={actionsDisabled || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
           <button className="unity-btn" disabled={actionsDisabled || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
             {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
           </button>
@@ -532,6 +593,6 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           </button>
         </div>
       </section>}
-    </div>
+    </GameImageSplit>
   </section>;
 }

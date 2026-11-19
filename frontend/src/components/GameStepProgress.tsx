@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 
-const labels = {
+export const gameProgressLabels = {
   pending: "待开始", running: "正在处理", done: "已完成",
   stopped: "已中止", skipped: "已跳过", error: "失败",
 };
-export type GameProgressState = keyof typeof labels;
+export type GameProgressState = keyof typeof gameProgressLabels;
 
 export function GameProgressBar({ label, value }: { label: string; value?: number }) {
   return <div className={`unity-progress-track${value === undefined ? " is-indeterminate" : ""}`}
@@ -28,7 +28,7 @@ export function GameStepProgress({ title, state, label, percent, elapsed, count,
     : Math.min(100, Math.max(0, percent));
   return <div className={`unity-current-task game-step-progress is-${state}`}>
     <div className="unity-generation-status">
-      <strong role="status">{title} · {label ?? labels[state]}</strong>
+      <strong role="status">{title} · {label ?? gameProgressLabels[state]}</strong>
       {(elapsed || count) && <div className="game-step-progress-metrics">
         {elapsed && <span>用时 <b>{elapsed}</b></span>}
         {count && <span>{count}{value === undefined ? "" : ` · ${Math.round(value)}%`}</span>}

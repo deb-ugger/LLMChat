@@ -5,6 +5,7 @@ import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilte
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { openGameAuxWindow } from "../gameAuxWindows";
+import { GameFlowCard } from "./GameFlowCard";
 
 export type GameFlowStep = {
   id: string;
@@ -224,13 +225,11 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const expanded = configured === step.id;
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
-        return <li key={step.id} className={`game-flow-item is-${state}${showingBenchmark ? " is-benchmark" : ""}${current ? " is-current-step" : ""}${hasConfiguration ? " is-configured" : ""}`}>
-          <div className="game-flow-step">
-          <div className="game-flow-row">
-            <button type="button" className="game-flow-step-toggle" aria-label={`${expanded ? "收起" : "展开"}${step.title}设置`}
-              aria-expanded={expanded} data-tooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"} onClick={() => onConfigure(expanded ? null : step.id)} />
-            <div className="game-flow-step-main"><strong>{step.title}</strong><small>{showingBenchmark ? "性能测试中" : statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</small></div>
-            <div className="game-flow-summary" style={{display:"block",overflow:"visible",WebkitLineClamp:"unset"}}>
+        return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark} current={current}
+          expanded={expanded} toggleTooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"}
+          onToggle={() => onConfigure(expanded ? null : step.id)}
+          status={<>{showingBenchmark ? "性能测试中" : statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
+          summary={<>
               {showingBenchmark && benchmarkQueue && <div className="game-flow-model-rates">
                 <span className="game-flow-model-name">性能测试</span>
                 {typeof round === "number" && typeof rounds === "number" && <span>第 {round} / {rounds} 轮</span>}
@@ -263,25 +262,22 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
                 <span>模型请求占用 <span className="game-flow-metric">{formatTiming(measured.wallTiming.modelRequestMs)}</span></span>
                 {measured.requestTimingComplete && <span>无在途模型请求 <span className="game-flow-metric">{formatTiming(Math.max(0, measured.elapsedMs - measured.wallTiming.modelRequestMs))}</span></span>}
               </small>}
-            </div>
-            <div className="game-flow-actions">
+          </>}
+          actions={<>
               {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
                 aria-label={`${actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : step.runDisabled || savingConfiguration}
                 onClick={step.stop || (()=>void withConfiguration(step.run, step.id))}>{actionLabel}</button>}
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
-            </div>
-          </div>
-          </div>
-          {hasConfiguration && <div ref={panel} className="game-flow-config" role="region" aria-label={`${step.title}设置`}>
+          </>}
+          configurationRef={panel}
+          configuration={hasConfiguration &&
             <div ref={content} className="game-flow-config-content">
               <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
               {onSaveConfiguration && <div className="game-flow-config-save">
                 <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration || configurationLocked(step) || !changed(step.id)} onClick={() => void withConfiguration(undefined, step.id, true)}>{savingConfiguration ? "保存中…" : "保存配置"}</button>
                 <button type="button" className="unity-btn" disabled={savingConfiguration || configurationLocked(step)} onClick={() => cancelConfiguration(step.id)}>取消</button>
               </div>}
-            </div>
-          </div>}
-        </li>;
+            </div>} />;
       })}</ol>
     </div>
     {configurationError&&<p className="unity-offline-error" role="alert">配置保存失败：{configurationError}</p>}
