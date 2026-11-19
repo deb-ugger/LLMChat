@@ -2,6 +2,8 @@ import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
 import { createLlmTranslationScheduler } from "./llmTranslationScheduler";
 import { toFriendlyError } from "./friendlyError";
 import { ollamaRequestContext } from "./ollamaContext";
+import { addDownload, updateDownload } from "./appDownloads";
+import { OCR_MODE_LABELS } from "./ocr/modes";
 
 export const API_BASE =
   import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:17800";
@@ -519,6 +521,54 @@ async function rawTranslate(text:string,init?:RequestInit,opts?:TranslateOptions
     }
 }
 const scheduledTranslate=createLlmTranslationScheduler((text, init, options) => options?.provider === "llm" ? runModelRequest(options, init?.signal, signal => rawTranslate(text, { ...init, signal }, options)) : rawTranslate(text, init, options));
+
+const getOcrModelStatus = () => request<OcrModelStatus>("/api/ocr/models");
+const ocrDownloads = new Map<OcrMode, Promise<OcrModelStatus>>();
+
+async function prepareOcrMode(mode: OcrMode) {
+  const ensure = () => request<OcrModelStatus>(`/api/ocr/models/${encodeURIComponent(mode)}`, { method: "POST" }, 15 * 60_000);
+  if (mode === "fast") return ensure();
+  const initial = await getOcrModelStatus().catch(() => null);
+  if (initial?.modes.some(item => item.id === mode && item.installed)) return ensure();
+
+  const id = addDownload({ name: `OCR · ${OCR_MODE_LABELS[mode]}`, source: "识别模型", status: "running" });
+  let pending = true;
+  let timer: ReturnType<typeof setTimeout>;
+  const poll = async () => {
+    const status = await getOcrModelStatus().catch(() => null);
+    if (!pending) return;
+    const progress = status?.download;
+    if (progress?.active && progress.mode === mode) {
+      const percent = progress.totalBytes ? Math.round(100 * progress.downloadedBytes / progress.totalBytes) : undefined;
+      updateDownload(id, {
+        detail: percent === undefined ? progress.model : `${progress.model || "模型文件"} · ${percent}%`,
+        progress: progress.totalBytes ? { value: progress.downloadedBytes, max: progress.totalBytes } : undefined,
+      });
+    }
+    timer = setTimeout(poll, 500);
+  };
+  timer = setTimeout(poll, 500);
+  try {
+    const result = await ensure();
+    updateDownload(id, { status: "completed", detail: undefined });
+    return result;
+  } catch (error) {
+    updateDownload(id, { status: "failed", detail: undefined, error: toFriendlyError(error, "OCR 模型下载失败") });
+    throw error;
+  } finally {
+    pending = false;
+    clearTimeout(timer);
+  }
+}
+
+function ensureOcrMode(mode: OcrMode) {
+  const existing = ocrDownloads.get(mode);
+  if (existing) return existing;
+  const run = prepareOcrMode(mode).finally(() => ocrDownloads.delete(mode));
+  ocrDownloads.set(mode, run);
+  return run;
+}
+
 export const api = {
   getStorage: (includeSizes = true) => request<StorageStatus>(`/api/storage${includeSizes ? "" : "?sizes=0"}`, undefined, 120_000),
   saveStoragePaths: (paths: Record<string, string>, includeSizes = true) => request<StorageStatus>(`/api/storage/paths${includeSizes ? "" : "?sizes=0"}`, {
@@ -528,13 +578,8 @@ export const api = {
     method: "PUT", body: JSON.stringify({ ids }),
   }, 120_000),
   health: () => request<{ ok: boolean }>("/api/health"),
-  getOcrModelStatus: () => request<OcrModelStatus>("/api/ocr/models"),
-  ensureOcrMode: (mode: OcrMode) =>
-    request<OcrModelStatus>(
-      `/api/ocr/models/${encodeURIComponent(mode)}`,
-      { method: "POST" },
-      15 * 60_000,
-    ),
+  getOcrModelStatus,
+  ensureOcrMode,
   removeOcrMode: (mode: Exclude<OcrMode, "fast">) =>
     request<OcrModelStatus>(`/api/ocr/models/${encodeURIComponent(mode)}`, {
       method: "DELETE",

@@ -1,6 +1,6 @@
 import { ImageKind, OPS, Util, type PDFPageProxy } from "pdfjs-dist";
 import { isTauri } from "@tauri-apps/api/core";
-import { saveOutputFile } from "./outputFiles";
+import { downloadBrowserFile, saveOutputFile } from "./outputFiles";
 
 export type PdfImageHit = {
   pageNumber: number;
@@ -545,17 +545,5 @@ export async function saveImageBlob(
     await saveOutputFile(fileName, new Uint8Array(await blob.arrayBuffer()), ["png"], "PNG 图片", "literature");
     return;
   }
-  downloadImageBlob(blob, fileName);
-}
-
-export function downloadImageBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+  downloadBrowserFile(blob, fileName, "文献翻译");
 }

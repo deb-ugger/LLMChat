@@ -5,7 +5,6 @@ import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
-import { GameImageDownloadsButton } from "./GameImageDownloadsButton";
 import { UnityIconButton } from "./UnityIconButton";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { loadGameStage, rememberGameStage } from "../unityLastGame";
@@ -421,7 +420,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}><UnityIconButton aria-label={automatic==="running"?"中止一键流程":automatic==="stopped"||automatic==="error"?"继续一键生成并应用":"一键生成并应用"} title={automatic==="running"?"中止并保存文本和图片进度":`扫描、并行翻译文本与图片、生成并应用${game.engine}补丁`} disabled={automatic!=="running"&&busy} onClick={()=>automatic==="running"?stopAutomatic():void runAutomatic()}><UnityActionIcon kind={automatic==="running"?"cancel":"run"}/></UnityIconButton><UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
-    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{supportsImages && <GameImageDownloadsButton active={active} />}<GameWorkflowHelp mode="embedded" supportsImages={supportsImages} /></div></header>
+    }}><UnityActionIcon kind="benchmark" /></UnityIconButton><GameWorkflowHelp mode="embedded" supportsImages={supportsImages} /></div></header>
 
       <UnityGameWorkspace controls={<div ref={setControlsTarget} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} className="engine-workspace-slot engine-result-slot"/>} output={logPanel}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"&&textStep!==4||textStep===2} className="engine-workflow-content">{workflowSteps}<div className="unity-step-panel">

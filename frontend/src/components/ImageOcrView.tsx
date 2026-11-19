@@ -1,4 +1,5 @@
 import { useOutputMessage } from "../appOutput";
+import { downloadBrowserFile } from "../outputFiles";
 import { OcrModeOptions } from "./OcrModeOptions";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -1396,7 +1397,8 @@ export function ImageOcrView({
       do{context.font=`${size}px sans-serif`;wrap();if(lines.length*size*1.2<=h)break;size--;}while(size>=6);
       context.save();context.beginPath();context.rect(x,y,w,h);context.clip();context.textBaseline="top";context.fillStyle=sample[0]*.299+sample[1]*.587+sample[2]*.114>128?"#111":"#fff";lines.forEach((line,i)=>context.fillText(line,x,y+i*size*1.2,w));context.restore();
     }
-    const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,"image/png"));if(!blob)throw new Error("无法生成译图");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=page.file.name.replace(/\.[^.]+$/,".png");a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,"image/png"));if(!blob)throw new Error("无法生成译图");
+    downloadBrowserFile(blob, page.file.name.replace(/\.[^.]+$/, ".png"), "图片文字识别");
   }catch(error){setError(String(error));}};
   const handledIncomingIdRef = useRef<number | null>(null);
   useEffect(() => {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type TranslateOptions } from "../api";
+import { downloadBrowserFile } from "../outputFiles";
 import { type GlossaryEntry, type TransEntry } from "../textTranslate";
 import { termMatches } from "../textTranslationTools";
 
@@ -54,7 +55,7 @@ export function TextProjectGlossary({ entries, terms, disabled, options, onChang
       <button type="button" disabled={disabled || working || !options.apiUrl || !options.model} onClick={() => void extract()}>提取候选术语</button>
       {working && <button type="button" onClick={() => controller.current?.abort()}>停止提取</button>}
       <button type="button" disabled={disabled || working} onClick={() => file.current?.click()}>导入 JSON</button>
-      <button type="button" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(terms, null, 2)], { type: "application/json" })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "glossary.json"; anchor.click(); URL.revokeObjectURL(url); }}>导出 JSON</button>
+      <button type="button" onClick={() => downloadBrowserFile(new Blob([JSON.stringify(terms, null, 2)], { type: "application/json" }), "glossary.json", "文本术语")}>导出 JSON</button>
       <button type="button" disabled={disabled || working} onClick={() => setDraft([...draft, { src: "", dst: "", enabled: true }])}>添加术语</button>
       <button type="button" disabled={disabled || working} onClick={() => save(draft)}>应用修改</button>
       <label>导入冲突 <select disabled={disabled || working} value={conflict} onChange={event => setConflict(event.target.value as typeof conflict)}><option value="error">提示冲突</option><option value="keep">保留已有</option><option value="replace">使用导入译法</option></select></label>

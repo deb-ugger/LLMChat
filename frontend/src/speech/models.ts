@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { addDownload, updateDownload } from "../appDownloads";
 import { SPEECH_MODELS, type SpeechModel, type SpeechFormat, type ChineseScript } from "./transcription";
 import type { SpeechOnlineProvider } from "./native";
 
@@ -90,12 +91,20 @@ export async function downloadSpeechModel(model: SpeechModel) {
   const controller = new AbortController();
   downloadController = controller;
   update({ download: { model, file: "检查模型文件", completedFiles: 0, loadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 }, error: "" });
+  let downloadId: string | undefined;
   try {
     const cache = await caches.open(SPEECH_CACHE);
     for (let index = 0; index < SPEECH_MODEL_FILES.length; index++) {
       if (controller.signal.aborted) throw new DOMException("已取消下载", "AbortError");
       const file = SPEECH_MODEL_FILES[index], url = modelUrl(model) + file;
       if ((await cache.match(url))?.ok) continue;
+      controller.signal.throwIfAborted();
+      downloadId ??= addDownload({
+        name: SPEECH_MODELS.find(item => item.id === model)?.label || model, source: "语音识别模型", status: "running",
+      }, { cancel: id => { updateDownload(id, { status: "cancelling" }); controller.abort(); } });
+      const id = downloadId;
+      const detail = `文件 ${index + 1} / ${SPEECH_MODEL_FILES.length} · ${file}`;
+      updateDownload(id, { detail, progress: undefined });
       update({ download: { model, file, completedFiles: index, loadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 } });
       const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) throw new Error(`下载 ${file} 失败（HTTP ${response.status}）`);
@@ -106,6 +115,10 @@ export async function downloadSpeechModel(model: SpeechModel) {
         const now = performance.now();
         update({ download: { model, file, completedFiles: index, loadedBytes: loaded, totalBytes: total,
           bytesPerSecond: (loaded - lastLoaded) * 1000 / Math.max(1, now - lastUpdate) } });
+        updateDownload(id, {
+          detail: total ? `${detail} · ${Math.min(100, Math.round(loaded / total * 100))}%` : detail,
+          progress: total ? { value: loaded, max: total } : undefined,
+        });
         lastUpdate = now; lastLoaded = loaded;
       };
       const progressStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -118,8 +131,13 @@ export async function downloadSpeechModel(model: SpeechModel) {
       });
       await cache.put(url, new Response(response.body.pipeThrough(progressStream), { headers: response.headers }));
     }
+    controller.signal.throwIfAborted();
     update({ rows: await readSpeechModelStatus(cache) });
+    if (downloadId) updateDownload(downloadId, { status: "completed", detail: undefined });
   } catch (error) {
+    if (downloadId) updateDownload(downloadId, controller.signal.aborted
+      ? { status: "cancelled", detail: undefined }
+      : { status: "failed", detail: undefined, error: error instanceof Error ? error.message : String(error) });
     await refreshSpeechModels();
     update({ error: error instanceof Error && error.name === "AbortError" ? "已停止下载，完整文件已保留，可继续下载。" : error instanceof Error ? error.message : String(error) });
     throw error;

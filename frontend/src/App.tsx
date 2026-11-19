@@ -1,4 +1,5 @@
 import { FeatureIcon } from "./components/FeatureIcon";
+import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -39,13 +40,15 @@ const pageLabels = {
   text: "文本翻译工程",
   unity: "游戏翻译",
   output: "输出",
+  downloads: "下载",
   stats: "统计",
   settings: "设置",
 } as const;
-type Page = keyof typeof pageLabels;
-const navigation: readonly Page[][] = [
+type NavigationItem = keyof typeof pageLabels;
+type Page = Exclude<NavigationItem, "downloads">;
+const navigation: readonly NavigationItem[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
-  ["output", "stats", "settings"],
+  ["output", "downloads", "stats", "settings"],
 ];
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
@@ -343,7 +346,7 @@ export default function App() {
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
-          {group.map(id => (
+          {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> : (
             <button key={id} type="button" className={page === id ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
               onClick={() => {

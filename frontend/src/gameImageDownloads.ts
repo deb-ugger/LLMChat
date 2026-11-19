@@ -1,67 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useSyncExternalStore } from "react";
+import { addDownload, downloadFileName, downloadFinished, getAppDownloads, updateDownload } from "./appDownloads";
 import { showAppNotice } from "./components/AppNotice";
-import { exportGameImages, type GameImageExportProgress } from "./gameImageArchive";
+import { exportGameImages } from "./gameImageArchive";
 import type { UnityImage } from "./unityOffline";
 
 export type GameImageDownloadRange = "all" | "filtered" | "checked";
-type Status = "queued" | "running" | "paused" | "cancelling" | "saving" | "completed" | "cancelled" | "failed";
-export type GameImageDownload = {
-  id: string;
-  path: string;
-  status: Status;
-  total: number;
-  progress?: GameImageExportProgress;
-  error?: string;
-};
-
-const historyKey = "llmchat-game-image-downloads";
 const directoryKey = "llmchat-game-image-download-directory";
 const archiveNames: Record<GameImageDownloadRange, string> = {
   all: "all-images.zip",
   filtered: "filtered-images.zip",
   checked: "checked-images.zip",
 };
-
-export function gameImageDownloadFinished(task: GameImageDownload) {
-  return task.status === "completed" || task.status === "cancelled" || task.status === "failed";
-}
-
-function readHistory(): GameImageDownload[] {
-  try {
-    const saved: GameImageDownload[] = JSON.parse(localStorage.getItem(historyKey) || "[]");
-    return saved.map(task => gameImageDownloadFinished(task) ? task :
-      { ...task, status: "failed", error: "应用关闭前未完成下载" });
-  } catch {
-    return [];
-  }
-}
-
-let downloads = readHistory();
-const listeners = new Set<() => void>();
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-};
-export const useGameImageDownloads = () => useSyncExternalStore(subscribe, () => downloads);
-
-function publish(tasks: GameImageDownload[], persist: boolean) {
-  downloads = tasks;
-  if (persist) {
-    try {
-      localStorage.setItem(historyKey, JSON.stringify(downloads));
-    } catch {
-      showAppNotice("下载记录保存失败", "error");
-    }
-  }
-  for (const listener of listeners) listener();
-}
-
-function update(id: string, patch: Partial<GameImageDownload>) {
-  publish(downloads.map(task => task.id === id ? { ...task, ...patch } : task), patch.status !== undefined);
-}
 
 function createDownloadControl() {
   const controller = new AbortController();
@@ -113,7 +64,7 @@ function runNext() {
   pending.delete(id);
   const control = createDownloadControl();
   active = { id, control };
-  update(id, { status: "running" });
+  updateDownload(id, { status: "running" });
   void (async () => {
     let started = false;
     try {
@@ -125,13 +76,15 @@ function runNext() {
         const now = performance.now();
         if (progress.stage === "reading" && now - lastReport < 100) return;
         lastReport = now;
-        update(id, { progress });
+        updateDownload(id, progress.stage === "reading"
+          ? { detail: `读取图片 ${progress.completed + 1} / ${images.length} · ${progress.file}`, progress: { value: progress.completed, max: images.length } }
+          : { detail: `打包 ${progress.percent}%`, progress: { value: progress.percent, max: 100 } });
       }, control, chunk => invoke("append_game_image_zip", chunk, { headers: { "llmchat-download-id": id } }));
       await control.checkpoint();
-      update(id, { status: "saving" });
+      updateDownload(id, { status: "saving", detail: undefined });
       await invoke("finish_game_image_zip", { id, expectedBytes });
-      update(id, { status: "completed" });
-      showAppNotice("图片下载完成。可在右上角「下载任务」打开文件。");
+      updateDownload(id, { status: "completed", detail: `${images.length} 张图片` });
+      showAppNotice("图片下载完成。可在左侧「下载」打开文件。");
     } catch (error) {
       let detail = error instanceof Error ? error.message : String(error);
       let cleanupFailed = false;
@@ -139,10 +92,10 @@ function runNext() {
         try { await invoke("cancel_game_image_zip", { id }); }
         catch (cleanupError) { cleanupFailed = true; detail += "；" + String(cleanupError); }
       }
-      if (control.signal.aborted && !cleanupFailed) update(id, { status: "cancelled" });
+      if (control.signal.aborted && !cleanupFailed) updateDownload(id, { status: "cancelled", detail: undefined });
       else {
-        update(id, { status: "failed", error: detail });
-        showAppNotice("图片下载失败。请在右上角查看下载任务。", "error");
+        updateDownload(id, { status: "failed", error: detail, detail: undefined });
+        showAppNotice("图片下载失败。请在左侧「下载」查看详情。", "error");
       }
     } finally {
       active = undefined;
@@ -163,41 +116,38 @@ export async function downloadGameImages(range: GameImageDownloadRange, images: 
     });
     if (!path) return;
     const selectedDirectory = await dirname(path);
-    if (downloads.some(task => !gameImageDownloadFinished(task) && pathKey(task.path) === pathKey(path))) {
+    if (getAppDownloads().some(task => task.path && !downloadFinished(task) && pathKey(task.path) === pathKey(path))) {
       showAppNotice("该文件路径已有下载任务，请选择其他文件名或位置。", "error");
       return;
     }
     localStorage.setItem(directoryKey, selectedDirectory);
-    const task: GameImageDownload = { id: crypto.randomUUID(), path, status: "queued", total: images.length };
-    pending.set(task.id, { path, images, read });
-    publish([task, ...downloads], true);
+    const id = addDownload({ name: downloadFileName(path), source: "游戏图片", path, status: "queued", detail: `${images.length} 张图片` }, {
+      pause: pauseGameImageDownload, resume: resumeGameImageDownload, cancel: cancelGameImageDownload,
+    });
+    pending.set(id, { path, images, read });
     runNext();
   } catch (error) {
     showAppNotice(error instanceof Error ? error.message : String(error), "error");
   }
 }
 
-export function pauseGameImageDownload(id: string) {
-  if (active?.id !== id || downloads.find(task => task.id === id)?.status !== "running") return;
+function pauseGameImageDownload(id: string) {
+  if (active?.id !== id || getAppDownloads().find(task => task.id === id)?.status !== "running") return;
   active.control.setPaused(true);
-  update(id, { status: "paused" });
+  updateDownload(id, { status: "paused" });
 }
 
-export function resumeGameImageDownload(id: string) {
-  if (active?.id !== id || downloads.find(task => task.id === id)?.status !== "paused") return;
+function resumeGameImageDownload(id: string) {
+  if (active?.id !== id || getAppDownloads().find(task => task.id === id)?.status !== "paused") return;
   active.control.setPaused(false);
-  update(id, { status: "running" });
+  updateDownload(id, { status: "running" });
 }
 
-export function cancelGameImageDownload(id: string) {
-  const task = downloads.find(task => task.id === id);
-  if (task?.status === "queued" && pending.delete(id)) update(id, { status: "cancelled" });
+function cancelGameImageDownload(id: string) {
+  const task = getAppDownloads().find(task => task.id === id);
+  if (task?.status === "queued" && pending.delete(id)) updateDownload(id, { status: "cancelled", detail: undefined });
   if (active?.id === id && (task?.status === "running" || task?.status === "paused")) {
-    update(id, { status: "cancelling" });
+    updateDownload(id, { status: "cancelling" });
     active.control.cancel();
   }
-}
-
-export function removeGameImageDownload(id: string) {
-  publish(downloads.filter(task => task.id !== id || !gameImageDownloadFinished(task)), true);
 }

@@ -1,4 +1,5 @@
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
+import { writeDownloadedFile } from "../outputFiles";
 import { GameBatchResults, gameImageBatchRows, type BatchRow } from "./GameBatchResults";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
@@ -30,7 +31,7 @@ import { createPortal } from "react-dom";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { gameImageRegionLanguageFilter } from "../gameImageScreening";
 import { gameTextHasSpeaker, gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
@@ -1616,7 +1617,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (!path) { setFileStatus({ action: "download", state: "cancelled", detail: "已取消下载" }); return; }
     setFileStatus({ action: "download", state: "working", path, detail: `正在生成并保存 ${entries.length} 条原文与译文…` });
     const contents = new TextEncoder().encode(exportUnityTranslations(entries, /\.csv$/i.test(path)));
-    await invoke("write_file_bytes", { path, contents: Array.from(contents) });
+    await writeDownloadedFile(path, contents, "游戏译文");
     setFileStatus({ action: "download", state: "done", path, folder: await dirname(path), detail: `下载完成：${entries.length} 条 · ${(contents.byteLength / 1024).toFixed(1)} KiB` });
   }, true, detail => setFileStatus(previous => ({ ...previous, action: "download", state: "error", detail: `下载失败：${detail}` })));
   const setImportValidation = (preview: ImportPreview, issues: UnityTranslationImportIssue[] = []) => {

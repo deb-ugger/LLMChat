@@ -13,7 +13,8 @@ import { protectMarkdown } from "../textProjectFormats";
 import { runTextJob, type ParsedText, type TextChecks } from "../textProcessing";
 import { createTextBatchClient, decodeTextBatch } from "../textTranslationBatch";
 import { logRuntimeError } from "../runtimeLog";
-import { saveOutputFile } from "../outputFiles";
+import { trackDownload } from "../appDownloads";
+import { downloadBrowserFile, saveOutputFile } from "../outputFiles";
 import { LangCombobox } from "./LangCombobox";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -142,15 +143,6 @@ function removeRecent(folder: string) {
   return next;
 }
 
-function downloadBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 async function saveExportWithPathDialog(
   fileName: string,
   content: string | Uint8Array,
@@ -186,10 +178,13 @@ async function saveExportWithPathDialog(
           },
         ],
       });
-      const writable = await handle.createWritable();
-      await writable.write(new Blob([content], { type: `${mime};charset=utf-8` }));
-      await writable.close();
-      return handle.name || fileName;
+      const name = handle.name || fileName;
+      await trackDownload({ name, source: "文本译文" }, async () => {
+        const writable = await handle.createWritable();
+        await writable.write(new Blob([content], { type: `${mime};charset=utf-8` }));
+        await writable.close();
+      });
+      return name;
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         return null;
@@ -199,7 +194,7 @@ async function saveExportWithPathDialog(
   }
 
   // Fallback when File System Access API is unavailable
-  downloadBlob(new Blob([content], { type: `${mime};charset=utf-8` }), fileName);
+  downloadBrowserFile(new Blob([content], { type: `${mime};charset=utf-8` }), fileName, "文本译文");
   return fileName;
 }
 
