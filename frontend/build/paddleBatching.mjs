@@ -27,7 +27,14 @@ export function batchPaddleRecognition(source){
 }
 export function paddleBatchingPlugin(){
  return {name:"paddle-cross-image-recognition",
-  transform(code,id){if(id.replaceAll("\\","/").includes("@paddleocr/paddleocr-js/dist/"))return batchPaddleRecognition(code);},
+  transform(code,id) {
+    const file = id.replaceAll("\\", "/").split("?")[0];
+    if (!file.includes("@paddleocr/paddleocr-js/dist/")) return;
+    const patched = batchPaddleRecognition(code);
+    if (!file.endsWith("/index.mjs")) return patched;
+    if (!patched.includes("function createDefaultWorker()")) throw new Error("PaddleOCR worker factory changed; update OCR worker adapter");
+    return patched + "\nexport { createDefaultWorker as createPaddleWorker };\n";
+  },
   generateBundle(_options,bundle){for(const item of Object.values(bundle)){if(item.type==="asset"&&item.fileName.endsWith(".js"))item.source=batchPaddleRecognition(typeof item.source==="string"?item.source:new TextDecoder().decode(item.source));else if(item.type==="chunk")item.code=batchPaddleRecognition(item.code);}},
   configureServer(server){server.middlewares.use((req,res,next)=>{const url=(req.url??"").split("?")[0];if(!url.includes("@paddleocr/paddleocr-js/dist/assets/worker-entry-")||!url.endsWith(".js"))return next();const file=new URL("../node_modules/"+url.split("/node_modules/")[1],import.meta.url);try{res.setHeader("Content-Type","text/javascript");res.end(batchPaddleRecognition(fs.readFileSync(file,"utf8")));}catch(error){next(error);}});}
  };

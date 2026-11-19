@@ -4,7 +4,7 @@ import type {
   OcrResultItem,
 } from "@paddleocr/paddleocr-js";
 import { API_BASE, api, type OcrMode } from "../api";
-import { OcrRuntime } from "./runtime";
+import { OcrRuntime, waitForOcrJob } from "./runtime";
 import { runtimeAssetBase } from "../runtimeAssets";
 
 type ModelPair = {
@@ -64,6 +64,8 @@ type PaddleOcrModule = typeof import("@paddleocr/paddleocr-js");
 type PaddleOcrInstance = Awaited<
   ReturnType<PaddleOcrModule["PaddleOCR"]["create"]>
 >;
+type PaddleWorker = { runner: PaddleOcrInstance; worker: Worker };
+const workerTimeoutMs = 90_000;
 
 function itemToLine(item: OcrResultItem, coordinateScale = 1): PaddleOcrLine | null {
   const text = item.text.trim().replace(/\s+/g, " ");
@@ -118,42 +120,79 @@ export class LocalPaddleOcr {
   private queue:Array<{image:Blob;stage?: (text:string)=>void;maxSide:number;boxThresh:number;resolve:(value:PaddleOcrRecognition)=>void;reject:(error:unknown)=>void}>=[];
   private draining=false;
   private closed=false;
+  private forceCpu=false;
   isGpu=false;
-  private runtime: OcrRuntime<PaddleOcrInstance>;
+  private runtime: OcrRuntime<PaddleWorker>;
 
   constructor(private readonly mode: OcrMode = "fast", private readonly imageOptions: { upscale?: boolean; maxSide?: number; boxThresh?:number; backend?:"auto"|"wasm"|"webgpu"; onDevice?:(message:string,fallback:boolean)=>void } = {}) {
-    this.runtime = new OcrRuntime(() => this.initialize(), (instance) => instance.dispose());
+    this.runtime = this.createRuntime();
   }
 
-  private async initialize(): Promise<PaddleOcrInstance> {
-      const models = modelPair(this.mode);
-      if(this.mode!=="fast")await api.ensureOcrMode(this.mode);
-      const {PaddleOCR}=await import("@paddleocr/paddleocr-js");
-      const create=(backend:"wasm"|"webgpu")=>PaddleOCR.create({
-        worker:true,initialize:true,
+  private createRuntime() {
+    return new OcrRuntime(signal => this.initialize(signal), async ({ worker }) => { worker.terminate(); });
+  }
+
+  private async initialize(signal: AbortSignal): Promise<PaddleWorker> {
+    const models = modelPair(this.mode);
+    if (this.mode !== "fast") await waitForOcrJob(() => api.ensureOcrMode(this.mode), signal);
+    const { PaddleOCR, createPaddleWorker } = await import("@paddleocr/paddleocr-js") as PaddleOcrModule & {
+      createPaddleWorker: () => Worker;
+    };
+    const create = async (backend: "wasm" | "webgpu"): Promise<PaddleWorker> => {
+      signal.throwIfAborted();
+      const worker = createPaddleWorker();
+      try {
+        const runner = await waitForOcrJob(() => PaddleOCR.create({
+        worker: { createWorker: () => worker }, initialize:true,
         textDetectionModelName:models.detName,textDetectionModelAsset:{url:models.detUrl},
         textRecognitionModelName:models.recName,textRecognitionModelAsset:{url:models.recUrl},
         pipelineBatchSize:4,textDetectionBatchSize:4,textRecognitionBatchSize:backend==="webgpu"?16:8,
         textDetMaxSideLimit:this.imageOptions.maxSide??4000,textDetBoxThresh:this.imageOptions.boxThresh??.3,textRecScoreThresh:0,
         ortOptions:{backend,wasmPaths:localAssetUrl("./ort/"),numThreads:1,simd:true}
-      });
-      let reason="";
-      if(this.imageOptions.backend!=="wasm"){
-        try{
-          const gpu=(navigator as Navigator & {gpu?:{requestAdapter:()=>Promise<unknown>}}).gpu;
-          if(!gpu||!await gpu.requestAdapter())throw new Error("运行环境或显卡驱动不支持 WebGPU");
-          const runner=await create("webgpu");
-          this.isGpu=true;
-          this.imageOptions.onDevice?.("OCR：GPU · WebGPU（文字识别批量 16）",false);
-          return runner;
-        }catch(error){
-          reason=error instanceof Error?error.message:String(error);
-          if(this.imageOptions.backend==="webgpu")throw error;
-        }
+        }), signal, workerTimeoutMs);
+        return { runner, worker };
+      } catch (error) {
+        worker.terminate();
+        throw error;
       }
-      const runner=await create("wasm");
-      this.imageOptions.onDevice?.(reason?`OCR：已切换 CPU，GPU 不可用：${reason}`:"OCR：CPU",!!reason);
-      return runner;
+    };
+    let reason = "";
+    if (!this.forceCpu && this.imageOptions.backend !== "wasm") {
+      try {
+        const gpu = (navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } }).gpu;
+        if (!gpu || !await waitForOcrJob(() => gpu.requestAdapter(), signal, workerTimeoutMs))
+          throw new Error("运行环境或显卡驱动不支持 WebGPU");
+        const gpuWorker = await create("webgpu");
+        this.isGpu = true;
+        this.imageOptions.onDevice?.("OCR：GPU · WebGPU（文字识别批量 16）", false);
+        return gpuWorker;
+      } catch (error) {
+        signal.throwIfAborted();
+        if (this.imageOptions.backend === "webgpu") throw error;
+        this.forceCpu = true;
+        reason = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const cpuWorker = await create("wasm");
+    this.imageOptions.onDevice?.(reason ? `OCR：已切换 CPU，GPU 不可用：${reason}` : "OCR：CPU", !!reason);
+    return cpuWorker;
+  }
+
+  private async predict<T>(work: (worker: PaddleWorker, signal: AbortSignal) => Promise<T>): Promise<T> {
+    for (;;) {
+      try { return await this.runtime.run(work); }
+      catch (error) {
+        if (this.closed || !(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+        const retryOnCpu = this.isGpu && this.imageOptions.backend !== "webgpu";
+        await this.runtime.dispose();
+        if (this.closed) throw error;
+        this.isGpu = false;
+        this.forceCpu ||= retryOnCpu;
+        this.runtime = this.createRuntime();
+        if (!retryOnCpu) throw error;
+        this.imageOptions.onDevice?.("OCR：GPU 响应超时，当前批次切换 CPU 重试", true);
+      }
+    }
   }
 
   prepare(): Promise<void> { return this.runtime.run(async()=>{}); }
@@ -172,12 +211,13 @@ export class LocalPaddleOcr {
       let bytes=0;
       while(this.queue.length&&batch.length<4&&this.queue[0].maxSide===first.maxSide&&this.queue[0].boxThresh===first.boxThresh&&(batch.length===0||bytes+this.queue[0].image.size<=16*1024*1024)){const entry=this.queue.shift()!;batch.push(entry);bytes+=entry.image.size;}
       try{
-        const values=await this.runtime.run(async(runner,signal)=>{
+        const values=await this.predict(async({ runner },signal)=>{
           const prepared:Array<{image:Blob|ImageBitmap;scale:number}>=[];
           try{
             for(const item of batch){signal.throwIfAborted();item.stage?.("正在预处理图片");prepared.push(this.mode==="manga"||this.imageOptions.upscale===false?{image:item.image,scale:1}:await prepareRecognitionImage(item.image));}
             signal.throwIfAborted();for(const item of batch)item.stage?.(`批量识别 ${batch.length} 张图片`);
-            const results=await runner.predict(prepared.map(item=>item.image),{textDetMaxSideLimit:first.maxSide,textDetBoxThresh:first.boxThresh,textRecScoreThresh:0});
+            const results=await waitForOcrJob(() => runner.predict(prepared.map(item=>item.image),
+              {textDetMaxSideLimit:first.maxSide,textDetBoxThresh:first.boxThresh,textRecScoreThresh:0}), signal, workerTimeoutMs);
             if(results.length!==batch.length)throw new Error("OCR 批量结果数量不匹配");
             return results.map((result,index)=>({profile:`${this.mode}:${first.maxSide}:${first.boxThresh}:${this.imageOptions.upscale!==false&&this.mode!=="manga"}`,detectedBoxes:result.metrics.detectedBoxes,lines:result.items.map(item=>itemToLine(item,prepared[index].scale)).filter((line):line is PaddleOcrLine=>line!==null),image:{width:result.image.width/prepared[index].scale,height:result.image.height/prepared[index].scale},initialization:runner.getInitializationSummary(),elapsedMs:result.metrics.totalMs}));
           }finally{prepared.forEach((item,index)=>{if(item.image!==batch[index].image)(item.image as ImageBitmap).close();});}

@@ -6,7 +6,7 @@ export class OcrRuntime<T> {
   private closing: Promise<void> | null = null;
 
   constructor(
-    private readonly initialize: () => Promise<T>,
+    private readonly initialize: (signal: AbortSignal) => Promise<T>,
     private readonly release: (value: T) => Promise<unknown>,
   ) {}
 
@@ -14,7 +14,7 @@ export class OcrRuntime<T> {
     if (this.controller.signal.aborted)
       return Promise.reject(new Error("识别已取消"));
     if (!this.resource) {
-      this.resource = this.initialize().catch((error) => {
+      this.resource = this.initialize(this.controller.signal).catch((error) => {
         this.resource = null;
         throw error;
       });
@@ -48,4 +48,25 @@ export class OcrRuntime<T> {
     })();
     return this.closing;
   }
+}
+
+/** Bound the wait independently of a worker that can stop responding. */
+export function waitForOcrJob<T>(work: () => Promise<T>, signal: AbortSignal, timeoutMs?: number): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("识别已取消"));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel!: () => void;
+  return new Promise<T>((resolve, reject) => {
+    cancel = () => reject(new Error("识别已取消"));
+    signal.addEventListener("abort", cancel, { once: true });
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => reject(new DOMException("OCR Worker 响应超时", "TimeoutError")), timeoutMs);
+    }
+    void Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return work();
+    }).then(resolve, reject);
+  }).finally(() => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  });
 }
