@@ -50,6 +50,7 @@ const navigation: readonly NavigationItem[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "downloads", "stats", "settings"],
 ];
+const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
@@ -63,8 +64,9 @@ export default function App() {
   const startupInteracted = useRef(false);
 
   const [navRailHidden, setNavRailHidden] = useState(false);
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(() => !isNarrowChat());
   const [settingsInitialTab, setSettingsInitialTab] = useState<
-    "unity" | "general" | undefined
+    "unity" | "general" | "chat" | undefined
   >(undefined);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -208,6 +210,8 @@ export default function App() {
 
   const onNewChat = async () => {
     if (!current) return;
+    setSearch("");
+    if (isNarrowChat()) setChatSidebarOpen(false);
     if (current.messages.length === 0) {
       setDisplayOffset(0);
       return;
@@ -220,6 +224,7 @@ export default function App() {
 
   const onSelectConversation = async (id: string) => {
     await openConversation(id);
+    if (isNarrowChat()) setChatSidebarOpen(false);
   };
 
   const onDeleteConversation = async (id: string) => {
@@ -354,7 +359,7 @@ export default function App() {
               aria-controls={id === "output" && outputExpanded ? "app-output-drawer" : undefined}
               onClick={() => {
                 if (id === "output") { setOutputExpanded(expanded => !expanded); return; }
-                if (id === "settings") setSettingsInitialTab(undefined);
+                if (id === "settings" || id === "chat") setSettingsInitialTab(undefined);
                 setPage(id);
               }}>
               <FeatureIcon feature={id === "redraw" ? "image" : id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
@@ -380,7 +385,7 @@ export default function App() {
       <div className="app-main">
         <div className={page === "chat" ? "literature-host" : "literature-host is-hidden"} aria-hidden={page !== "chat"} inert={page !== "chat"}>
           <div className="chat-layout">
-            <Sidebar
+            {chatSidebarOpen && <Sidebar
               conversations={conversations}
               currentId={current?.id}
               search={search}
@@ -389,12 +394,20 @@ export default function App() {
               onSelect={(id) => void onSelectConversation(id)}
               onDelete={(id) => void onDeleteConversation(id)}
               onRename={(id, title) => void onRenameConversation(id, title)}
-            />
+            />}
             <ChatView
               conversation={current}
               messages={visibleMessages}
               hiddenCount={hiddenCount}
               sending={sending}
+              model={settings.model}
+              sidebarOpen={chatSidebarOpen}
+              onToggleSidebar={() => setChatSidebarOpen(open => !open)}
+              onNewChat={() => void onNewChat()}
+              onOpenModelSettings={() => {
+                setSettingsInitialTab("chat");
+                setPage("settings");
+              }}
               onSend={(t) => void onSend(t)}
               onLoadEarlier={onLoadEarlier}
             />
@@ -498,7 +511,10 @@ export default function App() {
             onSave={onSaveSettings}
             initialTab={settingsInitialTab}
             active={page === "settings"}
-            onNavigate={(p) => setPage(p)}
+            onNavigate={(p) => {
+              if (p === "chat") setSettingsInitialTab(undefined);
+              setPage(p);
+            }}
           /></PagePanel>
         {outputExpanded && <GlobalOutputView onClose={() => {
           document.querySelector<HTMLButtonElement>('[aria-controls="app-output-drawer"]')?.focus();

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, Conversation } from "../api";
+import { copyText } from "../clipboard";
+import { showAppNotice } from "./AppNotice";
+import { FeatureIcon } from "./FeatureIcon";
 import { RichText } from "./RichText";
 
 type Props = {
@@ -7,6 +10,11 @@ type Props = {
   messages: ChatMessage[];
   hiddenCount: number;
   sending: boolean;
+  model: string;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  onNewChat: () => void;
+  onOpenModelSettings: () => void;
   onSend: (text: string) => void;
   onLoadEarlier: () => Promise<void>;
 };
@@ -16,35 +24,63 @@ export function ChatView({
   messages,
   hiddenCount,
   sending,
+  model,
+  sidebarOpen,
+  onToggleSidebar,
+  onNewChat,
+  onOpenModelSettings,
   onSend,
   onLoadEarlier,
 }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const previousPosition = useRef({ id: conversation?.id, hiddenCount });
   const loadingEarlier = useRef(false);
   const loadEarlier = async () => {
     if (loadingEarlier.current) return;
     loadingEarlier.current = true;
-    const list = listRef.current, height = list?.scrollHeight ?? 0;
+    const list = listRef.current;
+    const height = list?.scrollHeight ?? 0;
+    const top = list?.scrollTop ?? 0;
     try { await onLoadEarlier(); }
-    finally { requestAnimationFrame(() => { if (list) list.scrollTop = list.scrollHeight - height; loadingEarlier.current = false; }); }
+    finally {
+      requestAnimationFrame(() => {
+        if (list === listRef.current && list) list.scrollTop = top + list.scrollHeight - height;
+        loadingEarlier.current = false;
+      });
+    }
   };
 
   useEffect(() => {
     const previous = previousPosition.current;
-    if (previous.id !== conversation?.id || hiddenCount >= previous.hiddenCount) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const list = listRef.current;
+    if (list && (previous.id !== conversation?.id || hiddenCount >= previous.hiddenCount)) {
+      list.scrollTop = list.scrollHeight;
+    }
     previousPosition.current = { id: conversation?.id, hiddenCount };
   }, [messages.length, sending, conversation?.id, hiddenCount]);
 
   const empty = !conversation || conversation.messages.length === 0;
+  const sidebarLabel = sidebarOpen ? "收起对话侧栏" : "展开对话侧栏";
+  const modelLabel = model.split(/[\\/]/).at(-1) || model || "设置对话模型";
 
   return (
-    <section className={empty ? "chat-panel is-empty" : "chat-panel"}>
-      <header className="chat-title">{conversation?.title || "新对话"}</header>
+    <section className={empty ? "chat-panel is-empty" : "chat-panel"} aria-label="对话工作区">
+      <header className="chat-topbar">
+        <button type="button" className="chat-icon-button" aria-label={sidebarLabel} aria-expanded={sidebarOpen}
+          aria-controls={sidebarOpen ? "chat-conversations" : undefined} data-tooltip={sidebarLabel}
+          onClick={onToggleSidebar}><FeatureIcon feature="chat-sidebar" /></button>
+        {!sidebarOpen && <button type="button" className="chat-icon-button" aria-label="新建对话" data-tooltip="新建对话"
+          onClick={onNewChat}><FeatureIcon feature="new-chat" /></button>}
+        {!empty && <h1 className="chat-title" data-tooltip={conversation.title}>{conversation.title}</h1>}
+        <button type="button" className="chat-model" aria-label={`对话模型设置 · ${modelLabel}`}
+          data-tooltip={model || "设置对话模型"} onClick={onOpenModelSettings}>
+          <span>{modelLabel}</span><FeatureIcon feature="settings" size={15} />
+        </button>
+      </header>
       {!empty && (
         <div
           className="message-list"
+          aria-label="消息记录"
           ref={listRef}
           onScroll={(e) => {
             const el = e.currentTarget;
@@ -53,28 +89,31 @@ export function ChatView({
             }
           }}
         >
-          {hiddenCount > 0 && (
-            <button className="load-earlier" onClick={() => void loadEarlier()}>
-              加载更早的 {Math.min(hiddenCount, 30)} 条消息
-            </button>
-          )}
-          {messages.map((m, i) => (
-            <div
-              key={`${conversation?.id}-${hiddenCount + i}-${m.role}`}
-              className={m.role === "user" ? "bubble user" : "bubble ai"}
-            >
-              <RichText
-                content={m.content}
-                variant={m.role === "user" ? "user" : "ai"}
-              />
-            </div>
-          ))}
-          {sending && <div className="bubble ai thinking">思考中…</div>}
-          <div ref={bottomRef} />
+          <div className="chat-thread">
+            {hiddenCount > 0 && (
+              <button type="button" className="load-earlier" onClick={() => void loadEarlier()}>加载更早的消息</button>
+            )}
+            {messages.map((message, index) => {
+              const user = message.role === "user";
+              const copyLabel = user ? "复制消息" : "复制回复";
+              return <article key={`${conversation.id}-${hiddenCount + index}-${message.role}`}
+                className={user ? "chat-message is-user" : "chat-message"} aria-label={user ? "你的消息" : "模型回复"}>
+                <div className="bubble"><RichText content={message.content} variant={user ? "user" : "ai"} /></div>
+                <button type="button" className="chat-icon-button chat-copy" aria-label={copyLabel} data-tooltip={copyLabel}
+                  onClick={() => void copyText(message.content).then(ok => showAppNotice(ok ? "已复制" : "复制失败", ok ? "success" : "error"))}>
+                  <FeatureIcon feature="copy" size={15} />
+                </button>
+              </article>;
+            })}
+            {sending && <div className="chat-thinking" role="status"><span aria-hidden="true" />正在等待模型回复</div>}
+          </div>
         </div>
       )}
 
-      <ChatComposer sending={sending} onSend={onSend} />
+      <div className="chat-compose-zone">
+        {empty && <h1>开始对话</h1>}
+        <ChatComposer sending={sending} onSend={onSend} />
+      </div>
     </section>
   );
 }
@@ -88,13 +127,13 @@ function ChatComposer({ sending, onSend }: Pick<Props, "sending" | "onSend">) {
   };
 
   return (
-    <div className="input-panel">
+    <form className="chat-composer" onSubmit={event => { event.preventDefault(); submit(); }}>
       <textarea
         className="input-box"
         aria-label="消息"
-        placeholder="输入消息，Shift + Enter 换行"
+        placeholder="输入消息"
         value={text}
-        disabled={sending}
+        readOnly={sending}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -102,17 +141,14 @@ function ChatComposer({ sending, onSend }: Pick<Props, "sending" | "onSend">) {
             submit();
           }
         }}
-        rows={3}
+        rows={2}
       />
-      <div className="input-actions">
-        <button
-          className="send-btn"
-          disabled={sending || !text.trim()}
-          onClick={submit}
-        >
-          发送
+      <div className="chat-compose-actions">
+        <span>Enter 发送 · Shift + Enter 换行</span>
+        <button type="submit" className="chat-send" aria-label="发送消息" disabled={sending || !text.trim()}>
+          <FeatureIcon feature="send" size={16} />发送
         </button>
       </div>
-    </div>
+    </form>
   );
 }
