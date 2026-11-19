@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, scanMosaic, type MosaicBox, type MosaicModel } from "../gameMosaic";
@@ -21,7 +21,7 @@ type MosaicStorage = {
 type Props = {
   gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  controls: HTMLElement; steps?: ReactNode; onBusy?: (busy: boolean) => void;
+  controls: HTMLElement; onBusy?: (busy: boolean) => void;
 };
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
@@ -54,7 +54,7 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, steps: workflowSteps, onBusy }: Props) {
+export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, onBusy }: Props) {
   const task = useRef<AbortController | null>(null);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
   const [rows, setRows] = useState<Results>(() => {
@@ -352,7 +352,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   return <section className="game-mosaic-workbench" aria-label="图片去码">
     {confirmation.dialog}
     {createPortal(<div className="engine-workflow-content">
-      {workflowSteps}
+
       <div className="game-mosaic-controls">
         <div className="game-mosaic-toolbar">
           <select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => setScope(event.target.value as typeof scope)}>

@@ -49,22 +49,24 @@
 .unity-task-actions .unity-btn { min-height: 34px; padding: 6px 10px; font: inherit; }
 .unity-current-task.unity-background-task { display: block; }
 .unity-task-detail { color: var(--muted,#667589); font-size: 13px; }
-.unity-step-tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; padding: 5px; border-bottom: 1px solid var(--border,#d6dfe9); position: sticky; top: 0; z-index: 3; background: var(--panel,#fff); }
+.unity-workflow-layout { flex-direction: row; gap: 8px; }
+.unity-workflow-layout > .unity-workflow { min-inline-size: 0; }
+.game-workflow-steps { --node-size: clamp(58px, 17cqi, 76px); flex: 0 0 calc(var(--node-size) + 12px); display: flex; flex-direction: column; padding: 3px; min-block-size: 0; overflow: hidden auto; scrollbar-width: thin; }
+.game-workflow-node { display: flex; flex: 1 0 auto; flex-direction: column; align-items: center; min-inline-size: 0; max-block-size: calc(var(--node-size) + 72px); }
+.game-workflow-node:last-child { flex: 0 0 auto; }
+.game-workflow-node:not(:last-child)::after { content: ""; flex: 1 0 12px; inline-size: 2px; margin-block: 4px; border-radius: 1px; background: var(--step-border, var(--border)); }
+.game-workflow-node .unity-step-tab { inline-size: var(--node-size); block-size: var(--node-size); box-sizing: border-box; flex-direction: column; gap: 3px; padding: 4px; line-height: 1.25; text-align: center; white-space: normal; }
+.game-workflow-label { overflow-wrap: anywhere; }
 .unity-step-tab { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 5px 6px; font: inherit; font-size: 13px; color: #718096; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
 .unity-step-number { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
-.unity-step-tab.complete { color: #34765a; background: #e7f5ed; border-color: #c4e2d1; }
-.unity-step-tab.current { color: #245ec9; border-color: #bfd5f5; background: #e8f2ff; }
-.unity-step-tab.pending { color: #98652e; border-color: #eed8b9; background: #fff0da; }
-.unity-step-tab.outdated { color: #805400; border-color: #dfae32; background: #fff4c9; }
-.unity-step-tab.optional-update { color: #346483; border-color: #bdd4e6; background: #edf6ff; }
-.unity-step-tab.error { color: #a52d2d; border-color: #efbcbc; background: #fdeaea; }
-.unity-step-tab.is-selected { color: #fff; font-weight: 600; }
-.unity-step-tab.complete.is-selected { background: #28745a; border-color: #28745a; }
-.unity-step-tab.current.is-selected { background: #3265b6; border-color: #3265b6; }
-.unity-step-tab.pending.is-selected { background: #b9762a; border-color: #b9762a; }
-.unity-step-tab.outdated.is-selected { background: #966515; border-color: #966515; }
-.unity-step-tab.optional-update.is-selected { background: #346483; border-color: #346483; }
-.unity-step-tab.error.is-selected { background: #c84444; border-color: #c84444; }
+.game-workflow-node.complete { --step-ink: #34765a; --step-bg: #e7f5ed; --step-border: #c4e2d1; --step-selected: #28745a; }
+.game-workflow-node.current { --step-ink: #245ec9; --step-bg: #e8f2ff; --step-border: #bfd5f5; --step-selected: #3265b6; }
+.game-workflow-node.pending { --step-ink: #98652e; --step-bg: #fff0da; --step-border: #eed8b9; --step-selected: #b9762a; }
+.game-workflow-node.outdated { --step-ink: #805400; --step-bg: #fff4c9; --step-border: #dfae32; --step-selected: #966515; }
+.game-workflow-node.optional-update { --step-ink: #346483; --step-bg: #edf6ff; --step-border: #bdd4e6; --step-selected: #346483; }
+.game-workflow-node.error { --step-ink: #a52d2d; --step-bg: #fdeaea; --step-border: #efbcbc; --step-selected: #c84444; }
+.game-workflow-node .unity-step-tab { color: var(--step-ink, var(--muted)); background: var(--step-bg, var(--panel)); border-color: var(--step-border, var(--border)); }
+.game-workflow-node .is-selected { color: #fff; font-weight: 600; background: var(--step-selected, var(--accent)); border-color: var(--step-selected, var(--accent)); }
 .unity-step-tab:focus-visible { outline: 2px solid #86abf5; outline-offset: 2px; }
 .unity-step-panel { flex: 0 0 auto; overflow: visible; padding: 10px; min-width: 0; min-height: 0; }
 .unity-offline .unity-btn-warning { color: #805400; background: #fff0b3; border-color: #dfae32; font-weight: 600; }
@@ -300,11 +302,8 @@
 .unity-scan-resource-counts .has-error { color:var(--danger); background:var(--danger-soft); }
 .unity-step-batch > details > summary { cursor: pointer; font-weight: 650; padding: 5px 0; }
 .unity-warning-item { padding: 5px 8px; margin-top: 6px; border-left: 2px solid #d5b06c; background: #fffbf3; overflow-wrap: anywhere; }
-@container (min-width: 460px) { .unity-step-tabs { grid-template-columns: repeat(5,minmax(0,1fr)); } }
 @media (max-width: 1050px) { .unity-offline { flex-direction: column; overflow: auto; gap: 8px; } .unity-offline-config { width: 100% !important; height: 50vh; max-width: none; min-width: 0; } .unity-workspace-divider { display: none; } .unity-offline-workbench { min-height: 300px; } }
 
-.unity-step-tabs.game-workflow-steps { padding: 4px; }
-.unity-step-tabs.game-workflow-steps .unity-step-tab { min-height: 28px; gap: 4px; padding: 3px 5px; font-size: 12px; white-space: normal; text-align: center; }
 .unity-image-workbench > .unity-offline-toolbar input[type="search"] { flex: 1; min-width: 110px; margin-left: auto; }
 .unity-offline-workbench > .unity-offline-toolbar input[type="search"] { box-sizing: border-box; max-width: 230px; height: 30px; padding: 4px 8px; font-size: 13px; }
 .unity-image-toolbar > label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }

@@ -167,7 +167,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [mosaicBusy, setMosaicBusy] = useState(false);
   const [mosaicControls, setMosaicControls] = useState<HTMLDivElement | null>(null);
   const [mosaicStatus, setMosaicStatus] = useState<{ root: string; candidates: MosaicCandidateIndex; error?: string }>();
-  const setActiveStep = useCallback((step: number) => { setMosaicPage(false); setWorkflowStep(step); }, []);
+  const setActiveStep = useCallback((step: number) => { setMosaicPage(false); setWorkflowStep(Math.min(step, 3)); }, []);
   const fontEntries = project?.entries;
   const missingGlyphs = fontPlan?.missing;
   const glyphReferenceCounts = useMemo(
@@ -187,7 +187,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState("");
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
-  const outputStage = mosaicPage ? "图片去码" : activeStep === 2 ? imagePart ? "图片翻译" : "文本翻译" : GENERATION_STEPS[activeStep - 1] || "工程";
+  const outputStage = mosaicPage ? "图片去码" : activeStep === 2 ? imagePart ? "图片翻译" : "文本翻译" :
+    activeStep === 3 ? "生成与应用" : GENERATION_STEPS[activeStep - 1] || "工程";
   const [localActivity, setLocalActivity] = useState<{ images: boolean; value: GenerationProgress } | null>(null);
   const lastOperationError = useRef("");
   const logAction = (text: string, level: OutputLevel = "info", stage = outputStage, task?: string) =>
@@ -1777,7 +1778,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     },
   };
   useGameTestConfigurationSource(testConfigurations);
-  const viewingProgress = !!generation && activeStep === generation.step && (activeStep !== 2 || (!!checkpoint?.translationRuns || imagePart === !!checkpoint?.imageOnly));
+  const viewingProgress = !!generation && activeStep === Math.min(generation.step, 3) && (activeStep !== 2 || (!!checkpoint?.translationRuns || imagePart === !!checkpoint?.imageOnly));
   const currentExecution = {
     parameters: { translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices,
       source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage,
@@ -2189,14 +2190,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const visibleGeneration = viewingProgress ? generation : null;
   const progressState = visibleGeneration && localActivity?.value === visibleGeneration && visibleGeneration.state === "running"
-    ? "running" : activeStep === 2 ? flowProgressState : visibleGeneration?.state ?? (activeStep <= completedThrough ? "done" : "pending");
+    ? "running" : activeStep === 2 ? flowProgressState : visibleGeneration?.state ?? (activeStep === 3 ? applied ? "done" : "pending" : activeStep <= completedThrough ? "done" : "pending");
   const redrawSummary = activeStep === 2 && redrawPhase ? gameImageRedrawSummary(visibleGeneration, progressState === "error") : undefined;
   const showProgressCount = !(activeStep === 2 && redrawPhase && progressState === "error" && !redrawSummary);
   const progressTitle = activeStep === 2
     ? imagePart ? unityImagePhaseNames[imageTask.current]
       : visibleGeneration?.textStage ? gameTextStageLabels[visibleGeneration.textStage]
       : textScreening || !screenComplete ? "筛选文本" : "翻译正文"
-    : GENERATION_STEPS[activeStep - 1];
+    : GENERATION_STEPS[(activeStep === 3 ? visibleGeneration?.step ?? (patch ? 4 : 3) : activeStep) - 1];
   const scanTiming = activeStep === 1 && progressState === "done" ? project?.scanMetrics : undefined;
   const elapsed = (activeStep === 1 ? scanTiming?.totalMs ?? checkpoint?.scanElapsedMs : visibleGeneration?.elapsedMs) ?? 0;
   const elapsedLabel = [3600000, 60000, 1000].map((unit, index) => {
@@ -2249,11 +2250,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {installed && <UnityIconButton className="unity-btn-danger" aria-label="卸载补丁" title="卸载补丁，恢复游戏原件" disabled={locked} onClick={() => void uninstallPatch()}><UnityActionIcon kind="remove" /></UnityIconButton>}
     </>, toolbarTarget)}
     <aside className="unity-offline-config" style={{ width: panelWidth.width }}>
-    <div className="unity-offline-upper">
-    <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
-      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" steps={[
-        ...UNITY_STAGE_TABS.slice(0, 3), { step: 2, number: "2.3", label: "图片去码", imageOnly: false }, ...UNITY_STAGE_TABS.slice(3),
-      ].map(tab=>{
+    <div className="unity-offline-upper unity-workflow-layout">
+      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, number, label } = tab;
         if (number === "2.3") return {
           id: number, number, label, state: hasMosaic ? "complete" : scanReady ? "current" : "pending",
@@ -2264,14 +2262,26 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             else change();
           },
         };
+        if (step === 3) {
+          const deployment = generation && generation.step >= 3 ? generation : undefined;
+          const running = deployment?.state === "running";
+          const state = deployment?.state === "error" ? "error" : running ? "current" : applied ? "complete" :
+            patch || patchReady || deployment?.state === "stopped" ? "current" : "pending";
+          return {id:number,number,label,state,selected:activeStep===3,running,paused:deployment?.state==="stopped",onSelect:()=>{
+            if(mosaicBusy)return;
+            const change=()=>{followProgress.current=false;setActiveStep(3);setImagePart(false);};
+            if(activeStep===2&&imagePart&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();
+          }};
+        }
         const subReady = tab.imageOnly ? imagesReady : textReady;
         const partProgress = step === 2 && !preparingRescan ? currentParts?.[tab.imageOnly ? "images" : "text"] : undefined;
         const runningHere = step === 2 && partProgress ? partProgress.state === "running" : executingStep === step && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
         const baseState = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere||scanReady ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, !preparingRescan && needsScan ? 1 : undefined, !preparingRescan && scanUpdate.level === "optional" ? 1 : undefined);
-        const state = step===3&&!patchReady&&!runningHere&&baseState!=="complete"&&baseState!=="error"?"pending":baseState === "pending" && (step === 1 || step === 3 && patchReady || step === 4 && !!patch) ? "current" : baseState;
+        const state = step === 1 && baseState === "pending" ? "current" : baseState;
         const selectedTab = !mosaicPage && activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
         return {id:number,number,label:<>{label}{(state==="outdated"||state==="optional-update")&&` · ${scanUpdate.label}`}</>,state,selected:selectedTab,running:runningHere,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>{if(mosaicBusy)return;const change=()=>{followProgress.current=false;setActiveStep(step);setImagePart(tab.imageOnly);};if(activeStep===2&&imagePart&&!(step===2&&tab.imageOnly)&&imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}};
       })}/>
+    <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${mosaicPage ? "2.3" : activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" >
         {mosaicPage && <>
           <div className="unity-task-actions"><GameMosaicPatchButton gamePath={root} label="第三方去码补丁" disabled={mosaicBusy || !!busy || restoring} /></div>
@@ -2463,20 +2473,21 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "保留游戏原字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <ul>{fontPlan.missing.map(code => { const character = String.fromCodePoint(code); const matches = glyphReferenceCounts?.get(character) ?? 0; return <li key={code}><strong>{character} · U+{code.toString(16).toUpperCase().padStart(4, "0")}</strong> · {matches ? `${matches} 条文本` : "补充字符或动态字形"}{matches > 0 && <button className="unity-btn" onClick={() => { setActiveStep(2); setImagePart(false); setReviewFilter("all"); setSearch(character); setPage(0); followProgress.current = false; }}>定位文本</button>}</li>; })}</ul>}<p><code>{fontPlan.folder}/字库检查.txt</code></p><button className="unity-btn" onClick={() => void openTranslationFile(fontPlan.folder + "/字库检查.txt")}>打开检查报告</button><button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
 
           {project?.fonts.some(font => /^(TMP|NGUI)/.test(font.kind)) && <p className="hint">已检测到 TMP / NGUI 字体。替换时生成字形和独立图集，无需 Unity Editor；共享图集或不支持的布局会说明具体原因。</p>}
-        </>}
-        {activeStep === 4 && <>
           <div className="unity-offline-output"><span>应用位置</span><code data-tooltip={root}>{root}</code></div>
-          {!applied && <p className="hint">{patch ? "请先关闭游戏。应用前检查进程及原件、补丁哈希，保留备份；写入失败时回滚。" : "请先生成补丁，再执行此步。应用前会检查游戏进程和文件变化，并保留原件备份。"}</p>}
+          {!applied && <p className="hint">请在应用前关闭游戏。写入前会校验文件并保留原件备份。</p>}
         </>}
         </>}
       </div>
-      {activeStep > 2 && <div className="unity-task-actions" role="group" aria-label="当前步骤操作">
-        {activeStep === 3 && <><button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || saving || resumable && checkpoint?.step !== 2 || !patchReady || !!patch} data-tooltip={!patchReady ? "当前没有可写入的译文、译图或去码图" : "写入已选择的译文、译图和去码图"} onClick={() => void generatePatch()}>生成补丁</button>{patch&&<button className="unity-btn" data-tooltip={patch.folder} aria-label={patch.folder} onClick={()=>void openFolder(patch.folder)}>打开补丁目录</button>}</>}
-        {activeStep === 4 && (applied ? <button className="unity-btn unity-btn-primary" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button> : <button className="unity-btn unity-btn-primary" disabled={locked || !patch} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>)}
-        {activeStep > 2 && (activeStep <= completedThrough || generation?.state === "error" && activeStep === generation.step) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(activeStep)}>重做此步</button>}
+      {activeStep === 3 && <div className="unity-task-actions" role="group" aria-label="生成与应用补丁">
+        {!patch && <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || saving || resumable && checkpoint?.step !== 2 || !patchReady} data-tooltip={!patchReady ? "当前没有可写入的译文、译图或去码图" : "写入已选择的译文、译图和去码图"} onClick={() => void generatePatch()}>生成补丁</button>}
+        {patch && (applied ? <button className="unity-btn unity-btn-primary" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button>
+          : <button className="unity-btn unity-btn-primary" disabled={locked} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>)}
+        {patch && <button className="unity-btn" data-tooltip={patch.folder} onClick={() => void openFolder(patch.folder)}>打开补丁目录</button>}
+        {(patch || generation?.step === 3 && generation.state === "error") && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(3)}>重做生成</button>}
+        {patch && (applied || generation?.step === 4 && generation.state === "error") && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(4)}>重做应用</button>}
       </div>}
-    {activeStep > 2 && progressContent}
-    {errorPanel && (generation?.state !== "error" || generation.step === activeStep) && <div className="unity-step-batch">{errorPanel}</div>}
+    {activeStep === 3 && progressContent}
+    {errorPanel && (generation?.state !== "error" || Math.min(generation.step, 3) === activeStep) && <div className="unity-step-batch">{errorPanel}</div>}
     </section>
     </div>
     </aside>

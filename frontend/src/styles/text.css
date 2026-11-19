@@ -577,8 +577,6 @@
 .game-image-toolbar > .game-image-actions:empty { display:none; }
 
 
-.game-workflow-steps { grid-template-columns:repeat(5,minmax(0,1fr)); }
-.game-workflow-steps .unity-step-tab { white-space:nowrap; font-size:12px; padding:7px 3px; }
 .game-image-substeps { display:flex; gap:12px; padding:10px 12px; border-bottom:1px solid var(--border); }
 .game-image-substeps button { border:0; background:transparent; color:var(--text-muted); padding:5px 0; cursor:pointer; font:inherit; }
 .game-image-substeps button[aria-pressed=true] { color:var(--accent); font-weight:600; border-bottom:2px solid var(--accent); }
