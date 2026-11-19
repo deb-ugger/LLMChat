@@ -71,21 +71,25 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 #[tauri::command]
-async fn open_game_benchmark_window(window: tauri::WebviewWindow) -> Result<bool, String> {
-    open_game_window(window, BENCHMARK_WINDOW, "测试队列 · LLMChat", 930.0, 760.0)
+async fn open_game_benchmark_window(webview: tauri::Webview) -> Result<bool, String> {
+    open_game_window(webview, BENCHMARK_WINDOW, "测试队列 · LLMChat", 930.0, 760.0)
 }
 
 #[tauri::command]
-async fn open_game_aux_window(window: tauri::WebviewWindow, kind: String) -> Result<bool, String> {
+async fn open_game_aux_window(webview: tauri::Webview, kind: String) -> Result<bool, String> {
     match kind.as_str() {
-        "help" => open_game_window(window, GAME_HELP_WINDOW, "游戏翻译流程 · LLMChat", 760.0, 730.0),
-        "configuration" => open_game_window(window, GAME_CONFIGURATION_WINDOW, "测试配置 · LLMChat", 980.0, 740.0),
+        "help" => open_game_window(webview, GAME_HELP_WINDOW, "游戏翻译流程 · LLMChat", 760.0, 730.0),
+        "configuration" => open_game_window(webview, GAME_CONFIGURATION_WINDOW, "测试配置 · LLMChat", 980.0, 740.0),
         _ => Err("未知的游戏翻译窗口".into()),
     }
 }
 
-fn open_game_window(window: tauri::WebviewWindow, label: &str, title: &str, width: f64, height: f64) -> Result<bool, String> {
-    if window.label() != "main" { return Err("只能从主窗口打开游戏翻译窗口".into()); }
+fn open_game_window(webview: tauri::Webview, label: &str, title: &str, width: f64, height: f64) -> Result<bool, String> {
+    // The main window can also host the embedded ComfyUI webviews.
+    let window = webview.window();
+    if webview.label() != "main" || window.label() != "main" {
+        return Err("只能从主窗口打开游戏翻译窗口".into());
+    }
     let app = window.app_handle();
     let center = |child: &tauri::WebviewWindow| -> Result<(), String> {
         let location = window.outer_position().map_err(|error| error.to_string())?;
@@ -284,8 +288,11 @@ fn arm_close_watchdog() {
 
 /// Called only after the frontend has finished its save/cancel close guards.
 #[tauri::command]
-async fn finish_app_close(window: tauri::WebviewWindow) -> Result<(), String> {
-    if window.label() != "main" { return Err("只允许主窗口退出应用".into()); }
+async fn finish_app_close(webview: tauri::Webview) -> Result<(), String> {
+    let window = webview.window();
+    if webview.label() != "main" || window.label() != "main" {
+        return Err("只允许主窗口退出应用".into());
+    }
     let _ = runtime_log("shutdown-native-begin", &format!("window={}; frontend close guards accepted", window.label()));
     for label in [BENCHMARK_WINDOW, GAME_HELP_WINDOW, GAME_CONFIGURATION_WINDOW] {
         if let Some(child) = window.app_handle().get_webview_window(label) {
