@@ -666,6 +666,37 @@
   white-space: nowrap;
 }
 
+.stats-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 8px;
+  min-width: 0;
+}
+
+.stats-chart-legend button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: start;
+  cursor: pointer;
+}
+
+.stats-chart-legend button:hover { background: var(--bg-hover); }
+.stats-chart-legend button[aria-pressed=false] { opacity: .55; }
+.stats-chart-legend button[aria-pressed=false] span { text-decoration: line-through; }
+.stats-chart-legend button i { flex: none; width: 12px; height: 4px; border-radius: 4px; }
+.stats-chart-legend button span { min-width: 0; overflow-wrap: anywhere; }
+
 .stats-chart {
   width: 100%;
   height: clamp(220px, 30vh, 280px);

@@ -14,7 +14,7 @@ import { toFriendlyError } from "../friendlyError";
 import {
 formatMoney
 } from "../pricingDefaults";
-import { FEATURE_LABEL,FEATURE_OPTIONS,UsageBarChart,bandLabel,formatTokenExact,hasConsumption,isSupplementEvent,localDateString,nonCachedInput,parseLocalDate,tokenFieldForSum,tokenTotalOf,type ActorOption,type GroupBy } from "./StatsChart";
+import { FEATURE_LABEL,FEATURE_OPTIONS,UsageBarChart,bandLabel,formatTokenExact,hasConsumption,isSupplementEvent,localDateString,nonCachedInput,parseLocalDate,shortUsageModelName,tokenFieldForSum,tokenTotalOf,type ActorOption,type GroupBy } from "./StatsChart";
 
 
 type OkFilter = "" | "ok" | "fail" | "supplement";
@@ -460,6 +460,14 @@ function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+function eventChannelLabel(ev: UsageEvent): string {
+  if (ev.channel === "engine") return "在线引擎";
+  if (ev.channel !== "llm") return ev.channel || "—";
+  const host = ev.apiHost?.trim().toLowerCase();
+  if (!host || host === "[") return "LLM（来源未知）";
+  return /^(?:localhost\.?|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/.test(host) ? "本地 LLM" : "在线 LLM";
+}
+
 function eventRemark(ev: UsageEvent): string {
   const parts = [(ev.note || "").trim(), (ev.errorMessage || "").trim()].filter(
     Boolean,
@@ -820,7 +828,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         <div>
           <h1 className="stats-title">用量统计</h1>
           <p className="stats-sub">
-            记录对外 API 调用（含失败及补充用量）。无消耗的系列不会出现在图表中。
+            记录模型与翻译引擎的请求次数、Token 用量和费用。
           </p>
         </div>
         <div className="stats-header-actions">
@@ -1150,7 +1158,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 <th>日期时间</th>
                 <th>功能</th>
                 <th>通道</th>
-                <th>引擎 / 厂商·模型</th>
+                <th>引擎 / 模型</th>
                 <th>结果</th>
                 <th>时段</th>
                 <th>Tokens</th>
@@ -1170,9 +1178,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
                 sortedEvents.map((ev) => {
                   const target =
                     ev.channel === "llm"
-                      ? [ev.vendor, ev.model].filter(Boolean).join(" / ") ||
-                        ev.model ||
-                        "—"
+                      ? shortUsageModelName(ev.model) || ev.vendor || "—"
                       : ev.engineId
                         ? `${ev.engineId}${
                             ev.engineKind === "keyed"
@@ -1202,8 +1208,8 @@ export function StatsView({ active = true }: { active?: boolean }) {
                         </span>
                       </td>
                       <td>{FEATURE_LABEL[ev.feature] ?? ev.feature}</td>
-                      <td>{ev.channel === "llm" ? "LLM" : "引擎"}</td>
-                      <td>{target}</td>
+                      <td data-tooltip={ev.apiHost || undefined}>{eventChannelLabel(ev)}</td>
+                      <td data-tooltip={ev.channel === "llm" && ev.model !== target ? ev.model : undefined}>{target}</td>
                       <td>
                         <span
                           className={

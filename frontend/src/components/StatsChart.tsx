@@ -1,6 +1,6 @@
 import type { EChartsCoreOption,EChartsType } from "echarts/core";
 import * as echarts from "echarts/core";
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart, CustomChart, LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
@@ -26,7 +26,7 @@ const FEATURE_OPTIONS: { value: string; label: string }[] = [
   { value: "text", label: "文本翻译" },
   { value: "speech_recognition", label: "在线语音识别" },
   { value: "speech_proofread", label: "字幕校对" },
-  { value: "unity", label: "在线翻译" },
+  { value: "unity", label: "游戏翻译" },
   { value: "settings_test", label: "设置测试" },
   { value: "vendor_models", label: "刷新模型" },
 ];
@@ -34,6 +34,10 @@ const FEATURE_OPTIONS: { value: string; label: string }[] = [
 const FEATURE_LABEL: Record<string, string> = Object.fromEntries(
   FEATURE_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label]),
 );
+
+export function shortUsageModelName(model?: string) {
+  return model?.trim().split(/[\\/]/).filter(Boolean).at(-1) || "";
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -92,8 +96,7 @@ function displayKey(groupBy: GroupBy, key: string): string {
   }
   if (groupBy === "llm") {
     const [vendor, model] = key.split("|");
-    if (!model) return vendor || key;
-    return vendor && vendor !== "unknown" ? `${vendor} / ${model}` : model;
+    return shortUsageModelName(model) || vendor || key;
   }
   if (groupBy === "band") return bandLabel(key);
   return key;
@@ -446,7 +449,7 @@ function eventActorKey(ev: UsageEvent): string {
 
 function eventActorLabel(ev: UsageEvent): string {
   if (ev.channel === "llm") {
-    return (ev.model || "").trim() || "未知模型";
+    return shortUsageModelName(ev.model) || "未知模型";
   }
   const id = (ev.engineId || "").trim() || "未知引擎";
   if (ev.engineKind === "free") return `${id}（免费）`;
@@ -613,7 +616,7 @@ function buildActorDetailOption({
     const bandColor =
       peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
     const head = [
-      `<div style="font-weight:700;margin-bottom:4px">${actor.label}</div>`,
+      `<div style="font-weight:700;margin-bottom:4px">${echarts.format.encodeHTML(actor.label)}</div>`,
       `<div style="font-weight:700;margin-bottom:4px">${hourRangeLabel(h)}</div>`,
       band
         ? `<div style="margin-bottom:6px;color:${bandColor};font-weight:700">${band}</div>`
@@ -763,16 +766,16 @@ function buildActorDetailOption({
       metric === "cost"
         ? { show: false }
         : {
+            show: false,
             data:
               metric === "requests"
                 ? ["成功", "失败", "补充"]
                 : ["Cache Read", "Cache Write", "Input", "Output"],
-            top: 0,
           },
     grid: {
       left: 56,
       right: 24,
-      top: metric === "cost" ? 28 : 40,
+      top: 28,
       bottom: 44,
       containLabel: false,
     },
@@ -968,7 +971,7 @@ function UsageBarChartContent({
                   .sort((a, b) => b[1] - a[1]);
                 for (const [model, v] of mods) {
                   detailRows.push(
-                    `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${model}</span><span style="font-variant-numeric:tabular-nums">${formatMetricCompact(v, metric, currency)}&nbsp;&nbsp;${formatPct(v, dayVal)}</span></div>`,
+                    `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${echarts.format.encodeHTML(shortUsageModelName(model))}</span><span style="font-variant-numeric:tabular-nums">${formatMetricCompact(v, metric, currency)}&nbsp;&nbsp;${formatPct(v, dayVal)}</span></div>`,
                   );
                 }
               }
@@ -992,11 +995,11 @@ function UsageBarChartContent({
             },
           },
           legend: {
+            show: false,
             data: seriesDefs.map((s) => s.name),
-            top: 0,
-            type: seriesDefs.length > 4 ? "scroll" : "plain",
+            formatter: shortUsageModelName,
           },
-          grid: { left: 56, right: 24, top: 44, bottom: 48 },
+          grid: { left: 56, right: 24, top: 28, bottom: 48 },
           xAxis: {
             type: "category",
             boundaryGap: false,
@@ -1124,19 +1127,19 @@ function UsageBarChartContent({
           const band = peak == null ? "" : peak ? "高峰" : "闲时";
           const bandColor =
             peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
-          const byActor = new Map<string, number>();
+          const byActor = new Map<string, { label: string; total: number }>();
           for (const ev of hourEvents[h]) {
-            const label = eventActorLabel(ev);
-            byActor.set(
-              label,
-              (byActor.get(label) ?? 0) + eventMetricValue(ev, metric),
-            );
+            const key = eventActorKey(ev);
+            const total = eventMetricValue(ev, metric);
+            const actor = byActor.get(key);
+            if (actor) actor.total += total;
+            else byActor.set(key, { label: eventActorLabel(ev), total });
           }
-          const actorRows = [...byActor.entries()].sort((a, b) => b[1] - a[1]);
+          const actorRows = [...byActor.values()].sort((a, b) => b.total - a.total);
           const total = hourValue(h);
           const lines = actorRows.map(
-            ([name, v]) =>
-              `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${name}</span><span style="font-variant-numeric:tabular-nums">${formatMetricValue(v, metric, currency)}</span></div>`,
+            ({ label, total }) =>
+              `<div style="display:flex;justify-content:space-between;gap:16px;line-height:1.55"><span>${echarts.format.encodeHTML(label)}</span><span style="font-variant-numeric:tabular-nums">${formatMetricValue(total, metric, currency)}</span></div>`,
           );
           return [
             `<div style="font-weight:700;margin-bottom:4px">${hourRangeLabel(h)}</div>`,
@@ -1159,6 +1162,7 @@ function UsageBarChartContent({
                 : "费用 (¥)"
               : "Tokens";
         const actors = singleDay ? drillableActors : collectActors(events, day, metric);
+        const actorLabels = new Map(actors.map(actor => [actor.key, actor.label]));
         const hoursByActor = new Map<string, number[]>();
         hourEvents.forEach((rows, hour) => {
           for (const event of rows) {
@@ -1185,7 +1189,7 @@ function UsageBarChartContent({
                 const values = hoursByActor.get(a.key) ?? Array<number>(24).fill(0);
                 return {
                   id: a.key,
-                  name: a.label,
+                  name: a.key,
                   type: "custom" as const,
                   renderItem: hourlyBarRender,
                   encode: { x: 0, y: [2, 3] },
@@ -1214,14 +1218,14 @@ function UsageBarChartContent({
             },
           },
           legend: {
-            data: actors.map((a) => a.label),
-            top: 0,
-            type: actors.length > 3 ? "scroll" : "plain",
+            show: false,
+            data: actors.map((a) => a.key),
+            formatter: (name: string) => actorLabels.get(name) || name,
           },
           grid: {
             left: 56,
             right: 24,
-            top: actors.length ? 40 : 28,
+            top: 28,
             bottom: 44,
             containLabel: false,
           },
@@ -1240,8 +1244,8 @@ function UsageBarChartContent({
     if (metric === "requests") {
       return {
         tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-        legend: { data: ["成功", "失败", "补充"], top: 0 },
-        grid: { left: 48, right: 16, top: 36, bottom: 48 },
+        legend: { show: false, data: ["成功", "失败", "补充"] },
+        grid: { left: 48, right: 16, top: 28, bottom: 48 },
         xAxis: {
           type: "category",
           data: labels,
@@ -1350,10 +1354,10 @@ function UsageBarChartContent({
         },
       },
       legend: {
+        show: false,
         data: ["Cache Read", "Cache Write", "Input", "Output"],
-        top: 0,
       },
-      grid: { left: 56, right: 16, top: 40, bottom: 48 },
+      grid: { left: 56, right: 16, top: 28, bottom: 48 },
       xAxis: {
         type: "category",
         data: labels,
@@ -1413,6 +1417,13 @@ function ChartCanvas({ option, onSeriesClick }: {
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<EChartsType | null>(null);
+  const [selection, setSelection] = useState<{ option: EChartsCoreOption; hidden: Set<string> }>();
+  const hidden = selection?.option === option ? selection.hidden : undefined;
+  const legend = option.legend as { data?: string[]; formatter?: (name: string) => string } | undefined;
+  const legendColors = useMemo(() => new Map(
+    (option.series as { name?: string; lineStyle?: { color?: string }; itemStyle?: { color?: string } }[]).map(series =>
+      [series.name, series.lineStyle?.color || series.itemStyle?.color]),
+  ), [option]);
   const click = useRef(onSeriesClick);
   useEffect(() => { click.current = onSeriesClick; }, [onSeriesClick]);
   useEffect(() => {
@@ -1432,7 +1443,28 @@ function ChartCanvas({ option, onSeriesClick }: {
     };
   }, []);
   useEffect(() => { chartRef.current!.setOption(option, true); }, [option]);
-  return <div className="stats-chart" ref={hostRef} />;
+  return <>
+    {!!legend?.data?.length && <div className="stats-chart-legend" role="group" aria-label="图例">
+      {legend.data.map(name => {
+        const label = legend.formatter?.(name) || name;
+        const selected = !hidden?.has(name);
+        return <button type="button" key={name} aria-pressed={selected}
+          data-tooltip={label === name ? undefined : name.split("|").at(-1)}
+          onMouseEnter={() => { if (selected) chartRef.current?.dispatchAction({ type: "highlight", seriesName: name }); }}
+          onMouseLeave={() => chartRef.current?.dispatchAction({ type: "downplay", seriesName: name })}
+          onClick={() => {
+            const next = new Set(hidden);
+            if (!next.delete(name)) next.add(name);
+            chartRef.current?.dispatchAction({ type: "legendToggleSelect", name });
+            setSelection({ option, hidden: next });
+          }}>
+          <i aria-hidden="true" style={{ backgroundColor: legendColors.get(name) || "var(--accent)" }} />
+          <span>{label}</span>
+        </button>;
+      })}
+    </div>}
+    <div className="stats-chart" ref={hostRef} />
+  </>;
 }
 
 const UsageBarChart = memo(UsageBarChartContent);
