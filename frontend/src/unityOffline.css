@@ -52,39 +52,119 @@
 .unity-task-detail { color: var(--muted,#667589); font-size: 13px; }
 .unity-workflow-layout { flex-direction: row; gap: 6px; }
 .unity-workflow-layout > .unity-workflow { min-inline-size: 0; }
-.game-workflow-steps { box-sizing: border-box; flex: 0 0 62px; display: flex; flex-direction: column; padding: 4px 3px; min-block-size: 0; overflow: hidden auto; scrollbar-width: none; }
-.game-workflow-node { display: flex; flex: 1 0 auto; flex-direction: column; align-items: center; min-inline-size: 0; }
-.game-workflow-node:last-child { flex: 0 0 auto; }
-.game-workflow-connector { position: relative; flex: 1 0 4px; inline-size: 9px; margin-block: 3px; overflow: hidden; }
-.game-workflow-connector::before, .game-workflow-connector.is-flowing::after { content: ""; position: absolute; inset: 0 3px; border-radius: 2px; }
+.game-workflow-steps {
+  --workflow-tone-complete: #28745a;
+  --workflow-tone-current: #3265b6;
+  --workflow-tone-pending: #b9762a;
+  --workflow-tone-outdated: #966515;
+  --workflow-tone-optional-update: #346483;
+  --workflow-tone-error: #c84444;
+  --workflow-surface: var(--bg-panel, #fff);
+  box-sizing: border-box;
+  flex: 0 0 54px;
+  align-self: flex-start;
+  max-block-size: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 3px;
+  overflow: hidden auto;
+  scrollbar-width: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: var(--workflow-surface);
+}
+.game-workflow-node { display: flex; flex: none; flex-direction: column; align-items: center; min-inline-size: 0; }
+.game-workflow-node.complete { --step-tone: var(--workflow-tone-complete); }
+.game-workflow-node.current { --step-tone: var(--workflow-tone-current); }
+.game-workflow-node.pending { --step-tone: var(--workflow-tone-pending); }
+.game-workflow-node.outdated { --step-tone: var(--workflow-tone-outdated); }
+.game-workflow-node.optional-update { --step-tone: var(--workflow-tone-optional-update); }
+.game-workflow-node.error { --step-tone: var(--workflow-tone-error); }
+.game-workflow-connector {
+  --track-start: var(--step-tone, var(--accent));
+  --track-blend: color-mix(in oklab, var(--track-start), var(--track-end));
+  --track-gradient: linear-gradient(to bottom in oklab,
+    var(--track-start),
+    color-mix(in oklab, var(--track-start) 55%, var(--workflow-surface)) 27%,
+    color-mix(in oklab, var(--track-blend) 25%, var(--workflow-surface)) 50%,
+    color-mix(in oklab, var(--track-end) 55%, var(--workflow-surface)) 73%,
+    var(--track-end));
+  position: relative;
+  flex: 0 0 28px;
+  inline-size: 12px;
+  margin-block: 2px;
+}
+.game-workflow-connector::before, .game-workflow-connector.is-flowing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--track-gradient);
+}
 .game-workflow-connector::before {
-  --line-tone: var(--step-border, var(--border));
-  background: linear-gradient(180deg, transparent, var(--line-tone) 12%, var(--line-tone) 88%, transparent);
+  opacity: .8;
+  mask:
+    repeating-linear-gradient(#000 0 3px, transparent 3px 5px) left / 2px 100% no-repeat,
+    repeating-linear-gradient(#000 0 3px, transparent 3px 5px) right / 2px 100% no-repeat,
+    repeating-linear-gradient(transparent 0 5px, #000 5px 6px) center / 100% 100% no-repeat;
 }
-.game-workflow-connector.is-linked::before { --line-tone: color-mix(in srgb, var(--step-selected, var(--accent)) 52%, var(--step-border, var(--border))); }
-.game-workflow-connector.is-flowing::before { --line-tone: #bfd5f5; }
+.game-workflow-connector.is-linked::before { opacity: 1; }
+.game-workflow-connector.is-flowing { filter: drop-shadow(0 0 2px color-mix(in oklab, var(--track-blend) 48%, transparent)); }
 .game-workflow-connector.is-flowing::after {
-  background: linear-gradient(180deg, transparent, #3265b6 60%, #dceaff 84%, transparent) center / 100% 28px no-repeat;
-  animation: game-workflow-flow 1.8s linear infinite;
+  mask:
+    linear-gradient(to right, transparent, #000 38% 62%, transparent) center / 100% 100% no-repeat,
+    linear-gradient(transparent, #0009 58%, #000 80%, transparent) center -16px / 100% 16px no-repeat;
+  mask-composite: intersect;
+  animation: game-workflow-flow 1.35s linear infinite;
 }
-@keyframes game-workflow-flow { from { background-position: center -28px; } to { background-position: center calc(100% + 28px); } }
-@media (prefers-reduced-motion: reduce) { .game-workflow-connector.is-flowing::after { animation: none; } }
-.game-workflow-node .unity-step-tab { inline-size: 100%; flex: 0 0 42px; box-sizing: border-box; padding: 3px 2px; font-size: 12px; line-height: 1.2; text-align: center; white-space: normal; }
-.game-workflow-label { min-inline-size: 0; text-wrap: balance; }
+@keyframes game-workflow-flow {
+  from { mask-position: center, center -16px; }
+  to { mask-position: center, center calc(100% + 16px); }
+}
 .unity-step-tab { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 5px 6px; font: inherit; font-size: 13px; color: #718096; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
-.game-workflow-node.complete { --step-ink: #34765a; --step-bg: #e7f5ed; --step-border: #c4e2d1; --step-selected: #28745a; }
-.game-workflow-node.current { --step-ink: #245ec9; --step-bg: #e8f2ff; --step-border: #bfd5f5; --step-selected: #3265b6; }
-.game-workflow-node.pending { --step-ink: #98652e; --step-bg: #fff0da; --step-border: #eed8b9; --step-selected: #b9762a; }
-.game-workflow-node.outdated { --step-ink: #805400; --step-bg: #fff4c9; --step-border: #dfae32; --step-selected: #966515; }
-.game-workflow-node.optional-update { --step-ink: #346483; --step-bg: #edf6ff; --step-border: #bdd4e6; --step-selected: #346483; }
-.game-workflow-node.error { --step-ink: #a52d2d; --step-bg: #fdeaea; --step-border: #efbcbc; --step-selected: #c84444; }
-.game-workflow-node .unity-step-tab { color: var(--step-ink, var(--muted)); background: var(--step-bg, var(--panel)); border-color: var(--step-border, var(--border)); transition: background-color .16s ease, border-color .16s ease; }
-.game-workflow-node .unity-step-tab:hover, .game-workflow-node .is-selected { border-color: var(--step-selected, var(--accent)); }
-.game-workflow-node .is-selected {
-  color: var(--step-ink, var(--text));
-  font-weight: 650;
-  background: color-mix(in srgb, var(--step-selected, var(--accent)) 14%, var(--step-bg, var(--panel)));
-  box-shadow: inset 0 1px color-mix(in srgb, white 60%, transparent);
+.game-workflow-node .unity-step-tab {
+  --marker-tone: var(--step-tone, var(--accent));
+  --marker-halo: color-mix(in oklab, var(--marker-tone) 27%, transparent);
+  box-sizing: border-box;
+  inline-size: 100%;
+  flex-direction: column;
+  gap: 4px;
+  padding: 3px 1px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  color: color-mix(in oklab, var(--marker-tone) 80%, var(--text));
+  background: transparent;
+}
+.game-workflow-node .unity-step-tab:is(:hover, .is-selected) {
+  border-color: color-mix(in oklab, var(--marker-tone) 22%, var(--workflow-surface));
+  background: color-mix(in oklab, var(--marker-tone) 9%, var(--workflow-surface));
+}
+.game-workflow-node .unity-step-tab:focus-visible { outline-offset: -2px; }
+.game-workflow-label { max-inline-size: 3em; text-wrap: balance; }
+.game-workflow-marker {
+  box-sizing: border-box;
+  inline-size: 19px;
+  block-size: 19px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--marker-tone);
+  border-radius: 50%;
+  background: var(--workflow-surface);
+}
+.game-workflow-marker::after { content: ""; inline-size: 5px; block-size: 5px; border-radius: 50%; background: var(--marker-tone); }
+.game-workflow-node.complete .game-workflow-marker { background: var(--marker-tone); }
+.game-workflow-node.complete .game-workflow-marker::after { background: var(--workflow-surface); }
+.game-workflow-node .is-active-task .game-workflow-marker { animation: game-workflow-ring 1.5s ease-out infinite; }
+.game-workflow-node .is-paused-task .game-workflow-marker { border-style: dashed; }
+@keyframes game-workflow-ring {
+  from { box-shadow: 0 0 0 0 var(--marker-halo); }
+  80%, to { box-shadow: 0 0 0 5px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-workflow-connector.is-flowing::after { animation: none; mask-position: center, center; }
+  .game-workflow-node .is-active-task .game-workflow-marker { animation: none; box-shadow: 0 0 0 2px var(--marker-halo); }
 }
 .unity-step-tab:focus-visible { outline: 2px solid #86abf5; outline-offset: 2px; }
 .unity-step-panel { flex: 0 0 auto; overflow: visible; padding: 10px; min-width: 0; min-height: 0; }
@@ -470,9 +550,7 @@
   .unity-image-list-divider { display: none; }
 }
 
-.unity-step-tab.is-active-task { animation: unity-task-breathe 2s ease-in-out infinite; }
 .unity-sibling-task { display: block; margin-top: 8px; border: 0; background: transparent; color: var(--accent,#326df0); font: inherit; padding: 2px 0; cursor: pointer; text-align: left; }
-@media (prefers-reduced-motion: reduce) { .unity-step-tab.is-active-task { animation: none; } }
 
 .unity-image-list-pages { display:flex; align-items:center; justify-content:center; gap:8px; padding:10px 4px; font-size:12px; }
 .unity-image-list-pages button { border:0; background:transparent; color:var(--accent); font:inherit; padding:4px; cursor:pointer; }
@@ -503,11 +581,6 @@
 .unity-description-menu .unity-description-option > b { color:var(--text,#203149); font-size:13px; font-weight:700; }
 .unity-description-menu .unity-description-option:hover,.unity-description-menu .unity-description-option:focus-visible { background:var(--bg-hover); }
 .unity-description-menu .unity-description-option[aria-selected=true] { background:var(--accent-soft); }
-
-.unity-step-tab.is-paused-task { animation:game-task-pending 2.4s ease-in-out infinite; }
-@keyframes game-task-pending { 0%,100% { box-shadow:inset 0 0 0 1px #326df033; } 50% { box-shadow:inset 0 0 0 3px #326df0aa; } }
-@media(prefers-reduced-motion:reduce) { .unity-step-tab.is-paused-task { animation:none; } }
-
 
 .unity-image-result-pane { display:flex; flex:1; min-width:0; min-height:0; }
 .unity-image-result-pane[hidden],.unity-offline-workbench[hidden] { display:none!important; }
