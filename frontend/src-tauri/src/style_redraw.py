@@ -66,8 +66,10 @@ async def ready(session, root):
         raise RuntimeError("8188 端口上的服务不是 ComfyUI")
 
 
-def workflow(upload, reference, translation, steps, matte, profile):
+def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=None):
     text = f"Replace the lettering in this image with exactly this Chinese text: «{translation}». Image 1 is the authoritative Chinese glyph draft. Keep its glyphs, layout, scale and tilt. Use image 2 only for ink style. Match the original calligraphic strokes, colors, outline, orientation and layout. Do not add any extra words."
+    if edit_prompt:
+        text = edit_prompt
     if matte:
         text += f" Keep the background perfectly flat solid RGB{matte}."
     def node(kind, **inputs):
@@ -107,7 +109,7 @@ def workflow(upload, reference, translation, steps, matte, profile):
                       resolution=1024, **{"images.image_1":["4",0]}),
             "6": node("QwenImage21Cache", model=["1",0], device="auto", dtype="default"),
             "7": node("CFGGuider", model=["6",0], positive=["5",0], negative=["5",1], cfg=1.0),
-            "8": node("RandomNoise", noise_seed=secrets.randbits(48)),
+            "8": node("RandomNoise", noise_seed=profile.get("seed", secrets.randbits(48))),
             "9": node("KSamplerSelect", sampler_name="euler"),
             "10": node("ManualSigmas", sigmas="1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"),
             "13": node("SamplerCustomAdvanced", noise=["8",0], guider=["7",0], sampler=["9",0], sigmas=["10",0], latent_image=["5",2]),
@@ -129,7 +131,7 @@ def workflow(upload, reference, translation, steps, matte, profile):
         "10": node("ModelSamplingAuraFlow", shift=3.1, model=["1", 0]),
         "11": node("CFGNorm", strength=1.0, model=["10", 0]),
         "12": node("VAEEncode", pixels=["5", 0], vae=["3", 0]),
-        "13": node("KSampler", seed=secrets.randbits(48), steps=steps, cfg=4.0, sampler_name="euler",
+        "13": node("KSampler", seed=profile.get("seed", secrets.randbits(48)), steps=steps, cfg=4.0, sampler_name="euler",
                    scheduler="simple", denoise=1.0, model=["11", 0], positive=["8", 0], negative=["9", 0], latent_image=["12", 0]),
         "14": node("VAEDecode", samples=["13", 0], vae=["3", 0]),
         "15": node("PreviewImage", images=["14", 0]),
@@ -201,8 +203,14 @@ async def render(session, crop, draft, translation, steps, label, profile):
     # A complete Japanese reference tends to replace the Chinese draft on transparent sprites.
     ref_name = None if matte and profile["kind"] == "turbo" else await upload_image(session, reference)
     graph = workflow(draft_name, ref_name, translation, steps, matte, profile)
+    raw = await run_image_graph(session, graph, profile.get("output"), label)
+    with Image.open(io.BytesIO(raw)) as output:
+        return extract(output, matte, crop.size)
+
+
+async def run_image_graph(session, graph, output_id, label):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
-    output_id = profile.get("output") or (outputs[0] if len(outputs)==1 else "")
+    output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
         raise ValueError("请选择工作流的图像输出节点 ID")
     client = uuid.uuid4().hex
@@ -239,10 +247,65 @@ async def render(session, crop, draft, translation, steps, label, profile):
             if record.get("status", {}).get("status_str") == "error":
                 raise RuntimeError(str(record["status"].get("messages", []))[-1200:])
             image = record["outputs"][output_id]["images"][0]
-            raw = await request(session, "GET", "/view", params={k: image[k] for k in ("filename", "subfolder", "type")})
-            with Image.open(io.BytesIO(raw)) as output:
-                return extract(output, matte, crop.size)
+            return await request(session, "GET", "/view", params={k: image[k] for k in ("filename", "subfolder", "type")})
         raise TimeoutError("等待 ComfyUI 结果超时")
+
+
+def mosaic_mask(original, regions, protected):
+    mask = np.zeros((original.height, original.width), dtype=np.uint8)
+    for region in regions:
+        left, top, right, bottom = region["box"]
+        if not (0 <= left < right <= original.width and 0 <= top < bottom <= original.height):
+            raise ValueError("请检查去码蒙版坐标")
+        mask[top:bottom, left:right] = 255
+    for left, top, right, bottom in protected:
+        mask[max(0, top):min(original.height, bottom), max(0, left):min(original.width, right)] = 0
+    mask[np.asarray(original.getchannel("A")) == 0] = 0
+    image = Image.fromarray(mask)
+    if image.getbbox() is None:
+        raise ValueError("去码蒙版没有覆盖可编辑像素")
+    return image
+
+
+async def repair_mosaic(original, data, steps):
+    profile = data["profile"]
+    if profile["kind"] not in ("2511", "turbo"):
+        raise ValueError("请选择可用的去码重绘模型")
+    mask = mosaic_mask(original, data["regions"], profile.get("keep", []))
+    left, top, right, bottom = mask.getbbox()
+    padding = max(48, round(max(right - left, bottom - top) * .25))
+    bounds = (max(0, left - padding), max(0, top - padding),
+              min(original.width, right + padding), min(original.height, bottom + padding))
+    crop = original.crop(bounds)
+    source_mask = mask.crop(bounds)
+    reference = profile.get("referenceImage")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        await ready(session, Path(data["directory"]))
+        source_name = await upload_image(session, crop.convert("RGB"))
+        mask_name = await upload_image(session, source_mask.convert("RGB"))
+        reference_name = source_name
+        if reference:
+            with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
+                ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
+                                   for index, value in enumerate(bounds))
+                reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"))
+        prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
+                  "Preserve the pose, composition, outline, palette and the existing illustration style. "
+                  "Use image 2 as a visual style reference. Keep everything outside the mask unchanged.")
+        graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
+        sampler = graph["13"]["inputs"]
+        latent_key = "latent_image"
+        graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+        graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
+        graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
+        sampler[latent_key] = ["19", 0]
+        raw = await run_image_graph(session, graph, "15", "蒙版重绘")
+    with Image.open(io.BytesIO(raw)) as output:
+        restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
+    restored.putalpha(crop.getchannel("A"))
+    result = original.copy()
+    result.paste(restored, bounds, source_mask)
+    return result
 
 
 def ink_components(crop):
@@ -361,6 +424,10 @@ async def run(data):
         raise ValueError("采样步数须为 1–100")
     with Image.open(io.BytesIO(base64.b64decode(data["image"], validate=True))) as source:
         original = source.convert("RGBA")
+    if data["mode"] == "mosaic":
+        result = await repair_mosaic(original, data, steps)
+        emit("result", {"image": base64.b64encode(png(result)).decode("ascii")})
+        return
     regions = data["regions"]
     if not regions:
         raise ValueError("请勾选需要重绘的文字区域")

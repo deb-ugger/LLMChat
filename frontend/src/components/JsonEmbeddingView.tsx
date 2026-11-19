@@ -38,7 +38,8 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
   const isUnreal = game.engine === "Unreal Engine";
-  const supportsImages = game.engine.startsWith("RPG Maker") || game.engine === "WOLF RPG";
+  const supportsMosaic = game.engine.startsWith("RPG Maker");
+  const supportsImages = supportsMosaic || game.engine === "WOLF RPG";
   const availableBackupScopes = [
     ["text", "文本资源"],
     ...(game.engine.startsWith("RPG Maker") ? [["runtime", "插件与字体"]] : []),
@@ -64,8 +65,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const workflowWrites=useRef(Promise.resolve());
   const workflowRef=useRef(workflow);workflowRef.current=workflow;
   const textInfoChanged=useCallback((value:GameTextInfo)=>{const changedTarget=!!textTarget.current&&textTarget.current!==value.target;textTarget.current=value.target;if(value.dirty||value.running||changedTarget){setGenerated(false);if(workflowRef.current.textSkipped)void workflowUpdate.current({textSkipped:false});}setTextInfo(value);if(value.translationPath)setFile(value.translationPath);},[]);
-  const [part,setPart]=useState<"text"|"images">(savedStage.part);
-  useEffect(() => { rememberGameStage(game.path,textStep,part); }, [game.path,textStep,part]);
+  const [part,setPart]=useState<"text"|"images"|"mosaic">(savedStage.part);
+  const [mosaicBusy,setMosaicBusy]=useState(false);
+  useEffect(() => { rememberGameStage(game.path,textStep,part==="mosaic"?"images":part); }, [game.path,textStep,part]);
   const [imageWorkflow,setImageWorkflow]=useState<GameImageInfo>({state:"idle",stage:"filter",complete:false,count:null,folder:"",exists:null,loaded:false,selected:0,valid:0});
   const [textFailures, setTextFailures] = useState<BatchRow[]>([]);
   const [textRepairs, setTextRepairs] = useState<BatchRow[]>([]);
@@ -108,7 +110,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   useEffect(()=>{if(status.state!=="running"&&status.state!=="idle"){void loadPatch();}},[game.path,status.state]);
   const [backups, setBackups] = useState<Backup[]>([]), [backupId, setBackupId] = useState("");
   const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
-  const touched = useRef(false), busy = applyingTestConfiguration || automatic === "running" || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
+  const touched = useRef(false), busy = applyingTestConfiguration || automatic === "running" || pending || detecting || imageBusy || mosaicBusy || textInfo.running || status.state === "running" || launching;
   const latestWorkflow = useRef({text:textInfo,images:imageWorkflow,pending,detecting}); latestWorkflow.current={text:textInfo,images:imageWorkflow,pending,detecting};
   const busyRef = useRef(busy); busyRef.current = busy;
   const testConfigurations: GameTestConfigurationAccess = {
@@ -404,15 +406,15 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     {textInfo.sourcePath&&<p>扫描文本：<code className="game-resource-path" data-tooltip={textInfo.sourcePath}>{textInfo.sourcePath}</code></p>}
     {imageWorkflow.folder&&<p>图片工程：<code className="game-resource-path" data-tooltip={imageWorkflow.folder}>{imageWorkflow.folder}</code></p>}
   </>}/>;
-  const selectWorkflow=(id:string)=>{const change=()=>{if(id==="2.2"){setPart("images");setTextStep(2);}else{setPart("text");setTextStep(id==="2.1"?2:Number(id));}};if(part==="images"&&id!=="2.2"&&imageLeaveGuard.current)imageLeaveGuard.current(change);else if(part==="text"&&textInfo.dirty)void textHandle.current?.leave().then(ok=>{if(ok)change();});else change();};
-  const workflowSteps=<GameWorkflowSteps steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"翻译文本"},...(supportsImages?[{id:"2.2",label:"图片翻译"}]:[]),{id:"3",label:"生成补丁"},{id:"4",label:"应用到游戏"}].map(item=>{
-    const selected=part==="images"?(textStep===4?item.id==="4":item.id==="2.2"):item.id===(textStep===2?"2.1":String(textStep));
+  const selectWorkflow=(id:string)=>{if(mosaicBusy||id==="2.3"&&imageBusy)return;const change=()=>{if(id==="2.2"||id==="2.3"){setPart(id==="2.3"?"mosaic":"images");setTextStep(2);}else{setPart("text");setTextStep(id==="2.1"?2:Number(id));}};if(part==="images"&&id!=="2.2"&&imageLeaveGuard.current)imageLeaveGuard.current(change);else if(part==="text"&&textInfo.dirty)void textHandle.current?.leave().then(ok=>{if(ok)change();});else change();};
+  const workflowSteps=<GameWorkflowSteps steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"翻译文本"},...(supportsImages?[{id:"2.2",label:"图片翻译"}]:[]),...(supportsMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成补丁"},{id:"4",label:"应用到游戏"}].map(item=>{
+    const selected=part==="mosaic"?item.id==="2.3":part==="images"?(textStep===4?item.id==="4":item.id==="2.2"):item.id===(textStep===2?"2.1":String(textStep));
     const operationStep=status.action==="extract"?"1":status.action==="inspect"?"2.1":status.action==="embed"?"3":"4";
     const imageStep=imageWorkflow.stage==="restore"?"4":"2.2";
-    const running=textInfo.running&&item.id==="2.1"||imageBusy&&item.id===imageStep||status.state==="running"&&operationStep===item.id;
+    const running=mosaicBusy&&item.id==="2.3"||textInfo.running&&item.id==="2.1"||imageBusy&&item.id===imageStep||status.state==="running"&&operationStep===item.id;
     const scanned=!!scanPath||textInfo.count>0;
     const completed=item.id==="1"&&scanned||item.id==="2.1"&&scanned&&(workflow.textSkipped||textInfo.done===textInfo.selected)||item.id==="2.2"&&(imageWorkflow.complete||workflow.imagesSkipped)||item.id==="3"&&generated||item.id==="4"&&(patch.installed||!patch.conflicts.length&&automatic==="done");
-    const ready=item.id==="1"||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&canGenerate||item.id==="4"&&(generated||imageWorkflow.complete);
+    const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&canGenerate||item.id==="4"&&(generated||imageWorkflow.complete);
     const failed=!!scanLoadError&&item.id==="1"&&!running||!scanLoadError&&textInfo.state==="error"&&item.id==="2.1"||imageWorkflow.state==="error"&&item.id===imageStep||status.state==="error"&&operationStep===item.id;
     const state=failed?"error":running?"current":completed?"complete":ready?"current":"pending";
     return {...item,number:item.id,state,selected,paused:!completed&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep),running,onSelect:()=>selectWorkflow(item.id)};
@@ -439,7 +441,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         </p>}
         {textStep===3&&output("补丁目录",status.patchPath)}</div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} visible={part==="text"} step={textStep} active={active} disabled={pending||detecting||status.state==="running"} steps={workflowSteps} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {supportsImages&&<GameImageWorkbench testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
+      {supportsImages&&<GameImageWorkbench mosaicActive={active&&supportsMosaic&&part==="mosaic"} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} imageTarget={imageTarget} onBatchImages={setImageBatch} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowSteps={workflowSteps} workflowStage={textStep===4?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
 
     </main>
 

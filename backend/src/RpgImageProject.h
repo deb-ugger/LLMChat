@@ -55,6 +55,24 @@ class RpgImageProject {
     static Json row(const Json& project,const std::string& imageId){for(auto& image:project.at("images"))if(image.at("id").get<std::string>()==imageId)return image;throw std::runtime_error("未找到图片，请重新扫描");}
     static Path originalCache(const Path& game,const Json& image){return folder(game)/"original"/(image.at("id").get<std::string>()+"-"+image.at("sourceHash").get<std::string>()+".png");}
     static void validId(const std::string& imageId){if(imageId.empty()||imageId.find_first_not_of("0123456789abcdef")!=std::string::npos)throw std::runtime_error("图片编号无效");}
+    static Path installedImage(const Path& game,const std::string& imageId,bool mosaic){
+        return folder(game)/(mosaic?"mosaic-installed":"installed")/(imageId+".bin");
+    }
+    static bool matchesInstalled(const Path& installed,const std::string& bytes){
+        return std::filesystem::is_regular_file(installed)&&gamefiles::read(installed)==bytes;
+    }
+    static Path mosaicImage(const Path& game,const Json& image){
+        const auto imageId=image.at("id").get<std::string>();
+        const auto revision=image.at("sourceHash").get<std::string>();
+        validId(imageId);
+        if(revision.empty()||revision.find_first_not_of("0123456789-")!=std::string::npos)
+            throw std::runtime_error("原图版本无效，请重新扫描");
+        return folder(game)/"mosaic"/(imageId+"-"+revision+".png");
+    }
+    static std::string storedOriginal(const Path& game,const Json& image,const std::string& key){
+        auto bytes=gamefiles::read(originalCache(game,image));
+        return image.value("encrypted",false)?codec(std::move(bytes),key,true):bytes;
+    }
 public:
     Json currentSources(const Path& game, const Json& sources) {
         if (!sources.is_object() || sources.size() > 512) throw std::runtime_error("图片缓存校验批次无效");
@@ -100,7 +118,17 @@ public:
         std::sort(files.begin(),files.end());
         const auto key=db==Path("Data")?std::string():imageKey(game/db/"System.json");
         size_t completed=0;if(progress)progress(0,files.size(),"读取图片信息");
-        for(auto& file:files){checkRead(scanEpoch);if(progress&&(completed%16==0))progress(completed,files.size(),"读取图片信息："+utf8path::pathUtf8(file.filename()));++completed;const auto name=gamefiles::key(std::filesystem::relative(file,game));auto hash=stamp(file);if(byFile.contains(name)){auto old=byFile[name];const auto installed=folder(game)/"installed"/(old.at("id").get<std::string>()+".bin");if(old.at("sourceHash").get<std::string>()==hash||(std::filesystem::is_regular_file(installed)&&gamefiles::read(installed)==gamefiles::read(file))){images.push_back(old);continue;}}
+        for(auto& file:files){checkRead(scanEpoch);if(progress&&(completed%16==0))progress(completed,files.size(),"读取图片信息："+utf8path::pathUtf8(file.filename()));++completed;const auto name=gamefiles::key(std::filesystem::relative(file,game));auto hash=stamp(file);if(byFile.contains(name)){
+            auto old=byFile[name];
+            const auto oldId=old.at("id").get<std::string>();
+            if(old.at("sourceHash").get<std::string>()==hash){images.push_back(old);continue;}
+            const auto translation=installedImage(game,oldId,false);
+            const auto mosaic=installedImage(game,oldId,true);
+            if(std::filesystem::is_regular_file(translation)||std::filesystem::is_regular_file(mosaic)){
+                const auto current=gamefiles::read(file);
+                if(matchesInstalled(translation,current)||matchesInstalled(mosaic,current)){images.push_back(old);continue;}
+            }
+        }
             std::ifstream input(file,std::ios::binary);char buffer[40];input.read(buffer,sizeof buffer);std::string bytes(buffer,static_cast<size_t>(input.gcount()));const bool encrypted=gameresourcebackup::imageExtension(file)!=".png";std::string error;uint32_t width=0,height=0;try{if(encrypted)bytes=codec(bytes,key,false);std::tie(width,height)=dimensions(bytes);}catch(const std::exception& e){error=e.what();}
             images.push_back({{"id",id(name)},{"file",name},{"container",""},{"objectId",""},{"kind",db==Path("Data")?"WOLF PNG":"RPG PNG"},{"name",utf8path::pathUtf8(file.filename())},{"width",width},{"height",height},{"sourceFile",error.empty()?name:""},{"sourceHash",hash},{"renderedFile",""},{"renderedHash",""},{"selected",false},{"ocrCompleted",false},{"completed",false},{"error",error},{"regions",Json::array()},{"encrypted",encrypted}});
         }
@@ -133,30 +161,54 @@ public:
         return result;
     }
     Json render(const Path& game,const std::string& imageId,const std::string& bytes){std::lock_guard lock(mutex_);validId(imageId);auto image=imageRow(game,imageId);auto [width,height]=dimensions(bytes);if(width!=image.at("width").get<uint32_t>()||height!=image.at("height").get<uint32_t>())throw std::runtime_error("译图尺寸必须与原图一致");if(!std::filesystem::is_regular_file(originalCache(game,image)) && stamp(game/gamefiles::relative(image.at("file")))!=image.at("sourceHash").get<std::string>())throw std::runtime_error("原图片已改变，请重新扫描");auto name="rendered/"+imageId+".png";gamefiles::write(folder(game)/name,bytes);image["renderedFile"]=name;image["renderedHash"]=stamp(folder(game)/name);publish(game,Json::array({image}));return {{"path",name},{"hash",image["renderedHash"]}};}
-    Json apply(const Path& game,bool automatic,const Json& scopes=Json::array({"images"}),const Json& selectedIds=nullptr){
+    std::string previewMosaic(const Path& game,const std::string& imageId){
+        std::lock_guard lock(mutex_);
+        validId(imageId);
+        return gamefiles::read(mosaicImage(game,imageRow(game,imageId)));
+    }
+    Json saveMosaic(const Path& game,const std::string& imageId,const std::string& revision,const std::string& bytes){
+        std::lock_guard lock(mutex_);
+        if(data(game)==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
+        validId(imageId);
+        const auto image=imageRow(game,imageId);
+        if(revision!=image.at("sourceHash").get<std::string>())throw std::runtime_error("原图已变更，请重新生成去码候选");
+        const auto [width,height]=dimensions(bytes);
+        if(width!=image.at("width").get<uint32_t>()||height!=image.at("height").get<uint32_t>())
+            throw std::runtime_error("去码图尺寸必须与原图一致");
+        std::string error;
+        if(!atomicfile::writeText(mosaicImage(game,image),bytes,&error))throw std::runtime_error("无法保存去码图："+error);
+        return {{"saved",true}};
+    }
+    Json apply(const Path& game,bool automatic,const Json& scopes=Json::array({"images"}),const Json& selectedIds=nullptr,bool mosaic=false){
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
+        if(mosaic&&dataPath==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
         const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
+        if(mosaic&&ids.empty())throw std::runtime_error("请选择本组已确认的去码图");
+        if(mosaic)for(const auto& imageId:ids){validId(imageId);imageIndex(game,imageId);}
         std::vector<std::pair<Path,Path>> installedFiles;
         gameresourcebackup::Snapshot snapshot;
         size_t unchanged=0;
         const auto receipt=gamefiles::applyPrepared(game,[&](const auto& stage){
             for(const auto& image:catalog(game).at("images")){
-                if(!image.value("selected",false)||!image.value("completed",false)||image.value("renderedFile","").empty()) continue;
+                if(!mosaic&&(!image.value("selected",false)||!image.value("completed",false)||image.value("renderedFile","").empty())) continue;
                 const auto imageId=image.at("id").get<std::string>();
                 if(!selectedIds.is_null()&&!ids.contains(imageId)) continue;
                 const auto name=gamefiles::relative(image.at("file"));
                 const auto target=game/name;
-                const auto installed=folder(game)/"installed"/(imageId+".bin");
+                const auto installed=installedImage(game,imageId,mosaic);
                 const bool wasInstalled=std::filesystem::is_regular_file(installed);
                 const auto sourceHash=image.at("sourceHash").get<std::string>();
                 const bool encrypted=image.value("encrypted",false);
                 const auto current=gamefiles::read(target);
-                if(wasInstalled?current!=gamefiles::read(installed):stamp(target)!=sourceHash)
+                const bool otherApplied=matchesInstalled(installedImage(game,imageId,!mosaic),current);
+                if(otherApplied&&current!=storedOriginal(game,image,key))
+                    throw std::runtime_error("此图片已应用"+std::string(mosaic?"译图":"去码图")+"，请先恢复该图： "+image.at("name").get<std::string>());
+                if(!otherApplied&&(wasInstalled?current!=gamefiles::read(installed):stamp(target)!=sourceHash))
                     throw std::runtime_error("游戏图片已改变，请检查后重新扫描："+image.at("name").get<std::string>());
-                auto bytes=gamefiles::read(folder(game)/"rendered"/(imageId+".png"));
+                auto bytes=gamefiles::read(mosaic?mosaicImage(game,image):folder(game)/"rendered"/(imageId+".png"));
                 if(encrypted) bytes=codec(std::move(bytes),key,true);
                 if(bytes==current){++unchanged;continue;}
                 const auto cache=originalCache(game,image);
@@ -170,43 +222,47 @@ public:
                     if(!atomicfile::writeText(cache,original,&error))
                         throw std::runtime_error("无法保存原图备份："+image.at("name").get<std::string>()+" · "+error);
                 }
-                if(automatic&&snapshot.path.empty()) snapshot=gameresourcebackup::snapshot(game,dataPath,scopes);
+                if(automatic&&!mosaic&&snapshot.path.empty()) snapshot=gameresourcebackup::snapshot(game,dataPath,scopes);
                 stage(name,&bytes);
                 installedFiles.emplace_back(name,installed);
             }
         });
         if(receipt.empty()){
             if(unchanged) return {{"files",0},{"unchanged",unchanged},{"backupPath",""}};
-            throw std::runtime_error("没有可应用的译图，请先识别、翻译或替换译图");
+            throw std::runtime_error(mosaic?"没有可应用的去码图":"没有可应用的译图，请先识别、翻译或替换译图");
         }
         for(const auto& [name,installed]:installedFiles) gamefiles::copyResource(game/name,installed);
-        if(!automatic) std::filesystem::remove_all(receipt);
-        return {{"files",installedFiles.size()},{"unchanged",unchanged},{"backupPath",utf8path::pathUtf8(snapshot.path)},
-            {"backupDetail",automatic?snapshot.summary():""}};
+        if(!automatic&&!mosaic) std::filesystem::remove_all(receipt);
+        return {{"files",installedFiles.size()},{"unchanged",unchanged},{"backupPath",utf8path::pathUtf8(mosaic?receipt:snapshot.path)},
+            {"backupDetail",automatic&&!mosaic?snapshot.summary():""}};
     }
 
-    Json uninstall(const Path& game){
+    Json uninstall(const Path& game,bool mosaic=false,const Json& selectedIds=nullptr){
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
+        if(mosaic&&dataPath==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
         const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
+        const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
+        if(mosaic&&ids.empty())throw std::runtime_error("请选择本组需要恢复的图片");
         std::vector<std::pair<Path,Path>> installedFiles;
         const auto receipt=gamefiles::applyPrepared(game,[&](const auto& stage){
             for(const auto& image:catalog(game).at("images")){
                 const auto imageId=image.at("id").get<std::string>();
-                const auto installed=folder(game)/"installed"/(imageId+".bin");
+                if(mosaic&&!ids.contains(imageId))continue;
+                const auto installed=installedImage(game,imageId,mosaic);
                 if(!std::filesystem::is_regular_file(installed)) continue;
                 const auto name=gamefiles::relative(image.at("file"));
                 const auto current=gamefiles::read(game/name);
-                auto original=gamefiles::read(originalCache(game,image));
-                if(image.value("encrypted",false)) original=codec(std::move(original),key,true);
+                const auto original=storedOriginal(game,image,key);
                 if(current==original) continue;
+                if(matchesInstalled(installedImage(game,imageId,!mosaic),current))continue;
                 if(current!=gamefiles::read(installed)) throw std::runtime_error("游戏图片已被修改，无法卸载："+image.at("name").get<std::string>());
                 stage(name,&original);
                 installedFiles.emplace_back(name,installed);
             }
         });
-        if(receipt.empty()) throw std::runtime_error("没有已应用的译图可卸载");
+        if(receipt.empty()) throw std::runtime_error(mosaic?"本组没有已应用的去码图":"没有已应用的译图可卸载");
         for(const auto& [name,installed]:installedFiles) gamefiles::copyResource(game/name,installed);
         return {{"files",installedFiles.size()},{"backupPath",utf8path::pathUtf8(receipt)}};
     }
