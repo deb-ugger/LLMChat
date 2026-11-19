@@ -1923,6 +1923,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       }
     }
   };
+  const taskDetail = generation?.state === "error" ? undefined : generation?.detail;
+  const scanResource = activeStep === 1
+    ? taskDetail?.match(/^读取资源对象：(.+) · (对象 \d+ \/ \d+ · 已提取 \d+ 条文本)$/)
+    : undefined;
   const progressContent = <div className="unity-current-task" role="status">
     <div className="unity-generation-status">
       <strong>{activeStep === 2 ? imagePart ? imageTask.current === "recognize" ? "识字与定位" : "翻译图片文字" : generation?.textStage ? gameTextStageLabels[generation.textStage] : textScreening || !screenComplete ? "筛选文本" : "翻译正文" : GENERATION_STEPS[(generation?.step || activeStep) - 1]} · {({
@@ -1938,6 +1942,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     </div>
     <div className={`unity-progress-track${progressRunning ? " is-running" : ""}`} role="progressbar" aria-label="当前步骤进度" aria-valuenow={progressPercent ?? undefined}><div className="unity-progress-fill" style={{width: `${activeStep === 2 && flowProgressState === "done" ? 100 : progressPercent ?? (activeStep <= completedThrough ? 100 : 0)}%`}} /></div>
     {generation?.total != null && <div className="unity-progress-count">{progressPercent ?? 0}% · {generation.completed} / {generation.total} {progressUnit}</div>}
+    {activeStep === 1 && taskDetail &&
+      <p className="unity-task-detail" style={{ margin: "8px 0 0", display: "flex", flexWrap: "wrap", gap: "2px 12px", overflowWrap: "anywhere" }}>
+        {scanResource ? <>
+          <span data-tooltip={scanResource[1]} style={{ flex: "1 1 230px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>读取资源 · {scanResource[1]}</span>
+          <span>{scanResource[2]}</span>
+        </> : taskDetail}
+      </p>}
     {activeStep === 2 && !imagePart && !progressIsImage && generation?.step === 2 &&
       <UnityTranslationProgress progress={generation} running={progressRunning} failure={generation.state === "error" ? generation.failure || generation.detail : undefined}
         onLocate={locateTranslationFailure} />}
@@ -2062,7 +2073,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         {activeStep > 2 && (activeStep <= completedThrough || generation?.state === "error" && activeStep === generation.step) && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(activeStep)}>重做此步</button>}
       </div>
     {activeStep !== 2 && progressContent}
-    {(activeStep !== 2 || imagePart) && generation?.state !== "error" && generation?.detail && <p className="unity-task-detail">{generation.detail}</p>}
+    {activeStep !== 1 && (activeStep !== 2 || imagePart) && taskDetail && <p className="unity-task-detail">{taskDetail}</p>}
     </section>
     </div>
     <button className="unity-output-divider" role="separator" aria-orientation="horizontal" aria-label="调整步骤和输出区域高度" aria-valuenow={Math.round(upperHeight)} onMouseDown={e => resizeLayout(e)} onKeyDown={e => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); resizeLayoutKey(e.key === "ArrowDown" ? 16 : -16); } }} />
