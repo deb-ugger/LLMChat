@@ -1,115 +1,61 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SearchableSelect } from "./SearchableSelect";
 import { showAppNotice } from "./AppNotice";
+import { workflowControls, workflowEdits, type WorkflowControl } from "../comfyWorkflowFields";
 import { useGameActionConfirm } from "./GameActionConfirm";
 
-type RecordValue = Record<string, unknown>;
-type Field = { name: string; pointer: string; value: unknown; readOnly?: boolean };
-type Group = { key: string; title: string; fields: Field[] };
 type WorkflowFile = { path: string; modified?: number | null };
 type Saved = { workflow: unknown; revision: string };
 type Snapshot = Saved & { path: string; modified?: number | null };
 type Inventory = { directory: string; model: string[]; clip: string[]; vae: string[] };
-type Edit = { pointer: string; value: unknown };
 const directoryKey = "llmchat-comfy-directory";
 const workflowKey = "llmchat-comfy-saved-workflow";
 
-function record(value: unknown): RecordValue | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : undefined;
-}
-
-function pointerPart(key: string) { return key.replace(/~/g, "~0").replace(/\//g, "~1"); }
-function nodeName(node: RecordValue, fallback = "") {
-  return String(node.title || record(node._meta)?.title || node.type || node.class_type || fallback);
-}
-
-const knownWidgets: Record<string, string[]> = {
-  UNETLoader: ["unet_name", "weight_dtype"], UnetLoaderGGUF: ["unet_name"],
-  CLIPLoader: ["clip_name", "type", "device"], VAELoader: ["vae_name"],
-  KSampler: ["seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler", "denoise"],
-  KSamplerAdvanced: ["add_noise", "noise_seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler", "start_at_step", "end_at_step", "return_with_leftover_noise"],
-  LoadImage: ["image", "upload"], SaveImage: ["filename_prefix"], ManualSigmas: ["sigmas"],
-  PrimitiveInt: ["value", "control_after_generate"], PrimitiveFloat: ["value"], PrimitiveBoolean: ["value"], PrimitiveString: ["value"],
-};
-
-function configGroups(document: unknown): Group[] {
-  const graph = record(document);
-  if (!graph) return [];
-  if (!Array.isArray(graph.nodes)) return Object.entries(graph).flatMap(([id, item]) => {
-    const node = record(item), inputs = record(node?.inputs);
-    if (!node || !inputs || typeof node.class_type !== "string") return [];
-    return [{ key: id, title: `#${id} · ${nodeName(node)}`, fields: Object.entries(inputs).map(([name, value]) => ({
-      name, value, pointer: `/${pointerPart(id)}/inputs/${pointerPart(name)}`,
-      readOnly: Array.isArray(value) && value.length === 2 && typeof value[0] === "string" &&
-        Number.isInteger(value[1]) && Object.hasOwn(graph, value[0]),
-    })) }];
-  });
-  const visual = (nodes: unknown[], root: string, prefix: string): Group[] => nodes.flatMap((item, index) => {
-    const node = record(item);
-    if (!node) return [];
-    const inputs = (Array.isArray(node.inputs) ? node.inputs : []).flatMap(port => record(port) ? [record(port)!] : []);
-    const widgets = node.widgets_values;
-    const namedInputs = inputs.filter(port => record(port.widget)).map(port => String(port.label || port.name));
-    const names = Array.isArray(widgets) && namedInputs.length === widgets.length ? namedInputs : knownWidgets[String(node.type)] || [];
-    const values = Array.isArray(widgets) ? Object.entries(widgets) : Object.entries(record(widgets) || {});
-    const base = `${root}/nodes/${index}`;
-    const fields: Field[] = values.map(([key, value]) => {
-      const name = Array.isArray(widgets) ? names[Number(key)] || `参数 ${Number(key) + 1}` : key;
-      return { name, value, pointer: `${base}/widgets_values/${pointerPart(key)}`,
-        readOnly: inputs.some(port => (port.label === name || port.name === name) && port.link != null) };
-    });
-    for (const input of inputs.filter(port => port.link != null)) {
-      fields.push({ name: String(input.label || input.name), value: `连线 #${input.link}`, pointer: `${base}/link/${input.name}`, readOnly: true });
-    }
-    return [{ key: base, title: `${prefix}#${node.id ?? index + 1} · ${nodeName(node)}`, fields }];
-  });
-  const groups = visual(graph.nodes, "", "");
-  const subgraphs = record(graph.definitions)?.subgraphs;
-  if (Array.isArray(subgraphs)) subgraphs.forEach((item, index) => {
-    const sub = record(item);
-    if (Array.isArray(sub?.nodes)) groups.push(...visual(sub.nodes, `/definitions/subgraphs/${index}`, `${sub.name || "子图"} / `));
-  });
-  return groups;
-}
-
-const fieldText = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value) ?? "null";
-const valueType = (value: unknown) => value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-function workflowEdits(changes: Record<string, string>, groups: Group[]): Edit[] {
-  const fields = new Map(groups.flatMap(group => group.fields.map(field => [field.pointer, field] as const)));
-  return Object.entries(changes).flatMap(([pointer, text]) => {
-    const field = fields.get(pointer);
-    if (!field || field.readOnly) return [];
-    let value: unknown;
-    try { value = typeof field.value === "string" ? text : JSON.parse(text); }
-    catch { throw Error(`${field.name} 的参数格式无效`); }
-    if (valueType(value) !== valueType(field.value) || typeof value === "number" && !Number.isFinite(value)) throw Error(`${field.name} 必须保持原参数类型`);
-    return fieldText(field.value) === fieldText(value) ? [] : [{ pointer, value }];
+function filePayload(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
+    reader.onerror = () => reject(new Error("无法读取所选图片"));
+    reader.readAsDataURL(file);
   });
 }
 
-function ConfigControl({ field, text, change, inventory }: { field: Field; text: string; change: (text: string) => void; inventory: Inventory | null }) {
-  if (field.readOnly || field.value == null) return <output className="style-redraw-config-value">{text} <small>只读</small></output>;
-  if (typeof field.value === "boolean") return <input type="checkbox" checked={text === "true"} onChange={event => change(String(event.target.checked))} />;
-  const modelType = /^unet_name(?:_|$)/.test(field.name) ? "model" : /^clip_name(?:_|$)/.test(field.name) ? "clip" : /^vae_name(?:_|$)/.test(field.name) ? "vae" : null;
-  if (modelType && inventory && typeof field.value === "string") {
-    const choices = inventory[modelType];
-    const current = choices.find(name => name.replace(/\\/g, "/") === text.replace(/\\/g, "/"));
-    return <SearchableSelect aria-label={field.name} value={current || text} placeholder="没有可用模型" onChange={event => change(event.target.value)}>
-      {!current && <option value={text} disabled>{text}（未在目录中找到）</option>}
-      {choices.map(name => <option key={name} value={name}>{name}</option>)}
-    </SearchableSelect>;
+function Control({ field, text, change, upload, canUpload }: {
+  field: WorkflowControl; text: string; change: (text: string) => void; upload: (file: File) => void; canUpload: boolean;
+}) {
+  if (field.kind === "image") return <div className="style-redraw-input-image">
+    <span data-tooltip={text}>{text.split(/[\\/]/).at(-1) || "未选择图片"}</span>
+    <label className="style-redraw-image-pick">更换图片
+      <input type="file" aria-label={`更换${field.label}`} accept="image/png,image/jpeg,image/webp,image/bmp"
+        disabled={!canUpload} onChange={event => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) upload(file);
+        }} />
+    </label>
+  </div>;
+  if (field.kind === "prompt") return <textarea rows={3} aria-label={field.label} value={text} onChange={event => change(event.target.value)} />;
+  if (field.kind === "fast") return <label className="style-redraw-toggle">
+    <input type="checkbox" aria-label={field.label} checked={text === "true"} onChange={event => change(String(event.target.checked))} />
+    <span>减少生成时间</span>
+  </label>;
+  if (field.kind === "strength") {
+    const percent = Math.round(Number(text) * 100);
+    return <div className="style-redraw-strength">
+      <input type="range" aria-label={field.label} min={0} max={100} value={percent}
+        onChange={event => change(String(event.currentTarget.valueAsNumber / 100))} />
+      <output>{percent}%</output>
+    </div>;
   }
-  if (typeof field.value === "number") return <input type="number" step="any" value={text} onChange={event => change(event.target.value)} />;
-  if (typeof field.value !== "string" || field.name.includes("prompt") || text.includes("\n")) {
-    return <textarea rows={3} spellCheck={false} value={text} onChange={event => change(event.target.value)} />;
-  }
-  return <input type="text" value={text} onChange={event => change(event.target.value)} />;
+  if (field.kind === "steps") return <input type="number" aria-label={field.label} min={1} step={1}
+    value={text} onChange={event => change(event.target.value)} />;
+  return <input type="text" aria-label={field.label} value={text} onChange={event => change(event.target.value)} />;
 }
 
-export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue }: {
-  active: boolean; showDirectory: boolean; renderQueue: (queue: Queue | null, error: string) => ReactNode;
+export function ComfyWorkflowEditor<Queue>({ active, renderQueue }: {
+  active: boolean; renderQueue: (queue: Queue | null, error: string) => ReactNode;
 }) {
   const [files, setFiles] = useState<WorkflowFile[] | null>(null);
   const [queue, setQueue] = useState<Queue | null>(null);
@@ -121,8 +67,7 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
   const [changes, setChanges] = useState<Record<string, string>>({});
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [working, setWorking] = useState<"run" | "save" | null>(null);
-  const [query, setQuery] = useState("");
+  const [working, setWorking] = useState<"run" | "save" | "upload" | "connect" | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const { dialog, confirm } = useGameActionConfirm();
@@ -130,8 +75,7 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
   const current = snapshot?.path === selected ? snapshot : null;
   const dirty = Object.keys(changes).length > 0;
   const outdated = !!current && (!file || current.modified !== file.modified);
-  const groups = useMemo(() => configGroups(current?.workflow), [current?.workflow]);
-  const search = query.trim().toLowerCase();
+  const controls = useMemo(() => workflowControls(current?.workflow), [current?.workflow]);
 
   const inspect = async (path: string, announce = false) => {
     try {
@@ -182,7 +126,7 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
   const choose = async (path: string) => {
     if (path === selected || working) return;
     if (dirty && !await confirm("放弃当前尚未保存的参数修改并切换工作流？", { title: "切换工作流", okLabel: "放弃并切换", cancelLabel: "继续编辑", kind: "warning" })) return;
-    setSelected(path); setChanges({}); setQuery(""); setError(""); setLoading(false);
+    setSelected(path); setChanges({}); setError(""); setLoading(false);
     localStorage.setItem(workflowKey, path);
   };
   const reload = async () => {
@@ -193,7 +137,7 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
     if (!current || !file || working || loading || outdated) return;
     setWorking(action); setError("");
     try {
-      const edits = workflowEdits(changes, groups);
+      const edits = workflowEdits(changes, controls);
       const args = { path: current.path, revision: current.revision, edits };
       if (action === "save") {
         if (!edits.length) { setChanges({}); return; }
@@ -209,13 +153,46 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
     finally { setWorking(null); }
   };
 
+  const setField = (field: WorkflowControl, value: string) => {
+    setChanges(previous => {
+      const next = { ...previous };
+      if (value === String(field.value)) delete next[field.pointer];
+      else next[field.pointer] = value;
+      return next;
+    });
+  };
+
+  const upload = async (field: WorkflowControl, file: File) => {
+    if (!inventory || working || !current || outdated) return;
+    setWorking("upload"); setError("");
+    try {
+      const result = await invoke<{ name: string }>("run_style_redraw", {
+        directory: inventory.directory, image: await filePayload(file), steps: 1, regions: [],
+        mode: "workflow-input", profile: { name: file.name }, progress: new Channel<string>(),
+      });
+      setField(field, result.name);
+    } catch (cause) { setError(String(cause)); }
+    finally { setWorking(null); }
+  };
+
+  const connect = async () => {
+    if (!inventory || working) return;
+    setWorking("connect"); setListError("");
+    try {
+      await invoke("prepare_redraw_ui", { directory: inventory.directory, progress: new Channel<string>() });
+      setFiles(await invoke<WorkflowFile[] | null>("list_redraw_workflows"));
+    } catch (cause) { setListError(String(cause)); }
+    finally { setWorking(null); }
+  };
+
   return <section className="style-redraw style-redraw-native-workflows">
     {dialog}
     <div className="style-redraw-settings">
       <div className="style-redraw-config">
-        <header><h2>软件重绘</h2></header>
-        {showDirectory && <section className="style-redraw-card"><label>ComfyUI 便携版目录
-          <SearchableSelect aria-label="ComfyUI 便携版目录" value={inventory?.directory || ""} placeholder="选择检测到的目录或手动浏览"
+        <section className="style-redraw-card style-redraw-connection">
+          <label>ComfyUI 目录
+          <SearchableSelect aria-label="ComfyUI 便携版目录" value={inventory?.directory || ""} placeholder="选择便携版目录"
+            disabled={!!working}
             onChange={event => {
               const value = event.target.value;
               if (value !== "__manual__") void inspect(value, true);
@@ -226,7 +203,11 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
             {[...new Set([...directories, inventory?.directory].filter((dir): dir is string => !!dir))].map(dir => <option key={dir} value={dir}>{dir}</option>)}
             <option value="__manual__">手动选择目录…</option>
           </SearchableSelect>
-        </label></section>}
+          </label>
+          {files === null && inventory && <button type="button" disabled={!!working} onClick={() => void connect()}>
+            {working === "connect" ? "正在连接…" : "连接 ComfyUI"}
+          </button>}
+        </section>
         <section className="style-redraw-card">
           <h3>已保存工作流</h3>
           {listError ? <p className="style-redraw-error" role="status">{listError.includes("not allowed by ACL")
@@ -238,7 +219,7 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
           {loading && <small role="status">正在读取工作流…</small>}
           {current && <>
             <div className="style-redraw-tools">
-              <button type="button" className="style-redraw-primary" disabled={!!working || loading || outdated} onClick={() => void act("run")}>{working === "run" ? "正在提交…" : "运行当前配置"}</button>
+              <button type="button" className="style-redraw-primary" disabled={!!working || loading || outdated} onClick={() => void act("run")}>{working === "run" ? "正在提交…" : "开始重绘"}</button>
               <button type="button" disabled={!dirty || !!working || loading || outdated} onClick={() => void act("save")}>{working === "save" ? "正在保存…" : "保存修改"}</button>
               <button type="button" disabled={!file || !!working || loading} onClick={() => void reload()}>重新读取</button>
             </div>
@@ -247,25 +228,17 @@ export function ComfyWorkflowEditor<Queue>({ active, showDirectory, renderQueue 
           </>}
           {error && <p className="style-redraw-error" role="status">{error}</p>}
         </section>
-        {current && <section className="style-redraw-card style-redraw-workflow-config">
-          <div className="style-redraw-card-head"><h3>节点参数</h3>
-            <input type="search" aria-label="搜索节点参数" placeholder="搜索节点或参数" value={query} onChange={event => setQuery(event.target.value)} />
-          </div>
-          <fieldset disabled={loading || !!working}>
-            {groups.filter(group => !search || group.title.toLowerCase().includes(search) || group.fields.some(field => field.name.toLowerCase().includes(search))).map(group =>
-              <details key={group.key} open={search ? true : undefined}>
-                <summary>{group.title}</summary>
-                {group.fields.length ? <div className="style-redraw-model-grid">{group.fields.map(field =>
-                  <label key={field.pointer}>{field.name}<ConfigControl field={field} text={changes[field.pointer] ?? fieldText(field.value)} inventory={inventory}
-                    change={value => setChanges(previous => {
-                      const next = { ...previous };
-                      if (value === fieldText(field.value)) delete next[field.pointer]; else next[field.pointer] = value;
-                      return next;
-                    })} /></label>)}</div> : <small className="style-redraw-hint">无已保存参数</small>}
-              </details>)}
+        {current && (controls.length ? <section className="style-redraw-card style-redraw-workflow-config">
+          <h3>重绘参数</h3>
+          {working === "upload" && <small role="status">正在上传图片…</small>}
+          <fieldset disabled={loading || !!working || outdated}>
+            {controls.map(field => <div className={"style-redraw-field style-redraw-field-" + field.kind} key={field.pointer}>
+              <span data-tooltip={field.kind === "strength" ? "数值越高，生成结果可以与原图差别越大。" : field.kind === "steps" ? "增加步数通常会延长生成时间。" : undefined}>{field.label}</span>
+              <Control field={field} text={changes[field.pointer] ?? String(field.value)} canUpload={!!inventory}
+                change={value => setField(field, value)} upload={file => void upload(field, file)} />
+            </div>)}
           </fieldset>
-          <details><summary>原始工作流 JSON（只读）</summary><pre>{JSON.stringify(current.workflow, null, 2)}</pre></details>
-        </section>}
+        </section> : <p className="style-redraw-hint">这个工作流的参数可在 ComfyUI 编辑器中调整。</p>)}
       </div>
       {renderQueue(queue, queueError)}
     </div>

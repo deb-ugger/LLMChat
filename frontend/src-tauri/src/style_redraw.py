@@ -170,10 +170,10 @@ def extract(result, matte, size):
     return layer.resize(size, Image.Resampling.LANCZOS)
 
 
-async def upload_image(session, reference):
+async def upload_image(session, reference, kind="temp", filename=None):
     form = aiohttp.FormData()
-    form.add_field("type", "temp")
-    form.add_field("image", png(reference), filename=f"llmchat-{uuid.uuid4().hex}.png", content_type="image/png")
+    form.add_field("type", kind)
+    form.add_field("image", png(reference), filename=filename or f"llmchat-{uuid.uuid4().hex}.png", content_type="image/png")
     uploaded = await request(session, "POST", "/upload/image", data=form)
     name = "/".join(filter(None, [uploaded.get("subfolder"), uploaded["name"]]))
     if uploaded.get("type") == "temp":
@@ -1337,6 +1337,15 @@ async def run(data):
         raise ValueError("采样步数须为 1–100")
     with Image.open(io.BytesIO(base64.b64decode(data["image"], validate=True))) as source:
         original = source.convert("RGBA")
+    if data["mode"] == "workflow-input":
+        stem = Path(str(data["profile"].get("name", ""))).stem[:120]
+        stem = "".join(c if c not in '<>:"/\\|?*' and ord(c) >= 32 else "_" for c in stem).strip(" .")
+        filename = f"llmchat-{stem}.png" if stem else None
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            await ready(session, Path(data["directory"]))
+            name = await upload_image(session, original, "input", filename)
+        emit("result", {"name": name})
+        return
     if data["mode"] == "mosaic":
         result = await repair_mosaic(original, data, steps)
         emit("result", {"image": base64.b64encode(png(result)).decode("ascii")})

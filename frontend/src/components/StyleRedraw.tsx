@@ -2,7 +2,6 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { OutputDirectoryField } from "./OutputDirectoryField";
 import { getOutputDirectory, saveOutputFile } from "../outputFiles";
 import { showAppNotice } from "./AppNotice";
 import { SearchableSelect } from "./SearchableSelect";
@@ -31,7 +30,7 @@ const comfyUrl = "http://127.0.0.1:8188";
 const openPreferenceKey = "llmchat-comfy-open-preference";
 const savedWorkflowKey = "llmchat-comfy-saved-workflow";
 type WebTarget = "embedded" | "browser";
-const webTargetLabels: Record<WebTarget, string> = { embedded: "在软件中打开", browser: "在默认浏览器中打开" };
+const webTargetLabels: Record<WebTarget, string> = { embedded: "软件内打开", browser: "默认浏览器" };
 const modelFields = [["model", "扩散模型"], ["clip", "文本编码器"], ["vae", "VAE"]] as const;
 type ModelField = typeof modelFields[number][0];
 type Inventory = { directory: string } & Record<ModelField, string[]>;
@@ -161,7 +160,7 @@ function RedrawQueue({ queue, error, canApply, onApply }: {
           !!rows?.length && <section key={label}><h4>{label}</h4><ul>{rows.map(row)}</ul></section>)}
         {!queue.running?.length && !queue.waiting?.length && !queue.history?.length && <p className="style-redraw-hint">暂无任务</p>}
       </div>
-    </> : <p className="style-redraw-hint">{queue ? "ComfyUI 尚未启动。打开网页后可在这里查看队列。" : "正在连接本机 ComfyUI…"}</p>}
+    </> : <p className="style-redraw-hint">{queue ? "ComfyUI 尚未连接。" : "正在连接本机 ComfyUI…"}</p>}
     {preview && <RedrawOriginalPreview image={preview} onClose={() => setPreview(null)} />}
   </section>;
 }
@@ -205,7 +204,7 @@ function readImage(blob: Blob): Promise<string> {
   });
 }
 
-function Editor({ active, game, settings, onBusy }: { active: boolean; game?: GameInput; settings: boolean; onBusy?: (busy: boolean) => void }) {
+function Editor({ active, game, onBusy }: { active: boolean; game?: GameInput; onBusy?: (busy: boolean) => void }) {
   const [directory, setDirectory] = useState(() => localStorage.getItem(directoryKey) || "");
   const [output, setOutput] = useState("");
   const [source, setSource] = useState("");
@@ -225,9 +224,7 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
   const setResult = (value: string) => { setProgram(value); setLayer(""); setLayerView(false); setZoomRegion(-1); setCandidates({}); setChoice("program"); };
   const [profiles,setProfiles] = useState(savedProfiles);
   const [profileId,setProfileId] = useState<ProfileId>("turbo");
-  const [settingsProfileId, setSettingsProfileId] = useState<ProfileId>("turbo");
   const profile = profiles[profileId];
-  const settingsProfile = profiles[settingsProfileId];
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
   const [directoryStatus, setDirectoryStatus] = useState("");
@@ -265,7 +262,6 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
     }
     changeProfile(parameters.profile, weights);
     selectProfile(parameters.profile);
-    setSettingsProfileId(parameters.profile);
     if (parameters.profile === "2511" && parameters.steps != null) setSteps(parameters.steps);
     showAppNotice(`已套用${origin}的参数${missing.length ? `，未安装：${missing.join("、")}` : ""}`);
   };
@@ -299,15 +295,15 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
   const report = (e: unknown) => showAppNotice(e instanceof Error ? e.message : String(e), "error");
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
-    if (!game || settings) return;
+    if (!game) return;
     let current = true;
     game.load().then(readImage).then(value => { if (current) setSource(value); })
       .catch(error => { if (current) report(error); });
     return () => { current = false; };
-  }, [game, settings]);
+  }, [game]);
   useEffect(() => {
-    if (!game && !settings) void getOutputDirectory("redraw").then(setOutput).catch(report);
-  }, [settings, game]);
+    if (!game) void getOutputDirectory("redraw").then(setOutput).catch(report);
+  }, [game]);
 
   const loadDirectory = async (path: string, announce: boolean) => {
     const token = ++directoryCheck.current;
@@ -458,66 +454,7 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
     <RedrawQueue queue={queue} error={queueError} canApply={canApply} onApply={(item, parameters) => applyParameters(`任务 #${item.number}`, parameters)} />
   </div>;
   return <section ref={editor} className="style-redraw">
-    <header><h2>{settings ? "重绘设置" : "AI 风格重绘"}</h2></header>
-    {settings ? <div className="style-redraw-settings">
-      <div className="style-redraw-config">
-        <section className="style-redraw-card">
-          <div className="style-redraw-card-head"><h3>ComfyUI</h3>
-            <button type="button" onClick={() => void refreshDirectory().catch(report)} disabled={checkingDirectory}>重新检测</button>
-          </div>
-          <label>便携版目录
-            <SearchableSelect aria-label="ComfyUI 便携版目录" value={directory} disabled={checkingDirectory}
-              placeholder="选择检测到的目录或手动浏览" onChange={e => void choose(e.target.value).catch(report)}>
-              {[...new Set([...directories, directory].filter(Boolean))].map(path => <option key={path} value={path}>{path}</option>)}
-              <option value="__manual__">手动选择目录…</option>
-            </SearchableSelect>
-          </label>
-          <span role="status" className={directoryStatus && !checkingDirectory ? "style-redraw-error" : "style-redraw-hint"}>
-            {checkingDirectory ? "正在读取目录…" : directoryStatus || (inventory ? "已识别便携版" : "尚未选择目录")}
-          </span>
-        </section>
-        <section className="style-redraw-card">
-          <h3>工作流模型</h3>
-          <label>配置预设
-            <SearchableSelect aria-label="配置预设" value={settingsProfileId} onChange={event => setSettingsProfileId(event.target.value as ProfileId)}>
-              {(Object.keys(labels) as ProfileId[]).map(id => <option key={id} value={id}>{labels[id]}</option>)}
-            </SearchableSelect>
-          </label>
-          {settingsProfileId === "custom" && <>
-            <div className="style-redraw-model-grid">
-              <label>导入 API 格式工作流<input type="file" accept=".json" onChange={e => {
-                const file = e.target.files?.[0]; if (!file) return;
-                void file.text().then(text => {
-                  const graph = JSON.parse(text);
-                  if (!graph || !Object.keys(graph).length || !Object.values(graph).every(n => n && typeof n === "object" && "class_type" in n)) throw Error("请从 ComfyUI 导出 API 格式工作流");
-                  changeProfile("custom", { graph: text });
-                }).catch(report);
-              }} /></label>
-              <label>输出节点 ID<input placeholder="只有一个图像输出时可留空" value={settingsProfile.output || ""} onChange={e => changeProfile("custom", { output: e.target.value })} /></label>
-            </div>
-            <p className="style-redraw-hint"><code>{"{{draft}}"}</code> 为中文底稿，<code>{"{{original}}"}</code> 为原花字，提示词用 <code>{"{{prompt}}"}</code> 或 <code>{"{{translation}}"}</code>。用 <code>{"{{model}}, {{clip}}, {{vae}}"}</code> 的权重在下方选择。</p>
-            <small>{settingsProfile.graph ? "工作流已导入" : "尚未导入工作流"}</small>
-          </>}
-          <div className="style-redraw-model-grid">
-            {modelFields.filter(([field]) => usesWeight(settingsProfile, settingsProfileId, field)).map(([field, title]) => {
-              const files = modelChoices(inventory, settingsProfileId, field);
-              const selected = files.includes(settingsProfile[field]);
-              return <div key={field}><label>{title}
-                <SearchableSelect aria-label={title} value={selected ? settingsProfile[field] : ""}
-                  disabled={!inventory || checkingDirectory} placeholder={files.length ? "请选择模型" : inventory ? "没有找到可用模型" : "请先选择 ComfyUI 目录"}
-                  onChange={e => changeProfile(settingsProfileId, { [field]: e.target.value })}>
-                  {files.map(path => <option key={path} value={path}>{path}</option>)}
-                </SearchableSelect>
-              </label>
-              {inventory && !selected && settingsProfile[field] && <small className="style-redraw-error">未找到：{settingsProfile[field]}</small>}
-              </div>;
-            })}
-          </div>
-        </section>
-        {!game && <section className="style-redraw-card"><OutputDirectoryField module="redraw" label="独立重绘输出目录" /></section>}
-      </div>
-      {sidebar}
-    </div> : <div className="style-redraw-settings">
+    <div className="style-redraw-settings">
       <div className="style-redraw-config">
       <fieldset disabled={busy} className="style-redraw-card style-redraw-run">
         {!game && <label>原图<input type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void select(file).catch(report); }} /></label>}
@@ -544,7 +481,58 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
       </fieldset>
       {game && !valid && <small>请先确认每个勾选区域的坐标和译文。</small>}
       {!inventory && directoryStatus && <small className="style-redraw-error">{directoryStatus}</small>}
-      {inventory && missing.length > 0 && <small className="style-redraw-error">请在模块设置中选择已安装的模型：{missing.join("、")}</small>}
+      {inventory && missing.length > 0 && <small className="style-redraw-error">请在「重绘所需文件」选择已安装的模型：{missing.join("、")}</small>}
+      <details className="style-redraw-game-files">
+        <summary>重绘所需文件</summary>
+        <section className="style-redraw-card">
+          <div className="style-redraw-card-head"><h3>ComfyUI</h3>
+            <button type="button" onClick={() => void refreshDirectory().catch(report)} disabled={checkingDirectory}>重新检测</button>
+          </div>
+          <label>便携版目录
+            <SearchableSelect aria-label="ComfyUI 便携版目录" value={directory} disabled={checkingDirectory}
+              placeholder="选择检测到的目录或手动浏览" onChange={e => void choose(e.target.value).catch(report)}>
+              {[...new Set([...directories, directory].filter(Boolean))].map(path => <option key={path} value={path}>{path}</option>)}
+              <option value="__manual__">手动选择目录…</option>
+            </SearchableSelect>
+          </label>
+          <span role="status" className={directoryStatus && !checkingDirectory ? "style-redraw-error" : "style-redraw-hint"}>
+            {checkingDirectory ? "正在读取目录…" : directoryStatus || (inventory ? "已识别便携版" : "尚未选择目录")}
+          </span>
+        </section>
+        <section className="style-redraw-card">
+          <h3>工作流模型</h3>
+          {profileId === "custom" && <>
+            <div className="style-redraw-model-grid">
+              <label>导入 API 格式工作流<input type="file" accept=".json" onChange={e => {
+                const file = e.target.files?.[0]; if (!file) return;
+                void file.text().then(text => {
+                  const graph = JSON.parse(text);
+                  if (!graph || !Object.keys(graph).length || !Object.values(graph).every(n => n && typeof n === "object" && "class_type" in n)) throw Error("请从 ComfyUI 导出 API 格式工作流");
+                  changeProfile("custom", { graph: text });
+                }).catch(report);
+              }} /></label>
+              <label>输出节点 ID<input placeholder="只有一个图像输出时可留空" value={profile.output || ""} onChange={e => changeProfile("custom", { output: e.target.value })} /></label>
+            </div>
+            <p className="style-redraw-hint"><code>{"{{draft}}"}</code> 为中文底稿，<code>{"{{original}}"}</code> 为原花字，提示词用 <code>{"{{prompt}}"}</code> 或 <code>{"{{translation}}"}</code>。用 <code>{"{{model}}, {{clip}}, {{vae}}"}</code> 的权重在下方选择。</p>
+            <small>{profile.graph ? "工作流已导入" : "尚未导入工作流"}</small>
+          </>}
+          <div className="style-redraw-model-grid">
+            {modelFields.filter(([field]) => usesWeight(profile, profileId, field)).map(([field, title]) => {
+              const files = modelChoices(inventory, profileId, field);
+              const selected = files.includes(profile[field]);
+              return <div key={field}><label>{title}
+                <SearchableSelect aria-label={title} value={selected ? profile[field] : ""}
+                  disabled={!inventory || checkingDirectory} placeholder={files.length ? "请选择模型" : inventory ? "没有找到可用模型" : "请先选择 ComfyUI 目录"}
+                  onChange={e => changeProfile(profileId, { [field]: e.target.value })}>
+                  {files.map(path => <option key={path} value={path}>{path}</option>)}
+                </SearchableSelect>
+              </label>
+              {inventory && !selected && profile[field] && <small className="style-redraw-error">未找到：{profile[field]}</small>}
+              </div>;
+            })}
+          </div>
+        </section>
+      </details>
       {result && <div className="style-redraw-tools"><label>预览范围<select value={zoomRegion} onChange={e => setZoomRegion(Number(e.target.value))}>
         <option value={-1}>整幅画布</option>{regionList.map((_,i) => <option key={i} value={i}>区域 {i+1}</option>)}
       </select></label>{choice === "program" && <label><span><input type="checkbox" checked={layerView} onChange={e => setLayerView(e.target.checked)} />仅预览透明字层</span></label>}</div>}
@@ -576,7 +564,7 @@ function Editor({ active, game, settings, onBusy }: { active: boolean; game?: Ga
       </div>}
       </div>
       {sidebar}
-    </div>}
+    </div>
   </section>;
 }
 
@@ -586,8 +574,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
   const [target, setTarget] = useState<WebTarget>(() => localStorage.getItem(openPreferenceKey) === "browser" ? "browser" : "embedded");
   const [opening, setOpening] = useState(false);
   const [status, setStatus] = useState("");
-  const [moduleSettings, setModuleSettings] = useState(() => !!game && !localStorage.getItem(directoryKey));
-  const [editorBusy, setEditorBusy] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const openMenu = useRef<HTMLDivElement>(null);
   const openMenuId = useId();
   const [surfaceError, setSurfaceError] = useState("");
@@ -602,7 +589,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
   };
   useLayoutEffect(() => {
     const host = editorHost.current;
-    if (!active || view !== "embedded" || !host) return;
+    if (!active || view !== "embedded" || menuVisible || !host) return;
     let current = true;
     let frame: number | undefined;
     let previous = "";
@@ -631,7 +618,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
       if (frame != null) cancelAnimationFrame(frame);
       void syncEditor(null).catch(() => {});
     };
-  }, [active, view, gameSurface]);
+  }, [active, view, gameSurface, menuVisible]);
   useEffect(() => {
     if (!visited) return;
     return () => { void syncEditor(null, true).catch(() => {}); };
@@ -639,6 +626,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
   useEffect(() => { if (!active) openMenu.current?.hidePopover(); }, [active]);
   const openWeb = async (destination: WebTarget) => {
     if (starting.current) return;
+    if (destination === "embedded" && visited) { setView("embedded"); return; }
     starting.current = true;
     setOpening(true);
     try {
@@ -655,43 +643,36 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
     <header className="style-redraw-workspace-bar">
       <div className="style-redraw-tabs" role="group" aria-label="重绘工作区">
         <button type="button" aria-pressed={view === "native"} onClick={() => setView("native")}>软件重绘</button>
-        <button type="button" aria-pressed={view === "embedded"} disabled={opening}
-          onClick={() => { if (visited) setView("embedded"); else void openWeb("embedded"); }}>ComfyUI 编辑器</button>
-      </div>
-      {status && <small role="status">{status}</small>}
-      <div className="style-redraw-open">
         <div className="style-redraw-open-split">
-          <button type="button" className="style-redraw-open-main" disabled={opening} data-tooltip={webTargetLabels[target]}
-            onClick={() => void openWeb(target)}>打开网页</button>
-          <button type="button" className="style-redraw-open-arrow" disabled={opening} aria-label="网页打开方式" aria-haspopup="menu"
-            popoverTarget={openMenuId} popoverTargetAction="toggle" onClick={event => {
+          <button type="button" className="style-redraw-open-main" aria-pressed={view === "embedded"}
+            disabled={opening} data-tooltip={webTargetLabels[target]} onClick={() => void openWeb(target)}>ComfyUI 编辑器</button>
+          <button type="button" className="style-redraw-open-arrow" disabled={opening} aria-label="ComfyUI 打开方式"
+            aria-haspopup="menu" aria-expanded={menuVisible} popoverTarget={openMenuId} popoverTargetAction="toggle" onClick={event => {
               const rect = event.currentTarget.getBoundingClientRect();
               const menu = openMenu.current;
               if (menu) Object.assign(menu.style, {
-                left: `${Math.max(8, Math.min(rect.right - 194, window.innerWidth - 202))}px`,
-                top: `${rect.bottom + 6}px`,
+                left: `${Math.max(8, rect.right - 144)}px`,
+                top: `${rect.bottom + 4}px`,
               });
             }}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
           </button>
+          <div ref={openMenu} id={openMenuId} className="style-redraw-open-menu" popover="auto" role="menu"
+            aria-label="ComfyUI 打开方式" onToggle={event => setMenuVisible(event.currentTarget.matches(":popover-open"))}>
+            {(["embedded", "browser"] as const).map(value =>
+              <button key={value} type="button" role="menuitemradio" aria-checked={value === target} onClick={() => {
+                setTarget(value);
+                localStorage.setItem(openPreferenceKey, value);
+                openMenu.current?.hidePopover();
+              }}><span aria-hidden="true">{value === target ? "✓" : ""}</span>{webTargetLabels[value]}</button>)}
+          </div>
         </div>
-        <div ref={openMenu} id={openMenuId} className="style-redraw-open-menu" popover="auto" role="menu" aria-label="选择网页打开方式">
-          {(["embedded", "browser"] as const).map(value =>
-            <button key={value} type="button" role="menuitemradio" aria-checked={value === target} onClick={() => {
-              setTarget(value);
-              localStorage.setItem(openPreferenceKey, value);
-              openMenu.current?.hidePopover();
-            }}><span aria-hidden="true">{value === target ? "✓" : ""}</span>{webTargetLabels[value]}</button>)}
-        </div>
-        <button type="button" aria-pressed={view === "native" && moduleSettings} disabled={editorBusy || opening} onClick={() => {
-          setModuleSettings(view === "embedded" || !moduleSettings);
-          setView("native");
-        }}>模块设置</button>
       </div>
+      {status && <small role="status">{status}</small>}
     </header>
     <div className="style-redraw-workspace-pane" hidden={view !== "native"}>
-      {game ? <Editor active={active && view === "native"} game={game} settings={moduleSettings} onBusy={busy => { setEditorBusy(busy); onBusy?.(busy); }} />
-        : <ComfyWorkflowEditor<ComfyQueue> active={active && view === "native"} showDirectory={moduleSettings}
+      {game ? <Editor active={active && view === "native"} game={game} onBusy={onBusy} />
+        : <ComfyWorkflowEditor<ComfyQueue> active={active && view === "native"}
           renderQueue={(queue, error) => <RedrawQueue queue={queue} error={error} />} />}
     </div>
     {visited && <div ref={editorHost} className="style-redraw-workspace-pane style-redraw-comfy-pane" hidden={view !== "embedded"}>
