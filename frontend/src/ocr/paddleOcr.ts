@@ -134,6 +134,7 @@ export class LocalPaddleOcr {
 
   private async initialize(signal: AbortSignal): Promise<PaddleWorker> {
     const models = modelPair(this.mode);
+    const gpuRecognitionBatch = this.mode === "precise" ? 8 : 16;
     if (this.mode !== "fast") await waitForOcrJob(() => api.ensureOcrMode(this.mode), signal);
     const { PaddleOCR, createPaddleWorker } = await import("@paddleocr/paddleocr-js") as PaddleOcrModule & {
       createPaddleWorker: () => Worker;
@@ -146,7 +147,7 @@ export class LocalPaddleOcr {
         worker: { createWorker: () => worker }, initialize:true,
         textDetectionModelName:models.detName,textDetectionModelAsset:{url:models.detUrl},
         textRecognitionModelName:models.recName,textRecognitionModelAsset:{url:models.recUrl},
-        pipelineBatchSize:4,textDetectionBatchSize:4,textRecognitionBatchSize:backend==="webgpu"?16:8,
+        pipelineBatchSize:4,textDetectionBatchSize:4,textRecognitionBatchSize:backend==="webgpu"?gpuRecognitionBatch:8,
         textDetMaxSideLimit:this.imageOptions.maxSide??4000,textDetBoxThresh:this.imageOptions.boxThresh??.3,textRecScoreThresh:0,
         ortOptions:{backend,wasmPaths:localAssetUrl("./ort/"),numThreads:1,simd:true}
         }), signal, workerTimeoutMs);
@@ -164,7 +165,7 @@ export class LocalPaddleOcr {
           throw new Error("运行环境或显卡驱动不支持 WebGPU");
         const gpuWorker = await create("webgpu");
         this.isGpu = true;
-        this.imageOptions.onDevice?.("OCR：GPU · WebGPU（文字识别批量 16）", false);
+        this.imageOptions.onDevice?.(`OCR：GPU · WebGPU（文字识别批量 ${gpuRecognitionBatch}）`, false);
         return gpuWorker;
       } catch (error) {
         signal.throwIfAborted();
@@ -182,7 +183,10 @@ export class LocalPaddleOcr {
     for (;;) {
       try { return await this.runtime.run(work); }
       catch (error) {
-        if (this.closed || !(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+        const gpuMemoryError = this.isGpu && error instanceof Error &&
+          /out\s*of\s*memory|memory allocation failed|failed to allocate (?:gpu )?memory/i.test(error.message);
+        if (this.closed || !timedOut && !gpuMemoryError) throw error;
         const retryOnCpu = this.isGpu && this.imageOptions.backend !== "webgpu";
         await this.runtime.dispose();
         if (this.closed) throw error;
@@ -190,7 +194,8 @@ export class LocalPaddleOcr {
         this.forceCpu ||= retryOnCpu;
         this.runtime = this.createRuntime();
         if (!retryOnCpu) throw error;
-        this.imageOptions.onDevice?.("OCR：GPU 响应超时，当前批次切换 CPU 重试", true);
+        const reason = timedOut ? "GPU 响应超时" : "GPU 内存分配失败";
+        this.imageOptions.onDevice?.(`OCR：${reason}，当前批次切换 CPU 重试`, true);
       }
     }
   }
