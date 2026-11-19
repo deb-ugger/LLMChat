@@ -2239,7 +2239,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <UnityTranslationProgress progress={generation} running={progressRunning} failure={generation.state === "error" ? generation.failure || generation.detail : undefined}
         onLocate={locateTranslationFailure} />}
   </GameStepProgress>;
-  return <div className="unity-offline" onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
+  const deploymentPage = activeStep === 3;
+  return <div className={`unity-offline${deploymentPage ? " is-deployment" : ""}`} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
     {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
     {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
@@ -2247,9 +2248,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {toolbarTarget && createPortal(<>
       <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!project || !!busy || saving || restoring || !!importPreview} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
       <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
-      {installed && <UnityIconButton className="unity-btn-danger" aria-label="卸载补丁" title="卸载补丁，恢复游戏原件" disabled={locked} onClick={() => void uninstallPatch()}><UnityActionIcon kind="remove" /></UnityIconButton>}
     </>, toolbarTarget)}
-    <aside className="unity-offline-config" style={{ width: panelWidth.width }}>
+    <aside className="unity-offline-config" style={deploymentPage ? undefined : { width: panelWidth.width }}>
     <div className="unity-offline-upper unity-workflow-layout">
       <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, number, label } = tab;
@@ -2284,7 +2284,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${mosaicPage ? "2.3" : activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" >
         {mosaicPage && <>
-          <div className="unity-task-actions"><GameMosaicPatchButton gamePath={root} label="第三方去码补丁" disabled={mosaicBusy || !!busy || restoring} /></div>
           <div ref={setMosaicControls} />
           {!scanReady && <p className="hint">扫描资源后即可筛选、框选并重绘打码区域。</p>}
           {scanReady && !project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) && <p className="hint">当前工程没有可处理的图片。</p>}
@@ -2465,7 +2464,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         </>}
         </div></GameFlowSequence></GamePromptContext.Provider>}
         {activeStep === 2 && !imagePart && (textBatch || textTransfer) && <div className="unity-step-batch">{textBatch}{textTransfer}</div>}
-        {activeStep === 3 && <>
+        {deploymentPage && <div className="unity-deployment-grid">
+          <section className="unity-scan-progress-card unity-deployment-card" aria-label="生成补丁">
+            <h3>生成补丁</h3>
           <div className="unity-offline-font"><label>替换字体<input value={fontPath === ":original:" ? "" : fontPath} readOnly placeholder="未替换；字体可在软件目录 fonts 中选择" /></label><button className="unity-btn" disabled={!!busy || restoring || saving} onClick={() => void chooseFont()}>选择字体</button>{fontPath && <button className="unity-btn" disabled={parametersLocked} onClick={() => { setFontPath(""); setFontPlan(null); invalidatePatch(); }}>取消替换</button>}
 
           </div>
@@ -2473,25 +2474,44 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {fontPlan && <details className="unity-font-plan" open><summary>{fontPlan.characterCount} 个字符 · {fontPlan.fontChecked ? `${fontPlan.missing.length} 个缺字` : "保留游戏原字体"}</summary><p>采用译文 {fontPlan.translatedReferences} 处，保留原文 {fontPlan.originalReferences} 处，包含英文与数字。</p>{fontPlan.requirements.map(requirement => <p key={requirement}>{requirement}</p>)}{fontPlan.missing.length > 0 && <ul>{fontPlan.missing.map(code => { const character = String.fromCodePoint(code); const matches = glyphReferenceCounts?.get(character) ?? 0; return <li key={code}><strong>{character} · U+{code.toString(16).toUpperCase().padStart(4, "0")}</strong> · {matches ? `${matches} 条文本` : "补充字符或动态字形"}{matches > 0 && <button className="unity-btn" onClick={() => { setActiveStep(2); setImagePart(false); setReviewFilter("all"); setSearch(character); setPage(0); followProgress.current = false; }}>定位文本</button>}</li>; })}</ul>}<p><code>{fontPlan.folder}/字库检查.txt</code></p><button className="unity-btn" onClick={() => void openTranslationFile(fontPlan.folder + "/字库检查.txt")}>打开检查报告</button><button className="unity-btn" onClick={() => void openFolder(fontPlan.folder)}>打开字符集目录</button></details>}
 
           {project?.fonts.some(font => /^(TMP|NGUI)/.test(font.kind)) && <p className="hint">已检测到 TMP / NGUI 字体。替换时生成字形和独立图集，无需 Unity Editor；共享图集或不支持的布局会说明具体原因。</p>}
-          <div className="unity-offline-output"><span>应用位置</span><code data-tooltip={root}>{root}</code></div>
-          {!applied && <p className="hint">请在应用前关闭游戏。写入前会校验文件并保留原件备份。</p>}
-        </>}
+          <div className="unity-task-actions">
+            {!patch && <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || saving || resumable && checkpoint?.step !== 2 || !patchReady}
+              data-tooltip={!patchReady ? "当前没有可写入的译文、译图或去码图" : "写入已选择的译文、译图和去码图"} onClick={() => void generatePatch()}>生成补丁</button>}
+            {patch && <button className="unity-btn" data-tooltip={patch.folder} onClick={() => void openFolder(patch.folder)}>打开补丁目录</button>}
+            {(patch || generation?.step === 3 && generation.state === "error") && <button className="unity-btn" disabled={!!busy || restoring}
+              onClick={() => void restartStage(3)}>{patch ? "重新生成" : "重试生成"}</button>}
+          </div>
+          </section>
+          <div className="unity-deployment-install">
+            <section className="unity-scan-progress-card unity-deployment-card" aria-label="应用到游戏">
+              <h3>应用到游戏</h3>
+              <div className="unity-offline-output"><span>应用位置</span><code data-tooltip={root}>{root}</code></div>
+              <p className="hint">{installed ? patch && !applied ? "已安装补丁 · 新补丁待应用" : "已安装补丁" : patch ? "补丁已生成，待应用" : "未安装补丁"}</p>
+              <p className="hint">安装或卸载时请先关闭游戏。写入前会校验文件并备份原件。</p>
+              <div className="unity-task-actions" role="group" aria-label="安装与卸载生成的补丁">
+                <button className="unity-btn unity-btn-primary" disabled={!patch || applied || locked} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>
+                <button className="unity-btn unity-btn-danger" disabled={!installed || locked} onClick={() => void uninstallPatch()}>卸载补丁</button>
+                {patch && (applied || generation?.step === 4 && generation.state === "error") && <button className="unity-btn"
+                  disabled={!!busy || restoring} onClick={() => void restartStage(4)}>重新应用</button>}
+                {applied && <button className="unity-btn" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button>}
+              </div>
+            </section>
+            <section className="unity-scan-progress-card unity-deployment-card" aria-label="第三方去码补丁">
+              <h3>第三方去码补丁</h3>
+              <div className="unity-task-actions">
+                <GameMosaicPatchButton gamePath={root} label="安装或卸载" disabled={!root || !!busy || mosaicBusy || restoring || saving} />
+              </div>
+            </section>
+          </div>
+        </div>}
         </>}
       </div>
-      {activeStep === 3 && <div className="unity-task-actions" role="group" aria-label="生成与应用补丁">
-        {!patch && <button className="unity-btn unity-btn-primary" disabled={!!busy || restoring || saving || resumable && checkpoint?.step !== 2 || !patchReady} data-tooltip={!patchReady ? "当前没有可写入的译文、译图或去码图" : "写入已选择的译文、译图和去码图"} onClick={() => void generatePatch()}>生成补丁</button>}
-        {patch && (applied ? <button className="unity-btn unity-btn-primary" disabled={locked || !!error} onClick={() => void launchGame()}>启动游戏</button>
-          : <button className="unity-btn unity-btn-primary" disabled={locked} onClick={() => void startWorkflow(4, 4)}>应用到游戏</button>)}
-        {patch && <button className="unity-btn" data-tooltip={patch.folder} onClick={() => void openFolder(patch.folder)}>打开补丁目录</button>}
-        {(patch || generation?.step === 3 && generation.state === "error") && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(3)}>重做生成</button>}
-        {patch && (applied || generation?.step === 4 && generation.state === "error") && <button className="unity-btn unity-btn-warning" disabled={!!busy || restoring} onClick={() => void restartStage(4)}>重做应用</button>}
-      </div>}
     {activeStep === 3 && progressContent}
     {errorPanel && (generation?.state !== "error" || Math.min(generation.step, 3) === activeStep) && <div className="unity-step-batch">{errorPanel}</div>}
     </section>
     </div>
     </aside>
-    <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />
+    {!deploymentPage && <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />}
     {mosaicPage && <div className="unity-image-result-pane">
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
         <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} controls={mosaicControls} storage={mosaicStorage} onBusy={setMosaicBusy} />}
@@ -2506,7 +2526,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         setDirty(true);
       }
       logAction(reason, "error");
-    }} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart&&!mosaicPage} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source)=>updateImagePreview(image,true,source)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!mosaicPage&&!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
+    }} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart&&!mosaicPage} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source)=>updateImagePreview(image,true,source)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!deploymentPage&&!mosaicPage&&!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
       <div className="unity-offline-toolbar">
       <div className="unity-result-filters">
         <strong>{importPreview ? `导入预览 · ${importPreview.entries.length} 条` : "文本与译文"}</strong><GameTextFileMenu kind="download" active={active} disabled={!!busy || restoring || !scanReady || !!importPreview} options={[

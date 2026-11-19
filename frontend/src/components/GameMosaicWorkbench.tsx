@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, scanMosaic, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
+import { GameStepProgress, type GameProgressState } from "./GameStepProgress";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
   scanned?: boolean; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: number[]; saved?: boolean; reference?: boolean };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
+type MosaicStep = "screen" | "redraw";
+type StepRun = { state: GameProgressState; completed: number; total: number };
 export type MosaicCandidateIndex = Record<string, { source: string; included: boolean }>;
 type MosaicStorage = {
   index: MosaicCandidateIndex;
@@ -84,6 +87,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const [protect, setProtect] = useState(true);
   const [activeId, setActiveId] = useState("");
   const [busy, setBusy] = useState("");
+  const [progressStep, setProgressStep] = useState<MosaicStep>();
+  const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [source, setSource] = useState<{ id: string; revision: string; blob: Blob }>();
@@ -167,18 +172,30 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     setRows(previous => ({ ...previous, [image.id]: { ...resultFor(previous, image), ...edit } }));
   }
 
-  async function run(label: string, work: (signal: AbortSignal) => Promise<void>) {
+  async function run(label: string, work: (signal: AbortSignal, report: (completed: number) => void) => Promise<void | boolean>,
+    step?: { id: MosaicStep; total: number }) {
     if (task.current) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
+    setProgressStep(step?.id);
+    if (step) setStepRuns(previous => ({ ...previous, [step.id]: { state: "running", completed: 0, total: step.total } }));
     setBusy(label); setProgress(label); setError("");
+    const updateStep = (edit: Partial<StepRun>) => {
+      if (!step) return;
+      setStepRuns(previous => {
+        const current = previous[step.id];
+        return current ? { ...previous, [step.id]: { ...current, ...edit } } : previous;
+      });
+    };
     try {
-      await work(controller.signal);
+      const completed = await work(controller.signal, count => updateStep({ completed: count }));
       if (controller.signal.aborted) setProgress("已停止后续任务");
+      updateStep({ state: controller.signal.aborted ? "stopped" : completed === false ? "error" : "done" });
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
       else setProgress("已停止后续任务");
+      updateStep({ state: controller.signal.aborted ? "stopped" : "error" });
     } finally {
       task.current = null; setBusy("");
       onBusy?.(false);
@@ -187,7 +204,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
 
   function screen() {
     const targets = currentScope;
-    void run("筛选打码区域", async signal => {
+    if (!targets.length) return;
+    void run("筛选打码区域", async (signal, report) => {
       if (detectorKind === "lada" && !detectorFile) throw new Error("请选择 Lada v4 的 ONNX 文件");
       const detector = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile) : undefined;
       const screened: Results = {};
@@ -197,8 +215,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         for (const image of targets) {
           signal.throwIfAborted();
           const old = resultFor(rows, image);
-          const detail = completed + 1 + " / " + targets.length + " · " + image.name;
-          setProgress(detail);
+          setProgress(image.name);
           try {
             const input = await read(image, signal);
             const { boxes, signature } = await (detector ? detector.scan(input) : scanMosaic(input));
@@ -210,7 +227,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             failures++;
             screened[image.id] = { ...old, reason: cause instanceof Error ? cause.message : String(cause) };
           }
-          completed++;
+          report(++completed);
         }
       } finally {
         await detector?.release();
@@ -224,8 +241,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           return next;
         });
       }
-      setProgress("筛选完成 · " + completed + " 张" + (failures ? " · " + failures + " 张读取失败" : ""));
-    });
+      setProgress(failures ? `${failures} 张读取失败，可在待复核列表查看。` : "");
+      return failures === 0;
+    }, { id: "screen", total: targets.length });
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
@@ -249,8 +267,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   function generate(targets: UnityImage[], models: MosaicModel[]) {
-    void run("生成去码候选", async signal => {
-      const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
+    const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
+    if (!usableTargets.length) return;
+    void run("生成去码候选", async (signal, report) => {
       const ref = reference && await readSaved(reference, signal);
       const seed = parseInt((group || "ab").replace(/[^a-f0-9]/gi, "").slice(-8) || "1", 16);
       const cache = new Map<string, { blob: Blob; seconds: number }>();
@@ -264,7 +283,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           const input = await mosaicInputKey(original, boxes);
           for (const engine of models) {
             signal.throwIfAborted();
-            const title = (index + 1) + " / " + usableTargets.length + " · " + image.name + " · " + mosaicModelLabels[engine];
+            const title = image.name + " · " + mosaicModelLabels[engine];
             setProgress(title);
             const stepCount = models.length === 1 ? steps : engine === "turbo" ? 8 : 20;
             const key = JSON.stringify([engine, stepCount, input, keep, image.id === reference?.id ? "" : reference?.id]);
@@ -296,10 +315,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           if (signal.aborted) throw cause;
           failures.push(image.name + " · " + String(cause));
         }
+        report(index + 1);
       }
-      setProgress("候选生成完成 · " + usableTargets.length + " 张");
+      setProgress("");
       if (failures.length) setError(failures.join("\n"));
-    });
+      return failures.length === 0;
+    }, { id: "redraw", total: usableTargets.length });
   }
 
   function approve(image: UnityImage, blob: Blob) {
@@ -316,7 +337,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     if (storage) {
       const targets = undo ? included : saved.filter(image => !storage.index[image.id]?.included);
       if (!targets.length) return;
-      const title = undo ? "从去码补丁移除" : "加入去码补丁";
+      const title = undo ? "从生成清单移除" : "纳入补丁生成";
       void run(title, async signal => {
         await storage.select(targets, !undo, signal);
         setProgress(title + " · " + targets.length + " 张");
@@ -349,32 +370,69 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const activeBoxes = [...(activeResult?.boxes || []), ...(draft ? [draft] : [])];
   const candidate = view === "turbo" || view === "2511" ? values?.[view] : undefined;
 
+  const screenedCount = currentScope.filter(image => resultFor(rows, image).scanned).length;
+  const idleScreen: StepRun = { state: currentScope.length && screenedCount === currentScope.length ? "done" : "pending",
+    total: currentScope.length, completed: screenedCount };
+  const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
+  const stepProgress = (id: MosaicStep, title: string, actions: ReactNode) => {
+    const status = stepRuns[id] || (id === "screen" ? idleScreen : undefined);
+    const inProgress = progressStep === id && !!busy;
+    const percent = status?.total ? status.completed / status.total * 100 : undefined;
+    return <GameStepProgress title={title} state={status?.state || "pending"} percent={percent}
+      count={status?.total ? `${status.completed} / ${status.total} 张` : undefined}
+      actions={inProgress ? <button className="unity-btn" disabled={task.current?.signal.aborted} onClick={() => {
+        task.current?.abort(); setProgress("等待当前任务返回后停止后续任务");
+      }}>中止</button> : actions}>
+      {progressStep === id && (progress || error) && <>
+        {progress && <p className="game-mosaic-progress">{progress}</p>}
+        {error && <p className="game-mosaic-error" role="alert">{error}</p>}
+      </>}
+    </GameStepProgress>;
+  };
+
   return <section className="game-mosaic-workbench" aria-label="图片去码">
     {confirmation.dialog}
-    {createPortal(<div className="engine-workflow-content">
-
-      <div className="game-mosaic-controls">
-        <div className="game-mosaic-toolbar">
-          <select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => setScope(event.target.value as typeof scope)}>
+    {createPortal(<div className="game-mosaic-controls unity-scan-layout">
+      <section className="unity-scan-progress-card" aria-label="筛选打码图片">
+        {stepProgress("screen", "筛选打码图片", <>
+          <button className="unity-btn unity-btn-primary" disabled={!!busy || !currentScope.length || detectorKind === "lada" && !detectorFile}
+            onClick={screen}>开始筛选</button>
+        </>)}
+        <div className="game-mosaic-step-settings">
+          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => setScope(event.target.value as typeof scope)}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
-          </select>
-          <select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => setDetectorKind(event.target.value as typeof detectorKind)}>
-            <option value="grid">方格规则</option><option value="lada">Lada 专用检测 · 本地 ONNX</option>
-          </select>
-          {detectorKind === "lada" && <label>检测权重 <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(event.target.files?.[0])} /></label>}
-          <button className="unity-btn unity-btn-primary" disabled={!!busy || !currentScope.length || detectorKind === "lada" && !detectorFile} onClick={screen}>筛选打码 · {currentScope.length} 张</button>
-          {busy && <button className="unity-btn" onClick={() => { task.current?.abort(); setProgress("等待当前任务返回后停止后续任务"); }}>停止后续任务</button>}
+          </select></label>
+          <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => setDetectorKind(event.target.value as typeof detectorKind)}>
+            <option value="grid">方格规则</option><option value="lada">Lada 专用检测</option>
+          </select></label>
+          {detectorKind === "lada" && <label>本地模型<input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(event.target.files?.[0])} /></label>}
         </div>
-        <div className="game-mosaic-toolbar">
-          <select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => { const next = event.target.value as MosaicModel; setModel(next); setSteps(next === "turbo" ? 8 : 20); }}>
+      </section>
+      <section className="unity-scan-progress-card" aria-label="重绘打码区域">
+        {stepProgress("redraw", "重绘打码区域", <>
+          <button className="unity-btn unity-btn-primary" disabled={!!busy || !activeResult?.boxes.length}
+            onClick={() => active && generate([active], [model])}>重绘当前图</button>
+          <button className="unity-btn" disabled={!!busy || !reference || !redrawGroup.length}
+            onClick={() => generate(redrawGroup, [model])}>重绘本组所选</button>
+          <button className="unity-btn" disabled={!!busy || !activeResult?.boxes.length}
+            onClick={() => active && generate([active], ["turbo", "2511"])}>对比两种模型</button>
+        </>)}
+        <div className="game-mosaic-step-settings">
+          <label>去码模型<select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => {
+            const next = event.target.value as MosaicModel; setModel(next); setSteps(next === "turbo" ? 8 : 20);
+          }}>
             <option value="turbo">{mosaicModelLabels.turbo}</option><option value="2511">{mosaicModelLabels["2511"]}</option>
-          </select>
-          {model === "2511" && <label>步数 <input type="number" min={1} max={100} value={steps} disabled={!!busy} onChange={event => setSteps(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} /></label>}
-          <label><input type="checkbox" checked={protect} disabled={!!busy} onChange={event => setProtect(event.target.checked)} />保护已识别文字</label>
+          </select></label>
+          {model === "2511" && <label>步数<input type="number" min={1} max={100} value={steps} disabled={!!busy}
+            onChange={event => setSteps(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} /></label>}
+          <label className="game-mosaic-checkbox"><input type="checkbox" checked={protect} disabled={!!busy}
+            onChange={event => setProtect(event.target.checked)} />保护已识别文字</label>
         </div>
+      </section>
+      {!progressStep && (progress || error) && <div className="game-mosaic-control-feedback">
         {progress && <p className="game-mosaic-progress" role="status">{progress}</p>}
         {error && <p className="game-mosaic-error" role="alert">{error}</p>}
-      </div>
+      </div>}
     </div>, controls)}
     <div className="game-mosaic-body-grid">
       <aside className="game-mosaic-list">
@@ -447,18 +505,14 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           </svg>}
         </div>}
         <div className="game-mosaic-toolbar">
-          <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => generate([active], [model])}>重绘当前图</button>
-          <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => generate([active], ["turbo", "2511"])}>对比两种模型</button>
-          <button className="unity-btn" disabled={!!busy || !reference || !selected.some(image => image.id !== reference.id && resultFor(rows, image).boxes.length)}
-            onClick={() => generate(selected.filter(image => image.id !== reference?.id), [model])}>重绘本组所选</button>
           <button className="unity-btn unity-btn-primary" disabled={!!busy || !candidate} onClick={() => candidate && approve(active, candidate)}>确认当前候选</button>
         </div>
         <div className="game-mosaic-toolbar">
           <button className="unity-btn" disabled={!!busy || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
-            {storage ? `加入补丁 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
+            {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
           </button>
           <button className="unity-btn" disabled={!!busy || (storage ? !included.length : !selected.length)} onClick={() => void patch(true)}>
-            {storage ? "从去码补丁移除" : "撤销本组所选"}
+            {storage ? "从生成清单移除" : "撤销本组所选"}
           </button>
         </div>
       </section>}

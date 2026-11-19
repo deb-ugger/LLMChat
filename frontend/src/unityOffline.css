@@ -33,6 +33,7 @@
 @keyframes unity-task-breathe { 0%,100% { box-shadow: inset 0 0 0 0 #78a8f000; } 50% { box-shadow: inset 0 0 0 3px #78a8f077; background: #dceaff; } }
 .unity-offline { display: flex; flex: 1; min-width: 0; min-height: 0; gap: 0; padding: 10px 12px 0; background: var(--bg-app); font-size: 14px; overflow: hidden; }
 .unity-offline-config { min-width: 300px; max-width: 58%; flex-shrink: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; container-type: inline-size; }
+.unity-offline.is-deployment > .unity-offline-config { flex: 1; width: 100%; min-width: 0; max-width: none; height: auto; }
 .unity-offline-upper { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .unity-workspace-divider { width: 10px; flex-shrink: 0; border: 0; background: transparent; cursor: col-resize; position: relative; padding: 0; }
 .unity-workspace-divider::after { content: ""; position: absolute; inset: 35% 3px; border-radius: 4px; background: #bfcee4; }
@@ -110,6 +111,21 @@
 .unity-scan-progress-card, .unity-scan-configuration, .unity-scan-layout > .unity-scan-resources { min-width:0; border:1px solid var(--border); border-radius:var(--radius-md,10px); background:var(--bg-panel,#fff); }
 .unity-scan-progress-card { background:color-mix(in srgb,var(--accent) 4%,var(--bg-panel)); }
 .unity-scan-progress-card .unity-current-task { border:0; padding:12px; }
+.unity-deployment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+  align-items: start;
+  gap: 12px;
+  padding: var(--panel-gap, 12px);
+}
+.unity-deployment-install, .unity-deployment-card { display: grid; min-width: 0; gap: 12px; }
+.unity-deployment-card { padding: 12px; background: var(--bg-panel); }
+.unity-deployment-card h3, .unity-deployment-card .hint { margin: 0; }
+.unity-deployment-card h3 { font-size: 15px; }
+.unity-deployment-card .unity-offline-fields, .unity-deployment-card .unity-offline-output { margin: 0; }
+.unity-deployment-card .unity-offline-font { flex-wrap: wrap; }
+.unity-deployment-card :is(.unity-offline-font, .unity-offline-fields) label { min-width: 0; }
+.unity-deployment-card .unity-task-actions { padding: 10px 0 0; }
 .unity-scan-configuration > summary { padding:10px 12px; font-weight:650; cursor:pointer; }
 .unity-scan-settings-body { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; min-width:0; padding:0 12px 12px; }
 .unity-offline-fields.unity-scan-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr)); gap:10px 14px; align-items:end; }

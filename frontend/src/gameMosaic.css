@@ -9,7 +9,19 @@
   background: var(--bg-panel);
   color: var(--text);
 }
-.game-mosaic-controls { display: grid; gap: 10px; padding: 12px; }
+.game-mosaic-controls { padding: var(--panel-gap, 12px); }
+.game-mosaic-step-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.game-mosaic-step-settings label { display: grid; gap: 4px; min-width: 0; max-width: 100%; font-size: 13px; }
+.game-mosaic-step-settings :is(select, input[type="file"]) { min-width: 0; max-width: 100%; }
+.game-mosaic-step-settings .game-mosaic-checkbox { display: flex; align-items: center; min-height: 32px; gap: 5px; }
+.game-mosaic-control-feedback { display: grid; gap: 5px; }
 .game-mosaic-empty { margin: 12px; color: var(--text-muted); }
 .game-mosaic-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .game-mosaic-toolbar strong { overflow-wrap: anywhere; }
