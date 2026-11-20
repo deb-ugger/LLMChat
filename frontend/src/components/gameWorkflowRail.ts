@@ -113,7 +113,7 @@ export function deriveRailView(
     const start = order.get(source)!;
     const visited = new Set([source, ...targets]);
     let frontier = [...targets];
-    let end = lastEnabled;
+    let end = lastEnabled + 1;
     // Each frontier is one more edge from the fork. Resolve ties by rail order.
     while (frontier.length) {
       const joins = frontier.filter(id => isFanIn(id) && order.get(id)! > start);
@@ -131,16 +131,25 @@ export function deriveRailView(
       }
       frontier = next;
     }
-    for (let index = start; index < end; index++) {
-      if (isEnabled(steps[index]) && isEnabled(steps[index + 1])) parallelLanes[index] = true;
+    const branchNodes = new Set<string>();
+    const descendants = new Set(targets);
+    for (const id of descendants) {
+      const index = order.get(id)!;
+      if (index === start || index === end) continue;
+      if (start < index && index < end) branchNodes.add(id);
+      for (const target of outgoing.get(id) ?? []) descendants.add(target);
+    }
+    // Only adjacent members of the same fork share a parallel connector.
+    for (let index = start + 1; index + 1 < end; index++) {
+      if (branchNodes.has(steps[index].id) && branchNodes.has(steps[index + 1].id)) parallelLanes[index] = true;
     }
   }
   const parallelRegions: RailView["parallelRegions"] = [];
   parallelLanes.forEach((parallel, index) => {
     if (!parallel) return;
     const last = parallelRegions.at(-1);
-    if (last?.end === index) last.end++;
-    else parallelRegions.push({ start: index, end: index + 1, lanes: 2 });
+    if (last?.end === index - 1) last.end = index;
+    else parallelRegions.push({ start: index, end: index, lanes: 2 });
   });
 
   const unfinished = enabledSteps.filter(index => steps[index].state !== "complete");

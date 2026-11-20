@@ -30,7 +30,8 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, sk
   const orderedSteps = railOrder(steps, edges, enabled, skipped).map(index => steps[index]);
   const disconnectedIds = new Set(disconnected);
   const railSteps = orderedSteps.map(step => ({ ...step, disconnected: disconnectedIds.has(step.id) }));
-  const { nodes, connectors, lanes, beam } = deriveRailView(railSteps, edges, enabled, skipped);
+  const { nodes, connectors, lanes, beam, parallelRegions } = deriveRailView(railSteps, edges, enabled, skipped);
+  const parallelStarts = new Set(parallelRegions.map(region => region.start));
   const { from: beamFrom, to: beamTo, active: beamActive, isStatic: beamStatic } = beam;
   const stepOrder = JSON.stringify(orderedSteps.map(step => step.id));
 
@@ -91,7 +92,8 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, sk
             <span className="game-workflow-label">{item.label}</span>
           </button>
           {next && connector && <span aria-hidden="true"
-            className={connector.parallelLane ? `${connector.className} is-parallel-lane` : connector.className} data-lanes={lanes[index].count}
+            className={`${connector.className}${connector.parallelLane ? " is-parallel-lane" : ""}${parallelStarts.has(index) ? " is-parallel-first" : ""}`}
+            data-lanes={lanes[index].count}
             style={{
               "--track-flow-order": index,
               "--track-flow-count": connectors.length,

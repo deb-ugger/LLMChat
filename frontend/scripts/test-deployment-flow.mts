@@ -44,8 +44,8 @@ const states = ["全 pending", "首项 complete", "中间 complete", "中间 err
 const toggles = [[], ["text"], ["image","mosaic"], []];
 const expectedRegions = [
   [[], [], []],
-  [[[0, 4]], [[2, 4]], [[0, 1]]],
-  [[[0, 2]], [], [[0, 1]]],
+  [[[1, 1]], [], []],
+  [[], [], []],
   [[], [], []],
   [[], [], []],
 ];
@@ -117,7 +117,7 @@ function railOracle(steps, expectedEdges, disabled, disconnected, state, paralle
   }));
   const connectors = steps.slice(0,-1).map((step,index) => {
     const next = steps[index+1], skipped = blocked.has(step.id) || blocked.has(next.id);
-    const parallelLane = parallelRegions.some(({start,end}) => start <= index && index < end);
+    const parallelLane = parallelRegions.some(({start,end}) => start <= index && index <= end);
     return {index, parallelLane, className:classes("game-workflow-connector", index===3 && "is-linked", index===3 && "is-flow-highlight",
       !skipped && step.state==="complete" && (next.state==="complete" ? "is-done" : "is-handed-off"),
       outgoing(step.id)>1 && "is-fan-out", incoming(next.id)>1 && "is-fan-in",
@@ -201,13 +201,18 @@ const branchRail = (nodeIds, connections, skipped = []) => deriveRailView(
   connections.split(" ").map(([from,to]) => ({ from,to })),
   undefined, skipped,
 );
-assert.deepEqual(branchRail("abcdefg", "ab ac bd cd be cf eg fg").parallelRegions, [{start:0,end:3,lanes:2}]);
-assert.deepEqual(branchRail("abcd", "ab ac").parallelRegions, [{start:0,end:3,lanes:2}]);
-assert.deepEqual(branchRail("abcdefgh", "ac ad ce de bf bg fh gh").parallelRegions, [{start:0,end:7,lanes:2}]);
-const split = branchRail("abcdefg", "ab af bg fg", ["d"]);
-assert.deepEqual(split.parallelRegions, [{start:0,end:2,lanes:2},{start:4,end:6,lanes:2}]);
-assert.deepEqual(split.connectors.map(item => item.parallelLane), [true,true,false,false,true,true]);
-console.log("PASS 并行区间最短汇合、无汇合回退、区间并集及跳过截断");
+const parallelIndices = view => view.connectors.filter(item => item.parallelLane).map(item => item.index);
+const checkParallel = (view, indices, regions, label) => {
+  assert.deepEqual(parallelIndices(view), indices, label + " connector indices");
+  assert.deepEqual(view.parallelRegions, regions.map(([start,end]) => ({start,end,lanes:2})), label + " inclusive regions");
+};
+checkParallel(branchRail("abcdefg", "ab ac bd cd be cf eg fg"), [1], [[1,1]], "nearest join");
+checkParallel(branchRail("abc", "ab ac"), [1], [[1,1]], "no join keeps terminal branch");
+checkParallel(branchRail("abcdefgh", "ac ad ce de bf bg fh gh"), [2,5], [[2,2],[5,5]], "unrelated forks");
+checkParallel(branchRail("abcdefg", "ab ae bc bd cf df eg fg"), [1,2,3,4], [[1,4]], "overlapping fork regions");
+checkParallel(branchRail("abcde", "ab ad be de"), [], [], "unrelated node between branches");
+checkParallel(branchRail("abcdef", "ab ac ad ae bf cf df ef", ["c"]), [3], [[3,3]], "skip excludes its two neighboring connectors");
+console.log("PASS 最短汇合、无汇合、独立与重叠分叉、跳过节点的并行段下标");
 
 const railSteps = ids.map(id => ({id,state:"pending"}));
 const orderedIds = (spec, disabled = [], enabled = undefined) => railOrder(railSteps, spec === undefined ? undefined : edgesOf(spec), enabled, disabled)
@@ -224,4 +229,14 @@ const contracted = validateDeploymentPlan({edges:edgesOf("03 31 12 24"),disabled
 assert.deepEqual(railOrder(railSteps, contracted.effectiveEdges, contracted.enabledSteps, ["text"]), [0,1,3,2,4], "contracted skip keeps its original slot");
 assert.deepEqual(orderedIds("03 31 12 24 40"), ["scan","mosaic","text","image","apply"], "rootless graph starts from the first node");
 console.log("PASS T6 重接串行拓扑、并行支路顺序、可达与不可达跳过节点");
+
+const orderedRail = spec => {
+  const edges = edgesOf(spec);
+  const ordered = railOrder(railSteps, edges).map(index => railSteps[index]);
+  return deriveRailView(ordered, edges);
+};
+checkParallel(orderedRail("01 12 23 34"), [], [], "T1 serial");
+checkParallel(orderedRail("01 03 12 32 24"), [1], [[1,1]], "T2 scan / text, mosaic / image / apply");
+checkParallel(orderedRail("01 02 13 32 24"), [1], [[1,1]], "staggered branches join at image");
+console.log("PASS T045 串行无并行段，分叉入口与汇合出口排除，仅保留相邻支路段");
 console.log("PASS 总计 " + checked + " 个矩阵用例及独立边界回归");
