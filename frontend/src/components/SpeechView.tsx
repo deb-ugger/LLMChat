@@ -72,6 +72,7 @@ export function SpeechView({ active }: { active: boolean }) {
   const pref = models.preferences;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [environmentNoticeDismissed, setEnvironmentNoticeDismissed] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [toolsReady, setToolsReady] = useState(false);
   const [playback, setPlayback] = useState<SpeechPlayback | null>(null);
@@ -84,11 +85,14 @@ export function SpeechView({ active }: { active: boolean }) {
   const [height, setHeight] = useState(window.innerHeight - 36);
   const [queueTab, setQueueTab] = useState<"unfinished" | "completed">("unfinished");
   const resultsWorkspace = useRef<SpeechWorkspaceHandle>(null);
-  const left = usePersistedSize("llmchat-speech-left", 340, 260, Math.max(260, width * .6), "x");
-  const upper = usePersistedSize("llmchat-speech-options-height", 150, 96, Math.max(96, height - 240), "y");
+  const left = usePersistedSize("llmchat-speech-left", width * .22, 260, 420, "x");
+  const upper = usePersistedSize("llmchat-speech-options-height", 300, 160, Math.max(96, height - 240), "y");
   const unfinishedItems = queue.items.filter(item => item.status !== "done");
   const completedItems = queue.items.filter(item => item.status === "done");
+  const brokenJobs = queue.brokenJobs ?? [];
   const visibleItems = queueTab === "unfinished" ? unfinishedItems : completedItems;
+  const visibleBrokenJobs = queueTab === "unfinished" ? brokenJobs : [];
+  const taskCount = queue.items.length + brokenJobs.length;
   const selected = visibleItems.find(item => item.id === selectedId) ?? visibleItems[0];
   useEffect(() => {
     const row = Array.from(queueList.current?.children ?? []).find(element => (element as HTMLElement).dataset.speechTaskId === selected?.id);
@@ -112,7 +116,7 @@ export function SpeechView({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active || initialized.current) return;
     initialized.current = true;
-    if (!isTauri()) { setError("请在 LLMChat 桌面版中使用本地音频分段处理。"); return; }
+    if (!isTauri()) return;
     void speechNative.environment().then(async environment => {
       setToolsReady(environment.toolsReady);
       if (!environment.toolsReady) setError("音频解码组件缺失，请更新完整便携版。");
@@ -152,9 +156,9 @@ export function SpeechView({ active }: { active: boolean }) {
   const outputFolder = outputItem?.folder || pref.outputRoot;
   const selectTask = (item: SpeechQueueItem) => { setSelectedId(item.id); setQueueTab(item.status === "done" ? "completed" : "unfinished"); };
   const selectFile = (item: SpeechQueueItem) => { selectTask(item); resultsWorkspace.current?.openItem(item); };
-  const cancelFile = async (item: SpeechQueueItem) => {
+  const cancelFile = async (name: string, clean: () => Promise<void>) => {
     try {
-      if (await confirmDialog(`确定取消“${item.source.name}”并清理生成的字幕和断点？原音频文件将保留。`, { title: "取消并清理", kind: "warning", okLabel: "确认清理", cancelLabel: "取消" })) await speechQueue.cancel(item.id);
+      if (await confirmDialog(`确定取消“${name}”并清理生成的字幕和断点？原音频文件将保留。`, { title: "取消并清理", kind: "warning", okLabel: "确认清理", cancelLabel: "取消" })) await clean();
     } catch (cause) { setError(friendly(cause)); }
   };
   const renderJob = (item: SpeechQueueItem) => {
@@ -167,11 +171,11 @@ export function SpeechView({ active }: { active: boolean }) {
     <div className="speech-job-meta"><span className={`speech-job-status is-${item.status}`}>{labels[item.status]}</span><small><span>{formatSpeechTime(work.processed, ".")} / {formatSpeechTime(work.duration, ".")}</span><span>· {item.cueCount} 段字幕</span></small><strong className="speech-job-percent">{(work.duration ? Math.min(100, work.processed / work.duration * 100) : 0).toFixed(1)}%</strong></div>
     <SpeechJobTiming item={item} active={active} />
     <div className="speech-job-meter">{playback?.taskId === item.id ? <SpeechWaveform analyser={playback.analyser} /> : <progress value={work.processed} max={work.duration} />}</div>
-    {item.status === "error" && <p className="speech-error">{item.message}</p>}
+    {(item.status === "error" || (item.status === "paused" && item.recoveryError)) && <p className="speech-error">{item.message}</p>}
     <div className="speech-job-actions">{["ready", "paused", "error"].includes(item.status) && <button className="speech-icon-button" aria-label={item.status === "ready" ? "开始转写" : "继续转写"} data-tooltip={item.status === "ready" ? "开始转写" : "从已保存断点继续"} onClick={event => { event.stopPropagation(); selectFile(item); speechQueue.start(item.id); }}><TaskIcon action="play" /></button>}
       {["queued", "running"].includes(item.status) && <button className="speech-icon-button" aria-label="暂停转写" data-tooltip="暂停并保留断点" onClick={event => { event.stopPropagation(); speechQueue.pause(item.id); }}><TaskIcon action="pause" /></button>}
       <div className="speech-job-cleanup"><button className="speech-stop" disabled={item.status !== "paused"} data-tooltip={item.status === "paused" ? "删除该任务的字幕和断点，保留音频" : "暂停任务后可清除进度"} aria-label={item.status === "paused" ? "删除该任务的字幕和断点，保留音频" : "暂停任务后可清除进度"} onClick={event => { event.stopPropagation(); void speechQueue.reset(item.id).then(id => { if (id) { setSelectedId(id); } }); }}>清除进度</button>
-      <button className="speech-stop speech-icon-button" disabled={["cancelling", "resetting"].includes(item.status)} aria-label="取消并清理" data-tooltip="取消并清理字幕和断点" onClick={event => { event.stopPropagation(); void cancelFile(item); }}><TaskIcon action="trash" /></button></div>
+      <button className="speech-stop speech-icon-button" disabled={["cancelling", "resetting"].includes(item.status)} aria-label="取消并清理" data-tooltip="取消并清理字幕和断点" onClick={event => { event.stopPropagation(); void cancelFile(item.source.name, () => speechQueue.cancel(item.id)); }}><TaskIcon action="trash" /></button></div>
     </div>
   </article>;
   };
@@ -181,11 +185,16 @@ export function SpeechView({ active }: { active: boolean }) {
     <div className="speech-workspace" ref={workspace}>
       <aside className="speech-controls">
         <section className="speech-file-card speech-input-pane">
-          <div className="speech-queue-heading"><h2>音频队列 <span>· {queue.items.length} 个文件</span></h2><button disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>添加文件</button></div>
-          <div className="speech-queue-tabs" role="tablist" aria-label="音频任务状态">{(["unfinished", "completed"] as const).map(tab => <button key={tab} role="tab" aria-selected={queueTab === tab} aria-controls="speech-queue-items" onClick={() => { setQueueTab(tab); const item = (tab === "completed" ? completedItems : unfinishedItems)[0]; if (item) selectFile(item); }}>{tab === "unfinished" ? "未完成" : "已完成"}<span>{tab === "unfinished" ? unfinishedItems.length : completedItems.length}</span></button>)}</div>
-          {queue.items.length === 0 && <button className="speech-file-picker" disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>{queue.importing ? "正在读取音频信息…" : "拖放音频到此处，或点击添加多个文件"}</button>}
+          <div className="speech-queue-heading"><h2>音频队列 <span>· {taskCount} 个文件</span></h2><button disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>添加文件</button></div>
+          <div className="speech-queue-tabs" role="tablist" aria-label="音频任务状态">{(["unfinished", "completed"] as const).map(tab => <button key={tab} role="tab" aria-selected={queueTab === tab} aria-controls="speech-queue-items" onClick={() => { setQueueTab(tab); const item = (tab === "completed" ? completedItems : unfinishedItems)[0]; if (item) selectFile(item); }}>{tab === "unfinished" ? "未完成" : "已完成"}<span>{tab === "unfinished" ? unfinishedItems.length + brokenJobs.length : completedItems.length}</span></button>)}</div>
+          {taskCount === 0 && <button className="speech-file-picker" disabled={!toolsReady || queue.importing} onClick={() => void pickFiles()}>{queue.importing ? "正在读取音频信息…" : "拖放音频到此处，或点击添加多个文件"}</button>}
           <div className="speech-job-list" id="speech-queue-items" ref={queueList}>{visibleItems.map(renderJob)}
-            {visibleItems.length === 0 && queue.items.length > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
+            {visibleBrokenJobs.map(job => <article key={job.folder} className="speech-job">
+              <div><strong data-tooltip={job.folder}>{job.name}</strong><span className="speech-job-status is-error">失败</span></div>
+              <p className="speech-error">{job.loadError}</p>
+              {job.canClean && <div className="speech-job-actions"><button className="speech-stop" disabled={job.cleaning} onClick={() => void cancelFile(job.name, () => speechQueue.cleanBroken(job.folder))}>{job.cleaning ? "清理中" : "取消并清理"}</button></div>}
+            </article>)}
+            {visibleItems.length + visibleBrokenJobs.length === 0 && taskCount > 0 && <p className="speech-queue-empty">{queueTab === "completed" ? "暂无已完成任务" : "暂无未完成任务"}</p>}
           </div>
           {selected && <SpeechAudioPlayer key={selected.id} taskId={selected.id} path={selected.source.path} positions={listenPositions.current} onPlaybackChange={setPlayback} />}
           <div className="speech-actions"><button className="speech-primary" disabled={queueTab === "completed" || !toolsReady || !canStart} onClick={() => speechQueue.start()}>开始 / 继续队列</button><button disabled={queueTab === "completed" || !running} onClick={() => speechQueue.pause()}>全部暂停</button></div>
@@ -214,6 +223,10 @@ export function SpeechView({ active }: { active: boolean }) {
         <div className="speech-splitter is-horizontal" role="separator" aria-label="调整参数与结果区域高度" aria-orientation="horizontal" onMouseDown={event => upper.beginResize(event, 1)} />
       <SpeechWorkspace ref={resultsWorkspace} active={active} items={queue.items} initialItem={selected} onSelect={selectTask}>
         <DownloadProgress download={models.download} />
+        {!isTauri() && !environmentNoticeDismissed && <div className="speech-environment-notice" role="status">
+          请在 LLMChat 桌面版中使用本地音频分段处理。
+          <button type="button" onClick={() => setEnvironmentNoticeDismissed(true)}>关闭</button>
+        </div>}
         {(error || queue.error || models.error) && <div className="speech-error" role="alert">{error || queue.error || models.error}<button onClick={() => { setError(""); speechQueue.clearError(); if (models.error) void refreshSpeechModels(); }}>关闭</button></div>}
       </SpeechWorkspace>
       </main>

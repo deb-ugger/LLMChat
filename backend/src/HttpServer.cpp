@@ -48,6 +48,8 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+std::mutex& configUpdateMutex();
+
 namespace {
 
 constexpr const char* kProjectFileName = "project.lcproj";
@@ -733,6 +735,7 @@ int HttpServer::run()
         try
         {
             const json body = json::parse(req.body);
+            const std::lock_guard update(configUpdateMutex());
             AppConfig candidate = config_.snapshot();
             auto& c = candidate;
             if (body.contains("apiUrl"))
@@ -1402,7 +1405,7 @@ int HttpServer::run()
             try {
                 auto page = conversations_.page(id, std::stoi(req.get_param_value("limit")), req.has_param("before") ? std::stoi(req.get_param_value("before")) : -1);
                 if (page.is_null()) { res.status = 404; res.set_content(errorJson("Conversation not found").dump(), "application/json"); return; }
-                conversations_.switchToConversation(id);
+                if (!req.has_param("before")) conversations_.switchToConversation(id);
                 res.set_content(page.dump(), "application/json");
             } catch (const std::exception& ex) { res.status = 400; res.set_content(errorJson(ex.what()).dump(), "application/json"); }
             return;

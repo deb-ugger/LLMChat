@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -104,6 +104,24 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_stem: Option<String>,
 }
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum ListedJob {
+    Ready {
+        #[serde(flatten)]
+        job: Job,
+        #[serde(rename = "recoveryError", skip_serializing_if = "Option::is_none")]
+        recovery_error: Option<String>,
+    },
+    Broken {
+        folder: String,
+        name: String,
+        #[serde(rename = "loadError")]
+        load_error: String,
+        #[serde(rename = "canClean")]
+        can_clean: bool,
+    },
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Chunk { pub from: f64, pub to: f64, pub cues: Vec<Cue>, pub text: String }
 #[derive(Serialize)]
@@ -157,7 +175,10 @@ fn validate_options(options: &Options, duration: f64) -> Result<()> {
     Ok(())
 }
 fn load_job(folder: &Path) -> Result<Job> {
-    let job: Job = serde_json::from_slice(&fs::read(folder.join("job.json")).map_err(err)?).map_err(err)?;
+    parse_job(folder, &fs::read(folder.join("job.json")).map_err(err)?)
+}
+fn parse_job(folder: &Path, bytes: &[u8]) -> Result<Job> {
+    let job: Job = serde_json::from_slice(bytes).map_err(err)?;
     let legacy_folder = format!("speech-{}", job.id);
     if folder.file_name().and_then(|n| n.to_str()) != Some(job.output_stem.as_deref().unwrap_or(&legacy_folder)) {
         return Err("不是有效的语音任务目录".into());
@@ -209,17 +230,29 @@ fn output_path(job: &Job, format: &str) -> Result<PathBuf> {
     Ok(Path::new(&job.folder).join(format!("{stem}.{format}")))
 }
 fn open_outputs(job: &Job, truncate: bool) -> Result<Vec<(String, File)>> {
-    job.options.formats.iter().map(|format| {
-        let mut file = OpenOptions::new().create(true).write(true).truncate(truncate).append(!truncate)
-            .open(output_path(job, format)?).map_err(err)?;
-        if truncate && format == "vtt" { file.write_all(b"WEBVTT\n\n").map_err(err)?; }
+    let mut files = job.options.formats.iter().map(|format| {
+        let path = output_path(job, format)?;
+        let file = OpenOptions::new().create(true).write(true).append(!truncate)
+            .open(&path).map_err(|error| format!("{}：{error}", path.display()))?;
         Ok((format.clone(), file))
-    }).collect()
+    }).collect::<Result<Vec<_>>>()?;
+    // Check that every destination can be opened before replacing any existing export.
+    if truncate {
+        for (format, file) in &mut files {
+            file.set_len(0).map_err(err)?;
+            if format == "vtt" { file.write_all(b"WEBVTT\n\n").map_err(err)?; }
+        }
+    }
+    Ok(files)
 }
-fn restore_outputs(job: &mut Job) -> Result<()> {
+fn restore_outputs(job: &mut Job, require_audio_for_remaining: bool) -> Result<()> {
     // Validate the journal completely before truncating the user's exported files.
     let mut chunks = Vec::new();
     let (offset, cues) = visit_chunks(Path::new(&job.folder), true, |chunk| chunks.push(chunk))?;
+    if require_audio_for_remaining && offset < job.source.duration - 0.01
+        && modified(Path::new(&job.source.path))? != (job.source.size, job.source.modified) {
+        return Err("原音频文件已更改，请创建新任务".into());
+    }
     let mut files = open_outputs(job, true)?;
     let mut count = 0;
     for chunk in &chunks {
@@ -249,10 +282,10 @@ fn position_after(job: &Job) -> Option<Position> {
     (job.offset < job.source.duration - 0.01).then_some(Position::Ready(job.offset, job.cue_count))
 }
 
-fn rebuild(job: &mut Job) -> Result<()> {
+fn rebuild(job: &mut Job, require_audio_for_remaining: bool) -> Result<()> {
     with_position(&PathBuf::from(&job.folder), |position| {
         *position = Some(Position::NeedsReplay);
-        restore_outputs(job)?;
+        restore_outputs(job, require_audio_for_remaining)?;
         *position = position_after(job);
         Ok(())
     })
@@ -282,7 +315,7 @@ fn create_job(root: &Path, id: String, source: Source, options: Options, output_
     marker.write_all(PENDING_SIGNATURE).map_err(err)?; marker.sync_data().map_err(err)?; drop(marker);
     let mut job = Job { id, folder: folder.to_string_lossy().into_owned(), source, options, offset: 0.0, cue_count: 0, elapsed_ms: 0, output_stem: Some(output_stem) };
     File::create(folder.join("progress.jsonl")).map_err(err)?.sync_data().map_err(err)?;
-    rebuild(&mut job)?;
+    rebuild(&mut job, false)?;
     // Publish the task only after its journal and output headers exist.
     write_job_json(&folder.join("job.json"), &serde_json::to_vec_pretty(&job).map_err(err)?)?;
     pending.published = true;
@@ -294,12 +327,12 @@ fn commit(folder: &Path, chunk: Chunk, elapsed_ms: Option<u64>) -> Result<Job> {
         let mut job = load_job(folder)?;
         let (offset, count) = match *position {
             Some(Position::Ready(offset, count)) => (offset, count),
-            Some(Position::NeedsReplay) => {
-                restore_outputs(&mut job)?;
+            Some(Position::NeedsReplay) | None => {
+                *position = Some(Position::NeedsReplay);
+                restore_outputs(&mut job, false)?;
                 *position = position_after(&job);
                 (job.offset, job.cue_count)
             }
-            None => visit_chunks(folder, true, |_| {})?,
         };
         if (chunk.from - offset).abs() > 0.001 || !chunk.to.is_finite() || chunk.to <= offset || chunk.to > job.source.duration + 0.1 {
             return Err("保存位置与任务断点不一致".into());
@@ -332,19 +365,38 @@ fn update_elapsed(folder: &Path, job: &mut Job, elapsed_ms: u64) -> Result<u64> 
 fn save_elapsed(folder: &Path, elapsed_ms: u64) -> Result<u64> {
     with_position(folder, |_| update_elapsed(folder, &mut load_job(folder)?, elapsed_ms))
 }
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("{}：{error}", path.display())),
+    }
+}
+
 fn cancel_job(folder: &Path) -> Result<()> {
     with_position(folder, |position| {
-        let job = load_job(folder)?;
-        for format in &job.options.formats {
-            let file = output_path(&job, format)?;
-            if file.exists() { fs::remove_file(file).map_err(err)?; }
+        let manifest = folder.join("job.json");
+        let job = match fs::read(&manifest) {
+            Ok(bytes) => Some(parse_job(folder, &bytes)?),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => return Err(err(error)),
+        };
+        if let Some(job) = &job {
+            for format in &job.options.formats {
+                remove_file_if_present(&output_path(job, format)?)?;
+            }
+            remove_file_if_present(&folder.join("progress.jsonl"))?;
+            remove_file_if_present(&manifest)?;
         }
-        fs::remove_file(folder.join("progress.jsonl")).map_err(err)?;
-        fs::remove_file(folder.join("job.json")).map_err(err)?;
         *position = None;
         PREVIEW_INDEXES.lock().unwrap().remove(folder);
+        if job.is_none() { return Ok(()); }
         // Do not recursively delete unexpected/user-added files.
-        match fs::remove_dir(folder) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()), Err(e) => Err(err(e)) }
+        match fs::remove_dir(folder) {
+            Ok(()) => Ok(()),
+            Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty) => Ok(()),
+            Err(error) => Err(err(error)),
+        }
     })
 }
 fn decode_duration(job: &Job, offset: f64) -> Result<f64> {
@@ -386,21 +438,72 @@ pub async fn speech_create_job(app: AppHandle, root: String, id: String, source:
     register_output_root(&app, Path::new(&root))?;
     tauri::async_runtime::spawn_blocking(move || create_job(Path::new(&root), id, source, options, &output_date)).await.map_err(err)?
 }
-fn list_jobs(root: &Path) -> Result<Vec<Job>> {
-    if !root.exists() { return Ok(Vec::new()); }
+fn inspect_job(folder: &Path, position: &mut Option<Position>) -> Result<Option<ListedJob>> {
+    let broken = |load_error: String, can_clean| ListedJob::Broken {
+        folder: folder.to_string_lossy().into_owned(),
+        name: folder.file_name().unwrap_or(folder.as_os_str()).to_string_lossy().into_owned(),
+        load_error,
+        can_clean,
+    };
+    let bytes = match fs::read(folder.join("job.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Ok(Some(broken(format!("无法读取任务文件：{error}"), false))),
+    };
+    let mut job = match parse_job(folder, &bytes) {
+        Ok(job) => job,
+        Err(error) => return Ok(Some(broken(format!("任务文件无效：{error}"), false))),
+    };
+
+    let mut lengths: Vec<u64> = job.options.formats.iter()
+        .map(|format| if format == "vtt" { b"WEBVTT\n\n".len() as u64 } else { 0 })
+        .collect();
+    let mut count = 0;
+    (job.offset, job.cue_count) = match visit_chunks(folder, false, |chunk| {
+        for (format, length) in job.options.formats.iter().zip(&mut lengths) {
+            *length += chunk_text(&chunk, format, count).len() as u64;
+        }
+        count += chunk.cues.len();
+    }) {
+        Ok(progress) => progress,
+        Err(error) => return Ok(Some(broken(format!("无法恢复任务进度：{error}"), true))),
+    };
+
+    let recovery_error = if job.offset >= job.source.duration - 0.01
+        && job.options.formats.iter().zip(lengths).any(|(format, length)| {
+            !output_path(&job, format).and_then(|path| fs::metadata(path).map_err(err))
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == length)
+        }) {
+        // A committed final chunk is complete only once all configured exports are on disk.
+        *position = Some(Position::NeedsReplay);
+        match restore_outputs(&mut job, false) {
+            Ok(()) => { *position = position_after(&job); None }
+            Err(error) => Some(format!("字幕输出修复失败：{error}")),
+        }
+    } else {
+        None
+    };
+    Ok(Some(ListedJob::Ready { job, recovery_error }))
+}
+
+fn list_jobs(root: &Path) -> Result<Vec<ListedJob>> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(err(error)),
+    };
     let mut jobs = Vec::new();
-    for entry in fs::read_dir(root).map_err(err)? {
+    for entry in entries {
         let folder = entry.map_err(err)?.path();
         if !folder.is_dir() { continue; }
-        if !folder.join("job.json").is_file() { continue; }
-        let mut job = load_job(&folder)?;
-        (job.offset, job.cue_count) = visit_chunks(&folder, false, |_| {})?;
-        jobs.push(job);
+        if let Some(job) = with_position(&folder, |position| inspect_job(&folder, position))? {
+            jobs.push(job);
+        }
     }
     Ok(jobs)
 }
 #[tauri::command]
-pub async fn speech_list_jobs(app: AppHandle, root: String) -> Result<Vec<Job>> {
+pub async fn speech_list_jobs(app: AppHandle, root: String) -> Result<Vec<ListedJob>> {
     register_output_root(&app, Path::new(&root))?;
     tauri::async_runtime::spawn_blocking(move || list_jobs(Path::new(&root))).await.map_err(err)?
 }
@@ -408,9 +511,7 @@ pub async fn speech_list_jobs(app: AppHandle, root: String) -> Result<Vec<Job>> 
 pub async fn speech_resume_job(folder: String) -> Result<Job> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut job = load_job(Path::new(&folder))?;
-        let current = modified(Path::new(&job.source.path))?;
-        if current != (job.source.size, job.source.modified) { return Err("原音频文件已更改，请创建新任务".into()); }
-        rebuild(&mut job)?; Ok(job)
+        rebuild(&mut job, true)?; Ok(job)
     }).await.map_err(err)?
 }
 #[tauri::command]
@@ -599,7 +700,7 @@ mod tests {
         fs::write(legacy_folder.join("job.json"), serde_json::to_vec(&job).unwrap()).unwrap();
         let chunk = Chunk { from: 0.0, to: 20.0, cues: vec![Cue { start: 1.0, end: 3.0, text: "旧任务续写".into() }], text: "旧任务续写".into() };
         let mut restored = commit(&legacy_folder, chunk, None).unwrap();
-        rebuild(&mut restored).unwrap();
+        rebuild(&mut restored, false).unwrap();
         assert_eq!(fs::read_to_string(legacy_folder.join("原音频.txt")).unwrap(), "旧任务续写\n");
         assert_eq!(list_jobs(&root).unwrap().len(), 1);
         cancel_job(&legacy_folder).unwrap();
@@ -614,7 +715,7 @@ mod tests {
         assert!(commit(&folder, chunk, None).is_err(), "duplicate append must not duplicate output");
         OpenOptions::new().append(true).open(folder.join("progress.jsonl")).unwrap().write_all(b"{\"from\":20").unwrap();
         fs::write(output_path(&job, "txt").unwrap(), b"partial write").unwrap();
-        rebuild(&mut job).unwrap(); assert_eq!(job.offset, 20.0);
+        rebuild(&mut job, false).unwrap(); assert_eq!(job.offset, 20.0);
         assert_eq!(fs::read_to_string(output_path(&job, "txt").unwrap()).unwrap(), "简体字幕\n");
         assert_eq!(committed_records(&folder), 1);
         fs::write(folder.join("user-added.txt"), b"keep").unwrap();
@@ -635,8 +736,9 @@ mod tests {
         fs::write(output_path(&job, "txt").unwrap(), b"partial output").unwrap();
         let unpublished = root.join("speech-unpublished"); fs::create_dir(&unpublished).unwrap();
         fs::write(unpublished.join("job.json.tmp"), b"{").unwrap();
-        let jobs = list_jobs(&root).unwrap(); assert_eq!(jobs.len(), 1); assert_eq!(jobs[0].offset, 20.0);
-        let mut resumed = load_job(&folder).unwrap(); rebuild(&mut resumed).unwrap();
+        let jobs = list_jobs(&root).unwrap(); assert_eq!(jobs.len(), 1);
+        assert!(matches!(&jobs[0], ListedJob::Ready { job, .. } if job.offset == 20.0));
+        let mut resumed = load_job(&folder).unwrap(); rebuild(&mut resumed, true).unwrap();
         assert_eq!(resumed.offset, 20.0); assert_eq!(resumed.cue_count, 1);
         assert_eq!(fs::read_to_string(output_path(&job, "txt").unwrap()).unwrap(), "第一段\n");
         let saved = commit(&folder, Chunk { from: 20.0, to: 40.0, cues: vec![Cue { start: 21.0, end: 23.0, text: "第二段".into() }], text: "第二段".into() }, None).unwrap();
@@ -646,6 +748,99 @@ mod tests {
         POSITIONS.lock().unwrap().remove(&folder);
         cleanup(root);
     }
+    #[test]
+    fn job_recovery_replays_final_exports_before_completion() {
+        let (root, job) = fixture();
+        let folder = Path::new(&job.folder);
+        let first = Chunk { from: 0.0, to: 20.0, cues: vec![Cue { start: 1.0, end: 2.0, text: "第一段".into() }], text: "第一段".into() };
+        commit(folder, first, None).unwrap();
+        let last = Chunk { from: 20.0, to: 60.0, cues: vec![Cue { start: 21.0, end: 24.0, text: "最后一段".into() }], text: "最后一段".into() };
+        let mut journal = OpenOptions::new().append(true).open(folder.join("progress.jsonl")).unwrap();
+        serde_json::to_writer(&mut journal, &last).unwrap();
+        journal.write_all(b"\n").unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+        let vtt = output_path(&job, "vtt").unwrap();
+        let srt = output_path(&job, "srt").unwrap();
+        let txt = output_path(&job, "txt").unwrap();
+        fs::remove_file(&vtt).unwrap();
+        POSITIONS.lock().unwrap().remove(folder);
+
+        let listed = list_jobs(&root).unwrap();
+        assert!(matches!(&listed[..], [ListedJob::Ready { job, recovery_error: None }] if job.offset == 60.0 && job.cue_count == 2));
+        assert_eq!(fs::read_to_string(&txt).unwrap(), "第一段\n最后一段\n");
+        assert!(fs::read_to_string(&srt).unwrap().contains("2\n00:00:21,000 --> 00:00:24,000"));
+        assert!(fs::read_to_string(&vtt).unwrap().starts_with("WEBVTT\n\n"));
+
+        fs::remove_file(&vtt).unwrap();
+        fs::create_dir(&vtt).unwrap();
+        let listed = list_jobs(&root).unwrap();
+        assert!(matches!(&listed[..], [ListedJob::Ready { job, recovery_error: Some(error) }] if job.offset == 60.0 && error.contains("字幕输出修复失败")));
+        assert!(fs::read_to_string(&srt).unwrap().contains("2\n00:00:21,000 --> 00:00:24,000"));
+        fs::remove_dir(&vtt).unwrap();
+        // The journal already contains all audio, so repairing exports requires no source audio.
+        fs::remove_file(&job.source.path).unwrap();
+        let mut retry = load_job(folder).unwrap();
+        rebuild(&mut retry, true).unwrap();
+        assert_eq!(retry.offset, 60.0);
+        assert_eq!(fs::read_to_string(&txt).unwrap(), "第一段\n最后一段\n");
+        assert_eq!(committed_records(folder), 2);
+        cleanup(root);
+    }
+
+    #[test]
+    fn job_recovery_lists_good_and_broken_tasks_together() {
+        let (root, good) = fixture();
+        let bad_manifest = root.join("bad-metadata");
+        fs::create_dir(&bad_manifest).unwrap();
+        fs::write(bad_manifest.join("job.json"), b"{").unwrap();
+        let bad_journal = create_job(&root, "bad-journal".into(), good.source.clone(), good.options.clone(), "2026-10-22").unwrap();
+        fs::remove_file(Path::new(&bad_journal.folder).join("progress.jsonl")).unwrap();
+
+        let jobs = list_jobs(&root).unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert!(jobs.iter().any(|item| matches!(item, ListedJob::Ready { job, recovery_error: None } if job.id == good.id)));
+        assert!(jobs.iter().any(|item| matches!(item, ListedJob::Broken { name, load_error, can_clean: false, .. }
+            if name == "bad-metadata" && load_error.contains("任务文件无效"))));
+        assert!(jobs.iter().any(|item| matches!(item, ListedJob::Broken { folder, load_error, can_clean: true, .. }
+            if folder == &bad_journal.folder && load_error.contains("无法恢复任务进度"))));
+        cancel_job(Path::new(&bad_journal.folder)).unwrap();
+        assert_eq!(list_jobs(&root).unwrap().len(), 2);
+        POSITIONS.lock().unwrap().remove(Path::new(&good.folder));
+        cleanup(root);
+    }
+
+    #[test]
+    fn job_recovery_retries_partial_cleanup() {
+        let (root, job) = fixture();
+        let folder = Path::new(&job.folder);
+        let manifest = folder.join("job.json");
+        let user_file = folder.join("keep.txt");
+        fs::write(&user_file, "用户文件").unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let locked_manifest = OpenOptions::new().read(true).share_mode(0x3).open(&manifest).unwrap();
+            assert!(cancel_job(folder).is_err(), "the open manifest prevents the last deletion");
+            assert!(manifest.is_file());
+            assert!(!folder.join("progress.jsonl").exists());
+            for format in &job.options.formats { assert!(!output_path(&job, format).unwrap().exists()); }
+            drop(locked_manifest);
+        }
+        #[cfg(not(windows))]
+        {
+            for format in &job.options.formats { fs::remove_file(output_path(&job, format).unwrap()).unwrap(); }
+            fs::remove_file(folder.join("progress.jsonl")).unwrap();
+        }
+
+        cancel_job(folder).unwrap();
+        cancel_job(folder).unwrap();
+        assert!(!manifest.exists());
+        assert_eq!(fs::read_to_string(user_file).unwrap(), "用户文件");
+        assert!(Path::new(&job.source.path).is_file());
+        cleanup(root);
+    }
+
     #[test]
     fn ffmpeg_long_audio_uses_bounded_windows() {
         let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/ffmpeg");

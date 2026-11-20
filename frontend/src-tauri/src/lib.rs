@@ -194,13 +194,46 @@ fn write_file_bytes(path: String, contents: Vec<u8>) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("路径为空".to_string());
     }
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建目录失败: {e}"))?;
+    write_atomic_export(std::path::Path::new(&path), |file| file.write_all(&contents))
+        .map_err(|error| format!("写入文件失败：{path}：{error}"))
+}
+
+fn write_atomic_export(
+    target: &std::path::Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::fs::{self, OpenOptions};
+    use std::io;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
+    let parent = target.parent().filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let (temporary, mut file) = loop {
+        let sequence = NEXT_EXPORT.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".llmchat-export-{}-{sequence}.tmp", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
         }
+    };
+
+    let written = write(&mut file).and_then(|()| file.sync_all());
+    drop(file);
+    // std::fs::rename also replaces an existing file on Windows.
+    if let Err(error) = written.and_then(|()| fs::rename(&temporary, target)) {
+        if let Err(cleanup) = fs::remove_file(&temporary) {
+            return Err(io::Error::new(error.kind(), format!(
+                "{error}；无法清理临时文件 {}：{cleanup}", temporary.display()
+            )));
+        }
+        return Err(error);
     }
-    std::fs::write(&path, contents).map_err(|e| format!("写入文件失败: {e}"))
+    Ok(())
 }
 
 /// Read raw bytes from an absolute path chosen via the open dialog.

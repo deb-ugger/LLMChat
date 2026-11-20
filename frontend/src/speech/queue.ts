@@ -6,11 +6,14 @@ import { getSpeechPreferences, downloadSpeechModel, cancelSpeechModelDownload, s
 import { planSpeechCommit, nextSpeechWindow, validateSpeechRanges, type SpeechRange, type SpeechResult } from "./transcription";
 import { createSpeechOnline } from "./online";
 
-export type SpeechQueueItem = SpeechJob & { root: string; showOutput: boolean; status: "ready" | "queued" | "running" | "pausing" | "paused" | "resetting" | "done" | "error" | "cancelling"; message: string; elapsedMs: number; runningSince?: number; processingStartedAt?: number; startedOffset?: number; revision: number };
-type Snapshot = { items: SpeechQueueItem[]; importing: boolean; error: string };
+export type SpeechQueueItem = SpeechJob & { root: string; showOutput: boolean; status: "ready" | "queued" | "running" | "pausing" | "paused" | "resetting" | "done" | "error" | "cancelling"; message: string; elapsedMs: number; recoveryError?: string; runningSince?: number; processingStartedAt?: number; startedOffset?: number; revision: number };
+type BrokenSpeechJob = { folder: string; name: string; loadError: string; canClean: boolean; cleaning?: boolean };
+type ListedSpeechJob = (SpeechJob & { recoveryError?: string }) | BrokenSpeechJob;
+type Snapshot = { items: SpeechQueueItem[]; brokenJobs?: BrokenSpeechJob[]; importing: boolean; error: string };
 type Running = { client: SpeechClient; controller: AbortController; reason: "pause" | "cancel" | null; settled: Promise<void>; started: number };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const abort = () => new DOMException("任务已暂停或取消", "AbortError");
+const completedMessage = "识别完成，输出文件已保存";
 const chineseConverters: Partial<Record<SpeechJobOptions["chineseScript"], (text: string) => string>> = {};
 function jobOptions(pref: ReturnType<typeof getSpeechPreferences>): SpeechJobOptions {
   return { model: pref.model, language: pref.language, formats: [...pref.formats], chineseScript: pref.chineseScript,
@@ -78,13 +81,37 @@ export class SpeechQueue {
   }
   async restore(root: string) {
     if (!root) return;
-    const jobs = await speechNative.list(root);
-    const known = new Set(this.state.items.map(item => item.id));
-    this.publish({ items: [...this.state.items, ...jobs.filter(job => !known.has(job.id)).map(job => {
-      const done = job.offset >= job.source.duration - 0.01;
-      return { ...job, root, status: done ? "done" as const : "paused" as const,
-        showOutput: true, message: done ? "识别完成，输出文件已保存" : "可从已保存断点继续", elapsedMs: job.elapsedMs ?? 0, revision: 0 };
-    })] });
+    const jobs: ListedSpeechJob[] = await speechNative.list(root);
+    const items = [...this.state.items];
+    const known = new Set(items.map(item => item.id));
+    const brokenJobs = new Map(this.state.brokenJobs?.map(job => [job.folder, job]));
+    for (const job of jobs) {
+      if ("loadError" in job) {
+        if (!brokenJobs.get(job.folder)?.cleaning) brokenJobs.set(job.folder, job);
+        continue;
+      }
+      brokenJobs.delete(job.folder);
+      if (known.has(job.id)) continue;
+      known.add(job.id);
+      const done = !job.recoveryError && job.offset >= job.source.duration - 0.01;
+      items.push({ ...job, root, status: done ? "done" : "paused", showOutput: true,
+        message: job.recoveryError ?? (done ? completedMessage : "可从已保存断点继续"),
+        elapsedMs: job.elapsedMs ?? 0, revision: 0 });
+    }
+    this.publish({ items, brokenJobs: [...brokenJobs.values()] });
+  }
+  async cleanBroken(folder: string) {
+    const jobs = this.state.brokenJobs;
+    const job = jobs?.find(candidate => candidate.folder === folder);
+    if (!jobs || !job?.canClean || job.cleaning) return;
+    this.publish({ brokenJobs: jobs.map(candidate => candidate === job ? { ...candidate, cleaning: true } : candidate) });
+    try {
+      await speechNative.cancel(folder);
+      this.publish({ brokenJobs: this.state.brokenJobs?.filter(candidate => candidate.folder !== folder) });
+    } catch (error) {
+      this.publish({ brokenJobs: this.state.brokenJobs?.map(candidate => candidate.folder === folder
+        ? { ...candidate, cleaning: false, loadError: `清理失败：${message(error)}` } : candidate) });
+    }
   }
   start(id?: string) {
     const pref = getSpeechPreferences();
@@ -137,7 +164,13 @@ export class SpeechQueue {
     try {
       const saved = await speechNative.resume(item.folder);
       elapsedBase = Math.max(elapsedBase, saved.elapsedMs ?? 0);
-      item = { ...item, ...saved, elapsedMs: elapsedBase }; this.patch(item.id, { ...saved, elapsedMs: elapsedBase }); check();
+      item = { ...item, ...saved, elapsedMs: elapsedBase };
+      this.patch(item.id, { ...saved, elapsedMs: elapsedBase, recoveryError: undefined });
+      check();
+      if (item.offset >= item.source.duration - 0.01) {
+        terminal = { status: "done", message: completedMessage };
+        return;
+      }
       const processing = item.options.processing;
       const online = processing?.mode === "online" || processing?.proofread ? await createSpeechOnline(item.options, run.controller.signal) : null;
       check();
@@ -175,7 +208,7 @@ export class SpeechQueue {
         this.patch(item.id, { ...committed, elapsedMs: elapsedBase, revision: (this.state.items.find(job => job.id === item.id)?.revision ?? 0) + 1 });
         check();
       }
-      terminal = { status: "done", message: "识别完成，输出文件已保存" };
+      terminal = { status: "done", message: completedMessage };
     } catch (error) {
       if (run.reason === "pause") terminal = { status: "paused", message: "已暂停，断点已保留" };
       else if (run.reason !== "cancel") terminal = { status: "error", message: message(error) };
@@ -210,7 +243,7 @@ export class SpeechQueue {
       // A fresh ID avoids reusing a folder that contains user-added files.
       const nextId = crypto.randomUUID();
       this.patch(id, { id: nextId, folder: "", offset: 0, cueCount: 0, status: "ready", message: "等待开始",
-        elapsedMs: 0, runningSince: undefined, processingStartedAt: undefined, startedOffset: undefined, revision: current.revision + 1 });
+        elapsedMs: 0, recoveryError: undefined, runningSince: undefined, processingStartedAt: undefined, startedOffset: undefined, revision: current.revision + 1 });
       return nextId;
     } catch (error) { this.patch(id, { status: "paused", message: `清除进度失败：${message(error)}` }); }
   }

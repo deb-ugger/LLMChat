@@ -212,6 +212,13 @@ void ConfigStore::load()
     config_ = std::move(next);
 }
 
+// A settings transaction spans both the snapshot and the persisted replacement.
+std::mutex& configUpdateMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
 AppConfig ConfigStore::snapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);

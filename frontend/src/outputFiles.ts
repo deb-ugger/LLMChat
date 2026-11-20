@@ -29,8 +29,10 @@ export async function saveOutputFile(fileName: string, contents: Uint8Array, ext
 }
 
 export function writeDownloadedFile(path: string, contents: Uint8Array, source: string) {
-  return trackDownload({ path, name: downloadFileName(path), source }, () =>
-    invoke("write_file_bytes", { path, contents: Array.from(contents) }));
+  return trackDownload({ path, name: downloadFileName(path), source }, () => {
+    // This command resolves after the atomic replacement succeeds.
+    return invoke("write_file_bytes", { path, contents: Array.from(contents) });
+  });
 }
 
 export function downloadBrowserFile(blob: Blob, name: string, source: string) {
