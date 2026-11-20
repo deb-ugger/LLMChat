@@ -22,15 +22,23 @@ export function UnityTranslationProgress({ progress, running, failure, onLocate 
       })}
     </div>}
     {!!progress.engineStats?.length && <section className="unity-engine-meters" aria-label="各翻译引擎累计处理字符占比">
-      <div className="unity-engine-stack" role="img" aria-label={`各引擎累计处理 ${characters.toLocaleString("zh-CN")} 字符`} style={{ height: 8 }}>
+      <div className="unity-engine-stack" role="img" aria-label={`各引擎累计处理 ${characters.toLocaleString("zh-CN")} 字符`} style={{ height: 10 }}>
         {progress.engineStats.map(engine => <span key={engine.id} className="unity-engine-segment" data-tooltip={`${getEngineInfo(engine.id)?.label || engine.id}：${engine.characters.toLocaleString("zh-CN")} 字符`} style={{ width: `${characters ? engine.characters / characters * 100 : 0}%`, backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />)}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px" }}>
-        {progress.engineStats.map(engine => <div className="unity-engine-meter" key={engine.id} style={{ flexShrink: 0 }}>
-          <div><strong><span className="unity-engine-swatch" aria-hidden="true" style={{ backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />{getEngineInfo(engine.id)?.label || engine.id}</strong></div>
-          <span>{engine.characters.toLocaleString("zh-CN")} 字符 · {(characters ? engine.characters * 100 / characters : 0).toFixed(1)}%{running && engine.speed != null && ` · 当前 ${engine.speed.toFixed(1)} 字符/秒`}</span>
-          {engine.entryId && <button type="button" className="unity-progress-locate" onClick={() => onLocate(engine.entryId!)}>条目 #{engine.entryId}</button>}
-        </div>)}
+      <div className="unity-engine-list">
+        {progress.engineStats.map(engine => {
+          const share = characters ? engine.characters * 100 / characters : 0;
+          const content = <>
+            <span className="unity-engine-swatch" aria-hidden="true" style={{ backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />
+            <span className="unity-engine-name">{getEngineInfo(engine.id)?.label || engine.id}</span>
+            <span className="unity-engine-share">{share.toFixed(1)}%</span>
+            <span className="unity-engine-chars">{engine.characters.toLocaleString("zh-CN")} 字符{running && engine.speed != null ? ` · ${engine.speed.toFixed(1)}/秒` : ""}</span>
+            <span className="unity-engine-jump">{engine.entryId ? `#${engine.entryId}` : ""}</span>
+          </>;
+          return engine.entryId
+            ? <button type="button" key={engine.id} className="unity-engine-item is-jumpable" onClick={() => onLocate(engine.entryId!)} data-tooltip={`定位到条目 #${engine.entryId}`}>{content}</button>
+            : <div key={engine.id} className="unity-engine-item">{content}</div>;
+        })}
       </div>
     </section>}
     {last && <button type="button" className="unity-progress-locate" onClick={() => onLocate(last.id)}>最近已处理：条目 #{last.id} · {last.failed ? "失败，已记录" : "成功"} · 点击定位</button>}
