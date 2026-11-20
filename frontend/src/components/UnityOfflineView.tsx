@@ -1399,7 +1399,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (resume && run.step === 1) run.source = source;
     if (part) run.imageOnly = part === "images";
     if (rescan) {
-      run = { ...run, step: 1, imageOnly: false, projectFolder: "", scanFolder: "", previousProjectFolder: checkpointRef.current?.previousProjectFolder || project?.folder || checkpointRef.current?.projectFolder || checkpointRef.current?.scanFolder, source, includeCode, textMode, codeAssemblies, typeDirectory,
+      run = { ...run, step: 1, imageOnly: !!run.imageChain || part === "images", projectFolder: "", scanFolder: "", previousProjectFolder: checkpointRef.current?.previousProjectFolder || project?.folder || checkpointRef.current?.projectFolder || checkpointRef.current?.scanFolder, source, includeCode, textMode, codeAssemblies, typeDirectory,
         translationFailure: run.progress.step === 2 && run.progress.state === "error" ? run.progress.failure : run.translationFailure,
         progress: { step: 1, state: "running", detail: "重新提取游戏组件文本，已有工程和译文保留", completed: 0, total: null } };
       run.scanElapsedMs = 0;
@@ -1561,9 +1561,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         }
         if (controller.signal.aborted) throw new UnityPaused("");
         if (followProgress.current) {
-          if (index === 2 && run.imageOnly && run.imageTask !== "render" && run.imageTask !== "redraw") { setActiveStep(2); setImagePart(true); }
-        else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityTranslationReadiness(p, [], unityTranslationError, false, run.target).imagesReady) { setActiveStep(2); setImagePart(true); }
-          else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
+          if (index === 2 && (run.imageOnly || (!run.layoutOnly && !automatic && !unityTranslationReadiness(p, [], unityTranslationError, false, run.target).imagesReady))) {
+            setActiveStep(2);
+            setImagePart(true);
+          } else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
         }
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
       }
