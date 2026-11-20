@@ -262,14 +262,15 @@ public static class Program
         Directory.CreateDirectory(folder);
         return folder;
     }
+    static void WriteProjectSnapshot(Project project) => WriteJson(Path.Combine(project.Folder, "unity-project.json"), project);
+
     public static Project Save(Project project)
     {
         if (project.Version != 1 || !Directory.Exists(project.Folder)) throw new Exception("工程版本或目录无效");
         GameText.ProtectProject(project);
         var parents = project.Entries.Where(e => e.ParentId != null).Select(e => e.ParentId!).ToHashSet();
         foreach (var id in project.SegmentSources.Keys.Where(id => !parents.Contains(id)).ToArray()) project.SegmentSources.Remove(id);
-        var path = System.IO.Path.Combine(project.Folder, "unity-project.json");
-        WriteJson(path, project);
+        WriteProjectSnapshot(project);
         File.Delete(TextStatePath(project.Folder));
         ImageResources.CommitStates(project);
         return project;
@@ -433,15 +434,22 @@ public static class Program
         using (clock.Measure(ScanPhase.Save)) Save(project);
         var scanIndex = state.Next;
         var lastSavedIndex = state.Next;
-        var dirtyScan = false; var lastScanSave = Environment.TickCount64;
+        var dirtyScan = false;
+        var lastScanSave = Environment.TickCount64;
+        var checkpointInterval = 2000L;
         var originals = PatchInstallation.OriginalFiles(root);
         var incremental = new IncrementalScan(project, paths, originals, clock, request.ReusePath);
         void CommitScan(int next, bool force = false) {
-            if (!force && Environment.TickCount64 - lastScanSave < 2000) return;
+            var now = Environment.TickCount64;
+            if (!force && now - lastScanSave < checkpointInterval) return;
             using var time = clock.Measure(ScanPhase.Save);
             if (dirtyScan) {
-                Save(project);
+                // Load and explicit checkpoints normalize new entries. Periodic
+                // snapshots only persist the state needed to resume the scan.
+                if (force) Save(project);
+                else WriteProjectSnapshot(project);
                 incremental.Save();
+                checkpointInterval = Math.Clamp((Environment.TickCount64 - now) * 8, 2000L, 10000L);
                 dirtyScan = false;
             }
             // Advance the checkpoint only after the matching project snapshot is
@@ -481,6 +489,18 @@ public static class Program
             if (incremental.Hash(originals.GetValueOrDefault(file.Key) ?? Within(root, file.Key)) != file.Value)
                 throw new Exception("已扫描文件发生变化，请重新扫描：" + file.Key);
         clock.Set(ScanPhase.Other);
+        if (hasFileList && state.Next < paths.Length)
+        {
+            // The snapshot can be ahead of the checkpoint after a crash or
+            // contain an unfinished file after a cooperative stop.
+            var remaining = paths.Skip(state.Next).Select(path => Path.GetRelativePath(root, path)).ToHashSet(StringComparer.Ordinal);
+            project.Entries.RemoveAll(entry => remaining.Contains(entry.File));
+            project.Fonts.RemoveAll(font => remaining.Contains(font.File));
+            project.Images.RemoveAll(image => remaining.Contains(image.File));
+            project.Diagnostics.RemoveAll(issue => remaining.Contains(issue.File));
+            project.Resources.RemoveAll(resource => remaining.Contains(resource.File));
+            foreach (var file in project.Hashes.Keys.Where(remaining.Contains).ToArray()) project.Hashes.Remove(file);
+        }
         for (var index = state.Next; index < paths.Length; index++)
         {
             scanIndex = index;
@@ -497,12 +517,9 @@ public static class Program
             if (!isCode && !asset && !plain && !raster) { CommitScan(index + 1); continue; }
             Progress("检查资源：" + rel, index, paths.Length, project.Folder);
             dirtyScan = true;
-            // A crash between project and checkpoint saves replays only the current file.
-            project.Entries.RemoveAll(e => e.File == rel); project.Fonts.RemoveAll(f => f.File == rel); project.Hashes.Remove(rel); project.Images.RemoveAll(i => i.File == rel);
-            project.Diagnostics.RemoveAll(e => e.File == rel); project.Resources.RemoveAll(e => e.File == rel);
-            incremental.Sources.Remove(rel);
             var before = project.Entries.Count;
             var fonts = project.Fonts.Count; var imagesBefore = project.Images.Count;
+            var diagnosticsBefore = project.Diagnostics.Count;
             try
             {
                 var sourceDigest = new Lazy<string>(() => incremental.Hash(readPath));
@@ -538,7 +555,7 @@ public static class Program
                     }, types, rel, sourcePath: path, detail: ReportScanDetail, clock: clock);
                     else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
                 }
-                var failures = project.Diagnostics.Count(e => e.File == rel);
+                var failures = project.Diagnostics.Count - diagnosticsBefore;
                 var hasResults = metadataLiteralCount.HasValue || project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore;
                 if (hasResults) project.Hashes[rel] = sourceDigest.Value;
                 if (failures == 0 && !metadataLiteralCount.HasValue) {
@@ -554,7 +571,7 @@ public static class Program
                 project.Entries.RemoveRange(before, project.Entries.Count - before);
                 project.Fonts.RemoveRange(fonts, project.Fonts.Count - fonts); project.Images.RemoveRange(imagesBefore, project.Images.Count - imagesBefore);
                 project.Diagnostics.Add(ScanInspection.Issue(rel, "", "", e));
-                project.Resources.Add(new(rel, "failed", 0, 0, project.Diagnostics.Count(d => d.File == rel)));
+                project.Resources.Add(new(rel, "failed", 0, 0, project.Diagnostics.Count - diagnosticsBefore));
             }
             CommitScan(index + 1);
             Progress("已检查：" + rel, index + 1, paths.Length, project.Folder);
