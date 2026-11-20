@@ -433,7 +433,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
               ? getOptions(provider, scene, reviewModel) : primary;
             try {
               const context = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
-              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
+              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);
               if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译失败"), { code: response.code });
               // The protected request already carries the original display breaks as tokens.
               return preserveDialogueLines && !/[\r\n]/.test(protectedText) && /[\r\n]/.test(response.translation)
