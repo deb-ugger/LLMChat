@@ -1,4 +1,4 @@
-import { GameMosaicWorkbench } from "./GameMosaicWorkbench";
+import { GameMosaicWorkbench, type GameMosaicDeploymentHandle } from "./GameMosaicWorkbench";
 import { matchImagePatchConflicts, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { showAppNotice } from "./AppNotice";
 import type { BenchmarkImageSource } from "./GameTextBenchmarkDialog";
@@ -46,8 +46,19 @@ type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;erro
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 export type GameImageInfo = {state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number};
 type ImageTestConfiguration = NonNullable<GameTestConfiguration["images"]>;
-export type GameImageHandle = { benchmark: () => BenchmarkImageSource; automatic: (signal: AbortSignal) => Promise<boolean>; stop: () => void; prepare: () => Promise<boolean>; apply: () => Promise<boolean>; uninstall: () => Promise<boolean>; captureTestConfiguration: () => ImageTestConfiguration; applyTestConfiguration: (preset: ImageTestConfiguration) => Promise<void> };
-export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mosaicActive, mosaicDisabled, onMosaicBusy, backupScopes, workflowStage,onTaskStateChange,patchConflictPaths,onMatchedPatchConflicts,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage, testConfigurations, testConfigurationDisabled }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;patchConflictPaths:readonly string[];onMatchedPatchConflicts?:(paths:ReadonlySet<string>)=>void;backupScopes:string[];workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;mosaicActive?:boolean;mosaicDisabled?:boolean;onMosaicBusy?:(value:boolean)=>void;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void;testConfigurations?:GameTestConfigurationAccess;testConfigurationDisabled?:boolean }) {
+export type GameImageHandle = {
+  benchmark: () => BenchmarkImageSource;
+  automatic: (signal: AbortSignal) => Promise<boolean>;
+  stop: () => void;
+  prepare: () => Promise<boolean>;
+  generate: (signal: AbortSignal) => Promise<string[]>;
+  outputIds: () => string[];
+  apply: (ids: string[]) => Promise<boolean>;
+  uninstall: () => Promise<boolean>;
+  captureTestConfiguration: () => ImageTestConfiguration;
+  applyTestConfiguration: (preset: ImageTestConfiguration) => Promise<void>;
+};
+export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mosaicDeployment, mosaicActive, mosaicDisabled, onMosaicBusy, backupScopes, workflowStage,onTaskStateChange,patchConflictPaths,onMatchedPatchConflicts,leaveGuard,workspaceTargets,scanRequest=0,skipped,onSkip,onResetSkipped,active, disabled, onBusy, onMessage, testConfigurations, testConfigurationDisabled }: { handle?: {current: GameImageHandle | null}; workspaceTargets:{controls:HTMLElement|null;results:HTMLElement|null};scanRequest?:number;skipped:boolean;onSkip:()=>void;onResetSkipped:()=>void;leaveGuard?:{current:((change:()=>void)=>void)|null};onTaskStateChange?:(value:GameImageInfo)=>void;patchConflictPaths:readonly string[];onMatchedPatchConflicts?:(paths:ReadonlySet<string>)=>void;backupScopes:string[];workflowStage?:"images"|"apply";gamePath:string;settings:Settings;backupMode:string;mosaicDeployment?:{current:GameMosaicDeploymentHandle|null};mosaicActive?:boolean;mosaicDisabled?:boolean;onMosaicBusy?:(value:boolean)=>void;active:boolean;disabled:boolean;onBusy:(value:boolean)=>void;onMessage:(value:string,level?:"info"|"warning"|"error"|"success")=>void;testConfigurations?:GameTestConfigurationAccess;testConfigurationDisabled?:boolean }) {
   const promptState=useGamePromptSelection(gamePath + ":images");
   const {phase:closingPhase,show:showClosing,clear:clearClosing}=useClosingProgress();
   const operationWork=useRef<Promise<boolean>|null>(null),reading=useRef(false);
@@ -368,7 +379,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     const pool=translationKind==="engine"&&stage!=="review"?createUnityEnginePool(engines.filter(row=>engineReady(parseEngineKeys(settings.translateEngineKeys),row.id)),signal,request,{timingScope:promptState.scope + ":images"}):null;
     return {translate:(text:string)=>pool?pool.translate(text):request("llm",text),concurrency:pool?Math.max(1,pool.concurrency):modelConcurrency(promptState.scope,"image",translationModel || settings.model),regions:pool?1:Math.max(modelConcurrency(promptState.scope,"image",translationModel || settings.model),modelConcurrency(promptState.scope,"review",reviewModel)),dispose:()=>pool?.dispose()};
   };
-  const process=(phase:"recognize"|"translate",only?:UnityImage,ocrMode=mode, outputMode: "translate" | "translate-only" | "review" | "render" = "translate")=>execute(phase==="recognize"?"识别图片":outputMode==="render"?"生成译图":outputMode==="review"?"复核与重译":"翻译图片",async()=>{
+  const process=(phase:"recognize"|"translate",only?:UnityImage,ocrMode=mode, outputMode: "translate" | "translate-only" | "review" | "render" = "translate", signal?: AbortSignal)=>execute(phase==="recognize"?"识别图片":outputMode==="render"?"生成译图":outputMode==="review"?"复核与重译":"翻译图片",async()=>{
     if(phase==="recognize"&&stageModels.recognize!==undefined&&!stageModels.recognize)throw new Error("请选择识字视觉模型");
     if(phase==="translate"&&outputMode==="render"&&stageModels.render!==undefined&&!stageModels.render)throw new Error("请选择断行排版模型");
     if (phase === "translate" && outputMode === "review" && !models.includes(reviewModel)) throw new Error("请选择可用的图片复核模型");
@@ -378,6 +389,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     }
     setImagePhaseStarted(phase);
     await save(true);
+    signal?.throwIfAborted();
     const base = current.current;
     if (!base) return;
     if (!base.images?.length || base.images.some(needsGameImageScreening)) throw new Error("请先完成扫描与筛选");
@@ -546,11 +558,13 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       setProgress(null);
     }
   };
-  const applyImages = () => execute("应用译图", async () => {
+  const imageOutputIds = () => (current.current?.images || [])
+    .filter(image => image.selected && unityImageReadyForTarget(image, target)).map(image => image.id);
+  const applyImages = (ids: string[]) => execute("应用译图", async () => {
     await save(true);
-    const rows = current.current?.images?.filter(image => image.selected && unityImageReadyForTarget(image,target)) || [];
-    if (!rows.length) return;
-    const result = await post<{ files: number; unchanged?: number; composed?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: rows.map(image => image.id) });
+    const ready = new Set(imageOutputIds());
+    if (!ids.length || ids.some(id => !ready.has(id))) throw new Error("可应用的译图已改变，请再生成一次");
+    const result = await post<{ files: number; unchanged?: number; composed?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: ids });
     if (result.backupDetail) onMessage(result.backupDetail, "success");
     const detail = result.composed ? ` · ${result.composed} 张与去码图合成` : "";
     onMessage(result.files ? `已应用 ${result.files} 张译图${detail}` : `${result.unchanged ?? 0} 张译图已是当前版本`, "success");
@@ -643,6 +657,25 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         return current.current.images.filter(image => image.selected).every(image => unityImageWorkDone(image,target));
       } finally { signal.removeEventListener("abort",stop); }
     },
+    outputIds: imageOutputIds,
+    generate: async signal => {
+      await save(true);
+      signal.throwIfAborted();
+      const render = automaticSteps.current;
+      const rows = current.current?.images || [];
+      if (rows.some(image => image.selected && !unityImageWorkDone(image, target))) {
+        if (!render.textDone) throw new Error("请先完成图片文字翻译与复核");
+        const stop = () => abort.current?.abort();
+        signal.addEventListener("abort", stop, { once: true });
+        try {
+          if (!await render.render(signal)) throw new Error("译图生成未完成");
+        } finally {
+          signal.removeEventListener("abort", stop);
+        }
+      }
+      signal.throwIfAborted();
+      return imageOutputIds();
+    },
     apply: applyImages,
     uninstall: uninstallImages,
   };
@@ -691,11 +724,11 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     setStep(stage === "recognize" ? "recognize" : "translate");
     return stage === "recognize" ? process("recognize") : process("translate", undefined, mode, stage === "render" ? "render" : "translate-only");
   };
-  const execution = { filterStep, refineStep, needsRefinement, refineNeedsResume, requiresInitial, translated, reviewModel,
+  const execution = { filterStep, refineStep, needsRefinement, refineNeedsResume, requiresInitial, translated, reviewModel, textDone,
     recognize: () => runStage("recognize"),
     translate: () => process("translate", undefined, mode, "translate-only"),
     review: () => process("translate", undefined, mode, "review"),
-    render: () => process("translate", undefined, mode, "render"),
+    render: (signal?: AbortSignal) => process("translate", undefined, mode, "render", signal),
     redraw,
   };
   const automaticSteps = useRef(execution);
@@ -846,17 +879,15 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       </div>}
       </div></GameFlowSequence></GamePromptContext.Provider></div>
     </>;
-  const [mosaicVisited, setMosaicVisited] = useState(false);
-  useEffect(() => { if (mosaicActive) setMosaicVisited(true); }, [mosaicActive]);
   const readMosaicSource=useCallback((image:UnityImage,signal:AbortSignal)=>readImage(image,false,false,signal),[readImage]);
   const resultContent=<>    {project?.images?.length ? <ImagePreviewReaderContext.Provider value={readImage}><UnityImageWorkbench initialScreeningComplete={complete.filter} onRedrawFailure={async (image, reason) => {
       const row = current.current?.images?.find(item => item.id === image.id);
       if (row) await persist({ ...row, error: reason });
       onMessage(reason, "error");
     }} reuseRecognition patchIssues={patchConflicts.issues} key={imageResetRevision} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>onMessage(text,error?"error":"success")} leaveGuard={leaveGuard} project={project} active={active} disabled={disabled||clearing||!!busy} dirty={dirty} saving={busy==="保存"} ocrMode={mode} onTranslate={translateCurrent} onRecognize={complete.filter&&complete.refine?(image,selectedMode)=>process("recognize",image,selectedMode):undefined} onChange={image=>editImages([image])} onChangeMany={editImages} onRender={render} onImport={importImage} onDiscard={discardChanges} onSave={()=>execute("保存",()=>save())}/></ImagePreviewReaderContext.Provider>:<div className="game-image-empty">{busy==="扫描图片"?"正在扫描图片…":busy?"正在读取图片工程…":project?"未找到可读取的 PNG 图片资源":progress?.state==="stopped"?"图片工程读取已停止":progress?.state==="error"?"图片工程读取失败，请查看输出":existing===true?"正在恢复已有图片工程…":existing===false?"当前游戏没有已有图片工程，请在步骤 1 扫描资源":"正在检查已有图片工程…"}</div>}</>;
-  return <>{(mosaicActive || mosaicVisited) && workspaceTargets.results && workspaceTargets.controls && (project
+  return <>{(mosaicActive || mosaicDeployment) && workspaceTargets.results && workspaceTargets.controls && (project
     ? createPortal(<GameMosaicWorkbench gamePath={gamePath} images={project.images || EMPTY_GAME_IMAGES} backupMode={backupMode}
-      read={readMosaicSource} controls={workspaceTargets.controls} visible={!!mosaicActive} disabled={mosaicDisabled || !!busy} onBusy={onMosaicBusy} />, workspaceTargets.results)
+      read={readMosaicSource} controls={workspaceTargets.controls} deploymentHandle={mosaicDeployment} visible={!!mosaicActive} disabled={mosaicDisabled || !!busy} onBusy={onMosaicBusy} />, workspaceTargets.results)
     : mosaicActive && createPortal(<div className="engine-workflow-content"><p className="game-mosaic-empty">{busy ? "正在准备图片索引…" : "请先在步骤 1 扫描图片资源"}</p></div>, workspaceTargets.controls))}
     {active && busy === "读取图片工程" && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail={progress?.detail || "正在读取图片、识别结果和处理进度…"}/ >}{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{workspaceTargets.controls&&workflowStage!=="apply"&&createPortal(<div hidden={!active} className="engine-workflow-content">{operationContent}</div>,workspaceTargets.controls)}{workspaceTargets.results&&createPortal(<div hidden={!active} className="unity-image-result-pane">{resultContent}</div>,workspaceTargets.results)}</>;
 }
