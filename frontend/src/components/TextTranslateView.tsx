@@ -1,3 +1,5 @@
+import { EmptyState } from "./EmptyState";
+import { getFixedMenuPoint } from "../viewportLayout";
 import { useOutputMessage } from "../appOutput";
 import { showAppNotice } from "./AppNotice";
 import { registerAppCloseGuard } from "../appClose";
@@ -101,6 +103,51 @@ function checkProjectText(project: TextProject, source: string, translation: str
 function storedProject(project: TextProject, saved: { folder: string; epubPath?: string }): TextProject {
   const epub = project.sourceMeta?.epub;
   return { ...project, folder: saved.folder, ...(epub && saved.epubPath ? { sourceMeta: { ...project.sourceMeta, epub: { documents: epub.documents, archiveFile: "source.epub", archivePath: saved.epubPath } } } : {}) };
+}
+
+type TextRunCheckpoint = { runId: string; sequence: number; slots: number };
+type TextRunDelta = Pick<TextRunCheckpoint, "runId" | "sequence"> & {
+  updates: TransEntry[];
+  tokens: TextProject["tokens"];
+  elapsedMs: number;
+};
+
+async function recoverTextProject(raw: unknown, path?: string): Promise<TextProject> {
+  const project = parseProject(raw) as TextProject & { textRunCheckpoint?: TextRunCheckpoint };
+  const checkpoint = project.textRunCheckpoint;
+  delete project.textRunCheckpoint;
+  if (!path || !checkpoint) return project;
+  const { runId, sequence, slots } = checkpoint;
+  if (!runId || !Number.isSafeInteger(sequence) || sequence < 0 || !Number.isInteger(slots) || slots < 1 || slots > 64) {
+    throw new Error("文本工程的断点索引无效");
+  }
+
+  const indices = new Map(project.entries.map((entry, index) => [entry.id, index]));
+  for (let next = sequence + 1; next <= sequence + slots; next++) {
+    const record = await api.loadTextProject({ path: `${path}.checkpoint-${next % slots}.json` }).catch(error => {
+      if (error?.status === 404) return null;
+      throw error;
+    });
+    const delta = record?.project as TextRunDelta | undefined;
+    // A slot can contain data from the previous run or the previous compaction.
+    if (!delta || delta.runId !== runId || delta.sequence !== next) break;
+    if (!Array.isArray(delta.updates) || !delta.tokens || !Number.isFinite(delta.elapsedMs)) {
+      throw new Error("文本工程的断点记录无效");
+    }
+    for (const entry of delta.updates) {
+      const index = indices.get(entry?.id);
+      if (index === undefined) throw new Error("文本工程的断点包含未知条目");
+      project.entries[index] = entry;
+    }
+    project.tokens = delta.tokens;
+    project.elapsedMs = delta.elapsedMs;
+  }
+  return project;
+}
+
+async function loadRecoverableTextProject(options: { folder?: string; path?: string }) {
+  const data = await api.loadTextProject(options);
+  return { ...data, project: await recoverTextProject(data.project, data.path) };
 }
 
 function loadRecent(): RecentItem[] {
@@ -753,9 +800,8 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
     try {
       setError(null);
       setRecentMenu(null);
-      const data = await api.loadTextProject({ folder: item.folder });
-      const p = parseProject(data.project);
-      openWorkbench(p, {
+      const data = await loadRecoverableTextProject({ folder: item.folder });
+      openWorkbench(data.project, {
         folder: data.folder,
         folderPath: data.folderPath,
       });
@@ -809,10 +855,9 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
   const openListedProject = async (item: TextProjectListItem) => {
     try {
       setError(null);
-      const data = await api.loadTextProject({ folder: item.folder });
-      const p = parseProject(data.project);
+      const data = await loadRecoverableTextProject({ folder: item.folder });
       setProjectListOpen(false);
-      openWorkbench(p, {
+      openWorkbench(data.project, {
         folder: data.folder,
         folderPath: data.folderPath,
       });
@@ -960,7 +1005,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
 
     if (side === "open" || isProjectFileName(file.name)) {
       const sourcePath = sourcePaths.current.get(file);
-      const p = sourcePath ? parseProject((await api.loadTextProject({ path: sourcePath })).project) : parseProject(text);
+      const p = sourcePath ? (await loadRecoverableTextProject({ path: sourcePath })).project : await recoverTextProject(text);
       const saved = await persistProject(p, {
         folder: p.folder || stripProjectExt(file.name) || name,
         overwrite: true,
@@ -1929,7 +1974,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
               </button>
               <button
                 type="button"
-                className="send-btn"
+                className="text-open-project-btn"
                 disabled={!pendingFile || pendingSide !== "open"}
                 onClick={() => void onConfirmFile()}
               >
@@ -1939,7 +1984,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
             <h3 className="text-home-sub">最近打开</h3>
             <ul className="text-recent-list">
               {recent.length === 0 && (
-                <li className="text-recent-empty">暂无记录</li>
+                <li className="text-recent-empty"><EmptyState size="sm" title="暂无记录" /></li>
               )}
               {recent.map((r) => (
                 <li key={`${r.folder}-${r.openedAt}`}>
@@ -1952,8 +1997,7 @@ export function TextTranslateView({ settings, active = true, onLanguageChange }:
                       e.stopPropagation();
                       setRecentMenu({
                         item: r,
-                        x: e.clientX,
-                        y: e.clientY,
+                        ...getFixedMenuPoint(e.clientX, e.clientY, 168, 148),
                       });
                     }}
                     data-tooltip={r.folderPath || r.folder} aria-label={r.folderPath || r.folder}

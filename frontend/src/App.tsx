@@ -1,8 +1,9 @@
+import { getLayoutRect, getLayoutViewport } from "./viewportLayout";
 import { FeatureIcon } from "./components/FeatureIcon";
 import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
-import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   api,
   type Conversation,
@@ -22,6 +23,7 @@ const LiteratureView = lazy(async () => {
 });
 const SettingsView = lazy(() => import("./components/SettingsView").then(module => ({ default: module.SettingsView })));
 import { Sidebar } from "./components/Sidebar";
+import { showAppNotice } from "./components/AppNotice";
 const StatsView = lazy(() => import("./components/StatsView").then(module => ({ default: module.StatsView })));
 const TextTranslateView = lazy(() => import("./components/TextTranslateView").then(module => ({ default: module.TextTranslateView })));
 const UnityTranslateView = lazy(() => import("./components/UnityTranslateView").then(module => ({ default: module.UnityTranslateView })));
@@ -30,6 +32,7 @@ import { toFriendlyError } from "./friendlyError";
 import { stringifyLiteraturePromptCatalog } from "./literaturePrompt";
 import { defaultSettings, withDefaults } from "./settingsDefaults";
 import { resolveFeatureLlm, setVendorModelsOverrideCache } from "./modelPresets";
+import { THEMES, getTheme, onThemeChange, setTheme } from "./theme";
 
 const pageLabels = {
   chat: "对话",
@@ -42,13 +45,14 @@ const pageLabels = {
   output: "输出",
   downloads: "下载",
   stats: "统计",
+  appearance: "外观",
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
-type Page = Exclude<NavigationItem, "output" | "downloads">;
+type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance">;
 const navigation: readonly NavigationItem[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
-  ["output", "downloads", "stats", "settings"],
+  ["output", "downloads", "stats", "appearance", "settings"],
 ];
 const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
 
@@ -56,6 +60,48 @@ function PagePanel({ feature, active, children }: { feature: Page; active: boole
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
     <DeferredPanel active={active} label={pageLabels[feature]}>{children}</DeferredPanel>
   </div>;
+}
+
+function AppearanceButton({ railHidden }: { railHidden: boolean }) {
+  const id = useId();
+  const panel = useRef<HTMLDivElement>(null);
+  const [theme, setSelectedTheme] = useState(getTheme);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => onThemeChange(setSelectedTheme), []);
+  useEffect(() => {
+    if (railHidden && panel.current?.matches(":popover-open")) panel.current.hidePopover();
+  }, [railHidden]);
+
+  return <>
+    <button type="button" className={open ? "nav-item active" : "nav-item"} popoverTarget={id}
+      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} aria-label={pageLabels.appearance}
+      data-tooltip={pageLabels.appearance} onClick={event => {
+        const { scale, height } = getLayoutViewport();
+        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
+        panel.current?.style.setProperty("--appearance-left", `${bounds.right + 8}px`);
+        panel.current?.style.setProperty("--appearance-bottom", `${height - bounds.bottom}px`);
+      }}>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" />
+      </svg>
+      <span>{pageLabels.appearance}</span>
+    </button>
+    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover" role="dialog" aria-label={pageLabels.appearance}
+      onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
+      {THEMES.map(option => <button key={option.id} type="button" className="nav-appearance-option"
+        aria-pressed={theme === option.id} onClick={() => setTheme(option.id)}>
+        <span className="nav-appearance-swatch" aria-hidden="true" style={{
+          "--swatch-base": option.swatch[0],
+          "--swatch-panel": option.swatch[1],
+          "--swatch-accent": option.swatch[2],
+        } as CSSProperties} />
+        <span>{option.label}</span>
+        {theme === option.id && <span aria-hidden="true">✓</span>}
+      </button>)}
+    </div>
+  </>;
 }
 
 export default function App() {
@@ -71,12 +117,13 @@ export default function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [current, setCurrent] = useState<Conversation | null>(null);
+  const [{ current, displayOffset }, setChat] = useState<{ current: Conversation | null; displayOffset: number }>({ current: null, displayOffset: 0 });
+  const conversationSelection = useRef(0);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [search, setSearch] = useState("");
   const [sending, setSending] = useState(false);
   useEffect(() => { if (backendReady) void initializeAppOutput(); }, [backendReady]);
-  const [displayOffset, setDisplayOffset] = useState(0);
+  const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const [ocrIncoming, setOcrIncoming] = useState<{
     file: File;
     id: number;
@@ -110,15 +157,25 @@ export default function App() {
     return data;
   }, []);
 
+  const refreshSidebar = useCallback(async () => {
+    try {
+      await refreshList();
+    } catch (error) {
+      const detail = toFriendlyError(error, "对话列表刷新失败");
+      showAppNotice("对话列表刷新失败：" + detail, "error");
+      writeOutput(["对话", "列表刷新"], detail, "error");
+    }
+  }, [refreshList]);
+
   const openConversation = useCallback(
     async (id: string, pageSize = settings.messagePageSize) => {
+      const selection = ++conversationSelection.current;
       const conv = await api.getConversation(id, pageSize);
-      const offset = Math.max(0, conv.messages.length - pageSize);
-      setDisplayOffset(offset);
-      setCurrent(conv);
-      await refreshList();
+      if (selection !== conversationSelection.current) return;
+      setChat({ current: conv, displayOffset: Math.max(0, conv.messages.length - pageSize) });
+      await refreshSidebar();
     },
-    [refreshList, settings.messagePageSize],
+    [refreshSidebar, settings.messagePageSize],
   );
 
   useEffect(() => {
@@ -158,8 +215,7 @@ export default function App() {
             0,
             conv.messages.length - (s.messagePageSize || 30),
           );
-          setDisplayOffset(offset);
-          setCurrent(conv);
+          setChat({ current: conv, displayOffset: offset });
           setBackendError(null);
           setBackendReady(true);
           writeOutput(["系统", "后端连接"], "服务已就绪", "success", false, "启动");
@@ -210,16 +266,16 @@ export default function App() {
 
   const onNewChat = async () => {
     if (!current) return;
+    const selection = ++conversationSelection.current;
     setSearch("");
     if (isNarrowChat()) setChatSidebarOpen(false);
     if (current.messages.length === 0) {
-      setDisplayOffset(0);
+      setChat(value => ({ ...value, displayOffset: 0 }));
       return;
     }
     const conv = await api.createConversation();
-    setCurrent(conv);
-    setDisplayOffset(0);
-    await refreshList();
+    if (selection === conversationSelection.current) setChat({ current: conv, displayOffset: 0 });
+    await refreshSidebar();
   };
 
   const onSelectConversation = async (id: string) => {
@@ -228,27 +284,25 @@ export default function App() {
   };
 
   const onDeleteConversation = async (id: string) => {
+    const selection = conversationSelection.current;
     const res = await api.deleteConversation(id);
-    setCurrent(res.current);
-    setDisplayOffset(
-      Math.max(0, res.current.messages.length - settings.messagePageSize),
-    );
-    await refreshList();
+    if (selection === conversationSelection.current) {
+      setChat(value => value.current?.id === id ? {
+        current: res.current,
+        displayOffset: Math.max(0, res.current.messages.length - settings.messagePageSize),
+      } : value);
+    }
+    await refreshSidebar();
   };
 
   const onRenameConversation = async (id: string, title: string) => {
-    try {
-      const updated = await api.renameConversation(id, title);
-      setConversations((list) =>
-        list.map((c) => (c.id === id ? { ...c, title: updated.title } : c)),
-      );
-      setCurrent((cur) =>
-        cur && cur.id === id ? { ...cur, title: updated.title } : cur,
-      );
-      await refreshList();
-    } catch (e) {
-      throw e instanceof Error ? e : new Error("重命名失败");
-    }
+    const updated = await api.renameConversation(id, title);
+    setConversations(list => list.map(item => item.id === id ? { ...item, title: updated.title } : item));
+    setChat(value => value.current?.id === id ? {
+      ...value,
+      current: { ...value.current, title: updated.title },
+    } : value);
+    void refreshSidebar();
   };
 
   const onSend = async (text: string) => {
@@ -256,53 +310,49 @@ export default function App() {
     const content = text.trim();
     if (!content) return;
 
+    const id = current.id;
     setSending(true);
     const optimistic: Conversation = {
       ...current,
       messages: [...current.messages, { role: "user", content }],
-      title:
-        current.title === "新对话"
-          ? content.slice(0, 20)
-          : current.title,
+      title: current.title === "新对话" ? content.slice(0, 20) : current.title,
     };
-    setCurrent(optimistic);
-    setDisplayOffset(0);
+    setChat({ current: optimistic, displayOffset: 0 });
 
     try {
-      const res = await api.chat(current.id, content, settings.apiUrl);
-      writeOutput(["对话", "模型回复"], "已收到回复", "success");
-      setCurrent(res.conversation);
-      setDisplayOffset(
-        Math.max(
-          0,
-          res.conversation.messages.length - settings.messagePageSize,
-        ),
-      );
-      await refreshList();
-    } catch (err) {
-      writeOutput(["对话", "模型回复"], toFriendlyError(err), "error");
-      setCurrent({
-        ...optimistic,
-        messages: [
-          ...optimistic.messages,
-          {
-            role: "assistant",
-            content: `错误：${toFriendlyError(err)}`,
-          },
-        ],
-      });
+      const { conversation } = await api.chat(id, content, settings.apiUrl);
+      setChat(value => value.current?.id === id ? {
+        current: conversation,
+        displayOffset: Math.max(0, conversation.messages.length - settings.messagePageSize),
+      } : value);
+      writeOutput(["对话", "模型回复"], "已收到回复", "success", false, id);
+    } catch (error) {
+      const detail = toFriendlyError(error);
+      writeOutput(["对话", "模型回复"], detail, "error", true, id);
+      setChat(value => value.current?.id === id ? {
+        ...value,
+        current: { ...value.current, messages: [...value.current.messages, { role: "assistant", content: "错误：" + detail }] },
+      } : value);
+      return;
     } finally {
       setSending(false);
     }
+    void refreshSidebar();
   };
 
   const onLoadEarlier = async () => {
-    if (displayOffset > 0) { setDisplayOffset(v => Math.max(0, v - settings.messagePageSize)); return; }
+    if (displayOffset > 0) {
+      setChat(value => ({ ...value, displayOffset: Math.max(0, value.displayOffset - settings.messagePageSize) }));
+      return;
+    }
     if (!current?.messageOffset || loadingEarlierRef.current) return;
     loadingEarlierRef.current = true;
     try {
       const page = await api.getConversation(current.id, settings.messagePageSize, current.messageOffset);
-      setCurrent(value => value?.id === current.id && value.messageOffset === current.messageOffset ? { ...value, messages: [...page.messages, ...value.messages], messageOffset: page.messageOffset } : value);
+      setChat(value => value.current?.id === current.id && value.current.messageOffset === current.messageOffset ? {
+        ...value,
+        current: { ...value.current, messages: [...page.messages, ...value.current.messages], messageOffset: page.messageOffset },
+      } : value);
       writeOutput(["对话", "历史消息"], "已加载较早的消息", "success", false, current.id);
     } catch (error) {
       const detail = toFriendlyError(error, "加载历史消息失败");
@@ -311,18 +361,31 @@ export default function App() {
     finally { loadingEarlierRef.current = false; }
   };
 
-  const onSaveSettings = async (next: Settings) => {
-    const res = await api.saveSettings(next);
-    const resolved =
-      res.textProjectsDirResolved ||
-      next.textProjectsDirResolved ||
-      next.textProjectsDir;
-    setSettings({
-      ...next,
-      textProjectsDir: next.textProjectsDir.trim() || resolved || "",
-      textProjectsDirResolved: resolved,
-      dataDir: res.dataDir || next.dataDir,
+  const saveSettingsPatch = (patch: Partial<Settings>) => {
+    if (!Object.keys(patch).length) return Promise.resolve();
+
+    const save = settingsSaveQueue.current.then(async () => {
+      // The API wrapper still types this request as a full form; the endpoint accepts a field patch.
+      const res = await api.saveSettings(patch as Settings);
+      setSettings(previous => {
+        const next = { ...previous, ...patch };
+        const resolved = res.textProjectsDirResolved || next.textProjectsDirResolved || next.textProjectsDir;
+        return {
+          ...next,
+          textProjectsDir: patch.textProjectsDir === undefined ? previous.textProjectsDir : patch.textProjectsDir.trim() || resolved || "",
+          textProjectsDirResolved: resolved,
+          dataDir: res.dataDir || previous.dataDir,
+        };
+      });
     });
+    settingsSaveQueue.current = save.catch(() => {});
+    return save;
+  };
+
+  const onSaveSettings = (next: Settings) => {
+    const { textProjectsDirResolved, dataDir, port, ...fields } = next;
+    const patch = Object.fromEntries(Object.entries(fields).filter(([key, value]) => value !== settings[key as keyof Settings]));
+    return saveSettingsPatch(patch);
   };
 
   if (!backendReady) {
@@ -352,7 +415,8 @@ export default function App() {
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
-          {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> : (
+          {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> :
+            id === "appearance" ? <AppearanceButton key={id} railHidden={navRailHidden} /> : (
             <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
               aria-expanded={id === "output" ? outputExpanded : undefined}
@@ -393,7 +457,7 @@ export default function App() {
               onNewChat={() => void onNewChat()}
               onSelect={(id) => void onSelectConversation(id)}
               onDelete={(id) => void onDeleteConversation(id)}
-              onRename={(id, title) => void onRenameConversation(id, title)}
+              onRename={onRenameConversation}
             />}
             <ChatView
               conversation={current}
@@ -435,20 +499,19 @@ export default function App() {
             apiKey={litLlm.apiKey}
             onOpenImageOcr={openImageOcr}
             onOcrModeChange={async (ocrMode) => {
-              await onSaveSettings({ ...settings, ocrMode });
+              await saveSettingsPatch({ ocrMode });
             }}
             onTranslateSourceChange={async (translateSource) => {
-              await onSaveSettings({ ...settings, translateSource });
+              await saveSettingsPatch({ translateSource });
             }}
             onTranslateTargetChange={async (translateTarget) => {
-              await onSaveSettings({ ...settings, translateTarget });
+              await saveSettingsPatch({ translateTarget });
             }}
             onClearLineBreaksChange={async (translateClearLineBreaks) => {
-              await onSaveSettings({ ...settings, translateClearLineBreaks });
+              await saveSettingsPatch({ translateClearLineBreaks });
             }}
             onPromptCatalogChange={async ({ catalog, activeId, prompt }) => {
-              await onSaveSettings({
-                ...settings,
+              await saveSettingsPatch({
                 translatePromptCatalog:
                   stringifyLiteraturePromptCatalog(catalog),
                 translatePromptId: activeId,
@@ -462,7 +525,7 @@ export default function App() {
             ocrMode={settings.imageOcrMode}
             autoTranslate={settings.ocrAutoTranslate}
             onAutoTranslateChange={async (ocrAutoTranslate) => {
-              await onSaveSettings({ ...settings, ocrAutoTranslate });
+              await saveSettingsPatch({ ocrAutoTranslate });
             }}
             translateProvider={settings.ocrTranslateProvider}
             translateSource={settings.ocrTranslateSource}
@@ -475,20 +538,17 @@ export default function App() {
             incomingImage={ocrIncoming}
             onIncomingHandled={() => setOcrIncoming(null)}
             onOcrModeChange={async (ocrMode) => {
-              await onSaveSettings({ ...settings, imageOcrMode: ocrMode });
+              await saveSettingsPatch({ imageOcrMode: ocrMode });
             }}
             onTranslateSourceChange={async (ocrTranslateSource) => {
-              await onSaveSettings({
-                ...settings,
-                ocrTranslateSource,
-              });
+              await saveSettingsPatch({ ocrTranslateSource });
             }}
             onTranslateTargetChange={async (ocrTranslateTarget) => {
-              await onSaveSettings({ ...settings, ocrTranslateTarget });
+              await saveSettingsPatch({ ocrTranslateTarget });
             }}
           /></PagePanel>
         <PagePanel feature="text" active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
-            await onSaveSettings({ ...settings, [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
+            await saveSettingsPatch({ [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
           }} /></PagePanel>
         <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw active={page === "redraw"} /></PagePanel>
         <PagePanel feature="speech" active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>

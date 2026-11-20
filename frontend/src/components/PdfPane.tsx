@@ -1,3 +1,5 @@
+import { EmptyState } from "./EmptyState";
+import { getFixedMenuPoint, getLayoutRect } from "../viewportLayout";
 import { copyText } from "../clipboard";
 import "../pdfjsBootstrap";
 import { PdfBookmarksPanel } from "./PdfBookmarksPanel";
@@ -93,6 +95,8 @@ const PDF_DOCUMENT_OPTIONS = {
   standardFontDataUrl: `${import.meta.env.BASE_URL}standard_fonts/`,
 } as const;
 
+type PdfSearchHit = { page: number; matchIndex: number; offset: number; snippet: string };
+
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -113,7 +117,8 @@ type Props = {
   ocrMode?: string;
   onOpenImageOcr?: (file: File) => void;
   /** Extra controls rendered at the end of the PDF toolbar. */
-  toolbarExtra?: ReactNode;
+  toolbarTranslation?: ReactNode;
+  toolbarRecognition?: ReactNode;
   /** Open a document handed off from LiteratureView / EpubPane. */
   seedDoc?: LocalDocFile | null;
   /** Page hint from recent list (EPUB→PDF); PdfPane also re-reads IDB. */
@@ -423,7 +428,8 @@ export function PdfPane({
   model = "",
   ocrMode = "fast",
   onOpenImageOcr,
-  toolbarExtra,
+  toolbarTranslation,
+  toolbarRecognition,
   seedDoc = null,
   seedPageNumber = null,
   onSeedConsumed,
@@ -453,9 +459,7 @@ export function PdfPane({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchBusy, setSearchBusy] = useState(false);
-  const [searchHits, setSearchHits] = useState<
-    { page: number; snippet: string; matchIndex: number }[]
-  >([]);
+  const [searchHits, setSearchHits] = useState<PdfSearchHit[]>([]);
   const [viewMenuPos, setViewMenuPos] = useState<{
     top: number;
     left: number;
@@ -1953,7 +1957,7 @@ export function PdfPane({
       try {
         let cache = searchTextCache.current.get(pdf);
         if (!cache) { cache = new Map(); searchTextCache.current.set(pdf, cache); }
-        const hits: { page: number; snippet: string; matchIndex: number }[] = [];
+        const hits: PdfSearchHit[] = [];
         const pageMatches = controller.pageMatches ?? [], lengths = controller.pageMatchesLength ?? [];
         for (let pageIndex = 0; pageIndex < pageMatches.length && hits.length < 200; pageIndex++) {
           const matches = pageMatches[pageIndex];
@@ -1962,14 +1966,15 @@ export function PdfPane({
           let text = cache.get(pageIndex + 1);
           if (text === undefined) {
             const page = await pdf.getPage(pageIndex + 1);
-            const content = await page.getTextContent();
-            text = content.items.map(item => "str" in item ? item.str + (item.hasEOL ? "\n" : "") : "").join("");
+            const content = await page.getTextContent({ disableNormalization: true });
+            // PDF.js match offsets address the concatenated text-layer items.
+            text = content.items.map(item => "str" in item ? item.str : "").join("");
             cache.set(pageIndex + 1, text);
           }
           if (run !== searchRun.current || pdfRef.current !== pdf) return;
           for (let index = 0; index < matches.length && hits.length < 200; index++) {
             const offset = matches[index], length = lengths[pageIndex][index];
-            hits.push({ page: pageIndex + 1, snippet: text.slice(Math.max(0, offset - 24), offset + length + 36), matchIndex: hits.length });
+            hits.push({ page: pageIndex + 1, matchIndex: index, offset, snippet: text.slice(Math.max(0, offset - 24), offset + length + 36) });
           }
         }
         setSearchHits(hits);
@@ -1982,23 +1987,23 @@ export function PdfPane({
     bus.dispatch("find", { source: null, type: "", query: q, caseSensitive: false, entireWord: false, highlightAll: true, findPrevious: false, matchDiacritics: false });
   }, [searchQuery]);
   const jumpToSearchHit = useCallback(
-    (hit: { page: number; snippet: string; matchIndex: number }) => {
-      const q = searchQuery.trim();
+    (hit: PdfSearchHit) => {
+      const controller = findControllerRef.current, bus = eventBusRef.current;
+      const selected = controller?.selected;
+      const pageIndex = hit.page - 1;
+      if (!controller || !bus || !selected || controller.pageMatches?.[pageIndex]?.[hit.matchIndex] !== hit.offset) return;
       goToPage(hit.page);
-      if (q) {
-        eventBusRef.current?.dispatch("find", {
-          source: null,
-          type: "",
-          query: q,
-          caseSensitive: false,
-          entireWord: false,
-          highlightAll: true,
-          findPrevious: false,
-          matchDiacritics: false,
-        });
+      const previousPage = selected.pageIdx;
+      selected.pageIdx = pageIndex;
+      selected.matchIdx = hit.matchIndex;
+      // The text layer consumes this flag when it renders the selected match.
+      controller._scrollMatches = true;
+      if (previousPage >= 0 && previousPage !== pageIndex) {
+        bus.dispatch("updatetextlayermatches", { source: controller, pageIndex: previousPage });
       }
+      bus.dispatch("updatetextlayermatches", { source: controller, pageIndex });
     },
-    [goToPage, searchQuery],
+    [goToPage],
   );
 
   const extractCurrentPage = useCallback(
@@ -2381,8 +2386,7 @@ export function PdfPane({
             URL.revokeObjectURL(prev.imageHit.objectUrl);
           }
           return {
-            x: clientX,
-            y: clientY,
+            ...getFixedMenuPoint(clientX, clientY, 230, 270),
             pageNumber: pageNum,
             imageHit,
             selectedText,
@@ -2691,6 +2695,7 @@ export function PdfPane({
     >
       <div className="pdf-toolbar">
         <div className="pdf-toolbar-row pdf-toolbar-primary">
+          <div className="pdf-toolbar-group pdf-toolbar-actions">
         <div
           className="pdf-open-menu"
           ref={openMenuRef}
@@ -2778,10 +2783,12 @@ export function PdfPane({
         </button>
         <button type="button" className={`pdf-tool-btn${bookmarksOpen ? " active" : ""}`} disabled={!file} data-tooltip="书签" aria-label="书签" onClick={() => { setBookmarksOpen(value => !value); setOutlineOpen(false); setSearchOpen(false); }}>书签</button>
 
-        <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>
-          {engineBadge}
-        </span>
-        {toolbarExtra}
+        </div>
+        <div className="pdf-toolbar-group pdf-toolbar-translation">
+          <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>{engineBadge}</span>
+          {toolbarTranslation}
+        </div>
+        {toolbarRecognition && <div className="pdf-toolbar-group pdf-toolbar-recognition">{toolbarRecognition}</div>}
         </div>
 
         <div className="pdf-toolbar-row pdf-toolbar-secondary">
@@ -2823,9 +2830,7 @@ export function PdfPane({
             className="pdf-tool-btn pdf-view-trigger"
             disabled={!file}
             onClick={(e) => {
-              const r = (
-                e.currentTarget as HTMLButtonElement
-              ).getBoundingClientRect();
+              const r = getLayoutRect(e.currentTarget.getBoundingClientRect());
               setViewMenuPos({ top: r.bottom + 4, left: r.left });
               setViewMenuOpen((v) => !v);
             }}
@@ -3103,28 +3108,13 @@ export function PdfPane({
             <div className="pdfViewer" ref={viewerDivRef} />
           </div>
           {!file && !restoring && (
-            <div className="pdf-empty pdf-viewer-overlay">
-              {error ? (
-                <p className="boot-error">{error}</p>
-              ) : (
-                <>
-                  <p>
-                    打开带文字层的英文 PDF，在左侧 PDF
-                    区域内拖选文本即可翻译（长度不限）。
-                  </p>
-                  <p className="hint">
-                    会记住本地路径与阅读进度（页码、缩放、滚动）。文件被移动后需重新选择；进度仍会保留。扫描件无文字层时无法框选。
-                  </p>
-                </>
-              )}
-              <button
-                type="button"
-                className="send-btn"
-                onClick={() => void openFilePicker()}
-              >
+            <EmptyState className="pdf-empty pdf-viewer-overlay"
+              title={error ? <span className="boot-error">{error}</span> : "打开带文字层的英文 PDF，在文档中拖选文本即可翻译。"}
+              hint={error ? undefined : "会保留本地路径和阅读位置。扫描件无文字层时无法框选。"}
+              action={<button type="button" className="send-btn" onClick={() => void openFilePicker()}>
                 {error ? "重新选择文件" : "选择文件"}
-              </button>
-            </div>
+              </button>}
+            />
           )}
           {restoring && (
             <div className="pdf-empty pdf-viewer-overlay">
@@ -3132,9 +3122,7 @@ export function PdfPane({
             </div>
           )}
           {file && error && (
-            <div className="pdf-empty boot-error pdf-viewer-overlay">
-              {error}
-            </div>
+            <EmptyState className="pdf-empty pdf-viewer-overlay" title={<span className="boot-error">{error}</span>} />
           )}
           {file && docLoading && (
             <div className="pdf-empty pdf-viewer-loading pdf-viewer-overlay">

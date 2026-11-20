@@ -275,6 +275,70 @@ class JsonEmbedding {
         state_["backupPath"]=utf8path::pathUtf8(backup.path);
         state_["detail"]=backup.summary();
     }
+    void restoreWolfDirectory(const Path& backup, const Path& target, const Path& original,
+                              const std::string& name, json& tree, json& manifest) {
+        namespace fs = std::filesystem;
+        if (tree.value("restored", false)) return;
+        if (!tree.contains("files")) {
+            std::map<Path, bool> files;
+            auto collect = [&](const Path& root, bool fromBackup) {
+                auto directories = json::array();
+                if (!root.empty() && fs::exists(root)) {
+                    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+                        const auto path = entry.path().lexically_relative(root);
+                        if (gamefiles::reparsePoint(entry.path())) throw std::runtime_error("回滚目录包含链接");
+                        if (entry.is_directory()) directories.push_back(gamefiles::key(path));
+                        else if (entry.is_regular_file()) files[path] = fromBackup;
+                        else throw std::runtime_error("回滚目录包含非普通资源");
+                    }
+                }
+                return directories;
+            };
+            tree["oldDirectories"] = collect(target, false);
+            tree["originalDirectories"] = collect(original, true);
+            tree["hadOriginal"] = !original.empty();
+            if (fs::exists(target))
+                tree["retainedRoot"] = gamefiles::key(gamefiles::availableName(backup, Path("retained") / name));
+            tree["files"] = json::array();
+            for (const auto& [path, exists] : files)
+                tree["files"].push_back({{"name", gamefiles::key(path)}, {"existed", exists}});
+            gamefiles::ledger(backup, manifest, true);
+        }
+
+        const bool hadOriginal = tree.value("hadOriginal", false);
+        if (hadOriginal && (original.empty() || !fs::is_directory(original)))
+            throw std::runtime_error("备份原目录缺失：" + name);
+        if (hadOriginal) {
+            fs::create_directories(target);
+            for (const auto& path : tree.at("originalDirectories"))
+                fs::create_directories(gamefiles::checkedPath(target, gamefiles::relative(path)));
+        }
+        Path retainedName = name;
+        if (tree.contains("retainedRoot")) {
+            const auto savedRoot = gamefiles::relative(tree.at("retainedRoot"));
+            const auto saved = gamefiles::checkedPath(backup, savedRoot);
+            retainedName = savedRoot.lexically_relative("retained");
+            fs::create_directories(saved);
+            for (const auto& path : tree.at("oldDirectories"))
+                fs::create_directories(gamefiles::checkedPath(saved, gamefiles::relative(path)));
+        }
+        // Existing nonempty directories cannot be swapped atomically on Windows.
+        for (auto& file : tree.at("files")) {
+            const auto path = gamefiles::relative(file.at("name"));
+            const auto source = file.value("existed", false) ? gamefiles::checkedPath(original, path) : Path{};
+            gamefiles::restoreFile(backup, gamefiles::checkedPath(target, path), source, retainedName / path, file, manifest);
+        }
+        const auto& old = tree.at("oldDirectories");
+        for (auto it = old.rbegin(); it != old.rend(); ++it) {
+            const auto path = gamefiles::relative(*it);
+            const auto directory = gamefiles::checkedPath(target, path);
+            if ((!hadOriginal || !fs::is_directory(gamefiles::checkedPath(original, path)))
+                && fs::is_directory(directory) && fs::is_empty(directory)) fs::remove(directory);
+        }
+        if (!hadOriginal && fs::is_directory(target) && fs::is_empty(target)) fs::remove(target);
+        tree["restored"] = true;
+        gamefiles::ledger(backup, manifest, true);
+    }
     void restoreBackup(const Path& backup) {
         detail("正在恢复原资源");
         auto ledger = json::parse(read(backup / "manifest.json"));
@@ -285,9 +349,9 @@ class JsonEmbedding {
                 for(const auto& item:ledger.at("resources")) originals.insert(item.at("name").get<std::string>());
                 for(const auto& name:gamepatch::sources(game_,{}))
                     if(!originals.contains(gamefiles::key(name))) ledger["resources"].push_back({{"name",gamefiles::key(name)},{"existed",false}});
-                saveLedger(backup,ledger);
+                gamefiles::ledger(backup, ledger, true);
             }
-            gamefiles::restore(game_, backup);
+            gamefiles::restore(game_, backup, false);
             if(wolfText) {
                 json files=json::array();
                 for(const auto& item:ledger.at("resources")) files.push_back({{"path",item.at("name")}});
@@ -304,32 +368,41 @@ class JsonEmbedding {
             if (!resourceName(name)) throw std::runtime_error("备份包含无效资源名称");
             if (entry.value("restored", false)) continue;
             const auto originalPack = backup / "Data" / (name + ".wolf"), currentPack = game_ / "Data" / (name + ".wolf");
-            if (std::filesystem::exists(originalPack) && std::filesystem::exists(currentPack) && ledger.value("kind", "") != "snapshot") throw std::runtime_error("当前存在同名资源包，回滚已停止以避免覆盖：" + name);
+            if (std::filesystem::exists(originalPack) && std::filesystem::exists(currentPack) && ledger.value("kind", "") != "snapshot") {
+                const auto archive = entry.value("archiveRollback", json::object());
+                if (!archive.value("restored", false)
+                    && (!archive.contains("retainedPath") || !gamefiles::sameFileContents(originalPack, currentPack)))
+                    throw std::runtime_error("当前存在同名资源包，回滚已停止以避免覆盖：" + name);
+            }
             if (entry.value("hadArchive", false) && !std::filesystem::exists(originalPack) && !std::filesystem::exists(currentPack)) throw std::runtime_error("备份原资源缺失：" + name);
             if (entry.value("hadDirectory", false) && !std::filesystem::exists(backup / "Data" / name) && !std::filesystem::exists(game_ / "Data" / name)) throw std::runtime_error("备份原目录缺失：" + name);
         }
-        ledger["resources"] = resources; ledger["state"] = "rollingBack"; saveLedger(backup, ledger);
-        size_t completed = 0; progress(0, resources.size());
-        for (auto& entry : ledger["resources"]) {
-            if (entry.value("restored", false)) { progress(++completed, resources.size()); continue; }
-            const auto name = entry.at("name").get<std::string>(); const auto target = game_ / "Data" / name;
-            const auto directory = backup / "Data" / name, archive = backup / "Data" / (name + ".wolf");
+        ledger["resources"] = std::move(resources);
+        ledger["state"] = "rollingBack";
+        gamefiles::ledger(backup, ledger, true);
+        auto& entries = ledger.at("resources");
+        size_t completed = 0; progress(0, entries.size());
+        for (auto& entry : entries) {
+            if (entry.value("restored", false)) { progress(++completed, entries.size()); continue; }
+            const auto name = entry.at("name").get<std::string>();
+            const Path dirName = Path("Data") / name, packName = Path("Data") / (name + ".wolf");
+            const auto directory = gamefiles::checkedPath(backup, dirName);
+            const auto archive = gamefiles::checkedPath(backup, packName);
             const bool restoreDirectory = std::filesystem::exists(directory), restoreArchive = std::filesystem::exists(archive);
-            if (std::filesystem::exists(target) && (restoreDirectory || (!entry.value("hadDirectory", false) && restoreArchive))) {
-                auto retained = backup / "retained" / name; int number = 2;
-                while (std::filesystem::exists(retained)) retained = backup / "retained" / (name + "-" + std::to_string(number++));
-                std::filesystem::create_directories(retained.parent_path()); std::filesystem::rename(target, retained);
-            }
-            if (restoreDirectory) std::filesystem::rename(directory, target);
             if (restoreArchive) {
-                const auto current = game_ / "Data" / (name + ".wolf");
-                if (std::filesystem::exists(current)) { auto retained = backup / "retained" / (name + ".wolf"); int number = 2; while (std::filesystem::exists(retained)) retained = backup / "retained" / (name + "-" + std::to_string(number++) + ".wolf"); std::filesystem::create_directories(retained.parent_path()); std::filesystem::rename(current, retained); }
-                std::filesystem::rename(archive, current);
+                auto& state = entry["archiveRollback"];
+                if (state.is_null()) state = json::object();
+                gamefiles::restoreFile(backup, gamefiles::checkedPath(game_, packName), archive, packName.filename(), state, ledger);
             }
-            entry["restored"] = true; saveLedger(backup, ledger);
-            progress(++completed, resources.size());
+            if (restoreDirectory || entry.contains("directoryRollback") || (!entry.value("hadDirectory", false) && restoreArchive)) {
+                auto& state = entry["directoryRollback"];
+                if (state.is_null()) state = json::object();
+                restoreWolfDirectory(backup, gamefiles::checkedPath(game_, dirName), restoreDirectory ? directory : Path{}, name, state, ledger);
+            }
+            entry["restored"] = true;
+            gamefiles::ledger(backup, ledger, true);
+            progress(++completed, entries.size());
         }
-        ledger["state"] = "rolledBack"; saveLedger(backup, ledger);
     }
     static std::vector<std::string> rpgControls(const std::string& value) {
         static const std::regex pattern(R"((?:if|en)\([^)\r\n]+\)|\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\])?|[{}.!|><^$\\])|%%|%[1-9][0-9]*(?![0-9$]))", std::regex::icase);
@@ -465,23 +538,21 @@ class JsonEmbedding {
         if (directory != "data" && directory != "www/data" && directory != "www\\data") throw std::runtime_error("备份数据目录无效");
         for (const auto& item : ledger.at("resources")) {
             const auto name = item.at("name").get<std::string>();
-            if (!rpgtext::dataFile(name) || !std::filesystem::is_regular_file(backup / "original" / name)) throw std::runtime_error("备份原资源缺失或名称无效：" + name);
+            if (!rpgtext::dataFile(name) || (!item.value("restored", false)
+                && !std::filesystem::is_regular_file(gamefiles::checkedPath(backup, Path("original") / name))))
+                throw std::runtime_error("备份原资源缺失或名称无效：" + name);
         }
-        ledger["state"] = "rollingBack"; saveLedger(backup, ledger); size_t completed = 0; progress(0, ledger["resources"].size());
-        for (auto& item : ledger["resources"]) {
+        ledger["state"] = "rollingBack"; gamefiles::ledger(backup, ledger, true);
+        size_t completed = 0; progress(0, ledger.at("resources").size());
+        for (auto& item : ledger.at("resources")) {
             if (!item.value("restored", false)) {
-                const auto name = item.at("name").get<std::string>(); const auto target = game_ / utf8path::pathFromUtf8(directory) / name;
-                const auto staging = backup / "restore" / name; write(staging, read(backup / "original" / name));
-                if (std::filesystem::exists(target)) {
-                    auto retained = backup / "retained" / name; int number = 2;
-                    while (std::filesystem::exists(retained)) retained = backup / "retained" / (name + "-" + std::to_string(number++));
-                    std::filesystem::create_directories(retained.parent_path()); std::filesystem::rename(target, retained);
-                }
-                std::filesystem::create_directories(target.parent_path()); std::filesystem::rename(staging, target); item["restored"] = true; saveLedger(backup, ledger);
+                const auto name = item.at("name").get<std::string>();
+                const auto target = gamefiles::checkedPath(game_, utf8path::pathFromUtf8(directory) / name);
+                const auto original = gamefiles::checkedPath(backup, Path("original") / name);
+                gamefiles::restoreFile(backup, target, original, name, item, ledger);
             }
-            progress(++completed, ledger["resources"].size());
+            progress(++completed, ledger.at("resources").size());
         }
-        ledger["state"] = "rolledBack"; saveLedger(backup, ledger);
     }
     gameresourcebackup::Snapshot scopedBackup() {
         detail("按范围备份资源");
@@ -598,7 +669,22 @@ public:
             if (backup.empty() || blocked) throw std::runtime_error("请先回滚最新一份未恢复的备份");
             const auto receipt=json::parse(read(backup/"manifest.json"));if(receipt.value("managedPatch",false)&&receipt.contains("patchBefore")&&receipt["patchBefore"].value("installed",false)&&gamepatch::record(game_).is_null())throw std::runtime_error("文本补丁安装原件已清理，无法恢复这份旧补丁状态；请选择原始资源备份");
             { std::lock_guard lock(mutex_); state_ = {{"state", "running"}, {"action", action}, {"gamePath", utf8path::pathUtf8(game_)}, {"backupPath", utf8path::pathUtf8(backup)}, {"detail", "正在恢复原资源"}}; }
-            thread_ = std::thread([this, backup] { try { restoreBackup(backup); gamepatch::afterRestore(game_,backup); std::lock_guard lock(mutex_); state_["state"] = "rolledBack"; state_["detail"] = "原资源已恢复；替换后的目录保留在备份 retained 中"; } catch (const std::exception& e) { std::lock_guard lock(mutex_); state_["state"] = "error"; state_["detail"] = json::parse(json(e.what()).dump(-1, ' ', false, json::error_handler_t::replace)); } });
+            thread_ = std::thread([this, backup] {
+                try {
+                    restoreBackup(backup);
+                    gamepatch::afterRestore(game_, backup);
+                    auto manifest = json::parse(read(backup / "manifest.json"));
+                    manifest["state"] = "rolledBack";
+                    gamefiles::ledger(backup, manifest, true);
+                    std::lock_guard lock(mutex_);
+                    state_["state"] = "rolledBack";
+                    state_["detail"] = "原资源已恢复，替换前的资源保留在备份 retained 中";
+                } catch (const std::exception& e) {
+                    std::lock_guard lock(mutex_);
+                    state_["state"] = "error";
+                    state_["detail"] = json::parse(json(e.what()).dump(-1, ' ', false, json::error_handler_t::replace));
+                }
+            });
             return;
         } else if (action == "embed" || action == "apply") { std::lock_guard lock(mutex_); state_["state"] = "running"; state_["action"] = action; }
         else throw std::runtime_error("未知 JSON 嵌入操作");

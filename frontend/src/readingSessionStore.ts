@@ -81,7 +81,7 @@ export function readingSessionStore<S extends DocumentIdentity>(
       const session = { ...saved, ...meta };
       await request(current.put(session, "current"));
       const previous: Entry | undefined = await request(recent.get(meta.filePath));
-      await request(recent.put({ ...session, id: meta.filePath, openedAt: previous?.openedAt ?? Date.now() }));
+      if (previous) await request(recent.put({ ...session, id: previous.id, openedAt: previous.openedAt }));
     }),
   };
 }

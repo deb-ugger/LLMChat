@@ -1,3 +1,4 @@
+import { getFixedMenuPoint } from "../viewportLayout";
 import { showAppNotice } from "./AppNotice";
 import { useEffect, useRef, useState } from "react";
 import type { ConversationSummary } from "../api";
@@ -11,7 +12,7 @@ type Props = {
   onNewChat: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void | Promise<void>;
+  onRename: (id: string, title: string) => Promise<void>;
 };
 
 type ContextMenuState = {
@@ -37,6 +38,7 @@ export function Sidebar({
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -76,16 +78,18 @@ export function Sidebar({
     committingRef.current = true;
     const next = renameDraft.trim();
     const prev = conversations.find((c) => c.id === id)?.title ?? "";
-    setRenamingId(null);
-    setRenameDraft("");
+    setRenameSaving(true);
     try {
       if (next && next !== prev) {
         await onRename(id, next);
       }
+      setRenamingId(null);
+      setRenameDraft("");
     } catch (e) {
       showAppNotice(e instanceof Error ? e.message : "重命名失败", "error");
     } finally {
       committingRef.current = false;
+      setRenameSaving(false);
     }
   };
 
@@ -93,8 +97,7 @@ export function Sidebar({
     setMenu({
       id: conversation.id,
       title: conversation.title,
-      x: Math.max(4, Math.min(x, window.innerWidth - 146)),
-      y: Math.max(4, Math.min(y, window.innerHeight - 88)),
+      ...getFixedMenuPoint(x, y, 146, 88, 4),
     });
   };
 
@@ -130,6 +133,8 @@ export function Sidebar({
                 className="conv-rename-input"
                 aria-label="对话名称"
                 value={renameDraft}
+                readOnly={renameSaving}
+                aria-busy={renameSaving}
                 onChange={(e) => setRenameDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing) return;
@@ -137,7 +142,7 @@ export function Sidebar({
                     e.preventDefault();
                     void commitRename();
                   }
-                  if (e.key === "Escape") {
+                  if (e.key === "Escape" && !committingRef.current) {
                     e.preventDefault();
                     setRenamingId(null);
                     setRenameDraft("");
@@ -181,6 +186,7 @@ export function Sidebar({
             autoFocus
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
+              if (committingRef.current) return;
               setRenameDraft(menu.title);
               setRenamingId(menu.id);
               setMenu(null);
