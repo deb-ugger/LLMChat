@@ -11,7 +11,7 @@ export const UNITY_STAGE_TABS = [
   { step: 3, id: "3", label: "生成与应用", imageOnly: false },
 ] as const;
 export const unityImageHasRefusal = (image: UnityImage) => image.renderedKind !== "imported" && image.regions.some(region => region.selected && isTranslationRefusal(region.text, region.translation));
-export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
+export const unityImageResultReady = (image: UnityImage) => image.completed && !image.error && !image.regions.some(region => region.selected && region.error) && !!image.renderedFile && !unityImageHasRefusal(image);
 export const unityImageHasUntranslatedJapanese = (image: UnityImage, target?: string) => !!image.renderedFile && image.renderedKind !== "imported" &&
   image.regions.some(region => region.selected && gameImageJapaneseTextIssue(region.text, region.translation, target || region.translationTarget || image.renderedTarget));
 export const imageTranslationMatchesTarget = (image: UnityImage, target?: string) =>

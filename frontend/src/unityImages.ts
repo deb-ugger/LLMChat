@@ -6,7 +6,7 @@ import type { UnityImage, UnityImageRegion, UnityProject, UnityProgress } from "
 import { LocalPaddleOcr, type PaddleOcrLine } from "./ocr/paddleOcr";
 import { LocalMangaOcr } from "./ocr/mangaOcr";
 import { isTranslationRefusal, TRANSLATION_REFUSAL } from "./unityTokens";
-import { imageTranslationMatchesTarget, unityImageHasUntranslatedJapanese } from "./unityWorkflow";
+import { unityImageWorkDone } from "./unityWorkflow";
 import { gameImageJapaneseTextIssue } from "./gameDisplayText";
 
 async function png(canvas: HTMLCanvasElement) {
@@ -262,7 +262,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
   const selectedForTranslation = (region: UnityImageRegion) => region.selected && (services.includeRegion?.(region.text) ?? true);
   const matchesTarget = (value?: string) => !target || !value || value === target;
   const imageDone = (image: UnityImage) => mode === "recognize" ? image.ocrCompleted :
-    image.completed && (!!image.renderedFile || !!image.noTranslationNeeded) && imageTranslationMatchesTarget(image, target) && !unityImageHasUntranslatedJapanese(image, target);
+    unityImageWorkDone(image, target);
   if (!Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 100) throw new Error("翻译置信度阈值必须在 0% 到 100% 之间");
   // This lane only changes images; retain the read-only text/resource collections.
   const next = { ...project, images: (project.images || []).map(original => {
@@ -397,6 +397,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         report(`${image.name} · 生成译图`);
         const regions = image.regions.map(region => region.selected && !selectedForTranslation(region) ? { ...region, selected: false } : region);
         const result = await services.write(next, image, await services.render(source||await services.read(image), regions, image)); signal.throwIfAborted();
+        image.regions = regions;
         image.renderedFile = result.path; image.renderedHash = result.hash;image.renderedKind="generated";
       }
       image.noTranslationNeeded = false; image.renderedTarget = target;
