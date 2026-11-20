@@ -10,7 +10,8 @@ type RailEdge = { from: string; to: string };
 
 export type RailView = {
   nodes: { id: string; className: string }[];
-  connectors: { index: number; className: string }[];
+  connectors: { index: number; className: string; parallelLane: boolean }[];
+  parallelRegions: { start: number; end: number; lanes: number }[];
   beam: { from: number; to: number; active: boolean; isStatic: boolean };
   lanes: { index: number; count: number }[];
 };
@@ -56,8 +57,44 @@ export function deriveRailView(
   const selected = steps.findIndex(step => step.selected);
   const highlightedTrack = Math.min(Math.max(0, selected), steps.length - 2);
   const enabledSteps = steps.flatMap((step, index) => isEnabled(step) ? [index] : []);
-  const unfinished = enabledSteps.filter(index => steps[index].state !== "complete");
   const lastEnabled = enabledSteps.at(-1) ?? -1;
+  const parallelLanes = crossings.map(() => false);
+  for (const [source, targets] of outgoing) {
+    if (targets.size < 2) continue;
+    const start = order.get(source)!;
+    const visited = new Set([source, ...targets]);
+    let frontier = [...targets];
+    let end = lastEnabled;
+    // Each frontier is one more edge from the fork. Resolve ties by rail order.
+    while (frontier.length) {
+      const joins = frontier.filter(id => isFanIn(id) && order.get(id)! > start);
+      if (joins.length) {
+        end = Math.min(...joins.map(id => order.get(id)!));
+        break;
+      }
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const target of outgoing.get(id) ?? []) {
+          if (visited.has(target)) continue;
+          visited.add(target);
+          next.push(target);
+        }
+      }
+      frontier = next;
+    }
+    for (let index = start; index < end; index++) {
+      if (isEnabled(steps[index]) && isEnabled(steps[index + 1])) parallelLanes[index] = true;
+    }
+  }
+  const parallelRegions: RailView["parallelRegions"] = [];
+  parallelLanes.forEach((parallel, index) => {
+    if (!parallel) return;
+    const last = parallelRegions.at(-1);
+    if (last?.end === index) last.end++;
+    else parallelRegions.push({ start: index, end: index + 1, lanes: 2 });
+  });
+
+  const unfinished = enabledSteps.filter(index => steps[index].state !== "complete");
   const from = unfinished[0] ?? lastEnabled;
   const limit = graphMode || running < 0 ? lastEnabled : Math.max(from, running);
   const errorStep = unfinished.find(index => steps[index].state === "error");
@@ -76,7 +113,7 @@ export function deriveRailView(
     const skippedConnector = isSkipped(step) || isSkipped(next);
     const parallel = !graphMode && !skippedConnector && step.running && next.running;
     lanes.push({ index, count: graphMode ? crossings[index] : parallel ? 2 : 1 });
-    return { index, className: [
+    return { index, parallelLane: parallelLanes[index], className: [
       "game-workflow-connector", (step.selected || next.selected) && "is-linked",
       !isSkipped(step) && running >= 0 && index >= running && "is-flowing",
       index === highlightedTrack && "is-flow-highlight",
@@ -89,7 +126,7 @@ export function deriveRailView(
   const hasProcessing = enabledSteps.some(index => index > 0 && index < steps.length - 1);
   const active = enabledSteps.length > 1 && (!hasSkipped || unfinished.length > 0 && (!graphMode || hasProcessing));
   return {
-    nodes, connectors, lanes,
+    nodes, connectors, lanes, parallelRegions,
     beam: { from, to, active, isStatic: from === to },
   };
 }

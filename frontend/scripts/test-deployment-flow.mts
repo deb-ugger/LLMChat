@@ -42,6 +42,13 @@ const topologies = [
 ];
 const states = ["全 pending", "首项 complete", "中间 complete", "中间 error", "末尾 running"];
 const toggles = [[], ["text"], ["image","mosaic"], []];
+const expectedRegions = [
+  [[], [], []],
+  [[[0, 4]], [[2, 4]], [[0, 1]]],
+  [[[0, 2]], [], [[0, 1]]],
+  [[], [], []],
+  [[], [], []],
+];
 
 async function runWithStubs(plan, options: { abortAfter?: string; failAt?: string; completed?: string[] } = {}) {
   const executed: string[] = [], counts: number[] = [], runSteps: string[][] = [], stopped: string[] = [], errors: string[] = [];
@@ -92,7 +99,7 @@ async function runWithStubs(plan, options: { abortAfter?: string; failAt?: strin
   return { executed, counts:counts.slice(1), stopped, errors };
 }
 
-function railOracle(steps, expectedEdges, disabled, disconnected, state) {
+function railOracle(steps, expectedEdges, disabled, disconnected, state, parallelRegions) {
   const blocked = new Set(disabled);
   const enabled = steps.map((step,i) => blocked.has(step.id) ? -1 : i).filter(i => i >= 0);
   const outgoing = id => expectedEdges.filter(edge => edge.from === id).length;
@@ -110,18 +117,19 @@ function railOracle(steps, expectedEdges, disabled, disconnected, state) {
   }));
   const connectors = steps.slice(0,-1).map((step,index) => {
     const next = steps[index+1], skipped = blocked.has(step.id) || blocked.has(next.id);
-    return {index, className:classes("game-workflow-connector", index===3 && "is-linked", index===3 && "is-flow-highlight",
+    const parallelLane = parallelRegions.some(({start,end}) => start <= index && index < end);
+    return {index, parallelLane, className:classes("game-workflow-connector", index===3 && "is-linked", index===3 && "is-flow-highlight",
       !skipped && step.state==="complete" && (next.state==="complete" ? "is-done" : "is-handed-off"),
       outgoing(step.id)>1 && "is-fan-out", incoming(next.id)>1 && "is-fan-in",
       !lanes[index].count && "is-gap", missing(next) && "is-unlinked", skipped && "is-skipped")};
   });
   const from = state === 1 ? enabled[1] : enabled[0];
   const to = state === 1 && enabled.length === 2 ? from : state === 3 && enabled.includes(2) ? 2 : 4;
-  return {nodes,connectors,lanes,beam:{from,to,active:enabled.length>2,isStatic:from===to}};
+  return {nodes,connectors,lanes,parallelRegions,beam:{from,to,active:enabled.length>2,isStatic:from===to}};
 }
 
 let checked = 0;
-for (const topology of topologies) {
+for (const [topologyIndex, topology] of topologies.entries()) {
   const rawEdges = edgesOf(topology.edges);
   const baseline = [];
   for (let toggle = 0; toggle < toggles.length; toggle++) {
@@ -133,6 +141,7 @@ for (const topology of topologies) {
     const sequence = expected.flat();
     const validator = validateDeploymentPlan(plan);
     const projected = edgesOf(edgeSpec);
+    const regions = expectedRegions[topologyIndex][variant].map(([start,end]) => ({ start,end,lanes:2 }));
     const disconnected = topology.name.startsWith("T2") && !disabled.includes("mosaic") ? ["mosaic"] : [];
     for (let state = 0; state < states.length; state++) {
       const label = topology.name + " / " + toggle + " / " + states[state];
@@ -149,7 +158,7 @@ for (const topology of topologies) {
       const rail = deriveRailView(steps, validator.effectiveEdges, validator.enabledSteps, disabled);
       const sorted = rows => rows.map(row => ({...row,className:row.className.split(" ").sort()}));
       assert.deepEqual({...rail,nodes:sorted(rail.nodes),connectors:sorted(rail.connectors)},
-        railOracle(steps,projected,disabled,disconnected,state),label+" rail");
+        railOracle(steps,projected,disabled,disconnected,state,regions),label+" rail");
       if (toggle===0) baseline[state]=rail;
       if (toggle===3) {
         deriveRailView(steps,validateDeploymentPlan({...plan,disabled:[...disabled,"text"]}).effectiveEdges,undefined,[...disabled,"text"]);
@@ -187,4 +196,16 @@ assert.equal(deriveRailView([]).beam.active,false);
 assert.equal(deriveRailView(ordinary,[],["a"],["b"]).beam.active,false);
 assert.ok(!deriveRailView([{...ordinary[0],disconnected:true}],[],[],["a"]).nodes[0].className.includes("is-unlinked"));
 console.log("PASS 普通轨道并行、空轨道、单节点及跳过告警互斥");
+const branchRail = (nodeIds, connections, skipped = []) => deriveRailView(
+  [...nodeIds].map(id => ({ id,state:"pending" })),
+  connections.split(" ").map(([from,to]) => ({ from,to })),
+  undefined, skipped,
+);
+assert.deepEqual(branchRail("abcdefg", "ab ac bd cd be cf eg fg").parallelRegions, [{start:0,end:3,lanes:2}]);
+assert.deepEqual(branchRail("abcd", "ab ac").parallelRegions, [{start:0,end:3,lanes:2}]);
+assert.deepEqual(branchRail("abcdefgh", "ac ad ce de bf bg fh gh").parallelRegions, [{start:0,end:7,lanes:2}]);
+const split = branchRail("abcdefg", "ab af bg fg", ["d"]);
+assert.deepEqual(split.parallelRegions, [{start:0,end:2,lanes:2},{start:4,end:6,lanes:2}]);
+assert.deepEqual(split.connectors.map(item => item.parallelLane), [true,true,false,false,true,true]);
+console.log("PASS 并行区间最短汇合、无汇合回退、区间并集及跳过截断");
 console.log("PASS 总计 " + checked + " 个矩阵用例及独立边界回归");

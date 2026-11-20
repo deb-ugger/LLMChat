@@ -90,7 +90,7 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, sk
             <span className="game-workflow-label">{item.label}</span>
           </button>
           {next && connector && <span aria-hidden="true"
-            className={connector.className} data-lanes={lanes[index].count}
+            className={connector.parallelLane ? `${connector.className} is-parallel-lane` : connector.className} data-lanes={lanes[index].count}
             style={{
               "--track-flow-order": index,
               "--track-flow-count": connectors.length,
