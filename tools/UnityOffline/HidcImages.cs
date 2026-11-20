@@ -122,11 +122,56 @@ public static class HidcImages
         var h = ReadHeader(bytes); byte[]? raw = null;
         foreach (var frame in Decode(bytes, cancel)) { if (frame.Index != image.HidcFrame) continue; raw = frame.Data; break; }
         if (raw == null) throw new InvalidDataException("HIDC 帧索引不存在：" + image.Name);
-        var rgba = Pixels(h, raw); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        WriteSource(path, h, raw);
+    }
+
+    static void WriteSource(string path, Header h, byte[] raw) {
+        var rgba = Pixels(h, raw);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try { using (var output = File.Create(temporary)) FastPng.Write(rgba, h.Width, h.Height, output); File.Move(temporary, path, true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    internal static Dictionary<string, string> PrepareSources(Project project, Action cancel) {
+        var errors = new Dictionary<string, string>();
+        foreach (var chunk in project.Images.Where(image => image.Kind == "hidc").GroupBy(image => image.HidcPayload)) {
+            cancel();
+            var pending = new Dictionary<int, List<(ImageResource Image, string Path)>>();
+            foreach (var image in chunk) {
+                try {
+                    var path = Program.Within(project.Folder, image.SourceFile);
+                    if (File.Exists(path)) continue;
+                    var index = image.HidcFrame ?? throw new InvalidDataException("缺少 HIDC 帧索引");
+                    if (!pending.TryGetValue(index, out var targets)) pending[index] = targets = [];
+                    targets.Add((image, path));
+                } catch (Exception error) { errors[image.Id] = error.Message; }
+            }
+            if (pending.Count == 0) continue;
+            try {
+                var bytes = File.ReadAllBytes(Program.Within(project.Folder, chunk.Key));
+                var hash = Digest(bytes);
+                var header = ReadHeader(bytes);
+                foreach (var frame in Decode(bytes, cancel)) {
+                    if (!pending.Remove(frame.Index, out var targets)) continue;
+                    foreach (var (image, path) in targets) {
+                        try {
+                            if (Digest(Encoding.UTF8.GetBytes(hash + ":" + frame.Index)) != image.SourceHash)
+                                throw new InvalidDataException("HIDC 原始图片块缓存已改变，请重新扫描：" + image.Name);
+                            WriteSource(path, header, frame.Data);
+                        } catch (Exception error) { errors[image.Id] = error.Message; }
+                    }
+                    if (pending.Count == 0) break;
+                }
+                foreach (var (image, _) in pending.Values.SelectMany(list => list))
+                    errors[image.Id] = "HIDC 帧索引不存在：" + image.Name;
+            } catch (Exception error) when (error is not PausedException) {
+                foreach (var (image, _) in pending.Values.SelectMany(list => list))
+                    errors[image.Id] = error.Message;
+            }
+        }
+        return errors;
+    }
+
     // Changed frames are rebuilt as sparse references; every untouched frame keeps
     // its original compressed blocks, including frames referencing an edited frame.
     public static void Apply(Project project, ImageResource[] images, AssetTypeValueField field) {

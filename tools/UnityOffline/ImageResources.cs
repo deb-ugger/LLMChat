@@ -112,6 +112,10 @@ public static class ImageResources
     public static object Preview(Request request) {
         Program.CheckStop(request, "");
         var project = request.Project ?? Program.Load(Path.Combine(request.Path, "unity-project.json"));
+        if (!request.Thumbnail && string.IsNullOrEmpty(request.ImageId)) {
+            if (project.Images.Count > 16) throw new Exception("单次原图准备请求不能超过 16 张");
+            return new { errors = HidcImages.PrepareSources(project, () => Program.CheckStop(request, "")) };
+        }
         if(request.Thumbnail&&string.IsNullOrEmpty(request.ImageId)){
             if(project.Images.Count>8)throw new Exception("单次缩略图请求不能超过 8 张");
             return new { images=project.Images.Select(item=>{

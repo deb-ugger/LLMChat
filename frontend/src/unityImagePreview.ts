@@ -1,8 +1,38 @@
-import { readFileBytes } from "./localDocFile";
+import { fileStat, readFileBytes } from "./localDocFile";
 import { unityRun, type UnityImage, type UnityProject } from "./unityOffline";
 export type ImagePreviewReader = (image: UnityImage, translated: boolean, thumbnail: boolean, signal: AbortSignal) => Promise<Blob>;
+function hasHidcCachePath(image: UnityImage) {
+ return /^[a-f0-9]{64}$/.test(image.id) && image.sourceFile === "images/source/" + image.id + ".png";
+}
+
+export async function prepareUnityImageSources(project: UnityProject, images: readonly UnityImage[], signal: AbortSignal) {
+ const missing = await Promise.all(images.filter(image => image.kind === "hidc").map(async image => {
+  if (!hasHidcCachePath(image)) return image;
+  try {
+   await fileStat(project.folder + "/" + image.sourceFile);
+   return null;
+  } catch { return image; }
+ }));
+ signal.throwIfAborted();
+ const pending = missing.filter(image => image !== null);
+ if (pending.length === 0) return {};
+ const { errors } = await unityRun<{ errors: Record<string, string> }>("preview-image",
+  { project: { folder: project.folder, images: pending } }, undefined, signal);
+ return errors;
+}
+
 export async function readUnitySourceImage(project: UnityProject, image: UnityImage, signal?: AbortSignal): Promise<Blob> {
- if (image.kind !== "hidc") return new Blob([await readFileBytes(project.folder + "/" + image.sourceFile)], { type: "image/png" });
+ signal?.throwIfAborted();
+ if (image.kind !== "hidc" || hasHidcCachePath(image)) {
+  try {
+   const bytes = await readFileBytes(project.folder + "/" + image.sourceFile);
+   signal?.throwIfAborted();
+   return new Blob([bytes], { type: "image/png" });
+  } catch (error) {
+   if (image.kind !== "hidc") throw error;
+   signal?.throwIfAborted();
+  }
+ }
  const value = await unityRun<{data:string}>("preview-image", {project:{folder:project.folder,images:[image]},imageId:image.id}, undefined, signal);
  return fetch("data:image/png;base64," + value.data, {signal}).then(response => response.blob());
 }

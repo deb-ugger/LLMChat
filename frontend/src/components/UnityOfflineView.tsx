@@ -23,7 +23,7 @@ import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSe
 import { GameProgressBar, GameStepProgress } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
-import { readUnitySourceImage } from "../unityImagePreview";
+import { prepareUnityImageSources, readUnitySourceImage } from "../unityImagePreview";
 import { registerAppCloseGuard } from "../appClose";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
@@ -1829,6 +1829,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (!current) throw new Error("请先扫描图片资源");
     return readUnitySourceImage(current, image, signal);
   }, []);
+  const prepareMosaicSources = useCallback((images: readonly UnityImage[], signal: AbortSignal) => {
+    const current = latest.current;
+    if (!current) throw new Error("请先扫描图片资源");
+    return prepareUnityImageSources(current, images, signal);
+  }, []);
   const mosaicRequest = { root, path: project?.folder || "" };
   const mosaicStorage = mosaicIndex && {
     index: mosaicIndex,
@@ -2547,7 +2552,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {!deploymentPage && <button className="unity-workspace-divider" role="separator" aria-orientation="vertical" aria-label="调整步骤区和结果区宽度" aria-valuenow={Math.round(panelWidth.width)} onMouseDown={e => panelWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); panelWidth.setWidth(panelWidth.width + (e.key === "ArrowRight" ? 16 : -16)); } }} />}
     {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
-        <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
+        <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
     </div>}
     <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
       const current = latest.current;

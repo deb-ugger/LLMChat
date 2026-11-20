@@ -29,6 +29,7 @@ type MosaicStorage = {
 type Props = {
   gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
+  prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
   controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
 };
 
@@ -64,7 +65,7 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, controls, visible: paneVisible = true, disabled = false, onBusy }: Props) {
+export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy }: Props) {
   const task = useRef<AbortController | null>(null);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
   const [rows, setRows] = useState<Results>(() => {
@@ -284,27 +285,35 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         const scanner = lada ?? createMosaicGridScanner();
         try {
           while (!signal.aborted && cursor < targets.length) {
-            const image = targets[cursor++];
-            const old = resultFor(rows, image);
-            try {
-              const input = await read(image, signal);
+            const start = cursor;
+            cursor += prepareSources ? 16 : 1;
+            const next = targets.slice(start, cursor);
+            const errors: Record<string, string> = prepareSources ? await prepareSources(next, signal) : {};
+            for (const image of next) {
               if (signal.aborted) break;
-              const { boxes, signature } = await scanner.scan(input);
-              batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-                checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0,
-                signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined };
-            } catch (cause) {
-              if (signal.aborted) break;
-              failures++;
-              batch[image.id] = { ...old, scanned: false, reason: cause instanceof Error ? cause.message : String(cause) };
-            }
-            completed++;
-            if ((completed - initial) % 64 === 0) checkpoint();
-            const now = performance.now();
-            if (now - lastReport >= 150) {
-              report(completed);
-              setProgress(image.name);
-              lastReport = now;
+              const old = resultFor(rows, image);
+              try {
+                const prepareError = errors[image.id];
+                if (prepareError) throw new Error(prepareError);
+                const input = await read(image, signal);
+                if (signal.aborted) break;
+                const { boxes, signature } = await scanner.scan(input);
+                batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
+                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0,
+                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined };
+              } catch (cause) {
+                if (signal.aborted) break;
+                failures++;
+                batch[image.id] = { ...old, scanned: false, reason: cause instanceof Error ? cause.message : String(cause) };
+              }
+              completed++;
+              if ((completed - initial) % 64 === 0) checkpoint();
+              const now = performance.now();
+              if (now - lastReport >= 150) {
+                report(completed);
+                setProgress(image.name);
+                lastReport = now;
+              }
             }
           }
         } finally { if (!lada) await scanner.release(); }
