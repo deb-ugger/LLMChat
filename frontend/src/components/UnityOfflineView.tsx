@@ -62,7 +62,7 @@ import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLega
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
-import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
+import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, type DeploymentActions, type DeploymentFlow, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, scanMosaic, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
@@ -98,6 +98,7 @@ const imageResetDescriptions: Record<UnityImageResetPhase, string> = {
   render: "清除译图，保留识别结果和图片译文。",
 };
 const deploymentLabel: Record<DeploymentStep, string> = { scan: "扫描资源", text: "文本翻译", image: "图片翻译", mosaic: "图片去码", apply: "生成与应用" };
+const deploymentStageId = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" } as const;
 
 type DeploymentPatch = UnityPatch & { deploymentExcluded?: DeploymentPhase[] };
 
@@ -127,6 +128,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
   const [deploymentPlanState, setDeploymentPlanState] = useState<{ root: string; plan: DeploymentPlan }>();
+  const [deploymentFlow, setDeploymentFlow] = useState<{ root: string; flow: DeploymentFlow }>();
+  const receiveDeploymentFlow = useCallback((flow: DeploymentFlow) => setDeploymentFlow({ root, flow }), [root]);
   const [deploymentRun, setDeploymentRun] = useState<DeploymentRun | null>(null);
   const [deploymentStop, setDeploymentStop] = useState<{ root: string; step: DeploymentStep }>();
   const [mosaicCompleted, setMosaicCompleted] = useState("");
@@ -2324,6 +2327,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         onLocate={locateTranslationFailure} />}
   </GameStepProgress>;
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
+  const trackFlow = deploymentFlow?.root === root ? deploymentFlow.flow : deploymentPlan;
+  const trackEdges = trackFlow.edges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] }));
+  const trackEnabled = [deploymentStageId.scan, ...deploymentPhases.filter(id => !trackFlow.disabled.includes(id)).map(id => deploymentStageId[id]), deploymentStageId.apply];
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
   const activePatch = patch && deploymentPlan.disabled.every(id => patchScope.includes(id)) ? patch : null;
   const fullPatch = !!activePatch && patchScope.length === deploymentPlan.disabled.length;
@@ -2368,7 +2374,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
 
   function focusDeploymentStep(step: DeploymentStep) {
-    const id = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" }[step];
+    const id = deploymentStageId[step];
     const stage = UNITY_STAGE_TABS.find(item => item.id === id);
     if (stage) selectWorkflowStage(stage);
   }
@@ -2617,25 +2623,27 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       maxWidth: "none",
     }}>
     <div className="unity-offline-upper unity-workflow-layout">
-      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" steps={UNITY_STAGE_TABS.map(tab=>{
+      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
-        if (id === "2.3") return {
-          id, label, state: hasMosaic ? "complete" : scanReady ? "current" : "pending",
-          selected: mosaicPage, running: mosaicBusy, onSelect: () => selectWorkflowStage(tab),
-        };
+        const canvasRunning = deploymentRun?.steps.includes(step === 1 ? "scan" : step === 3 ? "apply" : id === "2.3" ? "mosaic" : tab.imageOnly ? "image" : "text");
+        if (id === "2.3") {
+          const running = canvasRunning ?? mosaicBusy;
+          return { id, label, state: running ? "current" : hasMosaic ? "complete" : scanReady ? "current" : "pending",
+            selected: mosaicPage, running, onSelect: () => selectWorkflowStage(tab) };
+        }
         if (step === 3) {
           const deployment = generation && generation.step >= 3 ? generation : undefined;
-          const running = deployment?.state === "running";
+          const running = canvasRunning ?? deployment?.state === "running";
           const state = deployment?.state === "error" ? "error" : running ? "current" : applied ? "complete" :
             patch || patchReady || deployment?.state === "stopped" ? "current" : "pending";
           return {id,label,state,selected:activeStep===3,running,paused:deployment?.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
         }
         const subReady = tab.imageOnly ? imagesReady : textReady;
         const partProgress = step === 2 && !preparingRescan ? currentParts?.[tab.imageOnly ? "images" : "text"] : undefined;
-        const runningHere = partProgress ? partProgress.state === "running" :
-          generation?.step === step && generation.state === "running" && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly);
+        const runningHere = canvasRunning ?? (partProgress ? partProgress.state === "running" :
+          generation?.step === step && generation.state === "running" && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly));
         const baseState = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere||scanReady ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, !preparingRescan && needsScan ? 1 : undefined, !preparingRescan && scanUpdate.level === "optional" ? 1 : undefined);
-        const state = step === 1 && baseState === "pending" ? "current" : baseState;
+        const state = canvasRunning || step === 1 && baseState === "pending" ? "current" : baseState;
         const selectedTab = !mosaicPage && activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
         const title = state === "outdated" || state === "optional-update" ? `${label} · ${scanUpdate.label}` : undefined;
         return {id,label,title,state,selected:selectedTab,running:runningHere,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
@@ -2830,7 +2838,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         </div></GameFlowSequence></GamePromptContext.Provider>}
         {activeStep === 2 && !imagePart && (textBatch || textTransfer) && <div className="unity-step-batch">{textBatch}{textTransfer}</div>}
         {deploymentPage && <div className="unity-deployment-page">
-          <UnityDeploymentPanel model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep}
+          <UnityDeploymentPanel model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep} onFlowChange={receiveDeploymentFlow}
             mosaic={<GameMosaicPatchButton gamePath={root} label="安装或卸载" disabled={!root || !!busy || mosaicBusy || restoring || saving} />} />
         </div>}
         </>}

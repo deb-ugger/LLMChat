@@ -100,6 +100,27 @@
 }
 
 .game-workflow-connector.is-linked { opacity: 1; }
+.game-workflow-connector.is-gap {
+  /* 图上没有这条边：轨道中间断开一段，别让灰线误导成"已经连上、只是没跑" */
+  mask-image: linear-gradient(to bottom, #000 0 36%, transparent 36% 64%, #000 64% 100%);
+  opacity: .55;
+}
+.game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
+
+/* 并行：分叉出去的那一段在左侧补一条支线，汇入的段在右侧补，形成"两条同时在送" */
+.game-workflow-connector.is-fan-out::after,
+.game-workflow-connector.is-fan-in::after {
+  content: "";
+  position: absolute;
+  inset-block: 6%;
+  inset-inline-start: -7px;
+  inline-size: 2px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, transparent, var(--workflow-tone-current, #3265b6) 22%,
+    var(--workflow-tone-current, #3265b6) 78%, transparent);
+  opacity: .6;
+}
+.game-workflow-connector.is-fan-in::after { inset-inline-start: auto; inset-inline-end: -7px; }
 
 /* 两端都完成的段：轨道本体变实心绿，光带走完就不再亮。 */
 .game-workflow-connector.is-done {
@@ -261,7 +282,15 @@
   border-radius: 50%;
   background: transparent;
 }
-.game-workflow-marker::after { content: ""; inline-size: 5px; block-size: 5px; border-radius: 50%; background: var(--marker-tone); }
+.game-workflow-marker::after { content: ""; }
+.game-workflow-marker::after, .game-workflow-alert { inline-size: 5px; block-size: 5px; border-radius: 50%; background: var(--marker-tone); }
+.game-workflow-alert {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: calc(50% + var(--workflow-marker-size) / 2 + 3px);
+  background: #e2964a;
+  box-shadow: 0 0 0 3px rgba(226, 150, 70, .16);
+}
 .game-workflow-node.complete .unity-step-tab:not(.is-selected) .game-workflow-marker::after {
   inline-size: 7px;
   block-size: 7px;

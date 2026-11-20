@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
@@ -55,6 +55,7 @@ type Point = { x: number; y: number };
 type FlowEdge = { from: DeploymentStep; to: DeploymentStep };
 type FlowGraph = { positions: Record<DeploymentStep, Point>; edges: FlowEdge[] };
 export type DeploymentPlan = FlowGraph & { disabled: DeploymentPhase[] };
+export type DeploymentFlow = Pick<DeploymentPlan, "edges" | "disabled">;
 export type DeploymentRun = {
   mode: "single" | "automatic";
   steps: DeploymentStep[];
@@ -178,6 +179,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       : model.applied ? "已应用" : model.patch ? "待应用" : "未生成",
   }));
   const enabled = (id: DeploymentStep) => !isPhase(id) || !plan.disabled.includes(id);
+  const unlinked = steps.filter(id => id !== "scan" && enabled(id) && !plan.edges.some(edge => edge.to === id));
   const nodePoint = (step: DeploymentStep) => motion?.step === step ? motion.at : plan.positions[step];
   const graph = (): FlowGraph => ({ positions: plan.positions, edges: plan.edges });
   const point = (element: HTMLElement, clientX: number, clientY: number): Point => {
@@ -428,8 +430,10 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
         </div>;
       })}
     </div>
-    <p className="dpl-canvas-hint">{selected ? "拖动选中连线的端点以重连，按 Delete 删除"
-      : "从输出拖到输入建立依赖 · 滚轮缩放 · 拖动空白处平移"}</p>
+    <p className="dpl-canvas-hint">
+      {unlinked.length > 0 && <strong role="status">{unlinked.map(id => deploymentStepLabels[id]).join("、")}已启用但未接入流程。 </strong>}
+      {selected ? "拖动选中连线的端点以重连，按 Delete 删除" : "从输出拖到输入建立依赖 · 滚轮缩放 · 拖动空白处平移"}
+    </p>
     {menu && <div className="dpl-menu" ref={menuRef} role="menu" style={{ left: menu.at.x, top: menu.at.y }}
       aria-label={menuStep ? deploymentStepLabels[menuStep] : "依赖连线"}>
       {menu.kind === "edge" ? <>
@@ -447,7 +451,16 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
 }
 
 
-export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep }: { model: DeploymentModel; actions: DeploymentActions; mosaic: ReactNode; onFocusStep?: (step: DeploymentStep) => void }) {
+export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFlowChange }: {
+  model: DeploymentModel;
+  actions: DeploymentActions;
+  mosaic: ReactNode;
+  onFocusStep?: (step: DeploymentStep) => void;
+  onFlowChange?: (flow: DeploymentFlow) => void;
+}) {
+  const { edges, disabled } = model.plan;
+  useLayoutEffect(() => { onFlowChange?.({ edges, disabled }); }, [onFlowChange, model.root, edges, disabled]);
+
   const plan = model.fontPlan;
   const missing = plan?.missing.length ?? 0;
   const running = model.progress?.state === "active";

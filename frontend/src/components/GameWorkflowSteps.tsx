@@ -2,6 +2,14 @@ import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEve
 
 export type GameWorkflowStep = { id: string; label: ReactNode; state: string; selected: boolean; running?: boolean; paused?: boolean; title?: string; onSelect: () => void };
 
+type Props = {
+  steps: GameWorkflowStep[];
+  idPrefix?: string;
+  panelId?: string;
+  edges?: { from: string; to: string }[];
+  enabled?: string[];
+};
+
 function moveFocus(event: KeyboardEvent<HTMLElement>) {
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
@@ -13,19 +21,38 @@ function moveFocus(event: KeyboardEvent<HTMLElement>) {
   tabs[next].focus();
 }
 
-export function GameWorkflowSteps({ steps, idPrefix, panelId }: { steps: GameWorkflowStep[]; idPrefix?: string; panelId?: string }) {
+export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
+  const graphMode = edges !== undefined;
+  const enabledIds = new Set(enabled ?? steps.map(step => step.id));
+  const inputIds = new Set(edges?.map(edge => edge.to));
+  const branches = new Map<string, Set<string>>();
+  for (const { from, to } of edges ?? []) {
+    if (!enabledIds.has(from) || !enabledIds.has(to)) continue;
+    const targets = branches.get(from) ?? new Set<string>();
+    targets.add(to);
+    branches.set(from, targets);
+  }
+  const fanOut = new Set<string>(), fanIn = new Set<string>();
+  for (const [from, targets] of branches) {
+    if (targets.size < 2) continue;
+    fanOut.add(from);
+    targets.forEach(to => fanIn.add(to));
+  }
+  const unlinked = (index: number) => graphMode && index > 0 && enabledIds.has(steps[index].id) && !inputIds.has(steps[index].id);
   const selectedRunning = steps.findIndex(step => step.selected && step.running);
   const flowingStep = selectedRunning >= 0 ? selectedRunning : steps.findIndex(step => step.running);
   const flowTrackCount = steps.length - 1;
   const selectedStep = steps.findIndex(step => step.selected);
   const highlightedTrack = Math.min(Math.max(0, selectedStep), flowTrackCount - 1);
-  // 连续光带：只从「第一处未完成」跑向「正在跑的那一步」，已完成段不再有光。
   const firstIncomplete = steps.findIndex(step => step.state !== "complete");
   const beamFrom = firstIncomplete >= 0 ? firstIncomplete : steps.length - 1;
-  const beamTo = flowingStep;
-  const beamActive = steps.length > 1 && beamTo >= beamFrom;
+  const singleIncomplete = firstIncomplete >= 0 && steps.slice(firstIncomplete + 1).every(step => step.state === "complete");
+  const beamTo = graphMode ? singleIncomplete ? beamFrom : steps.length - 1 : flowingStep;
+  const beamStatic = graphMode ? firstIncomplete < 0 || singleIncomplete && !enabledIds.has(steps[beamFrom].id) : beamFrom === beamTo;
+  const beamHalf = graphMode && singleIncomplete && !beamStatic;
+  const beamActive = graphMode ? steps.length > 0 && (flowingStep >= 0 || beamStatic) : steps.length > 1 && beamTo >= beamFrom;
   const stepOrder = JSON.stringify(steps.map(step => step.id));
 
   useLayoutEffect(() => {
@@ -43,7 +70,8 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId }: { steps: GameWor
         return ratio >= 0 && ratio <= 1 ? ratio : undefined;
       };
       const from = position(beamFrom);
-      const to = position(beamTo);
+      const node = beamHalf ? markers[beamFrom]?.closest(".game-workflow-node") : null;
+      const to = node && from !== undefined ? Math.min(1, from + node.getBoundingClientRect().height / (2 * bounds.height)) : position(beamTo);
       const next = from !== undefined && to !== undefined && from <= to ? { from, to } : null;
       setBeamPosition(current => current?.from === next?.from && current?.to === next?.to ? current : next);
     };
@@ -57,36 +85,52 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId }: { steps: GameWor
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [beamActive, beamFrom, beamTo, stepOrder]);
+  }, [beamActive, beamFrom, beamTo, beamHalf, stepOrder]);
+
+  const from = beamPosition?.from ?? (beamFrom + 0.5) / steps.length;
+  const to = beamPosition?.to ?? (beamTo + (beamHalf ? 1 : 0.5)) / steps.length;
+  const rangedBeam = graphMode && !beamStatic;
 
   return <nav className="game-workflow-steps" role="tablist" aria-label="处理步骤" aria-orientation="vertical" onKeyDown={moveFocus}>
     <div className="game-workflow-track" role="presentation" ref={trackRef}>
-      {beamActive && <span aria-hidden="true" className={beamFrom === beamTo ? "game-workflow-beam is-static" : "game-workflow-beam"} style={{
-        "--beam-from": beamPosition?.from ?? (beamFrom + 0.5) / steps.length,
-        "--beam-to": beamPosition?.to ?? (beamTo + 0.5) / steps.length,
+      {beamActive && <span aria-hidden="true" className={beamStatic ? "game-workflow-beam is-static" : "game-workflow-beam"} style={{
+        ...(rangedBeam ? { insetBlockStart: `${from * 100}%`, insetBlockEnd: `${(1 - to) * 100}%`, clipPath: "none" } : {}),
+        "--beam-from": rangedBeam ? 0 : from,
+        "--beam-to": rangedBeam ? 1 : to,
         "--beam-span": Math.max(1, beamTo - beamFrom),
       } as CSSProperties} />}
       {steps.map((item, index) => {
         const next = steps[index + 1];
         const flow = flowingStep >= 0 && index >= flowingStep;
         const linked = item.selected || next?.selected;
-        return <div className={`game-workflow-node ${item.state}`} key={item.id} role="presentation">
+        const missingInput = unlinked(index);
+        const gap = next && edges && !edges.some(edge => edge.from === item.id && edge.to === next.id);
+        const parallel = !graphMode && item.running && next?.running;
+        const title = missingInput ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（已启用但未接入流程）` : item.title;
+        return <div className={`game-workflow-node ${item.state}${missingInput ? " is-unlinked" : ""}`} key={item.id} role="presentation">
           <button id={idPrefix ? `${idPrefix}-${item.id}` : undefined} type="button" role="tab"
             tabIndex={item.selected ? 0 : -1} aria-selected={item.selected} aria-controls={panelId}
-            aria-current={item.running ? "step" : undefined} data-tooltip={item.title} aria-label={item.title}
+            aria-current={item.running ? "step" : undefined} data-tooltip={title} aria-label={title} title={missingInput ? title : undefined}
             className={`unity-step-tab${item.selected ? " is-selected" : ""}${item.running ? " is-active-task" : ""}${item.paused ? " is-paused-task" : ""}`}
             onClick={item.onSelect}>
             <span className="game-workflow-marker" aria-hidden="true" />
+            {missingInput && <span className="game-workflow-alert" aria-hidden="true" />}
             <span className="game-workflow-label">{item.label}</span>
           </button>
           {next && <span aria-hidden="true"
-            className={`game-workflow-connector${linked ? " is-linked" : ""}${flow ? " is-flowing" : ""}${index === highlightedTrack ? " is-flow-highlight" : ""}${item.state === "complete" && next.state === "complete" ? " is-done" : ""}${item.state === "complete" && next.state !== "complete" ? " is-handed-off" : ""}${item.running && next.running ? " is-parallel" : ""}`}
+            className={[
+              "game-workflow-connector", linked && "is-linked", flow && "is-flowing",
+              index === highlightedTrack && "is-flow-highlight",
+              item.state === "complete" && (next.state === "complete" ? "is-done" : "is-handed-off"),
+              parallel && "is-parallel", fanOut.has(item.id) && "is-fan-out", fanIn.has(next.id) && "is-fan-in",
+              gap && "is-gap", unlinked(index + 1) && "is-unlinked",
+            ].filter(Boolean).join(" ")}
             style={{
               "--track-flow-order": index,
               "--track-flow-count": flowTrackCount,
               "--track-flow-to-tone": `var(--workflow-tone-${next.state}, var(--workflow-tone-pending))`,
             } as CSSProperties}>
-            {item.running && next.running && <span className="game-workflow-bypass" aria-hidden="true" />}
+            {parallel && <span className="game-workflow-bypass" aria-hidden="true" />}
             <span className="game-workflow-flow" aria-hidden="true" />
             <span className="game-workflow-glint" aria-hidden="true" />
           </span>}
