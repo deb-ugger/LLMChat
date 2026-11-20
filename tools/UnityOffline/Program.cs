@@ -96,7 +96,7 @@ public sealed record SavedProject(Project? Project, int? ScanCompleted, int? Sca
 
 public static class Program
 {
-    public const int CurrentScanRevision = 7;
+    public const int CurrentScanRevision = 8;
     public const int MinimumUsableScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
@@ -400,6 +400,7 @@ public static class Program
         else if ((output.TrimEnd('\\', '/') + "/").Replace('\\', '/').StartsWith((root.TrimEnd('\\', '/') + "/").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
             throw new Exception("游戏内工程只能保存在 LLMChat-Unity 工作文件夹中");
         var inspection = ScanInspection.Inspect(root);
+        var yooPackages = YooAssetPackages.Find(root);
         var assemblies = request.IncludeCode ? ScanInspection.SelectedAssemblies(request, inspection) : [];
         var project = request.Path.Length > 0 ? Load(System.IO.Path.Combine(request.Path, "unity-project.json")) : new Project { Root = root, ScanRevision = CurrentScanRevision, TextMode = request.TextMode, TypeDirectory = request.TypeDirectory, Folder = NewFolder(output, "unity-project") };
         if (!string.Equals(project.Root, root, StringComparison.OrdinalIgnoreCase)) throw new Exception("扫描检查点不属于当前游戏");
@@ -492,7 +493,7 @@ public static class Program
             var isCode = request.IncludeCode && (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase) || assemblies.Contains(rel, StringComparer.OrdinalIgnoreCase));
             var asset = ext is ".assets" or ".bundle" or ".unity3d" or ".ab" || name is "resources.assets" or "globalgamemanagers" || Regex.IsMatch(name, @"^(level\d+|CAB-[0-9a-f]+)$", RegexOptions.IgnoreCase);
             var raster = ext is ".png" or ".jpg" or ".jpeg" && GameText.PlainFile(root, rel);
-            var plain = ext is ".txt" or ".json" or ".csv" or ".tsv" or ".xml" && GameText.PlainFile(root, rel);
+            var plain = ext is ".txt" or ".json" or ".csv" or ".tsv" or ".xml" && GameText.PlainFile(root, rel) && !YooAssetPackages.IsCatalog(yooPackages, rel);
             if (!isCode && !asset && !plain && !raster) { CommitScan(index + 1); continue; }
             Progress("检查资源：" + rel, index, paths.Length, project.Folder);
             dirtyScan = true;
@@ -547,6 +548,10 @@ public static class Program
         CommitScan(paths.Length, true);
         CheckStop(request, project.Folder);
         if (inspection.Catalogs.Length > 0) project.Warnings.Add($"检测到 {inspection.Catalogs.Length} 个 Addressables Catalog（JSON / BIN / Bundle）；资源修改后需核对 Catalog / CRC 和依赖，不能将加载失败直接视为加密。");
+        foreach (var package in yooPackages) {
+            CheckStop(request, project.Folder);
+            project.Warnings.Add(YooAssetPackages.Describe(root, package, () => CheckStop(request, project.Folder)));
+        }
         project.Warnings = project.Warnings.Distinct().ToList();
         using (clock.Measure(ScanPhase.Save)) {
             Save(project);
@@ -764,6 +769,7 @@ public static class Program
         var fonts = font == null ? [] : project.Fonts.Where(f => f.Kind == "UGUI" || f.Kind.StartsWith("TMP", StringComparison.Ordinal) || f.Kind.StartsWith("NGUI", StringComparison.Ordinal)).ToArray();
         if (font != null && fonts.Length == 0) throw new Exception("未扫描到可替换的字体，请先扫描游戏字体资源");
         var files = selected.Select(e => e.File).Concat(fonts.Select(f => f.File)).Concat(images.Select(i => i.File)).Distinct().ToArray();
+        YooAssetPackages.EnsureWritable(project.Root, files);
         var signature = Convert.ToHexString(SHA256.HashData(Utf8.GetBytes(JsonSerializer.Serialize(new { selected, images, fonts, characters, atlasRevision = BitmapFontGenerator.Revision, font = font == null ? "" : Convert.ToHexString(SHA256.HashData(font)) }, Json))));
         var folder = request.Path.Length > 0 ? Within(project.Folder, System.IO.Path.GetRelativePath(project.Folder, request.Path)) : NewFolder(project.Folder, "patch");
         var checkpointPath = System.IO.Path.Combine(folder, "export-state.json");
@@ -1100,6 +1106,7 @@ public static class Program
             if (previous.RootElement.GetProperty("manifestHash").GetString() != manifestHash) throw new Exception("应用检查点与补丁清单不一致");
         }
         if (files.Length == 0 || files.Select(f => f.File).Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Length) throw new Exception("补丁文件列表无效");
+        YooAssetPackages.EnsureWritable(root, files.Select(f => f.File));
         foreach (var file in files) if (Hash(Within(Path.Combine(folder, "original"), file.File)) != file.Original || Hash(Within(Path.Combine(folder, "patch"), file.File)) != file.Patch) throw new Exception("新补丁或备份校验失败：" + file.File);
         var restoredPatches = PatchInstallation.RestoreBeforeApply(root, folder);
         var applied = new List<string>();

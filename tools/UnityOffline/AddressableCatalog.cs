@@ -6,14 +6,11 @@ namespace LLMChat.UnityOffline;
 
 public static class AddressableCatalog
 {
-    static readonly uint[] table = Enumerable.Range(0, 256).Select(n => { var c = (uint)n; for (var i = 0; i < 8; i++) c = (c & 1) != 0 ? 0xedb88320 ^ (c >> 1) : c >> 1; return c; }).ToArray();
     public static uint BundleCrc(string path, Action? cancel = null) {
         var manager = new AssetsManager();
         try {
             var bundle = manager.LoadBundleFile(path, true); var stream = bundle.file.DataReader.BaseStream; stream.Position = 0;
-            var crc = uint.MaxValue; var buffer = new byte[65536]; int n;
-            while ((n = stream.Read(buffer)) > 0) { cancel?.Invoke(); for (var i = 0; i < n; i++) crc = table[(crc ^ buffer[i]) & 255] ^ (crc >> 8); }
-            return ~crc;
+            return ResourceCrc32.Compute(stream, cancel);
         } finally { manager.UnloadAll(); }
     }
     // Addressables BinaryStorageBuffer v2, SerializedData is five uints:

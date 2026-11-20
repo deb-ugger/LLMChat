@@ -38,11 +38,24 @@ public static class TextDocuments
         return string.Concat(parts);
     }
     public static string Read(string path) => new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
+    static readonly Regex LocalizedField = new(@"^(.+)_(?:name|entranceName|intro|text|description|title|message|caption)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     public static string Locale(string path)
     {
         foreach (var part in path.Split('/').Reverse()) {
-            var name = part.Replace("~1", "/").Replace("~0", "~").Replace('_', '-').ToLowerInvariant();
-            var named = name switch { "english" => "en", "japanese" or "日本語" => "ja", "chinese" or "简体中文" or "繁體中文" => "zh", "french" => "fr", "german" => "de", "spanish" => "es", "korean" => "ko", _ => "" };
+            var field = part.Replace("~1", "/").Replace("~0", "~");
+            var localized = LocalizedField.Match(field);
+            var name = (localized.Success ? localized.Groups[1].Value : field).Replace('_', '-').ToLowerInvariant();
+            var named = name switch {
+                "english" => "en",
+                "japanese" or "日本語" => "ja",
+                "chinese" or "中文名字" or "中文描述" => "zh",
+                "simplifiedchinese" or "简体中文" => "zh-hans",
+                "traditionalchinese" or "繁體中文" or "繁体中文" => "zh-hant",
+                "french" => "fr", "german" => "de", "spanish" => "es", "korean" => "ko",
+                "russian" => "ru", "italian" => "it", "portuguese" => "pt", "brazilianportuguese" => "pt-br",
+                _ => ""
+            };
             if (named.Length > 0) return named;
             if (Regex.IsMatch(name, @"^(?:en|ja|jp|zh|fr|de|es|it|pt|ko|ru)(?:-[a-z]{2,8})?$") ) return name.StartsWith("jp") ? "ja" + name[2..] : name;
         }

@@ -35,12 +35,15 @@ export function explainUnityFailure(error: unknown): UnityFailure {
   if (/HTTP\s*429|rate.limit/i.test(technical)) return result("翻译服务暂时限制了请求频率。", "稍后恢复翻译，或调整通用设置中的请求限制；已完成译文会保留。");
   if (/HTTP\s*5\d\d/i.test(technical)) return result("服务端处理失败，资源提取结果和已保存译文仍保留。", "稍后恢复任务；若持续失败，请检查对应服务配置并反馈技术详情，不必重复扫描资源。");
   if (/fetch|network|timeout|timed out|网络|超时/i.test(technical)) return result("翻译服务连接失败或请求超时。", "检查当前引擎、网络和代理配置后恢复；此前已完成的扫描与译文会保留。");
+  if (technical.startsWith("暂不支持回写 YooAsset 资源包："))
+    return result(technical.split("。", 1)[0], "取消选中来自该资源包的文本或图片，或取消涉及该资源包的字体替换，再生成补丁。");
   if (/class.?data|type.?tree|assets file|bundle|compression|序列化|类型树/i.test(technical))
     return result("资源组件无法解析当前文件格式、压缩方式或 Unity 类型数据。", "查看扫描提示中受影响的文件；可继续检查已成功提取的文本，不要将未完整生成的补丁应用到游戏。");
   if (/[一-鿿]/.test(technical)) return result(technical, "请保留工程和原件备份，按提示检查后重试；若仍失败，请反馈此错误。");
   return result("资源处理组件返回了无法识别的错误，暂时不能确定具体原因。", "先保留当前工程并重试；若仍失败，请反馈下方技术详情，以便定位，不要重复覆盖游戏文件。");
 }
 export function explainUnityWarning(warning: string): { reason: string; technical: string; category?: "stream"; location?: string; impact?: string } {
+  if (warning.startsWith("YooAsset 资源包 ")) return { reason: warning, technical: "" };
   if (/^已排除 \d+ 条程序标识/.test(warning)) return { reason: warning, technical: "" };
   const boundary = warning.indexOf("：");
   const file = boundary >= 0 ? warning.slice(0, boundary) : "资源文件";

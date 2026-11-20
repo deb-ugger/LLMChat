@@ -40,7 +40,7 @@ export function tagEditedImageTranslations(image: UnityImage, previous: UnityIma
         (!region.translationTarget || region.translationTarget === previous.regions[index]?.translationTarget)) region.translationTarget = target;
   }
 }
-export const UNITY_SCAN_COMPATIBILITY = { current: 7, minimumUsable: 2 };
+export const UNITY_SCAN_COMPATIBILITY = { current: 8, minimumUsable: 2 };
 type ScanOptions = { includeCode: boolean; textMode?: "lines" | "paragraphs" | "smart"; typeDirectory?: string; codeAssemblies?: string[] | null };
 export function unityScanOptionChanges(saved: ScanOptions, current: ScanOptions) {
   const reasons: string[] = [];
