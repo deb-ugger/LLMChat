@@ -33,7 +33,7 @@ import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { imageImportPng,type GameImportSource } from "../gameImageImport";
 import type { ImageArchiveReplacement } from "../gameImageArchive";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { GAME_IMAGE_SCREENING_LANES, LOCAL_REFINE_MODELS, gameImageRegionLanguageFilter, gameImageTranslationReadiness, localGameImageScreeningLanes } from "../gameImageScreening";
@@ -257,9 +257,31 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const workspaceRef = useRef<HTMLDivElement>(null);
   const panelMinWidth = 300;
   const [panelMaxWidth, setPanelMaxWidth] = useState(900);
+  const panelMaxRef = useRef(panelMaxWidth);
   const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, panelMinWidth, panelMaxWidth);
-  const panelDrag = useRef<{ pointerId: number; x: number; width: number; latest: number } | null>(null);
+  const committedPanelWidth = useRef(panelWidth.width);
+  const panelPreviewProperty = "--unity-panel-drag-width";
+  type PanelDrag = {
+    divider: HTMLButtonElement;
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    latest: number;
+    painted: number;
+    zoom: number;
+    frame: number;
+    detach: () => void;
+  };
+  const panelDrag = useRef<PanelDrag | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const dividerRef = useRef<HTMLButtonElement>(null);
+
+  const paintPanelWidth = useCallback((drag: PanelDrag) => {
+    if (drag.painted === drag.latest) return;
+    drag.painted = drag.latest;
+    panelRef.current?.style.setProperty(panelPreviewProperty, `${drag.painted}px`);
+    drag.divider.setAttribute("aria-valuenow", String(Math.round(drag.painted)));
+  }, [panelPreviewProperty]);
 
   useEffect(() => {
     const workspace = workspaceRef.current;
@@ -271,32 +293,76 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         + parseFloat(styles.getPropertyValue("--workflow-column-gap"))
         + parseFloat(styles.getPropertyValue("--workflow-divider-width"));
       const paneSpace = entry.contentRect.width - fixedWidth;
-      setPanelMaxWidth(Math.max(panelMinWidth, Math.min(900, Math.floor(paneSpace - 260))));
+      const nextMax = Math.max(panelMinWidth, Math.min(900, Math.floor(paneSpace - 260)));
+      panelMaxRef.current = nextMax;
+      setPanelMaxWidth(nextMax);
+      const drag = panelDrag.current;
+      if (drag) {
+        drag.latest = Math.min(drag.latest, nextMax);
+        if (drag.painted > nextMax) paintPanelWidth(drag);
+      }
     });
     observer.observe(workspace);
     return () => observer.disconnect();
-  }, [panelMinWidth]);
+  }, [panelMinWidth, paintPanelWidth]);
 
-  function resizePanel(event: PointerEvent<HTMLButtonElement>, commit: boolean) {
+  const clearPanelPreview = useCallback(() => {
+    panelRef.current?.style.removeProperty(panelPreviewProperty);
+    dividerRef.current?.setAttribute("aria-valuenow", String(Math.round(committedPanelWidth.current)));
+  }, [panelPreviewProperty]);
+
+  const endPanelDrag = useCallback((pointerId?: number) => {
+    const drag = panelDrag.current;
+    if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
+    panelDrag.current = null;
+    cancelAnimationFrame(drag.frame);
+    drag.detach();
+    if (drag.divider.hasPointerCapture(drag.pointerId)) {
+      drag.divider.releasePointerCapture(drag.pointerId);
+    }
+    return drag;
+  }, []);
+
+  const cancelPanelDrag = useCallback((pointerId?: number) => {
+    if (endPanelDrag(pointerId)) clearPanelPreview();
+  }, [endPanelDrag, clearPanelPreview]);
+
+  useLayoutEffect(() => {
+    committedPanelWidth.current = panelWidth.width;
+    const drag = panelDrag.current;
+    if (drag) {
+      drag.divider.setAttribute("aria-valuenow", String(Math.round(drag.painted)));
+    } else {
+      clearPanelPreview();
+    }
+  }, [panelWidth.width, clearPanelPreview]);
+
+  const panelResizeActive = active && activeStep !== 3 && !mosaicPage;
+  useLayoutEffect(() => () => cancelPanelDrag(), [panelResizeActive, cancelPanelDrag]);
+
+  function clampPanelWidth(width: number) {
+    return Math.max(panelMinWidth, Math.min(panelMaxWidth, panelMaxRef.current, width));
+  }
+
+  function resizePanel(event: PointerEvent<HTMLButtonElement>) {
     const drag = panelDrag.current;
     if (drag?.pointerId !== event.pointerId) return;
-    const divider = event.currentTarget;
-    const delta = (event.clientX - drag.x) / divider.currentCSSZoom;
-    const width = Math.min(panelMaxWidth, Math.max(panelMinWidth, drag.width + delta));
-    drag.latest = width;
-    if (!commit) {
-      // 直接把宽度写到节点上：布局跟着指针实时走，但不触发 2000 行组件的重渲染。
-      if (panelRef.current) {
-        panelRef.current.style.width = `calc(${width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`;
-      }
-      return;
+    drag.latest = clampPanelWidth(drag.startWidth + (event.clientX - drag.startX) / drag.zoom);
+    if (!drag.frame) {
+      drag.frame = requestAnimationFrame(() => {
+        drag.frame = 0;
+        if (panelDrag.current === drag) paintPanelWidth(drag);
+      });
     }
-    // 松手时保留当前宽度再交给 React 落库：React 会把同一个值写回内联样式，
-    // 中途不清空，避免出现一帧「宽度归零」的塌陷。
-    if (panelRef.current) {
-      panelRef.current.style.width = `calc(${width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`;
-    }
-    if (width !== panelWidth.width) panelWidth.setWidth(width);
+  }
+
+  function commitPanelDrag(event: PointerEvent<HTMLButtonElement>) {
+    const drag = endPanelDrag(event.pointerId);
+    if (!drag) return;
+    // 保留预览，等 React 写入最终宽度后再清除临时变量。
+    const width = clampPanelWidth(drag.latest);
+    if (width === panelWidth.width) clearPanelPreview();
+    else panelWidth.setWidth(width);
   }
 
   const workflowRef = useRef<HTMLElement>(null);
@@ -2625,7 +2691,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbarTarget)}
     <aside ref={panelRef} className="unity-offline-config" style={deploymentPage || mosaicPage ? undefined : {
-      width: `calc(${panelWidth.width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`,
+      width: `calc(var(${panelPreviewProperty}, ${panelWidth.width}px) + var(--workflow-rail-width) + var(--workflow-column-gap))`,
       minWidth: 0,
       maxWidth: "none",
     }}>
@@ -2855,25 +2921,44 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     </section>
     </div>
     </aside>
-    {!deploymentPage && !mosaicPage && <button className="unity-workspace-divider" role="separator" aria-orientation="vertical"
+    {!deploymentPage && !mosaicPage && <button ref={dividerRef} className="unity-workspace-divider" role="separator" aria-orientation="vertical"
       aria-label="调整步骤区和结果区宽度" aria-valuemin={panelMinWidth} aria-valuemax={panelMaxWidth} aria-valuenow={Math.round(panelWidth.width)}
       style={{ touchAction: "none", zIndex: 2 }}
       onPointerDown={event => {
         if (event.button !== 0 || panelDrag.current) return;
         event.preventDefault();
-        event.currentTarget.setPointerCapture(event.pointerId);
-        panelDrag.current = { pointerId: event.pointerId, x: event.clientX, width: panelWidth.width, latest: panelWidth.width };
+        const divider = event.currentTarget;
+        divider.focus({ preventScroll: true });
+        divider.setPointerCapture(event.pointerId);
+        const onKey = (e: globalThis.KeyboardEvent) => {
+          if (e.key !== "Escape") return;
+          e.preventDefault();
+          cancelPanelDrag();
+        };
+        const onBlur = () => cancelPanelDrag();
+        window.addEventListener("keydown", onKey);
+        window.addEventListener("blur", onBlur);
+        panelDrag.current = {
+          divider, pointerId: event.pointerId, startX: event.clientX,
+          startWidth: panelWidth.width, latest: panelWidth.width, painted: panelWidth.width,
+          zoom: divider.currentCSSZoom || 1, frame: 0,
+          detach: () => {
+            window.removeEventListener("keydown", onKey);
+            window.removeEventListener("blur", onBlur);
+          },
+        };
       }}
-      onPointerMove={event => resizePanel(event, false)}
-      onPointerUp={event => resizePanel(event, true)}
-      onLostPointerCapture={event => {
-        if (panelDrag.current?.pointerId !== event.pointerId) return;
-        panelDrag.current = null;
-      }}
+      onPointerMove={resizePanel}
+      onPointerUp={commitPanelDrag}
+      onPointerCancel={event => cancelPanelDrag(event.pointerId)}
+      onLostPointerCapture={event => cancelPanelDrag(event.pointerId)}
       onKeyDown={event => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         event.preventDefault();
-        panelWidth.setWidth(panelWidth.width + (event.key === "ArrowRight" ? 16 : -16));
+        if (panelDrag.current) return;
+        const target = clampPanelWidth(panelWidth.width + (event.key === "ArrowRight" ? 16 : -16));
+        // 已经顶到边界时不要再写偏好，否则会把用户更大的窗口宽度记成当前上限。
+        if (target !== panelWidth.width) panelWidth.setWidth(target);
       }} />}
     {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
