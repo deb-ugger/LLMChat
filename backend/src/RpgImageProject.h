@@ -317,7 +317,43 @@ public:
         if(!atomicfile::writeText(mosaicImage(game,image),bytes,&error))throw std::runtime_error("无法保存去码图："+error);
         return {{"saved",true}};
     }
-    Json apply(const Path& game,bool automatic,const Json& scopes=Json::array({"images"}),const Json& selectedIds=nullptr,bool mosaic=false){
+    Json mosaicStatus(const Path& game) {
+        std::lock_guard lock(mutex_);
+        const auto project = catalog(game);
+        Json candidates = Json::object();
+        for (const auto& image : project.at("images")) {
+            if (!image.value("sourceHash", "").empty() && std::filesystem::is_regular_file(mosaicImage(game, image)))
+                candidates[image.at("id").get<std::string>()] = image.at("sourceHash");
+        }
+        return {{"candidates", candidates}};
+    }
+
+    Json prepareMosaic(const Path& game, const Json& selectedIds, const std::string& patchId) {
+        std::lock_guard lock(mutex_);
+        data(game);
+        validId(patchId);
+        if (patchId.size() != 32) throw std::runtime_error("去码补丁标识无效");
+        const auto ids = selectedIds.get<std::set<std::string>>();
+        if (ids.empty()) throw std::runtime_error("没有已确认的去码图");
+        const auto patch = folder(game) / "mosaic-patches" / patchId;
+        if (std::filesystem::exists(patch)) throw std::runtime_error("去码补丁目录已存在");
+        Json sources = Json::object();
+        for (const auto& imageId : ids) {
+            validId(imageId);
+            const auto image = imageRow(game, imageId);
+            const auto bytes = gamefiles::read(mosaicImage(game, image));
+            const auto [width, height] = dimensions(bytes);
+            if (width != image.at("width").get<uint32_t>() || height != image.at("height").get<uint32_t>())
+                throw std::runtime_error("去码图尺寸与扫描原图不符");
+            gamefiles::write(patch / (imageId + ".png"), bytes);
+            sources[imageId] = image.at("sourceHash");
+        }
+        saveJson(patch / "manifest.json", {{"version", 1}, {"sources", sources}});
+        return {{"patchId", patchId}, {"path", utf8path::pathUtf8(patch)}, {"ids", ids}};
+    }
+
+    Json apply(const Path& game,bool automatic,const Json& scopes=Json::array({"images"}),const Json& selectedIds=nullptr,bool mosaic=false,
+        const std::string& preparedMosaic = {}){
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
@@ -325,6 +361,17 @@ public:
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组已确认的去码图");
         if(mosaic)for(const auto& imageId:ids){validId(imageId);imageIndex(game,imageId);}
+        Path mosaicPatch;
+        Json stagedSources;
+        if (mosaic && !preparedMosaic.empty()) {
+            validId(preparedMosaic);
+            if (preparedMosaic.size() != 32) throw std::runtime_error("去码补丁标识无效");
+            mosaicPatch = folder(game) / "mosaic-patches" / preparedMosaic;
+            const auto manifest = Json::parse(gamefiles::read(mosaicPatch / "manifest.json"));
+            if (manifest.value("version", 0) != 1) throw std::runtime_error("去码补丁版本不支持");
+            stagedSources = manifest.at("sources");
+            if (stagedSources.size() != ids.size()) throw std::runtime_error("去码补丁范围已改变，请重新生成");
+        }
         gameresourcebackup::Snapshot snapshot;
         size_t updated=0,unchanged=0,composed=0;
         const auto receipt=gamefiles::applyPrepared(game,[&](const auto& stage){
@@ -339,7 +386,11 @@ public:
                 const auto existing = std::filesystem::exists(target) ? target : source;
                 const auto current=gamefiles::read(existing);
                 auto installation=readInstallation(game,image,existing,current,key);
-                auto bytes=imageBytes(image,gamefiles::read(mosaic?mosaicImage(game,image):folder(game)/"rendered"/(imageId+".png")),key,true);
+                if (!mosaicPatch.empty() && (!stagedSources.contains(imageId) || stagedSources.at(imageId) != image.at("sourceHash")))
+                    throw std::runtime_error("去码补丁的原图版本已变更，请重新生成");
+                const auto patchFile = !mosaicPatch.empty() ? mosaicPatch / (imageId + ".png")
+                    : mosaic ? mosaicImage(game, image) : folder(game) / "rendered" / (imageId + ".png");
+                auto bytes = imageBytes(image, gamefiles::read(patchFile), key, true);
                 auto& layer=installation.layers.layer(mosaic);
                 if(bytes==(layer?*layer:installation.originalFile)){++unchanged;continue;}
                 if(bytes==installation.originalFile)layer.reset();

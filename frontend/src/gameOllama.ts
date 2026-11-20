@@ -12,7 +12,7 @@ type OllamaRuntime = { running: boolean; parallel: number | null; models: { name
 const starting = new Map<string, Promise<void>>();
 
 function ollamaAddress(connection: ModelConnection) {
-  if (!isTauri() || !connection.localModel || !connection.apiUrl) return;
+  if (!connection.localModel || !connection.apiUrl) return;
   try {
     const url = new URL(connection.apiUrl);
     const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -27,7 +27,7 @@ export async function withGameOllama<T>(connection: ModelConnection, signal: Abo
   report: OllamaOutput | undefined, request: () => Promise<T>): Promise<T> {
   try { return await request(); }
   catch (error) {
-    const address = (error as { code?: string } | null)?.code === "LLM_LOCAL_CONNECTION_FAILED" && ollamaAddress(connection);
+    const address = isTauri() && (error as { code?: string } | null)?.code === "LLM_LOCAL_CONNECTION_FAILED" && ollamaAddress(connection);
     if (!address) throw error;
     signal?.throwIfAborted();
     const endpoint = address.host === "::1" ? `[::1]:${address.port}` : `${address.host}:${address.port}`;
@@ -60,6 +60,7 @@ export async function withGameOllama<T>(connection: ModelConnection, signal: Abo
 }
 
 export async function prepareGameOllamaModels(connections: Array<{ connection: ModelConnection; lanes: number }>, signal: AbortSignal, report: OllamaOutput) {
+  if (!isTauri()) return;
   const endpoints = new Map<string, { connection: ModelConnection; parallel: number }>();
   for (const { connection, lanes } of connections) {
     const address = ollamaAddress(connection);
@@ -76,6 +77,7 @@ export async function prepareGameOllamaModels(connections: Array<{ connection: M
 }
 
 export async function prepareGameOllamaParallel(connection: ModelConnection, lanes: number, signal: AbortSignal, report: OllamaOutput) {
+  if (!isTauri()) return;
   const address = ollamaAddress(connection);
   if (!address) return;
   signal.throwIfAborted();
@@ -115,6 +117,7 @@ export function ollamaGpuDescription(model: { size: number; size_vram: number })
 }
 
 export async function reportRefinementGpu(connection: ModelConnection, signal: AbortSignal, report: OllamaOutput) {
+  if (!isTauri()) return;
   const address = ollamaAddress(connection);
   if (!address) return;
   try {

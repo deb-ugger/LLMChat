@@ -402,15 +402,16 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         const localProfiles = loadLocalModelProfiles();
         type Role = "text" | "dialogue" | "names";
         const llmOptions = new Map<Role, ReturnType<typeof buildUnityTranslateOptions>>();
-        const getOptions = (provider: TranslateProvider, scene: Role) => {
-          const cached = provider === "llm" && llmOptions.get(scene);
+        const reviewModel = Object.keys(localProfiles).find(model => /^qwen3\.5(?::|$)/i.test(model));
+        const getOptions = (provider: TranslateProvider, scene: Role, override?: string) => {
+          const cached = !override && provider === "llm" && llmOptions.get(scene);
           if (cached) return cached;
-          const model = (scene === "names" ? options.nameModel : scene === "dialogue" ? options.dialogueModel : "") || options.model;
+          const model = override || (scene === "names" ? options.nameModel : scene === "dialogue" ? options.dialogueModel : "") || options.model;
           const config = buildUnityTranslateOptions(general, provider, sourceFilter, options.target, model, options.joinLines,
             !!localProfiles[model || general.model] || options.kind === "local" && !model,
             provider === "llm" ? gameTaskPrompt(scene, promptState.selection, { source: sourceFilter, target: options.target }) : undefined,
             wrapMode, { selection: promptState.selection, role: scene });
-          if (provider === "llm") llmOptions.set(scene, config);
+          if (!override && provider === "llm") llmOptions.set(scene, config);
           return config;
         };
         if (options.kind !== "engine") {
@@ -424,10 +425,12 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         const request = async (provider: TranslateProvider, text: string, nameContext?: string, entry?: UnityEntry) => {
           const input = messageCore ? repairMessageCoreNameLineBreak(repairMessageCorePositionPrefix(text)) : text;
           const scene = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
-          const config = getOptions(provider, scene);
+          const primary = getOptions(provider, scene);
           const preserveDialogueLines = provider === "llm" && scene === "dialogue";
           const signal = provider === "llm" ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
           return translateGameControls(input, async (protectedText, originalContext, retryReason) => {
+            const config = retryReason && reviewModel && reviewModel !== primary.model
+              ? getOptions(provider, scene, reviewModel) : primary;
             try {
               const context = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
               const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...(nameContext && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, report);

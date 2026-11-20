@@ -437,5 +437,7 @@
 /* 部署页铺满、页内不出现滚动条。 */
 .unity-offline.is-deployment { height: 100%; }
 .unity-offline.is-deployment > .unity-offline-config { height: 100%; overflow: hidden; }
+.embed-deployment-canvas { margin-block: 0 12px; }
+.embed-unity-workspace .is-deployment .engine-result-slot[hidden] { display: none; }
 .dpl-grid { flex: 0 0 auto; }
 .dpl-foot { flex: 0 0 auto; }

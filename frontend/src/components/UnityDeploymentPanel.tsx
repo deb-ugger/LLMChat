@@ -5,6 +5,7 @@ export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error"
 
 export type DeploymentModel = {
   root: string;
+  supportedPhases?: readonly DeploymentPhase[];
   plan: DeploymentPlan;
   run: DeploymentRun | null;
   stoppedStep: DeploymentStep | null;
@@ -146,12 +147,12 @@ export function validateDeploymentPlan({ edges, disabled }: DeploymentFlow) {
   return { issues, disconnected, enabledSteps, effectiveEdges: effectiveDeploymentEdges(accepted, enabledSteps) };
 }
 
-export function loadDeploymentPlan(root: string): DeploymentPlan {
+export function loadDeploymentPlan(root: string, supported: readonly DeploymentPhase[] = deploymentPhases): DeploymentPlan {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(planKey(root)) || "null"); }
   catch { saved = null; }
   const order: DeploymentStep[] = ["scan", ...new Set<DeploymentPhase>([
-    ...(Array.isArray(saved?.order) ? saved.order.filter((item: unknown) => isStep(item) && isPhase(item)) : []), ...deploymentPhases,
+    ...(Array.isArray(saved?.order) ? saved.order.filter((item: unknown) => isStep(item) && isPhase(item) && supported.includes(item)) : []), ...supported,
   ]), "apply"];
   const positions = Object.fromEntries(order.map((step, index) => {
     const position = saved?.positions?.[step];
@@ -160,12 +161,12 @@ export function loadDeploymentPlan(root: string): DeploymentPlan {
   const edges: FlowEdge[] = [];
   if (Array.isArray(saved?.edges)) {
     for (const edge of saved.edges) {
-      if (isStep(edge?.from) && isStep(edge?.to) && !connectionIssue(edges, edge)) edges.push({ from: edge.from, to: edge.to });
+      if (isStep(edge?.from) && isStep(edge?.to) && order.includes(edge.from) && order.includes(edge.to) && !connectionIssue(edges, edge)) edges.push({ from: edge.from, to: edge.to });
     }
   } else {
     for (const [index, to] of order.slice(1).entries()) edges.push({ from: order[index], to });
   }
-  const disabled = steps.filter(step => Array.isArray(saved?.disabled) && saved.disabled.includes(step));
+  const disabled = steps.filter(step => !order.includes(step) || Array.isArray(saved?.disabled) && saved.disabled.includes(step));
   return { positions, edges, disabled };
 }
 
@@ -229,7 +230,7 @@ function linkPath(from: Point, to: Point) {
   return `M ${from.x} ${from.y} C ${from.x + bend} ${from.y}, ${to.x - bend} ${to.y}, ${to.x} ${to.y}`;
 }
 
-function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { model: DeploymentModel; actions: DeploymentActions; percent: number; running: boolean; onFocusStep?: (step: DeploymentStep) => void }) {
+export function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { model: DeploymentModel; actions: Pick<DeploymentActions, "execute" | "savePlan" | "stop">; percent: number; running: boolean; onFocusStep?: (step: DeploymentStep) => void }) {
   const cardPrefix = useId();
   const viewport = useRef<HTMLDivElement>(null), board = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
@@ -241,7 +242,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
   const pointer = useRef<CanvasDrag>(undefined);
   const history = useRef<{ undo: FlowGraph[]; redo: FlowGraph[] }>({ undo: [], redo: [] });
   const { plan, run, locked } = model;
-  const nodes: CanvasNode[] = steps.map(id => ({
+  const nodes: CanvasNode[] = steps.filter(id => !isPhase(id) || !model.supportedPhases || model.supportedPhases.includes(id)).map(id => ({
     id, state: run?.steps.includes(id) ? "active" : id !== model.stoppedStep && model.completed.includes(id) ? "done" : "todo",
     detail: id === model.stoppedStep ? "未生成" : id === "scan" ? model.completed.includes(id) ? "已就绪" : "未扫描"
       : id === "text" ? `${model.textCount} 条`

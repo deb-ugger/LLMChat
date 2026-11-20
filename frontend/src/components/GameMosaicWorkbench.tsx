@@ -23,9 +23,9 @@ type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string 
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
 export type GameMosaicDeploymentHandle = {
-  prepare: (signal: AbortSignal) => Promise<string[]>;
+  prepare: (signal: AbortSignal) => Promise<{ ids: string[]; patchId: string; path: string }>;
   selectedIds: () => string[];
-  apply: (ids: string[], undo?: boolean) => Promise<number>;
+  apply: (ids: string[], undo?: boolean, patchId?: string) => Promise<number>;
 };
 
 export type MosaicCandidateIndex = Record<string, { source: string; hash: string; included: boolean }>;
@@ -239,13 +239,37 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
 
   const candidatePath = (image: UnityImage) => API_BASE + "/api/game-images/mosaic?" +
     new URLSearchParams({ gamePath, id: image.id, sourceHash: image.sourceHash });
-  const writeMosaicPatch = async (ids: string[], undo = false, signal?: AbortSignal) => {
+  const writeMosaicPatch = async (ids: string[], undo = false, signal?: AbortSignal, patchId?: string) => {
     const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/" + (undo ? "mosaic-uninstall" : "mosaic-apply"), {
       method: "POST", signal, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gamePath, imageIds: ids, backupMode }),
+      body: JSON.stringify({ gamePath, imageIds: ids, backupMode, patchId }),
     }));
     return await response.json() as { files: number; retained?: number; composed?: number };
   };
+
+  const hasImages = usable.length > 0;
+  useEffect(() => {
+    if (!deploymentHandle || !hasImages) return;
+    const controller = new AbortController();
+    void fetch(API_BASE + "/api/game-images/mosaic-status", {
+      method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gamePath }),
+    }).then(mosaicResponse).then(response => response.json() as Promise<{ candidates: Record<string, string> }>).then(({ candidates }) => {
+      if (controller.signal.aborted) return;
+      setRows(previous => {
+        const next = { ...previous };
+        for (const [id, source] of Object.entries(candidates)) {
+          const row = next[id]?.source === source ? next[id] : { source, boxes: [], checked: false };
+          if (row.discardedHash !== source && !row.saved)
+            next[id] = { ...row, saved: true, checked: row.manualChecked ? row.checked : true };
+        }
+        return next;
+      });
+    }).catch(cause => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+    });
+    return () => controller.abort();
+  }, [deploymentHandle, gamePath, hasImages]);
 
   useEffect(() => {
     if (!deploymentHandle) return;
@@ -256,19 +280,15 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     deploymentHandle.current = {
       selectedIds: () => selected.map(image => image.id),
       prepare: async signal => {
-        for (const image of selected) {
-          signal.throwIfAborted();
-          try {
-            const response = await mosaicResponse(await fetch(candidatePath(image), { signal, cache: "no-store" }));
-            await response.body?.cancel();
-          } catch (error) {
-            signal.throwIfAborted();
-            throw new Error(`无法读取已确认的去码图「${image.name}」：${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-        return selected.map(image => image.id);
+        const imageIds = selected.map(image => image.id);
+        const patchId = crypto.randomUUID().replaceAll("-", "");
+        const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-prepare", {
+          method: "POST", signal, headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gamePath, imageIds, patchId }),
+        }));
+        return await response.json() as { ids: string[]; patchId: string; path: string };
       },
-      apply: async (ids, undo) => (await writeMosaicPatch(ids, undo)).files,
+      apply: async (ids, undo, patchId) => (await writeMosaicPatch(ids, undo, undefined, patchId)).files,
     };
     return () => { deploymentHandle.current = null; };
   });
@@ -598,6 +618,10 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const next: Results = {};
     for (const image of usable) {
       const entry = storage?.index[image.id];
+      if (!storage && resultFor(rows, image).saved) {
+        next[image.id] = { ...defaultResult(image), discardedHash: image.sourceHash };
+        continue;
+      }
       if (entry?.source !== image.sourceHash) continue;
       // The cache has no selective deletion endpoint. Remember which confirmation was cleared,
       // while keeping results already in the patch index available.
@@ -625,8 +649,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
 
   const busyReason = busy ? "正在处理，先中止或等待" : disabled ? "请等待其他工程操作完成" : undefined;
   const redrawReason = busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
-  const batchReason = busyReason ?? (!reference ? "先将已确认的图片设为组参考"
-    : !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
+  const batchReason = busyReason ?? (!redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind === "lada" && detectorFile
@@ -654,7 +677,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           </label>}
         </>)}
         {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model],
-          <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason} title={batchReason} data-tooltip={batchReason}
+          <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason} data-tooltip={batchReason}
             onClick={() => generate(redrawGroup, [model])}>重绘本组所选 · {redrawGroup.length} 张</button>, <>
           <label>去码模型<select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => {
             const next = event.target.value as MosaicModel; setModel(next); setSteps(next === "turbo" ? 8 : 20);
@@ -719,17 +742,17 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               <option value="" disabled>移动到分组…</option><option value="new">新建独立组</option>
               {[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => <option key={key} value={key}>{list[0].name} · {list.length} 张</option>)}
             </select>
-            <button className="unity-btn" disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
+            <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已确认图作为画风参考" : "先重绘当前图并确认一版，即可将结果用作组内画风参考"} disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
               const next = { ...previous };
               for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
               return next;
-            })}>设为组参考</button>
+            })}>{reference?.id === active.id ? "本组参考图" : "用作本组画风参考"}</button>
             {reference && <span>参考图 {reference.name}</span>}
           </div>
         </div>
         <div className="unity-image-actions">
           <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason}
-            title={redrawReason} data-tooltip={redrawReason} onClick={() => generate([active], [model])}>重绘当前图</button>
+            data-tooltip={redrawReason} onClick={() => generate([active], [model])}>重绘当前图</button>
           <button className="unity-btn" aria-pressed={drawing} disabled={!!busy || !originalUrl}
             onClick={() => setDrawing(value => !value)}>框选蒙版</button>
           <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, activeResult.boxes.slice(0, -1))}>删除最后一框</button>
@@ -747,7 +770,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
               setPreferredResult(showSaved ? preferredVersion.id : "saved");
             }}>{showSaved ? "查看候选" : "查看已确认"}</button>}
-            <button type="button" className="unity-btn" disabled={!!redrawReason} title={redrawReason} data-tooltip={redrawReason}
+            <button type="button" className="unity-btn" disabled={!!redrawReason} data-tooltip={redrawReason}
               onClick={() => generate([active], ["turbo", "2511"])}>两种模型各生成一版</button>
             {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
               onKeyDown={event => {

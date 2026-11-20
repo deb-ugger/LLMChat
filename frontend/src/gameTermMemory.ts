@@ -103,7 +103,6 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
 export function gameTermProblem(source: string, issues: ReadonlyMap<string, string>) {
   if (!issues.size) return undefined;
   const names = gameSpeakerNames(source), body = bodyText(source);
-  const messages = [...new Set([...issues].filter(([name]) => names.includes(name) || body.trim() === name ||
-    name.length >= 2 && body.includes(name)).map(([, problem]) => problem))];
+  const messages = [...new Set([...issues].filter(([name]) => names.includes(name) || body.trim() === name).map(([, problem]) => problem))];
   return messages.length ? messages.join("。") : undefined;
 }

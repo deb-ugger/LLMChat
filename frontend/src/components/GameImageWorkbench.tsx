@@ -274,7 +274,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const refineConfidence = Number(stageModels.refineConfidence || "50");
   const refineLimits = imagePresenceThresholds(refineConfidence);
   const refineThresholdHint = `当前阈值 ${refineConfidence}%。文字存在概率${refineLimits.text === 50 ? "＞" : "≥"}${refineLimits.text}%判有字，${refineLimits.noText === 50 ? "＜" : "≤"}${refineLimits.noText}%判无字，其余待复核。`;
-  const refineKey = refineMethod === "off" ? undefined : JSON.stringify([refineMethod, refineConfidence, refineMethod === "llm" ? "text-probability-1024-1600-v2" : "local",
+  const refineKey = refineMethod === "off" ? undefined : JSON.stringify([refineMethod, refineConfidence, refineMethod === "llm" ? "text-probability-1024-1600-v2" : "local-evidence-v2",
     refineMethod === "local" ? refineOcr.id : [refineModel, promptState.selection.refine || "builtin:refine"]]);
   const screen=async(controller:AbortController,resume=false)=>{if(stageModels.filter!==undefined&&!stageModels.filter)throw new Error("请选择筛选视觉模型");task.select({kind:"screen",options:{backend,strategy,mode,source,target,concurrency,provider,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage}});const base=current.current;if(!base)return;
     const screeningLanes=stageModels.filter?modelConcurrency(promptState.scope,"screen",stageModels.filter):localGameImageScreeningLanes(concurrency);

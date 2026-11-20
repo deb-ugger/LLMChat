@@ -74,9 +74,11 @@ export function coarseImageReason(image:UnityImage):string|null {
 export function needsGameImageRefinement(image: UnityImage, key: string) {
   const screening = image.screening;
   const state = screening?.beforeRefine?.state ?? screening?.state;
+  const changed = !imageRefinementKeyMatches(screening?.refineKey, key);
+  const previousAutomaticReview = !!screening?.refineKey && !!screening.beforeRefine && changed;
   return !!image.sourceFile && !image.completed && !image.ocrCompleted && !imageManuallyExcluded(image) && !screening?.manualGroup &&
-    selectedScreeningState(state) && (screening?.state !== "review" || screening.reviewSelected !== false) &&
-    (!imageRefinementKeyMatches(screening?.refineKey, key) || !!screening?.refineFailed);
+    selectedScreeningState(state) && (screening?.state !== "review" || screening.reviewSelected !== false || previousAutomaticReview) &&
+    (changed || !!screening?.refineFailed);
 }
 
 export function imageRefinementKeyMatches(saved: string | undefined, current: string) {
@@ -377,6 +379,11 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
           const result = await recognizeBytes(image, blob, () => services.recognize(blob, worker));
           signal.throwIfAborted();
           const classification = classifyGameImage(image, result, { ...options, source: options.source ?? initial.source, target: options.target ?? initial.target });
+          if (options.local && classification.state === "review" && !result.presence &&
+              !result.lines.some(line => line.confidence >= (options.confidenceThreshold ?? 50) && /\p{L}/u.test(line.text))) {
+            classification.state = "no-text";
+            classification.reason = "复筛未识别到可信文字";
+          }
           screening = { ...initial, ...classification, reviewSelected: false, presence: result.presence, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
             beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes }, refineKey: options.refineKey };
         } catch (error) {

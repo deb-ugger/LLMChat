@@ -128,8 +128,9 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   text.options.includeContext = true;
   if (text.options.lineMode) text.options.lineMode = "local";
   setRole(text.roles, "textScreen"); setRole(text.roles, "line");
-  for (const scene of ["text", "dialogue", "names"] as const)
+  for (const scene of ["text", "dialogue"] as const)
     setRole(text.roles, scene, normal, gameDefaultTextModel.concurrency);
+  setRole(text.roles, "names", modelId(testModels.qwen));
   const images = value.images;
   if (!images) return value;
   const imageLanguage = images.options.translation ?? text.options;
@@ -169,10 +170,11 @@ export function refreshSavedGameTestConfigurations() {
 
 export function builtinGameTestConfigurations(current: GameTestConfiguration): SavedGameTestConfiguration[] {
   const value = defaultGameTestConfiguration(current);
-  const japanese = structuredClone(value);
+  const japanese = defaultGameTestConfiguration(current);
   const language = { source: "ja", onlySourceLanguage: true };
   Object.assign(japanese.text.options, language);
   if (japanese.images?.options.translation) Object.assign(japanese.images.options.translation, language);
+  if (japanese.images && japanese.images.options.strategy) japanese.images.options.mode = "manga";
   return [
     { id: DEFAULT_GAME_TEST_CONFIGURATION_ID, name: "默认配置", value },
     { id: JAPANESE_GAME_TEST_CONFIGURATION_ID, name: "日语配置", value: japanese },

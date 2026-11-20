@@ -771,8 +771,9 @@ def game_layout_stamp(translation, size, font_path, color, logo=False, heading=F
     stamp=Image.new("RGBA",size)
     draw=ImageDraw.Draw(stamp)
     font_path = font_for_lettering(font_path, translation if logo else translation.replace("♡", ""))
-    fsize=max(6,min(140,h - (8 if logo else 3)))
-    while fsize>6:
+    minimum = 6 if logo else max(3, min(6, h - 3))
+    fsize = max(minimum, min(140, h - (8 if logo else 3)))
+    while fsize >= minimum:
         font=ImageFont.truetype(font_path,fsize)
         stroke=max(1,round(fsize*.08)) if logo else max(1,round(fsize*.09))
         lines=[]

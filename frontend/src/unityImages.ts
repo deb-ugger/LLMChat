@@ -221,6 +221,9 @@ export function unityImageParticipates(image: UnityImage) {
   return !/字库图集、法线或光照纹理不参与图片文字翻译|仅支持单张二维纹理，不处理数组或立方体纹理/.test(image.error);
 }
 export function unityImageHasText(image: UnityImage) { return image.regions.some(region => !!region.text.trim()); }
+function hasRecognizedLetters(image: UnityImage) {
+  return image.regions.some(region => /\p{L}/u.test(region.text));
+}
 export function unityImageResultGroup(image: UnityImage) {
   if (image.completed && image.noTranslationNeeded) return "excluded";
   if (image.screening?.sourceSkip || image.screening?.state === "not-needed") return "excluded";
@@ -228,6 +231,8 @@ export function unityImageResultGroup(image: UnityImage) {
   if (image.renderedKind === "imported" && image.renderedFile) return "text";
   if(image.screening?.state==="candidate"&&!image.ocrCompleted)return "candidate";
   if(image.screening?.state==="failed")return "failed";
+  if (image.screening?.state === "review" && image.ocrCompleted && !image.screening.manualGroup && !hasRecognizedLetters(image))
+    return "empty";
   if (image.screening?.state === "review") return !image.screening.manualGroup &&
     (image.ocrCompleted || image.screening.refineKey && !image.screening.refineFailed) ? "manual-review" : "review";
   if (image.ocrCompleted && usesUnityImageTextEvidence(image) && !image.renderedFile && unityImageHasText(image) &&
@@ -340,10 +345,11 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         if (image.screening) {
           const screening = image.screening;
           const candidate = image.regions.some(region => region.selected);
+          const hasLetters = hasRecognizedLetters(image);
           image.screening = { ...screening, reviewSelected: false,
             beforeRecognition: screening.beforeRecognition ?? { state: screening.state, reason: screening.reason },
-            state: candidate ? "candidate" : image.regions.length ? "review" : "no-text",
-            reason: candidate ? "正式识别完成" : image.regions.length ? "识别结果需复核" : "未识别出文字" };
+            state: candidate ? "candidate" : hasLetters ? "review" : "no-text",
+            reason: candidate ? "正式识别完成" : hasLetters ? "识别结果需复核" : "未识别出可翻译文字" };
         }
         if (mode !== "recognize") await publish();
       }

@@ -56,6 +56,7 @@ export function hasMessageCoreNameOverride(source: string, translation: string) 
 }
 
 export function gameTextProblem(source: string, translation: string, messageCore = false) {
+  if (source === translation && !source.trim()) return "";
   if (hasTranslationPromptLeak(source, translation)) return TRANSLATION_PROMPT_LEAK;
   if (messageCore && translation.trim()) {
     source = repairMessageCoreNameLineBreak(repairMessageCorePositionPrefix(source));
