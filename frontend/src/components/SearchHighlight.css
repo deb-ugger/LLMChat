@@ -1,12 +1,12 @@
-.search-match { color:inherit; background:#ffe083; border-radius:2px; padding:0; }
-.game-dialogue-repair { color:inherit; background:#ffd0d4; border-radius:2px; padding:0; }
+.search-match { color:inherit; background:color-mix(in srgb, var(--warning) 14%, var(--bg-panel)); border-radius:var(--radius-sm); padding:0; }
+.game-dialogue-repair { color:inherit; background:var(--danger-soft); border-radius:var(--radius-sm); padding:0; }
 .game-dialogue-repair .search-match { background:inherit; }
-.search-editor > textarea.game-dialogue-repair-empty { background:#fff0f1; }
+.search-editor > textarea.game-dialogue-repair-empty { background:var(--danger-soft); }
 .search-editor { position:relative; display:block; flex:1; min-width:0; width:100%; }
 .search-editor > textarea { position:relative; z-index:1; width:100%; box-sizing:border-box; }
 .unity-entry-editor > .search-editor { height:100%; }
 .search-editor.has-search-match > textarea { background:transparent!important; }
-.search-editor-mirror { position:absolute; box-sizing:border-box; overflow:hidden; white-space:pre-wrap; pointer-events:none; border-color:transparent; background:var(--panel,#fff); }
+.search-editor-mirror { position:absolute; box-sizing:border-box; overflow:hidden; white-space:pre-wrap; pointer-events:none; border-color:transparent; background:var(--panel,var(--bg-panel)); }
 .search-editor-mirror .search-match { color:transparent; }
-.search-matched-field { display:block; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; font-weight:400; }
+.search-matched-field { display:block; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--fs-caption); font-weight:400; }
 .unity-offline-table td .search-matched-field { white-space:pre-wrap; }

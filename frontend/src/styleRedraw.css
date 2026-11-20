@@ -1,21 +1,19 @@
 .style-redraw-workspace {
-  --text: #ededed; --text-muted: #ababab; --muted: #ababab; --bg-panel: #252525; --bg-muted: #2c2c2c;
-  --bg-hover: #363636; --border: #444; --accent: #4aa9f1; --accent-ink: #a5d7fb; --accent-soft: #263e52; --danger: #f08888;
   display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden;
-  color: var(--text); background: #1b1b1b; color-scheme: dark;
+  max-width: var(--content-max); margin-inline: auto;
+  color: var(--text); background: var(--bg-app);
 }
 .style-redraw-workspace-bar {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px;
-  flex: none; padding: 8px 16px; border-bottom: 1px solid var(--border); background: #202020;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) 14px;
+  flex: none; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); background: var(--bg-panel);
 }
 .style-redraw-tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.style-redraw-workspace-bar :is(button, select) {
+.style-redraw-workspace-bar :where(button, select) {
   font: inherit; color: inherit; background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 10px; min-height: 32px;
 }
 .style-redraw-workspace-bar button { cursor: pointer; }
-.style-redraw-workspace-bar button:disabled { opacity: .5; cursor: default; }
-.style-redraw-tabs button[aria-pressed=true] { border-color: #3c7bae; background: var(--accent-soft); color: var(--accent-ink); }
+.style-redraw-workspace-bar button:disabled { opacity: .45; cursor: not-allowed; }
 .style-redraw-open-split { display: inline-flex; align-items: stretch; }
 .style-redraw-workspace-bar .style-redraw-open-main { border-start-end-radius: 0; border-end-end-radius: 0; }
 .style-redraw-workspace-bar .style-redraw-open-arrow { display: grid; place-items: center; width: 23px; padding: 0; border-inline-start: 0; border-start-start-radius: 0; border-end-start-radius: 0; }
@@ -25,27 +23,27 @@
 }
 .style-redraw-open-menu > button {
   display: flex; align-items: center; gap: 5px; width: 100%; min-height: 25px; padding: 3px 6px;
-  font-size: 12px; background: transparent; border-color: transparent; text-align: start;
+  font-size: var(--fs-caption); background: transparent; border-color: transparent; text-align: start;
 }
 .style-redraw-open-menu > button[aria-checked=true] { background: var(--accent-soft); color: var(--accent-ink); }
 .style-redraw-open-menu > button span { width: 1em; }
 .style-redraw-workspace-bar small { color: var(--text-muted); flex: 1; }
 .style-redraw-workspace-pane { flex: 1; min-width: 0; min-height: 0; }
 .style-redraw-workspace-pane[hidden] { display: none; }
-.style-redraw-comfy-pane > p { margin: 0; padding: 16px; }
-.style-redraw { box-sizing: border-box; width: 100%; height: 100%; overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: stretch; gap: 12px; color: var(--text); background: #1b1b1b; }
-.style-redraw header, .style-redraw-tools, .style-redraw-box { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-.style-redraw header { justify-content: space-between; width: 100%; max-width: 1440px; align-self: center; }
-.style-redraw h2 { margin: 0; font-size: 18px; }
-.style-redraw fieldset { display: grid; gap: 12px; min-width: 0; padding: 0; margin: 0; border: 0; }
-.style-redraw label { display: grid; gap: 4px; }
+.style-redraw-comfy-pane > p { margin: 0; padding: var(--space-4); }
+.style-redraw { box-sizing: border-box; width: 100%; height: 100%; overflow: auto; padding: var(--page-inset); display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3); color: var(--text); background: var(--bg-app); }
+.style-redraw header, .style-redraw-tools, .style-redraw-box { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.style-redraw header { justify-content: space-between; width: 100%; max-width: var(--content-max); margin-inline: auto; }
+.style-redraw h2 { margin: 0; font-size: var(--fs-title); font-weight: 600; margin-block: var(--space-4); }
+.style-redraw fieldset { display: grid; gap: var(--space-3); min-width: 0; padding: 0; margin: 0; border: 0; }
+.style-redraw label { display: grid; gap: var(--space-1); }
 .style-redraw input:not(.searchable-select-input), .style-redraw textarea, .style-redraw select:not([hidden]),
 .style-redraw button:not(.searchable-select-caret, .searchable-select-option), .style-redraw-dialog footer button { box-sizing: border-box; font: inherit; background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; }
 .style-redraw input[type=number] { width: 84px; }
-.style-redraw button:not(.searchable-select-caret, .searchable-select-option), .style-redraw-dialog footer button { width: fit-content; cursor: pointer; }
-.style-redraw button:disabled { opacity: .5; cursor: default; }
+.style-redraw :where(button:not(.searchable-select-caret, .searchable-select-option)), .style-redraw-dialog footer button { width: fit-content; cursor: pointer; }
+.style-redraw button:disabled { opacity: .45; cursor: not-allowed; }
 .style-redraw p, .style-redraw figure { margin: 0; }
-.style-redraw-settings { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 16px; align-items: start; width: 100%; max-width: 1440px; margin-inline: auto; }
+.style-redraw-settings { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: var(--space-4); align-items: start; width: 100%; max-width: var(--content-max); margin-inline: auto; }
 .style-redraw-config { display: grid; gap: 14px; min-width: 0; }
 .style-redraw-native-workflows { overflow: hidden; }
 .style-redraw-native-workflows > .style-redraw-settings {
@@ -55,28 +53,32 @@
 .style-redraw-native-workflows .style-redraw-config { min-height: 0; overflow: auto; align-content: start; }
 .style-redraw-native-workflows .style-redraw-queue { min-height: 0; display: flex; flex-direction: column; }
 .style-redraw-native-workflows .style-redraw-queue-list { flex: 1; min-height: 0; max-height: none; align-content: start; }
+@media (min-width: 1600px) {
+  .style-redraw-native-workflows .style-redraw-queue:not(:has(li)) { align-self: start; }
+}
 @media (max-width: 900px) {
   .style-redraw-native-workflows { overflow: auto; }
   .style-redraw-native-workflows > .style-redraw-settings { flex: none; grid-template-columns: minmax(0, 1fr); }
   .style-redraw-native-workflows .style-redraw-config { overflow: visible; }
   .style-redraw-native-workflows .style-redraw-queue-list { max-height: 50vh; }
 }
-.style-redraw-card { display: grid; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-muted); }
-.style-redraw fieldset.style-redraw-run { padding: 16px; border: 1px solid var(--border); }
+.style-redraw-card { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-muted); }
+.style-redraw fieldset.style-redraw-run { padding: var(--space-4); border: 1px solid var(--border); }
 .style-redraw-run .style-redraw-tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr)); align-items: end; }
 .style-redraw-run .style-redraw-tools > button, .style-redraw-run .style-redraw-tools select, .style-redraw-run .style-redraw-tools input[type=number] { width: 100%; min-width: 0; }
 .style-redraw button:not(:disabled):hover, .style-redraw-workspace-bar button:not(:disabled):hover { border-color: var(--accent); }
-.style-redraw-card h3, .style-redraw-card h4 { margin: 0; font-size: 15px; }
-.style-redraw-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
-.style-redraw-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 12px; }
+.style-redraw-card h3, .style-redraw-card h4 { margin: 0; font-size: var(--fs-section); font-weight: 600; }
+.style-redraw-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.style-redraw-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: var(--space-3); }
 .style-redraw-model-grid > *, .style-redraw-card label, .style-redraw-card .settings-directory-picker input { min-width: 0; }
-.style-redraw-card .settings-directory-picker { display: flex; align-items: center; gap: 8px; }
+.style-redraw-card .settings-directory-picker { display: flex; align-items: center; gap: var(--space-2); }
 .style-redraw-card .settings-directory-picker input { flex: 1; }
-.style-redraw-hint, .style-redraw-error { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.style-redraw-hint, .style-redraw-error { font-size: var(--fs-caption); line-height: 1.45; overflow-wrap: anywhere; }
 .style-redraw-hint { color: var(--text-muted); }
+.style-redraw-queue .style-redraw-hint { line-height: 1.6; padding-inline: var(--space-2); }
 .style-redraw-error { color: var(--danger); }
-.style-redraw-workflow-parameters { display: grid; gap: 6px; margin: 0; font-size: 13px; }
-.style-redraw-workflow-parameters > div { display: grid; grid-template-columns: 7ch minmax(0, 1fr); gap: 8px; }
+.style-redraw-workflow-parameters { display: grid; gap: 6px; margin: 0; font-size: var(--fs-body); }
+.style-redraw-workflow-parameters > div { display: grid; grid-template-columns: 7ch minmax(0, 1fr); gap: var(--space-2); }
 .style-redraw-workflow-parameters dt { color: var(--text-muted); margin: 0; }
 .style-redraw-workflow-parameters dd { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .style-redraw-connection { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
@@ -105,13 +107,12 @@
 .style-redraw-image-pick:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .style-redraw-game-files > summary { cursor: pointer; color: var(--text-muted); }
 .style-redraw-game-files > section { margin-top: 8px; }
-.style-redraw .style-redraw-card button.style-redraw-primary { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 .style-redraw-queue-list { display: grid; gap: 14px; max-height: min(62vh, 600px); overflow: auto; }
-.style-redraw-queue-list h4 { padding-bottom: 7px; font-size: 13px; color: var(--text-muted); }
+.style-redraw-queue-list h4 { padding-bottom: 7px; font-size: var(--fs-body); color: var(--text-muted); }
 .style-redraw-queue-list ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .style-redraw-queue-list li { display: flex; align-items: center; gap: 9px; padding: 7px 9px; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
 .style-redraw-queue-list li > div { flex: 1; min-width: 0; }
-.style-redraw-queue-list li > button { padding: 4px 7px; font-size: 12px; white-space: nowrap; }
+.style-redraw-queue-list li > button { padding: var(--space-1) 7px; font-size: var(--fs-caption); white-space: nowrap; }
 .style-redraw-queue-list strong, .style-redraw-queue-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .style-redraw-queue-list small { color: var(--text-muted); }
 .style-redraw .style-redraw-queue-list button.style-redraw-thumbnail { display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0; overflow: hidden; background: var(--bg-muted); }
@@ -119,24 +120,24 @@
 .style-redraw-image-dialog { width: max-content; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); box-sizing: border-box; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); background: var(--bg-panel); }
 .style-redraw-image-dialog[open] { display: flex; flex-direction: column; }
 .style-redraw-image-dialog::backdrop { background: #0009; }
-.style-redraw-image-dialog > header { width: auto; max-width: none; align-self: stretch; flex: none; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.style-redraw-image-dialog > header { width: auto; max-width: none; align-self: stretch; flex: none; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
 .style-redraw-image-dialog > header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .style-redraw-image-dialog > header small { color: var(--text-muted); white-space: nowrap; }
 .style-redraw-image-dialog > p { padding: 14px; }
 .style-redraw-image-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.style-redraw-image-scroll img { display: block; width: auto; height: auto; max-width: none; max-height: none; background: repeating-conic-gradient(#d6dae0 0% 25%, #f1f2f4 0% 50%) 0 0 / 16px 16px; }
+.style-redraw-image-scroll img { display: block; width: auto; height: auto; max-width: none; max-height: none; background: repeating-conic-gradient(var(--bg-hover) 0% 25%, var(--bg-muted) 0% 50%) 0 0 / 16px 16px; }
 @media (max-width: 850px) { .style-redraw-settings { grid-template-columns: minmax(0, 1fr); } }
-.style-redraw-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.style-redraw-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 .style-redraw-previews figure { min-width: 0; min-height: 180px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-panel); }
 .style-redraw-previews figcaption { color: var(--text-muted); margin-bottom: 6px; }
 @media (max-width: 520px) { .style-redraw-previews { grid-template-columns: minmax(0, 1fr); } }
-.style-redraw-previews img { display: block; max-height: 48vh; max-width: 100%; margin-top: 4px; background: repeating-conic-gradient(#d6dae0 0% 25%, #f1f2f4 0% 50%) 0 0 / 16px 16px; }
-.style-redraw-dialog { width: min(840px, 90vw); max-height: 88vh; padding: 0; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; }
+.style-redraw-previews img { display: block; max-height: 48vh; max-width: 100%; margin-top: 4px; background: repeating-conic-gradient(var(--bg-hover) 0% 25%, var(--bg-muted) 0% 50%) 0 0 / 16px 16px; }
+.style-redraw-dialog { width: min(840px, 90vw); max-height: 88vh; padding: 0; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .style-redraw-dialog .style-redraw-workspace { height: min(75vh, 800px); }
 .style-redraw-dialog::backdrop { background: #0005; }
-.style-redraw-dialog footer { display: flex; justify-content: flex-end; padding: 8px 16px 12px; }
+.style-redraw-dialog footer { display: flex; justify-content: flex-end; padding: var(--space-2) var(--space-4) var(--space-3); }
 .style-redraw-canvas { position: relative; display: inline-block; max-width: 100%; margin-top: 4px; }
 .style-redraw-canvas img { margin-top: 0; }
 .style-redraw-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
 .style-redraw-canvas rect { fill: transparent; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
-.style-redraw-detail { display: block; max-height: 48vh; width: auto; max-width: 100%; margin-top: 4px; background: repeating-conic-gradient(#d6dae0 0% 25%, #f1f2f4 0% 50%) 0 0 / 16px 16px; }
+.style-redraw-detail { display: block; max-height: 48vh; width: auto; max-width: 100%; margin-top: 4px; background: repeating-conic-gradient(var(--bg-hover) 0% 25%, var(--bg-muted) 0% 50%) 0 0 / 16px 16px; }

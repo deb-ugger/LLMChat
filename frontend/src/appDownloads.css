@@ -2,11 +2,11 @@
   position: absolute;
   top: 2px;
   right: 5px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--accent, #326df0);
-  color: #fff;
-  font-size: 10px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-lg);
+  background: var(--accent, #1b1a16);
+  color: var(--bg-panel);
+  font-size: var(--fs-caption);
   line-height: 14px;
   font-variant-numeric: tabular-nums;
 }
@@ -20,27 +20,27 @@
   margin: 0;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--border, #d6dfe9);
-  border-radius: 10px;
-  background: var(--panel, #fff);
-  color: var(--text, #183148);
+  border: 1px solid var(--border, #dcd6c6);
+  border-radius: var(--radius-lg);
+  background: var(--panel, var(--bg-panel));
+  color: var(--text, #1b1a16);
   box-shadow: 0 8px 28px #0003;
-  font-size: 14px;
+  font-size: var(--fs-body);
 }
 .app-download-panel:popover-open { display: flex; flex-direction: column; }
 .app-download-panel > header, .app-download-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .app-download-panel > header {
   flex-shrink: 0;
-  padding: 10px 12px 10px 16px;
-  border-bottom: 1px solid var(--border, #d6dfe9);
+  padding: 10px var(--space-3) 10px var(--space-4);
+  border-bottom: 1px solid var(--border, #dcd6c6);
 }
-.app-download-panel h2 { margin: 0; font-size: 16px; }
+.app-download-panel h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .app-download-panel ul {
   display: grid;
   gap: 0;
@@ -49,10 +49,10 @@
   overscroll-behavior: contain;
   list-style: none;
   margin: 0;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
 }
-.app-download-row { display: grid; gap: 4px; min-width: 0; padding: 10px 4px; }
-.app-download-row + .app-download-row { border-top: 1px solid var(--border, #d6dfe9); }
+.app-download-row { display: grid; gap: var(--space-1); min-width: 0; padding: 10px var(--space-1); }
+.app-download-row + .app-download-row { border-top: 1px solid var(--border, #dcd6c6); }
 .app-download-heading strong, .app-download-path {
   min-width: 0;
   overflow: hidden;
@@ -60,21 +60,21 @@
   white-space: nowrap;
 }
 .app-download-path, .app-download-status, .app-download-empty {
-  color: var(--muted, #667589);
-  font-size: 13px;
+  color: var(--muted, #6a675c);
+  font-size: var(--fs-body);
 }
-.app-download-status, .app-download-actions { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.app-download-status, .app-download-actions { display: flex; flex-wrap: wrap; gap: var(--space-1) 10px; align-items: center; }
 .app-download-status { font-variant-numeric: tabular-nums; }
-.app-download-error, .app-download-status .is-error { color: var(--danger, #b93636); }
-.app-download-error { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
-.app-download-empty { margin: 0; padding: 20px 16px; }
-.app-download-row progress { width: 100%; height: 6px; accent-color: var(--accent, #326df0); }
+.app-download-error, .app-download-status .is-error { color: var(--danger, #a3231a); }
+.app-download-error { margin: 0; font-size: var(--fs-body); overflow-wrap: anywhere; }
+.app-download-empty { margin: 0; padding: 20px var(--space-4); }
+.app-download-row progress { width: 100%; height: 6px; accent-color: var(--accent, #1b1a16); }
 .app-download-panel button {
   flex: none;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--accent, #326df0);
+  color: var(--accent, #1b1a16);
   font: inherit;
   cursor: pointer;
 }
@@ -84,8 +84,8 @@
   width: 28px;
   height: 28px;
   padding: 0;
-  color: var(--muted, #667589);
+  color: var(--muted, #6a675c);
 }
 .app-download-icon svg { width: 16px; height: 16px; }
-.app-download-actions button { padding: 3px 5px; font-size: 13px; }
-.app-download-panel button:hover { background: var(--accent-soft, #edf3ff); color: var(--accent, #326df0); }
+.app-download-actions button { padding: 3px 5px; font-size: var(--fs-body); }
+.app-download-panel button:hover { background: var(--accent-soft, #e8e2d4); color: var(--accent, #1b1a16); }

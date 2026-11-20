@@ -1,0 +1,219 @@
+/* Standard actions. Keep hit areas for navigation, drag targets and sliders in their components. */
+button:is(
+  .chat-send, .send-btn, .save-btn, .chat-icon-button, .new-chat-btn,
+  .unity-btn, .dpl-btn, .stats-btn, .settings-test-btn, .settings-card-mini-test,
+  .settings-goto-page, .text-tool-btn, .pdf-tool-btn, .tr-copy-btn, .ocr-copy-btn,
+  .text-open-project-btn, .settings-save-current, .settings-discard-current,
+  .settings-panel-save, .settings-panel-cancel, .pricing-btn, .game-confirm-cancel,
+  .game-confirm-primary, .game-confirm-accept, .style-redraw-primary,
+  .speech-primary, .speech-layout-button, .unity-header-icon, .unity-help-trigger,
+  .pdf-toolbar-glyph-btn, .pdf-tool-round-btn
+),
+.speech-actions > button,
+.speech-queue-heading > button,
+.speech-view :where(button:not(.speech-file-picker, .speech-range-handle, .speech-tab-close, .speech-workspace-switch button, .speech-queue-tabs button, .speech-result-tabs button)),
+.game-action-confirm footer button {
+  block-size: var(--button-size, var(--control-size));
+  min-block-size: var(--button-size, var(--control-size));
+  padding: 0 var(--button-inset, 14px);
+  border: 1px solid var(--button-border, var(--border-strong));
+  border-radius: var(--radius-sm);
+  background: var(--button-bg, var(--bg-panel));
+  color: var(--button-fg, var(--text));
+  font: 600 var(--button-font, var(--fs-body))/1.25 var(--font);
+  cursor: pointer;
+}
+
+button:is(
+  .chat-send, .send-btn, .save-btn, .unity-btn-primary, .dpl-btn-primary,
+  .text-tool-btn-primary, .speech-primary, .settings-save-current,
+  .settings-panel-save, .pricing-btn-accent, .game-confirm-primary,
+  .style-redraw-primary
+) {
+  --button-bg: var(--accent);
+  --button-fg: var(--bg-panel);
+  --button-border: var(--accent);
+  --button-hover-bg: var(--accent-hover);
+}
+
+button:is(.ocr-paste-btn, .text-open-project-btn) {
+  --button-bg: var(--bg-panel);
+  --button-fg: var(--text);
+  --button-border: var(--border-strong);
+  --button-hover-bg: var(--bg-hover);
+}
+
+button:is(.chat-icon-button, .unity-header-icon, .unity-back, .unity-help-trigger, .dpl-btn-quiet, .pdf-toolbar-glyph-btn) {
+  --button-bg: transparent;
+  --button-border: transparent;
+  --button-fg: var(--text-muted);
+  --button-inset: var(--space-2);
+}
+
+button:is(.chat-icon-button, .unity-header-icon, .pdf-toolbar-glyph-btn, .pdf-tool-round-btn) {
+  inline-size: var(--button-size, var(--control-size));
+  --button-inset: 0;
+}
+
+button:is(.pdf-tool-btn, .text-tool-btn):is(.active, .is-active) {
+  --button-bg: var(--accent-soft);
+  --button-border: var(--accent);
+  --button-fg: var(--accent-ink);
+  --button-hover-bg: var(--accent-soft);
+}
+
+button:is(.pdf-tool-btn, .pdf-tool-round-btn, .tr-copy-btn, .ocr-copy-btn, .speech-layout-button, .pricing-btn-sm),
+.stats-pagination .stats-btn {
+  --button-size: var(--control-size-small);
+  --button-inset: var(--space-2);
+  --button-font: var(--fs-caption);
+}
+
+.boot .save-btn,
+.game-action-confirm footer button {
+  --button-size: var(--control-size-large);
+}
+
+button:is(.unity-btn-danger, .dpl-btn-danger, .pricing-btn-danger, .game-confirm-accept) {
+  --button-fg: var(--danger);
+  --button-border: var(--danger);
+  --button-hover-bg: var(--danger-soft);
+}
+
+button.settings-discard-current {
+  --button-bg: var(--danger);
+  --button-fg: var(--bg-panel);
+  --button-border: var(--danger);
+  --button-hover-bg: color-mix(in srgb, var(--danger) 88%, var(--text));
+}
+
+button:is(
+  .chat-send, .send-btn, .save-btn, .chat-icon-button, .new-chat-btn,
+  .unity-btn, .dpl-btn, .stats-btn, .settings-test-btn, .settings-card-mini-test,
+  .settings-goto-page, .text-tool-btn, .pdf-tool-btn, .tr-copy-btn, .ocr-copy-btn,
+  .text-open-project-btn, .settings-save-current, .settings-discard-current,
+  .settings-panel-save, .settings-panel-cancel, .pricing-btn, .game-confirm-cancel,
+  .game-confirm-primary, .game-confirm-accept, .style-redraw-primary,
+  .speech-primary, .speech-layout-button, .unity-header-icon, .unity-help-trigger,
+  .pdf-toolbar-glyph-btn, .pdf-tool-round-btn
+):hover:not(:disabled),
+.speech-actions > button:hover:not(:disabled),
+.speech-queue-heading > button:hover:not(:disabled),
+.game-action-confirm footer button:hover:not(:disabled) {
+  background: var(--button-hover-bg, var(--bg-hover));
+}
+
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* Page navigation and tabs inside a panel share separate visual treatments. */
+button.settings-tab,
+:is(.unity-mode-nav, .speech-workspace-switch, .style-redraw-tabs) > button,
+.style-redraw-tabs .style-redraw-open-main {
+  min-block-size: var(--control-size-large);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 var(--fs-body)/1.25 var(--font);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.settings-tab.active,
+:is(.unity-mode-nav, .speech-workspace-switch, .style-redraw-tabs) > button:is([aria-selected="true"], [aria-pressed="true"]),
+.style-redraw-tabs .style-redraw-open-main[aria-pressed="true"] {
+  border-bottom-color: var(--signal);
+  color: var(--text);
+}
+
+:is(.stats-seg, .speech-queue-tabs, .game-translation-tabs, .speech-result-tabs, .unity-bottom-tabs) {
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+:is(.stats-seg, .speech-queue-tabs, .game-translation-tabs) > button,
+:is(.speech-result-tabs, .unity-bottom-tabs) button[role="tab"] {
+  min-height: var(--control-size-small);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 var(--fs-caption)/1.25 var(--font);
+  cursor: pointer;
+}
+
+:is(.stats-seg, .speech-queue-tabs, .game-translation-tabs) > button:is(.is-active, [aria-selected="true"]),
+:is(.speech-result-tabs, .unity-bottom-tabs) button[role="tab"][aria-selected="true"] {
+  border-color: var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.speech-queue-tabs > button:last-child {
+  color: var(--success);
+}
+
+/* Keep native input semantics and keyboard behavior. Dedicated switches keep their tracks. */
+input:is([type="checkbox"], [type="radio"]):not(.speech-proofread-toggle input, .text-switch, [role="switch"]) {
+  appearance: none;
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+  inline-size: 14px;
+  block-size: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: calc(var(--radius-sm) / 2);
+  background: var(--bg-panel) center / 12px 12px no-repeat;
+  cursor: pointer;
+}
+
+input[type="radio"]:not(.speech-proofread-toggle input, .text-switch, [role="switch"]) {
+  border-radius: 50%;
+}
+
+input:is([type="checkbox"], [type="radio"]):not(.speech-proofread-toggle input, .text-switch, [role="switch"]):is(:checked, :indeterminate) {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:not(.speech-proofread-toggle input, .text-switch, [role="switch"]):checked {
+  /* The dark outline keeps the white mark visible on the light accent in ink. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2.6 6 2.1 2.1L9.4 3.5' fill='none' stroke='%231a1b17' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='m2.6 6 2.1 2.1L9.4 3.5' fill='none' stroke='white' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+input[type="checkbox"]:not(.speech-proofread-toggle input, .text-switch, [role="switch"]):indeterminate {
+  background-image: linear-gradient(var(--bg-panel), var(--bg-panel));
+  background-size: 7px 2px;
+}
+
+input[type="radio"]:not([role="switch"]):checked {
+  background-image: radial-gradient(circle, var(--bg-panel) 0 3px, transparent 3.5px);
+}
+
+input:is([type="checkbox"], [type="radio"]):not(.speech-proofread-toggle input, .text-switch, [role="switch"]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 2px;
+}
+
+input:is([type="checkbox"], [type="radio"]):disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+@media (forced-colors: active) {
+  input:is([type="checkbox"], [type="radio"]):not(.speech-proofread-toggle input, .text-switch, [role="switch"]) {
+    appearance: auto;
+  }
+}

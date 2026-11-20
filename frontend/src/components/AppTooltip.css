@@ -1,17 +1,17 @@
 body .app-tooltip,
 body [role="tooltip"]:not(.app-tooltip) {
   box-sizing: border-box;
-  padding: 8px 11px;
-  border: 1px solid #ffffff20;
-  border-radius: 8px;
-  background: #253247;
-  color: #f8fafc;
+  padding: var(--space-2) 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 400;
   line-height: 1.55;
   text-align: start;
-  box-shadow: 0 5px 18px #15223826;
+  box-shadow: var(--shadow-md);
   overflow-wrap: anywhere;
 }
 body .app-tooltip {
@@ -27,8 +27,8 @@ body .app-tooltip {
   pointer-events: none;
 }
 body .stats-tokens-tip-row { color: inherit; }
-body .stats-tokens-tip-row span:first-child { color: #c6d2e3; }
-body .stats-tokens-tip-row span:last-child { color: #f8fafc; }
+body .stats-tokens-tip-row span:first-child { color: var(--text-muted); }
+body .stats-tokens-tip-row span:last-child { color: var(--text); }
 body .pdf-outline-float-tip { animation: none; }
 body .pdf-outline-float-tip::before { display: none; }
 [data-tooltip]:disabled { pointer-events: auto; }

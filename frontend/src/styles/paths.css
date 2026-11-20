@@ -1,12 +1,10 @@
-/* Directory values use one line; labels and adjacent actions keep their space. */
-body :is(
-  .game-work-directory-path, .game-resource-path, .embed-game-location, .embed-game-path code,
-  .embed-path-link code, .unity-offline-output code, .unity-game-heading code,
-  .unity-game-path, .unity-recent-game-path, .unity-game-empty-path,
+/* Path defaults leave width, wrapping and truncation to each component. */
+body :where(
+  .game-work-directory-path, .game-resource-path, .embed-game-location,
+  .embed-path-link code, .unity-game-heading code, .unity-game-path, .unity-recent-game-path,
   .unity-config-path-link-value, .unity-fact dd strong.unity-fact-path,
   .unity-confirm-path code, .unity-selfcheck-path, .unity-selfcheck-logpath code,
-  .unity-output-logpath code, .unity-project-loading-path,
-  .settings-unity-game-path code, .storage-current-path, .speech-output-path output
+  .unity-project-loading-path, .storage-current-path, .speech-output-path output
 ) { display:block; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; overflow-wrap:normal; word-break:normal; }
-body :is(.embed-path-link,.unity-config-path-link,.unity-output-logpath,.unity-selfcheck-logpath,.unity-confirm-path,.unity-offline-output,.settings-directory-picker,.storage-location-path) { min-width:0; max-width:100%; }
-body :is(.settings-directory-picker input,.settings-path-row input,.storage-location-path input,.unity-offline-path input):not(:focus) { min-width:0; text-overflow:ellipsis; }
+body :where(.embed-path-link, .unity-config-path-link, .unity-selfcheck-logpath, .unity-confirm-path, .settings-directory-picker, .storage-location-path) { min-width:0; max-width:100%; }
+body :where(.settings-directory-picker input:not(:focus), .storage-location-path input:not(:focus)) { min-width:0; text-overflow:ellipsis; }

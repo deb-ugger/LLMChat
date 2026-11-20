@@ -1,9 +1,9 @@
-.closing-progress { width: min(420px,calc(100vw - 32px)); padding: 22px; box-sizing: border-box; border: 1px solid var(--border,#d6dfe9); border-radius: 10px; color: var(--text,#1d293b); background: var(--panel,#fff); box-shadow: 0 12px 48px #182a4a33; font: inherit; outline: none; }
-.closing-progress::backdrop { background: #17243a66; }
-.closing-progress h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 18px; }
+.closing-progress { width: min(420px,calc(100vw - 32px)); padding: 22px; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius-lg); color: var(--text); background: var(--bg-panel); box-shadow: var(--shadow-md); font: inherit; outline: none; }
+.closing-progress::backdrop { background: rgb(0 0 0 / 40%); }
+.closing-progress h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: var(--fs-dialog); font-weight: 600; }
 .closing-progress p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
 .closing-progress-actions { display:flex; justify-content:flex-end; margin-top:16px; }
-.closing-progress-actions button { border:1px solid #cf8585; border-radius:5px; padding:7px 12px; background:#fff0f0; color:#a52d2d; font:inherit; cursor:pointer; }
-.closing-progress-spinner { width: 18px; height: 18px; flex: none; border: 2px solid var(--border,#d6dfe9); border-top-color: var(--accent,#326df0); border-radius: 50%; animation: closing-progress-spin .9s linear infinite; }
+.closing-progress-actions button { border:1px solid color-mix(in srgb, var(--danger) 38%, var(--border)); border-radius:var(--radius-sm); padding:7px var(--space-3); background:var(--danger-soft); color:var(--danger); font:inherit; cursor:pointer; }
+.closing-progress-spinner { width: 18px; height: 18px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: closing-progress-spin .9s linear infinite; }
 @keyframes closing-progress-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .closing-progress-spinner { animation: none; } }
