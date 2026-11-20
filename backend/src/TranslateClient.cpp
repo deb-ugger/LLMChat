@@ -612,17 +612,37 @@ bool looksLikeHtml(const std::string& body)
 /** Google free endpoint blocked by CAPTCHA / unusual-traffic page. */
 bool isGoogleCaptchaOrBlockPage(const std::string& body)
 {
-    if (body.empty()) return false;
     const size_t n = std::min(body.size(), size_t(8000));
     const std::string low = toLower(body.substr(0, n));
-    return low.find("recaptcha") != std::string::npos
-        || low.find("captcha-form") != std::string::npos
-        || low.find("unusual traffic") != std::string::npos
-        || low.find("detected unusual traffic") != std::string::npos
-        || low.find("g-recaptcha") != std::string::npos
-        || (looksLikeHtml(body)
-            && low.find("translate.googleapis.com") != std::string::npos
-            && low.find("continue") != std::string::npos);
+    return low.find("google") != std::string::npos
+        && (low.find("recaptcha") != std::string::npos
+            || low.find("captcha-form") != std::string::npos
+            || low.find("unusual traffic") != std::string::npos);
+}
+
+bool classifyGooglePageError(TranslateResult& result, const std::string& body)
+{
+    if (isGoogleCaptchaOrBlockPage(body))
+    {
+        result.code = "GOOGLE_CAPTCHA";
+        result.error = withZhHint(
+            "Google CAPTCHA / unusual traffic from your network",
+            "谷歌翻译触发人机验证（请求过频或 IP 被风控），请稍后再试，或改用 Bing/有道");
+    }
+    else if (looksLikeHtml(body))
+    {
+        result.code = "UPSTREAM_HTML";
+        result.error = withZhHint(
+            "Google returned a web page instead of a translation",
+            "谷歌翻译返回了网页，未获得译文。网络或代理可能拦截了请求，请稍后重试或改用 Bing/有道");
+    }
+    else
+    {
+        return false;
+    }
+    result.ok = false;
+    result.translation.clear();
+    return true;
 }
 
 HttpResult winHttpRequest(
@@ -977,23 +997,10 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
     result.externalCall = true;
     const HttpResult http = winHttpGet(url);
 
-    auto markCaptcha = [&](const std::string& /*raw*/) {
-        result.ok = false;
-        result.translation.clear();
-        result.code = "GOOGLE_CAPTCHA";
-        // CAPTCHA HTML 本身无助于排障，给出明确说明即可
-        result.error = withZhHint(
-            "Google CAPTCHA / unusual traffic from your network",
-            "谷歌翻译触发人机验证（请求过频或 IP 被风控），请稍后再试，或改用 Bing/有道");
-    };
-
+    if (classifyGooglePageError(result, http.body)) return result;
     if (!http.ok)
     {
-        if (isGoogleCaptchaOrBlockPage(http.body) || isGoogleCaptchaOrBlockPage(http.error))
-        {
-            markCaptcha(http.body.empty() ? http.error : http.body);
-            return result;
-        }
+        if (classifyGooglePageError(result, http.error)) return result;
         const std::string base = http.error.empty()
             ? "Google translate request failed"
             : http.error;
@@ -1007,11 +1014,6 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
         result.error = withZhHint(
             "Google translate empty body",
             "谷歌翻译返回为空，请改用 Bing/有道或配置代理");
-        return result;
-    }
-    if (isGoogleCaptchaOrBlockPage(http.body) || looksLikeHtml(http.body))
-    {
-        markCaptcha(http.body);
         return result;
     }
     try
@@ -1034,20 +1036,11 @@ TranslateResult translateGoogleChunk(const std::string& text, const std::string&
                 "谷歌翻译无有效结果，国内常需代理，可改用 Bing/有道");
             return result;
         }
-        if (looksLikeHtml(result.translation) || isGoogleCaptchaOrBlockPage(result.translation))
-        {
-            markCaptcha(result.translation);
-            return result;
-        }
+        if (classifyGooglePageError(result, result.translation)) return result;
         result.ok = true;
     }
     catch (const std::exception& ex)
     {
-        if (isGoogleCaptchaOrBlockPage(http.body))
-        {
-            markCaptcha(http.body);
-            return result;
-        }
         result.error = withZhHint(
             std::string("Parse Google failed: ") + ex.what(),
             "谷歌翻译返回无法解析，国内常需代理，可改用 Bing/有道");
@@ -2285,10 +2278,8 @@ TranslateResult TranslateClient::translateFree(
         });
         if (google.ok) return google;
 
-        // Free Google endpoint often hits CAPTCHA; fall back to Bing automatically.
-        const bool captcha = google.code == "GOOGLE_CAPTCHA"
-            || isGoogleCaptchaOrBlockPage(google.error);
-        if (autoFallback && (captcha || looksLikeHtml(google.error)))
+        const bool captcha = google.code == "GOOGLE_CAPTCHA";
+        if (autoFallback && (captcha || google.code == "UPSTREAM_HTML"))
         {
             TranslateResult bing = runLimited([&](const std::string& chunk) {
                 return translateBing(chunk, source, target);
@@ -2299,12 +2290,12 @@ TranslateResult TranslateClient::translateFree(
                 return bing;
             }
             google.error = withZhHint(
-                "Google CAPTCHA and Bing fallback failed. Google: "
-                    + (google.error.empty() ? "captcha" : google.error)
-                    + " | Bing: "
-                    + (bing.error.empty() ? "failed" : bing.error),
-                "谷歌翻译已触发人机验证，且 Bing 备用也失败。请稍后再试、换网络/代理，或改用有道/大模型");
-            google.code = "GOOGLE_CAPTCHA";
+                captcha ? "Google CAPTCHA and Bing fallback failed"
+                        : "Google returned a web page and Bing fallback failed",
+                captcha ? "谷歌翻译已触发人机验证，且 Bing 备用也失败。请稍后再试、换网络/代理，或改用有道/大模型"
+                        : "谷歌翻译返回了网页，Bing 备用翻译也失败。请检查网络或代理，稍后重试或改用有道")
+                + " | Google: " + google.error
+                + " | Bing: " + (bing.error.empty() ? "failed" : bing.error);
         }
         return google;
     }

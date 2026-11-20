@@ -336,14 +336,23 @@ async function request<T>(
     err.code = "NETWORK_TIMEOUT";
     throw err;
   }
-  const data = await res.json().catch(() => ({}));
+  const text = await res.text().catch(() => "");
+  let data: unknown = {};
+  let rawText: string | undefined;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    if (!res.ok && text.trim()) rawText = text.slice(0, 2_000);
+  }
   if (!res.ok) {
-    const raw =
-      (data as { error?: string }).error ?? `HTTP ${res.status}`;
+    const failure = data as { error?: string; code?: string } | null;
+    const raw = failure?.error ?? rawText ?? `HTTP ${res.status}`;
     const err = new Error(toFriendlyError(raw)) as Error & {
-      status?:number;code?: string;response?: unknown;
+      status?: number; code?: string; response?: unknown;
     };
-    err.status=res.status;err.code = (data as { code?: string }).code;err.response = data;
+    err.status = res.status;
+    err.code = failure?.code;
+    err.response = data;
     throw err;
   }
   return data as T;
