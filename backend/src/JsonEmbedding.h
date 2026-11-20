@@ -256,6 +256,7 @@ class JsonEmbedding {
         std::lock_guard lock(mutex_);
         if(!snapshot.path.empty()||!receipt.empty()) state_["backupPath"]=utf8path::pathUtf8(snapshot.path.empty()?receipt:snapshot.path);
         else state_.erase("backupPath");
+        if (!snapshot.wolfCoverage.is_null()) state_["backupCoverage"] = snapshot.wolfCoverage;
         state_["state"]="applied";
         state_["detail"]=std::string("文本补丁已安装")+(snapshot.path.empty()?"":" · "+snapshot.summary());
     }
@@ -273,6 +274,7 @@ class JsonEmbedding {
         state_["state"]=state_.value("resumeAfterBackup","backedUp");
         state_.erase("resumeAfterBackup");
         state_["backupPath"]=utf8path::pathUtf8(backup.path);
+        if (!backup.wolfCoverage.is_null()) state_["backupCoverage"] = backup.wolfCoverage;
         state_["detail"]=backup.summary();
     }
     void restoreWolfDirectory(const Path& backup, const Path& target, const Path& original,
@@ -585,8 +587,19 @@ class JsonEmbedding {
             const auto backup=gamefiles::apply(game_,files);std::lock_guard lock(mutex_);state_["backupPath"]=utf8path::pathUtf8(snapshot.empty()?backup:snapshot);state_["state"]="applied";state_["detail"]="本地翻译插件已安装；回滚对应备份可卸载";return;
     }
 
+    static bool hasWolfResources(const Path& path) {
+        return std::filesystem::is_regular_file(path / "Data.wolf") ||
+            std::filesystem::exists(path / "Data" / "BasicData.wolf") ||
+            std::filesystem::exists(path / "Data" / "BasicData" / "Game.dat");
+    }
+
 public:
-    static json patchInfo(const Path& game){ auto state=gamepatch::info(game);if(!state.value("managed",false)){for(auto& item:backups(game)){if(item.at("state")!="applied")continue;auto dir=utf8path::pathFromUtf8(item.at("path"));auto ledger=json::parse(read(dir/"manifest.json"));if(ledger.value("kind","")=="snapshot"||ledger.value("managedPatch",false)||ledger.value("patchAdopted",false))continue;bool text=dir.filename().string().starts_with("wolf-")||ledger.value("engine","")=="rpgmaker";if(ledger.value("engine","")=="files")for(auto& resource:ledger["resources"]){auto name=resource.at("name").get<std::string>();if((name.starts_with("data/")||name.starts_with("www/data/"))&&rpgtext::dataFile(std::filesystem::path(name).filename().string()))text=true;}if(text){state["legacy"]=true;break;}}}return state; }
+    static json patchInfo(const Path& game) {
+        auto state = gamepatch::info(game);
+        if (hasWolfResources(game)) state["wolfBackupAvailability"] = gameresourcebackup::wolfAvailability(game);
+        if(!state.value("managed",false)){for(auto& item:backups(game)){if(item.at("state")!="applied")continue;auto dir=utf8path::pathFromUtf8(item.at("path"));auto ledger=json::parse(read(dir/"manifest.json"));if(ledger.value("kind","")=="snapshot"||ledger.value("managedPatch",false)||ledger.value("patchAdopted",false))continue;bool text=dir.filename().string().starts_with("wolf-")||ledger.value("engine","")=="rpgmaker";if(ledger.value("engine","")=="files")for(auto& resource:ledger["resources"]){auto name=resource.at("name").get<std::string>();if((name.starts_with("data/")||name.starts_with("www/data/"))&&rpgtext::dataFile(std::filesystem::path(name).filename().string()))text=true;}if(text){state["legacy"]=true;break;}}}
+        return state;
+    }
     static json detect(const Path& input) {
         auto root = std::filesystem::absolute(input); const bool executable = std::filesystem::is_regular_file(root);
         if (executable) {
@@ -599,7 +612,7 @@ public:
         if (!std::filesystem::is_directory(root)) throw std::runtime_error("请选择存在的游戏目录或主程序");
         auto identify = [](const Path& path) -> json {
             std::string engine; bool supported = false;
-            if (std::filesystem::is_regular_file(path / "Data.wolf") || std::filesystem::exists(path / "Data" / "BasicData.wolf") || std::filesystem::exists(path / "Data" / "BasicData" / "Game.dat")) { engine = "WOLF RPG"; supported = true; }
+            if (hasWolfResources(path)) { engine = "WOLF RPG"; supported = true; }
             else if (std::filesystem::exists(path / "www" / "data" / "System.json")) { engine = "RPG Maker MV"; supported = true; }
             else if (std::filesystem::exists(path / "data" / "System.json")) { engine = std::filesystem::exists(path / "js" / "rmmz_core.js") ? "RPG Maker MZ" : "RPG Maker MV/MZ"; supported = true; }
             else if (std::filesystem::exists(path / "UnityPlayer.dll")) engine = "Unity";
@@ -637,6 +650,7 @@ public:
                 auto manifest = json::parse(read(entry.path() / "manifest.json")); const auto name = entry.path().filename().string();
                 if (!std::regex_match(name, std::regex("(?:wolf|rpg|files)-[0-9]+"))) continue;
                 result.push_back({{"id", (legacy ? "legacy:" : "") + name}, {"order", name.substr(name.find('-') + 1)}, {"path", utf8path::pathUtf8(entry.path())}, {"state", manifest.value("state", "applied")}, {"resources", manifest.at("resources").size()}});
+                if (manifest.contains("backupCoverage")) result.back()["backupCoverage"] = manifest.at("backupCoverage");
             }
         }
         std::sort(result.begin(), result.end(), [](const json& a, const json& b) { return a.at("order").get<std::string>() > b.at("order").get<std::string>(); }); return result;
@@ -660,6 +674,9 @@ public:
             std::lock_guard lock(mutex_); const auto previous = state_.value("state", "idle");
             const auto resume = sameGame && (previous == "ready" || previous == "done") ? previous : "backedUp";
             if (resume == "backedUp") state_ = {{"gamePath", utf8path::pathUtf8(game_)}};
+            state_.erase("backupPath");
+            state_.erase("backupCoverage");
+            if (!unreal_ && rpgDirectory_.empty()) state_["backupCoverage"] = gameresourcebackup::emptyWolfCoverage(game_);
             state_["state"] = "running"; state_["action"] = action; state_["resumeAfterBackup"] = resume;
         } else if (action == "rollback") {
             game_ = std::filesystem::absolute(utf8path::pathFromUtf8(request.at("gamePath").get<std::string>()));
@@ -686,7 +703,11 @@ public:
                 }
             });
             return;
-        } else if (action == "embed" || action == "apply") { std::lock_guard lock(mutex_); state_["state"] = "running"; state_["action"] = action; }
+        } else if (action == "embed" || action == "apply") {
+            std::lock_guard lock(mutex_);
+            state_.erase("backupCoverage");
+            state_["state"] = "running"; state_["action"] = action;
+        }
         else throw std::runtime_error("未知 JSON 嵌入操作");
         thread_ = std::thread([this, action] { try { if (action == "inspect") inspect(); else if (action == "extract") extract(); else if (action == "runtime") installRuntime(); else if (action == "embed") embed(); else if (action == "backup") backupOnly(); else if(action=="uninstall-text"){detail("卸载文本补丁");const auto receipt=gamepatch::uninstall(game_);std::lock_guard lock(mutex_);state_["backupPath"]=utf8path::pathUtf8(receipt);state_["state"]="uninstalled";state_["detail"]="文本补丁已卸载，原资源已恢复";}else if(action=="cleanup-text"){gamepatch::cleanup(game_);std::lock_guard lock(mutex_);state_["state"]="cleaned";state_["detail"]="已清理卸载后的文本补丁安装文件，用户备份保留";}else apply(); finishBackupMode(action); } catch (const std::exception& e) { std::lock_guard lock(mutex_); state_["state"] = stop_?"stopped":"error"; state_["detail"] = stop_?"操作已中止":json::parse(json(e.what()).dump(-1, ' ', false, json::error_handler_t::replace)); dictionary_.clear(); } });
     }

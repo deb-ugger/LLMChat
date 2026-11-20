@@ -49,8 +49,11 @@ function embeddingCapabilities(game: EmbeddingGame) {
     ],
   };
 }
+type WolfBackupAvailability = { dataWolfPresent: boolean; looseText: boolean; textArchives: boolean; looseImages: boolean; textIncludesImages: boolean };
+type WolfBackupCategory = "looseText" | "dataWolf" | "looseImages" | "installationOriginals" | "textArchives";
+type WolfBackupCoverage = Record<WolfBackupCategory, { included: boolean; count: number }>;
 type Backup = { id: string; path: string; state: string; resources: number };
-type Status = { issues?: Array<{file:string;source:string;translation:string;reason:string}>; state: string; action?: string; detail?: string; gamePath?: string; jsonPath?: string; outputPath?: string; exportPath?: string; imagesPath?: string; imageManifest?: string; patchPath?: string; backupPath?: string; matched?: number; blocked?: number; dictionaryEntries?: number; completed?: number; total?: number };
+type Status = { issues?: Array<{file:string;source:string;translation:string;reason:string}>; state: string; action?: string; detail?: string; gamePath?: string; jsonPath?: string; outputPath?: string; exportPath?: string; imagesPath?: string; imageManifest?: string; patchPath?: string; backupPath?: string; backupCoverage?: WolfBackupCoverage; matched?: number; blocked?: number; dictionaryEntries?: number; completed?: number; total?: number };
 async function call<T>(action: string, body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}/api/json-embedding/${action}`, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
@@ -92,7 +95,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [textRepairs, setTextRepairs] = useState<BatchRow[]>([]);
   const [matchedImageConflicts, setMatchedImageConflicts] = useState<ReadonlySet<string>>(() => new Set());
   const [imageBusy,setImageBusy]=useState(false);const [detecting,setDetecting]=useState(true);
-  const [patch,setPatch]=useState<{installed:boolean;managed?:boolean;legacy?:boolean;conflicts:string[]}>({installed:false,conflicts:[]});
+  const [patch,setPatch]=useState<{installed:boolean;managed?:boolean;legacy?:boolean;conflicts:string[];wolfBackupAvailability?:WolfBackupAvailability}>({installed:false,conflicts:[]});
   const loadPatch=async(adopt=false)=>{
     setDetecting(true);
     try {
@@ -230,7 +233,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       showAppNotice(cause instanceof Error ? cause.message : String(cause), "error");
     } finally { setCheckingTextSource(false); }
   };
-  const start = async (action: string,jsonPath=file) => {
+  const start = async (action: string,jsonPath=file,scopes=backupScopes) => {
     if (action === "extract" && hasTextScan) {
       const priorResults = imageProject ? "文本译文、草稿、图片筛选、识别及译图结果" : "文本译文和草稿";
       if (!await confirm(`清除${priorResults}后重新扫描，处理配置保留。`, {title:"重新扫描资源",okLabel:"重新扫描",cancelLabel:"取消"})) return;
@@ -245,7 +248,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     touched.current = true; setPending(true); setPendingAction(action); setError("");if(["extract","inspect","runtime","uninstall-text","cleanup-text","rollback"].includes(action))setGenerated(false);
     if(action==="extract"&&imageProject){setImageScanRequest(value=>value+1);}
     try {
-      const value=await call<Status>("start", { action, gamePath: game.path, jsonPath, backupId, fontPath, backupMode, backupScopes });
+      const value=await call<Status>("start", { action, gamePath: game.path, jsonPath, backupId, fontPath, backupMode, backupScopes: scopes });
       manualLaunch.current = action === "apply" && launchAfterApply;
       setStatus(value);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setPending(false); }
@@ -367,12 +370,33 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   const output = (label:string,path?:string) => path&&<div className="json-embedding-output"><button type="button" className="embed-path-link" data-tooltip={path} aria-label={`打开${label}`} onClick={()=>void api.revealPath(path).catch(e=>setError(String(e)))}><span>{label}</span><code>{path}</code></button></div>;
 
+  const wolfBackup = game.engine === "WOLF RPG";
+  const wolfAvailability = patch.wolfBackupAvailability;
+  const snapshotOptions = wolfBackup ? [
+    ...(wolfAvailability?.looseText || wolfAvailability?.textArchives ? [["text",
+      (wolfAvailability.looseText && wolfAvailability.textArchives ? "散装文本和文本分包" : wolfAvailability.looseText ? "散装文本" : "文本分包")
+        + (wolfAvailability.textIncludesImages ? "（含文本目录内图片）" : ""),
+    ]] : []),
+    ...(wolfAvailability?.looseImages ? [["images", "散装图片"]] : []),
+  ] : availableBackupScopes;
+  const snapshotScopes = backupScopes.filter(scope => snapshotOptions.some(([id]) => id === scope));
+  const backedUpWolf = wolfBackup && status.action === "backup" && status.backupPath && status.backupCoverage;
+  const backedUpCategories = backedUpWolf ? ([
+    ["looseText", "散装文本"], ["textArchives", "文本分包"], ["looseImages", "散装图片"],
+  ] as const).filter(([id]) => backedUpWolf[id].included)
+    .map(([id, label]) => `${label} ${backedUpWolf[id].count} 个`).join("、") : "";
   const backupPanel=<section className="embed-section game-backup-settings" data-section="backup">
     <div className="game-maintenance-row"><h3>备份</h3><IconAction name="help" label="自动：应用前按所选范围创建备份。手动：点击立即备份时按所选范围创建备份。补丁卸载所需安装原件另行保留。"/>
       <label>方式<select aria-label="备份方式" value={backupMode} disabled={busy} onChange={e=>{const mode=e.target.value as "auto"|"manual";setBackupMode(mode);localStorage.setItem(`llmchat-game-backup:${game.path}`,mode);}}><option value="auto">自动备份</option><option value="manual">手动备份</option></select></label>
-      <button type="button" className="unity-btn" disabled={busy||!game.supported||!backupScopes.length} onClick={()=>void start("backup")}>立即备份</button>
+      <button type="button" className="unity-btn" disabled={busy||!game.supported||!snapshotScopes.length} onClick={()=>void start("backup", file, snapshotScopes)}>立即备份</button>
     </div>
-    <div className="game-backup-scopes" role="group" aria-label="备份范围"><span>范围</span>{availableBackupScopes.map(([scope,label])=><label key={scope}><input type="checkbox" aria-label={label} disabled={busy} checked={backupScopes.includes(scope)} onChange={e=>setBackupScopes(current=>e.target.checked?[...current,scope]:current.filter(item=>item!==scope))}/>{label}</label>)}</div>
+    <div className="game-backup-scopes" role="group" aria-label="备份范围"><span>范围</span>{snapshotOptions.map(([scope,label])=><label key={scope}><input type="checkbox" aria-label={label} disabled={busy} checked={backupScopes.includes(scope)} onChange={e=>setBackupScopes(current=>e.target.checked?[...current,scope]:current.filter(item=>item!==scope))}/>{label}</label>)}</div>
+    {wolfBackup && <>
+      {!detecting && !snapshotOptions.length && <p className="hint">{wolfAvailability ? "当前没有可备份的散装资源或文本分包。" : "未读取到当前备份范围，请重新检测补丁。"}</p>}
+      {wolfAvailability?.dataWolfPresent && !(backedUpWolf && backedUpWolf.dataWolf.included) && <p className="hint">检测到 Data.wolf。封包内的文本和图片当前不在备份范围。</p>}
+      <p className="hint">补丁安装原件用于卸载，单独保留。</p>
+      {backedUpCategories && <p className="hint">本次快照包含：{backedUpCategories}</p>}
+    </>}
     {progress(["backup"])}{output("备份",status.backupPath)}
   </section>;
   const restorePanel=<section className="embed-section game-restore-settings" data-section="restore"><div className="game-maintenance-row"><h3>恢复</h3>
