@@ -62,7 +62,7 @@ import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLega
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
-import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
+import { UnityDeploymentPanel, deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, scanMosaic, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
@@ -2494,30 +2494,27 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const signal = controller.signal;
     deploymentController.current = controller;
     const mode = automatic ? "automatic" : "single";
-    const layers: DeploymentStep[][] = automatic ? deploymentLayers(deploymentPlan) : action === "export" ? [["apply"]] : [[action], ["apply"]];
-    const total = layers.flat().length;
+    const sequence: DeploymentStep[] = automatic ? deploymentSequence(deploymentPlan) : action === "export" ? ["apply"] : [action, "apply"];
+    const total = sequence.length;
     const excluded = automatic || action === "export" ? disabledPhases : deploymentPhases.filter(phase => phase !== action);
     const completed = new Set(automatic ? deploymentCompleted.filter(phase => phase !== currentStoppedStep) : []);
-    const translationStep = { text: "text", images: "image" } as const;
+    const shouldRun = (step: DeploymentStep) => !completed.has(step) || step === "apply" && !activePatch;
+    const first = sequence.find(shouldRun);
     const committedBefore = checkpointRef.current;
     setDeploymentStop(undefined);
-    setDeploymentRun({ mode, steps: layers[0], completed: 0, total, stopping: false });
+    setDeploymentRun({ mode, steps: first ? [first] : [], completed: 0, total, stopping: false });
     void operation(automatic ? "一键执行" : "生成补丁", async () => {
       await save();
       let finished = 0;
-      for (const layer of layers) {
-        const pending = layer.filter(step => !completed.has(step) || step === "apply" && !activePatch);
-        finished += layer.length - pending.length;
-        const step = pending[0];
-        if (!step) continue;
+      for (const step of sequence) {
+        if (!shouldRun(step)) { finished++; continue; }
         if (signal.aborted) { setDeploymentStop({ root, step }); break; }
-        const label = pending.map(step => deploymentLabel[step]).join("、");
-        setDeploymentRun({ mode, steps: pending, completed: finished, total, stopping: false });
+        const label = deploymentLabel[step];
+        setDeploymentRun({ mode, steps: [step], completed: finished, total, stopping: false });
         setBusy(label);
         const former = latest.current;
-        const parts: UnityTranslationPart[] = [];
-        if (pending.includes("text")) parts.push("text");
-        if (pending.includes("image")) parts.push("images");
+        const part = step === "text" ? "text" : step === "image" ? "images" : undefined;
+        const parts: UnityTranslationPart[] = part ? [part] : [];
         const baseline = parts.length && former ? structuredClone(former) : former;
         const finishedParts = new Set<UnityTranslationPart>();
         const formerTask = checkpointRef.current;
@@ -2557,22 +2554,19 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
                 patch: generated, patchFolder: generated.folder, progress: { step: automatic ? 4 : 3, state: "done",
                   detail: automatic ? "已应用到游戏" : "补丁已生成", completed: generated.files, total: generated.files } });
             } else {
-              const jobs: Promise<void>[] = [];
-              if (parts.length) jobs.push((async () => {
-                await runWorkflow(2, 2, false, false, false, parts[0], false, parts.includes("images"), { parts, finishedParts, controller });
-                if (parts.includes("images")) {
+              if (part) {
+                await runWorkflow(2, 2, false, false, false, part, false, part === "images", { parts, finishedParts, controller });
+                if (part === "images") {
                   const saved = latest.current || current;
                   if (!unityTranslationReadiness(saved, [], unityTranslationError, false, target).imagesReady)
                     throw new Error("图片翻译还有待确认项，请在图片翻译页处理后继续");
                   const cache = await unityRun<{ errors: string[] }>("save-image", { project: saved, cleanImageCache: true });
                   if (cache.errors?.length) setActionError("部分译图缓存未能清理：" + cache.errors.join("；"));
                 }
-              })());
-              if (pending.includes("mosaic")) jobs.push(runDeploymentMosaic(current, signal, report).then(() => { mosaicDone = true; }));
-              const results = await Promise.allSettled(jobs);
-              const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
-              if (failures.length) throw failures.find(error => !(error instanceof UnityPaused || error instanceof UnityTranslationStopped ||
-                signal.aborted && error instanceof DOMException && error.name === "AbortError")) ?? failures[0];
+              } else {
+                await runDeploymentMosaic(current, signal, report);
+                mosaicDone = true;
+              }
               invalidatePatch(); setApplied(false);
             }
           }
@@ -2581,7 +2575,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             await unityRun("finish-deployment-output", { root, path: outputPath, step: engineStep, deploymentBatch: batch });
           }
           if (step !== "apply") completed.delete("apply");
-          finished += pending.length;
+          completed.add(step);
+          finished++;
         } catch (error) {
           const stopped = error instanceof UnityPaused || error instanceof UnityTranslationStopped ||
             signal.aborted && error instanceof DOMException && error.name === "AbortError";
@@ -2611,8 +2606,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             if (restored) remember(retained ? { ...restored, patch: null, patchFolder: "" } : restored);
             else { checkpointRef.current = null; setCheckpoint(null); }
             setGeneration(null);
-            const stoppedStep = undone[0] ? translationStep[undone[0]] : pending.includes("mosaic") && !mosaicDone ? "mosaic" : step;
-            setDeploymentStop({ root, step: stoppedStep });
+            setDeploymentStop({ root, step });
             setMessage("已停止，未完成阶段的产物已丢弃");
             break;
           }

@@ -201,6 +201,11 @@ export function deploymentLayers(plan: DeploymentPlan): DeploymentStep[][] {
   return layers;
 }
 
+export function deploymentSequence(plan: DeploymentPlan): DeploymentStep[] {
+  const disabled = new Set(plan.disabled);
+  return deploymentLayers(plan).flat().filter(step => !disabled.has(step));
+}
+
 type CanvasNode = { id: DeploymentStep; detail: string; state: DeploymentStageState };
 type LinkDrag = { kind: "link"; pointer: number; step: DeploymentStep; side: "out" | "in"; replace?: FlowEdge };
 type LinkCandidate = { edge: FlowEdge; others: FlowEdge[]; id: DeploymentStep; issue?: string };
