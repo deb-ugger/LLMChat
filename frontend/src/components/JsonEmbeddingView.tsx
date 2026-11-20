@@ -39,8 +39,7 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
   const isUnreal = game.engine === "Unreal Engine";
-  const supportsMosaic = game.engine.startsWith("RPG Maker");
-  const supportsImages = supportsMosaic || game.engine === "WOLF RPG";
+  const supportsImages = game.engine.startsWith("RPG Maker") || game.engine === "WOLF RPG";
   const availableBackupScopes = [
     ["text", "文本资源"],
     ...(game.engine.startsWith("RPG Maker") ? [["runtime", "插件与字体"]] : []),
@@ -368,7 +367,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {supportsImages && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} onClick={() => void applyImages()}>应用译图</button>}
         <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
         <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" disabled={busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-        {supportsImages && <IconAction name="rollback" caption="卸载译图" label={supportsMosaic ? "卸载译图并保留已应用的去码图" : "恢复已应用译图的原图"} disabled={busy || !imageWorkflow.loaded} onClick={async () => { if (await imageHandle.current?.uninstall()) setImagesApplied(false); }} />}
+        {supportsImages && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" disabled={busy || !imageWorkflow.loaded} onClick={async () => { if (await imageHandle.current?.uninstall()) setImagesApplied(false); }} />}
         <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
       </div>
     </section>
@@ -448,7 +447,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     else if (part === "text" && textInfo.dirty) void textHandle.current?.leave().then(ok => { if (ok) change(); });
     else change();
   };
-  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(supportsImages?[{id:"2.2",label:"图片翻译"}]:[]),...(supportsMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
+  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(supportsImages?[{id:"2.2",label:"图片翻译"},{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
     const selected=item.id===activeWorkflowId;
     const operationStep=(pending ? pendingAction : status.action)==="extract"?"1":"3";
     const imageStep=imageWorkflow.stage==="restore"?"3":"2.2";
@@ -490,7 +489,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {textStep===3&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
         </div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} batchResults={textBatch} visible={part==="text"} step={textStep} active={active} disabled={mosaicBusy||pending||detecting||status.state==="running"} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {supportsImages&&<GameImageWorkbench mosaicActive={active&&supportsMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
+      {supportsImages&&<GameImageWorkbench mosaicActive={active&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
 
     </main>
 

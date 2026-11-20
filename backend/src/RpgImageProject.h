@@ -247,7 +247,7 @@ public:
     }
     Json saveMosaic(const Path& game,const std::string& imageId,const std::string& revision,const std::string& bytes){
         std::lock_guard lock(mutex_);
-        if(data(game)==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
+        data(game);
         validId(imageId);
         const auto image=imageRow(game,imageId);
         if(revision!=image.at("sourceHash").get<std::string>())throw std::runtime_error("原图已变更，请重新生成去码候选");
@@ -262,7 +262,6 @@ public:
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
-        if(mosaic&&dataPath==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
         const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组已确认的去码图");
@@ -303,7 +302,6 @@ public:
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
-        if(mosaic&&dataPath==Path("Data"))throw std::runtime_error("图片去码支持 RPG Maker MV/MZ");
         const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组需要恢复的图片");
