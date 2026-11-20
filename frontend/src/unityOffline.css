@@ -111,44 +111,6 @@
 }
 .game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
 
-/* 并行：从分叉点到汇合点，轨道右侧连续贯穿第二条车道。
-   绝对定位画，不改变轨道宽度（轨道列只有 42px，撑宽会把节点文字挤出去）。
-   连接器之间本来有 2px 间距，车道上下各溢出 3px 把断口接上，读作一条连续的线。 */
-.game-workflow-connector:is(.is-fan-out, .is-fan-in, .is-parallel-lane) { overflow: visible; }
-
-.game-workflow-connector:is(.is-fan-out, .is-fan-in, .is-parallel-lane)::before {
-  content: "";
-  position: absolute;
-  inset-inline-end: -9px;
-  inset-block: -3px;
-  inline-size: 2px;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 78%, transparent);
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 45%, transparent));
-  pointer-events: none;
-  animation: game-workflow-lane-glow 2.4s ease-in-out infinite;
-}
-/* 分叉段顶端、汇合段底端各自收进一格，避免悬在节点外面 */
-.game-workflow-connector.is-fan-out::before { inset-block-start: 3px; }
-.game-workflow-connector.is-fan-in::before { inset-block-end: 3px; }
-
-/* 分叉/汇合那一点横向搭桥，让第二条车道读成"从这里岔出去、从这里并回来" */
-.game-workflow-connector:is(.is-fan-out, .is-fan-in)::after {
-  content: "";
-  position: absolute;
-  inset-inline-end: -9px;
-  inline-size: 9px;
-  block-size: 2px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 78%, transparent);
-  pointer-events: none;
-}
-.game-workflow-connector.is-fan-out::after { inset-block-start: 0; }
-.game-workflow-connector.is-fan-in::after { inset-block-end: 0; }
-
-@keyframes game-workflow-lane-glow {
-  0%, 100% { opacity: .5; }
-  50% { opacity: 1; }
 }
 
 /* 两端都完成的段：轨道本体变实心绿，光带走完就不再亮。 */
@@ -924,48 +886,9 @@
 .game-workflow-connector .game-workflow-flow,
 .game-workflow-connector .game-workflow-glint { display: none; }
 
-/* 并行：本段与下一段同时在跑时，左侧引出一条支线绕过去再汇回，
-   表示"两条线同时送"，主线不动。 */
-.game-workflow-connector.is-parallel {
-  inline-size: 26px;
-  opacity: 1;
-  --track-rail: linear-gradient(to bottom,
-    color-mix(in srgb, var(--step-tone, var(--workflow-tone-current)) 70%, transparent) 0 100%);
-  --track-ties: none;
-}
-.game-workflow-connector.is-parallel::before { content: none; }
-.game-workflow-bypass {
-  position: absolute;
-  inset-block: 4px;
-  left: 0;
-  inline-size: 3px;
-  border-radius: 999px 0 0 999px;
-  border-inline-start: 2px solid color-mix(in srgb, var(--step-tone, var(--workflow-tone-current)) 65%, transparent);
-  border-block-start: 2px solid color-mix(in srgb, var(--step-tone, var(--workflow-tone-current)) 65%, transparent);
-  border-start-start-radius: 10px;
-  opacity: .9;
-}
-.game-workflow-bypass::after {
-  content: "";
-  position: absolute;
-  left: -2px;
-  inline-size: 3px;
-  block-size: 34%;
-  border-radius: 999px;
-  background: linear-gradient(to bottom, transparent, #fff 60%, transparent);
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--step-tone, var(--workflow-tone-current)) 70%, transparent));
-  animation: game-workflow-bypass-run 1.6s linear infinite;
-}
-@keyframes game-workflow-bypass-run {
-  from { top: 0; opacity: 0; }
-  18% { opacity: .95; }
-  82% { opacity: .95; }
-  to { top: 100%; opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .game-workflow-connector,
-  .game-workflow-bypass::after,
   .game-workflow-node .is-active-task .game-workflow-marker { animation: none; }
-  .game-workflow-bypass::after { opacity: 0; }
 }
