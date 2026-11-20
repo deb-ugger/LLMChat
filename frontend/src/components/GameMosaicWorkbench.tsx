@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Poin
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, scanMosaic, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -13,7 +13,7 @@ import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
-  scanned?: boolean; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: number[]; saved?: boolean; reference?: boolean };
+  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: string | number[]; saved?: boolean; reference?: boolean };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type MosaicStep = "screen" | "redraw";
@@ -220,14 +220,14 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   async function run(label: string, work: (signal: AbortSignal, report: (completed: number) => void) => Promise<void | boolean>,
-    step?: { id: MosaicStep; total: number; summary: string }) {
+    step?: { id: MosaicStep; total: number; completed?: number; summary: string }) {
     if (task.current || disabled) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
     const started = performance.now();
     setProgressStep(step?.id);
-    if (step) setStepRuns(previous => ({ ...previous, [step.id]: { state: "running", completed: 0, total: step.total, summary: step.summary, started } }));
+    if (step) setStepRuns(previous => ({ ...previous, [step.id]: { state: "running", completed: step.completed ?? 0, total: step.total, summary: step.summary, started } }));
     setBusy(label); setProgress(label); setError("");
     const updateStep = (edit: Partial<StepRun>) => {
       if (!step) return;
@@ -250,48 +250,88 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     }
   }
 
-  function screen() {
-    const targets = currentScope;
+  const detectorKey = detectorKind === "grid" ? "grid" : detectorFile
+    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : "";
+  const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
+  const remaining = useMemo(() => currentScope.filter(image => {
+    const row = resultFor(rows, image);
+    return !row.scanned || !!row.reason || (row.detector ?? "grid") !== detectorKey;
+  }), [currentScope, rows, detectorKey]);
+  const screenedCount = currentScope.length - remaining.length;
+
+  function screen(restart = remaining.length === 0) {
+    const targets = restart ? currentScope : remaining;
     if (!targets.length) return;
+    lastScreen.current = { scope: currentScope, detector: detectorKey };
+    const initial = restart ? 0 : screenedCount;
     void run("筛选打码区域", async (signal, report) => {
       if (detectorKind === "lada" && !detectorFile) throw new Error("请选择 Lada v4 的 ONNX 文件");
-      const detector = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile) : undefined;
-      const screened: Results = {};
-      let failures = 0;
-      let completed = 0;
-      try {
-        for (const image of targets) {
-          signal.throwIfAborted();
-          const old = resultFor(rows, image);
-          setProgress(image.name);
-          try {
-            const input = await read(image, signal);
-            const { boxes, signature } = await (detector ? detector.scan(input) : scanMosaic(input));
-            screened[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-              checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0,
-              signature, scanned: true, reason: undefined };
-          } catch (cause) {
-            if (signal.aborted) throw cause;
-            failures++;
-            screened[image.id] = { ...old, reason: cause instanceof Error ? cause.message : String(cause) };
+      const lada = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile) : undefined;
+      if (restart) setRows(previous => {
+        const next = { ...previous };
+        for (const image of targets) next[image.id] = { ...resultFor(previous, image), scanned: false };
+        return next;
+      });
+      let batch: Results = {};
+      let cursor = 0, completed = initial, failures = 0;
+      let lastReport = 0;
+      const checkpoint = () => {
+        const changes = batch;
+        batch = {};
+        setRows(previous => ({ ...previous, ...changes }));
+      };
+      async function lane() {
+        const scanner = lada ?? createMosaicGridScanner();
+        try {
+          while (!signal.aborted && cursor < targets.length) {
+            const image = targets[cursor++];
+            const old = resultFor(rows, image);
+            try {
+              const input = await read(image, signal);
+              if (signal.aborted) break;
+              const { boxes, signature } = await scanner.scan(input);
+              batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
+                checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0,
+                signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined };
+            } catch (cause) {
+              if (signal.aborted) break;
+              failures++;
+              batch[image.id] = { ...old, scanned: false, reason: cause instanceof Error ? cause.message : String(cause) };
+            }
+            completed++;
+            if ((completed - initial) % 64 === 0) checkpoint();
+            const now = performance.now();
+            if (now - lastReport >= 150) {
+              report(completed);
+              setProgress(image.name);
+              lastReport = now;
+            }
           }
-          report(++completed);
-        }
-      } finally {
-        await detector?.release();
-        setRows(previous => {
-          const next = { ...previous, ...screened };
-          const proposals = groupMosaicScenes(usable.flatMap(image => {
-            const row = resultFor(next, image);
-            return row.signature && !row.manualGroup && !row.saved && !row.reference ? [{ ...image, signature: row.signature }] : [];
-          }));
-          for (const list of proposals) for (const image of list) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
-          return next;
-        });
+        } finally { if (!lada) await scanner.release(); }
       }
+      try {
+        const lanes = lada || navigator.hardwareConcurrency < 4 || targets.some(image => image.width * image.height > 8_000_000) ? 1 : 2;
+        const settled = await Promise.allSettled(Array.from({ length: Math.min(lanes, targets.length) }, lane));
+        for (const item of settled) if (item.status === "rejected") throw item.reason;
+      } finally {
+        checkpoint();
+        report(completed);
+        await lada?.release();
+      }
+      setRows(previous => {
+        const next = { ...previous };
+        const proposals = groupMosaicScenes(usable.flatMap(image => {
+          const row = resultFor(next, image);
+          if (!row.signature || row.manualGroup || row.saved || row.reference) return [];
+          const signature = typeof row.signature === "string" ? Array.from(atob(row.signature), c => c.charCodeAt(0)) : row.signature;
+          return [{ ...image, signature }];
+        }));
+        for (const list of proposals) for (const image of list) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
+        return next;
+      });
       setProgress(failures ? `${failures} 张读取失败，可在待复核列表查看。` : "");
       return failures === 0;
-    }, { id: "screen", total: targets.length, summary: detectorLabels[detectorKind] });
+    }, { id: "screen", total: currentScope.length, completed: initial, summary: detectorLabels[detectorKind] });
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
@@ -409,12 +449,22 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const activeBoxes = [...(activeResult?.boxes || []), ...(draft ? [draft] : [])];
-  const screenedCount = currentScope.filter(image => resultFor(rows, image).scanned).length;
-  const idleScreen: StepRun = { state: currentScope.length && screenedCount === currentScope.length ? "done" : "pending",
+  const previousScreen = lastScreen.current;
+  const sameScreen = previousScreen?.detector === detectorKey && previousScreen.scope.length === currentScope.length &&
+    (previousScreen.scope === currentScope || previousScreen.scope.every((image, i) =>
+      image.id === currentScope[i].id && image.sourceHash === currentScope[i].sourceHash));
+  const stoppedScreen = sameScreen && stepRuns.screen?.state === "stopped";
+  const screenAction = currentScope.length && !remaining.length ? "重新筛选"
+    : screenedCount || stoppedScreen ? "继续筛选" : "开始筛选";
+  const idleScreen: StepRun = { state: currentScope.length && screenedCount === currentScope.length ? "done" : screenedCount ? "stopped" : "pending",
     total: currentScope.length, completed: screenedCount };
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
-    const status = stepRuns[id] || (id === "screen" ? idleScreen : undefined);
+    const lastRun = stepRuns[id];
+    const status: StepRun | undefined = id === "screen" && lastRun?.state !== "running"
+      ? { ...idleScreen, state: sameScreen && lastRun && (lastRun.state === "error" || lastRun.state === "stopped") ? lastRun.state : idleScreen.state,
+          elapsed: sameScreen ? lastRun?.elapsed : undefined }
+      : lastRun;
     const state = status?.state || "pending";
     const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
@@ -428,7 +478,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         {status?.total ? <small className="game-flow-model-rates">
           <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
         </small> : null}
-        {running && <GameProgressBar label={`${title}进度`} value={percent} />}
+        {(running || id === "screen" && (!!status?.completed || stoppedScreen)) && <GameProgressBar label={`${title}进度`} value={percent} />}
       </div>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {
         task.current?.abort(); setProgress("等待当前任务返回后停止后续任务");
@@ -447,7 +497,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       <div className="game-flow-list"><ol>
         {stepCard("screen", "筛选打码图片", screenSummary,
           <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
-            onClick={screen}>开始筛选</button>, <>
+            onClick={() => screen()}>{screenAction}</button>, <>
+          {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn" disabled={actionsDisabled}
+            onClick={() => screen(true)}>重新筛选全部范围</button>}
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { setScope(event.target.value as typeof scope); setPage(0); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>

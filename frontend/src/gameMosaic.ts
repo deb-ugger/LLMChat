@@ -1,3 +1,5 @@
+import { scanMosaicPixels, sceneSignature } from "./gameMosaicGrid";
+export { scanMosaicPixels } from "./gameMosaicGrid";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { runtimeAssetBase } from "./runtimeAssets";
 import type { UnityImage } from "./unityOffline";
@@ -9,92 +11,6 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
 };
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[] };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
-
-function tileStarts(size: number, tile: number) {
-  const starts: number[] = [];
-  for (let start = 0; start + tile < size; start += tile / 2) starts.push(start);
-  starts.push(size - tile);
-  return starts;
-}
-
-function gridStrength(edges: Float64Array, period: number) {
-  let best = 0;
-  const total = edges.reduce((sum, edge) => sum + edge, 0);
-  for (let phase = 0; phase < period; phase++) {
-    let count = 0, strong = 0, sum = 0;
-    for (let index = phase; index < edges.length; index += period) {
-      const edge = edges[index];
-      count++;
-      sum += edge;
-      if (edge >= 10) strong++;
-    }
-    if (count < 3 || strong * 4 < count * 3 || sum / count < 14) continue;
-    const elsewhere = (total - sum) / (edges.length - count);
-    if (sum / count - elsewhere >= 10) best = Math.max(best, (sum / count) / Math.max(3, elsewhere));
-  }
-  return best;
-}
-
-function union(a: MosaicBox, b: MosaicBox): MosaicBox {
-  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
-}
-
-function mergeCandidate(boxes: MosaicBox[], next: MosaicBox) {
-  for (let index = 0; index < boxes.length;) {
-    const box = boxes[index];
-    if (box[0] < next[2] && box[2] > next[0] && box[1] < next[3] && box[3] > next[1]) {
-      next = union(box, next);
-      boxes.splice(index, 1);
-      index = 0;
-    } else index++;
-  }
-  boxes.push(next);
-}
-
-function sceneSignature(rgba: Uint8ClampedArray, width: number, height: number) {
-  const signature: number[] = [];
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    const index = (Math.floor((y + 0.5) * height / 16) * width + Math.floor((x + 0.5) * width / 16)) * 4;
-    const luma = (rgba[index] * 54 + rgba[index + 1] * 183 + rgba[index + 2] * 19) / 256;
-    signature.push(Math.round((luma - 127) * rgba[index + 3] / 255 + 127));
-  }
-  return signature;
-}
-
-export function scanMosaicPixels(rgba: Uint8ClampedArray, width: number, height: number): MosaicScan {
-  const boxes: MosaicBox[] = [];
-  const signature = sceneSignature(rgba, width, height);
-  if (Math.min(width, height) < 48) return { boxes, signature };
-
-  const size = Math.min(64, width, height);
-  const horizontal = new Float64Array(size - 1);
-  const vertical = new Float64Array(size - 1);
-  const distance = (a: number, b: number) =>
-    Math.min(rgba[a + 3], rgba[b + 3]) < 64 ? 0 :
-      (Math.abs(rgba[a] - rgba[b]) + Math.abs(rgba[a + 1] - rgba[b + 1]) + Math.abs(rgba[a + 2] - rgba[b + 2])) / 3;
-
-  for (const y of tileStarts(height, size)) for (const x of tileStarts(width, size)) {
-    for (let edge = 0; edge < size - 1; edge++) {
-      let across = 0, down = 0, samples = 0;
-      for (let offset = 0; offset < size; offset += 4) {
-        const h = ((y + offset) * width + x + edge) * 4;
-        const v = ((y + edge) * width + x + offset) * 4;
-        across += distance(h, h + 4);
-        down += distance(v, v + width * 4);
-        samples++;
-      }
-      horizontal[edge] = across / samples;
-      vertical[edge] = down / samples;
-    }
-    for (let period = 4; period <= 24; period++) {
-      if (gridStrength(horizontal, period) >= 3.2 && gridStrength(vertical, period) >= 3.2) {
-        mergeCandidate(boxes, [Math.floor(x), Math.floor(y), Math.floor(x + size), Math.floor(y + size)]);
-        break;
-      }
-    }
-  }
-  return { boxes, signature };
-}
 
 async function bitmapPixels(blob: Blob) {
   const bitmap = await createImageBitmap(blob);
@@ -112,6 +28,20 @@ async function bitmapPixels(blob: Blob) {
 export async function scanMosaic(blob: Blob): Promise<MosaicScan> {
   const image = await bitmapPixels(blob);
   return scanMosaicPixels(image.data, image.width, image.height);
+}
+
+export function createMosaicGridScanner() {
+  const worker = new Worker(new URL("./gameMosaicGridWorker.ts", import.meta.url), { type: "module" });
+  return {
+    // Each screening lane owns a worker and sends one image at a time.
+    scan: (blob: Blob) => new Promise<MosaicScan>((resolve, reject) => {
+      worker.onmessage = ({ data }: MessageEvent<MosaicScan | { error: string }>) =>
+        "error" in data ? reject(new Error(data.error)) : resolve(data);
+      worker.onerror = event => reject(new Error(event.message || "方格检测线程出错"));
+      worker.postMessage(blob);
+    }),
+    release: () => worker.terminate(),
+  };
 }
 
 const threshold = 0.25;
@@ -213,24 +143,32 @@ function sceneFamily(image: SceneInput) {
   return match ? (match[1] + ":" + match[2].slice(0, Math.max(0, match[2].length - 2))).toLowerCase() : name.toLowerCase();
 }
 
-function sceneDistance(a: SceneInput, b: SceneInput) {
-  if (a.signature.length !== 256 || b.signature.length !== 256) return Infinity;
-  return a.signature.reduce((sum, value, index) => sum + Math.abs(value - b.signature[index]), 0) / 256;
+function similarScene(a: SceneInput, b: SceneInput, limit: number) {
+  if (a.signature.length !== 256 || b.signature.length !== 256) return false;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) {
+    sum += Math.abs(a.signature[i] - b.signature[i]);
+    if (sum > limit * 256) return false;
+  }
+  return true;
 }
 
 export function groupMosaicScenes<T extends SceneInput>(images: readonly T[]): T[][] {
   const groups: T[][] = [];
-  const sorted = [...images].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const families: string[] = [];
+  const names = new Intl.Collator(undefined, { numeric: true });
+  const sorted = [...images].sort((a, b) => names.compare(a.name, b.name));
   for (const image of sorted) {
     const family = sceneFamily(image);
     const aspect = image.width / image.height;
-    const match = groups.find(([reference]) => {
-      if (Math.abs(aspect / (reference.width / reference.height) - 1) > 0.04) return false;
-      const sameFamily = family === sceneFamily(reference);
-      return sceneDistance(reference, image) <= (sameFamily ? 22 : 7);
-    });
+    const match = groups.find(([reference], i) =>
+      Math.abs(aspect / (reference.width / reference.height) - 1) <= 0.04 &&
+      similarScene(reference, image, family === families[i] ? 22 : 7));
     if (match) match.push(image);
-    else groups.push([image]);
+    else {
+      groups.push([image]);
+      families.push(family);
+    }
   }
   return groups;
 }
