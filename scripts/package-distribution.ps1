@@ -16,6 +16,7 @@ $files = @(
     'resources/ffmpeg/LICENSE', 'resources/ffmpeg/README.txt',
     'resources/ffmpeg/SOURCE.txt', 'resources/ffmpeg/VERSION.txt',
     'resources/unity/llmchat-unity.exe', 'resources/unity/classdata.tpk',
+    'resources/unity/Il2CppDumper.exe', 'resources/unity/IL2CPPDUMPER-LICENSE.txt',
     'resources/unity/onnxruntime.dll', 'resources/unity/onnxruntime_providers_shared.dll',
     'resources/unity/DOTNET-LICENSE.TXT', 'resources/unity/DOTNET-THIRD-PARTY-NOTICES.TXT',
     'resources/unity/THIRD-PARTY.txt', 'resources/unity/WTP-LICENSE.txt',

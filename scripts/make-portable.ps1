@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "build-incremental.ps1")
 $root = Split-Path -Parent $PSScriptRoot
 # Prefer CARGO_TARGET_DIR when set (Cursor sandbox may redirect builds).
@@ -72,8 +72,10 @@ if (Test-Path -LiteralPath $wolfTools) {
     New-Item -ItemType Directory -Force -Path $wolfOutput | Out-Null
     Copy-BuildTree $wolfTools $wolfOutput
 }
-if (!(Test-Path -LiteralPath (Join-Path $unityTools 'llmchat-unity.exe'))) {
-    throw 'Run scripts/prepare-unity-tools.ps1 before packaging the Unity embedding feature.'
+foreach ($name in @('llmchat-unity.exe', 'Il2CppDumper.exe', 'IL2CPPDUMPER-LICENSE.txt')) {
+    if (!(Test-Path -LiteralPath (Join-Path $unityTools $name) -PathType Leaf)) {
+        throw "Missing Unity component $name. Run scripts/prepare-unity-tools.ps1 before packaging."
+    }
 }
 $unityToolsOutput = Join-Path $out 'resources\unity'
 New-Item -ItemType Directory -Force -Path $unityToolsOutput | Out-Null

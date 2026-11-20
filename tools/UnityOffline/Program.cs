@@ -140,6 +140,7 @@ public static class Program
             {
                 "scan" => Scan(request),
                 "inspect" => ScanInspection.Inspect(request.Root),
+                "generate-il2cpp-types" => Il2CppTypeDefinitions.Generate(request),
                 "font-plan" => FontPreparation.Create(request),
                 "find" => FindSaved(request),
                 "workspace" => GameWorkspace.Open(request),

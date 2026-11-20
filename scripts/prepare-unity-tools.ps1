@@ -3,8 +3,8 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'build-incremental.ps1')
-$cacheInputs = @((Join-Path $root 'tools\UnityOffline'),(Join-Path $root 'tools\FontSymbols'),(Join-Path $root 'assets\fonts'),$PSCommandPath,(Join-Path $PSScriptRoot 'build-incremental.ps1'),(Join-Path $PSScriptRoot 'prepare-font-symbols.ps1'),(Join-Path $PSScriptRoot 'prepare-unity-segmentation.ps1'),(Join-Path $PSScriptRoot 'convert-unity-wtp.py'),(Join-Path $root 'tools\UnityOffline\obj\project.assets.json'))
-$cacheOutputs = @((Join-Path $root 'frontend\src-tauri\resources\unity'),(Join-Path $root 'frontend\src-tauri\resources\unity\llmchat-unity.exe'),(Join-Path $root 'frontend\public\wtp'))
+$cacheInputs = @((Join-Path $root 'tools\UnityOffline'),(Join-Path $root 'tools\FontSymbols'),(Join-Path $root 'assets\fonts'),$PSCommandPath,(Join-Path $PSScriptRoot 'build-incremental.ps1'),(Join-Path $PSScriptRoot 'prepare-font-symbols.ps1'),(Join-Path $PSScriptRoot 'prepare-il2cppdumper.ps1'),(Join-Path $PSScriptRoot 'prepare-unity-segmentation.ps1'),(Join-Path $PSScriptRoot 'convert-unity-wtp.py'),(Join-Path $root 'tools\UnityOffline\obj\project.assets.json'))
+$cacheOutputs = @((Join-Path $root 'frontend\src-tauri\resources\unity'),(Join-Path $root 'frontend\src-tauri\resources\unity\llmchat-unity.exe'),(Join-Path $root 'frontend\src-tauri\resources\unity\Il2CppDumper.exe'),(Join-Path $root 'frontend\src-tauri\resources\unity\IL2CPPDUMPER-LICENSE.txt'),(Join-Path $root 'frontend\public\wtp'))
 $cacheIdentity = "dotnet=$(& dotnet --version);python=$env:LLMCHAT_MODEL_PYTHON;Release/win-x64/self-contained/single-file"
 if (Test-BuildCache 'unity-tools' $cacheInputs $cacheOutputs $cacheIdentity) { Write-Output 'Unity tools unchanged; reusing published tools.'; return }
 & (Join-Path $PSScriptRoot 'prepare-font-symbols.ps1')
@@ -15,6 +15,7 @@ if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) { throw 'Install .NET S
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 & dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None -o $output
 if ($LASTEXITCODE -ne 0) { throw 'Unity embedding helper build failed.' }
+& (Join-Path $PSScriptRoot 'prepare-il2cppdumper.ps1') -OutputDirectory $output
 $database = Join-Path $output 'classdata.tpk'
 if (!(Test-Path -LiteralPath $database)) {
     $download = "$database.download"
@@ -34,7 +35,7 @@ https://github.com/StbSharp
 AssetsTools.NET 3.0.5 - Copyright (c) 2020 nesrak1
 AssetsTools.NET.MonoCecil 3.0.4 - Copyright (c) 2020 nesrak1
 https://github.com/nesrak1/AssetsTools.NET
-Mono.Cecil 0.11.6 - Copyright (c) 2008 - 2015 Jb Evain; Copyright (c) 2008 - 2011 Novell, Inc.
+Mono.Cecil 0.11.6 and 0.11.4 (Il2CppDumper) - Copyright (c) 2008 - 2015 Jb Evain; Copyright (c) 2008 - 2011 Novell, Inc.
 https://github.com/jbevain/cecil
 UABEA classdata.tpk - snapshot 057e2f6ae67ebc94a38faca9f946f8577162fa99
 Copyright (c) 2021 nesrak1
