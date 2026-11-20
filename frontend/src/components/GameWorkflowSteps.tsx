@@ -53,11 +53,14 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
   const firstIncomplete = steps.findIndex(step => step.state !== "complete");
   const beamFrom = firstIncomplete >= 0 ? firstIncomplete : steps.length - 1;
   const singleIncomplete = firstIncomplete >= 0 && steps.slice(firstIncomplete + 1).every(step => step.state === "complete");
-  const beamTo = graphMode ? singleIncomplete ? beamFrom : steps.length - 1 : flowingStep;
-  const beamStatic = graphMode ? firstIncomplete < 0 || singleIncomplete && !enabledIds.has(steps[beamFrom].id) : beamFrom === beamTo;
+  // 光带始终活在"第一处未完成 → 最后一步"这段上，不依赖是否正在跑。
+  // 以前非图模式只在 running 时点亮，导致停在中间页且没有任务在跑时整条轨道是死的。
+  const beamTo = graphMode
+    ? singleIncomplete ? beamFrom : steps.length - 1
+    : Math.max(beamFrom, flowingStep >= 0 ? flowingStep : firstIncomplete >= 0 ? steps.length - 1 : beamFrom);
+  const beamStatic = firstIncomplete < 0 || (graphMode ? singleIncomplete && !enabledIds.has(steps[beamFrom].id) : beamFrom === beamTo);
   const beamHalf = graphMode && singleIncomplete && !beamStatic;
-  // 图模式也别只在“正在跑”时才有光：空闲时让光束从第一个未完成滑到最后一步，轨道始终是活的。
-  const beamActive = graphMode ? steps.length > 0 : steps.length > 1 && beamTo >= beamFrom;
+  const beamActive = steps.length > 1 && beamTo >= beamFrom;
   const stepOrder = JSON.stringify(steps.map(step => step.id));
 
   useLayoutEffect(() => {
