@@ -15,13 +15,13 @@ export function GameFlowCard({ title, state, current, benchmark, status, summary
   configuration?: ReactNode;
   configurationRef?: Ref<HTMLDivElement>;
 }) {
-  return <li className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${current ? " is-current-step" : ""}${configuration ? " is-configured" : ""}`}>
+  return <li className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${current ? " is-current-step" : ""}${configuration ? " is-configured" : ""}${expanded ? " is-expanded" : ""}`}>
     <div className="game-flow-step">
       <div className="game-flow-row">
         <button type="button" className="game-flow-step-toggle" aria-label={`${expanded ? "收起" : "展开"}${title}设置`}
           aria-expanded={expanded} data-tooltip={toggleTooltip} onClick={onToggle} />
         <div className="game-flow-step-main"><strong>{title}</strong><small>{status}</small></div>
-        <div className="game-flow-summary" style={{ display: "block", overflow: "visible", WebkitLineClamp: "unset" }}>{summary}</div>
+        <div className="game-flow-summary">{summary}</div>
         <div className="game-flow-actions">{actions}</div>
       </div>
     </div>

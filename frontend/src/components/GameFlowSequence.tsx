@@ -244,20 +244,22 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
                     <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>
                     <small className="game-flow-model-concurrency">并发 <span className="game-flow-metric">{model.concurrency}</span></small>
                   </div>
+                  {expanded && <>
                   <small className="game-flow-model-rates">
                     <span>纯生成 <span className="game-flow-metric">{pureRate} tok/s</span></span>
                     <span>请求平均 <span className="game-flow-metric">{requestRate} tok/s</span></span>
                   </small>
                   <small style={{ display: "block" }} data-tooltip="已计入的模型请求逐次相加。应用排队、本地处理与保存另计，并发请求的耗时可能重叠。">请求耗时合计 <span className="game-flow-metric">{gameDuration(model.requestMs)}</span> · <span className="game-flow-metric">{model.requests} 次</span></small>
+                  </>}
                 </div>;
-              }) : <><span>{showingBenchmark ? "等待模型统计" : step.summary}</span><small style={{ display: "block" }}>纯生成 — tok/s · 请求平均 — tok/s</small></>}
-              {(measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
+              }) : <><span>{showingBenchmark ? "等待模型统计" : step.summary}</span>{expanded && <small style={{ display: "block" }}>纯生成 — tok/s · 请求平均 — tok/s</small>}</>}
+              {expanded && (measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
                 <span>{measured.wallTiming ? "非模型用时" : "历史累计"}</span>
                 <span>排队 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.queueMs)}</span></span>
                 <span>处理与校验 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.processingMs)}</span></span>
                 <span>保存 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.saveMs)}</span></span>
               </small>}
-              {measured.wallTiming?.modelRequestMs !== undefined && <small className="game-flow-model-rates"
+              {expanded && measured.wallTiming?.modelRequestMs !== undefined && <small className="game-flow-model-rates"
                 data-tooltip="从模型请求发出到返回，重叠请求只计一次；没有在途请求的时间单独显示。">
                 <span>模型请求占用 <span className="game-flow-metric">{formatTiming(measured.wallTiming.modelRequestMs)}</span></span>
                 {measured.requestTimingComplete && <span>无在途模型请求 <span className="game-flow-metric">{formatTiming(Math.max(0, measured.elapsedMs - measured.wallTiming.modelRequestMs))}</span></span>}

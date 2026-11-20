@@ -1,38 +1,161 @@
-.game-mosaic-controls { padding: var(--panel-gap, 12px); }
-.game-mosaic-step-summary { display: grid; gap: 4px; }
-.game-mosaic-controls .game-flow-actions { max-width: min(100%, 228px); }
+.unity-offline:is(.is-mosaic, :has(> .engine-result-slot > .game-mosaic-workbench:not([hidden]))) {
+  display: grid;
+  grid-template-columns: var(--workflow-rail-width) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-2);
+
+  & :is(.unity-offline-config, .unity-workflow-layout) { display: contents; }
+  & .game-workflow-steps { grid-column: 1; grid-row: 1 / -1; }
+  & .unity-workflow {
+    grid-column: 2;
+    grid-row: 1;
+    min-inline-size: 0;
+    max-block-size: min(22vh, 148px);
+    overflow-y: auto;
+    scrollbar-gutter: auto;
+  }
+  & .unity-step-panel:has(.game-mosaic-controls) { padding: 0; }
+  & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 2; grid-row: 2; }
+  & > .unity-workspace-divider { display: none; }
+
+  @media (max-width: 700px) {
+    grid-template-rows: auto minmax(480px, 1fr);
+  }
+}
+
+.game-mosaic-controls { padding: var(--space-2); }
+.game-mosaic-controls .game-flow-list > ol { gap: 8px; }
+.game-mosaic-controls .game-flow-item {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  box-sizing: border-box;
+  max-block-size: 96px;
+}
+.game-mosaic-controls .game-flow-item::after { display: none; }
+.game-mosaic-controls .game-flow-step { padding: var(--space-1) var(--space-3); }
+.game-mosaic-controls .game-flow-step .game-flow-row {
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
+  min-height: 38px;
+}
+.game-mosaic-controls .game-flow-step .game-flow-summary { grid-column: 2; grid-row: 1; }
+.game-mosaic-controls .game-flow-step .game-flow-actions { grid-column: 3; grid-row: 1; white-space: nowrap; }
+.game-mosaic-controls .game-flow-config { min-height: 0; padding: 2px var(--space-3); overflow: auto; }
+.game-mosaic-step-summary { display: grid; gap: var(--space-1); }
+.game-mosaic-step-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game-mosaic-step-settings {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
-  gap: 8px 12px;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
 }
-.game-mosaic-step-settings label { display: grid; gap: 4px; min-width: 0; max-width: 100%; font-size: 13px; }
-.game-mosaic-step-settings :is(select, input[type="file"]) { min-width: 0; max-width: 100%; }
-.game-mosaic-step-settings .game-mosaic-checkbox { display: flex; align-items: center; min-height: 32px; gap: 5px; }
-@container (max-width: 380px) {
-  .game-mosaic-controls .game-flow-step .game-flow-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .game-mosaic-controls .game-flow-step .game-flow-summary { grid-column: 2; grid-row: 1; }
-  .game-mosaic-controls .game-flow-step .game-flow-actions { grid-column: 1 / -1; grid-row: 2; max-width: 100%; }
+.game-mosaic-step-settings label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-size);
+  font-size: var(--fs-body);
+  white-space: nowrap;
 }
+.game-mosaic-step-settings :is(select, input) { min-width: 0; }
+.game-mosaic-step-settings input[type="file"] {
+  box-sizing: border-box;
+  block-size: var(--control-size);
+  min-block-size: 0;
+  padding-block: var(--space-1);
+}
+.game-mosaic-step-settings input[type="number"] { inline-size: 6ch; }
 .game-mosaic-empty { margin: 12px; color: var(--text-muted); }
 .game-mosaic-list { display: flex; flex-direction: column; overflow: hidden; }
+.game-mosaic-workbench .unity-image-body:has(> .unity-image-list-divider) { gap: var(--space-3); }
+.game-mosaic-workbench .unity-image-list-divider { display: none; }
+@media (width > 700px) {
+  .game-mosaic-workbench .game-mosaic-list { flex-basis: clamp(220px, 16vw, 300px); }
+}
 .game-mosaic-list > ul { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .game-mosaic-list > nav { flex-shrink: 0; }
 .unity-image-filter-menu .game-mosaic-filter-status { justify-content: space-between; }
 .game-mosaic-filter-status select {
-  min-width: 0; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px;
+  min-width: 0; padding: var(--space-1) 6px; border: 1px solid var(--border); border-radius: var(--radius-md);
   background: var(--bg-panel); color: inherit; font: inherit;
 }
-.game-mosaic-workbench .unity-image-previews figcaption { min-height: 30px; flex-wrap: nowrap; white-space: nowrap; }
-.game-mosaic-workbench .unity-image-previews figcaption small { overflow: hidden; text-overflow: ellipsis; }
-.game-mosaic-workbench .unity-image-previews figcaption select { min-width: 0; height: 30px; padding: 3px 7px; font-size: 13px; }
+.game-mosaic-workbench .unity-image-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: clip;
+}
+
+.game-mosaic-workbench .unity-image-detail > :not(.unity-image-previews) { flex: none; }
+
+.game-mosaic-workbench .unity-image-previews {
+  flex: 1 1 0;
+  min-height: 0;
+  margin-block: 0 var(--space-1);
+  row-gap: var(--space-2);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.game-mosaic-workbench .unity-image-previews.is-mosaic-comparison {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.game-mosaic-workbench .unity-image-previews figure {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.game-mosaic-workbench .unity-image-preview-surface {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  container-type: size;
+  background: none;
+}
+
+.game-mosaic-workbench .unity-image-stage {
+  inline-size: min(100%, calc(100cqh * var(--mosaic-image-aspect)));
+  aspect-ratio: var(--mosaic-image-aspect);
+  background: repeating-conic-gradient(var(--bg-muted) 0% 25%, var(--bg-hover) 25% 50%) 0 0 / 20px 20px;
+}
+
+.game-mosaic-workbench .unity-image-previews:has(> .game-mosaic-result-version) > figure {
+  margin-block-end: calc(var(--control-size) + 6px);
+}
+
+.game-mosaic-workbench .unity-image-stage > img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+.game-mosaic-workbench .unity-image-previews figcaption { min-height: 30px; overflow-wrap: anywhere; }
+.game-mosaic-workbench .unity-image-previews figcaption small { white-space: nowrap; }
+.game-mosaic-workbench .unity-image-previews figure > .hint { margin: 8px; }
+.game-mosaic-workbench .game-mosaic-results-bar {
+  grid-column: 1 / -1;
+  border-bottom: 1px solid var(--border);
+}
+.game-mosaic-results-bar > strong { flex: 0 0 auto; min-width: 0; }
+.game-mosaic-version-picker {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+.game-mosaic-version-picker > button { min-width: 32px; }
+.game-mosaic-result-version { display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: end; min-width: 0; min-height: 0; gap: 6px; }
+.game-mosaic-result-version > figure { width: 100%; box-sizing: border-box; }
 .game-mosaic-workbench .unity-image-actions button[aria-pressed="true"] {
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }
 .game-mosaic-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .game-mosaic-stage > svg:not(.is-drawing) { pointer-events: none; }
 .game-mosaic-stage > svg.is-drawing { cursor: crosshair; touch-action: none; }
-.game-mosaic-progress, .game-mosaic-error { margin: 0; font-size: 13px; }
+.game-mosaic-progress, .game-mosaic-error { margin: 0; font-size: var(--fs-body); }
 .game-mosaic-progress { color: var(--text-muted); overflow-wrap: anywhere; }
-.game-mosaic-error { color: var(--danger, #b93636); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
+.game-mosaic-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
