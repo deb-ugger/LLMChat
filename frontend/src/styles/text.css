@@ -464,7 +464,41 @@
 .embed-game-location { min-width:0; width:auto; max-width:65%; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border:0; background:transparent; color:var(--text-muted); font:inherit; font-size:var(--fs-caption); text-align:left; cursor:pointer; padding-inline:0; }
 
 .embed-workspace.embed-unity-workspace { width:100%; max-width:var(--content-max); margin-inline:auto; padding:0; overflow:hidden; }
-.embed-unity-workspace > .embed-game-header { padding:7px var(--space-4); }
+/* 与 Unity 顶栏（.unity-top）同款：44px 高、同底色、一条发丝线收口。 */
+.embed-unity-workspace > .embed-game-header {
+  height:44px;
+  padding:0 var(--space-4);
+  gap:var(--space-3);
+  align-items:center;
+  background:var(--bg-app);
+  border-bottom:1px solid var(--border);
+}
+/* 名称 / 引擎 / 路径：改成 Unity 那边 .unity-game-heading 的字阶与颜色。 */
+.embed-unity-workspace > .embed-game-header > strong {
+  min-width:0;
+  color:var(--text);
+  font-size:var(--fs-section);
+  font-weight:600;
+}
+.embed-unity-workspace > .embed-game-header .embed-engine {
+  flex-shrink:0;
+  margin:0;
+  padding:0;
+  border-radius:0;
+  background:none;
+  color:var(--text-muted);
+  font-size:var(--fs-caption);
+  font-weight:400;
+}
+.embed-unity-workspace > .embed-game-header .embed-game-location {
+  flex:0 1 auto;
+  min-width:0;
+  max-width:min(46ch,42vw);
+  padding-inline:0;
+  color:var(--text-muted);
+  font-family:var(--mono, ui-monospace, monospace);
+  font-size:var(--fs-caption);
+}
 .engine-workspace-slot { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
 .engine-result-slot { overflow:hidden; }
 .unity-workflow > .engine-workspace-slot { flex:1 0 auto; min-height:100%; }
@@ -486,9 +520,18 @@
 .game-dialogue-preview-tools button:disabled { opacity:.45; cursor:not-allowed; }
 .engine-workflow-content .unity-control-group > label { display:flex; flex-direction:column; gap:6px; }
 .engine-workflow-content .unity-control-group select { min-width:0; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--panel,var(--bg-panel)); color:var(--text); font:inherit; }
-.engine-workflow-content .embed-section { border-top:1px solid var(--border); padding:14px 0; }
-.engine-workflow-content .embed-section h3 { font-size:var(--fs-body); }
-.engine-workflow-content .embed-section > select { width:100%; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); color:var(--text); background:var(--panel,var(--bg-panel)); font:inherit; }
+/* 与 Unity 侧 .unity-step-panel 的分段、字阶、控件圆角对齐。 */
+.engine-workflow-content .embed-section {
+  margin-block:var(--space-3);
+  padding:var(--space-3) 0 0;
+  border:0;
+  border-top:1px solid var(--border);
+}
+.engine-workflow-content .embed-section:first-of-type { margin-block-start:0; border-top:0; padding-block-start:0; }
+.engine-workflow-content .embed-section h3 { margin:0 0 var(--space-2); color:var(--text); font-size:var(--fs-section); font-weight:600; }
+.engine-workflow-content .embed-section > select,
+.engine-workflow-content .unity-control-group select { width:100%; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); color:var(--text); background:var(--bg-panel); font:inherit; }
+.engine-workflow-content .unity-step-panel { display:flex; flex-direction:column; gap:var(--space-3); }
 
 .game-maintenance-row { display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2); }
 .game-maintenance-row h3 { flex-shrink:0; margin:0; }
