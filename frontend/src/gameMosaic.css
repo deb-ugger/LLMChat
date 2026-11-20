@@ -1,5 +1,5 @@
 /* 与文本/图片翻译同一副骨架：左轨 | 步骤列 | 结果列。 */
-.unity-offline:is(.is-mosaic, :has(> .engine-result-slot > .game-mosaic-workbench:not([hidden]))) {
+.unity-offline:is(.is-mosaic, :has(> .engine-result-slot > .game-mosaic-workbench:not([hidden]))):not(.is-deployment) {
   display: grid;
   grid-template-columns: var(--workflow-rail-width) clamp(420px, 25vw, 600px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -12,17 +12,29 @@
     grid-row: 1;
     min-inline-size: 0;
     align-self: start;
-    max-block-size: none;
-    overflow: visible;
+    max-block-size: 100%;
+    overflow-y: auto;
+    scrollbar-gutter: auto;
   }
   & .unity-step-panel:has(.game-mosaic-controls) { padding: 0; }
   & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 3; grid-row: 1; min-inline-size: 0; }
   & > .unity-workspace-divider { display: none; }
 
+  @media (width > 1080px) {
+    &.is-mosaic {
+      grid-template-columns: var(--workflow-rail-width)
+        var(--unity-panel-drag-width, var(--game-mosaic-step-column-width, clamp(420px, 25vw, 600px)))
+        var(--workflow-divider-width) minmax(0, 1fr);
+      & > .unity-workspace-divider { display: block; grid-column: 3; grid-row: 1; }
+      & > .unity-image-result-pane { grid-column: 4; }
+    }
+  }
+
   /* 窄窗回退：步骤列回到上方一条，结果列占满。 */
   @media (max-width: 1080px) {
     grid-template-columns: var(--workflow-rail-width) minmax(0, 1fr);
     grid-template-rows: auto minmax(420px, 1fr);
+    overflow-y: auto;
     & .game-workflow-steps { grid-row: 1 / -1; }
     & .unity-workflow { grid-column: 2; grid-row: 1; max-block-size: min(26vh, 168px); overflow-y: auto; }
     & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 2; grid-row: 2; }
@@ -31,20 +43,10 @@
 
 .game-mosaic-controls { padding: var(--space-2); }
 .game-mosaic-controls .game-flow-list > ol { gap: 8px; }
-.game-mosaic-controls .game-flow-item {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  box-sizing: border-box;
-  max-block-size: 96px;
-}
 .game-mosaic-controls .game-flow-item::after { display: none; }
 .game-mosaic-controls .game-flow-step { padding: var(--space-1) var(--space-3); }
-.game-mosaic-controls .game-flow-step .game-flow-row {
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
-  min-height: 38px;
-}
-.game-mosaic-controls .game-flow-step .game-flow-summary { grid-column: 2; grid-row: 1; }
-.game-mosaic-controls .game-flow-step .game-flow-actions { grid-column: 3; grid-row: 1; white-space: nowrap; }
+.game-mosaic-controls .game-flow-step .game-flow-row { min-height: 38px; }
+.game-mosaic-controls .game-flow-step .game-flow-actions { flex-wrap: nowrap; white-space: nowrap; }
 .game-mosaic-controls .game-flow-config { min-height: 0; padding: 2px var(--space-3); overflow: auto; }
 .game-mosaic-step-summary { display: grid; gap: var(--space-1); }
 .game-mosaic-step-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

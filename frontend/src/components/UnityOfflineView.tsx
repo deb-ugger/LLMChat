@@ -255,10 +255,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
   const [rowJump, setRowJump] = useState<{ id: string; sequence: number; error: boolean } | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const panelMinWidth = 300;
+  const panelMinWidth = mosaicPage ? 360 : 300;
   const [panelMaxWidth, setPanelMaxWidth] = useState(900);
+  const [mosaicViewport, setMosaicViewport] = useState(() => window.innerWidth);
   const panelMaxRef = useRef(panelMaxWidth);
-  const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, panelMinWidth, panelMaxWidth);
+  const workflowWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, panelMaxWidth);
+  const mosaicWidth = usePersistedWidth("game-mosaic-step-column-width",
+    Math.min(600, Math.max(420, mosaicViewport / 4)), 360, Math.max(360, Math.min(720, panelMaxWidth)));
+  const panelWidth = mosaicPage ? mosaicWidth : workflowWidth;
   const committedPanelWidth = useRef(panelWidth.width);
   const panelPreviewProperty = "--unity-panel-drag-width";
   type PanelDrag = {
@@ -274,14 +278,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const panelDrag = useRef<PanelDrag | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const panelPreviewRef = mosaicPage ? workspaceRef : panelRef;
   const dividerRef = useRef<HTMLButtonElement>(null);
 
   const paintPanelWidth = useCallback((drag: PanelDrag) => {
     if (drag.painted === drag.latest) return;
     drag.painted = drag.latest;
-    panelRef.current?.style.setProperty(panelPreviewProperty, `${drag.painted}px`);
+    panelPreviewRef.current?.style.setProperty(panelPreviewProperty, `${drag.painted}px`);
     drag.divider.setAttribute("aria-valuenow", String(Math.round(drag.painted)));
-  }, [panelPreviewProperty]);
+  }, [panelPreviewProperty, panelPreviewRef]);
 
   useEffect(() => {
     const workspace = workspaceRef.current;
@@ -290,10 +295,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       if (!entry.contentRect.width) return;
       const styles = getComputedStyle(workspace);
       const fixedWidth = parseFloat(styles.getPropertyValue("--workflow-rail-width"))
-        + parseFloat(styles.getPropertyValue("--workflow-column-gap"))
+        + (mosaicPage ? 3 * parseFloat(styles.columnGap) : parseFloat(styles.getPropertyValue("--workflow-column-gap")))
         + parseFloat(styles.getPropertyValue("--workflow-divider-width"));
       const paneSpace = entry.contentRect.width - fixedWidth;
-      const nextMax = Math.max(panelMinWidth, Math.min(900, Math.floor(paneSpace - 260)));
+      const nextMax = Math.max(panelMinWidth, Math.min(mosaicPage ? 720 : 900, Math.floor(paneSpace - (mosaicPage ? 420 : 260))));
+      if (mosaicPage) setMosaicViewport(window.innerWidth);
       panelMaxRef.current = nextMax;
       setPanelMaxWidth(nextMax);
       const drag = panelDrag.current;
@@ -304,12 +310,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     });
     observer.observe(workspace);
     return () => observer.disconnect();
-  }, [panelMinWidth, paintPanelWidth]);
+  }, [mosaicPage, panelMinWidth, paintPanelWidth]);
 
   const clearPanelPreview = useCallback(() => {
-    panelRef.current?.style.removeProperty(panelPreviewProperty);
+    panelPreviewRef.current?.style.removeProperty(panelPreviewProperty);
     dividerRef.current?.setAttribute("aria-valuenow", String(Math.round(committedPanelWidth.current)));
-  }, [panelPreviewProperty]);
+  }, [panelPreviewProperty, panelPreviewRef]);
 
   const endPanelDrag = useCallback((pointerId?: number) => {
     const drag = panelDrag.current;
@@ -337,7 +343,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }
   }, [panelWidth.width, clearPanelPreview]);
 
-  const panelResizeActive = active && activeStep !== 3 && !mosaicPage;
+  const panelResizeActive = active && activeStep !== 3 && (!mosaicPage || mosaicViewport > 1080);
   useLayoutEffect(() => () => cancelPanelDrag(), [panelResizeActive, cancelPanelDrag]);
 
   function clampPanelWidth(width: number) {
@@ -2681,7 +2687,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const trackEdges = deploymentPage ? deploymentValidation.effectiveEdges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
   const trackEnabled = deploymentPage ? deploymentValidation.enabledSteps.map(id => deploymentStageId[id]) : undefined;
   const trackSkipped = deploymentPage ? deploymentPlan.disabled.map(id => deploymentStageId[id]) : undefined;
-  return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
+  return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`}
+    style={mosaicPage ? { "--game-mosaic-step-column-width": `${panelWidth.width}px` } as CSSProperties : undefined} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
     {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
     {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
@@ -2922,7 +2929,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     </section>
     </div>
     </aside>
-    {!deploymentPage && !mosaicPage && <button ref={dividerRef} className="unity-workspace-divider" role="separator" aria-orientation="vertical"
+    {!deploymentPage && <button ref={dividerRef} className="unity-workspace-divider" role="separator" aria-orientation="vertical"
       aria-label="调整步骤区和结果区宽度" aria-valuemin={panelMinWidth} aria-valuemax={panelMaxWidth} aria-valuenow={Math.round(panelWidth.width)}
       style={{ touchAction: "none", zIndex: 2 }}
       onPointerDown={event => {

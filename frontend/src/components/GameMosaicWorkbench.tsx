@@ -13,7 +13,7 @@ import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
-  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: string | number[]; saved?: boolean; reference?: boolean };
+  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
@@ -22,7 +22,7 @@ type StepRun = { state: GameProgressState; completed: number; total: number; sta
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
-export type MosaicCandidateIndex = Record<string, { source: string; included: boolean }>;
+export type MosaicCandidateIndex = Record<string, { source: string; hash: string; included: boolean }>;
 type MosaicStorage = {
   index: MosaicCandidateIndex;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
@@ -101,8 +101,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     setRows(previous => {
       const next = { ...previous };
       for (const image of images) {
-        const saved = storage.index[image.id]?.source === image.sourceHash;
+        const entry = storage.index[image.id];
         const row = resultFor(previous, image);
+        const saved = entry?.source === image.sourceHash && (entry.included || entry.hash !== row.discardedHash);
         if (saved !== !!row.saved)
           next[image.id] = { ...row, saved, checked: row.manualChecked ? row.checked : saved || row.checked };
       }
@@ -123,7 +124,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const [model, setModel] = useState<MosaicModel>("turbo");
   const [steps, setSteps] = useState(8);
   const [protect, setProtect] = useState(true);
-  const [activeId, setActiveId] = useState("");
+  const [activeId, setActiveId] = useState<string | null>("");
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
@@ -174,7 +175,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const pages = Math.max(1, Math.ceil(visible.length / mosaicPageSize));
   const currentPage = Math.min(page, pages - 1);
   const pageImages = visible.slice(currentPage * mosaicPageSize, (currentPage + 1) * mosaicPageSize);
-  const active = pageImages.find(image => image.id === activeId) ?? pageImages[0];
+  const active = activeId === null ? undefined : pageImages.find(image => image.id === activeId) ?? pageImages[0];
   const activeResult = active && resultFor(rows, active);
   const group = active && (activeResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
@@ -203,9 +204,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
     if (row.checked) total.checked++;
-    if (row.saved) total.saved++;
+    if (row.saved && !storage?.index[image.id]?.included) total.saved++;
     return total;
-  }, { checked: 0, saved: 0 }), [visible, rows]);
+  }, { checked: 0, saved: 0 }), [visible, rows, storage?.index]);
 
   useLayoutEffect(() => {
     const element = previews.current;
@@ -465,7 +466,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     void run("保存已确认候选", async signal => {
       if (storage) await storage.save(image, blob, signal);
       else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
-      update(image, { saved: true, checked: true });
+      update(image, { saved: true, checked: true, discardedHash: undefined });
       setApproved({ id: image.id, revision: image.sourceHash, blob }); setPreferredResult("saved");
       setProgress("已保存 · " + image.name);
     });
@@ -507,15 +508,21 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const stoppedScreen = sameScreen && stepRuns.screen?.state === "stopped";
   const screenAction = currentScope.length && !remaining.length ? "重新筛选"
     : screenedCount || stoppedScreen ? "继续筛选" : "开始筛选";
-  const idleScreen: StepRun = { state: currentScope.length && screenedCount === currentScope.length ? "done" : screenedCount ? "stopped" : "pending",
-    total: currentScope.length, completed: screenedCount };
+  const lastScreenRun = stepRuns.screen;
+  const idleScreen: StepRun = {
+    state: currentScope.length && screenedCount === currentScope.length ? "done" : screenedCount ? "stopped"
+      : currentScope.some(image => resultFor(rows, image).reason) ? "error" : "pending",
+    total: currentScope.length, completed: screenedCount,
+  };
+  const screenStatus = lastScreenRun?.state === "running" ? lastScreenRun : {
+    ...idleScreen,
+    state: sameScreen && (lastScreenRun?.state === "error" || lastScreenRun?.state === "stopped") ? lastScreenRun.state : idleScreen.state,
+    elapsed: sameScreen ? lastScreenRun?.elapsed : undefined,
+  };
+  const canClear = [screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
-    const lastRun = stepRuns[id];
-    const status: StepRun | undefined = id === "screen" && lastRun?.state !== "running"
-      ? { ...idleScreen, state: sameScreen && lastRun && (lastRun.state === "error" || lastRun.state === "stopped") ? lastRun.state : idleScreen.state,
-          elapsed: sameScreen ? lastRun?.elapsed : undefined }
-      : lastRun;
+    const status = id === "screen" ? screenStatus : stepRuns.redraw;
     const state = status?.state || "pending";
     const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
@@ -529,7 +536,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         {status?.total ? <small className="game-flow-model-rates">
           <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
         </small> : null}
-        {(running || id === "screen" && (!!status?.completed || stoppedScreen)) && <GameProgressBar label={`${title}进度`} value={percent} />}
+        {(running || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {
         task.current?.abort(); setProgress("等待当前任务返回后停止后续任务");
@@ -538,6 +545,46 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   };
 
   const actionsDisabled = !!busy || disabled;
+  async function clearTask() {
+    if (!canClear || actionsDisabled) return;
+    const count = usable.filter(image => {
+      const row = resultFor(rows, image);
+      return row.scanned || row.checked || row.saved && !storage?.index[image.id]?.included ||
+        row.boxes.length || row.reason || row.manualGroup || candidates[image.id]?.revision === image.sourceHash;
+    }).length;
+    if (count > 0 && !await confirmation.confirm(`清除本次任务中 ${count} 张图片的筛选、选择、确认结果和进度？已纳入补丁的去码图将保留。`, {
+      title: "清理图片去码任务", okLabel: "清理",
+    })) return;
+    if (task.current) return;
+
+    const next: Results = {};
+    for (const image of usable) {
+      const entry = storage?.index[image.id];
+      if (entry?.source !== image.sourceHash) continue;
+      // The cache has no selective deletion endpoint. Remember which confirmation was cleared,
+      // while keeping results already in the patch index available.
+      next[image.id] = entry.included ? { ...defaultResult(image), saved: true }
+        : { ...defaultResult(image), discardedHash: entry.hash };
+    }
+    setRows(next);
+    lastScreen.current = null;
+    setStepRuns({});
+    setProgressStep(undefined);
+    setProgress("");
+    setError("");
+    setPage(0);
+    setSceneFilter(false);
+    setActiveId(null);
+    setSource(undefined);
+    setApproved(undefined);
+    setCandidates({});
+    setPreferredResult(undefined);
+    setDrawing(false);
+    setDraft(undefined);
+    anchor.current = null;
+    showAppNotice("已清理图片去码任务");
+  }
+
   const busyReason = busy ? "正在处理，先中止或等待" : disabled ? "请等待其他工程操作完成" : undefined;
   const redrawReason = busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = busyReason ?? (!reference ? "先将已确认的图片设为组参考"
@@ -549,9 +596,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     {confirmation.dialog}
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
       <div className="game-flow-list"><ol>
-        {stepCard("screen", "筛选打码图片", screenSummary,
+        {stepCard("screen", "筛选打码图片", screenSummary, <>
           <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
-            onClick={() => screen()}>{screenAction}</button>, <>
+            onClick={() => screen()}>{screenAction}</button>
+          {canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
+            onClick={() => void clearTask()}>清理</button>}
+        </>, <>
           {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn" disabled={actionsDisabled}
             onClick={() => screen(true)}>重新筛选全部范围</button>}
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { setScope(event.target.value as typeof scope); setPage(0); }}>
@@ -617,7 +667,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         })}</ul>
         <GameImageListPagination label="去码图片列表分页" page={currentPage} pages={pages} onPage={setPage} />
       </>}>
-      {!visible.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}
+      {!active && <div className="unity-offline-empty">{visible.length ? "从左侧列表选择图片预览" : "没有符合筛选条件的图片。"}</div>}
       {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
         <div className="unity-image-actions">
           <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
