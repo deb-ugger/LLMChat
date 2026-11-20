@@ -22,31 +22,49 @@
 
   @media (width > 1080px) {
     /* 方案 A：左列 = 步骤卡 + 筛选条 + 队列，右列整块给预览。 */
+    --mosaic-preview-column: 3;
+    grid-template-rows: auto auto minmax(0, 1fr);
+
     &.is-mosaic {
+      --mosaic-preview-column: 4;
       grid-template-columns: var(--workflow-rail-width)
         var(--unity-panel-drag-width, var(--game-mosaic-step-column-width, clamp(420px, 25vw, 600px)))
         var(--workflow-divider-width) minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
       & > .unity-workspace-divider { display: block; grid-column: 3; grid-row: 1 / -1; }
-      & > .unity-image-result-pane { display: contents; }
-      & > .engine-result-slot,
-      & > .engine-result-slot > .game-mosaic-workbench,
-      & > .engine-result-slot > .game-mosaic-workbench > .unity-image-body { display: contents; }
-      & .unity-image-result-pane .game-mosaic-workbench { display: contents; }
-      & .game-mosaic-workbench > .unity-offline-toolbar { grid-column: 2; grid-row: 2; padding-inline: var(--space-2); }
-      & .game-mosaic-workbench .unity-image-list.game-mosaic-list {
-        grid-column: 2;
-        grid-row: 3;
-        inline-size: auto;
-        min-block-size: 0;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--bg-panel);
-      }
-      & .game-mosaic-workbench .unity-image-list-divider { display: none; }
-      & .game-mosaic-workbench .unity-image-detail { grid-column: 4; grid-row: 1 / -1; min-block-size: 0; }
-      & .game-mosaic-workbench > .unity-offline-empty { grid-column: 4; grid-row: 1 / -1; }
     }
+
+    & .game-workflow-steps { grid-row: 1 / -1; }
+    & > :is(.unity-image-result-pane, .engine-result-slot) {
+      grid-column: var(--mosaic-preview-column);
+      grid-row: 1 / -1;
+    }
+    & > :is(.unity-image-result-pane, .engine-result-slot):not([hidden]):has(> .game-mosaic-workbench:not([hidden])),
+    & > :is(.unity-image-result-pane, .engine-result-slot) > .game-mosaic-workbench:not([hidden]),
+    & .game-mosaic-workbench:not([hidden]) > .unity-image-body { display: contents; }
+
+    & .game-mosaic-workbench > .unity-offline-toolbar {
+      grid-column: 2;
+      grid-row: 2;
+      min-inline-size: 0;
+      padding-inline: var(--space-2);
+    }
+    & .game-mosaic-workbench .unity-image-list.game-mosaic-list {
+      grid-column: 2;
+      grid-row: 3;
+      /* 队列随步骤列铺满，此处的宽度由外层分割条决定。 */
+      inline-size: auto !important;
+      min-block-size: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-panel);
+    }
+    & .game-mosaic-workbench > .unity-image-body > :is(.unity-image-detail, .unity-offline-empty) {
+      grid-column: var(--mosaic-preview-column);
+      grid-row: 1 / -1;
+      min-inline-size: 0;
+      min-block-size: 0;
+    }
+    & .game-mosaic-workbench .unity-image-detail > .unity-image-previews { overflow: auto; }
   }
 
   /* 窄窗回退：步骤列回到上方一条，结果列占满。 */
