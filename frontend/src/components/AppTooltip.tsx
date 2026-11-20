@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -5,9 +6,14 @@ type Hint = { element: HTMLElement; text: string };
 
 type Pointer = {x:number;y:number};
 function placeHint(element:HTMLElement,anchor:HTMLElement,pointer:Pointer|null){
-  const box=element.getBoundingClientRect(),width=document.documentElement.clientWidth,height=window.innerHeight,rect=anchor.getBoundingClientRect();
-  const left=pointer?(pointer.x+box.width+12<=width-8?pointer.x+12:pointer.x-box.width-12):rect.left+(rect.width-box.width)/2;
-  const top=pointer?(pointer.y+box.height+16<=height-8?pointer.y+16:pointer.y-box.height-12):(rect.bottom+box.height+8<=height-8?rect.bottom+8:rect.top-box.height-8);
+  const { scale, width, height } = getLayoutViewport();
+  const box = getLayoutRect(element.getBoundingClientRect(), scale);
+  const rect = getLayoutRect(anchor.getBoundingClientRect(), scale);
+  const x = pointer ? pointer.x / scale : rect.left + rect.width / 2;
+  const y = pointer ? pointer.y / scale : rect.bottom;
+  const left = pointer ? (x + box.width + 12 <= width - 8 ? x + 12 : x - box.width - 12) : x - box.width / 2;
+  const top = pointer ? (y + box.height + 16 <= height - 8 ? y + 16 : y - box.height - 12)
+    : (y + box.height + 8 <= height - 8 ? y + 8 : rect.top - box.height - 8);
   element.style.left=Math.max(8,Math.min(left,width-box.width-8))+"px";
   element.style.top=Math.max(8,Math.min(top,height-box.height-8))+"px";
 }

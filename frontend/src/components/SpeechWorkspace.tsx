@@ -1,3 +1,4 @@
+import { getFixedMenuPoint } from "../viewportLayout";
 import { useEffect, useId, useImperativeHandle, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { copyText } from "../clipboard";
 import { speechQueue, type SpeechQueueItem } from "../speech/queue";
@@ -118,7 +119,7 @@ export function SpeechPane({ id, active, items, initialItem, onSelect, layoutCon
         {fileTabs.length > 0 && <div className="speech-result-tabs" role="tablist" aria-label={workspaceMode === "ranges" ? "识别范围文件" : "转写结果文件"}>{fileTabs.map((item, index) => <div className="speech-file-tab" key={item.id}>
           <button type="button" role="tab" id={`${id}-${workspaceMode}-tab-${item.id}`} aria-controls={workspaceMode === "ranges" ? `${id}-range-page-${item.id}` : `${id}-result-page`} aria-selected={item.id === selectedTabId} tabIndex={item.id === selectedTabId || (!selectedTabId && index === 0) ? 0 : -1} data-tooltip={item.source.name} aria-label={item.source.name}
             onClick={() => { if (workspaceMode === "ranges") openRange(item); else selectFile(item); }}
-            onContextMenu={event => { event.preventDefault(); setTabMenu({ mode: workspaceMode, id: item.id, x: Math.max(0, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(0, Math.min(event.clientY, window.innerHeight - 168)) }); }}
+            onContextMenu={event => { event.preventDefault(); setTabMenu({ mode: workspaceMode, id: item.id, ...getFixedMenuPoint(event.clientX, event.clientY, 230, 168, 0) }); }}
             onKeyDown={event => {
               const next = event.key === "ArrowRight" ? (index + 1) % fileTabs.length : event.key === "ArrowLeft" ? (index + fileTabs.length - 1) % fileTabs.length : event.key === "Home" ? 0 : event.key === "End" ? fileTabs.length - 1 : -1;
               if (next < 0) return;

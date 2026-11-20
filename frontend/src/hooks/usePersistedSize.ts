@@ -14,12 +14,13 @@ export function usePersistedSize(
   const [preferredSize, setPreferredSize] = useState(() => {
     try {
       const raw = localStorage.getItem(storageKey);
-      const value = raw === null ? initial : Number(raw);
-      return Number.isFinite(value) ? value : initial;
-    } catch { return initial; }
+      if (raw === null) return undefined;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : undefined;
+    } catch { return undefined; }
   });
   // Viewport limits affect display only; keep the saved preference for larger windows.
-  const size = finishValue(preferredSize);
+  const size = finishValue(preferredSize ?? initial);
   const current = useRef(size);
   current.current = size;
   const cleanup = useRef<(() => void) | null>(null);

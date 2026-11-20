@@ -1,3 +1,5 @@
+import { EmptyState } from "./EmptyState";
+import { getFixedMenuPoint, getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { writeOutput } from "../appOutput";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
@@ -863,11 +865,13 @@ export function UnityTranslateView({
       setHelpMenuPos(null);
       return;
     }
-    const rect = helpBtnRef.current?.getBoundingClientRect();
-    if (rect) {
+    const anchor = helpBtnRef.current;
+    if (anchor) {
+      const viewport = getLayoutViewport();
+      const rect = getLayoutRect(anchor.getBoundingClientRect(), viewport.scale);
       setHelpMenuPos({
         top: rect.bottom + 4,
-        right: window.innerWidth - rect.right,
+        right: viewport.width - rect.right,
       });
     }
     setHelpOpen(true);
@@ -2320,11 +2324,9 @@ export function UnityTranslateView({
                   className="unity-recent-games"
                   aria-label="最近打开的游戏"
                 >
-                  <div className="unity-recent-games-head">
-                    <strong>最近打开</strong>
-                  </div>
-                  {!recentGames.length&&<p className="hint">暂无最近打开的游戏</p>}
-                  <ul className="unity-recent-games-list">
+                  {recentGames.length ? <>
+                    <div className="unity-recent-games-head"><strong>最近打开</strong></div>
+                    <ul className="unity-recent-games-list">
                     {recentGames.map((r) => {
                       const failures = recentGameFailureCount(r.gameDir);
                       return <li key={r.gameDir}>
@@ -2358,7 +2360,9 @@ export function UnityTranslateView({
                         </button>
                       </li>;
                     })}
-                  </ul>
+                    </ul>
+                  </> : <EmptyState className="unity-recent-empty" size="sm"
+                    title={<strong>最近打开</strong>} hint="暂无记录" />}
                 </section>
               </div>
 
@@ -2430,23 +2434,14 @@ export function UnityTranslateView({
 
                   {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}<span className="unity-recent-engine">{game.engine}</span></div><div className="unity-game-meta">{game.engine === "Unreal Engine" && game.textSupported === false ? "归档资源 · 去码补丁可用" : game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path" data-tooltip={game.path}>{game.path}</div></button></li>)}</ul>}
                   {awaitingPath || games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
-                    <div
-                      className={
-                        "unity-game-empty" +
-                        (scanning ? "" : " is-none-found")
-                      }
-                      role="status"
-                    >
-                      {scanning ? (
-                        <p>发现的游戏会显示在这里</p>
-                      ) : (
-                        <strong>未找到支持的游戏</strong>
-                      )}
-                    </div>
+                    <EmptyState className={scanning ? "unity-game-empty" : "unity-game-empty is-none-found"}
+                      size="sm" role="status"
+                      title={scanning ? "发现的游戏会显示在这里" : <strong>未找到支持的游戏</strong>}
+                      hint={scanning ? undefined : <><span>{scanState?.scanRoot || pathInput.trim()}</span>
+                        {" · "}{scanState?.error || "未识别到支持的游戏主程序或资源文件。"}</>}
+                    />
                   ) : filteredGames.length + filteredOtherGames.length === 0 ? (
-                    <p className="unity-game-empty">
-                      没有匹配「{searchQuery.trim()}」的游戏
-                    </p>
+                    <EmptyState className="unity-game-empty" size="sm" title={`没有匹配「${searchQuery.trim()}」的游戏`} />
                   ) : (
                     <ul className="unity-game-list">
                       {filteredGames.map((g) => {
@@ -2517,7 +2512,7 @@ export function UnityTranslateView({
                 </div>
               </section>
 
-              {error ? (
+              {error && (!scanState || games.length > 0 || otherGames.length > 0) ? (
                 <p className="unity-error unity-list-error">{error}</p>
               ) : null}
             </>
@@ -2791,8 +2786,7 @@ export function UnityTranslateView({
                     onContextMenu={(ev) => {
                       ev.preventDefault();
                       setSelfCheckTabMenu({
-                        x: ev.clientX,
-                        y: ev.clientY,
+                        ...getFixedMenuPoint(ev.clientX, ev.clientY, 190, 110),
                         tabId: tab.id,
                       });
                     }}

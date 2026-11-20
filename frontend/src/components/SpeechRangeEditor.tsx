@@ -1,3 +1,4 @@
+import { getFixedMenuPoint } from "../viewportLayout";
 import { useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { formatSpeechTime, speechRangeProgress, validateSpeechRanges, type SpeechRange } from "../speech/transcription";
 
@@ -136,7 +137,7 @@ export function SpeechRangeEditor({ duration, ranges = [], disabled, onChange }:
   const context = (event: MouseEvent, index: number) => {
     if (disabled) return;
     event.preventDefault(); event.stopPropagation(); select(index);
-    setMenu({ index, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 48) });
+    setMenu({ index, ...getFixedMenuPoint(event.clientX, event.clientY, 150, 48) });
   };
   const rangeLabel = (index: number) => `片段 ${index + 1}：${time(ranges[index].start)} — ${time(ranges[index].end)}`;
   const highlighted = hovered ?? active.index;

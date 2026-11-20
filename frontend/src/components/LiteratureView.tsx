@@ -580,7 +580,7 @@ export function LiteratureView({
             style={{
               margin: "0 3px 9px",
               padding: "7px 9px",
-              borderRadius: 8,
+              borderRadius: "var(--radius-md)",
               background: "color-mix(in srgb, var(--accent) 7%, var(--bg-panel))",
               color: "var(--accent-ink)",
               lineHeight: 1.45,
@@ -687,15 +687,8 @@ export function LiteratureView({
           onSeedConsumed={clearPdfSeed}
           onOpenOtherKind={onOpenFromPdf}
           onDocumentChange={clearSegmentHistory}
-          toolbarExtra={
-            docKind === "pdf" ? (
-              <>
-                {renderLanguageControls()}
-                {ocrModeMenu}
-                {promptMenu}
-              </>
-            ) : null
-          }
+          toolbarTranslation={docKind === "pdf" ? <>{renderLanguageControls()}{promptMenu}</> : null}
+          toolbarRecognition={docKind === "pdf" ? ocrModeMenu : null}
         />
         <EpubPane
           visible={visible && docKind === "epub"}
@@ -706,14 +699,7 @@ export function LiteratureView({
           onSeedConsumed={clearEpubSeed}
           onOpenOtherKind={onOpenFromEpub}
           onDocumentChange={clearSegmentHistory}
-          toolbarExtra={
-            docKind === "epub" ? (
-              <>
-                {renderLanguageControls()}
-                {promptMenu}
-              </>
-            ) : null
-          }
+          toolbarTranslation={docKind === "epub" ? <>{renderLanguageControls()}{promptMenu}</> : null}
         />
       </div>
       <div

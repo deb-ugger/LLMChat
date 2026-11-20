@@ -1,3 +1,4 @@
+import { getLayoutRect } from "../viewportLayout";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -648,7 +649,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
             disabled={opening} data-tooltip={webTargetLabels[target]} onClick={() => void openWeb(target)}>ComfyUI 编辑器</button>
           <button type="button" className="style-redraw-open-arrow" disabled={opening} aria-label="ComfyUI 打开方式"
             aria-haspopup="menu" aria-expanded={menuVisible} popoverTarget={openMenuId} popoverTargetAction="toggle" onClick={event => {
-              const rect = event.currentTarget.getBoundingClientRect();
+              const rect = getLayoutRect(event.currentTarget.getBoundingClientRect());
               const menu = openMenu.current;
               if (menu) Object.assign(menu.style, {
                 left: `${Math.max(8, rect.right - 144)}px`,

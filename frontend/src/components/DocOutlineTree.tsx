@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import {
   useCallback,
   useEffect,
@@ -353,18 +354,20 @@ export function DocOutlineTree({
   const filtering = titleQuery.trim().length > 0;
   const visibleKeys = filtering ? visible : null;
 
-  const onItemTipShow = useCallback((title: string, anchor: DOMRect) => {
+  const onItemTipShow = useCallback((title: string, bounds: DOMRect) => {
+    const viewport = getLayoutViewport();
+    const anchor = getLayoutRect(bounds, viewport.scale);
     const gap = 10;
-    const maxW = Math.min(360, window.innerWidth - 24);
+    const maxW = Math.min(360, viewport.width - 24);
     let left = Math.round(anchor.right + gap);
-    if (left + maxW > window.innerWidth - 8) {
+    if (left + maxW > viewport.width - 8) {
       left = Math.max(8, Math.round(anchor.left - gap - maxW));
     }
     tipKeyRef.current += 1;
     setItemTip({
       text: title,
       left,
-      top: Math.round(anchor.top + anchor.height / 2),
+      top: Math.max(8, Math.min(viewport.height - 8, Math.round(anchor.top + anchor.height / 2))),
       key: tipKeyRef.current,
     });
   }, []);

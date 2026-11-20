@@ -1,3 +1,4 @@
+import { EmptyState } from "./EmptyState";
 import {
   useCallback,
   useEffect,
@@ -68,7 +69,7 @@ type Props = {
   visible?: boolean;
   translateProvider?: string;
   model?: string;
-  toolbarExtra?: ReactNode;
+  toolbarTranslation?: ReactNode;
   /** Open a document handed off from LiteratureView / PdfPane. */
   seedDoc?: LocalDocFile | null;
   onSeedConsumed?: () => void;
@@ -83,7 +84,7 @@ export function EpubPane({
   visible = true,
   translateProvider = "llm",
   model = "",
-  toolbarExtra,
+  toolbarTranslation,
   seedDoc = null,
   onSeedConsumed,
   onOpenOtherKind,
@@ -626,6 +627,7 @@ export function EpubPane({
       aria-hidden={!visible}
     >
       <div className="epub-toolbar pdf-toolbar">
+        <div className="pdf-toolbar-group pdf-toolbar-actions">
         <div
           className="pdf-open-menu"
           ref={openMenuRef}
@@ -712,10 +714,11 @@ export function EpubPane({
         >
           目录
         </button>
-        <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>
-          {engineBadge}
-        </span>
-        {toolbarExtra}
+        </div>
+        <div className="pdf-toolbar-group pdf-toolbar-translation">
+          <span className="pdf-toolbar-engine" data-tooltip={engineBadge}>{engineBadge}</span>
+          {toolbarTranslation}
+        </div>
       </div>
 
       <div className="epub-main pdf-main">
@@ -743,28 +746,13 @@ export function EpubPane({
         <div className="epub-viewer-host">
           <div className="epub-viewer" ref={viewerRef} />
           {!hasBook && !restoring && (
-            <div className="pdf-empty pdf-viewer-overlay">
-              {error ? (
-                <p className="boot-error">{error}</p>
-              ) : (
-                <>
-                  <p>
-                    打开 EPUB，在正文中拖选文本即可翻译或查词（与 PDF
-                    共用右侧面板）。
-                  </p>
-                  <p className="hint">
-                    只记住本地路径与阅读位置（CFI）。文件被移动后需重新选择；进度仍会保留。
-                  </p>
-                </>
-              )}
-              <button
-                type="button"
-                className="send-btn"
-                onClick={() => void openFilePicker()}
-              >
+            <EmptyState className="pdf-empty pdf-viewer-overlay"
+              title={error ? <span className="boot-error">{error}</span> : "打开 EPUB，在正文中拖选文本即可翻译或查词。"}
+              hint={error ? undefined : "会保留本地路径和阅读位置。文件移动后需重新选择。"}
+              action={<button type="button" className="send-btn" onClick={() => void openFilePicker()}>
                 {error ? "重新选择文件" : "选择文件"}
-              </button>
-            </div>
+              </button>}
+            />
           )}
           {restoring && (
             <div className="pdf-empty pdf-viewer-overlay">
@@ -772,9 +760,7 @@ export function EpubPane({
             </div>
           )}
           {hasBook && error && (
-            <div className="pdf-empty boot-error pdf-viewer-overlay">
-              {error}
-            </div>
+            <EmptyState className="pdf-empty pdf-viewer-overlay" title={<span className="boot-error">{error}</span>} />
           )}
           {hasBook && loading && (
             <div className="pdf-empty pdf-viewer-loading pdf-viewer-overlay">

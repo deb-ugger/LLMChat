@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
@@ -75,9 +76,10 @@ export function AppDownloadsButton({ railHidden }: { railHidden: boolean }) {
     <button type="button" className={open ? "nav-item active" : "nav-item"}
       aria-label={pendingCount ? `下载，${pendingCount} 项未完成` : "下载"} data-tooltip="下载任务"
       aria-haspopup="dialog" aria-controls={id} aria-expanded={open} popoverTarget={id} onClick={event => {
-        const bounds = event.currentTarget.getBoundingClientRect();
+        const { scale, height } = getLayoutViewport();
+        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
         panel.current?.style.setProperty("--download-left", `${bounds.right + 8}px`);
-        panel.current?.style.setProperty("--download-bottom", `${window.innerHeight - bounds.bottom}px`);
+        panel.current?.style.setProperty("--download-bottom", `${height - bounds.bottom}px`);
       }}>
       <FeatureIcon feature="download" size={20} /><span>下载</span>
       {pendingCount > 0 && <span className="app-download-count" aria-hidden="true">{pendingCount}</span>}

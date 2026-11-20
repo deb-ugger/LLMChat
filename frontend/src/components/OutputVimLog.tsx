@@ -21,7 +21,7 @@ const logRefresh = Annotation.define<boolean>();
 Vim.defineEx("quit", "q", cm => closeDrawers.get(cm.cm6)?.());
 
 const theme = EditorView.theme({
-  "&": { height: "100%", fontSize: "13px" },
+  "&": { height: "100%", fontSize: "var(--fs-body)" },
   ".cm-scroller": { fontFamily: "var(--font-mono, monospace)", lineHeight: "1.35" },
   ".cm-content": { padding: "0" },
   ".cm-line": { padding: "2px 6px" },

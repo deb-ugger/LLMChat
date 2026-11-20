@@ -1,3 +1,5 @@
+import { EmptyState } from "./EmptyState";
+import { getFixedMenuPoint } from "../viewportLayout";
 import { useOutputMessage } from "../appOutput";
 import { downloadBrowserFile } from "../outputFiles";
 import { OcrModeOptions } from "./OcrModeOptions";
@@ -1488,7 +1490,7 @@ export function ImageOcrView({
     (e: ReactMouseEvent, pageId: string) => {
       e.preventDefault();
       e.stopPropagation();
-      setCtxMenu({ x: e.clientX, y: e.clientY, pageId });
+      setCtxMenu({ ...getFixedMenuPoint(e.clientX, e.clientY, 225, 185), pageId });
       setSelectedPageId(pageId);
     },
     [],
@@ -1504,7 +1506,7 @@ export function ImageOcrView({
       if (el.closest(".ocr-page")) return;
       e.preventDefault();
       e.stopPropagation();
-      setCtxMenu({ x: e.clientX, y: e.clientY, pageId: null });
+      setCtxMenu({ ...getFixedMenuPoint(e.clientX, e.clientY, 225, 185), pageId: null });
     };
     document.addEventListener("contextmenu", onContextMenu, true);
     return () => {
@@ -1872,9 +1874,8 @@ export function ImageOcrView({
           }}
         >
           {pages.length === 0 ? (
-            <div className="pdf-empty ocr-empty">
-              <p>拖入图片，或按 Ctrl+V 粘贴并识别。</p>
-              <div className="ocr-empty-actions">
+            <EmptyState className="ocr-empty" title="拖入图片，或按 Ctrl+V 粘贴并识别。"
+              action={<>
                 <button
                   type="button"
                   className="send-btn"
@@ -1889,8 +1890,8 @@ export function ImageOcrView({
                 >
                   从剪贴板粘贴图片
                 </button>
-              </div>
-            </div>
+              </>}
+            />
           ) : (
             <div className="ocr-pages">
               {pages.map((page, index) => (

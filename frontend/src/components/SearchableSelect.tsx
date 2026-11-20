@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { Children, Fragment, isValidElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import "./SearchableSelect.css";
 
@@ -55,14 +56,15 @@ export function SearchableSelect({ children, className, style, disabled, value, 
   const close = useCallback(() => { menu.current?.hidePopover(); setOpen(false); setQuery(null); }, []);
   const position = useCallback(() => {
     if (!root.current || !menu.current) return;
-    const rect = root.current.getBoundingClientRect();
-    const width = Math.min(Math.max(rect.width, 240), window.innerWidth - 24);
-    const below = window.innerHeight - rect.bottom - 12;
+    const viewport = getLayoutViewport();
+    const rect = getLayoutRect(root.current.getBoundingClientRect(), viewport.scale);
+    const width = Math.min(Math.max(rect.width, 240), viewport.width - 24);
+    const below = viewport.height - rect.bottom - 12;
     const above = rect.top - 12;
     const upwards = below < 240 && above > below;
     Object.assign(menu.current.style, {
-      width: `${width}px`, left: `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`,
-      top: upwards ? "auto" : `${rect.bottom + 4}px`, bottom: upwards ? `${window.innerHeight - rect.top + 4}px` : "auto",
+      width: `${width}px`, left: `${Math.max(12, Math.min(rect.left, viewport.width - width - 12))}px`,
+      top: upwards ? "auto" : `${rect.bottom + 4}px`, bottom: upwards ? `${viewport.height - rect.top + 4}px` : "auto",
       maxHeight: `${Math.max(40, Math.min(360, upwards ? above : below))}px`,
     });
   }, []);

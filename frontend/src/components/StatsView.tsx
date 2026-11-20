@@ -1,3 +1,5 @@
+import { EmptyState } from "./EmptyState";
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { writeOutput } from "../appOutput";
 
 
@@ -179,16 +181,17 @@ function DateRangePicker({
   const updatePopoverPosition = useCallback(() => {
     const trigger = triggerRef.current;
     if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    const width = Math.min(680, Math.max(300, window.innerWidth - 24));
+    const viewport = getLayoutViewport();
+    const rect = getLayoutRect(trigger.getBoundingClientRect(), viewport.scale);
+    const width = Math.min(680, Math.max(300, viewport.width - 24));
     const estimatedHeight = 370;
     const left = Math.min(
       Math.max(12, rect.left),
-      Math.max(12, window.innerWidth - width - 12),
+      Math.max(12, viewport.width - width - 12),
     );
     const below = rect.bottom + 7;
     const top =
-      below + estimatedHeight <= window.innerHeight
+      below + estimatedHeight <= viewport.height
         ? below
         : Math.max(12, rect.top - estimatedHeight - 7);
     setPopoverStyle({ left, top, width });
@@ -505,15 +508,16 @@ function TokenTotalCell({
   const placeTip = useCallback(() => {
     const el = triggerRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
+    const viewport = getLayoutViewport();
+    const r = getLayoutRect(el.getBoundingClientRect(), viewport.scale);
     const tipW = 180;
     const tipH = 128;
     let left = r.left;
     let top = r.bottom + 8;
-    if (left + tipW > window.innerWidth - 8) {
-      left = Math.max(8, window.innerWidth - tipW - 8);
+    if (left + tipW > viewport.width - 8) {
+      left = Math.max(8, viewport.width - tipW - 8);
     }
-    if (top + tipH > window.innerHeight - 8) {
+    if (top + tipH > viewport.height - 8) {
       top = Math.max(8, r.top - tipH - 8);
     }
     setPos({ top, left });
@@ -558,24 +562,24 @@ function TokenTotalCell({
             onMouseLeave={() => setOpen(false)}
           >
             <div className="stats-tokens-tip-row">
-              <span>Cache Read</span>
+              <span>缓存读</span>
               <span>{formatTokenExact(cacheRead)}</span>
             </div>
             <div className="stats-tokens-tip-row">
-              <span>Cache Write</span>
+              <span>缓存写</span>
               <span>{formatTokenExact(cacheWrite)}</span>
             </div>
             <div className="stats-tokens-tip-row">
-              <span>Input</span>
+              <span>输入</span>
               <span>{formatTokenExact(input)}</span>
             </div>
             <div className="stats-tokens-tip-row">
-              <span>Output</span>
+              <span>输出</span>
               <span>{formatTokenExact(output)}</span>
             </div>
             <div className="stats-tokens-tip-sep" />
             <div className="stats-tokens-tip-row is-total">
-              <span>Total</span>
+              <span>合计</span>
               <span>{formatTokenExact(displayTotal)}</span>
             </div>
           </div>,
@@ -994,7 +998,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
         <div className="stats-kpi">
           <div className="stats-kpi-line">
             <span className="stats-kpi-part is-main">
-              <span className="stats-kpi-part-label">Total</span>
+              <span className="stats-kpi-part-label">合计</span>
               <span className="stats-kpi-part-value">{totals.tokens}</span>
             </span>
             <span className="stats-kpi-eq" aria-hidden="true">
@@ -1015,23 +1019,23 @@ export function StatsView({ active = true }: { active?: boolean }) {
               </span>
               <span className="stats-kpi-parts is-token">
                 <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">Cache Read</span>
+                  <span className="stats-kpi-part-label">缓存读</span>
                   <span className="stats-kpi-part-value">
                     {totals.cacheRead}
                   </span>
                 </span>
                 <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">Cache Write</span>
+                  <span className="stats-kpi-part-label">缓存写</span>
                   <span className="stats-kpi-part-value">
                     {totals.cacheWrite}
                   </span>
                 </span>
                 <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">Input</span>
+                  <span className="stats-kpi-part-label">输入</span>
                   <span className="stats-kpi-part-value">{totals.input}</span>
                 </span>
                 <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">Output</span>
+                  <span className="stats-kpi-part-label">输出</span>
                   <span className="stats-kpi-part-value">{totals.output}</span>
                 </span>
               </span>
@@ -1102,7 +1106,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
           </div>
         </div>
         {loading && summary.length === 0 && events.length === 0 ? (
-          <div className="stats-empty">加载中…</div>
+          <EmptyState className="stats-empty" size="sm" title="加载中…" role="status" />
         ) : (
           <>
             <UsageBarChart
@@ -1171,7 +1175,7 @@ export function StatsView({ active = true }: { active?: boolean }) {
               {sortedEvents.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="stats-td-empty">
-                    暂无明细
+                    <EmptyState size="sm" title="暂无明细" />
                   </td>
                 </tr>
               ) : (

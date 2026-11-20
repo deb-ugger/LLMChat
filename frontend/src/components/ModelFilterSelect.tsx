@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { currentEffectivePresets, labelForModelId, loadLocalModelProfiles, vendorOfModel } from "../modelPresets";
 import { SearchableSelect } from "./SearchableSelect";
@@ -21,7 +22,25 @@ export function ModelFilterSelect({label,value,models,disabled,onChange,optional
   const filtered=rows.filter(row=>!filter.excluded.includes(row.vendor)&&(row.local?filter.local:filter.online));
   const close=()=>{menu.current?.hidePopover();setOpen(false);};
   useEffect(()=>{if(!open)return;const hide=(event:PointerEvent)=>{if(!menu.current?.contains(event.target as Node)&&!trigger.current?.contains(event.target as Node))close();};const scroll=(event:Event)=>{if(event.target!==menu.current)close();};const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close();};document.addEventListener("pointerdown",hide);document.addEventListener("keydown",key);window.addEventListener("resize",close);window.addEventListener("scroll",scroll,true);return()=>{document.removeEventListener("pointerdown",hide);document.removeEventListener("keydown",key);window.removeEventListener("resize",close);window.removeEventListener("scroll",scroll,true);};},[open]);
-  const toggle=()=>{if(open){close();return;}const box=trigger.current!.getBoundingClientRect(),width=Math.min(280,window.innerWidth-24),below=window.innerHeight-box.bottom-20,above=box.top-20,upwards=below<300&&above>below;Object.assign(menu.current!.style,{left:Math.max(12,Math.min(box.left,window.innerWidth-width-12))+"px",top:upwards?"auto":box.bottom+6+"px",bottom:upwards?window.innerHeight-box.top+6+"px":"auto",width:width+"px",maxHeight:Math.max(60,Math.min(420,upwards?above:below))+"px"});menu.current!.showPopover();setOpen(true);};
+  const toggle = () => {
+    if (open) { close(); return; }
+    const viewport = getLayoutViewport();
+    const box = getLayoutRect(trigger.current!.getBoundingClientRect(), viewport.scale);
+    const width = Math.min(280, viewport.width - 24);
+    const below = viewport.height - box.bottom - 20;
+    const above = box.top - 20;
+    const upwards = below < 300 && above > below;
+    const px = (value: number) => value + "px";
+    Object.assign(menu.current!.style, {
+      left: px(Math.max(12, Math.min(box.left, viewport.width - width - 12))),
+      top: upwards ? "auto" : px(box.bottom + 6),
+      bottom: upwards ? px(viewport.height - box.top + 6) : "auto",
+      width: px(width),
+      maxHeight: px(Math.max(60, Math.min(420, upwards ? above : below))),
+    });
+    menu.current!.showPopover();
+    setOpen(true);
+  };
   return <div className="model-filter-select"><button ref={trigger} type="button" className={"model-filter-trigger"+(filter.excluded.length||!filter.local||!filter.online?" is-filtered":"")} disabled={disabled} aria-label={label+"筛选"} aria-expanded={open} aria-controls={id} data-tooltip="筛选模型服务商及本地、在线模型" onClick={toggle}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2v-9Z"/></svg></button>
     <SearchableSelect aria-label={label} value={value} displayValue={models.includes(value)?labelForModelId(value):undefined} disabled={disabled} placeholder="请选择模型" emptyLabel="没有符合筛选条件的模型" onChange={event=>onChange(event.target.value)}>{optionalValue&&<option value={optionalValue}>取消单独指定</option>}{filtered.map(row=><option key={row.model} value={row.model}>{labelForModelId(row.model)}</option>)}</SearchableSelect>
     <div ref={menu} id={id} popover="manual" className="model-filter-menu" role="group" aria-label={label+"筛选条件"}><div className="model-filter-bulk"><button type="button" onClick={()=>setFilter({excluded:[],local:true,online:true})}>全选</button><button type="button" onClick={()=>setFilter({excluded:vendors,local:false,online:false})}>全不选</button></div><div className="model-filter-types"><label><input type="checkbox" checked={filter.local} onChange={event=>setFilter({...filter,local:event.target.checked})}/>本地模型</label><label><input type="checkbox" checked={filter.online} onChange={event=>setFilter({...filter,online:event.target.checked})}/>在线模型</label></div><div className="model-filter-vendors">{vendors.map(vendor=><label key={vendor}><input type="checkbox" checked={!filter.excluded.includes(vendor)} onChange={event=>setFilter({...filter,excluded:event.target.checked?filter.excluded.filter(name=>name!==vendor):[...filter.excluded,vendor]})}/>{vendor}</label>)}</div></div>

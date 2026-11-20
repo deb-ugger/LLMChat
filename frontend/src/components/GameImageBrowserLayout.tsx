@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type KeyboardEventHandler, type ReactNode, type Ref, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
@@ -63,10 +64,11 @@ export function GameImageFilter({ menuRef, children }: { menuRef: RefObject<HTML
       aria-haspopup="dialog" data-tooltip="筛选图片" onClick={event => {
         const menu = menuRef.current!;
         if (menu.matches(":popover-open")) { menu.hidePopover(); return; }
-        const rect = event.currentTarget.getBoundingClientRect();
+        const viewport = getLayoutViewport();
+        const rect = getLayoutRect(event.currentTarget.getBoundingClientRect(), viewport.scale);
         menu.showPopover();
-        menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
-        menu.style.top = `${Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 8))}px`;
+        menu.style.left = `${Math.max(8, Math.min(rect.left, viewport.width - menu.offsetWidth - 8))}px`;
+        menu.style.top = `${Math.max(8, Math.min(rect.bottom + 6, viewport.height - menu.offsetHeight - 8))}px`;
       }}>
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
         <path d="M3 5h18l-7 8v6l-4 2v-8z" />

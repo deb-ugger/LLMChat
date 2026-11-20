@@ -1,5 +1,6 @@
 import { writeOutput } from "../appOutput";
 import { normalizeProvider, ocrLangToTranslateSource, withDefaults } from "../settingsDefaults";
+import { THEMES, getTheme, setTheme, type ThemeId } from "../theme";
 import { LlmRuntimeSettings } from "./LlmRuntimeSettings";
 import { FeatureIcon } from "./FeatureIcon";
 import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
@@ -608,6 +609,7 @@ export function SettingsView({
     gameDir: "",
   });
   const [form, setForm] = useState<Settings>(() => withDefaults(settings));
+  const [themeId, setThemeId] = useState<ThemeId>(() => getTheme());
   const [profiles, setProfiles] = useState<Record<string, ModelProfile>>(() =>
     loadLocalModelProfiles(),
   );
@@ -2473,6 +2475,30 @@ export function SettingsView({
                 代理与大模型 API 是全软件共用配置，请优先在此完成连接测试。
               </span>
             </div>
+            <section className="settings-card settings-appearance">
+              <h2>外观</h2>
+              <p className="hint">主题只影响界面配色，立即生效，保存在本机。</p>
+              <div className="settings-theme-grid" role="radiogroup" aria-label="界面主题">
+                {THEMES.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={themeId === option.id}
+                    className={"settings-theme-option" + (themeId === option.id ? " is-active" : "")}
+                    onClick={() => { setTheme(option.id); setThemeId(option.id); }}
+                  >
+                    <span className="settings-theme-swatch" style={{ background: option.swatch[0] }}>
+                      <span className="is-rail" style={{ background: option.rail }} />
+                      <span className="is-panel" style={{ background: option.swatch[1] }} />
+                      <span className="is-accent" style={{ background: option.swatch[2] }} />
+                    </span>
+                    <span className="settings-theme-name">{option.label}</span>
+                    <span className="settings-theme-hint">{option.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
             <section
               className={
                 "settings-card settings-fold" +

@@ -5,6 +5,7 @@ import { TooltipComponent } from "echarts/components";
 import { LabelLayout } from "echarts/features";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption, EChartsType } from "echarts/core";
+import { useChartColors, type ChartColors } from "./chartTheme";
 
 echarts.use([
   PieChart,
@@ -39,6 +40,7 @@ function pieSeries(
   id: "count" | "ratio",
   slices: PieSlice[],
   center: [string, string],
+  colors: ChartColors,
 ): NonNullable<EChartsCoreOption["series"]> {
   const isRatio = id === "ratio";
   const total = slices.reduce((a, s) => a + Math.max(0, s.value), 0);
@@ -51,7 +53,7 @@ function pieSeries(
         {
           name: `__empty__${id}`,
           value: 1,
-          itemStyle: { color: "#edf1f6" },
+          itemStyle: { color: colors.mutedPanel },
           label: { show: false },
           labelLine: { show: false },
           tooltip: { show: false },
@@ -78,8 +80,8 @@ function pieSeries(
     stillShowZeroSum: true,
     legendHoverLink: false,
     itemStyle: {
-      borderRadius: isRatio ? 4 : 6,
-      borderColor: "#ffffff",
+      borderRadius: isRatio ? colors.radiusSmall : colors.radiusMedium,
+      borderColor: colors.panel,
       borderWidth: 2,
     },
     label: {
@@ -94,17 +96,17 @@ function pieSeries(
       },
       rich: {
         name: {
-          fontSize: 11,
-          color: "#6b778a",
+          fontSize: colors.captionSize,
+          color: colors.mutedText,
           lineHeight: 15,
           fontFamily: "Source Sans 3, Noto Sans SC, sans-serif",
         },
         val: {
-          fontSize: 13,
-          fontWeight: 700,
-          color: "#1c2430",
+          fontSize: colors.bodySize,
+          fontWeight: 600,
+          color: colors.text,
           lineHeight: 18,
-          fontFamily: "Source Sans 3, Noto Sans SC, sans-serif",
+          fontFamily: colors.mono,
         },
       },
     },
@@ -113,7 +115,7 @@ function pieSeries(
       length: 8,
       length2: 6,
       smooth: 0.2,
-      lineStyle: { width: 1, color: "#c5d0de" },
+      lineStyle: { width: 1, color: colors.borderStrong },
     },
     emphasis: {
       scale: true,
@@ -142,6 +144,7 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const [midTip, setMidTip] = useState<MidTip | null>(null);
   const midTipActiveRef = useRef(false);
+  const colors = useChartColors();
 
   const visibleSlices = useMemo(
     () => slices.filter((s) => !hidden.has(s.label)),
@@ -159,7 +162,7 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
     if (!el) return;
     const chart = echarts.init(el, undefined, {
       renderer: "canvas",
-      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2) * el.currentCSSZoom,
     });
     chartRef.current = chart;
     const onResize = () => chart.resize();
@@ -184,13 +187,13 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
       tooltip: {
         trigger: "item",
         appendToBody: true,
-        backgroundColor: "#fff",
-        borderColor: "#e5eaf0",
+        backgroundColor: colors.panel,
+        borderColor: colors.border,
         borderWidth: 1,
         padding: [8, 12],
-        textStyle: { color: "#1c2430", fontSize: 12 },
+        textStyle: { color: colors.text, fontSize: colors.captionSize },
         extraCssText:
-          "box-shadow: 0 6px 18px rgba(28,36,48,0.08); border-radius: 8px;",
+          "box-shadow: var(--shadow-md); border-radius: 8px;",
         formatter: (params: unknown) => {
           if (midTipActiveRef.current) return "";
           const p = params as {
@@ -210,14 +213,14 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
       },
       graphic: undefined,
       series: [
-        pieSeries("count", visibleSlices, ["25%", "46%"]),
-        pieSeries("ratio", visibleSlices, ["75%", "46%"]),
+        pieSeries("count", visibleSlices, ["25%", "46%"], colors),
+        pieSeries("ratio", visibleSlices, ["75%", "46%"], colors),
       ],
     };
 
     chart.setOption(option, true);
     requestAnimationFrame(() => chart.resize());
-  }, [visibleSlices, totalVisible, height]);
+  }, [visibleSlices, totalVisible, height, colors]);
 
   const highlightFromLegend = (label: string) => {
     if (hidden.has(label)) {
@@ -313,7 +316,7 @@ export function StatPieGroup({ slices, height = 168 }: GroupProps) {
             >
               <span
                 className="stat-shared-swatch"
-                style={{ background: off ? "#c5cdd8" : s.color }}
+                style={{ background: off ? "var(--border-strong)" : s.color }}
               />
               <span>{s.label}</span>
             </li>

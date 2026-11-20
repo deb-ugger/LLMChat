@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { GAME_CONTEXT_COUNT_MAX, GAME_CONTEXT_MAX, loadGameContextLengths, saveGameContextLengths } from "../gameTranslationContext";
 import { GAME_PROMPT_GROUPS, GAME_PROMPT_SCENES, saveGamePromptCatalog, useGamePromptCatalog, type GamePrompt, type GamePromptScene } from "../gamePrompts";
@@ -154,16 +155,17 @@ export function GamePromptPoolPanel({ notify }: { notify: Notify }) {
 
   const positionFilter = (button: HTMLButtonElement) => {
     const menu = filterMenu.current!;
-    const rect = button.getBoundingClientRect();
-    const width = Math.min(280, innerWidth - 24);
-    const below = innerHeight - rect.bottom - 12;
+    const viewport = getLayoutViewport();
+    const rect = getLayoutRect(button.getBoundingClientRect(), viewport.scale);
+    const width = Math.min(280, viewport.width - 24);
+    const below = viewport.height - rect.bottom - 12;
     const above = rect.top - 12;
     const flip = below < 220 && above > below;
     Object.assign(menu.style, {
       width: width + "px",
-      left: Math.max(12, Math.min(rect.right - width, innerWidth - width - 12)) + "px",
+      left: Math.max(12, Math.min(rect.right - width, viewport.width - width - 12)) + "px",
       top: flip ? "auto" : rect.bottom + 6 + "px",
-      bottom: flip ? innerHeight - rect.top + 6 + "px" : "auto",
+      bottom: flip ? viewport.height - rect.top + 6 + "px" : "auto",
       maxHeight: Math.min(340, flip ? above : below) + "px",
     });
   };

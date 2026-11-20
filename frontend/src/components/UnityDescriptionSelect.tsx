@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import "../unityOffline.css";
 
@@ -28,11 +29,13 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
   const pointerWasOpen=useRef(false);
   const selected = choices.find(choice => choice.value === value);
   const position = useCallback(() => {
-    const rect = trigger.current!.getBoundingClientRect(), list = menu.current!;
-    const width = Math.min(Math.max(rect.width, 440), window.innerWidth - 24);
-    const below = window.innerHeight - rect.bottom - 8, above = rect.top - 8;
+    const viewport = getLayoutViewport();
+    const rect = getLayoutRect(trigger.current!.getBoundingClientRect(), viewport.scale);
+    const list = menu.current!;
+    const width = Math.min(Math.max(rect.width, 440), viewport.width - 24);
+    const below = viewport.height - rect.bottom - 8, above = rect.top - 8;
     const upwards = below < 300 && above > below;
-    Object.assign(list.style, { width: `${width}px`, left: `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`, top: upwards ? "auto" : `${rect.bottom + 6}px`, bottom: upwards ? `${window.innerHeight - rect.top + 6}px` : "auto", maxHeight: `${Math.max(100, Math.min(560, upwards ? above : below))}px` });
+    Object.assign(list.style, { width: `${width}px`, left: `${Math.max(12, Math.min(rect.left, viewport.width - width - 12))}px`, top: upwards ? "auto" : `${rect.bottom + 6}px`, bottom: upwards ? `${viewport.height - rect.top + 6}px` : "auto", maxHeight: `${Math.max(100, Math.min(560, upwards ? above : below))}px` });
   }, []);
   const close = (focus = false) => { menu.current?.hidePopover(); if (focus) trigger.current?.focus(); };
   const show = () => {

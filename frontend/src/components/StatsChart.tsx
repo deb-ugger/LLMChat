@@ -1,9 +1,13 @@
+import { EmptyState } from "./EmptyState";
 import type { EChartsCoreOption,EChartsType } from "echarts/core";
+import type { XAxisComponentOption, YAxisComponentOption } from "echarts";
 import * as echarts from "echarts/core";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart, CustomChart, LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
+import type { TooltipComponentOption } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
+import { useChartColors, type ChartColors } from "./chartTheme";
 echarts.use([BarChart, CustomChart, LineChart, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent, CanvasRenderer]);
 import {
 type PricingCurrency,
@@ -17,6 +21,11 @@ isPeakLocalTime,
 parseTimeToMinutes,
 } from "../pricingDefaults";
 type GroupBy = "feature" | "engine" | "llm" | "day" | "band";
+type UsageChartOption = EChartsCoreOption & {
+  xAxis: XAxisComponentOption;
+  yAxis: YAxisComponentOption;
+  tooltip: TooltipComponentOption;
+};
 
 const FEATURE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "全部功能" },
@@ -276,10 +285,6 @@ const PEAK_AREA = "rgba(251,191,36,0.20)";
 
 const IDLE_AREA = "rgba(34,197,94,0.14)";
 
-const PEAK_LABEL = "#9a5b00";
-
-const IDLE_LABEL = "#166534";
-
 function eventHourIndex(time: string): number {
   const mins = parseTimeToMinutes(time);
   if (mins < 0) return -1;
@@ -339,7 +344,7 @@ function idleHourRanges(peaks: { from: number; to: number }[]) {
   return idle;
 }
 
-function valueBandArea(from: number, to: number, peak: boolean) {
+function valueBandArea(from: number, to: number, peak: boolean, colors: ChartColors) {
   const wide = to - from >= 1.2;
   return [
     {
@@ -349,8 +354,8 @@ function valueBandArea(from: number, to: number, peak: boolean) {
       label: {
         show: wide,
         position: "insideTop" as const,
-        color: peak ? PEAK_LABEL : IDLE_LABEL,
-        fontSize: 10,
+        color: peak ? colors.warning : colors.success,
+        fontSize: colors.captionSize,
         fontWeight: 600,
       },
     },
@@ -358,13 +363,13 @@ function valueBandArea(from: number, to: number, peak: boolean) {
   ];
 }
 
-function exactBandMarkAreas(rule: PricingRule | null) {
+function exactBandMarkAreas(rule: PricingRule | null, colors: ChartColors) {
   if (!rule || !(rule.peakWindows || []).length) return [];
   const peaks = peakHourRanges(rule.peakWindows);
   const idles = idleHourRanges(peaks);
   return [
-    ...idles.map((r) => valueBandArea(r.from, r.to, false)),
-    ...peaks.map((r) => valueBandArea(r.from, r.to, true)),
+    ...idles.map((r) => valueBandArea(r.from, r.to, false, colors)),
+    ...peaks.map((r) => valueBandArea(r.from, r.to, true, colors)),
   ];
 }
 
@@ -482,7 +487,7 @@ function collectActors(
     .map(([key, v]) => ({ key, label: v.label }));
 }
 
-function hourlyXAxis(rule: PricingRule | null, ticks: number[]) {
+function hourlyXAxis(rule: PricingRule | null, ticks: number[], colors: ChartColors) {
   return {
     type: "value" as const,
     min: 0,
@@ -496,19 +501,19 @@ function hourlyXAxis(rule: PricingRule | null, ticks: number[]) {
       customValues: ticks,
     },
     axisLabel: {
-      fontSize: 11,
+      fontSize: colors.captionSize,
       fontWeight: 600,
       hideOverlap: false,
       showMinLabel: true,
       showMaxLabel: true,
       customValues: ticks,
       formatter: (v: number) => formatHourTick(v),
-      color: (value: string) => {
+      color: (value?: string | number) => {
         const n = Number(value);
-        if (!Number.isFinite(n)) return "#6b778a";
+        if (!Number.isFinite(n)) return colors.mutedText;
         const peak = tickIsPeak(rule, n >= 24 ? 23.999 : n);
-        if (peak == null) return "#6b778a";
-        return peak ? PEAK_LABEL : IDLE_LABEL;
+        if (peak == null) return colors.mutedText;
+        return peak ? colors.warning : colors.success;
       },
     },
     splitLine: { show: false },
@@ -578,6 +583,7 @@ function buildActorDetailOption({
   currency,
   metric,
   pricingRules,
+  colors,
 }: {
   actor: ActorOption;
   day: string;
@@ -585,9 +591,10 @@ function buildActorDetailOption({
   currency: PricingCurrency;
   metric: "requests" | "tokens" | "cost";
   pricingRules: PricingRule[];
-}): EChartsCoreOption {
+  colors: ChartColors;
+}): UsageChartOption {
   const rule = pickRuleForDay(pricingRules, day, events);
-  const markAreas = exactBandMarkAreas(rule);
+  const markAreas = exactBandMarkAreas(rule, colors);
   const hourEvents: UsageEvent[][] = Array.from({ length: 24 }, () => []);
   for (const ev of events) {
     if (ev.date !== day || eventActorKey(ev) !== actor.key) continue;
@@ -614,7 +621,7 @@ function buildActorDetailOption({
     const peak = tickIsPeak(rule, h);
     const band = peak == null ? "" : peak ? "高峰" : "闲时";
     const bandColor =
-      peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
+      peak ? colors.warning : colors.success;
     const head = [
       `<div style="font-weight:700;margin-bottom:4px">${echarts.format.encodeHTML(actor.label)}</div>`,
       `<div style="font-weight:700;margin-bottom:4px">${hourRangeLabel(h)}</div>`,
@@ -628,7 +635,7 @@ function buildActorDetailOption({
         `<div>成功：${hourOk(h)}</div>`,
         `<div>失败：${hourFail(h)}</div>`,
         `<div>补充：${hourSupplement(h)}</div>`,
-        `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">合计：${hourOk(h) + hourFail(h) + hourSupplement(h)}</div>`,
+        `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">合计：${hourOk(h) + hourFail(h) + hourSupplement(h)}</div>`,
       ].join("");
     }
     if (metric === "cost") {
@@ -649,11 +656,11 @@ function buildActorDetailOption({
     );
     return [
       ...head,
-      `<div>Cache Read：${formatTokenExact(cacheRead)}</div>`,
-      `<div>Cache Write：${formatTokenExact(cacheWrite)}</div>`,
-      `<div>Input：${formatTokenExact(input)}</div>`,
-      `<div>Output：${formatTokenExact(output)}</div>`,
-      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">Total：${formatTokenExact(cacheRead + cacheWrite + input + output)}</div>`,
+      `<div>缓存读：${formatTokenExact(cacheRead)}</div>`,
+      `<div>缓存写：${formatTokenExact(cacheWrite)}</div>`,
+      `<div>输入：${formatTokenExact(input)}</div>`,
+      `<div>输出：${formatTokenExact(output)}</div>`,
+      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">Total：${formatTokenExact(cacheRead + cacheWrite + input + output)}</div>`,
     ].join("");
   };
 
@@ -706,28 +713,28 @@ function buildActorDetailOption({
   } else {
     const stacks = [
       {
-        name: "Cache Read",
+        name: "缓存读",
         color: "#7c6bc4",
         values: Array.from({ length: 24 }, (_, h) =>
           hourField(h, (ev) => tokenFieldForSum(ev.cacheReadTokens)),
         ),
       },
       {
-        name: "Cache Write",
+        name: "缓存写",
         color: "#b07a3a",
         values: Array.from({ length: 24 }, (_, h) =>
           hourField(h, (ev) => tokenFieldForSum(ev.cacheWriteTokens)),
         ),
       },
       {
-        name: "Input",
+        name: "输入",
         color: "#2f6fed",
         values: Array.from({ length: 24 }, (_, h) =>
           hourField(h, (ev) => nonCachedInput(ev)),
         ),
       },
       {
-        name: "Output",
+        name: "输出",
         color: "#5a8cb4",
         values: Array.from({ length: 24 }, (_, h) =>
           hourField(h, (ev) => tokenFieldForSum(ev.completionTokens)),
@@ -770,7 +777,7 @@ function buildActorDetailOption({
             data:
               metric === "requests"
                 ? ["成功", "失败", "补充"]
-                : ["Cache Read", "Cache Write", "Input", "Output"],
+                : ["缓存读", "缓存写", "输入", "输出"],
           },
     grid: {
       left: 56,
@@ -779,7 +786,7 @@ function buildActorDetailOption({
       bottom: 44,
       containLabel: false,
     },
-    xAxis: hourlyXAxis(rule, ticks),
+    xAxis: hourlyXAxis(rule, ticks, colors),
     yAxis: {
       type: "value",
       name:
@@ -840,7 +847,7 @@ function UsageBarChartContent({
     [events, metric, singleDay],
   );
 
-  const option = useMemo((): EChartsCoreOption => {
+  const buildOption = useCallback((colors: ChartColors): UsageChartOption => {
     if (singleDay && selectedActor) {
       return buildActorDetailOption({
         actor: selectedActor,
@@ -849,6 +856,7 @@ function UsageBarChartContent({
         currency,
         metric,
         pricingRules,
+        colors,
       });
     }
 
@@ -951,7 +959,7 @@ function UsageBarChartContent({
             axisPointer: {
               type: "line",
               snap: true,
-              lineStyle: { type: "dashed", color: "#9aa7b8", width: 1 },
+              lineStyle: { type: "dashed", color: colors.borderStrong, width: 1 },
             },
             formatter: (params: unknown) => {
               const list = Array.isArray(params) ? params : [params];
@@ -978,18 +986,18 @@ function UsageBarChartContent({
 
               const parts = [
                 `<div style="font-weight:700;margin-bottom:6px">${formatTipDate(iso)}${isToday ? " · Today" : ""}</div>`,
-                `<div style="color:#6b778a;margin-bottom:4px">当日明细</div>`,
+                `<div style="color:var(--text-muted);margin-bottom:4px">当日明细</div>`,
               ];
               if (detailRows.length > 0) {
                 parts.push(...detailRows);
               } else {
                 parts.push(
-                  `<div style="color:#6b778a">${metric === "cost" ? "无费用" : "无 Token 消耗"}</div>`,
+                  `<div style="color:var(--text-muted)">${metric === "cost" ? "无费用" : "无 Token 消耗"}</div>`,
                 );
               }
               parts.push(
-                `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">当天消耗: <b>${formatMetricValue(dayVal, metric, currency)}</b> ${valueLabel}</div>`,
-                `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb">累计消耗: <b>${formatMetricValue(cumVal, metric, currency)}</b> ${valueLabel}</div>`,
+                `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">当天消耗: <b>${formatMetricValue(dayVal, metric, currency)}</b> ${valueLabel}</div>`,
+                `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">累计消耗: <b>${formatMetricValue(cumVal, metric, currency)}</b> ${valueLabel}</div>`,
               );
               return parts.join("");
             },
@@ -1004,7 +1012,7 @@ function UsageBarChartContent({
             type: "category",
             boundaryGap: false,
             data: dates.map(formatAxisDate),
-            axisLabel: { fontSize: 11 },
+            axisLabel: { fontSize: colors.captionSize },
           },
           yAxis: {
             type: "value",
@@ -1032,7 +1040,7 @@ function UsageBarChartContent({
               data: s.cumulative,
               lineStyle: { width: 2, color: s.color },
               itemStyle: {
-                color: "#fff",
+                color: colors.panel,
                 borderColor: s.color,
                 borderWidth: 2,
               },
@@ -1040,7 +1048,7 @@ function UsageBarChartContent({
                 disabled: false,
                 scale: false,
                 itemStyle: {
-                  color: "#fff",
+                  color: colors.panel,
                   borderColor: s.color,
                   borderWidth: 2,
                 },
@@ -1070,7 +1078,7 @@ function UsageBarChartContent({
                       symbol: "circle",
                       symbolSize: 8,
                       itemStyle: {
-                        color: "#fff",
+                        color: colors.panel,
                         borderColor: s.color,
                         borderWidth: 2,
                       },
@@ -1090,10 +1098,10 @@ function UsageBarChartContent({
                       label: {
                         formatter: "Today",
                         position: "end" as const,
-                        color: "#6b778a",
-                        fontSize: 11,
+                        color: colors.mutedText,
+                        fontSize: colors.captionSize,
                       },
-                      lineStyle: { type: "dashed" as const, color: "#c5d0de" },
+                      lineStyle: { type: "dashed" as const, color: colors.borderStrong },
                       data: [{ xAxis: formatAxisDate(today) }],
                     }
                   : undefined,
@@ -1105,7 +1113,7 @@ function UsageBarChartContent({
       if (span === 1 && from) {
         const day = from;
         const rule = pickRuleForDay(pricingRules, day, events);
-        const markAreas = exactBandMarkAreas(rule);
+        const markAreas = exactBandMarkAreas(rule, colors);
 
         const hourEvents: UsageEvent[][] = Array.from({ length: 24 }, () => []);
         for (const ev of events) {
@@ -1126,7 +1134,7 @@ function UsageBarChartContent({
           const peak = tickIsPeak(rule, h);
           const band = peak == null ? "" : peak ? "高峰" : "闲时";
           const bandColor =
-            peak == null ? "#6b778a" : peak ? PEAK_LABEL : IDLE_LABEL;
+            peak ? colors.warning : colors.success;
           const byActor = new Map<string, { label: string; total: number }>();
           for (const ev of hourEvents[h]) {
             const key = eventActorKey(ev);
@@ -1148,8 +1156,8 @@ function UsageBarChartContent({
               : "",
             lines.length
               ? lines.join("")
-              : `<div style="color:#6b778a">无消耗</div>`,
-            `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;font-weight:700;display:flex;justify-content:space-between;gap:16px"><span>合计</span><span>${formatMetricValue(total, metric, currency)}</span></div>`,
+              : `<div style="color:var(--text-muted)">无消耗</div>`,
+            `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;gap:16px"><span>合计</span><span>${formatMetricValue(total, metric, currency)}</span></div>`,
           ].join("");
         };
 
@@ -1229,7 +1237,7 @@ function UsageBarChartContent({
             bottom: 44,
             containLabel: false,
           },
-          xAxis: hourlyXAxis(rule, ticks),
+          xAxis: hourlyXAxis(rule, ticks, colors),
           yAxis: {
             type: "value",
             name: yName,
@@ -1249,7 +1257,7 @@ function UsageBarChartContent({
         xAxis: {
           type: "category",
           data: labels,
-          axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: 11 },
+          axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: colors.captionSize },
         },
         yAxis: { type: "value", minInterval: 1, name: "次数" },
         series: [
@@ -1306,7 +1314,7 @@ function UsageBarChartContent({
         xAxis: {
           type: "category",
           data: labels,
-          axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: 11 },
+          axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: colors.captionSize },
         },
         yAxis: {
           type: "value",
@@ -1348,25 +1356,25 @@ function UsageBarChartContent({
             return `${item.marker ?? ""}${item.seriesName ?? ""}: ${formatTokenExact(v)}`;
           });
           lines.push(
-            `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb;font-weight:700">Total: ${formatTokenExact(total)}</div>`,
+            `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-weight:700">Total: ${formatTokenExact(total)}</div>`,
           );
           return `<div style="font-weight:600;margin-bottom:4px">${axis}</div>${lines.join("<br/>")}`;
         },
       },
       legend: {
         show: false,
-        data: ["Cache Read", "Cache Write", "Input", "Output"],
+        data: ["缓存读", "缓存写", "输入", "输出"],
       },
       grid: { left: 56, right: 16, top: 28, bottom: 48 },
       xAxis: {
         type: "category",
         data: labels,
-        axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: 11 },
+        axisLabel: { rotate: labels.length > 6 ? 28 : 0, fontSize: colors.captionSize },
       },
       yAxis: { type: "value", name: "Tokens" },
       series: [
         {
-          name: "Cache Read",
+          name: "缓存读",
           type: "bar",
           stack: "tok",
           data: rows.map((r) => tokenFieldForSum(r.cacheReadTokens)),
@@ -1374,7 +1382,7 @@ function UsageBarChartContent({
           barMaxWidth: 36,
         },
         {
-          name: "Cache Write",
+          name: "缓存写",
           type: "bar",
           stack: "tok",
           data: rows.map((r) => tokenFieldForSum(r.cacheWriteTokens)),
@@ -1382,7 +1390,7 @@ function UsageBarChartContent({
           barMaxWidth: 36,
         },
         {
-          name: "Input",
+          name: "输入",
           type: "bar",
           stack: "tok",
           data: rows.map((r) => nonCachedInput(r)),
@@ -1390,7 +1398,7 @@ function UsageBarChartContent({
           barMaxWidth: 36,
         },
         {
-          name: "Output",
+          name: "输出",
           type: "bar",
           stack: "tok",
           data: rows.map((r) => tokenFieldForSum(r.completionTokens)),
@@ -1401,24 +1409,27 @@ function UsageBarChartContent({
     };
   }, [events, groupBy, rows, metric, currency, pricingRules, selectedActor, singleDay, days, drillableActors]);
 
-  if (!rows.length && !(days && days.span > 1) && !singleDay) {
-    return <div className="stats-empty">所选范围内暂无用量数据</div>;
+  if (!rows.length && (!events.length || (!(days && days.span > 1) && !singleDay))) {
+    return <EmptyState className="stats-empty" title="所选范围内暂无用量数据" />;
   }
-  return <ChartCanvas option={option} onSeriesClick={seriesId => {
+  return <ChartCanvas buildOption={buildOption} onSeriesClick={seriesId => {
     if (!singleDay || selectedActor) return;
     const actor = drillableActors.find(item => item.key === seriesId);
     if (actor) onSelectActor(actor);
   }} />;
 }
 
-function ChartCanvas({ option, onSeriesClick }: {
-  option: EChartsCoreOption;
+function ChartCanvas({ buildOption, onSeriesClick }: {
+  buildOption: (colors: ChartColors) => UsageChartOption;
   onSeriesClick: (seriesId: string | undefined) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<EChartsType | null>(null);
-  const [selection, setSelection] = useState<{ option: EChartsCoreOption; hidden: Set<string> }>();
-  const hidden = selection?.option === option ? selection.hidden : undefined;
+  const colors = useChartColors();
+  const option = useMemo(() => buildOption(colors), [buildOption, colors]);
+  const lastBuildOption = useRef<typeof buildOption>(undefined);
+  const [selection, setSelection] = useState<{ buildOption: typeof buildOption; hidden: Set<string> }>();
+  const hidden = selection?.buildOption === buildOption ? selection.hidden : undefined;
   const legend = option.legend as { data?: string[]; formatter?: (name: string) => string } | undefined;
   const legendColors = useMemo(() => new Map(
     (option.series as { name?: string; lineStyle?: { color?: string }; itemStyle?: { color?: string } }[]).map(series =>
@@ -1428,7 +1439,10 @@ function ChartCanvas({ option, onSeriesClick }: {
   useEffect(() => { click.current = onSeriesClick; }, [onSeriesClick]);
   useEffect(() => {
     const host = hostRef.current!;
-    const chart = echarts.init(host, undefined, { renderer: "canvas" });
+    const chart = echarts.init(host, undefined, {
+      renderer: "canvas",
+      devicePixelRatio: window.devicePixelRatio * host.currentCSSZoom,
+    });
     chartRef.current = chart;
     chart.on("click", (event: unknown) => click.current((event as { seriesId?: string }).seriesId));
     const resize = () => chart.resize();
@@ -1442,7 +1456,37 @@ function ChartCanvas({ option, onSeriesClick }: {
       chartRef.current = null;
     };
   }, []);
-  useEffect(() => { chartRef.current!.setOption(option, true); }, [option]);
+  useEffect(() => {
+    const axisStyle = {
+      axisLine: { lineStyle: { color: colors.borderStrong } },
+      axisLabel: { color: colors.mutedText },
+      nameTextStyle: { color: colors.mutedText },
+      splitLine: { lineStyle: { color: colors.border } },
+    };
+    const { xAxis, yAxis, tooltip } = option;
+    // Merge theme-only updates so ECharts keeps the current legend selection.
+    chartRef.current!.setOption({
+      ...option,
+      xAxis: {
+        ...axisStyle,
+        ...xAxis,
+        axisTick: { lineStyle: { color: colors.borderStrong }, ...xAxis.axisTick },
+        axisLabel: { ...axisStyle.axisLabel, ...xAxis.axisLabel },
+      },
+      yAxis: { ...axisStyle, ...yAxis },
+      tooltip: {
+        ...tooltip,
+        backgroundColor: colors.panel,
+        borderColor: colors.border,
+        textStyle: { color: colors.text },
+        axisPointer: {
+          shadowStyle: { color: echarts.color.modifyAlpha(colors.text, 0.08) },
+          ...tooltip.axisPointer,
+        },
+      },
+    }, lastBuildOption.current !== buildOption);
+    lastBuildOption.current = buildOption;
+  }, [option, buildOption, colors]);
   return <>
     {!!legend?.data?.length && <div className="stats-chart-legend" role="group" aria-label="图例">
       {legend.data.map(name => {
@@ -1456,7 +1500,7 @@ function ChartCanvas({ option, onSeriesClick }: {
             const next = new Set(hidden);
             if (!next.delete(name)) next.add(name);
             chartRef.current?.dispatchAction({ type: "legendToggleSelect", name });
-            setSelection({ option, hidden: next });
+            setSelection({ buildOption, hidden: next });
           }}>
           <i aria-hidden="true" style={{ backgroundColor: legendColors.get(name) || "var(--accent)" }} />
           <span>{label}</span>

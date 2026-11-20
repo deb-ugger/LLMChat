@@ -8,6 +8,7 @@ import { AppNotice } from "./components/AppNotice";
 import { initializeAppClose } from "./appClose";
 import { installControlLabelBehavior } from "./controlLabels";
 import { installRuntimeLogging, logRuntimeError } from "./runtimeLog";
+import { initTheme } from "./theme";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -24,6 +25,7 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 installRuntimeLogging();
+initTheme();
 const auxiliary = currentGameAuxWindow();
 if (!auxiliary) recoverGamePerformanceArchives();
 if (!auxiliary && !isGameBenchmarkWindow) {

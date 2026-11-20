@@ -1,3 +1,4 @@
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 
@@ -23,7 +24,9 @@ export function GameTextFilterMenu({ active, disabled, value, matched, shown, on
   const menu = useRef<HTMLDivElement>(null), id = useId();
   useEffect(() => { if (!active || disabled) menu.current?.hidePopover(); }, [active, disabled]);
   return <><button type="button" className="unity-btn unity-text-action" aria-label="筛选文本与译文" data-tooltip="筛选文本与译文" disabled={disabled} popoverTarget={id} popoverTargetAction="toggle" aria-haspopup="dialog" onClick={event => {
-    const rect = event.currentTarget.getBoundingClientRect(); Object.assign(menu.current!.style, { left: `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`, top: `${Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 460))}px` });
+    const viewport = getLayoutViewport();
+    const rect = getLayoutRect(event.currentTarget.getBoundingClientRect(), viewport.scale);
+    Object.assign(menu.current!.style, { left: `${Math.max(8, Math.min(rect.left, viewport.width - 248))}px`, top: `${Math.max(8, Math.min(rect.bottom + 6, viewport.height - 460))}px` });
   }}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z" /></svg></button>
     {createPortal(<div ref={menu} id={id} popover="auto" role="dialog" aria-label="文本筛选条件" className="unity-image-filter-menu">
       <div className="unity-image-filter-presets"><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit })}>全部选取</button><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit, checked: false, unchecked: false, pending: false, failed: false, done: false })}>取消全部选取</button></div>
