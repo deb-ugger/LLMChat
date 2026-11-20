@@ -8,6 +8,257 @@ mod ollama;
 use std::sync::{Mutex, OnceLock};
 use std::io::Write;
 
+#[cfg(windows)]
+mod window_frame {
+    use std::{cell::Cell, mem::size_of};
+    use tauri::{PhysicalPosition, PhysicalSize, Rect, Webview};
+    use windows::core::w;
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{
+            GetMonitorInfoW, IntersectRect, MonitorFromRect, ValidateRect, MONITORINFO,
+            MONITOR_DEFAULTTONEAREST,
+        },
+        UI::{
+            HiDpi::GetDpiForWindow,
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongW, GetWindowRect,
+                IsIconic, IsZoomed, PostMessageW, SetWindowLongW, SetWindowPos, ShowWindow,
+                GWL_STYLE, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP,
+                HTTOPLEFT, HTTOPRIGHT, HWND_TOP, NCCALCSIZE_PARAMS, SWP_FRAMECHANGED,
+                SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+                WM_ACTIVATE, WM_APP, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE,
+                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WS_CAPTION,
+                WS_CHILD, WS_EX_TRANSPARENT, WS_THICKFRAME,
+            },
+        },
+    };
+
+    const SUBCLASS_ID: usize = 1;
+    const SYNC_LAYOUT: u32 = WM_APP + 0x347;
+
+    struct Frame {
+        grip: HWND,
+        webview: Webview,
+        layout_pending: Cell<bool>,
+    }
+
+    pub fn install(hwnd: HWND, webview: Webview) -> std::io::Result<()> {
+        // Tauri's setup callback runs on the thread that owns the main window.
+        unsafe {
+            // The WebView covers the top edge. A paint-free child lets Windows hit the grip.
+            let grip = CreateWindowExW(
+                WS_EX_TRANSPARENT, w!("STATIC"), w!(""), WS_CHILD, 0, 0, 0, 0, Some(hwnd),
+                None, None, None,
+            ).map_err(std::io::Error::other)?;
+            let mut frame = Box::new(Frame { grip, webview, layout_pending: Cell::new(false) });
+            let data = std::ptr::from_mut(frame.as_mut()) as usize;
+            if !SetWindowSubclass(grip, Some(grip_proc), SUBCLASS_ID, hwnd.0 as usize).as_bool()
+                || !SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, data).as_bool()
+            {
+                let _ = DestroyWindow(grip);
+                return Err(std::io::Error::other("无法安装主窗口边框处理"));
+            }
+            let _ = Box::into_raw(frame);
+            place_grip(hwnd, grip);
+        }
+        Ok(())
+    }
+
+    unsafe extern "system" fn grip_proc(
+        hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, id: usize, parent: usize,
+    ) -> LRESULT {
+        unsafe {
+            match msg {
+                WM_NCHITTEST => return LRESULT(HTTOP as isize),
+                WM_NCLBUTTONDOWN => {
+                    let _ = PostMessageW(Some(HWND(parent as _)), msg, wparam, lparam);
+                    return LRESULT(0);
+                }
+                WM_ERASEBKGND => return LRESULT(1),
+                WM_PAINT => {
+                    let _ = ValidateRect(Some(hwnd), None);
+                    return LRESULT(0);
+                }
+                WM_NCDESTROY => {
+                    let _ = RemoveWindowSubclass(hwnd, Some(grip_proc), id);
+                }
+                _ => {}
+            }
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+    }
+
+    fn can_resize(hwnd: HWND) -> bool {
+        unsafe {
+            !IsZoomed(hwnd).as_bool() && !IsIconic(hwnd).as_bool()
+                && GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_THICKFRAME.0 != 0
+        }
+    }
+
+    fn grip_size(hwnd: HWND) -> i32 {
+        ((8 * unsafe { GetDpiForWindow(hwnd) } + 48) / 96) as i32
+    }
+
+    fn place_grip(hwnd: HWND, grip: HWND) {
+        unsafe {
+            if can_resize(hwnd) {
+                let mut client = RECT::default();
+                if GetClientRect(hwnd, &mut client).is_ok() {
+                    let _ = SetWindowPos(grip, Some(HWND_TOP), 0, 0, client.right, grip_size(hwnd),
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                }
+            } else {
+                let _ = ShowWindow(grip, SW_HIDE);
+            }
+        }
+    }
+
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, subclass_id: usize, data: usize,
+    ) -> LRESULT {
+        unsafe {
+            let frame = &*(data as *const Frame);
+            match msg {
+                SYNC_LAYOUT => {
+                    if IsZoomed(hwnd).as_bool() {
+                        fit_maximized_window(hwnd);
+                    }
+                    frame.layout_pending.set(false);
+                    if !IsIconic(hwnd).as_bool() {
+                        sync_webview(hwnd, &frame.webview);
+                    }
+                    return LRESULT(0);
+                }
+                WM_NCCALCSIZE if wparam.0 != 0 && lparam.0 != 0 && IsZoomed(hwnd).as_bool() => {
+                    let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+                    let window_rect = (*params).rgrc[0];
+                    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                    // Keep Tao's work-area and auto-hide taskbar insets. The client must
+                    // also fit the proposed window rectangle once the DWM frame is removed.
+                    let mut client = RECT::default();
+                    if IntersectRect(&mut client, &window_rect, &(*params).rgrc[0]).as_bool() {
+                        (*params).rgrc[0] = client;
+                    }
+                    if work_area(&window_rect).is_some_and(|work| work != window_rect) {
+                        // Reposition after Windows commits the current non-client calculation.
+                        request_layout_sync(hwnd, frame);
+                    }
+                    return result;
+                }
+                WM_SIZE | WM_DPICHANGED | WM_ACTIVATE => {
+                    let grip = frame.grip;
+                    if msg != WM_ACTIVATE {
+                        request_layout_sync(hwnd, frame);
+                    }
+                    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                    place_grip(hwnd, grip);
+                    return result;
+                }
+                WM_NCHITTEST if can_resize(hwnd) => {
+                    if let Some(hit) = resize_hit(hwnd, lparam) {
+                        return LRESULT(hit as isize);
+                    }
+                }
+                WM_NCDESTROY => {
+                    let _ = RemoveWindowSubclass(hwnd, Some(window_proc), subclass_id);
+                    drop(Box::from_raw(data as *mut Frame));
+                }
+                _ => {}
+            }
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+    }
+
+    fn request_layout_sync(hwnd: HWND, frame: &Frame) {
+        if !frame.layout_pending.replace(true)
+            && unsafe { PostMessageW(Some(hwnd), SYNC_LAYOUT, WPARAM(0), LPARAM(0)) }.is_err()
+        {
+            frame.layout_pending.set(false);
+        }
+    }
+
+    fn sync_webview(hwnd: HWND, webview: &Webview) {
+        let mut client = RECT::default();
+        if unsafe { GetClientRect(hwnd, &mut client) }.is_err() || client.right <= 0 || client.bottom <= 0 {
+            return;
+        }
+        // The final outer-frame correction can leave the client size unchanged and
+        // thus emit no further WM_SIZE for Wry. Explicitly resize its host and controller.
+        let bounds = Rect {
+            position: PhysicalPosition::new(0, 0).into(),
+            size: PhysicalSize::new(client.right as u32, client.bottom as u32).into(),
+        };
+        if let Err(error) = webview.set_bounds(bounds) {
+            let _ = super::runtime_log("window-webview-layout-error", &error.to_string());
+        }
+    }
+
+    fn work_area(window_rect: &RECT) -> Option<RECT> {
+        let monitor = unsafe { MonitorFromRect(window_rect, MONITOR_DEFAULTTONEAREST) };
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool().then_some(info.rcWork)
+    }
+
+    fn fit_maximized_window(hwnd: HWND) {
+        let mut current = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut current) }.is_err() {
+            return;
+        }
+        let Some(work) = work_area(&current) else { return };
+        if current == work {
+            return;
+        }
+
+        unsafe {
+            // Tao hides the drawn caption but keeps WS_CAPTION. Windows adds the
+            // invisible maximized frame unless that style is cleared during repositioning.
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            let caption = style & WS_CAPTION.0 as i32;
+            if caption != 0 && SetWindowLongW(hwnd, GWL_STYLE, style & !caption) == 0 {
+                return;
+            }
+            let _ = SetWindowPos(
+                hwnd, None, work.left, work.top, work.right - work.left, work.bottom - work.top,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+            );
+            if caption != 0 {
+                let style = GetWindowLongW(hwnd, GWL_STYLE);
+                let _ = SetWindowLongW(hwnd, GWL_STYLE, style | caption);
+            }
+        }
+    }
+
+    fn resize_hit(hwnd: HWND, lparam: LPARAM) -> Option<u32> {
+        // Signed screen coordinates also work on monitors to the left or above the primary.
+        let x = lparam.0 as i16 as i32;
+        let y = (lparam.0 >> 16) as i16 as i32;
+        let mut frame = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut frame) }.is_err() {
+            return None;
+        }
+        let grip = grip_size(hwnd);
+        if !(frame.left..frame.right).contains(&x) || !(frame.top..frame.bottom).contains(&y) {
+            return None;
+        }
+        let col = if x < frame.left + grip { -1 } else if x >= frame.right - grip { 1 } else { 0 };
+        let row = if y < frame.top + grip { -1 } else if y >= frame.bottom - grip { 1 } else { 0 };
+
+        match (col, row) {
+            (-1, -1) => Some(HTTOPLEFT),
+            (1, -1) => Some(HTTOPRIGHT),
+            (-1, 1) => Some(HTBOTTOMLEFT),
+            (1, 1) => Some(HTBOTTOMRIGHT),
+            (-1, 0) => Some(HTLEFT),
+            (1, 0) => Some(HTRIGHT),
+            (0, -1) => Some(HTTOP),
+            (0, 1) => Some(HTBOTTOM),
+            _ => None,
+        }
+    }
+}
+
 const BENCHMARK_WINDOW: &str = "game-benchmark";
 const GAME_HELP_WINDOW: &str = "game-help";
 const GAME_CONFIGURATION_WINDOW: &str = "game-configuration";
@@ -453,9 +704,15 @@ pub fn run() {
             let _ = WEBVIEW_DIRECTORY.set(std::path::PathBuf::from(profile));
             let mut config = window_config.clone();
             config.create = true;
-            tauri::WebviewWindowBuilder::from_config(app, &config)?
+            let main_window = tauri::WebviewWindowBuilder::from_config(app, &config)?
                 .data_directory(std::path::PathBuf::from(profile))
                 .build()?;
+            #[cfg(windows)]
+            if !config.decorations {
+                window_frame::install(main_window.hwnd()?, main_window.as_ref().clone())?;
+            }
+            #[cfg(not(windows))]
+            let _ = main_window;
             build_close::install(app.handle())?;
             Ok(())
         })

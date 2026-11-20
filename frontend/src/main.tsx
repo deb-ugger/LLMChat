@@ -5,6 +5,7 @@ import { GameTextBenchmarkHost, GameTextBenchmarkWindow } from "./components/Gam
 import { recoverGamePerformanceArchives } from "./gameModelPerformance";
 import { refreshSavedGameTestConfigurations } from "./gameModelPreset";
 import { AppNotice } from "./components/AppNotice";
+import { WindowControls } from "./components/WindowControls";
 import { initializeAppClose } from "./appClose";
 import { installControlLabelBehavior } from "./controlLabels";
 import { installRuntimeLogging, logRuntimeError } from "./runtimeLog";
@@ -37,7 +38,7 @@ installControlLabelBehavior();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     {auxiliary ? <GameAuxiliaryWindow kind={auxiliary} /> : isGameBenchmarkWindow ? <GameTextBenchmarkWindow />
-      : <><App /><GameTextBenchmarkHost /><GameAuxiliaryHost /></>}
+      : <><App /><WindowControls /><GameTextBenchmarkHost /><GameAuxiliaryHost /></>}
     <AppTooltip />
     <AppNotice />
   </StrictMode>,

@@ -1660,7 +1660,7 @@ export function UnityTranslateView({
           )
         : null}
       {showDetail ? (
-        <header className="unity-top unity-top-detail">
+        <header className="unity-top unity-top-detail" data-tauri-drag-region="deep">
           <div className="unity-top-brand">
             <button
               type="button"

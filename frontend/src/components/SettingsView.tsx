@@ -2439,7 +2439,7 @@ export function SettingsView({
           </div>
         </div>
       ) : null}
-      <div className="settings-tabs" role="tablist">
+      <div className="settings-tabs" role="tablist" data-tauri-drag-region="deep">
         {tabs.map((t) => (
           <button
             key={t.id}

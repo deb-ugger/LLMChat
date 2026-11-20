@@ -65,7 +65,7 @@ export function ChatView({
 
   return (
     <section className={empty ? "chat-panel is-empty" : "chat-panel"} aria-label="对话工作区">
-      <header className="chat-topbar">
+      <header className="chat-topbar" data-tauri-drag-region="deep">
         <button type="button" className="chat-icon-button" aria-label={sidebarLabel} aria-expanded={sidebarOpen}
           aria-controls={sidebarOpen ? "chat-conversations" : undefined} data-tooltip={sidebarLabel}
           onClick={onToggleSidebar}><FeatureIcon feature="chat-sidebar" /></button>
