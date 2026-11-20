@@ -32,6 +32,23 @@ function IconAction({ name, label, caption, hint, disabled, onClick }: { name: s
   return <span className="embed-action" data-tooltip={hint || label} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? label : undefined}><button type="button" className={`embed-icon${name==="help"?" is-help":""}${caption?" has-caption":""}`} aria-label={label} disabled={disabled} onClick={onClick}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>{caption&&<span>{caption}</span>}</button></span>;
 }
 export type EmbeddingGame = { path: string; name: string; engine: string; supported: boolean; textSupported?: boolean };
+function embeddingCapabilities(game: EmbeddingGame) {
+  const rpgMaker = game.supported && game.engine.startsWith("RPG Maker");
+  const wolf = game.supported && game.engine === "WOLF RPG";
+  const unreal = game.supported && game.engine === "Unreal Engine";
+  return {
+    textSource: unreal ? "locres" : rpgMaker || wolf ? "engine-data" : null,
+    imageProject: rpgMaker || wolf,
+    selfMosaic: rpgMaker || wolf,
+    thirdPartyMosaic: unreal,
+    runtimeDictionary: rpgMaker,
+    backupScopes: [
+      ...(rpgMaker || wolf ? [["text", "文本资源"]] : unreal ? [["text", "散装 .locres"]] : []),
+      ...(rpgMaker ? [["runtime", "插件与字体"], ["images", "图片资源"]] : []),
+      ...(wolf ? [["images", "散装图片"]] : []),
+    ],
+  };
+}
 type Backup = { id: string; path: string; state: string; resources: number };
 type Status = { issues?: Array<{file:string;source:string;translation:string;reason:string}>; state: string; action?: string; detail?: string; gamePath?: string; jsonPath?: string; outputPath?: string; exportPath?: string; imagesPath?: string; imageManifest?: string; patchPath?: string; backupPath?: string; matched?: number; blocked?: number; dictionaryEntries?: number; completed?: number; total?: number };
 async function call<T>(action: string, body?: unknown): Promise<T> {
@@ -39,13 +56,11 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
-  const isUnreal = game.engine === "Unreal Engine";
-  const supportsImages = game.engine.startsWith("RPG Maker") || game.engine === "WOLF RPG";
-  const availableBackupScopes = [
-    ["text", "文本资源"],
-    ...(game.engine.startsWith("RPG Maker") ? [["runtime", "插件与字体"]] : []),
-    ...(supportsImages ? [["images", "图片资源"]] : []),
-  ];
+  const { textSource, imageProject, selfMosaic, thirdPartyMosaic, runtimeDictionary, backupScopes: availableBackupScopes } = embeddingCapabilities(game);
+  const [hasLooseLocres, setHasLooseLocres] = useState(game.textSupported === true);
+  const [checkingTextSource, setCheckingTextSource] = useState(false);
+  const needsLooseLocres = textSource === "locres" && !hasLooseLocres;
+  const canUseTextResources = textSource !== null && !needsLooseLocres;
   const imageHandle = useRef<GameImageHandle | null>(null);
   const automaticAbort = useRef<AbortController | null>(null);
   const followAutomatic = useRef(true);
@@ -54,8 +69,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [controlsTarget,setControlsTarget]=useState<HTMLDivElement|null>(null),[resultsTarget,setResultsTarget]=useState<HTMLDivElement|null>(null);
   const [imageScanRequest,setImageScanRequest]=useState(0);
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
-  const savedStage = useRef(loadGameStage(game.path, supportsImages)).current;
-  const [textStep,setTextStep]=useState(Math.min(savedStage.step, 3));
+  const savedStage = useRef(loadGameStage(game.path, imageProject)).current;
+  const [textStep,setTextStep]=useState(needsLooseLocres ? 1 : Math.min(savedStage.step, 3));
   const [scanPath,setScanPath]=useState("");
   const [textInfo,setTextInfo]=useState<GameTextInfo>({count:0,selected:0,sourcePath:"",done:0,changed:0,dirty:false,running:false,state:"idle",translationPath:""});
   const scanLoadError = textInfo.loadResult?.path === scanPath ? textInfo.loadResult.error : undefined;
@@ -128,7 +143,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [backups, setBackups] = useState<Backup[]>([]), [backupId, setBackupId] = useState("");
   const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
   const touched = useRef(false);
-  const workflowBusy = applyingTestConfiguration || automatic === "running" || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
+  const workflowBusy = applyingTestConfiguration || checkingTextSource || automatic === "running" || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
   const busy = workflowBusy || mosaicBusy;
   const latestWorkflow = useRef({text:textInfo,images:imageWorkflow,pending,detecting}); latestWorkflow.current={text:textInfo,images:imageWorkflow,pending,detecting};
   const busyRef = useRef(busy); busyRef.current = busy;
@@ -155,7 +170,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   useGameTestConfigurationSource(testConfigurations);
   useEffect(() => { let alive = true; void call<Status>("status").then(async value => {
-    if (alive && !touched.current && value.gamePath === game.path) { setFile(value.jsonPath || "");setStatus(value);if(followAutomatic.current && value.action?.includes("images"))setPart("images"); }
+    if (alive && !touched.current && value.gamePath === game.path) { setFile(value.jsonPath || "");setStatus(value);if(imageProject && followAutomatic.current && value.action?.includes("images"))setPart("images"); }
     if(alive){await loadPatch(false);}
   }).catch(cause => { if (alive) setError(String(cause)); }); return () => { alive = false; }; }, []);
   useEffect(() => {
@@ -195,9 +210,30 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     "当前游戏已有文本补丁。继续会按当前生成的译文更新补丁，请先关闭游戏。",
     {title:"已有文本补丁",okLabel:"继续更新",cancelLabel:"取消"});
   const hasTextScan = !!(scanPath || textInfo.sourcePath);
+  const scanning = (pending && pendingAction === "extract") || (status.action === "extract" && status.state === "running");
+  useEffect(() => {
+    if (textSource === "locres" && status.state === "error" && (status.action === "extract" || status.action === "inspect")
+        && status.detail?.startsWith("未找到散装 .locres")) {
+      setHasLooseLocres(false);
+      setTextStep(1);
+    }
+  }, [textSource, status]);
+
+  const recheckLooseLocres = async () => {
+    setCheckingTextSource(true);
+    try {
+      const games = await call<EmbeddingGame[]>("detect", { path: game.path });
+      const found = games.some(item => item.path === game.path && item.textSupported === true);
+      setHasLooseLocres(found);
+      if (!found) showAppNotice("仍未找到散装 .locres");
+    } catch (cause) {
+      showAppNotice(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally { setCheckingTextSource(false); }
+  };
   const start = async (action: string,jsonPath=file) => {
     if (action === "extract" && hasTextScan) {
-      if (!await confirm("清除文本译文、草稿、图片筛选、识别及译图结果后重新扫描，处理配置保留。", {title:"重新扫描资源",okLabel:"重新扫描",cancelLabel:"取消"})) return;
+      const priorResults = imageProject ? "文本译文、草稿、图片筛选、识别及译图结果" : "文本译文和草稿";
+      if (!await confirm(`清除${priorResults}后重新扫描，处理配置保留。`, {title:"重新扫描资源",okLabel:"重新扫描",cancelLabel:"取消"})) return;
       if (!await textHandle.current?.prepare()) return;
     }
     if (action === "apply" && !await confirmInstalledPatch()) return;
@@ -207,7 +243,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       jsonPath = currentFile;
     }
     touched.current = true; setPending(true); setPendingAction(action); setError("");if(["extract","inspect","runtime","uninstall-text","cleanup-text","rollback"].includes(action))setGenerated(false);
-    if(action==="extract"&&supportsImages){setImageScanRequest(value=>value+1);}
+    if(action==="extract"&&imageProject){setImageScanRequest(value=>value+1);}
     try {
       const value=await call<Status>("start", { action, gamePath: game.path, jsonPath, backupId, fontPath, backupMode, backupScopes });
       manualLaunch.current = action === "apply" && launchAfterApply;
@@ -233,7 +269,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     if (automaticAbort.current || busy) return;
     if (!await confirmInstalledPatch()) return;
     if (!await textHandle.current?.leave()) return;
-    if (supportsImages && !await imageHandle.current?.prepare()) return;
+    if (imageProject && !await imageHandle.current?.prepare()) return;
     const controller = new AbortController(); automaticAbort.current=controller;followAutomatic.current=true;setAutomatic("running");setError("");
     const checkpoint = (phase:string,state="running") => localStorage.setItem(automaticKey,JSON.stringify({phase,state}));
     const check = () => { if(controller.signal.aborted)throw new DOMException("一键流程已中止","AbortError"); };
@@ -260,9 +296,13 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       checkpoint("translate");if (followAutomatic.current) setTextStep(2);
       const results=await Promise.all([
         workflowRef.current.textSkipped?Promise.resolve(true):textHandle.current!.automatic(controller.signal),
-        !supportsImages||workflowRef.current.imagesSkipped?Promise.resolve(true):imageHandle.current!.automatic(controller.signal)
+        !imageProject||workflowRef.current.imagesSkipped?Promise.resolve(true):imageHandle.current!.automatic(controller.signal)
       ]);
-      check();if(results.some(value=>!value))throw new Error("文本或图片尚未完成，进度已保存；可修正后继续或跳过剩余内容");
+      check();
+      if (results.some(value => !value)) {
+        const remaining = imageProject ? "文本或图片" : "文本";
+        throw new Error(`${remaining}尚未完成，进度已保存；可修正后继续或跳过剩余内容`);
+      }
       const translated=await textHandle.current!.prepare();if(!translated)throw new Error("译文未能保存");
       await tick(); check();
       if (latestWorkflow.current.text.changed > 0 || latestWorkflow.current.text.positionRepairs) {
@@ -272,7 +312,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       } else appendLog("没有需要回写的文本，保留游戏原文");
       if (followAutomatic.current) { setPart("text"); setTextStep(3); }
       check();
-      if(supportsImages&&!await imageHandle.current!.apply())throw new Error("图片应用未完成，已完成结果保留");
+      if(imageProject&&!await imageHandle.current!.apply())throw new Error("图片应用未完成，已完成结果保留");
       check();
       checkpoint("done","done");setAutomatic("done");appendLog("一键生成并应用完成","success");
       if (launchAfterApply) await launchGame();
@@ -299,10 +339,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     if(await updateWorkflow(images?{imagesSkipped:true}:{textSkipped:true}))appendLog(images?"已跳过剩余图片，已有译图保留":"已跳过剩余文本，已有有效译文保留","success");
   };
   const skipImages=()=>{const change=()=>void skipPart(true);if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();};
-  const canGenerate=gamePatchCanGenerate(textInfo,imageWorkflow,supportsImages,workflow);
+  const canGenerate=canUseTextResources&&gamePatchCanGenerate(textInfo,imageWorkflow,imageProject,workflow);
   const generateTextPatch=async()=>{
     if(busy)return;
-    if(!canGenerate){setError("请先完成文本和图片翻译，或分别跳过剩余内容，再生成补丁");return;}
+    if(!canGenerate){setError(imageProject ? "请先完成文本和图片翻译，或分别跳过剩余内容，再生成补丁" : "请先完成文本翻译，或跳过剩余内容，再生成补丁");return;}
     const path=await textHandle.current?.prepare();if(!path)return;setFile(path);setGenerated(false);buildAfterCheck.current=true;await start("inspect",path);
   };
 
@@ -358,24 +398,24 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       </div>
       <div className="embed-deploy-launch">
         <button type="button" className="unity-btn unity-btn-primary" disabled={busy || !game.supported} onClick={() => void launchGame()}>{launching ? "正在启动…" : "启动游戏"}</button>
-        <label><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
+        {canUseTextResources && <label><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
           const value = event.target.checked;
           setLaunchAfterApply(value);
           localStorage.setItem(launchPreference, String(value));
-        }} />应用后启动</label>
+        }} />应用后启动</label>}
       </div>
       <div className="embed-deploy-actions">
-        <button type="button" className="unity-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !generated} onClick={() => void start("apply")}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>
-        {supportsImages && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} onClick={() => void applyImages()}>应用译图</button>}
+        {canUseTextResources && <button type="button" className="unity-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !generated} onClick={() => void start("apply")}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>}
+        {imageProject && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} onClick={() => void applyImages()}>应用译图</button>}
         <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
         <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" disabled={busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-        {supportsImages && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" disabled={busy || !imageWorkflow.loaded} onClick={async () => { if (await imageHandle.current?.uninstall()) setImagesApplied(false); }} />}
+        {imageProject && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" disabled={busy || !imageWorkflow.loaded} onClick={async () => { if (await imageHandle.current?.uninstall()) setImagesApplied(false); }} />}
         <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
       </div>
     </section>
     {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running" />}
-    <div className="embed-deploy-maintenance">{backupPanel}{restorePanel}</div>
-    {supportsImages && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>
+    <div className="embed-deploy-maintenance">{canUseTextResources && backupPanel}{restorePanel}</div>
+    {runtimeDictionary && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>
       <summary>运行时加载译文</summary>
       <div className="embed-form-row">
         <label className="embed-field embed-inline-field"><span>中文字体</span><div className="json-embedding-path">
@@ -428,7 +468,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     onRetry={textFailures.length && !busy && textHandle.current?.canRetryFailures ? () => textHandle.current?.retryFailures?.() : undefined} />;
   const scanResources = <section className="unity-scan-resources" aria-label="资源信息"><h3>资源信息</h3>
     {workDirectory}
-    <p>已扫描文本：{textInfo.count} 条</p>{textInfo.messageCore && <p>已启用 YEP Message Core。可在译文末尾用 <code>{"\\nc<人物名>"}</code> 补充居中姓名。</p>}<p>图片资源：{imageWorkflow.count===null?"未读取":`${imageWorkflow.count} 张`}</p>
+    <p>已扫描文本：{textInfo.count} 条</p>{textInfo.messageCore && <p>已启用 YEP Message Core。可在译文末尾用 <code>{"\\nc<人物名>"}</code> 补充居中姓名。</p>}{imageProject && <p>图片资源：{imageWorkflow.count===null?"未读取":`${imageWorkflow.count} 张`}</p>}
     {textInfo.sourcePath&&<p>扫描文本：<code className="game-resource-path" data-tooltip={textInfo.sourcePath}>{textInfo.sourcePath}</code></p>}
     {imageWorkflow.folder&&<p>图片工程：<code className="game-resource-path" data-tooltip={imageWorkflow.folder}>{imageWorkflow.folder}</code></p>}
   </section>;
@@ -449,49 +489,63 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     else if (part === "text" && textInfo.dirty) void textHandle.current?.leave().then(ok => { if (ok) change(); });
     else change();
   };
-  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(supportsImages?[{id:"2.2",label:"图片翻译"},{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
+  const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel" steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(imageProject?[{id:"2.2",label:"图片翻译"}]:[]),...(selfMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
     const selected=item.id===activeWorkflowId;
     const operationStep=(pending ? pendingAction : status.action)==="extract"?"1":"3";
     const imageStep=imageWorkflow.stage==="restore"?"3":"2.2";
     const running=mosaicBusy&&item.id==="2.3"||textInfo.running&&item.id==="2.1"||imageBusy&&item.id===imageStep||(pending||status.state==="running")&&operationStep===item.id;
     const scanned=!!scanPath||textInfo.count>0;
     const completed=item.id==="1"&&scanned||item.id==="2.1"&&scanned&&(workflow.textSkipped||textInfo.done===textInfo.selected)||item.id==="2.2"&&(imageWorkflow.complete||workflow.imagesSkipped)||item.id==="2.3"&&mosaicComplete||item.id==="3"&&(patch.installed||imagesApplied||!patch.conflicts.length&&automatic==="done");
-    const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&(canGenerate||generated||imageWorkflow.valid>0);
+    const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&(canGenerate||canUseTextResources&&generated||imageProject&&imageWorkflow.valid>0);
     const failed=!!scanLoadError&&item.id==="1"&&!running||!scanLoadError&&textInfo.state==="error"&&item.id==="2.1"||imageWorkflow.state==="error"&&item.id===imageStep||status.state==="error"&&operationStep===item.id;
     const state=failed?"error":running?"current":completed?"complete":ready?"current":"pending";
     return {...item,state,selected,paused:!completed&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
   })}/>;
   return <div className="json-embedding-view" onClickCapture={event => logGameButton(event, appendLog)} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>{confirmation.dialog}
     <main className="embed-workspace embed-unity-workspace" data-workflow-part={part}>
-      <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}><UnityIconButton aria-label={automatic==="running"?"中止一键流程":automatic==="stopped"||automatic==="error"?"继续一键生成并应用":"一键生成并应用"} title={automatic==="running"?"中止并保存文本和图片进度":`扫描、并行翻译文本与图片、生成并应用${game.engine}补丁`} disabled={automatic!=="running"&&busy} onClick={()=>automatic==="running"?stopAutomatic():void runAutomatic()}><UnityActionIcon kind={automatic==="running"?"cancel":"run"}/></UnityIconButton><UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
+      <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}>
+        {(canUseTextResources || automatic === "running") && <UnityIconButton
+          aria-label={automatic === "running" ? "中止一键流程" : automatic === "stopped" || automatic === "error" ? "继续一键生成并应用" : "一键生成并应用"}
+          title={automatic === "running"
+            ? (imageProject ? "中止并保存文本和图片进度" : "中止并保存文本进度")
+            : `扫描、${imageProject ? "并行翻译文本与图片" : "翻译文本"}、生成并应用${game.engine}补丁`}
+          disabled={automatic !== "running" && busy}
+          onClick={() => automatic === "running" ? stopAutomatic() : void runAutomatic()}>
+          <UnityActionIcon kind={automatic === "running" ? "cancel" : "run"} />
+        </UnityIconButton>}
+        <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
-    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{isUnreal && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={supportsImages} /></div></header>
+    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
 
       <UnityGameWorkspace steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">
 
-        {textStep===1&&<div className="unity-task-actions"><button className="unity-btn unity-btn-primary" disabled={busy && !(status.action === "extract" && status.state === "running" || pending && pendingAction === "extract")} onClick={()=>status.action === "extract" && status.state === "running" || pending && pendingAction === "extract" ? stopScan() : void start("extract")}>{status.action === "extract" && status.state === "running" || pending && pendingAction === "extract" ? "中止扫描" : hasTextScan?"重新扫描资源":"开始扫描"}</button></div>}
+        {textStep===1&&<div className="unity-task-actions">
+          {scanning ? <button className="unity-btn unity-btn-primary" onClick={stopScan}>中止扫描</button>
+            : needsLooseLocres ? <button className="unity-btn unity-btn-primary" disabled={busy} onClick={() => void recheckLooseLocres()}>{checkingTextSource ? "正在检测…" : "重新检测散装 .locres"}</button>
+            : canUseTextResources && <button className="unity-btn unity-btn-primary" disabled={busy} onClick={() => void start("extract")}>{hasTextScan ? "重新扫描资源" : "开始扫描"}</button>}
+        </div>}
         {textStep===3&&<>
           <div className="unity-control-group"><span>待回写译文 {textInfo.changed} 条</span>{!!textInfo.positionRepairs && <span>对话纠错 {textInfo.positionRepairs} 条</span>}</div>
-          <div className="unity-task-actions"><button className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文匹配、控制符及游戏资源，再生成补丁" disabled={busy||!canGenerate} onClick={()=>void generateTextPatch()}>生成补丁</button></div>
+          {canUseTextResources&&<div className="unity-task-actions"><button className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文匹配、控制符及游戏资源，再生成补丁" disabled={busy||!canGenerate} onClick={()=>void generateTextPatch()}>生成补丁</button></div>}
           {progress(["inspect","embed"])}
           {output("补丁目录",status.patchPath)}
           {deploymentPanel}
         </>}
         {textStep===1&&progress(["extract"],{step:"1",title:"扫描资源",done:!!scanPath||textInfo.count>0})}
-        {textStep === 1 && isUnreal && !hasTextScan && <p className="hint">
-          {game.textSupported === false
-            ? "当前目录没有散装 .locres。若本地化文件在 Pak 或 IoStore 中，先用匹配游戏版本的工具导出到对应的 Content/Localization，再扫描。"
-            : "扫描 Content/Localization 下的 .locres 文件。按游戏实际使用的原文语言筛选后再翻译。"}
+        {textStep === 1 && textSource === "locres" && (needsLooseLocres || !hasTextScan) && <p className="hint">
+          {needsLooseLocres
+            ? "当前目录没有散装 .locres。请先用外部工具将本地化字符串导出为散装 .locres，放到游戏对应的 Content/Localization 目录，再重新检测。"
+            : "扫描 Content/Localization 下的散装 .locres。按游戏实际使用的原文语言筛选后再翻译。"}
         </p>}
         {textStep===1&&scanResources}
         {textStep===3&&validationErrors.length>0&&<div className="unity-step-batch"><GameBatchResults errors={validationErrors} onLocate={locateBatch}/></div>}
         {textStep===3&&fileConflicts.length>0&&<div className="unity-step-batch"><GameBatchResults errors={fileConflicts} onLocate={locateBatch}/></div>}
-        {textStep===3&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
+        {textStep===3&&imageProject&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
         </div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} batchResults={textBatch} visible={part==="text"} step={textStep} active={active} disabled={mosaicBusy||pending||detecting||status.state==="running"} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {supportsImages&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench mosaicActive={active&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
+      {imageProject&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench mosaicActive={active&&selfMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
 
     </main>
 
