@@ -5,6 +5,7 @@
 #include "RpgMessageCore.h"
 #include "GameTextProject.h"
 #include "GameFileOps.h"
+#include "WolfArchive.h"
 #include "GameResourceBackup.h"
 #include "ManagedGamePatch.h"
 #include "MvMzRuntime.h"
@@ -46,25 +47,7 @@ class JsonEmbedding {
     void progress(size_t completed, size_t total) { std::lock_guard lock(mutex_); state_["completed"] = completed; state_["total"] = total; }
     void checkStop() { if (stop_) throw std::runtime_error("嵌入操作已中止，原游戏未修改"); }
     void runTool(const std::string& name, const std::vector<std::wstring>& args) {
-        checkStop(); const auto executable = tools_ / name;
-        if (!std::filesystem::exists(executable)) throw std::runtime_error("缺少 WOLF 工具 " + name + "，请先准备 resources/wolf");
-#ifdef _WIN32
-        std::wstring command = L"\"" + executable.wstring() + L"\"";
-        for (const auto& arg : args) command += L" \"" + arg + L"\"";
-        SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-        HANDLE log = CreateFileW((work_ / "tools.log").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (log == INVALID_HANDLE_VALUE) throw std::runtime_error("无法创建工具日志");
-        STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdOutput = log; startup.hStdError = log; startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-        PROCESS_INFORMATION process{};
-        const bool ok = CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, work_.c_str(), &startup, &process);
-        CloseHandle(log); if (!ok) throw std::runtime_error("无法启动工具：" + name);
-        CloseHandle(process.hThread);
-        while (WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT) if (stop_) { TerminateProcess(process.hProcess, 2); WaitForSingleObject(process.hProcess, INFINITE); CloseHandle(process.hProcess); checkStop(); }
-        DWORD code; GetExitCodeProcess(process.hProcess, &code); CloseHandle(process.hProcess);
-        if (code != 0) throw std::runtime_error(name + " 处理失败，请查看输出目录 tools.log");
-#else
-        throw std::runtime_error("WOLF 嵌入目前仅支持 Windows");
-#endif
+        wolfarchive::runTool(tools_, work_, name, args, [&]{ return stop_.load(); });
     }
     static std::vector<std::string> controls(const std::string& value) {
         static const std::regex pattern(R"(\\[A-Za-z]+(?:\[[^\]\r\n]*\])?)");
@@ -163,23 +146,49 @@ class JsonEmbedding {
         std::lock_guard lock(mutex_); state_["matched"] = matched_; state_["blocked"] = blocked_; state_["examined"] = examined_; state_["issues"]=issues_;
     }
     void prepareWolf() {
-        const auto source = sourceGame_ / "Data", data = work_ / "Data"; std::filesystem::create_directories(data);
+        const auto data = work_ / "Data";
+        std::filesystem::create_directories(data);
         originals_.clear();
-        if (!std::filesystem::is_directory(source)) throw std::runtime_error("游戏目录缺少 Data 文件夹");
-        bool found = false;
-        for (const auto& entry : std::filesystem::directory_iterator(source)) {
-            const auto stem = entry.path().stem().string();
-            if (stem != "BasicData" && stem != "MapData" && !stem.starts_with("Evtext")) continue;
-            if (entry.is_directory()) { for (const auto& file : std::filesystem::recursive_directory_iterator(entry.path())) if (file.is_regular_file()) if(std::filesystem::is_regular_file(game_/std::filesystem::relative(file.path(),sourceGame_)))remember(game_/std::filesystem::relative(file.path(),sourceGame_)); std::filesystem::copy(entry.path(), data / entry.path().filename(), std::filesystem::copy_options::recursive); found = true; }
-            else if (entry.path().extension() == ".wolf") {
-                found = true; if(std::filesystem::is_regular_file(game_/std::filesystem::relative(entry.path(),sourceGame_)))remember(game_/std::filesystem::relative(entry.path(),sourceGame_)); const auto copy = data / entry.path().filename(); std::filesystem::copy_file(entry.path(), copy);
-                detail("解包：" + utf8path::pathUtf8(entry.path().filename()));
-                runTool("DxaDecode.exe", {L"-K:WLFRPrO!p(;s5((8P@((UFWlu$#5(=", copy.wstring()});
-                const auto folder = data / entry.path().stem();
-                if (!std::filesystem::is_directory(folder) || std::filesystem::is_empty(folder)) throw std::runtime_error("解包结果为空：" + utf8path::pathUtf8(entry.path().filename()));
+        std::map<Path,Path> groups;
+        const auto collect = [&](const Path& source) {
+            if (!std::filesystem::is_directory(source)) return;
+            for (const auto& entry : std::filesystem::directory_iterator(source)) {
+                const auto group = entry.is_directory() ? entry.path().filename() : entry.path().stem();
+                if (!gamepatch::wolfName(utf8path::pathUtf8(group))) continue;
+                if (entry.is_directory() || gameresourcebackup::imageExtension(entry.path()) == ".wolf") {
+                    // A loose directory overrides the corresponding archive from this layer.
+                    if (entry.is_directory() || !std::filesystem::is_directory(source / group))
+                        groups[group] = entry.path();
+                }
             }
+        };
+        const auto mainArchive = game_ / "Data.wolf";
+        if (std::filesystem::is_regular_file(mainArchive)) {
+            detail("读取 WOLF 封包：Data.wolf");
+            remember(mainArchive);
+            collect(wolfarchive::unpack(game_, mainArchive, tools_, [&]{ return stop_.load(); }));
         }
-        if (!found) throw std::runtime_error("目前支持 WOLF 的 BasicData、MapData、Evtext 资源包或解包目录");
+        const auto source = sourceGame_ / "Data";
+        collect(source);
+        if (groups.empty()) throw std::runtime_error("未找到 WOLF 的 BasicData、MapData 或 Evtext 文本资源");
+        for (const auto& [group, path] : groups) {
+            checkStop();
+            auto input = path;
+            if (std::filesystem::is_regular_file(path)) {
+                detail("读取 WOLF 封包：" + utf8path::pathUtf8(path.filename()));
+                input = wolfarchive::unpack(game_, path, tools_, [&]{ return stop_.load(); });
+            }
+            if (path.parent_path() == source) {
+                const auto track = [&](const Path& file) {
+                    const auto original = game_ / file.lexically_relative(sourceGame_);
+                    if (std::filesystem::is_regular_file(original)) remember(original);
+                };
+                if (input != path) track(path);
+                else for (const auto& file : std::filesystem::recursive_directory_iterator(input))
+                    if (file.is_regular_file()) track(file.path());
+            }
+            std::filesystem::copy(input, data / group, std::filesystem::copy_options::recursive);
+        }
         detail("提取事件、地图与数据库文本"); runTool("WolfTL.exe", {data.wstring(), work_.wstring(), L"--create"});
         if (!std::filesystem::is_directory(work_ / "dump")) throw std::runtime_error("没有生成可回写的文本定位数据");
     }
@@ -424,7 +433,7 @@ class JsonEmbedding {
         std::lock_guard lock(mutex_); state_["matched"] = matched_; state_["blocked"] = blocked_; state_["examined"] = examined_; state_["issues"]=issues_;
     }
     void extract() {
-        checkStop(); gametext::resetForScan(game_);
+        checkStop();
         dictionary_ = json::object(); exporting_ = true;
         try {
             if (unreal_) scanUnreal(false);
@@ -432,6 +441,7 @@ class JsonEmbedding {
         }
         catch (...) { exporting_ = false; throw; }
         exporting_ = false;
+        checkStop(); gametext::resetForScan(game_);
         const auto output = work_ / "MTool.json"; write(output, dictionary_.dump(2));
         std::lock_guard lock(mutex_); state_["state"] = "exported"; state_["detail"] = "文本已导出为 MTool JSON"; state_["exportPath"] = utf8path::pathUtf8(output); state_["dictionaryEntries"] = dictionary_.size(); dictionary_.clear();
     }
@@ -518,7 +528,7 @@ public:
         if (!std::filesystem::is_directory(root)) throw std::runtime_error("请选择存在的游戏目录或主程序");
         auto identify = [](const Path& path) -> json {
             std::string engine; bool supported = false;
-            if (std::filesystem::exists(path / "Data" / "BasicData.wolf") || std::filesystem::exists(path / "Data" / "BasicData" / "Game.dat")) { engine = "WOLF RPG"; supported = true; }
+            if (std::filesystem::is_regular_file(path / "Data.wolf") || std::filesystem::exists(path / "Data" / "BasicData.wolf") || std::filesystem::exists(path / "Data" / "BasicData" / "Game.dat")) { engine = "WOLF RPG"; supported = true; }
             else if (std::filesystem::exists(path / "www" / "data" / "System.json")) { engine = "RPG Maker MV"; supported = true; }
             else if (std::filesystem::exists(path / "data" / "System.json")) { engine = std::filesystem::exists(path / "js" / "rmmz_core.js") ? "RPG Maker MZ" : "RPG Maker MV/MZ"; supported = true; }
             else if (std::filesystem::exists(path / "UnityPlayer.dll")) engine = "Unity";

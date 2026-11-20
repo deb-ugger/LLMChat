@@ -354,7 +354,7 @@ int HttpServer::run()
     request_cancel::Registry translationTasks;
     TextRunStore textRuns;
     JsonEmbedding jsonEmbedding(storage::base / "resources" / "wolf");
-    RpgImageProject gameImages;
+    RpgImageProject gameImages(storage::base / "resources" / "wolf");
     std::atomic<unsigned long long> nextTask{0};
     httplib::Server svr;
     svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
