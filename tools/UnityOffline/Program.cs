@@ -96,7 +96,7 @@ public sealed record SavedProject(Project? Project, int? ScanCompleted, int? Sca
 
 public static class Program
 {
-    public const int CurrentScanRevision = 8;
+    public const int CurrentScanRevision = 9;
     public const int MinimumUsableScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
@@ -514,9 +514,23 @@ public static class Program
                 }
                 clock.Parsed++;
                 var externals = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int? metadataLiteralCount = null;
                 using (clock.Measure(ScanPhase.Parse)) {
                     if (isCode && ext == ".dll") ScanAssembly(readPath, rel, project);
-                    else if (isCode) VisitMetadata(File.ReadAllBytes(readPath), (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
+                    else if (isCode) {
+                        var bytes = File.ReadAllBytes(readPath);
+                        if (Il2CppMetadata.ReadVersion(bytes) == 39) {
+                            var literals = Il2CppMetadata.ReadV39Literals(bytes, CheckScanStop);
+                            var report = Path.Combine("il2cpp-strings", rel + ".json");
+                            var destination = Within(project.Folder, report);
+                            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                            WriteJson(destination, new { sourceFile = rel, metadataVersion = 39, literalCount = literals.Length, literals });
+                            metadataLiteralCount = literals.Length;
+                            project.Warnings.Add($"IL2CPP v39 字符串报告包含 {literals.Length} 条原始字面量，位于工程目录的 {report}。报告仅供查看。");
+                        } else {
+                            VisitMetadata(bytes, (loc, text, _) => Add(project, rel, "", 0, loc, "IL2CPP 字面量", text));
+                        }
+                    }
                     else if (raster) { using var decode = clock.Measure(ScanPhase.Decode); ImageResources.ScanFile(project, readPath, rel); }
                     else if (asset) VisitResource(readPath, (am, inst, container) => {
                         foreach (var external in inst.file.Metadata.Externals) externals.Add(external.PathName);
@@ -525,13 +539,13 @@ public static class Program
                     else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
                 }
                 var failures = project.Diagnostics.Count(e => e.File == rel);
-                var hasResults = project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore;
+                var hasResults = metadataLiteralCount.HasValue || project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore;
                 if (hasResults) project.Hashes[rel] = sourceDigest.Value;
-                if (failures == 0) {
+                if (failures == 0 && !metadataLiteralCount.HasValue) {
                     foreach (var image in project.Images.Skip(imagesBefore)) externals.Add(image.DependencyFile);
                     incremental.Remember(rel, sourceDigest.Value, asset, externals);
                 }
-                project.Resources.Add(new(rel, failures > 0 ? "partial" : hasResults ? "ready" : "empty", project.Entries.Count - before, project.Fonts.Count - fonts, failures));
+                project.Resources.Add(new(rel, failures > 0 ? "partial" : hasResults ? "ready" : "empty", metadataLiteralCount ?? project.Entries.Count - before, project.Fonts.Count - fonts, failures));
             }
             catch (PausedException) { throw; }
             catch (Exception e)
@@ -577,10 +591,10 @@ public static class Program
     }
     public static byte[] VisitMetadata(byte[] bytes, Action<string, string, Action<string>> visit)
     {
-        if (bytes.Length < 32 || BinaryPrimitives.ReadUInt32LittleEndian(bytes) != 0xFAB11BAF) throw new Exception("IL2CPP metadata 文件头无效或已加密");
+        var version = Il2CppMetadata.ReadVersion(bytes);
+        if (version == 39) throw new InvalidDataException("IL2CPP v39 字面量只支持读取报告");
+        if (version is < 24 or > 31) throw new InvalidDataException($"不支持 IL2CPP metadata 版本 {version}");
         int I(int p) => BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(p, 4));
-        var version = I(4);
-        if (version is < 24 or > 31) throw new Exception($"首版未验证 metadata 版本 {version}");
         var table = I(8); var count = I(12); var data = I(16); var length = I(20);
         if (table < 32 || count < 0 || count % 8 != 0 || (long)table + count > bytes.Length || data < (long)table + count || length < 0 || (long)data + length > bytes.Length)
             throw new Exception("IL2CPP 字符串表边界无效");
