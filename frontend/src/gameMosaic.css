@@ -1,25 +1,31 @@
+/* 与文本/图片翻译同一副骨架：左轨 | 步骤列 | 结果列。 */
 .unity-offline:is(.is-mosaic, :has(> .engine-result-slot > .game-mosaic-workbench:not([hidden]))) {
   display: grid;
-  grid-template-columns: var(--workflow-rail-width) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: var(--workflow-rail-width) clamp(420px, 25vw, 600px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--space-2);
 
   & :is(.unity-offline-config, .unity-workflow-layout) { display: contents; }
-  & .game-workflow-steps { grid-column: 1; grid-row: 1 / -1; }
+  & .game-workflow-steps { grid-column: 1; grid-row: 1; }
   & .unity-workflow {
     grid-column: 2;
     grid-row: 1;
     min-inline-size: 0;
-    max-block-size: min(22vh, 148px);
-    overflow-y: auto;
-    scrollbar-gutter: auto;
+    align-self: start;
+    max-block-size: none;
+    overflow: visible;
   }
   & .unity-step-panel:has(.game-mosaic-controls) { padding: 0; }
-  & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 2; grid-row: 2; }
+  & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 3; grid-row: 1; min-inline-size: 0; }
   & > .unity-workspace-divider { display: none; }
 
-  @media (max-width: 700px) {
-    grid-template-rows: auto minmax(480px, 1fr);
+  /* 窄窗回退：步骤列回到上方一条，结果列占满。 */
+  @media (max-width: 1080px) {
+    grid-template-columns: var(--workflow-rail-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(420px, 1fr);
+    & .game-workflow-steps { grid-row: 1 / -1; }
+    & .unity-workflow { grid-column: 2; grid-row: 1; max-block-size: min(26vh, 168px); overflow-y: auto; }
+    & > :is(.unity-image-result-pane, .engine-result-slot) { grid-column: 2; grid-row: 2; }
   }
 }
 
