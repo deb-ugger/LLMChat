@@ -112,7 +112,7 @@
 .game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
 
 /* 并行：分叉出去的那一段在左侧补一条支线，汇入的段在右侧补，形成"两条同时在送" */
-.game-workflow-connector.is-fan-out::after,
+.game-workflow-connector.is-fan-out::before,
 .game-workflow-connector.is-fan-in::after {
   content: "";
   position: absolute;
@@ -466,12 +466,17 @@
 .unity-engine-stack > span:last-child { border-start-end-radius: 999px; border-end-end-radius: 999px; }
 
 /* 引擎占比：一行一个，数字右对齐，整行可点跳到对应条目 */
-.unity-engine-list { display: flex; flex-direction: column; gap: 1px; }
+.unity-engine-list {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) max-content minmax(0, max-content) max-content;
+  gap: 1px 10px;
+}
 .unity-engine-item {
   display: grid;
-  grid-template-columns: 9px minmax(0, 1fr) auto auto 34px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 10px;
+  box-sizing: border-box;
   inline-size: 100%;
   padding: 7px 8px;
   border: 0;
@@ -482,14 +487,16 @@
   text-align: start;
 }
 .unity-engine-item.is-jumpable { cursor: pointer; }
-.unity-engine-item.is-jumpable:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.unity-engine-item.is-jumpable:is(:hover, :focus-visible) { background: var(--bg-hover); }
+.unity-engine-item.is-jumpable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .unity-engine-name { font-size: var(--fs-body); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.unity-engine-share { font-size: var(--fs-body); font-weight: 600; font-variant-numeric: tabular-nums; }
-.unity-engine-chars { font-size: var(--fs-small, 12px); color: var(--muted, #6a675c); font-variant-numeric: tabular-nums; }
-.unity-engine-jump { font-size: var(--fs-small, 12px); color: var(--muted, #6a675c); text-align: end; }
-.unity-engine-item:hover .unity-engine-jump { color: var(--accent, #326df0); }
+.unity-engine-share, .unity-engine-chars, .unity-engine-jump { text-align: end; font-variant-numeric: tabular-nums; }
+.unity-engine-share { font-size: var(--fs-body); font-weight: 600; }
+.unity-engine-chars, .unity-engine-jump { font-size: var(--fs-caption); color: var(--text-muted); }
+.unity-engine-chars { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unity-engine-item.is-jumpable .unity-engine-jump { color: var(--accent); text-decoration: underline; }
 .unity-engine-segment { flex: 0 0 auto; height: 100%; }
-.unity-engine-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: var(--radius-sm); }
+.unity-engine-swatch { display: inline-block; width: 10px; height: 10px; border-radius: var(--radius-sm); }
 .unity-progress-locate { display: block; max-width: 100%; border: 0; padding: var(--space-1) 0; color: var(--accent,#1b1a16); background: transparent; font: inherit; text-align: left; overflow-wrap: anywhere; text-decoration: underline; cursor: pointer; }
 .unity-progress-locate:focus-visible { outline: 2px solid var(--accent,#1b1a16); outline-offset: 2px; }
 .unity-engine-row, .unity-engine-add { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 6px 0; }
@@ -821,8 +828,7 @@
 .unity-offline.is-deployment .unity-step-panel { padding: 0 var(--space-3); }
 .unity-offline.is-deployment .unity-current-task { width: calc(100% - 24px); max-width: var(--content-max, 1680px); margin-inline: auto; }
 
-/* 连续光带：整条轨道只有一层光，从第一处未完成滑向正在跑的那一步；
-   节点压在上面，光经过时被节点盖住，看起来像"进山洞"。 */
+/* 光带坐标取自轨道内容，外层滚动区裁掉超出面板的散射。 */
 .game-workflow-track {
   position: relative;
   display: flex;
@@ -842,46 +848,52 @@
   /* 横向保留光晕，纵向限制在未完成的区间内。 */
   overflow: visible clip;
 }
-.game-workflow-beam:not(.is-static) {
-  clip-path: inset(calc(100% * var(--beam-from)) 0 calc(100% * (1 - var(--beam-to))) 0);
-}
-.game-workflow-beam::before,
-.game-workflow-beam::after {
+.game-workflow-beam::before {
   content: "";
   position: absolute;
   left: 50%;
-  top: calc(100% * var(--beam-from, 0));
-  animation: game-workflow-beam-run var(--beam-duration) linear infinite;
-}
-.game-workflow-beam::before {
-  z-index: 1;
+  top: calc(100% * var(--beam-from));
   translate: -50% -50%;
-  inline-size: 7px;
-  block-size: 7px;
+  inline-size: calc(var(--workflow-marker-size) + 10px);
+  block-size: calc(var(--workflow-marker-size) + 10px);
   border-radius: 50%;
-  background: radial-gradient(closest-side, #ffffff 0 45%, #dff6ff 62%, rgb(214 246 255 / 70%) 100%);
-  box-shadow: 0 0 5px 1px rgb(214 248 255 / 92%), 0 0 16px 4px rgb(96 196 255 / 58%), 0 0 30px 8px rgb(64 150 255 / 24%);
+  background: radial-gradient(closest-side, transparent 62%,
+    color-mix(in srgb, var(--beam-anchor-tone, var(--workflow-tone-current)) 65%, transparent) 78%, transparent 100%);
 }
-.game-workflow-beam::after {
-  /* The beam moves down; the tail ends at the core and fans out above it. */
-  translate: -50% calc(-100% + 2px);
-  inline-size: 24px;
-  block-size: 112px;
-  background:
-    linear-gradient(to top, rgb(123 220 255 / 90%), rgb(77 169 255 / 52%) 22%,
-      rgb(62 134 255 / 20%) 57%, transparent) center / 7px 100% no-repeat,
-    radial-gradient(ellipse 50% 52% at 50% 55%, rgb(89 175 255 / 24%), transparent);
-  filter: blur(3px);
+
+@media (prefers-reduced-motion: no-preference) {
+  .game-workflow-beam:not(.is-static) {
+    clip-path: inset(calc(100% * var(--beam-from)) -100% calc(100% * (1 - var(--beam-to))) -100%);
+
+    &::before, &::after { animation: game-workflow-beam-run var(--beam-duration) linear infinite; }
+    &::before {
+      z-index: 1;
+      inline-size: 7px;
+      block-size: 7px;
+      background: radial-gradient(closest-side, #ffffff 0 45%, #dff6ff 62%, rgb(214 246 255 / 70%) 100%);
+      box-shadow: 0 0 5px 1px rgb(214 248 255 / 92%), 0 0 16px 4px rgb(96 196 255 / 58%), 0 0 30px 8px rgb(64 150 255 / 24%);
+    }
+    &::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: calc(100% * var(--beam-from));
+      translate: -50% calc(-100% + 2px);
+      inline-size: 24px;
+      block-size: 112px;
+      background:
+        linear-gradient(to top, rgb(123 220 255 / 90%), rgb(77 169 255 / 52%) 22%,
+          rgb(62 134 255 / 20%) 57%, transparent) center / 7px 100% no-repeat,
+        radial-gradient(ellipse 50% 52% at 50% 55%, rgb(89 175 255 / 24%), transparent);
+      filter: blur(3px);
+    }
+  }
 }
 @keyframes game-workflow-beam-run {
   from { top: calc(100% * var(--beam-from, 0)); opacity: 0; }
   8%, 88% { opacity: 1; }
   to { top: calc(100% * var(--beam-to, 1)); opacity: 0; }
 }
-
-.game-workflow-beam.is-static { z-index: 2; }
-.game-workflow-beam.is-static::before { animation: none; }
-.game-workflow-beam.is-static::after { display: none; }
 
 /* 每段自己的光带停用，只保留轨道底色与完成态。 */
 .game-workflow-connector .game-workflow-flow,
@@ -928,12 +940,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .game-workflow-connector,
-  .game-workflow-beam::before,
   .game-workflow-bypass::after,
   .game-workflow-node .is-active-task .game-workflow-marker { animation: none; }
-
-  .game-workflow-beam { z-index: 2; }
-  .game-workflow-beam:not(.is-static)::before { top: calc(100% * var(--beam-from, 0) + 4px); }
-  .game-workflow-beam::after { display: none; }
   .game-workflow-bypass::after { opacity: 0; }
 }

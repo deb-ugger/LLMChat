@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
@@ -204,6 +204,7 @@ function linkPath(from: Point, to: Point) {
 }
 
 function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { model: DeploymentModel; actions: DeploymentActions; percent: number; running: boolean; onFocusStep?: (step: DeploymentStep) => void }) {
+  const cardPrefix = useId();
   const viewport = useRef<HTMLDivElement>(null), board = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
   const [fit, setFit] = useState(1);
@@ -465,8 +466,8 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
         const runnable = canRun && node.state === "todo" && enabled(node.id) && (node.id === "scan" ||
           !remaining.has("scan") && !validation.disconnected.includes(node.id) && ready(node.id, plan.edges, remaining) && (node.id !== "apply" || canApply));
         const incomplete = validation.disconnected.includes(node.id);
-        const label = deploymentStepLabels[node.id];
-        return <div key={node.id} data-flow-node={node.id} tabIndex={0} aria-label={runnable ? `${label} · 可以执行` : incomplete ? `${label} · 依赖路径不完整` : label}
+        const titleId = `${cardPrefix}-${node.id}-title`, detailId = `${cardPrefix}-${node.id}-detail`;
+        return <div key={node.id} data-flow-node={node.id} role="group" tabIndex={0} aria-labelledby={titleId} aria-describedby={detailId}
           className={`dpl-card is-${enabled(node.id) ? node.state : "skipped"}${runnable ? " is-runnable" : ""}${incomplete ? " is-incomplete" : ""}${!locked ? " is-movable" : ""}${motion?.step === node.id ? " is-dragging" : ""}`}
           style={{ left: pos.x, top: pos.y, width: cardWidth, height: cardHeight }}
           onContextMenu={event => { event.preventDefault(); openMenu({ kind: "node", step: node.id }, event.clientX, event.clientY); }}
@@ -476,8 +477,8 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
             const box = event.currentTarget.getBoundingClientRect();
             openMenu({ kind: "node", step: node.id }, box.x + box.width / 2, box.y + box.height / 2);
           }}>
-          <b>{label}</b>
-          <span className="dpl-card-detail">{runnable ? "可以执行" : incomplete ? "依赖路径不完整" : enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
+          <b id={titleId}>{deploymentStepLabels[node.id]}</b>
+          <span id={detailId} className="dpl-card-detail">{runnable ? "可以执行" : incomplete ? "依赖路径不完整" : enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
             : node.state === "done" && editable ? `已完成 · ${node.detail}` : node.detail : "已跳过"}</span>
           {node.id !== "scan" && <span className={`dpl-port is-input${candidate?.id === node.id && !candidate.issue && wire?.drag.side === "out" ? " is-target" : ""}`}
             data-flow-port="in" aria-label="输入" />}
@@ -490,7 +491,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
     </div>
     <div className="dpl-canvas-hint">
       <strong className={previewIssues.length ? "is-invalid" : ""} role="status">
-        {candidate ? "连线预览" : "排布校验"} · {previewIssues.length ? previewIssues.join("。") : "依赖完整，可以执行"}
+        {candidate ? "连线预览" : "排布校验"} · {previewIssues.length ? previewIssues.join("。") : "依赖完整"}
       </strong>
       <span>{selected ? "拖动选中连线的端点以重连，按 Delete 删除" : "从输出拖到输入建立依赖 · 滚轮缩放 · 拖动空白处平移"}</span>
     </div>

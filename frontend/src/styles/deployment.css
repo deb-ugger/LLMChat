@@ -154,37 +154,39 @@
 .dpl-card.is-active { border-color: var(--flow-ink); box-shadow: 0 0 14px color-mix(in srgb, var(--flow-ink) 24%, transparent); }
 .dpl-card.is-skipped { color: var(--flow-warning); border-style: dashed; border-color: var(--flow-warning); }
 
-.dpl-card.is-runnable { --flow-runnable: light-dark(#008690, #5ee8ff); }
-.dpl-card.is-runnable::before,
-.dpl-card.is-runnable::after {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-}
-/* 描边只负责"这个节点现在能跑"，保持静止；呼吸交给右上角那颗点，整卡一起脉动会晃眼。 */
-.dpl-card.is-runnable::before {
-  inset: -1px;
-  border: 1px solid color-mix(in srgb, var(--flow-runnable) 55%, transparent);
-  border-radius: inherit;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--flow-runnable) 18%, transparent);
-}
-.dpl-card.is-runnable::after {
-  inset-block-start: 10px;
-  inset-inline-end: 10px;
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: radial-gradient(closest-side, #ffffff 0 30%, var(--flow-runnable) 72%);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--flow-runnable) 70%, transparent), 0 0 14px color-mix(in srgb, var(--flow-runnable) 30%, transparent);
-  animation: dpl-runnable-pulse 1.5s ease-in-out infinite;
+.dpl-card:focus-visible,
+.dpl .dpl-switch:focus-visible { outline: 2px solid var(--flow-ink); outline-offset: 2px; }
+
+.dpl-card.is-runnable:not(.is-active, .is-skipped, .is-incomplete) {
+  --flow-runnable: light-dark(#008690, #5ee8ff);
+
+  &::before, &::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+  }
+  &::before {
+    inset: -1px;
+    border: 1px solid color-mix(in srgb, var(--flow-runnable) 55%, transparent);
+    border-radius: inherit;
+    box-shadow: 0 0 10px color-mix(in srgb, var(--flow-runnable) 18%, transparent);
+  }
+  &::after {
+    inset-block-start: 10px;
+    inset-inline-end: 10px;
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+    background: radial-gradient(closest-side, #ffffff 0 30%, var(--flow-runnable) 72%);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--flow-runnable) 70%, transparent), 0 0 14px color-mix(in srgb, var(--flow-runnable) 30%, transparent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    &:not(.is-dragging)::after { animation: dpl-runnable-pulse 1.5s ease-in-out infinite; }
+  }
 }
 @keyframes dpl-runnable-pulse {
   0%, 100% { opacity: .45; }
   50% { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dpl-card.is-runnable::before,
-  .dpl-card.is-runnable::after { animation: none; }
 }
 
 .dpl-port {

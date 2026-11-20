@@ -50,17 +50,13 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
   const flowTrackCount = steps.length - 1;
   const selectedStep = steps.findIndex(step => step.selected);
   const highlightedTrack = Math.min(Math.max(0, selectedStep), flowTrackCount - 1);
-  const firstIncomplete = steps.findIndex(step => step.state !== "complete");
-  const beamFrom = firstIncomplete >= 0 ? firstIncomplete : steps.length - 1;
-  const singleIncomplete = firstIncomplete >= 0 && steps.slice(firstIncomplete + 1).every(step => step.state === "complete");
-  // 光带始终活在"第一处未完成 → 最后一步"这段上，不依赖是否正在跑。
-  // 以前非图模式只在 running 时点亮，导致停在中间页且没有任务在跑时整条轨道是死的。
-  const beamTo = graphMode
-    ? singleIncomplete ? beamFrom : steps.length - 1
-    : Math.max(beamFrom, flowingStep >= 0 ? flowingStep : firstIncomplete >= 0 ? steps.length - 1 : beamFrom);
-  const beamStatic = firstIncomplete < 0 || (graphMode ? singleIncomplete && !enabledIds.has(steps[beamFrom].id) : beamFrom === beamTo);
-  const beamHalf = graphMode && singleIncomplete && !beamStatic;
-  const beamActive = steps.length > 1 && beamTo >= beamFrom;
+  const unfinished = steps.flatMap((step, index) => enabledIds.has(step.id) && step.state !== "complete" ? [index] : []);
+  const beamFrom = unfinished[0] ?? steps.length - 1;
+  const limit = graphMode || flowingStep < 0 ? steps.length - 1 : Math.max(beamFrom, flowingStep);
+  const errorStep = unfinished.find(index => steps[index].state === "error");
+  const beamTo = unfinished.length <= 1 ? beamFrom : Math.min(limit, errorStep ?? limit);
+  const beamStatic = beamFrom === beamTo;
+  const beamActive = steps.length > 1;
   const stepOrder = JSON.stringify(steps.map(step => step.id));
 
   useLayoutEffect(() => {
@@ -78,8 +74,7 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
         return ratio >= 0 && ratio <= 1 ? ratio : undefined;
       };
       const from = position(beamFrom);
-      const node = beamHalf ? markers[beamFrom]?.closest(".game-workflow-node") : null;
-      const to = node && from !== undefined ? Math.min(1, from + node.getBoundingClientRect().height / (2 * bounds.height)) : position(beamTo);
+      const to = position(beamTo);
       const next = from !== undefined && to !== undefined && from <= to ? { from, to } : null;
       setBeamPosition(current => current?.from === next?.from && current?.to === next?.to ? current : next);
     };
@@ -93,18 +88,14 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [beamActive, beamFrom, beamTo, beamHalf, stepOrder]);
-
-  const from = beamPosition?.from ?? (beamFrom + 0.5) / steps.length;
-  const to = beamPosition?.to ?? (beamTo + (beamHalf ? 1 : 0.5)) / steps.length;
-  const rangedBeam = graphMode && !beamStatic;
+  }, [beamActive, beamFrom, beamTo, stepOrder]);
 
   return <nav className="game-workflow-steps" role="tablist" aria-label="处理步骤" aria-orientation="vertical" onKeyDown={moveFocus}>
     <div className="game-workflow-track" role="presentation" ref={trackRef}>
       {beamActive && <span aria-hidden="true" className={beamStatic ? "game-workflow-beam is-static" : "game-workflow-beam"} style={{
-        ...(rangedBeam ? { insetBlockStart: `${from * 100}%`, insetBlockEnd: `${(1 - to) * 100}%`, clipPath: "none" } : {}),
-        "--beam-from": rangedBeam ? 0 : from,
-        "--beam-to": rangedBeam ? 1 : to,
+        "--beam-from": beamPosition?.from ?? (beamFrom + 0.5) / steps.length,
+        "--beam-to": beamPosition?.to ?? (beamTo + 0.5) / steps.length,
+        "--beam-anchor-tone": `var(--workflow-tone-${steps[beamFrom].state}, var(--workflow-tone-current))`,
         "--beam-span": Math.max(1, beamTo - beamFrom),
       } as CSSProperties} />}
       {steps.map((item, index) => {

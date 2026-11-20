@@ -27,17 +27,23 @@ export function UnityTranslationProgress({ progress, running, failure, onLocate 
       </div>
       <div className="unity-engine-list">
         {progress.engineStats.map(engine => {
-          const share = characters ? engine.characters * 100 / characters : 0;
+          const { entryId } = engine;
+          const name = getEngineInfo(engine.id)?.label || engine.id;
+          const share = `${(characters ? engine.characters * 100 / characters : 0).toFixed(1)}%`;
+          const count = `${engine.characters.toLocaleString("zh-CN")} 字符${running && engine.speed != null ? ` · ${engine.speed.toFixed(1)} 字符/秒` : ""}`;
           const content = <>
             <span className="unity-engine-swatch" aria-hidden="true" style={{ backgroundColor: engineColors[engine.id] || "var(--accent,#326df0)" }} />
-            <span className="unity-engine-name">{getEngineInfo(engine.id)?.label || engine.id}</span>
-            <span className="unity-engine-share">{share.toFixed(1)}%</span>
-            <span className="unity-engine-chars">{engine.characters.toLocaleString("zh-CN")} 字符{running && engine.speed != null ? ` · ${engine.speed.toFixed(1)}/秒` : ""}</span>
-            <span className="unity-engine-jump">{engine.entryId ? `#${engine.entryId}` : ""}</span>
+            <span className="unity-engine-name">{name}</span>
+            <span className="unity-engine-share">{share}</span>
+            <span className="unity-engine-chars">{count}</span>
+            <span className="unity-engine-jump">{entryId && `#${entryId}`}</span>
           </>;
-          return engine.entryId
-            ? <button type="button" key={engine.id} className="unity-engine-item is-jumpable" onClick={() => onLocate(engine.entryId!)} data-tooltip={`定位到条目 #${engine.entryId}`}>{content}</button>
-            : <div key={engine.id} className="unity-engine-item">{content}</div>;
+          if (!entryId) return <div key={engine.id} className="unity-engine-item">{content}</div>;
+          const locateLabel = `定位到条目 #${entryId}`;
+          return <button type="button" key={engine.id} className="unity-engine-item is-jumpable"
+            aria-label={`${name}，${share}，${count}，${locateLabel}`} data-tooltip={locateLabel} onClick={() => onLocate(entryId)}>
+            {content}
+          </button>;
         })}
       </div>
     </section>}
