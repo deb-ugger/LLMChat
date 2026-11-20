@@ -54,7 +54,7 @@ export type DeploymentStep = "scan" | DeploymentPhase | "apply";
 type Point = { x: number; y: number };
 type FlowEdge = { from: DeploymentStep; to: DeploymentStep };
 type FlowGraph = { positions: Record<DeploymentStep, Point>; edges: FlowEdge[] };
-export type DeploymentPlan = FlowGraph & { disabled: DeploymentPhase[] };
+export type DeploymentPlan = FlowGraph & { disabled: DeploymentStep[] };
 export type DeploymentFlow = Pick<DeploymentPlan, "edges" | "disabled">;
 export type DeploymentRun = {
   mode: "single" | "automatic";
@@ -91,6 +91,26 @@ function connectionIssue(edges: FlowEdge[], { from, to }: FlowEdge) {
   return reachesSource(to) ? "这条连线会形成循环依赖" : undefined;
 }
 
+function effectiveDeploymentEdges(edges: FlowEdge[], enabled: DeploymentStep[]) {
+  const active = new Set(enabled);
+  const effective = new Map<string, FlowEdge>();
+  for (const from of enabled) {
+    const queue = new Set<DeploymentStep>([from]);
+    for (const step of queue) {
+      for (const edge of edges) {
+        if (edge.from !== step) continue;
+        if (active.has(edge.to)) {
+          const direct = { from, to: edge.to };
+          effective.set(edgeKey(direct), direct);
+        } else {
+          queue.add(edge.to);
+        }
+      }
+    }
+  }
+  return [...effective.values()];
+}
+
 export function validateDeploymentPlan({ edges, disabled }: DeploymentFlow) {
   const issues: string[] = [];
   const disconnected: DeploymentStep[] = [];
@@ -119,10 +139,11 @@ export function validateDeploymentPlan({ edges, disabled }: DeploymentFlow) {
   if (missingOutput.length) issues.push(labels(missingOutput) + "缺少通往生成与应用的路径");
   disconnected.push(...missingInput, ...missingOutput);
   if (!fromScan.has("apply")) {
-    disconnected.push("apply");
+    if (!disabled.includes("apply")) disconnected.push("apply");
     issues.push("扫描资源与生成和应用之间缺少完整路径");
   }
-  return { issues, disconnected };
+  const enabledSteps = steps.filter(step => !disabled.includes(step));
+  return { issues, disconnected, enabledSteps, effectiveEdges: effectiveDeploymentEdges(accepted, enabledSteps) };
 }
 
 export function loadDeploymentPlan(root: string): DeploymentPlan {
@@ -144,7 +165,7 @@ export function loadDeploymentPlan(root: string): DeploymentPlan {
   } else {
     for (const [index, to] of order.slice(1).entries()) edges.push({ from: order[index], to });
   }
-  const disabled = deploymentPhases.filter(phase => Array.isArray(saved?.disabled) && saved.disabled.includes(phase));
+  const disabled = steps.filter(step => Array.isArray(saved?.disabled) && saved.disabled.includes(step));
   return { positions, edges, disabled };
 }
 
@@ -223,14 +244,16 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       : id === "mosaic" ? `${model.mosaic.count} 张`
       : model.applied ? "已应用" : model.patch ? "待应用" : "未生成",
   }));
-  const enabled = (id: DeploymentStep) => !isPhase(id) || !plan.disabled.includes(id);
+  const enabled = (id: DeploymentStep) => !plan.disabled.includes(id);
   const validation = validateDeploymentPlan(plan);
+  const savedEdgeKeys = new Set(plan.edges.map(edgeKey));
+  const bypassEdges = validation.effectiveEdges.filter(edge => !savedEdgeKeys.has(edgeKey(edge)));
   const candidate = wire?.candidate;
   const previewIssues = candidate
     ? candidate.issue ? [candidate.issue] : validateDeploymentPlan({ edges: [...candidate.others, candidate.edge], disabled: plan.disabled }).issues
     : validation.issues;
   const remaining = new Set(steps.filter(id => id === model.stoppedStep || !model.completed.includes(id)));
-  releaseSkipped(plan, remaining);
+  releaseSkipped({ ...plan, disabled: plan.disabled.filter(isPhase) }, remaining);
   const canRun = !!model.root && !locked && !run && !running;
   const canApply = !model.applied && (!!model.patch || model.patchReady && !deploymentPhases.some(id => enabled(id) && remaining.has(id)));
   const nodePoint = (step: DeploymentStep) => motion?.step === step ? motion.at : plan.positions[step];
@@ -431,6 +454,9 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
     </div>
     <div className="dpl-board" ref={board} style={{ transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${fit * view.zoom})` }}>
       <svg className="dpl-rails" width={fitWidth} height={boardHeight} aria-label="阶段依赖">
+        {bypassEdges.map(edge => <g key={edgeKey(edge)} className="dpl-edge" data-flow-bypass={edgeKey(edge)} aria-hidden="true">
+          <path className="dpl-edge-line" d={linkPath(portPoint(nodePoint(edge.from), "out"), portPoint(nodePoint(edge.to), "in"))} />
+        </g>)}
         {[...plan.edges].sort((a, b) => Number(edgeKey(a) === selected) - Number(edgeKey(b) === selected)).map(edge => {
           const key = edgeKey(edge), active = selected === key;
           const from = portPoint(nodePoint(edge.from), "out"), to = portPoint(nodePoint(edge.to), "in");

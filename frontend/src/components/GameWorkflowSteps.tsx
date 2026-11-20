@@ -8,6 +8,7 @@ type Props = {
   panelId?: string;
   edges?: { from: string; to: string }[];
   enabled?: string[];
+  skipped?: string[];
   disconnected?: string[];
 };
 
@@ -22,11 +23,13 @@ function moveFocus(event: KeyboardEvent<HTMLElement>) {
   tabs[next].focus();
 }
 
-export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, disconnected }: Props) {
+export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, skipped, disconnected }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
   const graphMode = edges !== undefined;
   const enabledIds = new Set(enabled ?? steps.map(step => step.id));
+  const skippedIds = new Set(skipped);
+  const isEnabled = (step: GameWorkflowStep) => enabledIds.has(step.id) && !skippedIds.has(step.id);
   const outgoing = new Map<string, Set<string>>();
   const incoming = new Map<string, Set<string>>();
   for (const { from, to } of edges ?? []) {
@@ -38,25 +41,27 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
     incoming.set(to, sources);
   }
   const disconnectedIds = new Set(disconnected);
-  const unlinked = (index: number) => disconnectedIds.has(steps[index].id);
+  const unlinked = (index: number) => isEnabled(steps[index]) && disconnectedIds.has(steps[index].id);
   const order = new Map(steps.map((step, index) => [step.id, index]));
   // A vertical rail segment represents every dependency that crosses that boundary.
   const crossings = (edges ?? []).flatMap(({ from, to }) => {
     const a = order.get(from), b = order.get(to);
     return a === undefined || b === undefined ? [] : [{ first: Math.min(a, b), last: Math.max(a, b) }];
   });
-  const selectedRunning = steps.findIndex(step => step.selected && step.running);
-  const flowingStep = selectedRunning >= 0 ? selectedRunning : steps.findIndex(step => step.running);
+  const selectedRunning = steps.findIndex(step => isEnabled(step) && step.selected && step.running);
+  const flowingStep = selectedRunning >= 0 ? selectedRunning : steps.findIndex(step => isEnabled(step) && step.running);
   const flowTrackCount = steps.length - 1;
   const selectedStep = steps.findIndex(step => step.selected);
   const highlightedTrack = Math.min(Math.max(0, selectedStep), flowTrackCount - 1);
-  const unfinished = steps.flatMap((step, index) => enabledIds.has(step.id) && step.state !== "complete" ? [index] : []);
-  const beamFrom = unfinished[0] ?? steps.length - 1;
-  const limit = graphMode || flowingStep < 0 ? steps.length - 1 : Math.max(beamFrom, flowingStep);
+  const enabledSteps = steps.flatMap((step, index) => isEnabled(step) ? [index] : []);
+  const unfinished = enabledSteps.filter(index => steps[index].state !== "complete");
+  const lastEnabled = enabledSteps.at(-1) ?? -1;
+  const beamFrom = unfinished[0] ?? lastEnabled;
+  const limit = graphMode || flowingStep < 0 ? lastEnabled : Math.max(beamFrom, flowingStep);
   const errorStep = unfinished.find(index => steps[index].state === "error");
   const beamTo = unfinished.length <= 1 ? beamFrom : Math.min(limit, errorStep ?? limit);
   const beamStatic = beamFrom === beamTo;
-  const beamActive = steps.length > 1;
+  const beamActive = enabledSteps.length > 1 && (unfinished.length > 0 || enabledSteps.length === steps.length);
   const stepOrder = JSON.stringify(steps.map(step => step.id));
 
   useLayoutEffect(() => {
@@ -100,19 +105,23 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
       } as CSSProperties} />}
       {steps.map((item, index) => {
         const next = steps[index + 1];
-        const flow = flowingStep >= 0 && index >= flowingStep;
+        const skippedStep = skippedIds.has(item.id);
+        const skippedNext = next && skippedIds.has(next.id);
+        const state = skippedStep ? "skipped" : item.state;
+        const flow = !skippedStep && flowingStep >= 0 && index >= flowingStep;
         const linked = item.selected || next?.selected;
         const missingInput = unlinked(index);
         const gap = graphMode && next && !crossings.some(({ first, last }) => first <= index && index < last);
         const fanOut = (outgoing.get(item.id)?.size ?? 0) >= 2;
         const fanIn = next && (incoming.get(next.id)?.size ?? 0) >= 2;
-        const parallel = !graphMode && item.running && next?.running;
-        const title = missingInput ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（依赖路径不完整）` : item.title;
-        return <div className={`game-workflow-node ${item.state}${missingInput ? " is-unlinked" : ""}`} key={item.id} role="presentation">
+        const parallel = !graphMode && !skippedStep && !skippedNext && item.running && next?.running;
+        const notice = skippedStep ? "已跳过" : missingInput ? "依赖路径不完整" : undefined;
+        const title = notice ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（${notice}）` : item.title;
+        return <div className={`game-workflow-node ${state}${missingInput ? " is-unlinked" : ""}`} key={item.id} role="presentation">
           <button id={idPrefix ? `${idPrefix}-${item.id}` : undefined} type="button" role="tab"
             tabIndex={item.selected ? 0 : -1} aria-selected={item.selected} aria-controls={panelId}
-            aria-current={item.running ? "step" : undefined} data-tooltip={title} aria-label={title} title={missingInput ? title : undefined}
-            className={`unity-step-tab${item.selected ? " is-selected" : ""}${item.running ? " is-active-task" : ""}${item.paused ? " is-paused-task" : ""}`}
+            aria-current={!skippedStep && item.running ? "step" : undefined} data-tooltip={title} aria-label={title} title={notice ? title : undefined}
+            className={`unity-step-tab${item.selected ? " is-selected" : ""}${!skippedStep && item.running ? " is-active-task" : ""}${!skippedStep && item.paused ? " is-paused-task" : ""}`}
             onClick={item.onSelect}>
             <span className="game-workflow-marker" aria-hidden="true" />
             {missingInput && <span className="game-workflow-alert" aria-hidden="true" />}
@@ -122,14 +131,14 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, di
             className={[
               "game-workflow-connector", linked && "is-linked", flow && "is-flowing",
               index === highlightedTrack && "is-flow-highlight",
-              item.state === "complete" && (next.state === "complete" ? "is-done" : "is-handed-off"),
+              state === "complete" && !skippedNext && (next.state === "complete" ? "is-done" : "is-handed-off"),
               parallel && "is-parallel", fanOut && "is-fan-out", fanIn && "is-fan-in",
               gap && "is-gap", unlinked(index + 1) && "is-unlinked",
             ].filter(Boolean).join(" ")}
             style={{
               "--track-flow-order": index,
               "--track-flow-count": flowTrackCount,
-              "--track-flow-to-tone": `var(--workflow-tone-${next.state}, var(--workflow-tone-pending))`,
+              "--track-flow-to-tone": `var(--workflow-tone-${skippedNext ? "skipped" : next.state}, var(--workflow-tone-pending))`,
             } as CSSProperties}>
             {parallel && <span className="game-workflow-bypass" aria-hidden="true" />}
             <span className="game-workflow-flow" aria-hidden="true" />

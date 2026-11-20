@@ -1440,7 +1440,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       await taskWrites.current; setActiveStep(images ? 3 : 2); setImagePart(!images);
     });
   }
-  async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint, excluded: DeploymentPhase[] = loadDeploymentPlan(root).disabled, deploymentBatch?: string) {
+  async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint, excluded: DeploymentPhase[] = loadDeploymentPlan(root).disabled.filter((id): id is DeploymentPhase => id !== "scan" && id !== "apply"), deploymentBatch?: string) {
     setBusy("生成补丁");
     const ids = unityLanguageScope(p.entries, run?.source || source, run?.onlySourceLanguage ?? onlySourceLanguage).ids;
     const patchTarget = run?.target ?? target;
@@ -2403,8 +2403,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
   const deploymentValidation = useMemo(() => validateDeploymentPlan(deploymentPlan), [deploymentPlan]);
-  const activePatch = patch && deploymentPlan.disabled.every(id => patchScope.includes(id)) ? patch : null;
-  const fullPatch = !!activePatch && patchScope.length === deploymentPlan.disabled.length;
+  const disabledPhases = deploymentPhases.filter(id => deploymentPlan.disabled.includes(id));
+  const activePatch = patch && disabledPhases.every(id => patchScope.includes(id)) ? patch : null;
+  const fullPatch = !!activePatch && patchScope.length === disabledPhases.length;
   const currentStoppedStep = deploymentStop?.root === root ? deploymentStop.step : null;
   const patchImages = (project?.images || []).filter(image => image.selected && unityImageReadyForTarget(image, target));
   const mosaicCount = (project?.images || []).filter(image => {
@@ -2430,8 +2431,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (!root || locked || deploymentController.current) return false;
     try {
       saveDeploymentPlan(root, plan);
-      if (plan.disabled.length !== deploymentPlan.disabled.length ||
-          plan.disabled.some(phase => !deploymentPlan.disabled.includes(phase))) {
+      if (deploymentPhases.some(phase => plan.disabled.includes(phase) !== deploymentPlan.disabled.includes(phase))) {
         invalidatePatch();
         setApplied(false);
         const saved = checkpointRef.current;
@@ -2496,7 +2496,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const mode = automatic ? "automatic" : "single";
     const layers: DeploymentStep[][] = automatic ? deploymentLayers(deploymentPlan) : action === "export" ? [["apply"]] : [[action], ["apply"]];
     const total = layers.flat().length;
-    const excluded = automatic || action === "export" ? deploymentPlan.disabled : deploymentPhases.filter(phase => phase !== action);
+    const excluded = automatic || action === "export" ? disabledPhases : deploymentPhases.filter(phase => phase !== action);
     const completed = new Set(automatic ? deploymentCompleted.filter(phase => phase !== currentStoppedStep) : []);
     const translationStep = { text: "text", images: "image" } as const;
     const committedBefore = checkpointRef.current;
@@ -2684,8 +2684,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     },
   };
   const deploymentPage = activeStep === 3;
-  const trackEdges = deploymentPage ? deploymentPlan.edges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
-  const trackEnabled = deploymentPage ? [deploymentStageId.scan, ...enabledPhases.map(id => deploymentStageId[id]), deploymentStageId.apply] : undefined;
+  const trackEdges = deploymentPage ? deploymentValidation.effectiveEdges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
+  const trackEnabled = deploymentPage ? deploymentValidation.enabledSteps.map(id => deploymentStageId[id]) : undefined;
+  const trackSkipped = deploymentPage ? deploymentPlan.disabled.map(id => deploymentStageId[id]) : undefined;
   return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
     {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
@@ -2701,7 +2702,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       maxWidth: "none",
     }}>
     <div className="unity-offline-upper unity-workflow-layout">
-      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled}
+      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} skipped={trackSkipped}
         disconnected={deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined} steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
         const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);
