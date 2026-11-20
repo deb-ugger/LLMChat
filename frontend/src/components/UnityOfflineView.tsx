@@ -1,7 +1,7 @@
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
 import { rememberRecentGameFailures } from "../unityLastGame";
-import { clearImageGroupHistory } from "../gameImageGroupChanges";
+import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { GameMosaicWorkbench, type MosaicCandidateIndex } from "./GameMosaicWorkbench";
@@ -58,7 +58,7 @@ import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslate
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
 import { countMissingGlyphEntries, legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
-import { UNITY_STAGE_TABS, unityImagesReady, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
+import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
@@ -85,12 +85,13 @@ const EMPTY_ENTRIES: UnityEntry[] = [];
 const unityImagePhaseNames = { filter: "筛选图片", refine: "复筛图片", recognize: "识字与定位", translate: "翻译图片文字",
   review: "复核与重译", render: "生成译图", redraw: "AI 风格重绘" } as const;
 type UnityImagePhase = keyof typeof unityImagePhaseNames;
-type UnityImageResetPhase = Exclude<UnityImagePhase, "translate" | "redraw">;
+type UnityImageResetPhase = Exclude<UnityImagePhase, "redraw">;
 const unityImagePhases = Object.keys(unityImagePhaseNames) as UnityImagePhase[];
 const imageResetDescriptions: Record<UnityImageResetPhase, string> = {
   filter: "清除初筛、复筛、识别、图片译文和译图，保留原图和文本译文。",
   refine: "恢复初筛结果，清除复筛、正式识别、图片译文和译图，保留原图和文本译文。",
   recognize: "清除识别、图片译文和译图，保留筛选结果。",
+  translate: "清除全部图片的区域译文、复核结果和译图，保留筛选与识别结果。",
   review: "恢复复核前的区域译文并清除译图，保留识别和初译结果。",
   render: "清除译图，保留识别结果和图片译文。",
 };
@@ -652,7 +653,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const imageReset = step === 2 && imagePart ? phase ?? "recognize" : undefined;
     if (imageReset && (!project || saving || imageEditorBusy || importPreview)) return;
     if (step === 1) {
-      if (!project || !await confirm("清除旧扫描进度及未安装的补丁、字库检查，已安装补丁和原件备份保留至下次应用。已有译文、原图、导入译图和勾选状态保留，扫描完成后匹配复用。", { title: "重新扫描资源", kind: "warning", okLabel: "清理并重新设置", cancelLabel: "取消" })) return;
+      if (!project || !await confirm("重新读取游戏资源，匹配后复用已有译文、图片处理结果和勾选状态。旧扫描进度、字库检查和未安装补丁将重新生成。", { title: "重新扫描资源", kind: "warning", okLabel: "继续重新扫描", cancelLabel: "取消" })) return;
       await operation("准备重新扫描", async () => {
         if (dirty) await save(); await taskWrites.current; await projectWrites.current;
         const workspace = await unityRun<UnityWorkspace<RunCheckpoint>>("prepare-rescan", { root, path: project.folder, task: { ...(checkpointRef.current || projectCheckpoint(project)), translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices, source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage, lineMode, lineModel, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters } });
@@ -679,8 +680,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const applyWorkspace = (workspace: UnityWorkspace<RunCheckpoint>) => {
         const p = workspace.saved.project;
         if (p?.images) p.images = p.images.map(normalizeUnityImageSelection);
-        if (p && imageReset === "filter" && workspace.task?.imageTask === "filter" && workspace.task.progress.state === "pending") {
-          clearImageGroupHistory(p.folder);
+        if (p && imageReset && workspace.task?.imageTask === imageReset && workspace.task.progress.state === "pending" &&
+            (imageReset === "filter" || imageReset === "refine" || imageReset === "recognize")) {
+          resetImageGroupHistory(p.folder);
           setImageResetRevision(value => value + 1);
         }
         latest.current = p; setProject(p);
@@ -706,6 +708,30 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         throw error;
       }
     }, false);
+  }
+  async function clearResourceScan() {
+    if (busy || mosaicBusy || restoring || saving || !project) return;
+    if (!await confirmation.ask("清理扫描及后续结果", "将清除扫描工程、文本译文、图片处理结果、去码候选和未安装补丁。游戏原件、已安装补丁及其恢复备份保留。")) return;
+    await operation("清理扫描及后续结果", async () => {
+      await taskWrites.current; await projectWrites.current;
+      const current = latest.current;
+      if (!current) return;
+      const { workspace } = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", {
+        root, step: 1, path: current.folder, task: checkpointRef.current || projectCheckpoint(current),
+      });
+      clearImageGroupHistory(current.folder);
+      try { localStorage.removeItem("llmchat-game-mosaic:" + root); } catch { /* Storage can be unavailable. */ }
+      clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
+      clearGamePerformance(promptState.scope + ":images", unityImagePhases);
+      latest.current = null;
+      setProject(null); setPreparingRescan(false); setPatch(null); setFontPlan(null); setApplied(false);
+      setGeneration(null); setLocalActivity(null); setMosaicStatus(undefined);
+      textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();
+      pendingImageMasks.current.clear(); pendingEdits.current.clear(); setDirty(false);
+      if (workspace.task) remember(workspace.task);
+      setActiveStep(1);
+      setMessage("扫描及后续结果已清理，可以从头扫描");
+    });
   }
   function queueProjectWrite<T>(job: () => Promise<T>): Promise<T> {
     const next = projectWrites.current.catch(() => {}).then(job); projectWrites.current = next; return next;
@@ -1520,7 +1546,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           try { await jobs.wait(automatic && !run.layoutOnly ? ["text", "images"] : [part || (run.imageOnly ? "images" : "text")]); }
           finally { translationJobs.current = null; await projectWrites.current; }
           p = latest.current || p;
-          if (automatic && !unityImagesReady(p, run.target)) {
+          if (automatic && !unityTranslationReadiness(p, [], unityTranslationError, false, run.target).imagesReady) {
             run.endStep = 2; run.automatic = false; run.progress = { ...run.progress, step: 2, state: "done", detail: "图片识别结果已保存" };
             if (followProgress.current) { setActiveStep(2); setImagePart(true); }
             break;
@@ -1536,7 +1562,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (controller.signal.aborted) throw new UnityPaused("");
         if (followProgress.current) {
           if (index === 2 && run.imageOnly && run.imageTask !== "render" && run.imageTask !== "redraw") { setActiveStep(2); setImagePart(true); }
-          else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityImagesReady(p, run.target)) { setActiveStep(2); setImagePart(true); }
+        else if (index === 2 && !run.imageOnly && !run.layoutOnly && !automatic && !unityTranslationReadiness(p, [], unityTranslationError, false, run.target).imagesReady) { setActiveStep(2); setImagePart(true); }
           else setActiveStep(run.layoutOnly ? 2 : Math.min(index + 1, GENERATION_STEPS.length));
         }
         if (index < endStep) { run.step = index + 1; run.progress = { step: index + 1, state: "running", detail: "等待开始下一步", completed: 0, total: null }; remember(run); }
@@ -1644,23 +1670,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setTextScreened(false);setTextScreenStarted(false);setTextScreenPaused(false);setPatch(null);setFontPlan(null);setGeneration(null);setDirty(false);
       clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
       logAction("文本筛选及后续译文、补丁已清理","success");
-    });
-  };
-  const clearImageTranslations = async () => {
-    if (!project || !await confirmation.ask("重新翻译", "将删除所选图片的区域译文和译图结果。")) return;
-    await operation("清理图片译文", async () => {
-      if (dirty) await save(); await taskWrites.current;
-      const reset = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", { root, step: 3, path: project.folder, task: checkpointRef.current || projectCheckpoint(project) });
-      if (reset.workspace.task) { remember(reset.workspace.task); await taskWrites.current; }
-      const clearingImages = (latest.current?.images || []).filter(image => image.selected);
-      const clearingRegions = clearingImages.reduce((sum,image) => sum + image.regions.filter(region => region.translation).length, 0);
-      showLocalActivity(`正在清理 ${clearingImages.length} 张图片的区域译文和译图`, "running", true);
-      editImages((latest.current?.images || []).filter(image => image.selected).map(image => ({ ...image, completed: false, renderedFile: "", renderedHash: "", error: "", regions: image.regions.map(({ beforeReview: _, ...region }) => ({ ...region, translation: "", error: "" })) })));
-      await save(); clearGamePerformance(promptState.scope + ":images", ["translate", "review", "render"]); setPatch(null); setFontPlan(null); setGeneration(null);
-      logAction(`清理完成：区域译文 ${clearingRegions} 条，所选图片 ${clearingImages.length} 张；识别区域与原图保留`, "success");
-      const clearedTask = checkpointRef.current;
-      if (clearedTask) { remember({...clearedTask, imageTask: undefined, translationRuns: clearedTask.translationRuns && {...clearedTask.translationRuns,images:{...clearedTask.translationRuns.images,state:"pending",completed:0,detail:"筛选和识别结果已保留，等待翻译"}}}); }
-      setMessage("图片译文缓存已清理，点击开始翻译继续");
     });
   };
   const retryTranslationEntry = async (id: string) => {
@@ -2077,7 +2086,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const imageRecognitionCleanupAvailable = !!project?.images?.some(image => image.ocrCompleted || image.renderedFile);
   const imageRun = checkpoint?.translationRuns?.images;
   const imageRunAttempted = !!imageRun && imageRun.state !== "pending" && imageRun.state !== "skipped";
-  const imageTranslationAttempted = (imageRunAttempted && checkpoint?.imageTask === "translate") || !!project?.images?.some(image => image.selected && (image.renderedFile || image.regions.some(region => !!region.translation)));
+  const imageTranslationAttempted = (imageRunAttempted && checkpoint?.imageTask === "translate") || !!project?.images?.some(image => image.renderedFile || image.regions.some(region => !!region.translation || !!region.beforeReview));
   const imageRecognitionAttempted = imageRecognitionCleanupAvailable || imageRunAttempted && checkpoint?.imageTask === "recognize";
   const imageScreeningAttempted = !!project?.images?.some(image => image.screening) || imageRunAttempted && checkpoint?.imageTask === "filter";
   const imageRefineAttempted = !!project?.images?.some(image => image.screening?.refineKey) || imageRunAttempted && checkpoint?.imageTask === "refine";
@@ -2240,9 +2249,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         onClick={() => void (preparingRescan ? startWorkflow(1, 1, false, false, true) : scanStarted ? restartStage(1) : startWorkflow(1, 1))}>
         {!preparingRescan && scanStarted ? "重新扫描资源" : "开始扫描"}
       </button>}
+      {activeStep === 1 && project && !busy && !restoring && !saving && <button type="button" className="unity-btn unity-btn-warning" onClick={() => void clearResourceScan()}>清理扫描</button>}
       {imageEditorBusy && <button className="unity-btn" onClick={() => imageEditorAbort.current?.abort()}>停止处理</button>}
       {generation && !viewingProgress && <button className="unity-btn" onClick={() => { setActiveStep(generation.step); setImagePart(!!checkpoint?.imageOnly); }}>查看进度</button>}
     </>}>
+    {activeStep === 2 && imagePart && readiness.manualReviewImages > 0 && !readiness.imagesSkipped &&
+      <p className="unity-task-detail">待人工确认 {readiness.manualReviewImages} 张。请在右侧分组处理，或跳过剩余内容。</p>}
     {scanResource ? <div className="unity-scan-current-resource">
       <span className="unity-scan-resource-path" data-tooltip={scanResource[1]}>{scanResource[1]}</span>
       <div className="unity-scan-resource-metrics"><span>对象 <b>{scanResource[2]}</b> / {scanResource[3]}</span><span>已提取 <b>{scanResource[4]}</b> 条文本</span></div>
@@ -2364,7 +2376,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               run: recognitionReady && !imageTextDone && !imageReviewReady ? () => startTranslationPart("images", "translate") : undefined,
               stop: partRunning && imageTask.current === "translate" ? () => stopPart("images") : undefined,
               stopDisabled: partStopping,
-              runDisabled: partActionDisabled, clear: canClearImageStep && imageTranslationAttempted ? () => void clearImageTranslations() : undefined },
+              runDisabled: partActionDisabled, clear: canClearImageStep && imageTranslationAttempted ? () => void restartStage(2, true, "translate") : undefined },
             { id: "review", title: "复核与重译", models: [{role:"review",id:imageReviewModel}],
               summary: imageReviewModel.split("/").pop() || "未配置复核模型", state: imageTextDone ? "done" : imageReviewReady ? "current" : "waiting",
               run: imageReviewReady ? () => startTranslationPart("images", "review") : undefined,

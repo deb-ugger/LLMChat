@@ -137,6 +137,19 @@ internal static class UnityMosaic
         return Status(request);
     }
 
+    internal static void ClearProcessingResults(string root)
+    {
+        if (!Directory.Exists(Path.Combine(GameWorkspace.WorkRoot(root), "mosaic"))) return;
+        var folder = Store(root);
+        EditIndex(folder, index => {
+            foreach (var path in Directory.EnumerateFiles(folder, "*.png")) {
+                if (Regex.IsMatch(Path.GetFileName(path), "^[a-f0-9]{64}-[0-9A-F]{64}\\.png$", RegexOptions.CultureInvariant))
+                    File.Delete(path);
+            }
+            index.Clear();
+        });
+    }
+
     internal static Dictionary<string, Candidate> Included(Project project)
     {
         var root = GameWorkspace.WorkRoot(project.Root);

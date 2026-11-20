@@ -19,14 +19,20 @@ export function clearImageGroupHistory(folder: string) {
   catch { /* Storage can be unavailable. */ }
 }
 
+export function resetImageGroupHistory(folder: string) {
+  try { localStorage.setItem(groupHistoryKey(folder), "[]"); }
+  catch { /* Storage can be unavailable. */ }
+}
+
 export function imageGroupHistory(folder?: string) {
   const key = folder && groupHistoryKey(folder);
-  let serialized = key ? localStorage.getItem(key) || "[]" : "[]";
+  const stored = key ? localStorage.getItem(key) : null;
+  let serialized = stored ?? "[]";
   let origins: Map<string, ImageOrigin | null>;
   try { origins = new Map(JSON.parse(serialized)); }
   catch { origins = new Map(); }
   let initialized = false;
-  let sawScreening = false;
+  let sawScreening = stored === "[]";
   return {
     origins,
     record(images: readonly UnityImage[], initialScreeningComplete: boolean) {

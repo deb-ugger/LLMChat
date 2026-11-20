@@ -334,7 +334,18 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       if (!image.ocrCompleted) {
         const lines = cached ?? await services.recognize(source!, stage => report(`${image.name} · ${stage}`),worker,image); signal.throwIfAborted();
         image.regions = lines.filter(line => line.text.trim()).map(line => ({ ...line, translation: "", error: "", selected: line.confidence >= confidenceThreshold }));
-        image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));image.ocrCompleted = true; image.error = ""; if(image.screening){const candidate=image.regions.some(region=>region.selected);image.screening={...image.screening,reviewSelected:false,state:candidate?"candidate":image.regions.length?"review":"no-text",reason:candidate?"正式识别完成":image.regions.length?"识别结果需复核":"未识别出文字"};}if(mode!=="recognize")await publish();
+        image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));
+        image.ocrCompleted = true;
+        image.error = "";
+        if (image.screening) {
+          const screening = image.screening;
+          const candidate = image.regions.some(region => region.selected);
+          image.screening = { ...screening, reviewSelected: false,
+            beforeRecognition: screening.beforeRecognition ?? { state: screening.state, reason: screening.reason },
+            state: candidate ? "candidate" : image.regions.length ? "review" : "no-text",
+            reason: candidate ? "正式识别完成" : image.regions.length ? "识别结果需复核" : "未识别出文字" };
+        }
+        if (mode !== "recognize") await publish();
       }
       image.regions = measureGameWork(services.timingScope, "processingMs", () => unityImageTranslationRegions(image.regions, confidenceThreshold, image));
       if (!unityImageHasText(image) || !canSelectUnityImage(image)) { image.selected = false; image.selectionManual = false; }

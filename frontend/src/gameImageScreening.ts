@@ -28,6 +28,7 @@ export type ImageScreening = {
   redrawError?: string;
   presence?: ImagePresence;
   beforeRefine?: Pick<ImageScreening, "state" | "reason" | "boxes">;
+  beforeRecognition?: Pick<ImageScreening, "state" | "reason">;
   initial?: Pick<ImageScreening, "state" | "reason" | "boxes">;
   reviewEvidenceMissing?: boolean;
   sourceSkip?: string;
@@ -119,6 +120,16 @@ export function restoreGameImageSourceSkip(image: UnityImage) {
   if (!image.screening?.sourceSkip) return image;
   const { sourceSkip, ...screening } = image.screening;
   return { ...image, selected: true, screening };
+}
+
+export function restoreGameImageRecognition(image: UnityImage): UnityImage {
+  const restored = restoreGameImageSourceSkip(image);
+  if (!restored.screening) return restored;
+  const { beforeRecognition, reviewSelected: _reviewSelected, ...screening } = restored.screening;
+  const previous = beforeRecognition ?? (["正式识别完成", "识别结果需复核", "未识别出文字"].includes(screening.reason)
+    ? { state: "candidate" as const, reason: "待正式识别" } : undefined);
+  return { ...restored, selected: previous && restored.selectionManual !== true ? previous.state === "candidate" : restored.selected,
+    screening: previous ? { ...screening, ...previous } : screening };
 }
 
 export function gameImageTranslationReadiness(recognitionReady: boolean, initialPending: boolean, hasUntranslated: boolean, reviewConfigured: boolean) {

@@ -349,6 +349,10 @@ public static class ImageResources
         Directory.CreateDirectory(Path.GetDirectoryName(RecoveryMarker(project))!);
         Program.WriteJson(RecoveryMarker(project), new { manualReset = true });
         foreach (var image in project.Images) {
+            if (image.Screening is JsonObject details) {
+                details.Remove("redrawSelected");
+                details.Remove("redrawError");
+            }
             if (phase is "review" or "render") {
                 if (image.RenderedFile.Length > 0) {
                     ClearRendered(image);
@@ -363,6 +367,7 @@ public static class ImageResources
                         restored = true;
                     }
                     if (restored) {
+                        image.Completed = false;
                         var failures = image.Regions.Count(region => region.Selected && region.Error.Length > 0);
                         image.Error = failures == 0 ? "" : $"{failures} 个文字区域翻译失败，已保留初译结果";
                     }
@@ -370,6 +375,15 @@ public static class ImageResources
                 continue;
             }
             ClearRendered(image);
+            if (phase == "translate") {
+                image.Completed = false; image.NoTranslationNeeded = false;
+                if (image.OcrCompleted && image.SourceFile.Length > 0) image.Error = "";
+                foreach (var region in image.Regions) {
+                    region.Translation = ""; region.TranslationTarget = null;
+                    region.BeforeReview = null; region.Error = "";
+                }
+                continue;
+            }
             image.OcrCompleted = false; image.Completed = false; image.NoTranslationNeeded = false;
             if (image.SourceFile.Length > 0) image.Error = "";
             if (phase == "filter") {
@@ -379,7 +393,7 @@ public static class ImageResources
                 image.Regions.Clear();
             } else if (phase == "refine") {
                 RestoreInitialScreening(image);
-            } else image.Regions.Clear();
+            } else RestoreScreeningBeforeRecognition(image);
         }
         project.ImagesSkipped = false;
     }
@@ -405,7 +419,7 @@ public static class ImageResources
                 screening["reason"] = "检测到可信的文字";
             }
         }
-        foreach (var key in new[] { "refineKey", "refineFailed", "beforeRefine", "presence", "sourceSkip" }) screening.Remove(key);
+        foreach (var key in new[] { "refineKey", "refineFailed", "beforeRefine", "beforeRecognition", "presence", "sourceSkip" }) screening.Remove(key);
         if (wasRefined) screening.Remove("reviewSelected");
         var restored = screening["state"]?.GetValue<string>();
         var initialRegions = screening["recognition"]?["lines"]?.Deserialize<List<ImageRegion>>(Program.Json);
@@ -422,6 +436,24 @@ public static class ImageResources
         }
         if (!manual && image.SelectionManual != true) image.Selected = restored == "candidate";
         if (restored == "failed" && image.SourceFile.Length > 0) image.Error = screening["reason"]?.GetValue<string>() ?? image.Error;
+    }
+
+    static void RestoreScreeningBeforeRecognition(ImageResource image) {
+        image.Regions.Clear();
+        if (image.Screening is not JsonObject screening) return;
+        var previous = screening["beforeRecognition"];
+        if (previous != null) {
+            screening["state"] = previous["state"]?.DeepClone();
+            screening["reason"] = previous["reason"]?.DeepClone();
+        } else if (screening["reason"]?.GetValue<string>() is "正式识别完成" or "识别结果需复核" or "未识别出文字") {
+            screening["state"] = "candidate";
+            screening["reason"] = "待正式识别";
+        }
+        screening.Remove("beforeRecognition");
+        screening.Remove("reviewSelected");
+        if (screening.Remove("sourceSkip") || previous != null || screening["reason"]?.GetValue<string>() == "待正式识别") {
+            if (image.SelectionManual != true) image.Selected = screening["state"]?.GetValue<string>() == "candidate";
+        }
     }
     public static void LoadStates(Project project, DateTime projectTime) {
         for (var index = 0; index < project.Images.Count; index++) {
@@ -489,7 +521,7 @@ public static class ImageResources
         if (project.Images.Count == 0 || File.Exists(RecoveryMarker(project))) return 0;
         var count = 0;
         foreach (var folder in Directory.EnumerateDirectories(projectsRoot, "unity-project-*").OrderByDescending(Directory.GetLastWriteTimeUtc)) {
-            if (Path.GetFullPath(folder).Equals(Path.GetFullPath(project.Folder), StringComparison.OrdinalIgnoreCase)) continue;
+            if (WorkflowReset.IsRetiredProject(folder) || Path.GetFullPath(folder).Equals(Path.GetFullPath(project.Folder), StringComparison.OrdinalIgnoreCase)) continue;
             var candidates = project.Images.Where(image => !image.OcrCompleted && image.Regions.Count == 0 && image.RenderedFile.Length == 0 && image.Error.Length == 0).ToList();
             if (candidates.Count == 0) break;
             var path = Path.Combine(folder, "unity-project.json"); if (!File.Exists(path)) continue;

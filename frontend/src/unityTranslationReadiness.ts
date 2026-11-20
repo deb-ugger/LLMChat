@@ -1,6 +1,7 @@
 import type { UnityEntry, UnityProject, UnityProgress } from "./unityOffline";
 import { unityTranslationStats, unityTranslationContextKey } from "./unityTranslationSession";
 import { unityImageReadyForTarget, unityImageWorkDone } from "./unityWorkflow";
+import { unityImageResultGroup } from "./unityImages";
 
 export function unityTranslationReadiness(project: UnityProject | null, selected: UnityEntry[], validate: (source: string, translation: string) => string, partial = false, target?: string) {
   const stats = unityTranslationStats(selected, validate, unityTranslationContextKey, target);
@@ -9,13 +10,14 @@ export function unityTranslationReadiness(project: UnityProject | null, selected
   const images = (project?.images || []).filter(image => image.selected);
   const validImages = images.filter(image => unityImageReadyForTarget(image, target));
   const completedImages = images.filter(image => unityImageWorkDone(image, target)).length;
-  const imagesComplete = !!project && (!images.length || (project.scanRevision || 0) >= 5 && completedImages === images.length);
+  const manualReviewImages = (project?.images || []).filter(image => unityImageResultGroup(image) === "manual-review").length;
+  const imagesComplete = !!project && !manualReviewImages && (!images.length || (project.scanRevision || 0) >= 5 && completedImages === images.length);
   return {
     stats, textComplete, textSkipped, textReady: !!project && (textComplete || textSkipped),
     validText: stats.coverageCompleted, missingText: selected.length - stats.coverageCompleted,
     imagesComplete, imagesSkipped: !!project?.imagesSkipped,
     imagesReady: !!project && (imagesComplete || !!project.imagesSkipped),
-    validImages: validImages.length, completedImages, totalImages: images.length, missingImages: images.length - completedImages,
+    validImages: validImages.length, completedImages, totalImages: images.length, missingImages: images.length - completedImages, manualReviewImages,
     hasPatchContent: stats.coverageChanged > 0 || validImages.length > 0,
   };
 }
@@ -32,6 +34,7 @@ export function unityCurrentPartProgress<T extends PartProgress>(progress: T | u
   const stats = part === "text" ? readiness.stats : { completed: readiness.completedImages, total: readiness.totalImages };
   const detail = complete ? part === "images" && !readiness.totalImages ? "没有选中的图片，无需处理" : part === "text" ? "所选文本均有有效译文" : "所选译图均已完成"
     : skipped ? "已完成结果保留，未完成内容保持原样"
+    : part === "images" && readiness.manualReviewImages > 0 ? `有 ${readiness.manualReviewImages} 张图片待人工确认，请处理后继续或跳过剩余内容`
     : `仍有 ${missing} ${part === "text" ? "种原文" : "张图片"}未完成，可继续处理或跳过剩余内容`;
   return { ...progress, ...stats, state, detail, failure: state === "error" ? progress.failure : undefined };
 }

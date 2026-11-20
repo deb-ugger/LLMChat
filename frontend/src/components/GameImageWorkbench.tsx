@@ -1,5 +1,5 @@
 import { GameMosaicWorkbench } from "./GameMosaicWorkbench";
-import { matchImagePatchConflicts } from "../gameImageGroupChanges";
+import { matchImagePatchConflicts, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { showAppNotice } from "./AppNotice";
 import type { BenchmarkImageSource } from "./GameTextBenchmarkDialog";
 import { beginGameStep, finishGameStep, modelConcurrency, clearGamePerformance, measureGameAsync } from "../gameModelPerformance";
@@ -25,7 +25,7 @@ import { createPortal } from "react-dom";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import {useGameImageTask,imageTaskDuration,type GameImageTask} from "../hooks/useGameImageTask";
 import { LocalPaddleOcr } from "../ocr/paddleOcr";
-import { classifyImageText, screenGameImages, ScreeningModelError, needsGameImageScreening, needsGameImageRefinement, restoreReviewSelection, clearGameImageRefinement, refineGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, imagePresenceThresholds, imageRefinementKeyMatches, gameImageAlreadyTarget, gameImageMatchesSource, skipGameImageOutsideSource, restoreGameImageSourceSkip, gameImageTranslationReadiness, GAME_IMAGE_SCREENING_LANES, localGameImageScreeningLanes } from "../gameImageScreening";
+import { classifyImageText, screenGameImages, ScreeningModelError, needsGameImageScreening, needsGameImageRefinement, restoreReviewSelection, clearGameImageRefinement, refineGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, imagePresenceThresholds, imageRefinementKeyMatches, gameImageAlreadyTarget, gameImageMatchesSource, skipGameImageOutsideSource, restoreGameImageSourceSkip, restoreGameImageRecognition, gameImageTranslationReadiness, GAME_IMAGE_SCREENING_LANES, localGameImageScreeningLanes } from "../gameImageScreening";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { API_BASE, type OcrMode, type Settings } from "../api";
@@ -35,7 +35,7 @@ import { buildUnityTranslateOptions, UNITY_LANGUAGES } from "../unityTranslation
 import { createUnityEnginePool, normalizeUnityEngines } from "../unityEnginePool";
 import { UnityEngineList } from "./UnityEngineList";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
-import { normalizeUnityImageSelection, createUnityImageOcr, translateCurrentUnityImage, mergeUnityOcrLines, processUnityImages, unityImageTranslationRegions } from "../unityImages";
+import { normalizeUnityImageSelection, createUnityImageOcr, translateCurrentUnityImage, mergeUnityOcrLines, processUnityImages, unityImageResultGroup, unityImageTranslationRegions } from "../unityImages";
 import type { UnityImage, UnityImageRegion, UnityProgress, UnityProject } from "../unityOffline";
 import { unityImageReadyForTarget, unityImageWorkDone, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget } from "../unityWorkflow";
 import { ImagePreviewReaderContext, UnityImageWorkbench } from "./UnityImageWorkbench";
@@ -496,7 +496,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const refineUpdateRequired = !!refineKey && images.some(image => needsRefinement(image) && !!image.screening?.refineKey && !imageRefinementKeyMatches(image.screening.refineKey, refineKey));
   const redrawCount = images.filter(gameImageRedrawSelected).length;
   const complete=useMemo(()=>({restore:false,filter:images.length>0&&!images.some(needsGameImageScreening),refine:!refineNeedsResume&&!images.some(needsRefinement),recognize:selected.every(image=>image.ocrCompleted),translate:selected.every(image=>unityImageWorkDone(image,target))}),[images,selected,refineKey,refineNeedsResume,target]);
-  useEffect(()=>{onTaskStateChange?.({state:!busy&&task.task&&progress?.state!=="error"?"stopped":progress?.state||"idle",stage:step,complete:!!project&&(images.length===0||complete.filter&&complete.refine&&!redrawCount&&selected.every(image=>unityImageWorkDone(image,target))),count:project?images.length:null,folder:project?.folder||"",exists:existing,loaded:!!project,selected:selected.length,valid:selected.filter(image=>unityImageReadyForTarget(image,target)).length});},[busy,task.task,progress?.state,step,project?.folder,images.length,existing,selected,complete.filter,complete.refine,complete.translate,redrawCount,onTaskStateChange,target]);
+  const manualReviewPending = images.some(image => unityImageResultGroup(image) === "manual-review");
+  useEffect(()=>{onTaskStateChange?.({state:!busy&&task.task&&progress?.state!=="error"?"stopped":progress?.state||"idle",stage:step,complete:!!project&&(images.length===0||complete.filter&&complete.refine&&!manualReviewPending&&!redrawCount&&selected.every(image=>unityImageWorkDone(image,target))),count:project?images.length:null,folder:project?.folder||"",exists:existing,loaded:!!project,selected:selected.length,valid:selected.filter(image=>unityImageReadyForTarget(image,target)).length});},[busy,task.task,progress?.state,step,project?.folder,images.length,existing,selected,complete.filter,complete.refine,complete.translate,manualReviewPending,redrawCount,onTaskStateChange,target]);
   const resetImages = async (phase: keyof typeof resetLabels) => {
     const label = resetLabels[phase];
     const descriptions = {
@@ -513,11 +514,15 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       const clearScreening = phase === "filter" || phase === "cache";
       const clearRecognition = clearScreening || phase === "refine" || phase === "recognize";
       const rows = (base.images || []).map(image => {
-        const restored = clearRecognition ? restoreGameImageSourceSkip(image) : image;
+        const restored = clearRecognition ? restoreGameImageRecognition(image) : image;
         const next = { ...(phase === "refine" ? clearGameImageRefinement(restored) : restored), completed: false, noTranslationNeeded: false, error: image.sourceFile ? "" : image.error };
+        if (next.screening) {
+          const { redrawError: _error, redrawSelected: _selected, ...screening } = next.screening;
+          next.screening = screening;
+        }
         if (clearScreening) Object.assign(next, { screening: undefined, selected: false, selectionManual: false });
         if (clearRecognition) Object.assign(next, { ocrCompleted: false, regions: [] });
-        if (phase === "translate") next.regions = image.regions.map((region:ReviewedRegion) => {const {beforeReview:_,...rest}=region;return {...rest,translation:"",error:""};});
+        if (phase === "translate") next.regions = image.regions.map((region:ReviewedRegion) => {const {beforeReview:_,...rest}=region;return {...rest,translation:"",translationTarget:undefined,error:""};});
         if (phase === "review") next.regions = image.regions.map((region:ReviewedRegion)=>{const {beforeReview,...rest}=region;return beforeReview?{...rest,...beforeReview}:region;});
         return next;
       });
@@ -530,10 +535,13 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       task.reset();
       setImagePhaseStarted(phase === "review" ? "translate" : phase === "translate" ? "recognize" : (phase === "recognize" || phase === "refine") ? "filter" : phase === "filter" ? "cache" : "initial");
       setStep(phase === "cache" ? "filter" : phase === "review" ? "translate" : phase);
-      if (clearScreening) setImageResetRevision(value => value + 1);
+      if (clearRecognition) {
+        resetImageGroupHistory(base.folder);
+        setImageResetRevision(value => value + 1);
+      }
     });
     if (cleared) {
-      const order = ["filter", "refine", "recognize", "translate", "review", "render"];
+      const order = ["filter", "refine", "recognize", "translate", "review", "render", "redraw"];
       clearGamePerformance(promptState.scope + ":images", order.slice(phase === "cache" ? 0 : order.indexOf(phase)));
       setProgress(null);
     }
@@ -628,6 +636,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         }
         if (current.current.images.some(gameImageRedrawSelected) &&
             !await advance("redraw", () => automaticSteps.current.redraw())) return false;
+        if (current.current.images.some(image => unityImageResultGroup(image) === "manual-review")) {
+          onMessage("还有图片待人工确认，请处理后继续或跳过剩余内容", "warning");
+          return false;
+        }
         return current.current.images.filter(image => image.selected).every(image => unityImageWorkDone(image,target));
       } finally { signal.removeEventListener("abort",stop); }
     },

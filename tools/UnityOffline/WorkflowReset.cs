@@ -5,14 +5,16 @@ using System.Text.Json.Nodes;
 namespace LLMChat.UnityOffline;
 
 public sealed record ResetResult(int Step, WorkspaceResult Workspace);
-public sealed record ResetPlan(int Step, string Project, string[] Delete, string[] Restore, JsonNode Task, bool Restored = false, bool ImageOnly = false, string ImageResetPhase = "");
+public sealed record ResetPlan(int Step, string Project, string[] Delete, string[] Restore, JsonNode Task, bool Restored = false, bool ImageOnly = false, string ImageResetPhase = "", string[]? Retained = null);
 
 public static class WorkflowReset
 {
+    const string RetiredMarker = "reset-retained.json";
+    internal static bool IsRetiredProject(string folder) => File.Exists(Path.Combine(folder, RetiredMarker));
     static string Full(string path) => Path.GetFullPath(path).TrimEnd('\\', '/');
     static bool Same(string a, string b) => string.Equals(Full(a), Full(b), StringComparison.OrdinalIgnoreCase);
     static bool ValidImageReset(int step, bool imageOnly, string phase) =>
-        string.IsNullOrEmpty(phase) || step == 2 && imageOnly && phase is "filter" or "refine" or "recognize" or "review" or "render";
+        string.IsNullOrEmpty(phase) || step == 2 && imageOnly && phase is "filter" or "refine" or "recognize" or "translate" or "review" or "render";
     static void NoLinks(string path)
     {
         if (!Directory.Exists(path)) return;
@@ -80,6 +82,11 @@ public static class WorkflowReset
         task["projectFolder"] = step == 1 ? "" : folders[0]; task["scanFolder"] = ""; task["previousProjectFolder"] = "";
         task["patchFolder"] = reusable;
         if (step != 4) task["patch"] = null;
+        if (step == 1) {
+            task["translationRuns"] = null; task["imageTask"] = null;
+            task["imageOnly"] = false; task["imageChain"] = false; task["layoutOnly"] = false;
+            task["scanElapsedMs"] = 0;
+        }
         if (step <= 2 && !request.ImageOnly) { task["partial"] = false; task["translationFailure"] = null; }
         if (imagePhaseReset) {
             task["imageOnly"] = true;
@@ -91,11 +98,12 @@ public static class WorkflowReset
             var retainedMeters = runs[part]?["engineStats"]?.DeepClone();
             runs[part] = new JsonObject { ["step"] = 2, ["state"] = "pending", ["completed"] = 0, ["total"] = null, ["detail"] = "可调整参数后重新开始", ["engineStats"] = retainedMeters };
         }
-        task["progress"] = new JsonObject { ["step"] = previous, ["state"] = imagePhaseReset ? "pending" : "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
+        task["progress"] = new JsonObject { ["step"] = previous, ["state"] = imagePhaseReset || step == 1 ? "pending" : "done", ["completed"] = 0, ["total"] = 0, ["detail"] = "可调整参数后重新开始" };
         var installedProjects = folders.Concat(obsolete).Where(folder => Directory.GetDirectories(folder, "patch-*").Any(PatchInstallation.HasApplied)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plan = new ResetPlan(step, step == 1 ? "" : Path.GetRelativePath(work, folders[0]),
             (step == 1 ? folders : patches.Where(p => reusable.Length == 0 || !Same(p, reusable)).Where(p => !obsolete.Any(old => Same(Path.GetDirectoryName(p)!, old))).Concat(step < 4 ? fontPlans : []).Concat(obsolete)).Select(p => Path.GetRelativePath(work, p)).ToArray(),
-            restore.Select(p => Path.GetRelativePath(work, p)).ToArray(), GameWorkspace.PackTask(root, task), ImageOnly: request.ImageOnly, ImageResetPhase: request.ImageResetPhase);
+            restore.Select(p => Path.GetRelativePath(work, p)).ToArray(), GameWorkspace.PackTask(root, task), ImageOnly: request.ImageOnly, ImageResetPhase: request.ImageResetPhase,
+            Retained: step == 1 ? installedProjects.Select(p => Path.GetRelativePath(work, p)).ToArray() : null);
         if (step != 4) plan = plan with { Delete = plan.Delete.Where(relative => {
             var target = Program.Within(work, relative);
             return !installedProjects.Contains(target) && !PatchInstallation.HasApplied(target);
@@ -231,6 +239,14 @@ public static class WorkflowReset
             if (!Same(Path.GetDirectoryName(retained)!, project) || !Path.GetFileName(retained).StartsWith("patch-", StringComparison.Ordinal)) throw new Exception("保留补丁不属于当前工程");
             NoLinks(retained);
             File.Delete(Path.Combine(retained, "application-state.json"));
+        }
+        if (plan.Step == 1) {
+            foreach (var relative in plan.Retained ?? []) {
+                var folder = Program.Within(work, relative);
+                OwnedProject(root, projects, folder);
+                Program.WriteJson(Path.Combine(folder, RetiredMarker), new { installedBackup = true });
+            }
+            UnityMosaic.ClearProcessingResults(root);
         }
         GameWorkspace.SaveTask(new Request { Root = root, Task = plan.Task });
         for (var index = 0; index < targets.Length; index++) {

@@ -302,6 +302,7 @@ public static class Program
         var root = System.IO.Path.GetFullPath(request.Root).TrimEnd('\\', '/');
         var options = new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint };
         var candidates = Directory.EnumerateDirectories(request.OutputRoot, "unity-project-*", options)
+            .Where(folder => !WorkflowReset.IsRetiredProject(folder))
             .Select(folder => System.IO.Path.Combine(folder, "unity-project.json")).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc);
         foreach (var path in candidates)
         {
