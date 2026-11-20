@@ -147,7 +147,27 @@ export function deriveRailView(
   const from = unfinished[0] ?? lastEnabled;
   const limit = graphMode || running < 0 ? lastEnabled : Math.max(from, running);
   const errorStep = unfinished.find(index => steps[index].state === "error");
-  const to = unfinished.length <= 1 ? from : Math.min(limit, errorStep ?? limit);
+  let to = unfinished.length <= 1 ? from : Math.min(limit, errorStep ?? limit);
+  if (graphMode && to > from) {
+    // Animate only through the contiguous dependency interval reachable from the first unfinished step.
+    const reached = new Set([from]);
+    const pending = isUnlinked(steps[from]) ? [] : [from];
+    const segments = new Set<number>();
+    for (const index of pending) {
+      for (const id of outgoing.get(steps[index].id) ?? []) {
+        const target = order.get(id)!;
+        if (isUnlinked(steps[target])) continue;
+        for (let lane = Math.min(index, target); lane < Math.max(index, target); lane++) segments.add(lane);
+        if (!reached.has(target)) {
+          reached.add(target);
+          pending.push(target);
+        }
+      }
+    }
+    let end = from;
+    while (end < to && segments.has(end)) end++;
+    to = end;
+  }
 
   const nodes = steps.map(step => ({
     id: step.id,
