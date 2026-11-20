@@ -111,10 +111,8 @@
 }
 .game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
 
-}
-
 /* 两端都完成的段：轨道本体变实心绿，光带走完就不再亮。 */
-.game-workflow-connector.is-done {
+.game-workflow-connector.is-done:not(.is-skipped, .is-gap, .is-unlinked) {
   --track-rail: linear-gradient(to bottom,
     var(--success, #2f6b46) 0 100%);
   --track-ties: repeating-linear-gradient(to bottom,
@@ -126,7 +124,7 @@
 .game-workflow-connector.is-done .game-workflow-glint { display: none; }
 
 /* 上端完成、下端正在跑：轨道从绿过渡到下一步的状态色。 */
-.game-workflow-connector.is-handed-off {
+.game-workflow-connector.is-handed-off:not(.is-skipped, .is-gap, .is-unlinked) {
   --track-rail: linear-gradient(to bottom,
     var(--success, #2f6b46) 0,
     color-mix(in srgb, var(--success, #2f6b46) 55%, var(--text-muted)) 42%,
@@ -886,31 +884,31 @@
 .game-workflow-connector .game-workflow-flow,
 .game-workflow-connector .game-workflow-glint { display: none; }
 
-}
-
 @media (prefers-reduced-motion: reduce) {
   .game-workflow-connector,
   .game-workflow-node .is-active-task .game-workflow-marker { animation: none; }
 }
 
-/* 并行区间：轨道本身就是"双股粗缆"——加粗、两色渐变，不额外画第二条线。
-   颜色仍取自状态（--track-flow-from-tone → --track-flow-to-tone），
-   所以已完成段是绿、交接段是绿→蓝、待办段是灰，不会被并行标识强奸颜色。 */
-.game-workflow-connector.is-parallel-lane {
+/* 跳过、断线和依赖缺失优先保留各自的轨道。 */
+.game-workflow-connector.is-parallel-lane:not(.is-skipped, .is-gap, .is-unlinked) {
+  --cable-from-tone: var(--track-flow-from-tone, var(--workflow-tone-current, #3265b6));
+  --cable-to-tone: var(--track-flow-to-tone, var(--workflow-tone-current, #3265b6));
+  --track-rail: none;
+  --track-ties: none;
   inline-size: 8px;
   border-radius: 4px;
   background: linear-gradient(to bottom,
-    color-mix(in srgb, var(--track-flow-from-tone, var(--workflow-tone-current, #3265b6)) 88%, transparent),
-    color-mix(in srgb, var(--track-flow-to-tone, var(--workflow-tone-current, #3265b6)) 88%, transparent));
-  --track-rail: none;
-  --track-ties: none;
-  box-shadow: 0 0 9px color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 32%, transparent);
+    color-mix(in srgb, var(--cable-from-tone) 88%, transparent),
+    color-mix(in srgb, var(--cable-to-tone) 88%, transparent));
+  box-shadow: 0 0 9px color-mix(in srgb, var(--cable-to-tone) 32%, transparent);
+}
+.game-workflow-connector.is-parallel-lane.is-done:not(.is-skipped, .is-gap, .is-unlinked) {
+  --cable-from-tone: var(--success, #2f6b46);
+  --cable-to-tone: var(--cable-from-tone);
 }
 
-/* 并行区间的入口（分叉那一格）挂一个极小 ×2 角标，说明这段是两路并跑。
-   只在 is-fan-out 上挂一次，不会每段都冒出来。 */
-.game-workflow-connector.is-fan-out { overflow: visible; }
-.game-workflow-connector.is-fan-out::after {
+/* ×2 只标在启用的分叉粗缆上。 */
+.game-workflow-connector.is-fan-out.is-parallel-lane:not(.is-skipped, .is-gap, .is-unlinked)::after {
   content: "×2";
   position: absolute;
   inset-inline-end: -14px;
@@ -920,8 +918,8 @@
   letter-spacing: .2px;
   padding: 1px 3px;
   border-radius: 3px;
-  color: color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 70%, #ffffff);
+  color: color-mix(in srgb, var(--cable-to-tone) 70%, #ffffff);
   background: rgba(18, 21, 26, .92);
-  border: 1px solid color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 42%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cable-to-tone) 42%, transparent);
   pointer-events: none;
 }
