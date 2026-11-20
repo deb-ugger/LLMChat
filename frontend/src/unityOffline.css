@@ -111,20 +111,49 @@
 }
 .game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
 
-/* 并行：分叉出去的那一段在左侧补一条支线，汇入的段在右侧补，形成"两条同时在送" */
+/* 并行：分叉/汇合的段在轨道右侧多出一条独立车道，与主线形成双轨。
+   用绝对定位画，不改变轨道宽度（轨道列只有 42px，撑宽会把节点文字挤出去）。 */
+.game-workflow-connector.is-fan-out,
+.game-workflow-connector.is-fan-in { overflow: visible; }
+
 .game-workflow-connector.is-fan-out::before,
+.game-workflow-connector.is-fan-in::before {
+  content: "";
+  position: absolute;
+  inset-inline-end: -9px;
+  inline-size: 2px;
+  border-radius: 999px;
+  background: linear-gradient(to bottom,
+    transparent,
+    color-mix(in srgb, var(--workflow-tone-current, #3265b6) 80%, transparent) 9%,
+    color-mix(in srgb, var(--workflow-tone-current, #3265b6) 80%, transparent) 91%,
+    transparent);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 50%, transparent));
+  pointer-events: none;
+  animation: game-workflow-lane-glow 2.4s ease-in-out infinite;
+}
+.game-workflow-connector.is-fan-out::before { inset-block-start: 0; block-size: calc(100% + 6px); }
+.game-workflow-connector.is-fan-in::before { inset-block-end: 0; block-size: calc(100% + 6px); }
+
+/* 分叉/汇合那一点横向搭桥，让"两条线"读得出来，而不是一根多余的平行线 */
+.game-workflow-connector.is-fan-out::after,
 .game-workflow-connector.is-fan-in::after {
   content: "";
   position: absolute;
-  inset-block: 6%;
-  inset-inline-start: -7px;
-  inline-size: 2px;
+  inset-inline-end: -9px;
+  inline-size: 9px;
+  block-size: 2px;
   border-radius: 2px;
-  background: linear-gradient(to bottom, transparent, var(--workflow-tone-current, #3265b6) 22%,
-    var(--workflow-tone-current, #3265b6) 78%, transparent);
-  opacity: .6;
+  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 80%, transparent);
+  pointer-events: none;
 }
-.game-workflow-connector.is-fan-in::after { inset-inline-start: auto; inset-inline-end: -7px; }
+.game-workflow-connector.is-fan-out::after { inset-block-start: 0; }
+.game-workflow-connector.is-fan-in::after { inset-block-end: 0; }
+
+@keyframes game-workflow-lane-glow {
+  0%, 100% { opacity: .5; }
+  50% { opacity: 1; }
+}
 
 /* 两端都完成的段：轨道本体变实心绿，光带走完就不再亮。 */
 .game-workflow-connector.is-done {
