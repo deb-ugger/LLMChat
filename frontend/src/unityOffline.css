@@ -907,19 +907,22 @@
   --cable-to-tone: var(--cable-from-tone);
 }
 
-/* ×2 只标在启用的分叉粗缆上。 */
-.game-workflow-connector.is-fan-out.is-parallel-lane:not(.is-skipped, .is-gap, .is-unlinked)::after {
-  content: "×2";
+/* 「并联」角标只出现在并行支路之间那段缆的中线上。 */
+.game-workflow-connector.is-parallel-first:not(.is-skipped, .is-gap, .is-unlinked)::after {
+  content: "并联";
   position: absolute;
-  inset-inline-end: -14px;
-  inset-block-start: 4px;
-  font-size: 8.5px;
+  inset-inline-start: 50%;
+  inset-block-start: 50%;
+  translate: -50% -50%;
+  font-size: 9px;
   line-height: 1;
-  letter-spacing: .2px;
-  padding: 1px 3px;
-  border-radius: 3px;
-  color: color-mix(in srgb, var(--cable-to-tone) 70%, #ffffff);
-  background: rgba(18, 21, 26, .92);
-  border: 1px solid color-mix(in srgb, var(--cable-to-tone) 42%, transparent);
+  letter-spacing: .5px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--cable-to-tone) 60%, #ffffff);
+  background: rgba(18, 21, 26, .95);
+  border: 1px solid color-mix(in srgb, var(--cable-to-tone) 45%, transparent);
+  box-shadow: 0 0 0 2px var(--bg-app, #0b0c0e);
   pointer-events: none;
+  z-index: 3;
 }
