@@ -62,7 +62,7 @@ import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLega
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
-import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, type DeploymentActions, type DeploymentFlow, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
+import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, scanMosaic, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
@@ -98,7 +98,7 @@ const imageResetDescriptions: Record<UnityImageResetPhase, string> = {
   render: "清除译图，保留识别结果和图片译文。",
 };
 const deploymentLabel: Record<DeploymentStep, string> = { scan: "扫描资源", text: "文本翻译", image: "图片翻译", mosaic: "图片去码", apply: "生成与应用" };
-const deploymentStageId = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" } as const;
+const deploymentStageId = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" } as const satisfies Record<DeploymentStep, (typeof UNITY_STAGE_TABS)[number]["id"]>;
 
 type DeploymentPatch = UnityPatch & { deploymentExcluded?: DeploymentPhase[] };
 
@@ -128,8 +128,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
   const [deploymentPlanState, setDeploymentPlanState] = useState<{ root: string; plan: DeploymentPlan }>();
-  const [deploymentFlow, setDeploymentFlow] = useState<{ root: string; flow: DeploymentFlow }>();
-  const receiveDeploymentFlow = useCallback((flow: DeploymentFlow) => setDeploymentFlow({ root, flow }), [root]);
   const [deploymentRun, setDeploymentRun] = useState<DeploymentRun | null>(null);
   const [deploymentStop, setDeploymentStop] = useState<{ root: string; step: DeploymentStep }>();
   const [mosaicCompleted, setMosaicCompleted] = useState("");
@@ -260,7 +258,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const panelMinWidth = 300;
   const [panelMaxWidth, setPanelMaxWidth] = useState(900);
   const panelWidth = usePersistedWidth("unity-offline-panel-width", 480, panelMinWidth, panelMaxWidth);
-  const panelDrag = useRef<{ pointerId: number; x: number; width: number } | null>(null);
+  const panelDrag = useRef<{ pointerId: number; x: number; width: number; latest: number } | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const workspace = workspaceRef.current;
@@ -284,11 +283,20 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const divider = event.currentTarget;
     const delta = (event.clientX - drag.x) / divider.currentCSSZoom;
     const width = Math.min(panelMaxWidth, Math.max(panelMinWidth, drag.width + delta));
-    if (commit) {
-      if (width !== drag.width) panelWidth.setWidth(width);
-    } else {
-      divider.style.translate = `${width - drag.width}px 0`;
+    drag.latest = width;
+    if (!commit) {
+      // 直接把宽度写到节点上：布局跟着指针实时走，但不触发 2000 行组件的重渲染。
+      if (panelRef.current) {
+        panelRef.current.style.width = `calc(${width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`;
+      }
+      return;
     }
+    // 松手时保留当前宽度再交给 React 落库：React 会把同一个值写回内联样式，
+    // 中途不清空，避免出现一帧「宽度归零」的塌陷。
+    if (panelRef.current) {
+      panelRef.current.style.width = `calc(${width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`;
+    }
+    if (width !== panelWidth.width) panelWidth.setWidth(width);
   }
 
   const workflowRef = useRef<HTMLElement>(null);
@@ -2327,9 +2335,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         onLocate={locateTranslationFailure} />}
   </GameStepProgress>;
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
-  const trackFlow = deploymentFlow?.root === root ? deploymentFlow.flow : deploymentPlan;
-  const trackEdges = trackFlow.edges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] }));
-  const trackEnabled = [deploymentStageId.scan, ...deploymentPhases.filter(id => !trackFlow.disabled.includes(id)).map(id => deploymentStageId[id]), deploymentStageId.apply];
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
   const activePatch = patch && deploymentPlan.disabled.every(id => patchScope.includes(id)) ? patch : null;
   const fullPatch = !!activePatch && patchScope.length === deploymentPlan.disabled.length;
@@ -2608,6 +2613,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     },
   };
   const deploymentPage = activeStep === 3;
+  const trackEdges = deploymentPage ? deploymentPlan.edges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
+  const trackEnabled = deploymentPage ? [deploymentStageId.scan, ...enabledPhases.map(id => deploymentStageId[id]), deploymentStageId.apply] : undefined;
   return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
     {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
@@ -2617,7 +2624,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!project || !!busy || saving || restoring || !!importPreview} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
       <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbarTarget)}
-    <aside className="unity-offline-config" style={deploymentPage || mosaicPage ? undefined : {
+    <aside ref={panelRef} className="unity-offline-config" style={deploymentPage || mosaicPage ? undefined : {
       width: `calc(${panelWidth.width}px + var(--workflow-rail-width) + var(--workflow-column-gap))`,
       minWidth: 0,
       maxWidth: "none",
@@ -2625,7 +2632,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     <div className="unity-offline-upper unity-workflow-layout">
       <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
-        const canvasRunning = deploymentRun?.steps.includes(step === 1 ? "scan" : step === 3 ? "apply" : id === "2.3" ? "mosaic" : tab.imageOnly ? "image" : "text");
+        const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);
         if (id === "2.3") {
           const running = canvasRunning ?? mosaicBusy;
           return { id, label, state: running ? "current" : hasMosaic ? "complete" : scanReady ? "current" : "pending",
@@ -2838,7 +2845,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         </div></GameFlowSequence></GamePromptContext.Provider>}
         {activeStep === 2 && !imagePart && (textBatch || textTransfer) && <div className="unity-step-batch">{textBatch}{textTransfer}</div>}
         {deploymentPage && <div className="unity-deployment-page">
-          <UnityDeploymentPanel model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep} onFlowChange={receiveDeploymentFlow}
+          <UnityDeploymentPanel model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep}
             mosaic={<GameMosaicPatchButton gamePath={root} label="安装或卸载" disabled={!root || !!busy || mosaicBusy || restoring || saving} />} />
         </div>}
         </>}
@@ -2855,14 +2862,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (event.button !== 0 || panelDrag.current) return;
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
-        panelDrag.current = { pointerId: event.pointerId, x: event.clientX, width: panelWidth.width };
+        panelDrag.current = { pointerId: event.pointerId, x: event.clientX, width: panelWidth.width, latest: panelWidth.width };
       }}
       onPointerMove={event => resizePanel(event, false)}
       onPointerUp={event => resizePanel(event, true)}
       onLostPointerCapture={event => {
         if (panelDrag.current?.pointerId !== event.pointerId) return;
         panelDrag.current = null;
-        event.currentTarget.style.translate = "";
       }}
       onKeyDown={event => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;

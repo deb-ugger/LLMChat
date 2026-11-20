@@ -79,6 +79,10 @@
     transparent 0 10px,
     color-mix(in srgb, var(--text-muted) 38%, transparent) 10px 12px);
   --track-flow-from-tone: var(--step-tone, var(--workflow-tone-pending));
+  /* 兜底：某些页面（生成与应用左轨）不注入 order/count，缺了会让 linear() 缓动整体失效、光完全不动。 */
+  --track-flow-order: 0;
+  --track-flow-count: 1;
+  --track-flow-to-tone: var(--workflow-tone-pending);
   --track-flow-strength: 62%;
   /* 流向待办时不要整体变灰：尾巴只混 40% 下一节点色，保留上一步的颜色。 */
   --track-flow-mix: color-mix(in oklab, var(--track-flow-to-tone) 40%, var(--track-flow-from-tone));
@@ -186,7 +190,7 @@
 
 /* 动画挂在连接器上，--flow-p 由光带、亮头、两侧光线共同继承。 */
 .game-workflow-connector {
-  animation: game-workflow-flow-progress calc(1.2s * var(--track-flow-count)) var(--track-flow-timing) infinite;
+  animation: game-workflow-flow-progress calc(0.9s * var(--track-flow-count)) var(--track-flow-timing) infinite;
   /* 头部色相：过半才换成下一步的颜色（和光带分界同一套节奏）。 */
   --flow-head-tone: color-mix(in oklab,
     var(--track-flow-to-tone) clamp(0%, (var(--flow-p) - 0.5) * 600%, 100%),
@@ -198,12 +202,12 @@
   position: absolute;
   left: 50%;
   translate: -50% 0;
-  inline-size: 7px;
-  block-size: 62%;
+  inline-size: 8px;
+  block-size: 34%;
   border-radius: var(--radius-md);
-  top: calc(var(--flow-p) * 108% - 58%);
+  top: calc(var(--flow-p) * 106% - 30%);
   /* 中点就是分界：光带落到中点以下的那一段改成下一步的颜色，上半段保持上一步的颜色。 */
-  --flow-split: clamp(0%, calc((1.06 - 1.08 * var(--flow-p)) / 0.62 * 100%), 100%);
+  --flow-split: clamp(0%, calc((1.02 - 1.04 * var(--flow-p)) / 0.34 * 100%), 100%);
   /* 上端长渐隐 = 拖尾；下端到 96% 才收，保证头部有实心的一段。 */
   background: linear-gradient(to bottom,
     transparent 0,
@@ -213,7 +217,7 @@
     var(--track-flow-to-tone) var(--flow-split),
     var(--track-flow-to-tone) 96%,
     transparent 100%);
-  opacity: calc(clamp(0, min(var(--flow-p), 1 - var(--flow-p)) * 400, 1) * 0.92);
+  opacity: calc(clamp(0, min(var(--flow-p), 1 - var(--flow-p)) * 600, 1));
   box-shadow: 0 0 12px color-mix(in srgb, var(--track-flow-from-tone) 45%, transparent);
 }
 
@@ -223,16 +227,16 @@
   position: absolute;
   left: 50%;
   translate: -50% 0;
-  inline-size: 9px;
-  block-size: 18%;
+  inline-size: 10px;
+  block-size: 12%;
   border-radius: 999px;
-  top: calc(var(--flow-p) * 108% - 14%);
+  top: calc(var(--flow-p) * 106% - 12%);
   background: radial-gradient(closest-side at 50% 80%,
     #fff 0 52%,
     color-mix(in srgb, #fff 60%, var(--flow-head-tone)) 72%,
     var(--flow-head-tone) 90%,
     transparent 100%);
-  opacity: calc(clamp(0, min(var(--flow-p), 1 - var(--flow-p)) * 400, 1) * 0.95);
+  opacity: calc(clamp(0, min(var(--flow-p), 1 - var(--flow-p)) * 600, 1));
   box-shadow:
     0 0 10px color-mix(in srgb, var(--track-flow-to-tone) 65%, transparent),
     0 0 20px color-mix(in srgb, var(--track-flow-to-tone) 32%, transparent);
@@ -801,51 +805,57 @@
 }
 .game-workflow-track > .game-workflow-node { position: relative; z-index: 1; }
 .game-workflow-beam {
+  --beam-duration: calc(1.6s * var(--beam-span, 1));
   position: absolute;
   inset-block: 0;
   left: 50%;
   translate: -50% 0;
-  inline-size: 10px;
+  inline-size: 36px;
   pointer-events: none;
   z-index: 0;
-  overflow: hidden;
+  /* 横向保留光晕，纵向限制在未完成的区间内。 */
+  overflow: visible clip;
 }
 .game-workflow-beam:not(.is-static) {
   clip-path: inset(calc(100% * var(--beam-from)) 0 calc(100% * (1 - var(--beam-to))) 0);
 }
+.game-workflow-beam::before,
 .game-workflow-beam::after {
   content: "";
   position: absolute;
   left: 50%;
-  translate: -50% -82%;
+  top: calc(100% * var(--beam-from, 0));
+  animation: game-workflow-beam-run var(--beam-duration) linear infinite;
+}
+.game-workflow-beam::before {
+  z-index: 1;
+  translate: -50% -50%;
   inline-size: 7px;
-  block-size: 56px;
-  border-radius: 999px;
-  background: linear-gradient(to bottom,
-    transparent 0,
-    color-mix(in srgb, var(--success, #2f6b46) 45%, transparent) 26%,
-    var(--workflow-tone-current, #3265b6) 82%,
-    transparent 100%);
-  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 55%, transparent));
-  animation: game-workflow-beam-run calc(1.6s * var(--beam-span, 1)) linear infinite;
+  block-size: 7px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, #ffffff 0 45%, #dff6ff 62%, rgb(214 246 255 / 70%) 100%);
+  box-shadow: 0 0 5px 1px rgb(214 248 255 / 92%), 0 0 16px 4px rgb(96 196 255 / 58%), 0 0 30px 8px rgb(64 150 255 / 24%);
+}
+.game-workflow-beam::after {
+  /* The beam moves down; the tail ends at the core and fans out above it. */
+  translate: -50% calc(-100% + 2px);
+  inline-size: 24px;
+  block-size: 112px;
+  background:
+    linear-gradient(to top, rgb(123 220 255 / 90%), rgb(77 169 255 / 52%) 22%,
+      rgb(62 134 255 / 20%) 57%, transparent) center / 7px 100% no-repeat,
+    radial-gradient(ellipse 50% 52% at 50% 55%, rgb(89 175 255 / 24%), transparent);
+  filter: blur(3px);
 }
 @keyframes game-workflow-beam-run {
   from { top: calc(100% * var(--beam-from, 0)); opacity: 0; }
-  14% { opacity: .95; }
-  86% { opacity: .95; }
+  8%, 88% { opacity: 1; }
   to { top: calc(100% * var(--beam-to, 1)); opacity: 0; }
 }
 
-.game-workflow-beam.is-static { inline-size: calc(var(--workflow-marker-size) + 12px); }
-.game-workflow-beam.is-static::after {
-  top: calc(100% * var(--beam-from));
-  translate: -50% -50%;
-  inline-size: calc(var(--workflow-marker-size) + 8px);
-  block-size: calc(var(--workflow-marker-size) + 8px);
-  background: color-mix(in srgb, var(--workflow-tone-current) 35%, transparent);
-  filter: none;
-  animation: none;
-}
+.game-workflow-beam.is-static { z-index: 2; }
+.game-workflow-beam.is-static::before { animation: none; }
+.game-workflow-beam.is-static::after { display: none; }
 
 /* 每段自己的光带停用，只保留轨道底色与完成态。 */
 .game-workflow-connector .game-workflow-flow,
@@ -892,10 +902,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .game-workflow-connector,
-  .game-workflow-beam::after,
+  .game-workflow-beam::before,
   .game-workflow-bypass::after,
   .game-workflow-node .is-active-task .game-workflow-marker { animation: none; }
 
-  .game-workflow-beam:not(.is-static)::after,
+  .game-workflow-beam { z-index: 2; }
+  .game-workflow-beam:not(.is-static)::before { top: calc(100% * var(--beam-from, 0) + 4px); }
+  .game-workflow-beam::after { display: none; }
   .game-workflow-bypass::after { opacity: 0; }
 }

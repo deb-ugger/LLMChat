@@ -26,21 +26,17 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
   const graphMode = edges !== undefined;
   const enabledIds = new Set(enabled ?? steps.map(step => step.id));
-  const inputIds = new Set(edges?.map(edge => edge.to));
-  const branches = new Map<string, Set<string>>();
+  const outgoing = new Map<string, Set<string>>();
+  const incoming = new Map<string, Set<string>>();
   for (const { from, to } of edges ?? []) {
-    if (!enabledIds.has(from) || !enabledIds.has(to)) continue;
-    const targets = branches.get(from) ?? new Set<string>();
+    const targets = outgoing.get(from) ?? new Set<string>();
+    const sources = incoming.get(to) ?? new Set<string>();
     targets.add(to);
-    branches.set(from, targets);
+    sources.add(from);
+    outgoing.set(from, targets);
+    incoming.set(to, sources);
   }
-  const fanOut = new Set<string>(), fanIn = new Set<string>();
-  for (const [from, targets] of branches) {
-    if (targets.size < 2) continue;
-    fanOut.add(from);
-    targets.forEach(to => fanIn.add(to));
-  }
-  const unlinked = (index: number) => graphMode && index > 0 && enabledIds.has(steps[index].id) && !inputIds.has(steps[index].id);
+  const unlinked = (index: number) => graphMode && index > 0 && enabledIds.has(steps[index].id) && !incoming.has(steps[index].id);
   const selectedRunning = steps.findIndex(step => step.selected && step.running);
   const flowingStep = selectedRunning >= 0 ? selectedRunning : steps.findIndex(step => step.running);
   const flowTrackCount = steps.length - 1;
@@ -52,7 +48,8 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
   const beamTo = graphMode ? singleIncomplete ? beamFrom : steps.length - 1 : flowingStep;
   const beamStatic = graphMode ? firstIncomplete < 0 || singleIncomplete && !enabledIds.has(steps[beamFrom].id) : beamFrom === beamTo;
   const beamHalf = graphMode && singleIncomplete && !beamStatic;
-  const beamActive = graphMode ? steps.length > 0 && (flowingStep >= 0 || beamStatic) : steps.length > 1 && beamTo >= beamFrom;
+  // 图模式也别只在“正在跑”时才有光：空闲时让光束从第一个未完成滑到最后一步，轨道始终是活的。
+  const beamActive = graphMode ? steps.length > 0 : steps.length > 1 && beamTo >= beamFrom;
   const stepOrder = JSON.stringify(steps.map(step => step.id));
 
   useLayoutEffect(() => {
@@ -104,7 +101,9 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
         const flow = flowingStep >= 0 && index >= flowingStep;
         const linked = item.selected || next?.selected;
         const missingInput = unlinked(index);
-        const gap = next && edges && !edges.some(edge => edge.from === item.id && edge.to === next.id);
+        const gap = graphMode && next && !outgoing.get(item.id)?.has(next.id);
+        const fanOut = (outgoing.get(item.id)?.size ?? 0) >= 2;
+        const fanIn = next && (incoming.get(next.id)?.size ?? 0) >= 2;
         const parallel = !graphMode && item.running && next?.running;
         const title = missingInput ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（已启用但未接入流程）` : item.title;
         return <div className={`game-workflow-node ${item.state}${missingInput ? " is-unlinked" : ""}`} key={item.id} role="presentation">
@@ -122,7 +121,7 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
               "game-workflow-connector", linked && "is-linked", flow && "is-flowing",
               index === highlightedTrack && "is-flow-highlight",
               item.state === "complete" && (next.state === "complete" ? "is-done" : "is-handed-off"),
-              parallel && "is-parallel", fanOut.has(item.id) && "is-fan-out", fanIn.has(next.id) && "is-fan-in",
+              parallel && "is-parallel", fanOut && "is-fan-out", fanIn && "is-fan-in",
               gap && "is-gap", unlinked(index + 1) && "is-unlinked",
             ].filter(Boolean).join(" ")}
             style={{

@@ -116,20 +116,26 @@ export function saveDeploymentPlan(root: string, plan: DeploymentPlan) {
   localStorage.setItem(planKey(root), JSON.stringify(plan));
 }
 
+function ready(step: DeploymentStep, edges: FlowEdge[], remaining: ReadonlySet<DeploymentStep>) {
+  return !edges.some(edge => edge.to === step && remaining.has(edge.from));
+}
+
+// A skipped phase releases its dependants without using an execution wave.
+function releaseSkipped(plan: DeploymentPlan, remaining: Set<DeploymentStep>) {
+  let skipped = plan.disabled.find(step => remaining.has(step) && ready(step, plan.edges, remaining));
+  while (skipped) {
+    remaining.delete(skipped);
+    skipped = plan.disabled.find(step => remaining.has(step) && ready(step, plan.edges, remaining));
+  }
+}
+
 export function deploymentLayers(plan: DeploymentPlan): DeploymentStep[][] {
   // Scanning creates the project, and applying writes the combined patch.
   const layers: DeploymentStep[][] = [["scan"]];
-  const remaining = new Set(deploymentPhases);
-  const ready = (step: DeploymentPhase) => !plan.edges.some(edge =>
-    edge.to === step && isPhase(edge.from) && remaining.has(edge.from));
+  const remaining = new Set<DeploymentStep>(deploymentPhases);
   while (remaining.size) {
-    // A skipped phase releases its dependants without using an execution wave.
-    let skipped = [...remaining].find(step => plan.disabled.includes(step) && ready(step));
-    while (skipped) {
-      remaining.delete(skipped);
-      skipped = [...remaining].find(step => plan.disabled.includes(step) && ready(step));
-    }
-    const layer = [...remaining].filter(ready);
+    releaseSkipped(plan, remaining);
+    const layer = [...remaining].filter(step => ready(step, plan.edges, remaining));
     for (const step of layer) remaining.delete(step);
     if (layer.length) layers.push(layer);
   }
@@ -180,6 +186,10 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
   }));
   const enabled = (id: DeploymentStep) => !isPhase(id) || !plan.disabled.includes(id);
   const unlinked = steps.filter(id => id !== "scan" && enabled(id) && !plan.edges.some(edge => edge.to === id));
+  const remaining = new Set(steps.filter(id => id === model.stoppedStep || !model.completed.includes(id)));
+  releaseSkipped(plan, remaining);
+  const canRun = !!model.root && !locked && !run && !running;
+  const canApply = !model.applied && (!!model.patch || model.patchReady && !deploymentPhases.some(id => enabled(id) && remaining.has(id)));
   const nodePoint = (step: DeploymentStep) => motion?.step === step ? motion.at : plan.positions[step];
   const graph = (): FlowGraph => ({ positions: plan.positions, edges: plan.edges });
   const point = (element: HTMLElement, clientX: number, clientY: number): Point => {
@@ -408,8 +418,11 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       </svg>
       {nodes.map(node => {
         const pos = nodePoint(node.id), editable = isPhase(node.id);
-        return <div key={node.id} data-flow-node={node.id} tabIndex={0} aria-label={deploymentStepLabels[node.id]}
-          className={`dpl-card is-${enabled(node.id) ? node.state : "skipped"}${!locked ? " is-movable" : ""}${motion?.step === node.id ? " is-dragging" : ""}`}
+        const runnable = canRun && node.state === "todo" && enabled(node.id) && (node.id === "scan" ||
+          !remaining.has("scan") && !unlinked.includes(node.id) && ready(node.id, plan.edges, remaining) && (node.id !== "apply" || canApply));
+        const label = deploymentStepLabels[node.id];
+        return <div key={node.id} data-flow-node={node.id} tabIndex={0} aria-label={runnable ? `${label} · 可以执行` : label}
+          className={`dpl-card is-${enabled(node.id) ? node.state : "skipped"}${runnable ? " is-runnable" : ""}${!locked ? " is-movable" : ""}${motion?.step === node.id ? " is-dragging" : ""}`}
           style={{ left: pos.x, top: pos.y, width: cardWidth, height: cardHeight }}
           onContextMenu={event => { event.preventDefault(); openMenu({ kind: "node", step: node.id }, event.clientX, event.clientY); }}
           onKeyDown={event => {
@@ -418,8 +431,8 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
             const box = event.currentTarget.getBoundingClientRect();
             openMenu({ kind: "node", step: node.id }, box.x + box.width / 2, box.y + box.height / 2);
           }}>
-          <b>{deploymentStepLabels[node.id]}</b>
-          <span className="dpl-card-detail">{enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
+          <b>{label}</b>
+          <span className="dpl-card-detail">{runnable ? "可以执行" : enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
             : node.state === "done" && editable ? `已完成 · ${node.detail}` : node.detail : "已跳过"}</span>
           {node.id !== "scan" && <span className={`dpl-port is-input${wire?.target === node.id && wire.drag.side === "out" ? " is-target" : ""}`}
             data-flow-port="in" aria-label="输入" />}
