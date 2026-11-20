@@ -911,9 +911,9 @@
 .game-workflow-connector.is-parallel-first:not(.is-skipped, .is-gap, .is-unlinked)::after {
   content: "并联";
   position: absolute;
-  inset-inline-end: 100%;
-  margin-inline-end: 2px;
-  inset-block-start: 50%;
+  right: 100%;
+  margin-right: 2px;
+  top: 50%;
   translate: 0 -50%;
   writing-mode: vertical-rl;
   text-orientation: upright;
