@@ -56,6 +56,7 @@ public sealed class Project
     public Dictionary<string, string> DefinitionHashes { get; set; } = [];
     public List<ScanIssue> Diagnostics { get; set; } = [];
     public List<ResourceResult> Resources { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<BinaryTextAssetInfo>? BinaryTextAssets { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public ScanMetrics? ScanMetrics { get; set; }
 }
 public sealed class Request
@@ -96,7 +97,7 @@ public sealed record SavedProject(Project? Project, int? ScanCompleted, int? Sca
 
 public static class Program
 {
-    public const int CurrentScanRevision = 10;
+    public const int CurrentScanRevision = 11;
     public const int MinimumUsableScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
@@ -498,6 +499,7 @@ public static class Program
             project.Entries.RemoveAll(entry => remaining.Contains(entry.File));
             project.Fonts.RemoveAll(font => remaining.Contains(font.File));
             project.Images.RemoveAll(image => remaining.Contains(image.File));
+            project.BinaryTextAssets?.RemoveAll(asset => remaining.Contains(asset.File));
             project.Diagnostics.RemoveAll(issue => remaining.Contains(issue.File));
             project.Resources.RemoveAll(resource => remaining.Contains(resource.File));
             foreach (var file in project.Hashes.Keys.Where(remaining.Contains).ToArray()) project.Hashes.Remove(file);
@@ -521,6 +523,7 @@ public static class Program
             var before = project.Entries.Count;
             var fonts = project.Fonts.Count; var imagesBefore = project.Images.Count;
             var diagnosticsBefore = project.Diagnostics.Count;
+            var binaryBefore = project.BinaryTextAssets?.Count ?? 0;
             try
             {
                 var sourceDigest = new Lazy<string>(() => incremental.Hash(readPath));
@@ -557,7 +560,8 @@ public static class Program
                     else TextDocuments.Process(TextDocuments.Read(readPath), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, "", 0, item.Locator, "文本文件", item.Text, item.Locale); });
                 }
                 var failures = project.Diagnostics.Count - diagnosticsBefore;
-                var hasResults = metadataLiteralCount.HasValue || project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore;
+                var hasResults = metadataLiteralCount.HasValue || project.Entries.Count > before || project.Fonts.Count > fonts || project.Images.Count > imagesBefore ||
+                    (project.BinaryTextAssets?.Count ?? 0) > binaryBefore;
                 if (hasResults) project.Hashes[rel] = sourceDigest.Value;
                 if (failures == 0 && !metadataLiteralCount.HasValue) {
                     foreach (var image in project.Images.Skip(imagesBefore)) externals.Add(image.DependencyFile);
@@ -571,6 +575,7 @@ public static class Program
                 project.Hashes.Remove(rel);
                 project.Entries.RemoveRange(before, project.Entries.Count - before);
                 project.Fonts.RemoveRange(fonts, project.Fonts.Count - fonts); project.Images.RemoveRange(imagesBefore, project.Images.Count - imagesBefore);
+                if (project.BinaryTextAssets is { } binary) binary.RemoveRange(binaryBefore, binary.Count - binaryBefore);
                 project.Diagnostics.Add(ScanInspection.Issue(rel, "", "", e));
                 project.Resources.Add(new(rel, "failed", 0, 0, project.Diagnostics.Count - diagnosticsBefore));
             }
@@ -583,6 +588,10 @@ public static class Program
         foreach (var package in yooPackages) {
             CheckStop(request, project.Folder);
             project.Warnings.Add(YooAssetPackages.Describe(root, package, () => CheckStop(request, project.Folder)));
+        }
+        if (project.BinaryTextAssets is { Count: > 0 } binaryAssets) {
+            WriteJson(Path.Combine(project.Folder, "binary-text-assets.json"), binaryAssets);
+            project.Warnings.Add($"二进制 TextAsset 报告包含 {binaryAssets.Count} 条资源记录，位于工程目录的 binary-text-assets.json。");
         }
         project.Warnings = project.Warnings.Distinct().ToList();
         using (clock.Measure(ScanPhase.Save)) {
@@ -778,8 +787,13 @@ public static class Program
                 if (type == 128) project.Fonts.Add(new FontInfo(rel, container, info.PathId.ToString(), name, "UGUI") { References = FontPreparation.References(field) });
                 if (type == 49) {
                     var bytes = field["m_Script"].AsByteArray;
-                    if (!hidc.AddChunk(name, info.PathId, bytes) && GameText.TextAsset(name))
-                        TextDocuments.Process(Utf8.GetString(bytes), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
+                    if (!hidc.AddChunk(name, info.PathId, bytes) && GameText.TextAsset(name)) {
+                        var structure = BinaryTextAssets.Read(name, bytes, project.CheckCancellation);
+                        if (structure != null)
+                            (project.BinaryTextAssets ??= []).Add(new(rel, container, info.PathId.ToString(), name, structure));
+                        else
+                            TextDocuments.Process(Utf8.GetString(bytes), name, project.TextMode, item => { if (GameText.Visible(item.Field, item.Text, project.TextMode == "smart" ? int.MaxValue : 16000)) Add(project, rel, container, info.PathId, item.Locator, "TextAsset", item.Text, item.Locale); });
+                    }
                 }
                 if (type == 114)
                 {

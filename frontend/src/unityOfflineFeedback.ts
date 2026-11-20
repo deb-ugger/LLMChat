@@ -43,7 +43,7 @@ export function explainUnityFailure(error: unknown): UnityFailure {
   return result("资源处理组件返回了无法识别的错误，暂时不能确定具体原因。", "先保留当前工程并重试；若仍失败，请反馈下方技术详情，以便定位，不要重复覆盖游戏文件。");
 }
 export function explainUnityWarning(warning: string): { reason: string; technical: string; category?: "stream"; location?: string; impact?: string } {
-  if (warning.startsWith("YooAsset 资源包 ") || warning.startsWith("IL2CPP v39 字符串报告")) return { reason: warning, technical: "" };
+  if (warning.startsWith("YooAsset 资源包 ") || warning.startsWith("IL2CPP v39 字符串报告") || warning.startsWith("二进制 TextAsset 报告")) return { reason: warning, technical: "" };
   if (/^已排除 \d+ 条程序标识/.test(warning)) return { reason: warning, technical: "" };
   const boundary = warning.indexOf("：");
   const file = boundary >= 0 ? warning.slice(0, boundary) : "资源文件";

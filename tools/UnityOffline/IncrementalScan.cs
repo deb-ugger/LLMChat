@@ -68,6 +68,7 @@ internal sealed class IncrementalScan(Project project, string[] paths, Dictionar
     ILookup<string, Entry>? entries;
     ILookup<string, FontInfo>? fonts;
     ILookup<string, ImageResource>? images;
+    ILookup<string, BinaryTextAssetInfo>? binaryAssets;
     Dictionary<string, ResourceResult>? resources;
     Project? old;
     internal Dictionary<string, Source> Sources { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -117,6 +118,7 @@ internal sealed class IncrementalScan(Project project, string[] paths, Dictionar
         entries = old.Entries.ToLookup(e => e.File, StringComparer.OrdinalIgnoreCase);
         fonts = old.Fonts.ToLookup(f => f.File, StringComparer.OrdinalIgnoreCase);
         images = old.Images.ToLookup(i => i.File, StringComparer.OrdinalIgnoreCase);
+        binaryAssets = old.BinaryTextAssets?.ToLookup(asset => asset.File, StringComparer.OrdinalIgnoreCase);
         resources = old.Resources.ToDictionary(r => r.File, StringComparer.OrdinalIgnoreCase);
         project.NextEntryId = Math.Max(project.NextEntryId, old.NextEntryId);
     }
@@ -196,6 +198,7 @@ internal sealed class IncrementalScan(Project project, string[] paths, Dictionar
             HidcFrame = image.HidcFrame, HidcPayload = image.HidcPayload, Name = image.Name, Width = image.Width, Height = image.Height,
             SourceFile = image.SourceFile, SourceHash = image.SourceHash, DependencyFile = image.DependencyFile, DependencyHash = image.DependencyHash
         }));
+        if (binaryAssets?.Contains(relative) == true) (project.BinaryTextAssets ??= []).AddRange(binaryAssets[relative]);
         if (old!.Hashes.ContainsKey(relative)) project.Hashes[relative] = hash;
         project.Resources.Add(result);
         Sources[relative] = source;
