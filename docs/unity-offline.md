@@ -64,6 +64,7 @@
 - 代码扫描默认关闭。启用后列出游戏 Managed 中可回写的程序集，独立翻译 DLL 也可选择；引擎程序集不进入这个列表，已签名或无法读取的程序集显示原因并禁用。
 - 可选择 Managed / DummyDll 类型定义目录。定义复制到当前游戏工程中并记录哈希，恢复和生成前校验；只读取元数据，不执行 DLL。
 - Windows IL2CPP 游戏可在「扫描资源 → 类型定义」点击「生成类型定义」。组件读取游戏自己的 `GameAssembly.dll` 和 `global-metadata.dat`，将 DummyDll 保存到游戏的 `LLMChat-Unity` 并自动选用。内置 Il2CppDumper 来自支持 v39 的 [Perfare 项目 PR #840](https://github.com/Perfare/Il2CppDumper/pull/840)，固定到 `6b931a9172585a07037e96f4d362f3e97a19a603`。
+- 扫描会解析通过 `UnityEngine` 外观程序集引用的 UI Toolkit 类型。只有基础头的旧 YooAsset 内置清单占位对象按空内容处理，其余资源仍按实际字段读取。
 - 文本处理和字体生成无需 Unity Editor。Windows 原生字形生成使用所选静态 TTF / OTF 私有加载，验证实际选中字体，禁止系统字体回退；当前覆盖 BMP 字符。TMP 支持 `m_GlyphTable` / `m_CharacterTable` 的单图集布局，生成 SDF 或位图、更新字形度量与材质参数并保留对象引用；NGUI 支持独立 BMFont 位图和字形回写。生成过程中检查中止，恢复时保留已完成资源文件。
 - TXT、JSON、CSV、TSV、XML 按对应结构提取与回写。JSON 字段带语言前缀时（如 `English_name`、`Japanese_intro`），按字段语言筛选，保留键名和 ID。CSV 仅处理可识别的正文或语言列，保留键、表头及其他列；引号内换行属于同一字段。XML 保留结构，禁用 DTD；JSON 和 XML 的语言字段优先于文字脚本猜测，法语与英语不因同为拉丁字母而混在同一范围。
 - 输出区显示可读取、无目标、部分解析和失败的资源数量。失败对象保留资源位置、具体原因及处理建议，不将流结束异常直接解释成游戏损坏，也不将部分解析显示为全部成功。

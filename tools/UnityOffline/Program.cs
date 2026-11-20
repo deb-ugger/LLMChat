@@ -96,7 +96,7 @@ public sealed record SavedProject(Project? Project, int? ScanCompleted, int? Sca
 
 public static class Program
 {
-    public const int CurrentScanRevision = 9;
+    public const int CurrentScanRevision = 10;
     public const int MinimumUsableScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
@@ -701,13 +701,38 @@ public static class Program
         array.Value = new AssetTypeValue(bytes, false);
         array.Children.Clear();
     }
+    static AssetTypeValueField? GetMonoScript(AssetsManager manager, AssetsFileInstance instance, AssetTypeValueField header) =>
+        manager.GetExtAsset(instance, header["m_Script"], false, AssetReadFlags.None).baseField;
+
+    static AssetTypeValueField ReadScanField(AssetsManager manager, AssetsFileInstance instance, AssetFileInfo info)
+    {
+        try { return manager.GetBaseField(instance, info); }
+        catch (EndOfStreamException) when (info.TypeId == 114 && !instance.file.Metadata.TypeTreeEnabled)
+        {
+            // Older embedded YooAsset catalog records can be placeholders.
+            // The script payload is absent only if the header fills the record.
+            var template = manager.GetTemplateBaseField(instance, info, AssetReadFlags.SkipMonoBehaviourFields);
+            var reader = instance.file.Reader;
+            var offset = info.GetAbsoluteByteOffset(instance.file);
+            reader.Position = offset;
+            var header = template.MakeValue(reader);
+            if (reader.Position - offset != info.ByteSize) throw;
+            var script = GetMonoScript(manager, instance, header);
+            if (script == null || script.IsDummy ||
+                script["m_Namespace"].AsString != "YooAsset" ||
+                script["m_ClassName"].AsString != "BuiltinCatalog" ||
+                Path.GetFileNameWithoutExtension(script["m_AssemblyName"].AsString) != "YooAsset") throw;
+            return header;
+        }
+    }
+
     static string ObjectDescription(AssetsManager manager, AssetsFileInstance instance, AssetFileInfo info)
     {
         var type = ((AssetClassID)info.TypeId).ToString();
         if (info.TypeId == 114) {
             try {
                 var header = manager.GetBaseField(instance, info, AssetReadFlags.SkipMonoBehaviourFields);
-                var script = manager.GetExtAsset(instance, header["m_Script"], false, AssetReadFlags.None).baseField;
+                var script = GetMonoScript(manager, instance, header);
                 if (script != null && !script.IsDummy && !script["m_ClassName"].IsDummy) {
                     var space = script["m_Namespace"].IsDummy ? "" : script["m_Namespace"].AsString;
                     type = (space.Length > 0 ? space + "." : "") + script["m_ClassName"].AsString;
@@ -746,7 +771,7 @@ public static class Program
                     project.Diagnostics.Add(new(rel, container, info.PathId.ToString(), ObjectDescription(am, inst, info) + "：缺少字段类型定义，尚未提取该对象", "选择游戏 Managed 或匹配的 DummyDll 类型目录后重新扫描；IL2CPP 的 GameAssembly.dll 不能代替 DummyDll。"));
                     continue;
                 }
-                var field = am.GetBaseField(inst, info);
+                var field = ReadScanField(am, inst, info);
                 var name = field["m_Name"].IsDummy ? info.PathId.ToString() : field["m_Name"].AsString;
                 if (type == 28) ImageResources.ScanTexture(project, inst, field, rel, container, info.PathId, fontTextures.Contains(info.PathId), dependencyHashes, textureCache, sourceDigest,
                     stage => project.ReportScanDetail?.Invoke($"{stage}：{name} · {rel} · 对象 {objectIndex} / {inst.file.Metadata.AssetInfos.Count}"), clock);
