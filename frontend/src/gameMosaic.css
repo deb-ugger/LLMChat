@@ -63,8 +63,14 @@
       grid-row: 1 / -1;
       min-inline-size: 0;
       min-block-size: 0;
+      overflow: hidden;
     }
-    & .game-mosaic-workbench .unity-image-detail > .unity-image-previews { overflow: auto; }
+    /* 详情内自己滚，别把整页撑高（否则会冒出页面级竖直滚动条）。 */
+    & .game-mosaic-workbench .unity-image-detail { grid-template-rows: auto minmax(0, 1fr) auto; }
+    & .game-mosaic-workbench .unity-image-detail > .unity-image-previews {
+      overflow: auto;
+      min-block-size: 0;
+    }
   }
 
   /* 窄窗回退：步骤列回到上方一条，结果列占满。 */
