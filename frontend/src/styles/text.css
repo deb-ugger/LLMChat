@@ -463,9 +463,16 @@
 .embed-game-header .embed-engine { flex-shrink:0; margin:0; }
 .embed-game-location { min-width:0; width:auto; max-width:65%; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border:0; background:transparent; color:var(--text-muted); font:inherit; font-size:var(--fs-caption); text-align:left; cursor:pointer; padding-inline:0; }
 
-.embed-workspace.embed-unity-workspace { width:100%; max-width:var(--content-max); margin-inline:auto; padding:0; overflow:hidden; }
+.embed-workspace.embed-unity-workspace {
+  width:100%;
+  max-width:none;
+  padding:0;
+  overflow:hidden;
+  background:var(--bg-app);
+}
 /* 与 Unity 顶栏（.unity-top）同款：44px 高、同底色、一条发丝线收口。 */
 .embed-unity-workspace > .embed-game-header {
+  flex:none;
   height:44px;
   padding:0 var(--space-4);
   gap:var(--space-3);
@@ -520,18 +527,20 @@
 .game-dialogue-preview-tools button:disabled { opacity:.45; cursor:not-allowed; }
 .engine-workflow-content .unity-control-group > label { display:flex; flex-direction:column; gap:6px; }
 .engine-workflow-content .unity-control-group select { min-width:0; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--panel,var(--bg-panel)); color:var(--text); font:inherit; }
-/* 与 Unity 侧 .unity-step-panel 的分段、字阶、控件圆角对齐。 */
-.engine-workflow-content .embed-section {
-  margin-block:var(--space-3);
-  padding:var(--space-3) 0 0;
-  border:0;
-  border-top:1px solid var(--border);
+/* 文本和资源操作面板沿用 Unity 的分段。图片步骤由各自的配置卡排版。 */
+.embed-unity-workspace[data-workflow-part="text"] .engine-workflow-content {
+  & .embed-section {
+    margin-block:var(--space-3);
+    padding:var(--space-3) 0 0;
+    border:0;
+    border-top:1px solid var(--border);
+  }
+  & .embed-section:first-of-type { margin-block-start:0; border-top:0; padding-block-start:0; }
+  & .embed-section h3 { margin:0 0 var(--space-2); color:var(--text); font-size:var(--fs-section); font-weight:600; }
+  & .embed-section > select,
+  & .unity-control-group select { width:100%; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); color:var(--text); background:var(--bg-panel); font:inherit; }
+  & .unity-step-panel { display:flex; flex-direction:column; gap:var(--space-3); }
 }
-.engine-workflow-content .embed-section:first-of-type { margin-block-start:0; border-top:0; padding-block-start:0; }
-.engine-workflow-content .embed-section h3 { margin:0 0 var(--space-2); color:var(--text); font-size:var(--fs-section); font-weight:600; }
-.engine-workflow-content .embed-section > select,
-.engine-workflow-content .unity-control-group select { width:100%; padding:var(--space-2) 10px; border:1px solid var(--border); border-radius:var(--radius-md); color:var(--text); background:var(--bg-panel); font:inherit; }
-.engine-workflow-content .unity-step-panel { display:flex; flex-direction:column; gap:var(--space-3); }
 
 .game-maintenance-row { display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2); }
 .game-maintenance-row h3 { flex-shrink:0; margin:0; }
@@ -555,7 +564,13 @@
 .embed-deploy-launch label { display:inline-flex; align-items:center; gap:5px; font-size:var(--fs-body); }
 .embed-deploy-actions { flex-basis:100%; }
 .embed-deploy-maintenance { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:10px; }
-.engine-workflow-content .embed-deploy-maintenance > .embed-section { min-width:0; padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); }
+.embed-unity-workspace[data-workflow-part="text"] .engine-workflow-content .embed-deploy-maintenance > .embed-section {
+  min-width:0;
+  margin-block:0;
+  padding:10px;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
 .embed-deploy-maintenance .game-maintenance-row > label { margin-left:0; }
 .embed-deploy-maintenance .game-restore-settings .game-maintenance-row > select { min-width:min(100%,130px); }
 .embed-deploy-maintenance .game-backup-scopes { margin-top:8px; }
