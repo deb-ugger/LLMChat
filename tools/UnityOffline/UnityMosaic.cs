@@ -108,9 +108,11 @@ internal static class UnityMosaic
         if (bytes.Length < 24 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
             throw new InvalidDataException("去码候选必须是 PNG");
         Decode(bytes, image);
-        var folder = Store(request.Root);
+        var store = Store(request.Root);
+        var folder = request.DeploymentBatch.Length == 0 ? store : DeploymentFolder(store, request.DeploymentBatch);
         var hash = Convert.ToHexString(SHA256.HashData(bytes));
         EditIndex(folder, index => {
+            Program.CheckStop(request, request.Path);
             var path = CandidatePath(folder, image.Id, hash);
             var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try { File.WriteAllBytes(temporary, bytes); File.Move(temporary, path, true); }
@@ -120,6 +122,41 @@ internal static class UnityMosaic
         });
         return Status(request);
     }
+
+    internal static object FinishDeployment(Request request)
+    {
+        var folder = Store(request.Root);
+        var stage = DeploymentFolder(folder, request.DeploymentBatch);
+        if (request.IncludeMosaic && Directory.Exists(stage)) {
+            var project = ProjectFor(request);
+            var staged = ReadIndex(stage);
+            EditIndex(folder, index => {
+                foreach (var (id, item) in staged) {
+                    var image = Find(project, id);
+                    if (item.Source != image.SourceHash) throw new InvalidDataException("去码原图已变化：" + image.Name);
+                    _ = ReadCandidate(stage, image, item);
+                }
+                Program.CheckStop(request, request.Path);
+                foreach (var (id, item) in staged) {
+                    var destination = CandidatePath(folder, id, item.Hash);
+                    File.Copy(CandidatePath(stage, id, item.Hash), destination, true);
+                    index[id] = item with { Included = true };
+                }
+            });
+        }
+        Program.DeleteDeploymentDirectory(stage);
+        return Status(request);
+    }
+
+    static string DeploymentFolder(string folder, string id)
+    {
+        if (!Guid.TryParseExact(id, "N", out _)) throw new InvalidDataException("无效的一键去码批次");
+        var result = Program.Within(folder, "deployment-" + id);
+        if (Directory.Exists(result) && (File.GetAttributes(result) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("去码暂存目录不能使用链接");
+        return result;
+    }
+
 
     internal static object Select(Request request)
     {

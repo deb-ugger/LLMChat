@@ -22,6 +22,34 @@ public static class PatchInstallation
             }
         return result.OrderByDescending(p => p.Updated).ToArray();
     }
+    internal sealed record InstallationSnapshot(string Folder, string State);
+    internal static InstallationSnapshot[] Capture(string root) => Applied(root)
+        .Select(patch => new InstallationSnapshot(patch.Folder, File.ReadAllText(Path.Combine(patch.Folder, "application-state.json"))))
+        .ToArray();
+
+    internal static void RestoreSnapshot(string root, InstallationSnapshot[] snapshots)
+    {
+        foreach (var snapshot in snapshots.Reverse()) {
+            var state = JsonNode.Parse(snapshot.State)!;
+            var completed = state["completed"]!.AsArray().Select(file => file!.GetValue<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(snapshot.Folder, "manifest.json")))!;
+            foreach (var file in manifest["files"]!.AsArray()) {
+                var relative = file!["file"]!.GetValue<string>();
+                if (!completed.Contains(relative)) continue;
+                var target = Program.ApplyPath(root, relative);
+                var source = Program.ApplyPath(Path.Combine(snapshot.Folder, "patch"), relative);
+                var hash = file["patchSha256"]!.GetValue<string>();
+                var current = Program.Hash(target);
+                if (Program.Hash(source) != hash || (current != hash && current != file["originalSha256"]!.GetValue<string>()))
+                    throw new IOException("停止后恢复旧补丁失败：" + relative);
+                if (current != hash) Program.ReplaceFile(source, target);
+                if (Program.Hash(target) != hash) throw new IOException("旧补丁恢复校验失败：" + relative);
+            }
+            Program.WriteJson(Path.Combine(snapshot.Folder, "application-state.json"), state);
+        }
+    }
+
+
     public static InstallationStatus Status(string root) => new(Path.GetFullPath(root), Applied(root).Length > 0);
     public static Dictionary<string, string> OriginalFiles(string root)
     {

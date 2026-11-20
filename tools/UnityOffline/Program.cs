@@ -77,6 +77,9 @@ public sealed class Request
     public string ImageId { get; set; } = "";
     public string ImageSourceHash { get; set; } = "";
     public bool IncludeMosaic { get; set; }
+    public bool ExcludeMosaic { get; set; }
+    public string DeploymentBatch { get; set; } = "";
+    public bool DiscardOnStop { get; set; }
     public string ImageData { get; set; } = "";
     public bool ImageOnly { get; set; }
     public string ImageResetPhase { get; set; } = "";
@@ -160,6 +163,9 @@ public static class Program
                 "mosaic-status" => UnityMosaic.Status(request),
                 "mosaic-preview" => UnityMosaic.Preview(request),
                 "mosaic-save" => UnityMosaic.Save(request),
+                "mosaic-finish-deployment" => UnityMosaic.FinishDeployment(request),
+                "discard-deployment-output" => FinishDeploymentOutput(request, true),
+                "finish-deployment-output" => FinishDeploymentOutput(request, false),
                 "mosaic-select" => UnityMosaic.Select(request),
                 "download-image" => DownloadImage(request.Url),
                 "export" => Export(request),
@@ -413,6 +419,7 @@ public static class Program
         var priorMetrics = project.ScanMetrics;
         using (clock.Measure(ScanPhase.Save)) Save(project);
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
+        MarkDeploymentOutput(request, project.Folder);
         var statePath = System.IO.Path.Combine(project.Folder, "scan-state.json");
         var pathsPath = System.IO.Path.Combine(project.Folder, "scan-files.json");
         Progress("正在列出游戏资源文件", folder: project.Folder);
@@ -818,6 +825,55 @@ public static class Program
         hidc.Publish(project, rel, container, firstImage);
     }
 
+    static string DeploymentOutputMarker(string folder) => Path.Combine(folder, "deployment-output.pending");
+    static void MarkDeploymentOutput(Request request, string folder)
+    {
+        if (request.DeploymentBatch.Length == 0) return;
+        if (request.Path.Length > 0 || !Guid.TryParseExact(request.DeploymentBatch, "N", out _))
+            throw new InvalidDataException("一键流程只能登记其新建输出");
+        File.WriteAllText(DeploymentOutputMarker(folder), request.DeploymentBatch, Utf8);
+    }
+
+    static object FinishDeploymentOutput(Request request, bool discard)
+    {
+        var target = Path.GetFullPath(request.Path);
+        if (!Directory.Exists(target)) return new { ok = true };
+        var projectFolder = request.Step == 1 ? target : Path.GetDirectoryName(target)!;
+        var marker = DeploymentOutputMarker(target);
+        if (!GameWorkspace.IsProjectsRoot(request.Root, Path.GetDirectoryName(projectFolder)!) ||
+            !Path.GetFileName(projectFolder).StartsWith("unity-project-", StringComparison.Ordinal) ||
+            request.Step is not (1 or 3) ||
+            request.Step == 3 && !Path.GetFileName(target).StartsWith("patch-", StringComparison.Ordinal) ||
+            !Guid.TryParseExact(request.DeploymentBatch, "N", out _) || !File.Exists(marker) ||
+            File.ReadAllText(marker, Utf8) != request.DeploymentBatch)
+            throw new InvalidDataException("清理目标不是本次一键流程的输出");
+        if (discard) {
+            if (request.Step == 1 ? Directory.EnumerateDirectories(target, "patch-*").Any() : PatchInstallation.HasApplied(target))
+                throw new InvalidDataException("不能丢弃含已应用补丁的输出");
+            DeleteDeploymentDirectory(target);
+        } else File.Delete(marker);
+        return new { ok = true };
+    }
+
+
+    internal static void DeleteDeploymentDirectory(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        void CheckLinks(string directory)
+        {
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("中止清理目录包含链接：" + directory);
+            foreach (var item in Directory.EnumerateFileSystemEntries(directory)) {
+                var attributes = File.GetAttributes(item);
+                if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("中止清理目录包含链接：" + item);
+                if ((attributes & FileAttributes.Directory) != 0) CheckLinks(item);
+            }
+        }
+        CheckLinks(path);
+        Directory.Delete(path, true);
+    }
+
+
     public static object Export(Request request)
     {
         Progress("校验译文、占位符与字体");
@@ -829,7 +885,7 @@ public static class Program
         using var types = new GameTypes(project.Root, project.TypeDirectory);
         var selected = project.Entries.Where(WritableSelection(request.SelectedIds)).ToArray();
         var translatedImages = ImageResources.Ready(project, request.PatchImageIds);
-        var mosaic = UnityMosaic.Included(project);
+        var mosaic = request.ExcludeMosaic ? new Dictionary<string, UnityMosaic.Candidate>() : UnityMosaic.Included(project);
         if (selected.Length == 0 && translatedImages.Length == 0 && mosaic.Count == 0)
             throw new Exception("没有可回写的译文、译图或去码图");
         ImageResource[] images = UnityMosaic.Prepare(project, translatedImages, mosaic, () => CheckStop(request, request.Path));
@@ -844,6 +900,7 @@ public static class Program
         YooAssetPackages.EnsureWritable(project.Root, files);
         var signature = Convert.ToHexString(SHA256.HashData(Utf8.GetBytes(JsonSerializer.Serialize(new { selected, images, fonts, characters, atlasRevision = BitmapFontGenerator.Revision, font = font == null ? "" : Convert.ToHexString(SHA256.HashData(font)) }, Json))));
         var folder = request.Path.Length > 0 ? Within(project.Folder, System.IO.Path.GetRelativePath(project.Folder, request.Path)) : NewFolder(project.Folder, "patch");
+        MarkDeploymentOutput(request, folder);
         var checkpointPath = System.IO.Path.Combine(folder, "export-state.json");
         var checkpoint = File.Exists(checkpointPath) ? JsonSerializer.Deserialize<ExportCheckpoint>(File.ReadAllText(checkpointPath, Utf8), Json)! : new ExportCheckpoint(signature, []) { TotalFiles = files.Length };
         if (checkpoint.Signature != signature) throw new Exception("译文、选取、字体或字库生成方式已变化，请重做生成补丁；已有译文保留");
@@ -1107,7 +1164,7 @@ public static class Program
         }
     }
 
-    static string ApplyPath(string root, string relative)
+    internal static string ApplyPath(string root, string relative)
     {
         var path = Within(root, relative);
         for (var item = path; item != null; item = System.IO.Path.GetDirectoryName(item))
@@ -1118,7 +1175,7 @@ public static class Program
         return path;
     }
 
-    static void ReplaceFile(string source, string target)
+    internal static void ReplaceFile(string source, string target)
     {
         var temp = target + ".llmchat-" + Guid.NewGuid().ToString("N") + ".tmp";
         try { File.Copy(source, temp); File.Move(temp, target, true); }
@@ -1151,6 +1208,18 @@ public static class Program
     }
 
     public static object Apply(Request request)
+    {
+        if (!request.DiscardOnStop) return ApplyCore(request);
+        var previous = PatchInstallation.Capture(request.Root);
+        try { return ApplyCore(request); }
+        catch (PausedException) {
+            if (PatchInstallation.HasApplied(request.Path)) RestorePatch(request.Root, request.Path);
+            PatchInstallation.RestoreSnapshot(request.Root, previous);
+            throw;
+        }
+    }
+
+    static object ApplyCore(Request request)
     {
         var root = System.IO.Path.GetFullPath(request.Root);
         var folder = System.IO.Path.GetFullPath(request.Path);
