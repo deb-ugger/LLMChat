@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Text;
-using System.Text.RegularExpressions;
 using AssetsTools.NET;
 using AssetsTools.NET.Extra;
 
@@ -9,18 +8,17 @@ namespace LLMChat.UnityOffline;
 public sealed record BinaryTextAssetInfo(string File, string Container, string ObjectId, string Name, BinaryTextAssetSummary Structure);
 public sealed record BinaryTextAssetSummary(string Format, int Length, int ParsedBytes,
     string? RootType = null, string[]? RootFields = null, int? Nodes = null, int? Arrays = null,
-    int? Strings = null, string? Version = null, int? Bones = null, int? Slots = null, int? Objects = null, string[]? AssetTypes = null);
+    int? Strings = null, string? Version = null, int? Bones = null, int? Slots = null, int? Objects = null, string[]? AssetTypes = null,
+    SpineSkeletonSummary? Skeleton = null);
 
 internal static class BinaryTextAssets
 {
-    static readonly UTF8Encoding Utf8 = new(false, true);
     static readonly UnicodeEncoding Utf16 = new(false, false, true);
-    static readonly Regex SpineVersion = new(@"^4\.2\.[0-9]+$", RegexOptions.CultureInvariant);
 
     internal static BinaryTextAssetSummary? Read(string name, byte[] bytes, Action? checkStop = null)
     {
         if (name.EndsWith(".skel", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".skel.bytes", StringComparison.OrdinalIgnoreCase))
-            return ReadSpine(bytes);
+            return SpineBinaryInspection.Read(bytes, checkStop);
         // A root node followed by the first Odin type definition.
         if (bytes.Length >= 11 && bytes[0] is 0x02 or 0x04 && bytes[1] == 0x2f &&
             BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(2)) == 0)
@@ -168,55 +166,7 @@ internal static class BinaryTextAssets
     static string DecodeOdin(ReadOnlySpan<byte> encoded) =>
         (encoded[0] == 0 ? Encoding.Latin1 : Utf16).GetString(encoded[5..]);
 
-    // Read the 4.2 skeleton prefix through the slot table. The report does
-    // not contain attachments, coordinates, or animation timelines.
-    static BinaryTextAssetSummary ReadSpine(byte[] bytes)
-    {
-        var reader = new FormatReader(bytes);
-        reader.Take(8);
-        var version = Utf8.GetString(reader.SpineString());
-        if (!SpineVersion.IsMatch(version)) throw new InvalidDataException($"不支持的 Spine 骨骼版本 {version}");
-        reader.Take(5 * sizeof(float));
-        var nonessential = reader.Bool();
-        if (nonessential)
-        {
-            reader.Take(sizeof(float));
-            reader.SpineString();
-            reader.SpineString();
-        }
-
-        var strings = reader.SpineCount();
-        for (var i = 0; i < strings; i++) reader.SpineString();
-        var bones = reader.SpineCount();
-        for (var i = 0; i < bones; i++)
-        {
-            reader.SpineString();
-            if (i > 0 && reader.VarUInt() >= i) throw new InvalidDataException("Spine 骨骼父节点引用越界");
-            reader.Take(8 * sizeof(float));
-            reader.VarUInt();
-            reader.Bool();
-            if (nonessential)
-            {
-                reader.Take(sizeof(int));
-                reader.SpineString();
-                reader.Bool();
-            }
-        }
-
-        var slots = reader.SpineCount();
-        for (var i = 0; i < slots; i++)
-        {
-            reader.SpineString();
-            if (reader.VarUInt() >= bones) throw new InvalidDataException("Spine 插槽骨骼引用越界");
-            reader.Take(2 * sizeof(int));
-            if (reader.VarUInt() > strings) throw new InvalidDataException("Spine 插槽字符串引用越界");
-            reader.VarUInt();
-            if (nonessential) reader.Bool();
-        }
-        return new("Spine binary", bytes.Length, reader.Offset, Strings: strings, Version: version, Bones: bones, Slots: slots);
-    }
-
-    ref struct FormatReader(ReadOnlySpan<byte> data)
+    internal ref struct FormatReader(ReadOnlySpan<byte> data)
     {
         readonly ReadOnlySpan<byte> data = data;
         internal int Offset { get; private set; }
@@ -247,12 +197,19 @@ internal static class BinaryTextAssets
 
         internal int VarUInt()
         {
-            var value = 0;
+            var value = VarBits();
+            if (value > int.MaxValue) throw new InvalidDataException("Spine 非负整数越界");
+            return (int)value;
+        }
+
+        internal uint VarBits()
+        {
+            uint value = 0;
             for (var shift = 0; shift <= 28; shift += 7)
             {
                 var part = Byte();
-                if (shift == 28 && part > 7) break;
-                value |= (part & 0x7f) << shift;
+                if (shift == 28 && part > 15) break;
+                value |= (uint)(part & 0x7f) << shift;
                 if ((part & 0x80) == 0) return value;
             }
             throw new InvalidDataException("Spine 可变长度整数越界");

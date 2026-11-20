@@ -97,7 +97,7 @@ public sealed record SavedProject(Project? Project, int? ScanCompleted, int? Sca
 
 public static class Program
 {
-    public const int CurrentScanRevision = 11;
+    public const int CurrentScanRevision = 12;
     public const int MinimumUsableScanRevision = 2;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     static readonly UTF8Encoding Utf8 = new(false, true);
