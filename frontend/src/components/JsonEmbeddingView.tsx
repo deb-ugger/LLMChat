@@ -8,6 +8,7 @@ import { gameAvailableModels } from "./GameTranslationTabs";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
+import { GameMosaicCompletionContext } from "./GameMosaicWorkbench";
 import { UnityIconButton } from "./UnityIconButton";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
@@ -68,6 +69,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const textInfoChanged=useCallback((value:GameTextInfo)=>{const changedTarget=!!textTarget.current&&textTarget.current!==value.target;textTarget.current=value.target;if(value.dirty||value.running||changedTarget){setGenerated(false);if(workflowRef.current.textSkipped)void workflowUpdate.current({textSkipped:false});}setTextInfo(value);if(value.translationPath)setFile(value.translationPath);},[]);
   const [part,setPart]=useState<"text"|"images"|"mosaic">(savedStage.step >= 3 ? "text" : savedStage.part);
   const [mosaicBusy,setMosaicBusy]=useState(false);
+  const [mosaicComplete,setMosaicComplete]=useState(false);
   useEffect(() => { rememberGameStage(game.path,textStep,part==="mosaic"?"images":part); }, [game.path,textStep,part]);
   const [imageWorkflow,setImageWorkflow]=useState<GameImageInfo>({state:"idle",stage:"filter",complete:false,count:null,folder:"",exists:null,loaded:false,selected:0,valid:0});
   const [imagesApplied, setImagesApplied] = useState(false);
@@ -453,7 +455,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const imageStep=imageWorkflow.stage==="restore"?"3":"2.2";
     const running=mosaicBusy&&item.id==="2.3"||textInfo.running&&item.id==="2.1"||imageBusy&&item.id===imageStep||(pending||status.state==="running")&&operationStep===item.id;
     const scanned=!!scanPath||textInfo.count>0;
-    const completed=item.id==="1"&&scanned||item.id==="2.1"&&scanned&&(workflow.textSkipped||textInfo.done===textInfo.selected)||item.id==="2.2"&&(imageWorkflow.complete||workflow.imagesSkipped)||item.id==="3"&&(patch.installed||imagesApplied||!patch.conflicts.length&&automatic==="done");
+    const completed=item.id==="1"&&scanned||item.id==="2.1"&&scanned&&(workflow.textSkipped||textInfo.done===textInfo.selected)||item.id==="2.2"&&(imageWorkflow.complete||workflow.imagesSkipped)||item.id==="2.3"&&mosaicComplete||item.id==="3"&&(patch.installed||imagesApplied||!patch.conflicts.length&&automatic==="done");
     const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||["2.1","2.2"].includes(item.id)&&scanned||item.id==="3"&&(canGenerate||generated||imageWorkflow.valid>0);
     const failed=!!scanLoadError&&item.id==="1"&&!running||!scanLoadError&&textInfo.state==="error"&&item.id==="2.1"||imageWorkflow.state==="error"&&item.id===imageStep||status.state==="error"&&operationStep===item.id;
     const state=failed?"error":running?"current":completed?"complete":ready?"current":"pending";
@@ -489,7 +491,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {textStep===3&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
         </div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} batchResults={textBatch} visible={part==="text"} step={textStep} active={active} disabled={mosaicBusy||pending||detecting||status.state==="running"} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {supportsImages&&<GameImageWorkbench mosaicActive={active&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/>}
+      {supportsImages&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench mosaicActive={active&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
 
     </main>
 
