@@ -892,3 +892,36 @@
   .game-workflow-connector,
   .game-workflow-node .is-active-task .game-workflow-marker { animation: none; }
 }
+
+/* 并行区间：轨道本身就是"双股粗缆"——加粗、两色渐变，不额外画第二条线。
+   颜色仍取自状态（--track-flow-from-tone → --track-flow-to-tone），
+   所以已完成段是绿、交接段是绿→蓝、待办段是灰，不会被并行标识强奸颜色。 */
+.game-workflow-connector.is-parallel-lane {
+  inline-size: 8px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--track-flow-from-tone, var(--workflow-tone-current, #3265b6)) 88%, transparent),
+    color-mix(in srgb, var(--track-flow-to-tone, var(--workflow-tone-current, #3265b6)) 88%, transparent));
+  --track-rail: none;
+  --track-ties: none;
+  box-shadow: 0 0 9px color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 32%, transparent);
+}
+
+/* 并行区间的入口（分叉那一格）挂一个极小 ×2 角标，说明这段是两路并跑。
+   只在 is-fan-out 上挂一次，不会每段都冒出来。 */
+.game-workflow-connector.is-fan-out { overflow: visible; }
+.game-workflow-connector.is-fan-out::after {
+  content: "×2";
+  position: absolute;
+  inset-inline-end: -14px;
+  inset-block-start: 4px;
+  font-size: 8.5px;
+  line-height: 1;
+  letter-spacing: .2px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  color: color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 70%, #ffffff);
+  background: rgba(18, 21, 26, .92);
+  border: 1px solid color-mix(in srgb, var(--track-flow-to-tone, #3265b6) 42%, transparent);
+  pointer-events: none;
+}
