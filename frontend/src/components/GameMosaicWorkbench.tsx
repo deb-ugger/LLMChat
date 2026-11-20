@@ -22,6 +22,12 @@ type StepRun = { state: GameProgressState; completed: number; total: number; sta
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
+export type GameMosaicDeploymentHandle = {
+  prepare: (signal: AbortSignal) => Promise<string[]>;
+  selectedIds: () => string[];
+  apply: (ids: string[], undo?: boolean) => Promise<number>;
+};
+
 export type MosaicCandidateIndex = Record<string, { source: string; hash: string; included: boolean }>;
 type MosaicStorage = {
   index: MosaicCandidateIndex;
@@ -34,6 +40,7 @@ type Props = {
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
   prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
   controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
+  deploymentHandle?: { current: GameMosaicDeploymentHandle | null };
 };
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
@@ -89,7 +96,7 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy }: Props) {
+export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle }: Props) {
   const task = useRef<AbortController | null>(null);
   const onCompletionChange = useContext(GameMosaicCompletionContext);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
@@ -232,12 +239,47 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
 
   const candidatePath = (image: UnityImage) => API_BASE + "/api/game-images/mosaic?" +
     new URLSearchParams({ gamePath, id: image.id, sourceHash: image.sourceHash });
+  const writeMosaicPatch = async (ids: string[], undo = false, signal?: AbortSignal) => {
+    const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/" + (undo ? "mosaic-uninstall" : "mosaic-apply"), {
+      method: "POST", signal, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gamePath, imageIds: ids, backupMode }),
+    }));
+    return await response.json() as { files: number; retained?: number; composed?: number };
+  };
+
+  useEffect(() => {
+    if (!deploymentHandle) return;
+    const selected = usable.filter(image => {
+      const row = resultFor(rows, image);
+      return row.checked && row.saved;
+    });
+    deploymentHandle.current = {
+      selectedIds: () => selected.map(image => image.id),
+      prepare: async signal => {
+        for (const image of selected) {
+          signal.throwIfAborted();
+          try {
+            const response = await mosaicResponse(await fetch(candidatePath(image), { signal, cache: "no-store" }));
+            await response.body?.cancel();
+          } catch (error) {
+            signal.throwIfAborted();
+            throw new Error(`无法读取已确认的去码图「${image.name}」：${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return selected.map(image => image.id);
+      },
+      apply: async (ids, undo) => (await writeMosaicPatch(ids, undo)).files,
+    };
+    return () => { deploymentHandle.current = null; };
+  });
+
   const readSaved = async (image: UnityImage, signal: AbortSignal) =>
     storage ? storage.read(image, signal) : (await mosaicResponse(await fetch(candidatePath(image), { signal, cache: "no-store" }))).blob();
 
+  const loadPreviews = !deploymentHandle || paneVisible;
   useEffect(() => {
     const image = active;
-    if (!image) return;
+    if (!loadPreviews || !image) return;
     const controller = new AbortController();
     setPreferredResult(undefined); setDrawing(false); setDraft(undefined); anchor.current = null;
     void read(image, controller.signal).then(blob => {
@@ -246,10 +288,10 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       if (!controller.signal.aborted) setSource({ id: image.id, revision: image.sourceHash, error: String(cause) });
     });
     return () => controller.abort();
-  }, [active, read]);
+  }, [active, read, loadPreviews]);
 
   useEffect(() => {
-    if (!showSaved || !active) return;
+    if (!loadPreviews || !showSaved || !active) return;
     const controller = new AbortController();
     void readSaved(active, controller.signal).then(blob => {
       if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, blob });
@@ -257,7 +299,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, error: String(cause) });
     });
     return () => controller.abort();
-  }, [active, showSaved]);
+  }, [active, showSaved, loadPreviews]);
 
   function update(image: UnityImage, edit: Partial<Result>) {
     setRows(previous => ({ ...previous, [image.id]: { ...resultFor(previous, image), ...edit } }));
@@ -487,11 +529,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const title = undo ? "撤销所选去码图" : "应用所选去码图";
     if (!targets.length || !await confirmation.confirm("请关闭游戏后继续。将处理当前场景组中所选的 " + targets.length + " 张图片。", { title, okLabel: title })) return;
     void run(title, async signal => {
-      const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/" + (undo ? "mosaic-uninstall" : "mosaic-apply"), {
-        method: "POST", signal, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ gamePath, imageIds: targets.map(image => image.id), backupMode }),
-      }));
-      const detail = await response.json();
+      const detail = await writeMosaicPatch(targets.map(image => image.id), undo, signal);
       const layers = undo && detail.retained ? ` · 保留 ${detail.retained} 张译图`
         : detail.composed ? ` · ${detail.composed} 张与译图合成` : "";
       const message = `${title}完成 · ${detail.files} 张${layers}`;
@@ -589,6 +627,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const redrawReason = busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = busyReason ?? (!reference ? "先将已确认的图片设为组参考"
     : !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
+  if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind === "lada" && detectorFile
     ? `${detectorLabels.lada} · ${detectorFile.name}` : detectorLabels[detectorKind];
