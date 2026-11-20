@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import { deriveRailView } from "../src/components/gameWorkflowRail.ts";
+import { deriveRailView, railOrder } from "../src/components/gameWorkflowRail.ts";
 
 function section(file, from, to) {
   const source = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -208,4 +208,20 @@ const split = branchRail("abcdefg", "ab af bg fg", ["d"]);
 assert.deepEqual(split.parallelRegions, [{start:0,end:2,lanes:2},{start:4,end:6,lanes:2}]);
 assert.deepEqual(split.connectors.map(item => item.parallelLane), [true,true,false,false,true,true]);
 console.log("PASS 并行区间最短汇合、无汇合回退、区间并集及跳过截断");
+
+const railSteps = ids.map(id => ({id,state:"pending"}));
+const orderedIds = (spec, disabled = [], enabled = undefined) => railOrder(railSteps, spec === undefined ? undefined : edgesOf(spec), enabled, disabled)
+  .map(index => railSteps[index].id);
+assert.deepEqual(orderedIds(undefined), ids, "ordinary rail keeps its order");
+assert.deepEqual(railOrder(railSteps, edgesOf("01 12 23 34")), [0,1,2,3,4], "T1 serial stays unchanged");
+assert.deepEqual(orderedIds("03 31 12 24"), ["scan","mosaic","text","image","apply"], "T6 serial rewire");
+const parallelOrder = orderedIds("02 01 24 14");
+assert.ok(parallelOrder.indexOf("text") < parallelOrder.indexOf("image"));
+assert.ok(parallelOrder.indexOf("apply") > parallelOrder.indexOf("image"));
+assert.deepEqual(orderedIds("01 03 12 34 24", ["text"]), ids, "skip forwards the dependency in the same layer");
+assert.deepEqual(orderedIds("03 31 12 24", ["text"]), ["scan","mosaic","text","image","apply"], "reachable skip stays after its predecessor");
+const contracted = validateDeploymentPlan({edges:edgesOf("03 31 12 24"),disabled:["text"]});
+assert.deepEqual(railOrder(railSteps, contracted.effectiveEdges, contracted.enabledSteps, ["text"]), [0,1,3,2,4], "contracted skip keeps its original slot");
+assert.deepEqual(orderedIds("03 31 12 24 40"), ["scan","mosaic","text","image","apply"], "rootless graph starts from the first node");
+console.log("PASS T6 重接串行拓扑、并行支路顺序、可达与不可达跳过节点");
 console.log("PASS 总计 " + checked + " 个矩阵用例及独立边界回归");

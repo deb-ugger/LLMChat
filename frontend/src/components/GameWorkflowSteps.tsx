@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { deriveRailView } from "./gameWorkflowRail";
+import { deriveRailView, railOrder } from "./gameWorkflowRail";
 
 export type GameWorkflowStep = { id: string; label: ReactNode; state: string; selected: boolean; running?: boolean; paused?: boolean; title?: string; onSelect: () => void };
 
@@ -27,11 +27,12 @@ function moveFocus(event: KeyboardEvent<HTMLElement>) {
 export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, skipped, disconnected }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
+  const orderedSteps = railOrder(steps, edges, enabled, skipped).map(index => steps[index]);
   const disconnectedIds = new Set(disconnected);
-  const railSteps = steps.map(step => ({ ...step, disconnected: disconnectedIds.has(step.id) }));
+  const railSteps = orderedSteps.map(step => ({ ...step, disconnected: disconnectedIds.has(step.id) }));
   const { nodes, connectors, lanes, beam } = deriveRailView(railSteps, edges, enabled, skipped);
   const { from: beamFrom, to: beamTo, active: beamActive, isStatic: beamStatic } = beam;
-  const stepOrder = JSON.stringify(steps.map(step => step.id));
+  const stepOrder = JSON.stringify(orderedSteps.map(step => step.id));
 
   useLayoutEffect(() => {
     const track = trackRef.current;
@@ -67,13 +68,13 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, sk
   return <nav className="game-workflow-steps" role="tablist" aria-label="处理步骤" aria-orientation="vertical" onKeyDown={moveFocus}>
     <div className="game-workflow-track" role="presentation" ref={trackRef}>
       {beamActive && <span aria-hidden="true" className={beamStatic ? "game-workflow-beam is-static" : "game-workflow-beam"} style={{
-        "--beam-from": beamPosition?.from ?? (beamFrom + 0.5) / steps.length,
-        "--beam-to": beamPosition?.to ?? (beamTo + 0.5) / steps.length,
-        "--beam-anchor-tone": `var(--workflow-tone-${steps[beamFrom].state}, var(--workflow-tone-current))`,
+        "--beam-from": beamPosition?.from ?? (beamFrom + 0.5) / orderedSteps.length,
+        "--beam-to": beamPosition?.to ?? (beamTo + 0.5) / orderedSteps.length,
+        "--beam-anchor-tone": `var(--workflow-tone-${orderedSteps[beamFrom].state}, var(--workflow-tone-current))`,
         "--beam-span": Math.max(1, beamTo - beamFrom),
       } as CSSProperties} />}
-      {steps.map((item, index) => {
-        const node = nodes[index], connector = connectors[index], next = steps[index + 1];
+      {orderedSteps.map((item, index) => {
+        const node = nodes[index], connector = connectors[index], next = orderedSteps[index + 1];
         const skippedStep = node.className.includes(" is-skipped");
         const skippedNext = nodes[index + 1]?.className.includes(" is-skipped");
         const missingInput = node.className.includes(" is-unlinked");

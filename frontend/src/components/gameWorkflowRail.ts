@@ -8,6 +8,55 @@ export type RailStep = {
 
 type RailEdge = { from: string; to: string };
 
+export function railOrder(
+  steps: readonly RailStep[],
+  edges?: readonly RailEdge[],
+  enabled?: readonly string[],
+  skipped?: readonly string[],
+): number[] {
+  const indices = steps.map((_, index) => index);
+  if (!edges?.length || indices.length < 2) return indices;
+
+  const enabledIds = new Set(enabled ?? steps.map(step => step.id));
+  const skippedIds = new Set(skipped);
+  const active = steps.map(step => enabledIds.has(step.id) && !skippedIds.has(step.id) && step.state !== "skipped");
+  const indexOf = new Map(steps.map(({ id }, index) => [id, index]));
+  const outgoing = indices.map(() => new Set<number>());
+  const indegree = indices.map(() => 0);
+  for (const { from, to } of edges) {
+    const source = indexOf.get(from), target = indexOf.get(to);
+    if (source === undefined || target === undefined || source === target || outgoing[source].has(target)) continue;
+    outgoing[source].add(target);
+    indegree[target]++;
+  }
+
+  const layers = indices.map(() => 0);
+  const reachable = indices.map(() => false);
+  const queue = indices.filter(index => indegree[index] === 0);
+  if (queue.length === 0) {
+    indegree[0] = 0;
+    queue.push(0);
+  }
+  for (const source of queue) {
+    for (const target of outgoing[source]) {
+      if (indegree[target] === 0) continue;
+      // A skipped intermediary passes the dependency on without adding a layer.
+      layers[target] = Math.max(layers[target], layers[source] + Number(active[source]));
+      reachable[target] ||= active[source] || reachable[source];
+      if (--indegree[target] === 0) queue.push(target);
+    }
+  }
+
+  const rank = new Map(queue.map((index, position) => [index, position]));
+  const ordered = queue.filter(index => active[index] || reachable[index])
+    .sort((a, b) => layers[a] - layers[b] || Number(active[a]) - Number(active[b])
+      || (active[a] ? a - b : rank.get(a)! - rank.get(b)!));
+  const placed = new Set(ordered);
+  // Keep unanchored skipped steps and any unorderable steps in their original slots.
+  for (const index of indices) if (!placed.has(index)) ordered.splice(index, 0, index);
+  return ordered;
+}
+
 export type RailView = {
   nodes: { id: string; className: string }[];
   connectors: { index: number; className: string; parallelLane: boolean }[];
