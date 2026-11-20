@@ -916,6 +916,7 @@
   translate: -50% -50%;
   font-size: 9px;
   line-height: 1;
+  white-space: nowrap;
   letter-spacing: .5px;
   padding: 2px 4px;
   border-radius: 4px;
