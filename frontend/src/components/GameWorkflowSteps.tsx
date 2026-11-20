@@ -8,6 +8,7 @@ type Props = {
   panelId?: string;
   edges?: { from: string; to: string }[];
   enabled?: string[];
+  disconnected?: string[];
 };
 
 function moveFocus(event: KeyboardEvent<HTMLElement>) {
@@ -21,7 +22,7 @@ function moveFocus(event: KeyboardEvent<HTMLElement>) {
   tabs[next].focus();
 }
 
-export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: Props) {
+export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, disconnected }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
   const graphMode = edges !== undefined;
@@ -36,7 +37,14 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
     outgoing.set(from, targets);
     incoming.set(to, sources);
   }
-  const unlinked = (index: number) => graphMode && index > 0 && enabledIds.has(steps[index].id) && !incoming.has(steps[index].id);
+  const disconnectedIds = new Set(disconnected);
+  const unlinked = (index: number) => disconnectedIds.has(steps[index].id);
+  const order = new Map(steps.map((step, index) => [step.id, index]));
+  // A vertical rail segment represents every dependency that crosses that boundary.
+  const crossings = (edges ?? []).flatMap(({ from, to }) => {
+    const a = order.get(from), b = order.get(to);
+    return a === undefined || b === undefined ? [] : [{ first: Math.min(a, b), last: Math.max(a, b) }];
+  });
   const selectedRunning = steps.findIndex(step => step.selected && step.running);
   const flowingStep = selectedRunning >= 0 ? selectedRunning : steps.findIndex(step => step.running);
   const flowTrackCount = steps.length - 1;
@@ -101,11 +109,11 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled }: 
         const flow = flowingStep >= 0 && index >= flowingStep;
         const linked = item.selected || next?.selected;
         const missingInput = unlinked(index);
-        const gap = graphMode && next && !outgoing.get(item.id)?.has(next.id);
+        const gap = graphMode && next && !crossings.some(({ first, last }) => first <= index && index < last);
         const fanOut = (outgoing.get(item.id)?.size ?? 0) >= 2;
         const fanIn = next && (incoming.get(next.id)?.size ?? 0) >= 2;
         const parallel = !graphMode && item.running && next?.running;
-        const title = missingInput ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（已启用但未接入流程）` : item.title;
+        const title = missingInput ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（依赖路径不完整）` : item.title;
         return <div className={`game-workflow-node ${item.state}${missingInput ? " is-unlinked" : ""}`} key={item.id} role="presentation">
           <button id={idPrefix ? `${idPrefix}-${item.id}` : undefined} type="button" role="tab"
             tabIndex={item.selected ? 0 : -1} aria-selected={item.selected} aria-controls={panelId}

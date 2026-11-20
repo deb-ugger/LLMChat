@@ -227,7 +227,27 @@
 .dpl-switch::after { content: ""; position: absolute; inset: 2px auto auto 2px; width: 9px; height: 9px; border-radius: 2px; background: var(--text-muted); }
 .dpl .dpl-switch[aria-checked="true"] { border-color: var(--flow-ink); }
 .dpl-switch[aria-checked="true"]::after { left: 14px; background: var(--flow-ink); box-shadow: 0 0 6px var(--flow-ink); }
-.dpl-canvas-hint { position: absolute; inset: auto 14px 8px; margin: 0; color: var(--text-muted); font-size: var(--fs-caption); pointer-events: none; }
+.dpl-canvas-hint {
+  position: absolute;
+  inset: auto 14px 8px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  pointer-events: none;
+}
+.dpl-canvas-hint strong {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--flow-bg);
+  color: var(--flow-ink);
+}
+.dpl-canvas-hint strong.is-invalid,
+.dpl-card.is-incomplete .dpl-card-detail { color: var(--flow-warning); }
+.dpl-card.is-incomplete { border-color: var(--flow-warning); }
+.dpl-link-preview.is-invalid { stroke: var(--flow-warning); }
 .dpl-menu {
   position: absolute;
   z-index: 3;

@@ -62,7 +62,7 @@ import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLega
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
-import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
+import { UnityDeploymentPanel, deploymentLayers, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, scanMosaic, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
@@ -2402,6 +2402,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   </GameStepProgress>;
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
+  const deploymentValidation = useMemo(() => validateDeploymentPlan(deploymentPlan), [deploymentPlan]);
   const activePatch = patch && deploymentPlan.disabled.every(id => patchScope.includes(id)) ? patch : null;
   const fullPatch = !!activePatch && patchScope.length === deploymentPlan.disabled.length;
   const currentStoppedStep = deploymentStop?.root === root ? deploymentStop.step : null;
@@ -2484,10 +2485,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   function runDeployment(action: "automatic" | "export" | DeploymentPhase) {
     if (!root || locked || deploymentController.current || running.current || mosaicBusy ||
         action !== "automatic" && action !== "export" && deploymentPlan.disabled.includes(action)) return;
+    const automatic = action === "automatic";
+    if (automatic && deploymentValidation.issues.length) {
+      setActionError(deploymentValidation.issues.join("。"));
+      return;
+    }
     const controller = new AbortController();
     const signal = controller.signal;
     deploymentController.current = controller;
-    const automatic = action === "automatic";
     const mode = automatic ? "automatic" : "single";
     const layers: DeploymentStep[][] = automatic ? deploymentLayers(deploymentPlan) : action === "export" ? [["apply"]] : [[action], ["apply"]];
     const total = layers.flat().length;
@@ -2696,7 +2701,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       maxWidth: "none",
     }}>
     <div className="unity-offline-upper unity-workflow-layout">
-      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} steps={UNITY_STAGE_TABS.map(tab=>{
+      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled}
+        disconnected={deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined} steps={UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
         const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);
         if (id === "2.3") {

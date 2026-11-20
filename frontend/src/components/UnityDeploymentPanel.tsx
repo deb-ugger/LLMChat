@@ -77,8 +77,10 @@ const isStep = (id: unknown): id is DeploymentStep => steps.some(step => step ==
 const isPhase = (id: DeploymentStep): id is DeploymentPhase => id !== "scan" && id !== "apply";
 const edgeKey = ({ from, to }: FlowEdge) => from + "-" + to;
 
-function canConnect(edges: FlowEdge[], { from, to }: FlowEdge) {
-  if (from === to || from === "apply" || to === "scan" || edges.some(edge => edge.from === from && edge.to === to)) return false;
+function connectionIssue(edges: FlowEdge[], { from, to }: FlowEdge) {
+  if (from === to) return "阶段不能连接自身";
+  if (from === "apply" || to === "scan") return "连线须从扫描资源开始，向生成与应用汇合";
+  if (edges.some(edge => edge.from === from && edge.to === to)) return "这条依赖已存在";
   const visited = new Set<DeploymentStep>();
   function reachesSource(step: DeploymentStep): boolean {
     if (step === from) return true;
@@ -86,7 +88,41 @@ function canConnect(edges: FlowEdge[], { from, to }: FlowEdge) {
     visited.add(step);
     return edges.some(edge => edge.from === step && reachesSource(edge.to));
   }
-  return !reachesSource(to);
+  return reachesSource(to) ? "这条连线会形成循环依赖" : undefined;
+}
+
+export function validateDeploymentPlan({ edges, disabled }: DeploymentFlow) {
+  const issues: string[] = [];
+  const disconnected: DeploymentStep[] = [];
+  const accepted: FlowEdge[] = [];
+  for (const edge of edges) {
+    const issue = connectionIssue(accepted, edge);
+    if (issue) issues.push(deploymentStepLabels[edge.from] + " → " + deploymentStepLabels[edge.to] + " · " + issue);
+    else accepted.push(edge);
+  }
+
+  const reachable = (start: DeploymentStep, from: "from" | "to", to: "to" | "from") => {
+    const visited = new Set<DeploymentStep>([start]);
+    for (const step of visited) {
+      for (const edge of accepted) if (edge[from] === step) visited.add(edge[to]);
+    }
+    return visited;
+  };
+  const fromScan = reachable("scan", "from", "to");
+  const toApply = reachable("apply", "to", "from");
+  const enabled = deploymentPhases.filter(phase => !disabled.includes(phase));
+  if (enabled.length === 0) issues.push("请至少启用一个处理阶段");
+  const missingInput = enabled.filter(phase => !fromScan.has(phase));
+  const missingOutput = enabled.filter(phase => fromScan.has(phase) && !toApply.has(phase));
+  const labels = (ids: DeploymentStep[]) => ids.map(id => deploymentStepLabels[id]).join("、");
+  if (missingInput.length) issues.push(labels(missingInput) + "缺少来自扫描资源的路径");
+  if (missingOutput.length) issues.push(labels(missingOutput) + "缺少通往生成与应用的路径");
+  disconnected.push(...missingInput, ...missingOutput);
+  if (!fromScan.has("apply")) {
+    disconnected.push("apply");
+    issues.push("扫描资源与生成和应用之间缺少完整路径");
+  }
+  return { issues, disconnected };
 }
 
 export function loadDeploymentPlan(root: string): DeploymentPlan {
@@ -103,7 +139,7 @@ export function loadDeploymentPlan(root: string): DeploymentPlan {
   const edges: FlowEdge[] = [];
   if (Array.isArray(saved?.edges)) {
     for (const edge of saved.edges) {
-      if (isStep(edge?.from) && isStep(edge?.to) && canConnect(edges, edge)) edges.push({ from: edge.from, to: edge.to });
+      if (isStep(edge?.from) && isStep(edge?.to) && !connectionIssue(edges, edge)) edges.push({ from: edge.from, to: edge.to });
     }
   } else {
     for (const [index, to] of order.slice(1).entries()) edges.push({ from: order[index], to });
@@ -136,6 +172,7 @@ export function deploymentLayers(plan: DeploymentPlan): DeploymentStep[][] {
   while (remaining.size) {
     releaseSkipped(plan, remaining);
     const layer = [...remaining].filter(step => ready(step, plan.edges, remaining));
+    if (layer.length === 0 && remaining.size > 0) throw new Error("流程存在循环依赖");
     for (const step of layer) remaining.delete(step);
     if (layer.length) layers.push(layer);
   }
@@ -145,6 +182,7 @@ export function deploymentLayers(plan: DeploymentPlan): DeploymentStep[][] {
 
 type CanvasNode = { id: DeploymentStep; detail: string; state: DeploymentStageState };
 type LinkDrag = { kind: "link"; pointer: number; step: DeploymentStep; side: "out" | "in"; replace?: FlowEdge };
+type LinkCandidate = { edge: FlowEdge; others: FlowEdge[]; id: DeploymentStep; issue?: string };
 type CanvasDrag = LinkDrag
   | { kind: "node"; pointer: number; step: DeploymentStep; start: Point; origin: Point }
   | { kind: "pan"; pointer: number; start: Point; origin: Point };
@@ -171,7 +209,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
   const [fit, setFit] = useState(1);
   const [menu, setMenu] = useState<CanvasMenu>();
   const [motion, setMotion] = useState<{ step: DeploymentStep; at: Point }>();
-  const [wire, setWire] = useState<{ drag: LinkDrag; at: Point; target?: DeploymentStep }>();
+  const [wire, setWire] = useState<{ drag: LinkDrag; at: Point; candidate?: LinkCandidate }>();
   const [selected, setSelected] = useState<string>();
   const pointer = useRef<CanvasDrag>(undefined);
   const history = useRef<{ undo: FlowGraph[]; redo: FlowGraph[] }>({ undo: [], redo: [] });
@@ -185,7 +223,11 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       : model.applied ? "已应用" : model.patch ? "待应用" : "未生成",
   }));
   const enabled = (id: DeploymentStep) => !isPhase(id) || !plan.disabled.includes(id);
-  const unlinked = steps.filter(id => id !== "scan" && enabled(id) && !plan.edges.some(edge => edge.to === id));
+  const validation = validateDeploymentPlan(plan);
+  const candidate = wire?.candidate;
+  const previewIssues = candidate
+    ? candidate.issue ? [candidate.issue] : validateDeploymentPlan({ edges: [...candidate.others, candidate.edge], disabled: plan.disabled }).issues
+    : validation.issues;
   const remaining = new Set(steps.filter(id => id === model.stoppedStep || !model.completed.includes(id)));
   releaseSkipped(plan, remaining);
   const canRun = !!model.root && !locked && !run && !running;
@@ -253,13 +295,14 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
     }
   }
 
-  function connectCandidate(drag: LinkDrag, clientX: number, clientY: number) {
+  function connectCandidate(drag: LinkDrag, clientX: number, clientY: number): LinkCandidate | undefined {
     const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-flow-port]");
     const id = target?.closest<HTMLElement>("[data-flow-node]")?.dataset.flowNode;
-    if (!isStep(id) || target?.dataset.flowPort === drag.side) return undefined;
+    if (!isStep(id)) return undefined;
     const edge = drag.side === "out" ? { from: drag.step, to: id } : { from: id, to: drag.step };
     const others = plan.edges.filter(value => !drag.replace || edgeKey(value) !== edgeKey(drag.replace));
-    return canConnect(others, edge) ? { edge, others, id } : undefined;
+    const issue = target?.dataset.flowPort === drag.side ? "请将输出端接到输入端" : connectionIssue(others, edge);
+    return { edge, others, id, issue };
   }
 
   function beginLink(event: ReactPointerEvent, step: DeploymentStep, side: "out" | "in", replace?: FlowEdge) {
@@ -299,7 +342,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
     const drag = pointer.current;
     if (drag?.pointer !== event.pointerId) return;
     if (drag.kind === "link") {
-      setWire({ drag, at: point(board.current!, event.clientX, event.clientY), target: connectCandidate(drag, event.clientX, event.clientY)?.id });
+      setWire({ drag, at: point(board.current!, event.clientX, event.clientY), candidate: connectCandidate(drag, event.clientX, event.clientY) });
     } else if (drag.kind === "node") {
       setMotion({ step: drag.step, at: nodeDragPoint(event, drag) });
     } else {
@@ -323,7 +366,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       }
     } else if (drag.kind === "link") {
       const target = connectCandidate(drag, event.clientX, event.clientY);
-      if (target && (!drag.replace || edgeKey(drag.replace) !== edgeKey(target.edge)) &&
+      if (target && !target.issue && (!drag.replace || edgeKey(drag.replace) !== edgeKey(target.edge)) &&
           edit({ ...graph(), edges: [...target.others, target.edge] })) setSelected(edgeKey(target.edge));
     }
   }
@@ -362,7 +405,8 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
   const quick = run?.mode === "automatic";
   const menuStep = menu?.kind === "node" ? menu.step : undefined;
   const jump = (step: DeploymentStep) => { setMenu(undefined); onFocusStep?.(step); };
-  const wireTarget = wire?.target ? portPoint(nodePoint(wire.target), wire.drag.side === "out" ? "in" : "out") : wire?.at;
+  const wireTarget = wire && candidate && !candidate.issue
+    ? portPoint(nodePoint(candidate.id), wire.drag.side === "out" ? "in" : "out") : wire?.at;
   const wireStart = wire ? portPoint(nodePoint(wire.drag.step), wire.drag.side) : undefined;
 
   return <div className="dpl-canvas" ref={viewport} tabIndex={0} aria-label="生成与应用流程画布"
@@ -382,7 +426,7 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
       </div>
       {run || model.canStop && model.busyLabel
         ? <button type="button" className="dpl-run-trigger is-stop" disabled={!model.canStop || !!run?.stopping} onClick={actions.stop}>{run?.stopping ? "正在停止…" : "■ 停止"}</button>
-        : <button type="button" className="dpl-run-trigger" disabled={!model.root || locked || plan.disabled.length === deploymentPhases.length} onClick={actions.execute}>▶ 一键执行</button>}
+        : <button type="button" className="dpl-run-trigger" disabled={!model.root || locked || validation.issues.length > 0} onClick={actions.execute}>▶ 一键执行</button>}
     </div>
     <div className="dpl-board" ref={board} style={{ transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${fit * view.zoom})` }}>
       <svg className="dpl-rails" width={fitWidth} height={boardHeight} aria-label="阶段依赖">
@@ -413,16 +457,17 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
             </>}
           </g>;
         })}
-        {wire && wireStart && wireTarget && <path className={`dpl-link-preview${wire.target ? " is-valid" : ""}`}
+        {wire && wireStart && wireTarget && <path className={`dpl-link-preview${candidate ? candidate.issue ? " is-invalid" : " is-valid" : ""}`}
           d={wire.drag.side === "out" ? linkPath(wireStart, wireTarget) : linkPath(wireTarget, wireStart)} aria-hidden="true" />}
       </svg>
       {nodes.map(node => {
         const pos = nodePoint(node.id), editable = isPhase(node.id);
         const runnable = canRun && node.state === "todo" && enabled(node.id) && (node.id === "scan" ||
-          !remaining.has("scan") && !unlinked.includes(node.id) && ready(node.id, plan.edges, remaining) && (node.id !== "apply" || canApply));
+          !remaining.has("scan") && !validation.disconnected.includes(node.id) && ready(node.id, plan.edges, remaining) && (node.id !== "apply" || canApply));
+        const incomplete = validation.disconnected.includes(node.id);
         const label = deploymentStepLabels[node.id];
-        return <div key={node.id} data-flow-node={node.id} tabIndex={0} aria-label={runnable ? `${label} · 可以执行` : label}
-          className={`dpl-card is-${enabled(node.id) ? node.state : "skipped"}${runnable ? " is-runnable" : ""}${!locked ? " is-movable" : ""}${motion?.step === node.id ? " is-dragging" : ""}`}
+        return <div key={node.id} data-flow-node={node.id} tabIndex={0} aria-label={runnable ? `${label} · 可以执行` : incomplete ? `${label} · 依赖路径不完整` : label}
+          className={`dpl-card is-${enabled(node.id) ? node.state : "skipped"}${runnable ? " is-runnable" : ""}${incomplete ? " is-incomplete" : ""}${!locked ? " is-movable" : ""}${motion?.step === node.id ? " is-dragging" : ""}`}
           style={{ left: pos.x, top: pos.y, width: cardWidth, height: cardHeight }}
           onContextMenu={event => { event.preventDefault(); openMenu({ kind: "node", step: node.id }, event.clientX, event.clientY); }}
           onKeyDown={event => {
@@ -432,21 +477,23 @@ function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { m
             openMenu({ kind: "node", step: node.id }, box.x + box.width / 2, box.y + box.height / 2);
           }}>
           <b>{label}</b>
-          <span className="dpl-card-detail">{runnable ? "可以执行" : enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
+          <span className="dpl-card-detail">{runnable ? "可以执行" : incomplete ? "依赖路径不完整" : enabled(node.id) ? node.state === "active" ? `进行中 · ${node.detail}`
             : node.state === "done" && editable ? `已完成 · ${node.detail}` : node.detail : "已跳过"}</span>
-          {node.id !== "scan" && <span className={`dpl-port is-input${wire?.target === node.id && wire.drag.side === "out" ? " is-target" : ""}`}
+          {node.id !== "scan" && <span className={`dpl-port is-input${candidate?.id === node.id && !candidate.issue && wire?.drag.side === "out" ? " is-target" : ""}`}
             data-flow-port="in" aria-label="输入" />}
-          {node.id !== "apply" && <span className={`dpl-port is-output${wire?.target === node.id && wire.drag.side === "in" ? " is-target" : ""}`}
+          {node.id !== "apply" && <span className={`dpl-port is-output${candidate?.id === node.id && !candidate.issue && wire?.drag.side === "in" ? " is-target" : ""}`}
             data-flow-port="out" aria-label="输出" onPointerDown={event => beginLink(event, node.id, "out")} />}
           {editable && <button type="button" role="switch" aria-label={`启用${deploymentStepLabels[node.id]}`} aria-checked={enabled(node.id)}
             className="dpl-switch" disabled={locked} onClick={() => { if (isPhase(node.id)) toggle(node.id); }} />}
         </div>;
       })}
     </div>
-    <p className="dpl-canvas-hint">
-      {unlinked.length > 0 && <strong role="status">{unlinked.map(id => deploymentStepLabels[id]).join("、")}已启用但未接入流程。 </strong>}
-      {selected ? "拖动选中连线的端点以重连，按 Delete 删除" : "从输出拖到输入建立依赖 · 滚轮缩放 · 拖动空白处平移"}
-    </p>
+    <div className="dpl-canvas-hint">
+      <strong className={previewIssues.length ? "is-invalid" : ""} role="status">
+        {candidate ? "连线预览" : "排布校验"} · {previewIssues.length ? previewIssues.join("。") : "依赖完整，可以执行"}
+      </strong>
+      <span>{selected ? "拖动选中连线的端点以重连，按 Delete 删除" : "从输出拖到输入建立依赖 · 滚轮缩放 · 拖动空白处平移"}</span>
+    </div>
     {menu && <div className="dpl-menu" ref={menuRef} role="menu" style={{ left: menu.at.x, top: menu.at.y }}
       aria-label={menuStep ? deploymentStepLabels[menuStep] : "依赖连线"}>
       {menu.kind === "edge" ? <>
