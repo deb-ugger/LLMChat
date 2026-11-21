@@ -202,7 +202,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     queueControls={<button type="button" className="unity-btn" disabled={stopping || !running && (!hasWaiting || formalBusy)}
       title={!running && formalBusy ? formalBlockingReason : undefined}
       onClick={() => control(running ? "benchmark-stop" : "benchmark-start")}>
-      {stopping ? "正在中止…" : running ? "中止当前并暂停队列" : "运行队列"}</button>}
+      {running || stopping ? "中止当前并暂停队列" : "运行队列"}</button>}
     queueContents={<div className="game-benchmark-results">
       {!queue.length && <p className="hint">暂无正在运行或排队的任务。</p>}
       {queue.map(job => {
@@ -221,10 +221,13 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
                 {progress?.percent == null ? "—" : progress.percent + "%"}
               </span>
             </div>
-            <div className="hint" style={{ marginInlineStart: "calc(8px + var(--space-2))" }} title={progress?.detail}>
-              {job.status === "等待" ? "等待前一项" : progress &&
-                <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
-                  {progress.failed > 0 && " · 失败 " + progress.failed}</>}
+            <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
+              {stopping && job.status === "运行中" && <div>正在中止…</div>}
+              <div className="hint" title={progress?.detail}>
+                {job.status === "等待" ? "等待前一项" : progress &&
+                  <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
+                    {progress.failed > 0 && " · 失败 " + progress.failed}</>}
+              </div>
             </div>
           </div>
           {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
@@ -443,9 +446,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       <div className="game-benchmark-toolbar game-benchmark-task-actions">
         <button type="button" className="settings-panel-save" disabled={!!issue || adding || snapshot.stopping}
           title={issue || (snapshot.stopping ? "正在中止当前测试，请稍候" : undefined)} onClick={() => void start(true)}>
-          {adding ? "正在准备样本…" : running ? "插到队首" : "立即运行"}
+          {running ? "插到队首" : "立即运行"}
         </button>
         <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
+        <span role="status">{adding && "正在准备样本…"}</span>
       </div>
       <BenchmarkSection title="测试配置">
         <div className="game-benchmark-toolbar">
