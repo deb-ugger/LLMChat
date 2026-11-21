@@ -25,12 +25,21 @@ function Get-BuildFiles([string[]]$Paths) {
     }
 }
 function Get-BuildInventory([string[]]$Paths, [switch]$Inputs) {
-    $rows = @(foreach ($file in @(Get-BuildFiles $Paths | Sort-Object FullName -Unique)) {
-        $digest = ''
-        if ($Inputs -and ($file.Name -like '.env*' -or $file.Extension -in @('.ts','.tsx','.js','.mjs','.cjs','.css','.html','.cs','.csproj','.json','.toml','.ps1','.cmd','.py','.txt','.props','.targets'))) { $digest = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
-        '{0}|{1}|{2}|{3}' -f $file.FullName,$file.Length,$file.LastWriteTimeUtc.Ticks,$digest
-    })
-    return ($rows -join "`n")
+    $hasher = if ($Inputs) { [Security.Cryptography.SHA256]::Create() }
+    try {
+        $rows = @(foreach ($file in @(Get-BuildFiles $Paths | Sort-Object FullName -Unique)) {
+            $digest = ''
+            if ($Inputs -and ($file.Name -like '.env*' -or $file.Extension -in @('.ts','.tsx','.js','.mjs','.cjs','.css','.html','.cs','.csproj','.json','.toml','.ps1','.cmd','.py','.txt','.props','.targets'))) {
+                $stream = [IO.File]::OpenRead($file.FullName)
+                try { $digest = [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-','') }
+                finally { $stream.Dispose() }
+            }
+            '{0}|{1}|{2}|{3}' -f $file.FullName,$file.Length,$file.LastWriteTimeUtc.Ticks,$digest
+        })
+        return ($rows -join "`n")
+    } finally {
+        if ($hasher) { $hasher.Dispose() }
+    }
 }
 function Test-BuildCache([string]$Name, [string[]]$Inputs, [string[]]$Outputs, [string]$Identity) {
     $path = Join-Path $script:BuildCacheRoot "$Name.json"
