@@ -758,12 +758,36 @@
 .game-action-confirm .game-confirm-close:hover { background:var(--accent-soft,rgba(255,255,255,.07)); color:var(--text); }
 .game-action-confirm footer { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:20px; }
 .game-action-confirm footer button { display:inline-flex; align-items:center; justify-content:center; min-width:92px; height:34px; padding:0 14px; border-radius:9px; font:inherit; font-size:13px; cursor:pointer; transition:background .14s ease, border-color .14s ease, color .14s ease; }
-.game-action-confirm .game-confirm-cancel { border:1px solid var(--line,rgba(255,255,255,.12)); background:transparent; color:var(--text); }
-.game-action-confirm .game-confirm-cancel:hover { background:rgba(255,255,255,.06); }
-.game-action-confirm .game-confirm-accept { border:1px solid rgba(214,88,80,.45); background:rgba(214,88,80,.14); color:#ff9d95; }
-.game-action-confirm .game-confirm-accept:hover { background:rgba(214,88,80,.24); border-color:rgba(214,88,80,.65); }
-.game-action-confirm .game-confirm-primary { border:1px solid rgba(110,190,255,.4); background:rgba(110,190,255,.14); color:#a8dcff; }
-.game-action-confirm .game-confirm-primary:hover { background:rgba(110,190,255,.24); }
+.game-action-confirm :is(.game-confirm-cancel, .game-confirm-accept, .game-confirm-primary) {
+  --confirm-panel: var(--panel, var(--bg-panel));
+  border: 1px solid var(--confirm-button-border);
+  background: var(--confirm-button-bg);
+  color: var(--confirm-button-text);
+}
+.game-action-confirm .game-confirm-cancel {
+  --confirm-button-border: var(--line, var(--border));
+  --confirm-button-bg: var(--confirm-panel);
+  --confirm-button-hover: var(--bg-hover);
+  --confirm-button-text: var(--text);
+}
+.game-action-confirm .game-confirm-accept {
+  --confirm-button-border: color-mix(in srgb, var(--danger) 45%, var(--confirm-panel));
+  --confirm-button-bg: color-mix(in srgb, var(--danger) 14%, var(--confirm-panel));
+  --confirm-button-hover: color-mix(in srgb, var(--danger) 24%, var(--confirm-panel));
+  --confirm-button-text: color-mix(in srgb, var(--danger) 55%, var(--text));
+}
+.game-action-confirm .game-confirm-primary {
+  --confirm-button-border: color-mix(in srgb, var(--accent) 40%, var(--confirm-panel));
+  --confirm-button-bg: color-mix(in srgb, var(--accent) 12%, var(--confirm-panel));
+  --confirm-button-hover: color-mix(in srgb, var(--accent) 20%, var(--confirm-panel));
+  --confirm-button-text: color-mix(in srgb, var(--accent) 42%, var(--text));
+}
+.game-action-confirm footer :is(.game-confirm-cancel, .game-confirm-accept, .game-confirm-primary):hover:not(:disabled) {
+  background: var(--confirm-button-hover);
+}
+.game-action-confirm .game-confirm-accept:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 65%, var(--confirm-panel));
+}
 .game-action-confirm button:focus-visible { outline:2px solid var(--accent,#1b1a16); outline-offset:3px; }
 .game-action-confirm button:disabled { opacity:.45; cursor:not-allowed; }
 .game-confirm-details { max-height:220px; overflow:auto; margin-top:16px; padding:var(--space-3) 14px; border-radius:var(--radius-lg); background:var(--accent-soft,#e8e2d4); font-size:var(--fs-body); line-height:1.7; }
