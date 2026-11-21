@@ -2,6 +2,7 @@ import type { MosaicBox } from "./gameMosaic";
 
 export const mosaicStatusLabels = {
   failed: "处理失败",
+  retrying: "重试队列",
   pending: "待筛选",
   review: "待复核",
   candidate: "疑似有码",

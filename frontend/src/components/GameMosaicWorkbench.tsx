@@ -4,7 +4,7 @@ import { api, type Settings } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, mosaicRowsStorageKey, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
@@ -141,7 +141,8 @@ function sameReview(row: Result, scan: MosaicScan, key: string) {
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: true });
 const mosaicPageSize = 40;
-function mosaicStatus(row: Result, included: boolean): MosaicStatus {
+function mosaicStatus(row: Result, included: boolean, queuedForRetry: boolean): MosaicStatus {
+  if (queuedForRetry && row.refineError) return "retrying";
   const state = mosaicScreeningStatus(row);
   return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
 }
@@ -287,7 +288,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [query, setQuery] = useState("");
   const [groupPages, setGroupPages] = useState<Partial<Record<MosaicStatus, number>>>({});
   const [collapsed, setCollapsed] = useState<Partial<Record<MosaicStatus, boolean>>>(() =>
-    Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, id !== "failed"])));
+    Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, id !== "failed" && id !== "retrying"])));
   const listId = useId();
   const listRef = useRef<HTMLUListElement>(null);
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
@@ -310,6 +311,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
   const pendingRedraw = useRef<RedrawPlan | null>(null);
   const lastReview = useRef<{ key: string; images: Map<string, string> } | null>(null);
+  const [refineRetryQueue, setRefineRetryQueue] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [, refreshElapsed] = useState(0);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -356,13 +358,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const groupAnchor = sceneFilter ? usable.find(image => image.id === activeId) ?? matches[0] : undefined;
   const scopedGroup = groupAnchor && (resultFor(rows, groupAnchor).group || groupAnchor.id);
   const currentScope = scopedGroup ? imageGroup.get(scopedGroup) ?? [] : matches;
-  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image =>
-    mosaicStatus(resultFor(rows, image), !!storage?.index[image.id]?.included) === statusFilter),
-    [currentScope, rows, statusFilter, storage?.index]);
+  const imageStatus = useCallback((image: UnityImage) => mosaicStatus(resultFor(rows, image),
+    !!storage?.index[image.id]?.included, refineRetryQueue.get(image.id) === image.sourceHash),
+  [rows, storage?.index, refineRetryQueue]);
+  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image => imageStatus(image) === statusFilter),
+    [currentScope, statusFilter, imageStatus]);
   const { ordered, groups } = useMemo(() => {
     const grouped = new Map<MosaicStatus, UnityImage[]>();
     for (const image of visible) {
-      const status = mosaicStatus(resultFor(rows, image), !!storage?.index[image.id]?.included);
+      const status = imageStatus(image);
       const list = grouped.get(status);
       if (list) list.push(image);
       else grouped.set(status, [image]);
@@ -373,10 +377,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       if (statusFilter === "all" || statusFilter === status) groups.set(status, images || []);
     }
     return { groups, ordered: [...groups].filter(([id]) => !collapsed[id]).flatMap(([id, images]) => images.map(image => ({ id, image }))) };
-  }, [visible, rows, storage?.index, collapsed, statusFilter]);
+  }, [visible, imageStatus, collapsed, statusFilter]);
   const refineChanges = useMemo(() => {
     const changes = new Map<MosaicStatus, { added: number; removed: number }>();
     for (const image of currentScope) {
+      if (imageStatus(image) === "retrying") continue;
       const row = resultFor(rows,image);
       const movement = refineMovementFor(row);
       if (!movement || movement.from === movement.to) continue;
@@ -388,7 +393,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       changes.set(movement.to,to);
     }
     return changes;
-  }, [currentScope, rows]);
+  }, [currentScope, rows, imageStatus]);
   const active = activeId === null ? undefined : visible.find(image => image.id === activeId) ?? ordered[0]?.image;
   const previewedImage = useRef(active);
   previewedImage.current = active;
@@ -817,6 +822,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const requestConcurrency = metrics?.usage && Math.min(targets.length, Math.max(1, Math.min(2, reviewSettings.refineConcurrency ?? 1)));
     const timingScope = deploymentScope ?? usage?.scope;
     const selections = timingScope && gameStepSelections(timingScope, deploymentScope ? "mosaic" : "refine", requestConcurrency);
+    const retries = new Map((restart ? [] : targets).filter(image => !!resultFor(rows, image).refineError)
+      .map(image => [image.id, image.sourceHash]));
+    if (retries.size) setRefineRetryQueue(retries);
+    const finishRetry = (image: UnityImage) => {
+      if (retries.get(image.id) !== image.sourceHash) return;
+      setRefineRetryQueue(previous => {
+        const next = new Map(previous);
+        next.delete(image.id);
+        return next;
+      });
+    };
     let succeeded = false;
     try {
       const result = await refineMosaicBatch(targets,{root:gamePath,settings:reviewSettings,signal,modelFile:detectorFile,read,prepare:prepareSources,restart,timingScope,
@@ -824,6 +840,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           .finally(() => usage?.refresh()),
        onResult: (image,scan) => {
          applyReview(image,scan);
+         finishRetry(image);
          if (ownedUsage && !isCached(image)) ownedUsage.recordItems(++processed,failures);
        },
        onError: (image,error) => {
@@ -834,12 +851,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
            return { ...previous, [image.id]: attachRefineMovement(row,{ ...row,
              refineError: error, refined: undefined, refineQuickExcluded: undefined }) };
          });
+         finishRetry(image);
        },
         onProgress: report,
         onPreparation:metrics?.onPreparation});
        succeeded = result.failed === 0;
        return result;
-     } finally { ownedUsage?.finish(succeeded); }
+     } finally {
+       if (retries.size) setRefineRetryQueue(new Map());
+       ownedUsage?.finish(succeeded);
+     }
   }
   function refine(restart=false) {
     const targets = restart ? checkedReviewScope : pendingReview;
@@ -1237,7 +1258,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         {multipleModels ? <div className="game-flow-model-list">{modelRows}</div> : modelRows}
         {status?.total ? <small className="game-flow-model-rates">
           <span>{id === "refine" && "已处理 "}{processed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
-          {id === "refine" && failed > 0 && <span>成功 {status.completed} 张 · 失败 {failed} 张</span>}
+          {id === "refine" && (failed > 0 || refineRetryQueue.size > 0) &&
+            <span>成功 {status.completed} 张 · 本轮失败 {failed} 张</span>}
+          {id === "refine" && refineRetryQueue.size > 0 && <span>重试队列 {refineRetryQueue.size} 张</span>}
           {id === "refine" && status.prepared !== undefined && status.prepared > (processed ?? 0) &&
             <span>候选已准备 {status.prepared} / {status.total} 张</span>}
         </small> : null}
@@ -1372,8 +1395,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   const busyReason = busy ? "正在处理，先中止或等待" : disabled ? "请等待其他工程操作完成" : undefined;
-  const failureCount = useMemo(() => scoped.filter(image => mosaicStatus(resultFor(rows, image), false) === "failed").length, [scoped, rows]);
+  const { failed: failureCount, retrying: retryCount } = useMemo(() => {
+    const counts = { failed: 0, retrying: 0 };
+    for (const image of scoped) {
+      const status = imageStatus(image);
+      if (status === "failed" || status === "retrying") counts[status]++;
+    }
+    return counts;
+  }, [scoped, imageStatus]);
   const activeFailure = mosaicProcessingError(activeResult);
+  const activeRetry = active && imageStatus(active) === "retrying";
+  const filterProcessingStatus = (status: "failed" | "retrying") => {
+    setStatusFilter(statusFilter === status ? "all" : status);
+    setCollapsed(previous => ({ ...previous, [status]: false }));
+    setQuery(""); setSceneFilter(false); setGroupPages({}); setActiveId("");
+  };
   const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
@@ -1454,7 +1490,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     <div className="unity-offline-toolbar unity-image-toolbar">
       <GameImageFilter menuRef={filterMenu}>
         <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setGroupPages({}); }}>
-          <option value="all">全部状态</option>{(Object.entries(mosaicStatusLabels) as [MosaicStatus, string][]).map(([id, label])=><option key={id} value={id}>{label}</option>)}
+          <option value="all">全部状态</option>{(Object.entries(mosaicStatusLabels) as [MosaicStatus, string][]).filter(([id]) =>
+            id !== "retrying" || retryCount > 0 || statusFilter === id).map(([id, label]) =>
+            <option key={id} value={id}>{label}</option>)}
         </select></label>
         <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => {
           if (event.target.checked && active) setActiveId(active.id);
@@ -1463,19 +1501,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         }} />仅本组</label>
       </GameImageFilter>
       <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已采用去码图 {counts.saved} 张</span>
-      {failureCount > 0 && <button type="button" className="unity-btn game-mosaic-failed-filter"
-      aria-pressed={statusFilter === "failed"} onClick={() => {
-        setStatusFilter(statusFilter === "failed" ? "all" : "failed");
-        setCollapsed(previous => ({ ...previous, failed: false }));
-        setQuery(""); setSceneFilter(false); setGroupPages({}); setActiveId("");
-      }}>处理失败 · {failureCount} 张</button>}
+      {(failureCount > 0 || statusFilter === "failed") && <button type="button" className="unity-btn game-mosaic-failed-filter"
+        aria-pressed={statusFilter === "failed"} onClick={() => filterProcessingStatus("failed")}>处理失败 · {failureCount} 张</button>}
+      {(retryCount > 0 || statusFilter === "retrying") && <button type="button" className="unity-btn"
+        aria-pressed={statusFilter === "retrying"} onClick={() => filterProcessingStatus("retrying")}>重试队列 · {retryCount} 张</button>}
     <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query}
         onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }} />
     </div>
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={navigateList}
       list={<>
         <ul ref={listRef}>{[...groups].map(([id, items]) => {
-          if (id === "failed" && !items.length && statusFilter !== "failed") return null;
+          if ((id === "failed" || id === "retrying") && !items.length && statusFilter !== id) return null;
           const label = mosaicStatusLabels[id];
           const pages = Math.max(1, Math.ceil(items.length / mosaicPageSize));
           const page = Math.min(groupPages[id] || 0, pages - 1);
@@ -1508,14 +1544,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               </summary>
             <ul>{!collapsed[id] && items.slice(page*mosaicPageSize,(page+1)*mosaicPageSize).map(image => {
                 const row = resultFor(rows, image);
-                const state = mosaicStatus(row, !!storage?.index[image.id]?.included);
+                const state = imageStatus(image);
                 const status = mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
                 const movement = refineMovementFor(row);
                 const change = movement && movement.from !== movement.to
                   ? " · 复筛 " + mosaicStatusLabels[movement.from] + " → " + mosaicStatusLabels[movement.to] : "";
                 const failure = mosaicProcessingError(row);
-                const detail = `${image.width} × ${image.height} · ${failure || status + change}`;
-                return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${failure ? " has-error" : ""}`}>
+                const detail = `${image.width} × ${image.height} · ${state === "retrying" ? status + " · 上次" + failure : failure || status + change}`;
+                return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}`}>
                   <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={actionsDisabled} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: row.boxes.length ? undefined : row.review })} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail}
                     onClick={() => selectPreview(image.id)}>
@@ -1561,7 +1597,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               editMask(image, mapMosaicBoxes(activeResult.boxes, active, image));
           }}>复制蒙版到组内空白图</button>
         </div>
-        {activeFailure ? <p className="game-mosaic-error">{activeFailure}</p> :
+        {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
+          {activeRetry && "重试队列 · 上次"}{activeFailure}
+        </p> :
           activeResult.review && <p className="hint">{activeResult.review}</p>}
         <div ref={previews} className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
           style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
