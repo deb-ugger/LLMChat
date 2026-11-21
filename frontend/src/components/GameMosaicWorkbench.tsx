@@ -11,7 +11,7 @@ import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
-import { useBenchmarkProgress } from "../benchmark/benchmarkRunner";
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
@@ -511,7 +511,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
   async function run(label: string, work: (signal: AbortSignal, report: (progress: number | { prepared: number }) => void) => Promise<void | boolean>,
     step?: { id: MosaicStep; total: number; completed?: number; summary: string; previousElapsed?: number }) {
-    if (task.current || disabled) return;
+    if (task.current || disabled || isBenchmarkRunning()) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
@@ -896,6 +896,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const redrawRemaining = pausedRedraw?.targets.filter(target => target.pending.size).length ?? 0;
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const benchmarkProgress = useBenchmarkProgress(gamePath);
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
     const status = id === "screen" ? screenStatus : id === "refine" ? refineStatus : stepRuns.redraw;
@@ -1023,8 +1025,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   const busyReason = busy ? "正在处理，先中止或等待" : disabled ? "请等待其他工程操作完成" : undefined;
-  const redrawReason = busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
-  const batchReason = busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
+  const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
+  const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
@@ -1035,12 +1037,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
       <div className="game-flow-list"><ol>
         {stepCard("screen", "筛选打码图片", screenSummary, <>
-          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !screenTargets.length}
+          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={testing || actionsDisabled || !screenTargets.length} title={testTitle}
             onClick={() => screen()}>{screenAction}</button>
           {canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
             onClick={() => void clearTask()}>清理</button>}
         </>, <>
-          {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled}
+          {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn is-secondary" disabled={testing || actionsDisabled} title={testTitle}
             onClick={() => screen(true)}>重新筛选已勾选图片</button>}
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setGroupPages({}); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
@@ -1057,7 +1059,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           </label>}
         </>)}
         {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest", <>
-          <button type="button" className="unity-btn game-flow-start" disabled={actionsDisabled || !checkedReviewScope.length}
+          <button type="button" className="unity-btn game-flow-start" disabled={testing || actionsDisabled || !checkedReviewScope.length} title={testTitle}
             onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&checkedReviewScope.length?"重新复筛":reviewedCount||stepRuns.refine?.state==="stopped"?"继续复筛":"开始复筛"}</button>
           {canClearRefine && <button type="button" className="unity-btn game-flow-clear"
             aria-label="清理复筛" disabled={actionsDisabled} onClick={() => void clearRefine()}>清理</button>}
@@ -1074,7 +1076,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={preferences.refine!==false} disabled={!!busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
         </>)}
         {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model], <>
-          <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason}
+          <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason} title={testTitle}
             data-tooltip={batchReason ?? (pausedRedraw ? "按上一次重绘的图片及配置继续" : undefined)}
             onClick={() => pausedRedraw ? startRedraw(pausedRedraw,true) : generate(redrawGroup, [model])}>
             {pausedRedraw ? "继续重绘 · 剩余 " + redrawRemaining : "重绘本组所选 · " + redrawGroup.length} 张
@@ -1181,7 +1183,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           </div>
         </div>
         <div className="unity-image-actions">
-          <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason}
+          <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason} title={testTitle}
             data-tooltip={redrawReason} onClick={() => generate([active], [model])}>重绘当前图</button>
           <button className="unity-btn" aria-pressed={drawing} disabled={!!busy || !originalUrl}
             onClick={() => setDrawing(value => !value)}>框选蒙版</button>
@@ -1201,7 +1203,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
               setPreferredResult(showSaved ? preferredVersion.id : "saved");
             }}>{showSaved ? "查看候选" : "查看已确认"}</button>}
-            <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} data-tooltip={redrawReason}
+            <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} title={testTitle} data-tooltip={redrawReason}
               onClick={() => generate([active], ["turbo", "2511"])}>两种模型各生成一版</button>
             {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
               onKeyDown={event => {
@@ -1252,10 +1254,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           ) : <GameImagePreviewFrame fallback={<p className="hint">尚未生成去码结果</p>} />}
         </div>
         <div className="unity-image-actions">
-          <button className="unity-btn" disabled={actionsDisabled || (storage ? saved.length === included.length : !saved.length)} onClick={() => void patch(false)}>
+          <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
             {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
           </button>
-          <button className="unity-btn" disabled={actionsDisabled || (storage ? !included.length : !selected.length)} onClick={() => void patch(true)}>
+          <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
             {storage ? "从生成清单移除" : "撤销本组所选"}
           </button>
         </div>

@@ -114,7 +114,13 @@ function commit(scope: string) {
     clearInterval(timer);
     checkpoints.delete(scope);
   }
-  localStorage.setItem("llmchat-game-performance:" + scope, JSON.stringify(Object.fromEntries(Object.entries(value).map(([step, meter]) => [step, { ...performanceSnapshot(meter), started: undefined }]))));
+  const key = "llmchat-game-performance:" + scope;
+  const steps = Object.entries(value);
+  if (steps.length) localStorage.setItem(key, JSON.stringify(Object.fromEntries(steps.map(([step, meter]) => [step, { ...performanceSnapshot(meter), started: undefined }]))));
+  else {
+    localStorage.removeItem(key);
+    scopes.delete(scope);
+  }
   window.dispatchEvent(new Event("llmchat-game-performance"));
 }
 export function beginGameStep(scope: string, step: string, benchmark?: Record<string, unknown>) {
@@ -144,13 +150,13 @@ export function completeGameStep(scope: string, step: string) {
   const meter = records(scope)[step];
   if (meter) { stopMeter(meter); archiveStep(scope, step, meter, "completed"); commit(scope); }
 }
-export function clearGamePerformance(scope: string, affected: readonly string[]) {
+export function clearGamePerformance(scope: string, affected: readonly string[], archive = true) {
   const all = records(scope);
   for (const step of affected) {
     const meter = all[step];
     if (!meter) continue;
     stopMeter(meter);
-    archiveStep(scope, step, meter, "cleared");
+    if (archive) archiveStep(scope, step, meter, "cleared");
     delete all[step];
   }
   commit(scope);

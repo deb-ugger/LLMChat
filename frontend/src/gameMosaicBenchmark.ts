@@ -88,7 +88,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
               const keep: MosaicBox[] = options.protect ? image.regions.filter(region => region.selected && region.text)
                 .map(region => [region.x0, region.y0, region.x1, region.y1]) : [];
               await redrawMosaic({ source, boxes: workload.boxes[image.id], keep, model: options.model, steps: options.steps,
-                seed: 1, signal, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
+                seed: 1, signal, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
             } else {
               const scan = await (detector ?? grid!).scan(source);
               if (expected) results.set(image.id,scan);

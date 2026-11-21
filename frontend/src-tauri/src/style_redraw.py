@@ -4,6 +4,8 @@ import base64
 import io
 import os
 import json
+import shutil
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 import secrets
@@ -68,6 +70,7 @@ async def ready(session, root):
     argv = stats["system"].get("argv", [])
     if argv and Path(argv[0]).is_absolute() and Path(argv[0]).resolve() != (root / "ComfyUI/main.py").resolve():
         raise RuntimeError("8188 端口上的 ComfyUI 不属于所选目录，请切换目录或退出该实例后重试")
+    return argv
 
 
 def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=None):
@@ -170,9 +173,11 @@ def extract(result, matte, size):
     return layer.resize(size, Image.Resampling.LANCZOS)
 
 
-async def upload_image(session, reference, kind="temp", filename=None):
+async def upload_image(session, reference, kind="temp", filename=None, subfolder=None):
     form = aiohttp.FormData()
     form.add_field("type", kind)
+    if subfolder:
+        form.add_field("subfolder", subfolder)
     form.add_field("image", png(reference), filename=filename or f"llmchat-{uuid.uuid4().hex}.png", content_type="image/png")
     uploaded = await request(session, "POST", "/upload/image", data=form)
     name = "/".join(filter(None, [uploaded.get("subfolder"), uploaded["name"]]))
@@ -212,7 +217,7 @@ async def render(session, crop, draft, translation, steps, label, profile):
         return extract(output, matte, crop.size)
 
 
-async def run_image_graph(session, graph, output_id, label):
+async def run_image_graph(session, graph, output_id, label, prompt_ids=None):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
@@ -221,6 +226,8 @@ async def run_image_graph(session, graph, output_id, label):
     async with session.ws_connect(BASE + "/ws", params={"clientId": client}) as ws:
         job = await request(session, "POST", "/prompt", json={"client_id": client, "prompt": graph})
         pid = job["prompt_id"]
+        if prompt_ids is not None:
+            prompt_ids.append(pid)
         emit("status", f"{label} · 已提交，等待 ComfyUI")
         deadline = time.monotonic() + 3600
         while time.monotonic() < deadline:
@@ -271,6 +278,67 @@ def mosaic_mask(original, regions, protected):
     return image
 
 
+def benchmark_storage_paths(root, argv):
+    def option(name):
+        for index, argument in enumerate(argv[1:], 1):
+            if argument == name:
+                return Path(argv[index + 1])
+            if argument.startswith(name + "="):
+                return Path(argument.split("=", 1)[1])
+        return None
+
+    # Relative overrides resolve from the server's current directory, which is not part of system_stats.
+    base = option("--base-directory") or root / "ComfyUI"
+    temp = option("--temp-directory")
+    output = option("--output-directory")
+    if any(value is not None and not value.is_absolute() for value in (base, temp, output)):
+        raise ValueError("运行重绘测试时，ComfyUI 的 base、temp 和 output 自定义目录须使用绝对路径")
+    return (temp / "temp" if temp else base / "temp").resolve(), (output or base / "output").resolve()
+
+
+def remove_benchmark_directory(parent, subfolder):
+    path = parent / subfolder
+    if path.resolve().parent != parent:
+        raise ValueError(f"无法安全清理测试临时目录：{path}")
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+
+
+async def remove_benchmark_prompt(session, prompt_id):
+    async def delete(route):
+        async with session.post(BASE + route, json={"delete": [prompt_id]}, allow_redirects=False) as response:
+            response.raise_for_status()
+
+    # A transport failure can leave the submitted prompt in flight. Wait for its last write.
+    await delete("/queue")
+    while any(item[1] == prompt_id for item in (await request(session, "GET", "/queue"))["queue_running"]):
+        await asyncio.sleep(1)
+    await delete("/history")
+
+
+@asynccontextmanager
+async def benchmark_redraw_storage(session, root, argv, enabled):
+    if not enabled:
+        yield None, None
+        return
+    temp, output = benchmark_storage_paths(root, argv)
+    subfolder = "llmchat-benchmark-" + uuid.uuid4().hex
+    prompt_ids = []
+    try:
+        yield subfolder, prompt_ids
+    finally:
+        try:
+            for prompt_id in prompt_ids:
+                await remove_benchmark_prompt(session, prompt_id)
+        finally:
+            try:
+                remove_benchmark_directory(temp, subfolder)
+            finally:
+                remove_benchmark_directory(output, subfolder)
+
+
 async def repair_mosaic(original, data, steps):
     profile = data["profile"]
     if profile["kind"] not in ("2511", "turbo"):
@@ -284,26 +352,31 @@ async def repair_mosaic(original, data, steps):
     source_mask = mask.crop(bounds)
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
-        await ready(session, Path(data["directory"]))
-        source_name = await upload_image(session, crop.convert("RGB"))
-        mask_name = await upload_image(session, source_mask.convert("RGB"))
-        reference_name = source_name
-        if reference:
-            with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
-                ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
-                                   for index, value in enumerate(bounds))
-                reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"))
-        prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
-                  "Preserve the pose, composition, outline, palette and the existing illustration style. "
-                  "Use image 2 as a visual style reference. Keep everything outside the mask unchanged.")
-        graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
-        sampler = graph["13"]["inputs"]
-        latent_key = "latent_image"
-        graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
-        graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
-        graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
-        sampler[latent_key] = ["19", 0]
-        raw = await run_image_graph(session, graph, "15", "蒙版重绘")
+        root = Path(data["directory"])
+        argv = await ready(session, root)
+        async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
+            source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
+            mask_name = await upload_image(session, source_mask.convert("RGB"), subfolder=subfolder)
+            reference_name = source_name
+            if reference:
+                with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
+                    ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
+                                       for index, value in enumerate(bounds))
+                    reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
+            prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
+                      "Preserve the pose, composition, outline, palette and the existing illustration style. "
+                      "Use image 2 as a visual style reference. Keep everything outside the mask unchanged.")
+            graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
+            sampler = graph["13"]["inputs"]
+            latent_key = "latent_image"
+            graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+            graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
+            graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
+            sampler[latent_key] = ["19", 0]
+            if subfolder:
+                graph["15"] = {"class_type": "SaveImage", "inputs": {
+                    "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
+            raw = await run_image_graph(session, graph, "15", "蒙版重绘", prompt_ids)
     with Image.open(io.BytesIO(raw)) as output:
         restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
     restored.putalpha(crop.getchannel("A"))

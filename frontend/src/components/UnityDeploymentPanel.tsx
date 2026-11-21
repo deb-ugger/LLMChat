@@ -1,3 +1,4 @@
+import { benchmarkBlockingReason, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
@@ -233,6 +234,8 @@ function linkPath(from: Point, to: Point) {
 }
 
 export function DeploymentCanvas({ model, actions, percent, running, onFocusStep }: { model: DeploymentModel; actions: Pick<DeploymentActions, "execute" | "savePlan" | "stop">; percent: number; running: boolean; onFocusStep?: (step: DeploymentStep) => void }) {
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
   const cardPrefix = useId();
   const viewport = useRef<HTMLDivElement>(null), board = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
@@ -458,7 +461,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
       </div>
       {run || model.canStop && model.busyLabel
         ? <button type="button" className="dpl-run-trigger is-stop" disabled={!model.canStop || !!run?.stopping} onClick={actions.stop}>{run?.stopping ? "正在停止…" : "■ 停止"}</button>
-        : <button type="button" className="dpl-run-trigger" disabled={!model.root || locked || validation.issues.length > 0} onClick={actions.execute}>▶ 一键执行</button>}
+        : <button type="button" className="dpl-run-trigger" disabled={testing || !model.root || locked || validation.issues.length > 0} title={testTitle} onClick={actions.execute}>▶ 一键执行</button>}
     </div>
     <div className="dpl-board" ref={board} style={{ transform: `translate(-50%, -50%) translate(${view.x}px, ${view.y}px) scale(${fit * view.zoom})` }}>
       <svg className="dpl-rails" width={fitWidth} height={boardHeight} aria-label="阶段依赖">
@@ -554,6 +557,8 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
   onFlowChange?: (flow: DeploymentFlow) => void;
 }) {
   const { edges, disabled } = model.plan;
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
   useLayoutEffect(() => { onFlowChange?.({ edges, disabled }); }, [onFlowChange, model.root, edges, disabled]);
 
   const plan = model.fontPlan;
@@ -563,7 +568,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
   const fontChecked = !!plan?.fontChecked;
 
   const enabled = (phase: DeploymentPhase) => !model.plan.disabled.includes(phase);
-  const generate = (phase: DeploymentPhase) => <button type="button" className="dpl-btn" disabled={!enabled(phase) || model.locked || !model.completed.includes("scan")} onClick={() => actions.generatePhase(phase)}>生成</button>;
+  const generate = (phase: DeploymentPhase) => <button type="button" className="dpl-btn" disabled={testing || !enabled(phase) || model.locked || !model.completed.includes("scan")} title={testTitle} onClick={() => actions.generatePhase(phase)}>生成</button>;
 
   const percent = model.progress?.percent ?? (model.applied ? 100 : model.patch ? 80 : 0);
 
@@ -595,7 +600,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
             <label htmlFor="dpl-extra">补充字符</label>
             <div className="dpl-input-row">
               <input id="dpl-extra" className="dpl-input" value={model.extraCharacters} disabled={model.locked} placeholder="角色名等动态内容" onChange={event => actions.setExtraCharacters(event.currentTarget.value)} />
-              <button className="dpl-btn" disabled={model.locked} onClick={actions.checkFontPlan}>检查字库</button>
+              <button className="dpl-btn" disabled={testing || model.locked} title={testTitle} onClick={actions.checkFontPlan}>检查字库</button>
             </div>
           </div>
           <dl className="dpl-stats">
@@ -676,15 +681,15 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
             {model.applied
               ? <>
                 <button className="dpl-btn dpl-btn-primary" disabled={model.locked} onClick={actions.launch}>启动游戏</button>
-                <button className="dpl-btn" disabled={model.locked} onClick={actions.reapply}>重新应用</button>
+                <button className="dpl-btn" disabled={testing || model.locked} title={testTitle} onClick={actions.reapply}>重新应用</button>
               </>
-              : <button className="dpl-btn dpl-btn-primary" disabled={!model.patch || model.locked} onClick={actions.apply}>应用到游戏</button>}
-            <button className="dpl-btn dpl-btn-danger" disabled={!model.installed || model.locked} onClick={actions.uninstall}>卸载</button>
+              : <button className="dpl-btn dpl-btn-primary" disabled={testing || !model.patch || model.locked} title={testTitle} onClick={actions.apply}>应用到游戏</button>}
+            <button className="dpl-btn dpl-btn-danger" disabled={testing || !model.installed || model.locked} title={testTitle} onClick={actions.uninstall}>卸载</button>
           </div>
           {model.applied && model.installed && model.patch && actions.removeLayer && <div className="dpl-actions">
             {deploymentPhases.filter(phase => phase === "text" ? model.patch!.entries > 0 || model.patch!.fontReplacements > 0
               : phase === "image" ? !!model.patch!.images : !!(model.patch as UnityPatch & {mosaicImages?: number}).mosaicImages)
-              .map(phase => <button key={phase} className="dpl-btn" disabled={model.locked} onClick={()=>actions.removeLayer?.(phase)}>卸载{phase === "text" ? "文本" : phase === "image" ? "译图" : "去码图"}</button>)}
+              .map(phase => <button key={phase} className="dpl-btn" disabled={testing || model.locked} title={testTitle} onClick={()=>actions.removeLayer?.(phase)}>卸载{phase === "text" ? "文本" : phase === "image" ? "译图" : "去码图"}</button>)}
           </div>}
           <div className="dpl-mosaic">
             <span>第三方去码补丁</span>

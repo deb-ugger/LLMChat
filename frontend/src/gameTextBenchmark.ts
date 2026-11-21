@@ -20,7 +20,7 @@ import type { UnityEntry, UnityProgress } from "./unityOffline";
 export const benchmarkRoles = ["text", "dialogue", "names"] as const;
 type Role = typeof benchmarkRoles[number];
 export type BenchmarkConfig = {
-  id: string; label: string; source: string; target: string;
+  id: string; label: string; source: string; target: string; enabled?: boolean;
   models: Record<Role, { id: string; lanes: number }>;
   mosaic?: MosaicBenchmarkSetup;
   imageMode?: OcrMode; imageStrategy?: "staged" | "full"; localLanes?: number; imageConfidence?: number; engines?: UnityEngineChoice[];
@@ -209,7 +209,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
     const roundStarted = performance.now();
     let finishedConfigs = 0, failedConfigs = 0;
     report(`开始第 ${round} / ${rounds} 轮测试 · ${configs.length} 个配置`, "info");
-    clearGamePerformance(scope, [step]);
+    clearGamePerformance(scope, [step], false);
     for (const config of configs) {
       signal.throwIfAborted();
       const selected = target?.selected ?? workload.selectedIds.size;
@@ -232,19 +232,22 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         status = signal.aborted ? "已中止" : "失败";
         detail = error instanceof Error ? error.message : String(error);
       } finally {
+        const complete = metadata.translated + metadata.failed >= selected;
+        const interrupted = signal.aborted && !complete;
+        if (interrupted) status = "已中止";
         metadata.status = status;
         metadata.detail = detail;
         const recorded = new Set(Object.values(stepPerformance(scope, step).models).filter(model => model.requests > 0).map(model => model.model));
         for (const id of new Set((target || config.models.text.id ? activeRoles : []).map(role => config.models[role].id))) {
           if (id && !recorded.has(id)) unobservedModels.push(id);
         }
-        finishGameStep(scope, true);
+        finishGameStep(scope, !interrupted);
         const performance = stepPerformance(scope, step);
-        clearGamePerformance(scope, [step]);
+        clearGamePerformance(scope, [step], false);
         const result: BenchmarkResult = { round, label: config.label, selected, translated: metadata.translated, failed: metadata.failed, status, detail, summary: metadata.summary, unobservedModels, performance };
         onResult(result);
         for (const line of benchmarkResultLines(result)) report(line, status === "完成" ? "success" : status === "失败" ? "error" : "info");
-        finishedConfigs++;
+        if (!interrupted) finishedConfigs++;
         if (status === "失败") failedConfigs++;
       }
       if (signal.aborted) {

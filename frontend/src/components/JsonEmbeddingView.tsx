@@ -1,3 +1,4 @@
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
@@ -199,6 +200,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const touched = useRef(false);
   const workflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
   const busy = workflowBusy || mosaicBusy;
+  useFormalWorkflowActivity(busy);
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
   const latestWorkflow = useRef({ text: textInfo, mosaicComplete }); latestWorkflow.current = { text: textInfo, mosaicComplete };
   const busyRef = useRef(busy); busyRef.current = busy;
   const testConfigurations: GameTestConfigurationAccess = {
@@ -288,12 +292,14 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     } finally { setCheckingTextSource(false); }
   };
   const start = async (action: string,jsonPath=file,scopes=backupScopes) => {
+    if (isBenchmarkRunning()) return;
     if (action === "extract" && (hasTextScan || imageWorkflow.exists)) {
       const priorResults = !canUseTextResources ? "图片筛选、识别及译图结果" : imageProject ? "文本译文、草稿、图片筛选、识别及译图结果" : "文本译文和草稿";
       if (!await confirm(`清除${priorResults}后重新扫描，处理配置保留。`, {title:"重新扫描资源",okLabel:"重新扫描",cancelLabel:"取消"})) return;
       if (canUseTextResources && !await textHandle.current?.prepare()) return;
       if (imageProject && !await imageHandle.current?.prepare()) return;
     }
+    if (isBenchmarkRunning()) return;
     if (action === "extract" && !canUseTextResources && imageProject) {
       setPart("images"); setTextStep(2); setImageScanRequest(value=>value+1);
       return;
@@ -303,6 +309,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       if (!currentFile) return;
       jsonPath = currentFile;
     }
+    if (isBenchmarkRunning()) return;
     touched.current = true; setPending(true); setPendingAction(action); setError("");
     if(action==="extract"&&imageProject){setImageScanRequest(value=>value+1);}
     try {
@@ -356,7 +363,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
 
   const runDeployment = async (mode: DeploymentRun["mode"], work: (step: DeploymentStep, signal: AbortSignal) => Promise<void>) => {
-    if (deploymentAbort.current || busyRef.current) return;
+    if (isBenchmarkRunning() || deploymentAbort.current || busyRef.current) return;
     const controller = new AbortController();
     const signal = controller.signal;
     deploymentAbort.current = controller;
@@ -426,7 +433,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
 
   const runAutomatic = async () => {
-    if (deploymentAbort.current || busy || validation.issues.length || !await confirmInstalledPatch()) return;
+    if (isBenchmarkRunning() || deploymentAbort.current || busy || validation.issues.length || !await confirmInstalledPatch()) return;
     if (canUseTextResources && !await textHandle.current?.leave()) return;
     if (imageProject && !plan.disabled.includes("image") && !await imageHandle.current?.prepare()) return;
     followAutomatic.current = true;
@@ -606,7 +613,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const backupPanel=<section className="embed-section game-backup-settings" data-section="backup">
     <div className="game-maintenance-row"><h3>备份</h3><IconAction name="help" label="自动：应用前按所选范围创建备份。手动：点击立即备份时按所选范围创建备份。补丁卸载所需安装原件另行保留。"/>
       <label>方式<select aria-label="备份方式" value={backupMode} disabled={busy} onChange={e=>{const mode=e.target.value as "auto"|"manual";setBackupMode(mode);localStorage.setItem(`llmchat-game-backup:${game.path}`,mode);}}><option value="auto">自动备份</option><option value="manual">手动备份</option></select></label>
-      <button type="button" className="unity-btn" disabled={busy||!game.supported||!snapshotScopes.length} onClick={()=>void start("backup", file, snapshotScopes)}>立即备份</button>
+      <button type="button" className="unity-btn" disabled={testing||busy||!game.supported||!snapshotScopes.length} title={testTitle} onClick={()=>void start("backup", file, snapshotScopes)}>立即备份</button>
     </div>
     <div className="game-backup-scopes" role="group" aria-label="备份范围"><span>范围</span>{snapshotOptions.map(([scope,label])=><label key={scope}><input type="checkbox" aria-label={label} disabled={busy} checked={backupScopes.includes(scope)} onChange={e=>setBackupScopes(current=>e.target.checked?[...current,scope]:current.filter(item=>item!==scope))}/>{label}</label>)}</div>
     {wolfBackup && <>
@@ -619,10 +626,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   </section>;
   const restorePanel=<section className="embed-section game-restore-settings" data-section="restore"><div className="game-maintenance-row"><h3>恢复</h3>
     <select aria-label="选择回滚备份" disabled={busy||!backups.length} value={backupId} onChange={e=>setBackupId(e.target.value)}><option value="">选择备份</option>{backups.map((item,index)=><option key={item.id} value={item.id} disabled={item.state==="rolledBack"}>{index+1} · {item.resources} 组资源 · {item.state==="snapshot"?"独立备份":item.state==="rolledBack"?"已回滚":item.state==="applied"?"已应用":"待恢复"}</option>)}</select>
-    <IconAction name="refresh" label="刷新备份列表" disabled={busy} onClick={()=>void loadBackups()}/><button type="button" className="unity-btn unity-btn-warning unity-important-action" disabled={busy||!backupId} onClick={()=>void start("rollback")}>恢复</button>
+    <IconAction name="refresh" label="刷新备份列表" disabled={busy} onClick={()=>void loadBackups()}/><button type="button" className="unity-btn unity-btn-warning unity-important-action" disabled={testing||busy||!backupId} title={testTitle} onClick={()=>void start("rollback")}>恢复</button>
   </div>{progress(["rollback"])}</section>;
 
-  const canWritePatch = !busy && !patch.conflicts.length && !(backupMode === "auto" && !backupScopes.length);
+  const canWritePatch = !testing && !busy && !patch.conflicts.length && !(backupMode === "auto" && !backupScopes.length);
   const patchStatus = detecting ? "正在检测补丁…" : patch.conflicts.length ? "游戏资源已改变" :
     patch.installed ? "文本补丁已安装" : patch.legacy ? "发现旧版文本补丁" : patch.managed ? "文本补丁已卸载" : "未安装文本补丁";
   const products = [
@@ -641,9 +648,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const deploymentPanel = <div className="embed-deployment">
     <section className="embed-deploy-main" aria-label="生成与应用">
       <div className="dpl dpl-grid embed-product-grid">
-        {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={busy || !canGenerate} onClick={generateTextPatch}>生成补丁</button></div></section>}
-        {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={busy || !imageWorkflow.loaded} onClick={generateImages}>生成译图</button></div></section>}
-        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={busy || !imageWorkflow.loaded} onClick={generateMosaic}>生成去码图</button></div></section>}
+        {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div></section>}
+        {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div></section>}
+        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>生成去码图</button></div></section>}
         <section className="dpl-panel" aria-label="应用到游戏"><div className="dpl-panel-head"><h3>应用到游戏</h3></div>
       <div className="embed-deploy-status" role="status">
         {stagedProducts && <strong>已生成，未应用 · {stagedProducts}</strong>}
@@ -667,17 +674,17 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       </div>
       <div className="embed-deploy-actions" role="group" aria-label="应用">
         <strong>应用</strong>
-        {canUseTextResources && <button type="button" className="unity-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>}
-        {imageProject && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} onClick={applyImages}>应用译图</button>}
-        {selfMosaic && <button type="button" className="unity-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length} onClick={() => void applyMosaic()}>应用去码图</button>}
+        {canUseTextResources && <button type="button" className="unity-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>}
+        {imageProject && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>}
+        {selfMosaic && <button type="button" className="unity-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length} title={testTitle} onClick={() => void applyMosaic()}>应用去码图</button>}
         <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
-        <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" disabled={busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-        {imageProject && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" disabled={busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
+        <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
+        {imageProject && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
           if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
           setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
         }))} />}
-        {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" disabled={busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
-        <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
+        {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
+        <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
       </div>
         </section></div>
     </section>
@@ -690,7 +697,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           <input aria-label="中文字体" value={fontPath} placeholder="可选 TTF / OTF" disabled={busy} onChange={event => setFontPath(event.target.value)} />
           <IconAction name="json" label="选择中文字体，随本地翻译插件加载" disabled={busy} onClick={() => void pickFont()} />
         </div></label>
-        <IconAction name="apply" caption="安装插件" label="安装或更新本地 JSON 翻译插件" disabled={!canWritePatch || !file} onClick={() => void start("runtime")} />
+        <IconAction name="apply" caption="安装插件" label="安装或更新本地 JSON 翻译插件" hint={testTitle} disabled={!canWritePatch || !file} onClick={() => void start("runtime")} />
       </div>
       {progress(["runtime"])}
     </details>}
@@ -733,7 +740,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     else show();
   };
   const textBatch = (textFailures.length > 0 || textRepairs.length > 0) && <GameBatchResults errors={textFailures} repairs={textRepairs} onLocate={locateBatch}
-    onRetry={textFailures.length && !busy && textHandle.current?.canRetryFailures ? () => textHandle.current?.retryFailures?.() : undefined} />;
+    onRetry={textFailures.length && !testing && !busy && textHandle.current?.canRetryFailures ? () => textHandle.current?.retryFailures?.() : undefined} />;
   const scanResources = <section className="unity-scan-resources" aria-label="资源信息"><h3>资源信息</h3>
     {workDirectory}
     <p>已扫描文本：{textInfo.count} 条</p>{textInfo.messageCore && <p>已启用 YEP Message Core。可在译文末尾用 <code>{"\\nc<人物名>"}</code> 补充居中姓名。</p>}{imageProject && <p>图片资源：{imageWorkflow.count===null?"未读取":`${imageWorkflow.count} 张`}</p>}
@@ -806,8 +813,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           aria-label={automatic === "running" ? "中止一键流程" : automatic === "stopped" || automatic === "error" ? "继续一键生成并应用" : "一键生成并应用"}
           title={automatic === "running"
             ? (imageProject ? "中止一键流程，保留已完成的文本和图片产物" : "中止并保存文本进度")
-            : `扫描、${!canUseTextResources ? "翻译图片" : imageProject ? "串行翻译文本与图片" : "翻译文本"}、生成并应用${game.engine}补丁`}
-          disabled={automatic !== "running" && busy}
+            : testTitle ?? `扫描、${!canUseTextResources ? "翻译图片" : imageProject ? "串行翻译文本与图片" : "翻译文本"}、生成并应用${game.engine}补丁`}
+          disabled={automatic !== "running" && (testing || busy)}
           onClick={() => automatic === "running" ? stopDeployment() : void runAutomatic()}>
           <UnityActionIcon kind={automatic === "running" ? "cancel" : "run"} />
         </UnityIconButton>}
@@ -828,8 +835,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
 
         {textStep===1&&<div className="unity-task-actions">
           {scanning ? <button className="unity-btn unity-btn-primary" onClick={stopScan}>中止扫描</button>
-            : needsLooseLocres ? <><button className="unity-btn unity-btn-primary" disabled={busy} onClick={() => void start("extract")}>{imageWorkflow.exists ? "重新扫描图片" : "扫描图片"}</button><button className="unity-btn" disabled={busy} onClick={() => void recheckLooseLocres()}>{checkingTextSource ? "正在检测…" : "重新检测散装 .locres"}</button></>
-            : canUseTextResources && <button className="unity-btn unity-btn-primary" disabled={busy} onClick={() => void start("extract")}>{hasTextScan ? "重新扫描资源" : "开始扫描"}</button>}
+            : needsLooseLocres ? <><button className="unity-btn unity-btn-primary" disabled={testing || busy} title={testTitle} onClick={() => void start("extract")}>{imageWorkflow.exists ? "重新扫描图片" : "扫描图片"}</button><button className="unity-btn" disabled={busy} onClick={() => void recheckLooseLocres()}>{checkingTextSource ? "正在检测…" : "重新检测散装 .locres"}</button></>
+            : canUseTextResources && <button className="unity-btn unity-btn-primary" disabled={testing || busy} title={testTitle} onClick={() => void start("extract")}>{hasTextScan ? "重新扫描资源" : "开始扫描"}</button>}
         </div>}
         {textStep===3&&<>
           <div className="unity-control-group"><span>待回写译文 {textInfo.changed} 条</span>{!!textInfo.positionRepairs && <span>对话纠错 {textInfo.positionRepairs} 条</span>}</div>

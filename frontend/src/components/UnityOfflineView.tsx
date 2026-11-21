@@ -1,3 +1,4 @@
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { refineMosaicBatch } from "../gameMosaicRefine";
 import { requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
@@ -421,6 +422,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     })();
     return () => { cancelled = true; };
   }, [root]);
+  useFormalWorkflowActivity(!!busy || restoring || textScreening || !!imageEditorBusy);
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
   useEffect(() => { onBusyChange?.(!!busy || restoring || applyingTestConfiguration); }, [busy, restoring, applyingTestConfiguration, onBusyChange]);
   useEffect(() => {
     if (!root || !project?.folder) return;
@@ -642,7 +646,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (textDraftOriginals.current.size) { invalidatePatch(); setFontPlan(null); }
   };
   async function operation(label: string, task: () => Promise<void>, keepProgress = true, reportError: (message: string) => void = setError) {
-    if (mosaicBusy || running.current || imageEditorWork.current) return false;
+    if (isBenchmarkRunning() || mosaicBusy || running.current || imageEditorWork.current) return false;
     if (importPreviewRef.current && label !== "应用导入预览" && label !== "导入翻译文件") { setActionError("请先应用或取消右侧的导入预览"); return false; }
     if (!keepProgress) setGeneration(null);
     setBusy(label); setError(""); setActionError(""); setMessage(""); logAction(`开始${label}`); if (label === "准备任务") setLocalActivity(null); else showLocalActivity(`${label}：正在准备…`);
@@ -1286,7 +1290,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const editImage = (value: UnityImage, fromEditor = true) => editImages([value], fromEditor);
   async function imageOperation(label:string,task:()=>Promise<void>){
-    if(mosaicBusy||imageEditorWork.current||restoring||saving||importPreviewRef.current)return false;
+    if(isBenchmarkRunning()||mosaicBusy||imageEditorWork.current||restoring||saving||importPreviewRef.current)return false;
     if(running.current&&(!translationJobs.current||translationJobs.current.state("images")==="running"))return false;
     setImageEditorBusy(label);setActionError("");logAction(`开始${label}`);showLocalActivity(`${label}：正在准备…`,"running",true);
     const work=Promise.resolve().then(task);imageEditorWork.current=work;
@@ -1406,7 +1410,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false, part?: UnityTranslationPart, imageChain = false) {
     if (importPreviewRef.current) { setActionError("请先应用或取消右侧的导入预览"); return; }
-    if (busy || applyingTestConfiguration || imageEditorWork.current || restoring || running.current) return;
+    if (isBenchmarkRunning() || busy || applyingTestConfiguration || imageEditorWork.current || restoring || running.current) return;
     const changedScanOptions = resume && checkpointRef.current?.step === 1
       ? unityScanOptionChanges(checkpointRef.current, { includeCode, textMode, typeDirectory, codeAssemblies }) : [];
     const rescan = (needsScan || updateScan || preparingRescan || changedScanOptions.length > 0) && (resume ? checkpointRef.current?.step ?? startStep : startStep) <= 2;
@@ -1657,7 +1661,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const taskAction = translationJobs.current ? <>
     {selectedJob?.state === "running" && <button className="unity-btn" disabled={translationJobs.current.isStopping(currentPart)} onClick={() => stopPart(currentPart)}>中止 {imagePart ? "2.2" : "2.1"}</button>}
     {Object.values(checkpoint?.translationRuns || {}).filter(part => part.state === "running").length > 1 && <button className="unity-btn" onClick={stop}>中止全部</button>}
-  </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={restoring}>{needsScan || scanOptionsChanged ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn unity-btn-warning unity-important-action" disabled={restoring || needsScan} data-tooltip={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} aria-label={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
+  </> : <>{busy && abort.current ? <button className="unity-btn" onClick={stop} disabled={abort.current.signal.aborted}>中止</button> : !busy && resumable && <button className="unity-btn" onClick={resumeTask} disabled={testing || restoring} title={testTitle}>{needsScan || scanOptionsChanged ? "重新扫描并继续" : checkpoint.layoutOnly ? "恢复断行" : `${generation?.state === "error" && progressPercent === null ? "重试" : "恢复"}${checkpoint.automatic ? "一键流程" : checkpoint.imageOnly ? "图片翻译" : GENERATION_STEPS[checkpoint.step - 1]}`}</button>}{!busy && resumable && checkpoint.step === 2 && <button className="unity-btn unity-btn-warning unity-important-action" disabled={restoring || needsScan} data-tooltip={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} aria-label={needsScan ? "需要先重新扫描" : "保留已完成结果，未处理内容保持原样"} onClick={() => void skipRemaining()}>{checkpoint?.imageOnly ? "跳过剩余图片" : "跳过剩余文本"}</button>}</>;
   const failureMessage = generation?.state === "error" ? generation.failure || error : error;
   const failure = failureMessage ? explainUnityFailure(failureMessage) : null;
   const currentRowIssue = rowIssue && tableEntries.find(entry => entry.id === rowIssue.id);
@@ -2297,7 +2301,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     count={redrawSummary?.count ?? (showProgressCount && visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined)}
     actions={<>
       {activeStep !== 2 && !(activeStep === 3 && busy) && taskAction}
-      {activeStep === 1 && !busy && !restoring && <button className="unity-btn unity-btn-primary" disabled={!root || !output}
+      {activeStep === 1 && !busy && !restoring && <button className="unity-btn unity-btn-primary" disabled={testing || !root || !output} title={testTitle}
         onClick={() => void (preparingRescan ? startWorkflow(1, 1, false, false, true) : scanStarted ? restartStage(1) : startWorkflow(1, 1))}>
         {!preparingRescan && scanStarted ? "重新扫描资源" : "开始扫描"}
       </button>}
@@ -2420,7 +2424,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
 
   function runDeployment(action: "automatic" | "export" | DeploymentPhase) {
-    if (!root || locked || deploymentController.current || running.current || mosaicBusy ||
+    if (isBenchmarkRunning() || !root || locked || deploymentController.current || running.current || mosaicBusy ||
         action !== "automatic" && action !== "export" && deploymentPlan.disabled.includes(action)) return;
     const automatic = action === "automatic";
     if (automatic && deploymentValidation.issues.length) {
@@ -2900,7 +2904,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         <GameTextFilterMenu active={active} disabled={!scanReady} value={textFilters} matched={matched.length} shown={filtered.length}
           onLimitChange={limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); }}
           onChange={value => { setTextFilters(value); setLocateAcrossLanguages(false); setReviewFilter("all"); setPage(0); }} />
-        {errorsOnly && !importPreview && <button className="unity-btn" disabled={!!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text")}>重试未完成项</button>}
+        {errorsOnly && !importPreview && <button className="unity-btn" title={testTitle} disabled={testing || !!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text")}>重试未完成项</button>}
       </div>
       <div className="unity-result-tools">
         <input type="search" aria-label="搜索来源、原文和译文" data-tooltip="搜索来源、原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => { setSearch(e.target.value); setPage(0); }} />
@@ -2925,7 +2929,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         {scanReady && <span aria-label="文本范围与选择统计">{locateAcrossLanguages ? "查看全部语言" : scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}
         <div className="unity-offline-pagination" aria-label="文本结果分页"><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(Math.max(0, visiblePage - 10))}>-10 页</button><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>上一页</button><GamePageNumber page={visiblePage} pages={pageCount} onPage={setPage} /><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(visiblePage + 1)}>下一页</button><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(Math.min(pageCount - 1, visiblePage + 10))}>+10 页</button></div>
         </div>
-      {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions">{importPreview ? <button className="unity-btn" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>校验当前预览</button> : <button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} disabled={rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} data-tooltip={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button>}<button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{importPreview ? "请修改右侧预览译文，再校验或应用此次导入。" : rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
+      {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions">{importPreview ? <button className="unity-btn" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>校验当前预览</button> : <button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} title={testTitle} disabled={testing || rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} data-tooltip={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button>}<button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{importPreview ? "请修改右侧预览译文，再校验或应用此次导入。" : rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
       {qualityIssue && <div className="unity-row-error-panel" style={{ borderColor: "#d6b56a", background: "#fffaf0" }} role="dialog" aria-label={`第 ${qualityIssueId} 条疑似问题详情`}><div className="unity-row-error-actions"><button className="unity-btn" onClick={() => locateTranslationFailure(qualityIssueId!)}>定位此条</button><button className="unity-btn" onClick={() => setQualityIssueId(null)}>关闭</button></div><strong>第 {qualityIssueId} 条疑似问题</strong>{qualityIssue.map(issue => <p key={issue}>{issue}</p>)}<p>请结合原文和上下文复核；这些提示不会阻止生成补丁。</p></div>}
       </> : <div className="unity-offline-empty">扫描完成后显示文本与译文。</div>}
     </section>}

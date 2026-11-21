@@ -6,7 +6,7 @@ import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { openGameAuxWindow } from "../gameAuxWindows";
 import { GameFlowCard } from "./GameFlowCard";
-import { useBenchmarkProgress } from "../benchmark/benchmarkRunner";
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 
 export type GameFlowStep = {
   id: string;
@@ -63,6 +63,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const scope = promptContext?.scope || configurationScope || "game";
   const performanceScope = scope + (imageFlow ? ":images" : ":text");
   const benchmark = useBenchmarkProgress(scope);
+  const testing = useBenchmarkRunning();
+  const testTitle = testing ? benchmarkBlockingReason : undefined;
+  const runConfigured = (action?: () => void, step?: string) => {
+    if (isBenchmarkRunning()) return;
+    void withConfiguration(() => { if (!isBenchmarkRunning()) action?.(); }, step);
+  };
   const benchmarkRunning = !!benchmark && (benchmark.step === "screen" || benchmark.step === "translate") !== imageFlow;
   const [, refreshPerformance] = useState(0);
   useEffect(() => {
@@ -196,7 +202,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     <div className="game-flow-list">
       {(onRun || actions || testConfigurations) && <div className="game-flow-run">
         {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={openTestConfiguration}>应用测试配置</button>}
-        {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={savingConfiguration} onClick={()=>void withConfiguration(onRun)}>运行流程</button>}
+        {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={testing || savingConfiguration} title={testTitle} onClick={() => runConfigured(onRun)}>运行流程</button>}
         {actions}
       </div>}
       <ol>{steps.map(step => {
@@ -258,8 +264,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           </>}
           actions={<>
               {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
-                aria-label={`${actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : step.runDisabled || savingConfiguration}
-                onClick={step.stop || (()=>void withConfiguration(step.run, step.id))}>{actionLabel}</button>}
+                aria-label={`${actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : testing || step.runDisabled || savingConfiguration}
+                title={step.stop ? undefined : testTitle} onClick={step.stop || (() => runConfigured(step.run, step.id))}>{actionLabel}</button>}
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
           </>}
           configurationRef={panel}
