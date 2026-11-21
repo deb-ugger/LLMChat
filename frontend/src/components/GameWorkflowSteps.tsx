@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { deriveRailView, railOrder } from "./gameWorkflowRail";
+import { compactRail, deriveRailView, railOrder } from "./gameWorkflowRail";
 
 export type GameWorkflowStep = { id: string; label: ReactNode; state: string; selected: boolean; running?: boolean; paused?: boolean; title?: string; onSelect: () => void };
 
@@ -27,10 +27,14 @@ function moveFocus(event: KeyboardEvent<HTMLElement>) {
 export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, skipped, disconnected }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [beamPosition, setBeamPosition] = useState<{ from: number; to: number } | null>(null);
-  const orderedSteps = railOrder(steps, edges, enabled, skipped).map(index => steps[index]);
+  const compacted = compactRail(steps, edges ?? [], skipped ?? []);
+  const visibleEdges = edges === undefined ? undefined : compacted.edges;
+  const orderedSteps = railOrder(compacted.steps, visibleEdges, enabled, skipped).map(index => compacted.steps[index]);
+  const originalSteps = compacted.steps.length < steps.length ? steps : undefined;
+  const selectedHidden = steps.some(step => step.selected) && !orderedSteps.some(step => step.selected);
   const disconnectedIds = new Set(disconnected);
   const railSteps = orderedSteps.map(step => ({ ...step, disconnected: disconnectedIds.has(step.id) }));
-  const { nodes, connectors, lanes, beam, parallelRegions } = deriveRailView(railSteps, edges, enabled, skipped);
+  const { nodes, connectors, lanes, beam, parallelRegions } = deriveRailView(railSteps, visibleEdges, enabled, skipped, undefined, originalSteps);
   const parallelStarts = new Set(parallelRegions.map(region => region.start));
   const { from: beamFrom, to: beamTo, active: beamActive, isStatic: beamStatic } = beam;
   const stepOrder = JSON.stringify(orderedSteps.map(step => step.id));
@@ -83,7 +87,7 @@ export function GameWorkflowSteps({ steps, idPrefix, panelId, edges, enabled, sk
         const title = notice ? `${item.title ?? (typeof item.label === "string" ? item.label : item.id)}（${notice}）` : item.title;
         return <div className={node.className} key={item.id} role="presentation">
           <button id={idPrefix ? `${idPrefix}-${item.id}` : undefined} type="button" role="tab"
-            tabIndex={item.selected ? 0 : -1} aria-selected={item.selected} aria-controls={panelId}
+            tabIndex={item.selected || selectedHidden && index === 0 ? 0 : -1} aria-selected={item.selected} aria-controls={panelId}
             aria-current={!skippedStep && item.running ? "step" : undefined} data-tooltip={title} aria-label={title} title={notice ? title : undefined}
             className={`unity-step-tab${item.selected ? " is-selected" : ""}${!skippedStep && item.running ? " is-active-task" : ""}${!skippedStep && item.paused ? " is-paused-task" : ""}`}
             onClick={item.onSelect}>

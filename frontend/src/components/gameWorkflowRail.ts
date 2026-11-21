@@ -8,6 +8,40 @@ export type RailStep = {
 
 type RailEdge = { from: string; to: string };
 
+export function compactRail<T extends RailStep>(
+  steps: readonly T[],
+  edges: readonly RailEdge[],
+  skipped: readonly string[],
+): { steps: T[]; edges: RailEdge[] } {
+  const skippedIds = new Set(skipped);
+  const visible = steps.filter(step => !skippedIds.has(step.id));
+  if (visible.length === steps.length) return { steps: visible, edges: [...edges] };
+  if (visible.length === 0) return { steps: [], edges: [] };
+
+  const removed = new Set(steps.filter(step => skippedIds.has(step.id)).map(step => step.id));
+  const visibleIds = new Set(visible.map(step => step.id));
+  const outgoing = new Map<string, Set<string>>();
+  for (const { from, to } of edges) {
+    const targets = outgoing.get(from) ?? new Set<string>();
+    targets.add(to);
+    outgoing.set(from, targets);
+  }
+
+  const compactedEdges: RailEdge[] = [];
+  for (const { id: from } of visible) {
+    const targets = new Set(outgoing.get(from));
+    for (const to of targets) {
+      // Stop at the first visible node of each path. The Set deduplicates bypasses and visits.
+      if (removed.has(to)) {
+        for (const next of outgoing.get(to) ?? []) targets.add(next);
+      } else if (to !== from && visibleIds.has(to)) {
+        compactedEdges.push({ from, to });
+      }
+    }
+  }
+  return { steps: visible, edges: compactedEdges };
+}
+
 export function railOrder(
   steps: readonly RailStep[],
   edges?: readonly RailEdge[],
@@ -71,6 +105,7 @@ export function deriveRailView(
   enabled?: readonly string[],
   skipped?: readonly string[],
   flowingStep?: number,
+  originalSteps: readonly RailStep[] = steps,
 ): RailView {
   const graphMode = edges !== undefined;
   const enabledIds = new Set(enabled ?? steps.map(step => step.id));
@@ -200,8 +235,8 @@ export function deriveRailView(
       graphMode && crossings[index] === 0 && "is-gap", isUnlinked(next) && "is-unlinked", skippedConnector && "is-skipped",
     ].filter(Boolean).join(" ") };
   });
-  const hasSkipped = enabledSteps.length !== steps.length;
-  const hasProcessing = enabledSteps.some(index => index > 0 && index < steps.length - 1);
+  const hasSkipped = enabledSteps.length !== originalSteps.length;
+  const hasProcessing = originalSteps.slice(1, -1).some(isEnabled);
   const active = enabledSteps.length > 1 && (!hasSkipped || unfinished.length > 0 && (!graphMode || hasProcessing));
   return {
     nodes, connectors, lanes, parallelRegions,

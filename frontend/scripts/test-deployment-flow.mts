@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import { deriveRailView, railOrder } from "../src/components/gameWorkflowRail.ts";
+import { compactRail, deriveRailView, railOrder } from "../src/components/gameWorkflowRail.ts";
 
 function section(file, from, to) {
   const source = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -87,7 +87,7 @@ async function runWithStubs(plan, options: { abortAfter?: string; failAt?: strin
       context.finishedParts.add(part);
     },
     runDeploymentMosaic:async () => { action("mosaic"); },
-    unityTranslationReadiness:() => ({imagesReady:true}), unityTranslationError:noop, target:"zh", invalidatePatch:noop,
+    unityTranslationReadiness:() => ({imagesReady:true}), unityTranslationError:noop, target:"zh", picture:{target:"en"}, invalidatePatch:noop,
     UnityPaused:class extends Error {}, UnityTranslationStopped:class extends Error {},
   };
   const start = new Function("deps", "const {" + Object.keys(deps).join(",") + "} = deps;\n" + runner + "\nreturn runDeployment;")(deps);
@@ -239,4 +239,31 @@ checkParallel(orderedRail("01 12 23 34"), [], [], "T1 serial");
 checkParallel(orderedRail("01 03 12 32 24"), [1], [[1,1]], "T2 scan / text, mosaic / image / apply");
 checkParallel(orderedRail("01 02 13 32 24"), [1], [[1,1]], "staggered branches join at image");
 console.log("PASS T045 串行无并行段，分叉入口与汇合出口排除，仅保留相邻支路段");
+
+const compactSteps = railSteps.filter(step => step.id !== "mosaic");
+const serialEdges = edgesOf("01 12 24");
+const skipText = compactRail(compactSteps, serialEdges, ["text"]);
+assert.deepEqual(skipText.steps.map(step => step.id), ["scan","image","apply"]);
+assert.deepEqual(edgeKeys(skipText.edges), ["image>apply","scan>image"]);
+checkParallel(deriveRailView(skipText.steps, skipText.edges), [], [], "T048 serial after compaction");
+
+const diamondEdges = edgesOf("01 02 14 24");
+const beforeSkip = deriveRailView(compactSteps, diamondEdges);
+checkParallel(beforeSkip, [1], [[1,1]], "T048 fork before skipping");
+const skipBranch = compactRail(compactSteps, [...diamondEdges, ...edgesOf("04")], ["text"]);
+assert.deepEqual(skipBranch.steps, skipText.steps);
+assert.deepEqual(edgeKeys(skipBranch.edges), ["image>apply","scan>apply","scan>image"]);
+checkParallel(deriveRailView(skipBranch.steps, skipBranch.edges), [], [], "T048 fork with one branch skipped");
+
+const skipTwo = compactRail(compactSteps, serialEdges, ["text","image"]);
+assert.deepEqual(skipTwo.steps.map(step => step.id), ["scan","apply"]);
+assert.deepEqual(skipTwo.edges, edgesOf("04"));
+assert.equal(deriveRailView(skipTwo.steps, skipTwo.edges, undefined, ["text","image"], undefined, compactSteps).beam.active, false);
+const keepProcessing = compactRail(compactSteps, serialEdges, ["scan","image"]);
+assert.equal(deriveRailView(keepProcessing.steps, keepProcessing.edges, undefined, ["scan","image"], undefined, compactSteps).beam.active, true);
+assert.deepEqual(compactRail(compactSteps, serialEdges, []), {steps:compactSteps,edges:serialEdges});
+assert.deepEqual(compactRail(compactSteps, serialEdges, compactSteps.map(step=>step.id)), {steps:[],edges:[]});
+assert.equal(deriveRailView([], []).beam.active, false);
+assert.deepEqual(railOrder([], []), []);
+console.log("PASS T048 隐藏跳过节点、串行补边、并行消退、跨多段、空跳过与全跳过");
 console.log("PASS 总计 " + checked + " 个矩阵用例及独立边界回归");
