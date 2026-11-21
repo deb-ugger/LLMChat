@@ -17,7 +17,7 @@ import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "..
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { gameTextRequest } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameDuration, reportGameStepItems, stepPerformance } from "../gameModelPerformance";
-import { deploymentMetrics, deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
+import { deploymentMetrics, deploymentMetricScope, isGameDeploymentComplete, measureDeploymentStage } from "../unityWorkflow";
 import { gamePatchCanGenerate, type GamePatchWorkflow } from "../gamePatchWorkflow";
 import { GameWorkDirectory } from "./GameWorkDirectory";
 import { gameDropTarget } from "../hooks/useGameFileDrop";
@@ -830,10 +830,31 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const deploymentPage = part === "text" && textStep === 3;
   const completed: CanvasStep[] = [];
   if (hasTextScan || (!canUseTextResources && imageWorkflow.loaded)) completed.push("scan");
-  if (hasTextScan && (workflow.textSkipped || textInfo.selected === textInfo.done)) completed.push("text");
-  if (imageWorkflow.complete || workflow.imagesSkipped) completed.push("image");
-  if (mosaicComplete) completed.push("mosaic");
-  const applied = !stagedProducts && (!!appliedProducts || patch.installed || automatic === "done");
+  if (!textBusy && textInfo.sourcePath && !textInfo.loadResult?.error &&
+      (workflow.textSkipped || textInfo.selected === textInfo.done)) completed.push("text");
+  if (!imageBusy && (imageWorkflow.complete || workflow.imagesSkipped)) completed.push("image");
+  if (!mosaicBusy && (mosaicComplete || imageWorkflow.loaded && imageWorkflow.count === 0)) completed.push("mosaic");
+  const appliedIds = (artifact: ImageArtifact | undefined, ids: string[]) => {
+    if (!artifact) return !ids.length;
+    if (!artifact.applied || artifact.ids.length !== ids.length) return false;
+    const applied = new Set(artifact.ids);
+    return ids.every(id => applied.has(id));
+  };
+  const { enabledSteps } = validation;
+  const enabledArtifacts = [
+    enabledSteps.includes("text") ? artifacts.text : undefined,
+    enabledSteps.includes("image") && !workflow.imagesSkipped ? artifacts.images : undefined,
+    enabledSteps.includes("mosaic") ? artifacts.mosaic : undefined,
+  ];
+  const outputsApplied = (!enabledSteps.includes("text") || !(textInfo.changed || textInfo.positionRepairs) || !!artifacts.text?.applied) &&
+    (!enabledSteps.includes("image") || workflow.imagesSkipped || appliedIds(artifacts.images, imageHandle.current?.outputIds() ?? [])) &&
+    (!enabledSteps.includes("mosaic") || appliedIds(artifacts.mosaic, mosaicHandle.current?.selectedIds() ?? []));
+  const applied = isGameDeploymentComplete(enabledSteps, completed, {
+    applied: outputsApplied && (enabledArtifacts.some(artifact => artifact?.applied) || automatic === "done"),
+    blocked: enabledArtifacts.some(artifact => artifact && !artifact.applied) || !!patch.conflicts.length || !!validation.issues.length || textInfo.dirty ||
+      textUnfinished || imageUnfinished || mosaicBusy || imageBusy || textBusy || pending || status.state === "running" ||
+      deploymentRunning || deployment?.state === "stopped" || deployment?.state === "error",
+  });
   if (applied) completed.push("apply");
   const activeCanvasStep = (Object.keys(stageIds) as CanvasStep[]).find(id => stageIds[id] === deploymentStep);
   const run = deploymentRunning && deployment?.mode === "automatic" ? {
@@ -858,13 +879,13 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const selected=item.id===activeWorkflowId;
     const operationStep=(pending ? pendingAction : status.action)==="extract"?"1":"3";
     const imageStep=imageWorkflow.stage==="restore"?"3":"2.2";
-    const running=deploymentRunning&&deploymentStep===item.id||mosaicBusy&&item.id==="2.3"||textInfo.running&&item.id==="2.1"||imageBusy&&item.id===imageStep||(pending||status.state==="running")&&operationStep===item.id;
+    const running=deploymentRunning&&deploymentStep===item.id||mosaicBusy&&item.id==="2.3"||textBusy&&item.id==="2.1"||imageBusy&&item.id===imageStep||(pending||status.state==="running")&&operationStep===item.id;
     const scanned=!!scanPath||textInfo.count>0||(!canUseTextResources&&imageWorkflow.loaded);
-    const completed=item.id==="1"&&scanned||item.id==="2.1"&&scanned&&(workflow.textSkipped||textInfo.done===textInfo.selected)||item.id==="2.2"&&(imageWorkflow.complete||workflow.imagesSkipped)||item.id==="2.3"&&mosaicComplete||item.id==="3"&&!stagedProducts&&(patch.installed||!!appliedProducts||!patch.conflicts.length&&automatic==="done");
+    const finished = completed.some(step => stageIds[step] === item.id);
     const ready=item.id==="1"||item.id==="2.3"&&imageWorkflow.loaded||(item.id==="2.1"&&canUseTextResources||item.id==="2.2")&&scanned||item.id==="3"&&(canGenerate||canApplyText||imageProject&&imageWorkflow.valid>0||mosaicComplete);
     const failed=deployment?.state==="error"&&deploymentStep===item.id||!!scanLoadError&&item.id==="1"&&!running||!scanLoadError&&textInfo.state==="error"&&item.id==="2.1"||imageWorkflow.state==="error"&&item.id===imageStep||status.state==="error"&&operationStep===item.id;
-    const state=failed?"error":running?"current":completed?"complete":ready?"current":"pending";
-    return {...item,state,selected,paused:deployment?.state==="stopped"&&deploymentStep===item.id||!completed&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
+    const state=running?"current":failed?"error":finished?"complete":ready?"current":"pending";
+    return {...item,state,selected,paused:deployment?.state==="stopped"&&deploymentStep===item.id||!finished&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
   })}/>;
   return <div className="json-embedding-view" onClickCapture={event => logGameButton(event, appendLog)} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>{confirmation.dialog}
     <main className="embed-workspace embed-unity-workspace" data-workflow-part={part}>

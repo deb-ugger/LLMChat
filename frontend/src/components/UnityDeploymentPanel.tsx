@@ -258,7 +258,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
       : id === "text" ? `${model.textCount} 条`
       : id === "image" ? `${model.images.ready} / ${model.images.total}`
       : id === "mosaic" ? `${model.mosaic.count} 张`
-      : model.applied ? "已应用" : model.patch || model.staged ? "待应用" : "未生成",
+      : model.completed.includes("apply") ? "已应用" : model.patch || model.staged ? "待应用" : model.installed ? "已有补丁" : "未生成",
   }));
   const enabled = (id: DeploymentStep) => !plan.disabled.includes(id);
   const validation = validateDeploymentPlan(plan);
@@ -456,7 +456,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
         : model.stoppedStep ? "已停止 · 单步模式" : "单步模式"}</span>
       <span className="dpl-meter" role="group" aria-label="整体进度">
         <span className="dpl-meter-value">{Math.max(0, Math.min(100, Math.round(percent)))}<i>%</i></span>
-        <span className="dpl-meter-caption">{running ? model.progress?.label || "处理中" : model.applied ? "已完成" : "未完成"}</span>
+        <span className="dpl-meter-caption">{running ? model.progress?.label || "处理中" : model.completed.includes("apply") ? "已完成" : "未完成"}</span>
       </span>
       <div className="dpl-zoom" role="group" aria-label="画布缩放">
         <output>{Math.round(view.zoom * 100)}%</output>
@@ -605,7 +605,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
   const enabled = (phase: DeploymentPhase) => !model.plan.disabled.includes(phase);
   const generate = (phase: DeploymentPhase) => <button type="button" className="dpl-btn" disabled={testing || !enabled(phase) || model.locked || !model.completed.includes("scan")} title={testTitle} onClick={() => actions.generatePhase(phase)}>生成</button>;
 
-  const percent = model.progress?.percent ?? (model.applied ? 100 : model.patch ? 80 : 0);
+  const percent = model.progress?.percent ?? (model.completed.includes("apply") ? 100 : model.patch ? 80 : 0);
 
   return (
     <div className={`dpl${running ? " is-running" : ""}`}>

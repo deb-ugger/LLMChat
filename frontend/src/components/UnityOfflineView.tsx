@@ -7,7 +7,7 @@ import { rememberRecentGameFailures } from "../unityLastGame";
 import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
-import { GameMosaicWorkbench, type MosaicCandidateIndex } from "./GameMosaicWorkbench";
+import { GameMosaicCompletionContext, GameMosaicWorkbench, type MosaicCandidateIndex } from "./GameMosaicWorkbench";
 import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
@@ -62,7 +62,7 @@ import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslate
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
-import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges, deploymentMetrics, deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
+import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges, deploymentMetrics, deploymentMetricScope, isGameDeploymentComplete, measureDeploymentStage } from "../unityWorkflow";
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
@@ -198,6 +198,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [activeStep, setWorkflowStep] = useState(1);
   const [mosaicPage, setMosaicPage] = useState(false);
   const [mosaicBusy, setMosaicBusy] = useState(false);
+  const [mosaicWorkbenchState, setMosaicWorkbenchState] = useState<{ root: string; complete: boolean }>();
   const [mosaicControls, setMosaicControls] = useState<HTMLDivElement | null>(null);
   const [mosaicStatus, setMosaicStatus] = useState<{ root: string; candidates: MosaicCandidateIndex; savedDrafts?: ReadonlySet<string>; error?: string }>();
   const setActiveStep = useCallback((step: number) => { setMosaicPage(false); setWorkflowStep(Math.min(step, 3)); }, []);
@@ -2376,18 +2377,34 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const activePatch = patch && disabledPhases.every(id => patchScope.includes(id)) ? patch : null;
   const fullPatch = !!activePatch && patchScope.length === disabledPhases.length;
   const currentStoppedStep = deploymentStop?.root === root ? deploymentStop.step : null;
+  const reportMosaicCompletion = useCallback((complete: boolean) => {
+    setMosaicWorkbenchState(previous => previous?.root === root && previous.complete === complete ? previous : { root, complete });
+  }, [root]);
+  const reportMosaicBusy = useCallback((running: boolean) => {
+    setMosaicBusy(running);
+    if (running) setMosaicCompleted("");
+  }, []);
   const patchImages = (project?.images || []).filter(image => image.selected && unityImageReadyForTarget(image, picture.target));
   const mosaicCount = (project?.images || []).filter(image => {
     const candidate = mosaicIndex?.[image.id];
     return !!image.sourceFile && !!candidate?.included && candidate.source === image.sourceHash;
   }).length;
+  const noMosaicImages = scanReady && !project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0);
+  const mosaicReady = !mosaicBusy && !!project && (noMosaicImages || mosaicCompleted === project.folder ||
+    (mosaicWorkbenchState?.root === root ? mosaicWorkbenchState.complete :
+      hasMosaic && !Object.values(mosaicIndex ?? {}).some(candidate => !candidate.included)));
   const deploymentCompleted: DeploymentStep[] = [
     ...(scanReady ? ["scan" as const] : []),
     ...(textReady ? ["text" as const] : []),
     ...(imagesReady ? ["image" as const] : []),
-    ...(project && mosaicCompleted === project.folder ? ["mosaic" as const] : []),
-    ...(applied && fullPatch ? ["apply" as const] : []),
+    ...(mosaicReady ? ["mosaic" as const] : []),
   ];
+  const deploymentComplete = isGameDeploymentComplete(deploymentValidation.enabledSteps, deploymentCompleted, {
+    applied: applied && fullPatch,
+    blocked: !!busy || mosaicBusy || textScreening || !!imageEditorBusy || !!currentStoppedStep ||
+      !!deploymentRun || !!deploymentValidation.issues.length || generation?.state === "error" || generation?.state === "stopped",
+  });
+  if (deploymentComplete) deploymentCompleted.push("apply");
   const enabledPhases = deploymentPhases.filter(id => !deploymentPlan.disabled.includes(id));
   const eligibleTextIds = unityLanguageScope(project?.entries || [], source, onlySourceLanguage).ids;
   const textCount = project?.entries.filter(entry => entry.selected && eligibleTextIds.has(entry.id) && !entry.error && entry.translation && textTranslationMatchesTarget(entry, target)).length || 0;
@@ -2743,13 +2760,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);
         if (id === "2.3") {
           const running = canvasRunning ?? mosaicBusy;
-          return { id, label, state: running ? "current" : hasMosaic ? "complete" : scanReady ? "current" : "pending",
+          return { id, label, state: running ? "current" : mosaicReady ? "complete" : scanReady ? "current" : "pending",
             selected: mosaicPage, running, onSelect: () => selectWorkflowStage(tab) };
         }
         if (step === 3) {
           const deployment = generation && generation.step >= 3 ? generation : undefined;
           const running = canvasRunning ?? deployment?.state === "running";
-          const state = deployment?.state === "error" ? "error" : running ? "current" : applied ? "complete" :
+          const state = running ? "current" : deployment?.state === "error" ? "error" : deploymentComplete ? "complete" :
             patch || patchReady || deployment?.state === "stopped" ? "current" : "pending";
           return {id,label,state,selected:activeStep===3,running,paused:deployment?.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
         }
@@ -2758,10 +2775,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const runningHere = canvasRunning ?? (partProgress ? partProgress.state === "running" :
           generation?.step === step && generation.state === "running" && (step !== 2 || !!checkpoint?.imageOnly === tab.imageOnly));
         const baseState = step === 2 ? (partProgress ? partProgress.state === "error" : generation?.step === 2 && generation.state === "error" && !!checkpoint?.imageOnly === tab.imageOnly) ? "error" : subReady ? "complete" : runningHere||scanReady ? "current" : "pending" : unityStageState(step, displayedCompletedThrough, executingStep, generation?.state === "error" ? generation.step : undefined, !preparingRescan && needsScan ? 1 : undefined, !preparingRescan && scanUpdate.level === "optional" ? 1 : undefined);
-        const state = canvasRunning || step === 1 && baseState === "pending" ? "current" : baseState;
+        const state = runningHere || id === "2.1" && textScreening || step === 1 && baseState === "pending" ? "current" : baseState;
         const selectedTab = !mosaicPage && activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
         const title = state === "outdated" || state === "optional-update" ? `${label} · ${scanUpdate.label}` : undefined;
-        return {id,label,title,state,selected:selectedTab,running:runningHere,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
+        return {id,label,title,state,selected:selectedTab,running:runningHere || id === "2.1" && textScreening,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
       })}/>
     <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
       <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${mosaicPage ? "2.3" : activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" >
@@ -2966,7 +2983,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {!deploymentPage && <button {...dividerProps} />}
     {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
-        <GameMosaicWorkbench settings={settings} key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
+        <GameMosaicCompletionContext.Provider value={reportMosaicCompletion}>
+          <GameMosaicWorkbench settings={settings} key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={reportMosaicBusy} />
+        </GameMosaicCompletionContext.Provider>}
     </div>}
     <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench redrawingId={redrawingId} key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
       const current = latest.current;
@@ -3009,7 +3028,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           <td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={entriesLocked || !!importPreview} checked={entry.selected} onChange={e => update(entry.id, { selected: e.target.checked })} /></td>
           <td data-tooltip={`${entry.file}\n${entry.container}\n${entry.locator}${entry.locale ? `\n语言字段：${entry.locale}` : ""}`}><span><SearchHighlight query={search} text={`#${entry.id} · ${entry.kind}${entry.locale ? ` · ${unityLanguageLabel(unityEntryLanguage(entry))}` : ""}`} /></span><small><SearchHighlight query={search} text={`${entry.file.split(/[\\/]/).pop()} · 对象 #${entry.objectId === "0" ? entry.id : entry.objectId}`} /></small>{search && [entry.file, entry.container, entry.locator].filter(value => value?.toLowerCase().includes(search.toLowerCase())).map((value, index) => <small className="search-matched-field" key={index}><SearchHighlight text={value} query={search} /></small>)}</td>
           <td className="unity-offline-source"><div className="unity-source-text" data-tooltip={entry.source}><GameTextScreenedSource completed={!!entry.translation && !entry.error && !unityTranslationError(entry.source, entry.translation) && !gameDisplayTextProblem(entry.source, entry.translation)} source={entry.source} target={target} sourceLanguage={source} locale={entry.locale} skipTarget={skipTargetLanguage} screened={entry.selected && !importPreview && (textScreened || entry.screeningDraft !== undefined || entry.translation === entry.source)} query={search} /></div></td>
-          <td><div className="unity-entry-editor"><GameTextScreenedEditor screening={{ source: entry.source, target, sourceLanguage: source, locale: entry.locale, skipTarget: skipTargetLanguage, screened: entry.selected && !importPreview && (textScreened || entry.screeningDraft !== undefined || entry.translation === entry.source) }} screeningDraft={importPreview ? undefined : entry.screeningDraft} query={search} aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} disabled={entriesLocked} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined, screeningDraft: undefined })} />{entryProblem(entry) && <button className="unity-row-error" data-tooltip={entry.error ? explainUnityFailure(entry.error).reason : entryProblem(entry)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => { setQualityIssueId(null); setRowIssue({ ...entry, error: entryProblem(entry) }); }}>!</button>}{qualityIssues.has(entry.id) && <button className="unity-row-error" style={{ color: "#9a6700", borderColor: "#d6b56a", background: "#fff8e6" }} data-tooltip={qualityIssues.get(entry.id)!.join("；")} aria-label={`第 ${entry.id} 条疑似问题`} onClick={() => { setRowIssue(null); setQualityIssueId(entry.id); }}>?</button>}</div></td>
+          <td><div className="unity-entry-editor"><GameTextScreenedEditor screening={{ source: entry.source, target, sourceLanguage: source, locale: entry.locale, skipTarget: skipTargetLanguage, screened: entry.selected && !importPreview && (textScreened || entry.screeningDraft !== undefined || entry.translation === entry.source) }} screeningDraft={importPreview ? undefined : entry.screeningDraft} query={search} aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} readOnly={entriesLocked} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined, screeningDraft: undefined })} />{entryProblem(entry) && <button className="unity-row-error" data-tooltip={entry.error ? explainUnityFailure(entry.error).reason : entryProblem(entry)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => { setQualityIssueId(null); setRowIssue({ ...entry, error: entryProblem(entry) }); }}>!</button>}{qualityIssues.has(entry.id) && <button className="unity-row-error" style={{ color: "#9a6700", borderColor: "#d6b56a", background: "#fff8e6" }} data-tooltip={qualityIssues.get(entry.id)!.join("；")} aria-label={`第 ${entry.id} 条疑似问题`} onClick={() => { setRowIssue(null); setQualityIssueId(entry.id); }}>?</button>}</div></td>
         </tr>)}</tbody></table>{!filtered.length && <div className="game-text-no-matches" role="status"><strong>没有匹配的文本</strong><span>请修改搜索词或筛选条件后重试。</span></div>}</div>
         <div className="unity-results-footer">
         {scanReady && <span aria-label="文本范围与选择统计">{locateAcrossLanguages ? "查看全部语言" : scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}

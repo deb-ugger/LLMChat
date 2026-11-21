@@ -11,6 +11,12 @@ export function deploymentMetricScope(root: string, stage: DeploymentMetricStage
   return root + ":deployment:" + stage;
 }
 
+export function isGameDeploymentComplete(enabled: readonly string[], completed: readonly string[],
+  { applied, blocked }: { applied: boolean; blocked: boolean }) {
+  return applied && !blocked && enabled.includes("apply") &&
+    enabled.every(step => step === "apply" || completed.includes(step));
+}
+
 export function deploymentMetrics(root: string): DeploymentMetrics {
   const result: DeploymentMetrics = {};
   for (const stage of deploymentStages) {

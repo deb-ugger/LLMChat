@@ -38,7 +38,7 @@ export function GameTextScreenedEditor({ screeningDraft, screening, repairs, rep
     {editor}
     <div className="game-dialogue-preview-tools">
       <span>{showingPreview ? "补丁写入预览" : "原译文"}</span>
-      <button type="button" disabled={props.disabled} onClick={() => setEditing(value => !value)}>{showingPreview ? "编辑译文" : "查看预览"}</button>
+      <button type="button" disabled={props.disabled} onClick={() => setEditing(value => !value)}>{showingPreview ? props.readOnly ? "查看原译文" : "编辑译文" : "查看预览"}</button>
     </div>
   </div>;
 }
