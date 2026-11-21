@@ -14,6 +14,7 @@ import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow"
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
+import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { GameMetricHint, GameModelUsage, GameStepTimingDetails } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
@@ -801,6 +802,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const detectorKey = mosaicDetectorKey(detectorKind, detectorFile);
   const reviewKey = mosaicReviewKey(preferences, detectorFile);
   const reviewModels = settings ? gameAvailableModels(settings) : ["qwen3-vl:8b-instruct"];
+  const [refineModelFilter, setRefineModelFilter] = usePersistedModelFilter("mosaic:refineModel");
+  const [refineGuardFilter, setRefineGuardFilter] = usePersistedModelFilter("mosaic:refineGuardModel");
   function applyReview(image: UnityImage, scan: MosaicScan) {
     setRows(previous => {
       const old = resultFor(previous,image);
@@ -1557,12 +1560,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </>,<>
           {reviewedCount > 0 && pendingReview.length > 0 && <button type="button" className="unity-btn is-secondary"
             disabled={testing || actionsDisabled} onClick={() => refine(true)}>重新复筛已勾选图片</button>}
-          <label>候选区域推理模型<select aria-label="去码复筛视觉模型" value={preferences.refineModel || "qwen3.5:latest"} disabled={!!busy} onChange={e=>changePreferences({refineModel:e.target.value})}>
-            {[...new Set(["qwen3.5:latest",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
-          </select></label>
-          <label>纹理与漏检复核模型<select aria-label="去码纹理复核模型" value={preferences.refineGuardModel || "qwen3-vl:8b-instruct"} disabled={!!busy} onChange={e=>changePreferences({refineGuardModel:e.target.value})}>
-            {[...new Set(["qwen3-vl:8b-instruct",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
-          </select></label>
+          <div className="game-mosaic-model-field">
+            <span>候选区域推理模型</span>
+            <ModelFilterSelect label="候选区域推理模型" value={preferences.refineModel || "qwen3.5:latest"}
+              models={[...new Set(["qwen3.5:latest",...reviewModels])]} disabled={!!busy}
+              filter={refineModelFilter} setFilter={setRefineModelFilter}
+              onChange={model=>changePreferences({refineModel:model})} />
+          </div>
+          <div className="game-mosaic-model-field">
+            <span>纹理与漏检复核模型</span>
+            <ModelFilterSelect label="纹理与漏检复核模型" value={preferences.refineGuardModel || "qwen3-vl:8b-instruct"}
+              models={[...new Set(["qwen3-vl:8b-instruct",...reviewModels])]} disabled={!!busy}
+              filter={refineGuardFilter} setFilter={setRefineGuardFilter}
+              onChange={model=>changePreferences({refineGuardModel:model})} />
+          </div>
           <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
           <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={!!busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}><option value={1}>1</option><option value={2}>2</option></select></label>
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={!!preferences.refineIncludeMissed} disabled={!!busy} onChange={e=>changePreferences({refineIncludeMissed:e.target.checked})}/>自动流程使用大模型补查未发现（耗时长）</label>

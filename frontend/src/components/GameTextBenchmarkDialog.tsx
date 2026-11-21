@@ -1,5 +1,6 @@
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
+import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
@@ -344,6 +345,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const requiresModel = step === "review";
   const localLabel = step === "translate" || step === "imageTranslate" ? "翻译引擎" : step === "render" ? "本地原位排版" : step === "recognize" ? "本地 OCR" : "本地筛选";
   const key = "llmchat-game-benchmark:" + scope + (step === "translate" ? "" : ":" + step);
+  const [refineModelFilter, setRefineModelFilter] = usePersistedModelFilter("mosaic:refineModel");
+  const [refineGuardFilter, setRefineGuardFilter] = usePersistedModelFilter("mosaic:refineGuardModel");
   const capture = (number: number): BenchmarkConfig => {
     const { modelIds, ...settings } = current;
     const id = imageStep ? (images?.steps[imageStep] || "") : (screenModel || "");
@@ -616,12 +619,20 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             </select></label>
           </>}
           {mosaicStep === "mosaicRefine" && <>
-            <label>候选区域推理模型<select value={config.mosaic.refineModel} onChange={event => changeMosaic(config.id, { refineModel: event.target.value })}>
-              {[...new Set([config.mosaic.refineModel, ...models].filter(Boolean))].map(model => <option key={model}>{model}</option>)}
-            </select></label>
-            <label>纹理与漏检复核模型<select value={config.mosaic.refineGuardModel} onChange={event => changeMosaic(config.id, { refineGuardModel: event.target.value })}>
-              {[...new Set([config.mosaic.refineGuardModel, ...models].filter(Boolean))].map(model => <option key={model}>{model}</option>)}
-            </select></label>
+            <div className="game-mosaic-model-field">
+              <span>候选区域推理模型</span>
+              <ModelFilterSelect label="候选区域推理模型" value={config.mosaic.refineModel || "qwen3.5:latest"}
+                models={[...new Set([config.mosaic.refineModel || "qwen3.5:latest", ...models])]}
+                filter={refineModelFilter} setFilter={setRefineModelFilter} disabled={adding}
+                onChange={model => changeMosaic(config.id, { refineModel: model })} />
+            </div>
+            <div className="game-mosaic-model-field">
+              <span>纹理与漏检复核模型</span>
+              <ModelFilterSelect label="纹理与漏检复核模型" value={config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct"}
+                models={[...new Set([config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct", ...models])]}
+                filter={refineGuardFilter} setFilter={setRefineGuardFilter} disabled={adding}
+                onChange={model => changeMosaic(config.id, { refineGuardModel: model })} />
+            </div>
             <label>并发<select value={config.mosaic.refineConcurrency ?? 1} onChange={event => changeMosaic(config.id, { refineConcurrency: Number(event.target.value) })}>
               <option>1</option><option>2</option>
             </select></label>

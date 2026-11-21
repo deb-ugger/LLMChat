@@ -15,6 +15,15 @@ export function readModelFilter(key: string): ModelFilter {
 export function saveModelFilter(key: string, filter: ModelFilter) {
   localStorage.setItem("llmchat-game-model-filter:" + key, JSON.stringify(filter));
 }
+export function usePersistedModelFilter(key: string) {
+  const [filter, setFilterState] = useState<ModelFilter>(() => readModelFilter(key));
+  const setFilter = (next: ModelFilter) => {
+    setFilterState(next);
+    saveModelFilter(key, next);
+  };
+  return [filter, setFilter] as const;
+}
+
 export function ModelFilterSelect({label,value,models,disabled,onChange,optionalValue,filter,setFilter}:{label:string;value:string;models:string[];disabled:boolean;onChange:(value:string)=>void;optionalValue?:string;filter:ModelFilter;setFilter:(filter:ModelFilter)=>void}){
   const id=useId(),menu=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),[open,setOpen]=useState(false);
   const rows=useMemo(()=>{const profiles=loadLocalModelProfiles(),presets=currentEffectivePresets();return [...new Set(models)].map(model=>{const vendor=vendorOfModel(model,presets),profile=profiles[model];return {model,local:!vendor&&!!profile,vendor:vendor||(profile?.apiUrl.includes(":11434/")?"Ollama":profile?"自定义本地服务":"其他接口")};});},[models]);
