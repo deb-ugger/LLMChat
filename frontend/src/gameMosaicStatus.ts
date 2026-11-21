@@ -15,11 +15,15 @@ export type MosaicStatus = keyof typeof mosaicStatusLabels;
 export type MosaicScreeningSnapshot = {
   boxes: MosaicBox[];
   scanned?: boolean;
+  detector?: string;
   reason?: string;
   review?: string;
 };
 
+export type MosaicInitialScreeningSnapshot = MosaicScreeningSnapshot & { checked: boolean };
+
 export type MosaicScreeningState = MosaicScreeningSnapshot & {
+  beforeRefine?: MosaicInitialScreeningSnapshot;
   refined?: string;
   refineError?: string;
   redrawError?: string;
@@ -27,6 +31,10 @@ export type MosaicScreeningState = MosaicScreeningSnapshot & {
   refineMovement?: { to: MosaicStatus };
   manualBoxes?: boolean;
 };
+
+export function mosaicInitialScreening(row: MosaicScreeningState): MosaicScreeningSnapshot {
+  return row.beforeRefine ?? row;
+}
 
 export function mosaicProcessingError(row?: MosaicScreeningState) {
   if (!row) return undefined;
@@ -39,7 +47,7 @@ export function mosaicScreeningStatus(row?: MosaicScreeningState): MosaicStatus 
   if (!row) return "pending";
   if (row.reason || row.refineError || row.redrawError) return "failed";
   if (row.review) return "review";
-  if (!row.boxes.length) return row.scanned ? "clear" : "pending";
+  if (!row.boxes.length) return row.scanned || row.refined ? "clear" : "pending";
   const previous = row.refineMovement?.to;
   if (row.refined && !row.refineQuickExcluded &&
       (previous ? previous === "candidate" || previous === "refinedCandidate" : !row.manualBoxes)) {

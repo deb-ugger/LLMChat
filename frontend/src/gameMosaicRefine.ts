@@ -1,5 +1,6 @@
-import { loadMosaicDetector, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
+import { loadMosaicDetector, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
+import { mosaicInitialScreening, type MosaicInitialScreeningSnapshot } from "./gameMosaicStatus";
 import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
@@ -7,6 +8,7 @@ type StoredReview = { source: string; scan: MosaicScan };
 type StoredProposal = { source: string; hash: string; scan: MosaicScan };
 export type MosaicStoredResult = { source: string; refined?: string; refineError?: string; redrawError?: string; boxes: MosaicBox[];
   checked: boolean; manualChecked?: boolean; scanned?: boolean; detector?: string; reason?: string; review?: string;
+  beforeRefine?: MosaicInitialScreeningSnapshot;
   manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean; discardedHash?: string };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
@@ -41,7 +43,9 @@ export function persistMosaicErrorUpdates(root: string, updates: readonly Mosaic
 
 export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: string) {
   if (row?.manualBoxes) return { boxes: row.boxes };
-  if (row?.scanned && row.detector === detector && !row.reason && !row.refineError)
+  if (!row || row.reason || row.refineError) return undefined;
+  const initial = mosaicInitialScreening(row);
+  if (initial.scanned && !initial.reason && matchesMosaicDetectorKey(initial.detector, detector))
     return { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes };
 }
 

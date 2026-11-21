@@ -75,6 +75,14 @@ export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File)
   return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : kind + "-2d-presence-v2";
 }
 
+export function matchesMosaicDetectorKey(recorded: string | undefined, current: string) {
+  if (recorded === current) return true;
+  if (current === "grid-v2") return recorded === undefined || recorded === "grid";
+  if (current === "anime-2d-presence-v2") return recorded === "anime-2d-presence-v1";
+  return current.startsWith('["custom-yolo-presence-v2",') &&
+    recorded === current.replace('"custom-yolo-presence-v2"', '"custom-yolo-presence-v1"');
+}
+
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal, timingScope?: string) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
   return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope, initialScreening: true });
