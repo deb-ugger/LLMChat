@@ -174,10 +174,9 @@ export function GameTextBenchmarkWindow() {
 function BenchmarkSection({ title, className = "", action, children }: {
   title: string; className?: string; action?: ReactNode; children: ReactNode;
 }) {
-  return <section className={"game-benchmark-section " + className} aria-label={title}
-    style={{ display: "grid", gap: "var(--space-2)", padding: "var(--space-3)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}>
+  return <section className={"game-benchmark-section " + className} aria-label={title}>
     <header className="game-benchmark-records-head">
-      <h3 style={{ margin: 0, fontSize: "var(--fs-section)" }}>{title}</h3>{action}
+      <h3>{title}</h3>{action}
     </header>
     {children}
   </section>;
