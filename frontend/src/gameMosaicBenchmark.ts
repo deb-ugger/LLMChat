@@ -2,6 +2,7 @@ import type { RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHist
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { clearMosaicReviews, refineMosaicBatch } from "./gameMosaicRefine";
+import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { mosaicBoxScore, presenceScore, type AnnotatedSampleSet } from "./benchmark/imageSampleSet";
@@ -23,8 +24,8 @@ export type MosaicBenchmarkWorkload = ImageBenchmarkWorkload & {
   modelFile?: File;
 };
 
-type MosaicReviewSource = { checked: boolean; boxes: MosaicBox[]; scanned?: boolean; review?: string; reason?: string };
-type MosaicSourceRow = MosaicReviewSource & { source: string; refined?: string; refineError?: string; beforeRefine?: MosaicReviewSource };
+type MosaicReviewSource = MosaicScreeningSnapshot & { checked: boolean };
+type MosaicSourceRow = MosaicReviewSource & MosaicScreeningState & { source: string; beforeRefine?: MosaicReviewSource };
 const liveSources = new Map<string, Record<string, MosaicSourceRow>>();
 
 export function publishMosaicBenchmarkSource(root: string, rows?: Record<string, MosaicSourceRow>) {
@@ -48,8 +49,7 @@ export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: s
     const current = useSnapshot ? saved?.beforeRefine ?? (saved?.refined || saved?.refineError ? undefined : saved) : saved;
     if (useSnapshot ? Boolean(current?.scanned && current.checked) : current?.checked ?? true) checked.push(image.id);
     if (current?.boxes.length) boxes[image.id] = current.boxes;
-    categories[image.id] = current?.review || current?.reason || (!useSnapshot && saved?.refineError) ? "待复核"
-      : current?.boxes.length ? "疑似有码" : current?.scanned ? "未发现" : "待筛选";
+    categories[image.id] = mosaicStatusLabels[mosaicScreeningStatus(current)];
   }
   return { ...workload, selected: images, checked, boxes, categories, modelFile: gameDetectorFile(root) };
 }
@@ -65,7 +65,9 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
   onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet): BenchmarkStepRunner {
   return async (config, settings, scope, record?: RecordImageBenchmarkOutcome) => {
     const recordScan = (image: UnityImage, scan: MosaicScan) => record?.(image.id, {
-      category: scan.review ? "待复核" : scan.boxes.length ? "疑似有码" : "未发现",
+      category: mosaicStatusLabels[mosaicScreeningStatus({
+        ...scan, scanned: true, refined: step === "mosaicRefine" ? step : undefined, refineQuickExcluded: scan.quickExcluded,
+      })],
       boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes, checked: !!scan.boxes.length && !scan.review, reason: scan.review,
     });
     const options = config.mosaic!;
@@ -93,7 +95,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
         });
         const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
         const review = [...result.results.values()].filter(scan => !!scan.review).length;
-        return { translated: result.results.size, failed: result.failed, summary: "已确认 " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
+        return { translated: result.results.size, failed: result.failed, summary: mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
       } finally { clearMosaicReviews(root); }
     }
     let cursor = 0, completed = 0, failed = 0, located = 0, review = 0, regions = 0;

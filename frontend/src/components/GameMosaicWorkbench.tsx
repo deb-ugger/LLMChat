@@ -1,4 +1,5 @@
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
+import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicStatus } from "../gameMosaicStatus";
 import { api, type Settings } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
@@ -21,7 +22,7 @@ import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./G
 import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
-type InitialScreening = { boxes: MosaicBox[]; checked: boolean; scanned?: boolean; detector?: string; reason?: string; review?: string };
+type InitialScreening = MosaicScreeningSnapshot & { checked: boolean; detector?: string };
 type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefore: boolean; checkedAfter: boolean };
 type Result = { source: string; beforeRefine?: InitialScreening; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
@@ -131,16 +132,9 @@ type Props = {
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: true });
 const mosaicPageSize = 40;
-const mosaicStatusLabels = {
-  pending: "待筛选", review: "待复核", candidate: "疑似有码",
-  confirmed: "已确认", included: "已纳入补丁", clear: "未发现",
-} as const;
-type MosaicStatus = keyof typeof mosaicStatusLabels;
 function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   if (row.saved) return included ? "included" : "confirmed";
-  if (row.reason || row.refineError || row.review) return "review";
-  if (row.boxes.length) return "candidate";
-  return row.scanned ? "clear" : "pending";
+  return mosaicScreeningStatus(row);
 }
 const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类＋定位）" };
 function resultFor(rows: Results, image: UnityImage) {
@@ -163,19 +157,28 @@ function rememberInitialScreening(row: Result): InitialScreening {
 function attachRefineMovement(before: Result, after: Result): Result {
   const initial = rememberInitialScreening(before);
   return { ...after, beforeRefine: initial, refineMovement: {
-    from: mosaicStatus({ ...before, ...initial, scanned:initial.scanned, reason:initial.reason, review:initial.review,
-      refineError:undefined },false),
-    to: mosaicStatus(after,false),
+    from: mosaicScreeningStatus(initial),
+    to: mosaicScreeningStatus(after),
     checkedBefore: initial.checked,
     checkedAfter: after.checked,
   } };
+}
+
+function refineMovementFor(row: Result): RefineMovement | undefined {
+  const movement = row.refineMovement;
+  if (movement) {
+    // Older projects recorded a successful positive review as a candidate.
+    return movement.to === "candidate" && row.refined ? { ...movement, to: "refinedCandidate" } : movement;
+  }
+  if (row.beforeRefine && (row.refined || row.refineError) && !row.saved)
+    return attachRefineMovement(row, row).refineMovement;
 }
 
 function reviewedResult(row: Result, scan: MosaicScan, reviewKey: string, detectorKey: string): Result {
   return attachRefineMovement(row, { ...row,
     boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
     checked: row.manualChecked ? row.checked : !!scan.boxes.length && !scan.review,
-    refined: reviewKey, refineQuickExcluded: scan.quickExcluded, scanned: true, detector: detectorKey,
+    refined: reviewKey, refineMovement: undefined, refineQuickExcluded: scan.quickExcluded, scanned: true, detector: detectorKey,
     reason: undefined, refineError: undefined, review: scan.review });
 }
 
@@ -210,9 +213,9 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
         <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
       </div>}
     </GameImagePreviewFrame>
-    <button type="button" className="unity-btn" aria-label={`确认 ${modelName} 候选`}
+    <button type="button" className="unity-btn" aria-label={`采用 ${modelName} 候选`}
       disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
-      onClick={() => onApprove(version.blob)}>确认此版</button>
+      onClick={() => onApprove(version.blob)}>采用此版</button>
   </div>;
 }
 
@@ -347,8 +350,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const changes = new Map<MosaicStatus, { added: number; removed: number }>();
     for (const image of currentScope) {
       const row = resultFor(rows,image);
-      const movement = row.refineMovement ?? (row.beforeRefine && (row.refined || row.refineError) && !row.saved
-        ? attachRefineMovement(row,row).refineMovement : undefined);
+      const movement = refineMovementFor(row);
       if (!movement || movement.from === movement.to) continue;
       const from = changes.get(movement.from) ?? { added:0, removed:0 };
       from.removed++;
@@ -441,7 +443,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (drawing || !active) return;
     const { name: title, width, height } = active;
     const originalView = { id: "original", label: "原图", src: original?.blob };
-    const savedView = { id: "saved", label: "去码结果 · 已确认", src: activeSaved ? confirmed?.blob : undefined };
+    const savedView = { id: "saved", label: "已采用去码图", src: activeSaved ? confirmed?.blob : undefined };
     const candidateViews = versions.map((version, index) => ({
       id: version.id,
       label: (versions.length === 2 ? "候选 " + (index === 0 ? "A" : "B") : "去码结果") + " · " + mosaicModelLabels[version.id],
@@ -999,7 +1001,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function approve(image: UnityImage, blob: Blob) {
-    void run("保存已确认候选", async signal => {
+    void run("保存已采用去码图", async signal => {
       if (storage) await storage.save(image, blob, signal);
       else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
       update(image, { saved: true, checked: true, discardedHash: undefined });
@@ -1179,7 +1181,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
   async function clearRedraw() {
     if (actionsDisabled || !canClearRedraw) return;
-    if (!await confirmation.confirm("清理未确认的重绘候选和重绘进度？已确认的去码图会保留。", {
+    if (!await confirmation.confirm("清理未采用的重绘候选和重绘进度？已采用的去码图会保留。", {
       title: "清理重绘", okLabel: "清理",
     }) || task.current) return;
 
@@ -1197,7 +1199,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       return row.scanned || row.manualChecked || row.saved && !storage?.index[image.id]?.included ||
         row.boxes.length || row.reason || row.refineError || row.manualGroup || candidates[image.id]?.revision === image.sourceHash;
     }).length;
-    if (count > 0 && !await confirmation.confirm(`清除本次任务中 ${count} 张图片的筛选、选择、确认结果和进度？已纳入补丁的去码图将保留。`, {
+    if (count > 0 && !await confirmation.confirm(`清除本次任务中 ${count} 张图片的筛选、选择、采用结果和进度？已纳入补丁的去码图将保留。`, {
       title: "清理图片去码任务", okLabel: "清理",
     })) return;
     if (task.current) return;
@@ -1327,7 +1329,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           setGroupPages({});
         }} />仅本组</label>
       </GameImageFilter>
-      <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已确认 {counts.saved} 张</span>
+      <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已采用去码图 {counts.saved} 张</span>
       <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query} disabled={!!busy}
         onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }} />
     </div>
@@ -1367,8 +1369,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             <ul>{!collapsed[id] && items.slice(page*mosaicPageSize,(page+1)*mosaicPageSize).map(image => {
                 const row = resultFor(rows, image);
                 const state = mosaicStatus(row, !!storage?.index[image.id]?.included);
-                const status = mosaicStatusLabels[state] + (state === "candidate" ? ` · ${row.boxes.length} 区域` : "");
-                const movement = row.refineMovement;
+                const status = mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
+                const movement = refineMovementFor(row);
                 const change = movement && movement.from !== movement.to
                   ? " · 复筛 " + mosaicStatusLabels[movement.from] + " → " + mosaicStatusLabels[movement.to] : "";
                 const detail = `${image.width} × ${image.height} · ${status}` + change;
@@ -1398,7 +1400,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               <option value="" disabled>移动到分组…</option><option value="new">新建独立组</option>
               {[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => <option key={key} value={key}>{list[0].name} · {list.length} 张</option>)}
             </select>
-            <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已确认图作为画风参考" : "先重绘当前图并确认一版，即可将结果用作组内画风参考"} disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
+            <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={!!busy || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
               const next = { ...previous };
               for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
               return next;
@@ -1426,7 +1428,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             <strong>去码结果</strong>
             {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
               setPreferredResult(showSaved ? preferredVersion.id : "saved");
-            }}>{showSaved ? "查看候选" : "查看已确认"}</button>}
+            }}>{showSaved ? "查看候选" : "查看已采用去码图"}</button>}
             <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} title={testTitle} data-tooltip={redrawReason}
               onClick={() => generate([active], ["turbo", "2511"])}>两种模型各生成一版</button>
             {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
@@ -1465,10 +1467,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               </svg>
             </div>}
           </GameImagePreviewFrame>
-          {showSaved ? <GameImagePreviewFrame caption="已确认" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
+          {showSaved ? <GameImagePreviewFrame caption="已采用去码图" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
             ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
             {savedUrl && <div className="unity-image-stage">
-              <img src={savedUrl} alt={`${active.name} 已确认去码结果`} draggable={false} />
+              <img src={savedUrl} alt={`${active.name} 已采用去码图`} draggable={false} />
             </div>}
           </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
             <MosaicResultVersion key={version.id} version={version}
@@ -1479,7 +1481,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </div>
         <div className="unity-image-actions">
           <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
-            {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已确认 · ${saved.length} 张`}
+            {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}
           </button>
           <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
             {storage ? "从生成清单移除" : "撤销本组所选"}
