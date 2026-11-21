@@ -2283,7 +2283,7 @@ body.ocr-image-resizing * {
 .game-flow-model-row { min-inline-size: 0; font-size: var(--fs-caption); }
 .game-flow-model-values { display: flex; min-inline-size: 0; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0 var(--space-2); }
 .game-flow-model-values > * { min-inline-size: 0; max-inline-size: 100%; }
-.game-flow-model-list { display: grid; gap: var(--space-1); }
+.game-flow-model-list { display: grid; gap: var(--space-2); }
 .game-flow-model-list .game-flow-model-row {
   display: grid;
   grid-template-columns: minmax(0, min(26%, 12rem)) minmax(0, 1fr);
@@ -2306,20 +2306,23 @@ body.ocr-image-resizing * {
 .game-flow-row:has(> .game-flow-summary .game-flow-model-list) > .game-flow-summary { grid-column: 1 / -1; grid-row: 2; text-align: start; }
 .game-flow-row:has(> .game-flow-summary .game-flow-model-list) > .game-flow-actions { grid-column: 2; grid-row: 1; }
 .game-flow-model-name { color: var(--text-muted, #6a675c); font-weight: 600; }
-/* 多模型块：模型之间留白分隔，模型名加重，服务计时降到次要层级。 */
-.game-flow-model-list { row-gap: var(--space-2); }
 .game-flow-model-list .game-flow-model-row + .game-flow-model-row {
-  border-top: 1px solid var(--line); padding-top: var(--space-2);
+  border-top: 1px solid var(--border-strong);
+  padding-top: var(--space-2);
 }
-.game-flow-model-list .game-flow-model-name { color: var(--text); font-weight: 600; }
-.game-flow-model-service {
-  margin-top: 3px; color: var(--text-muted); opacity: .85;
-  font-size: .8em; line-height: 1.55;
+.game-flow-item .game-flow-model-list .game-flow-model-name { color: var(--text); }
+.game-flow-model-service { display: block; flex-basis: 100%; }
+.game-flow-model-list .game-flow-model-service {
+  margin-block-start: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  line-height: 1.55;
 }
-.game-flow-model-service .game-flow-metric { font-size: 1em; }
-.game-flow-summary:has(.game-flow-model-list) .game-flow-model-rates {
-  margin-top: var(--space-1); padding-top: var(--space-1);
-  border-top: 1px solid var(--line); justify-content: flex-start;
+.game-flow-model-list ~ .game-flow-model-rates { justify-content: flex-start; }
+.game-flow-model-list + .game-flow-model-rates {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-strong);
 }
 .game-flow-model-heading, .game-flow-model-rates { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0 9px; }
 .game-flow-model-concurrency, .game-flow-model-rates > span { white-space: nowrap; }

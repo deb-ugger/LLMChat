@@ -111,7 +111,7 @@ const metricDetails: Record<string, string> = {
   ocrMs: "本地 OCR 调用的经过时间，包含识别内部的图像预处理和结果解析。",
   cacheHits: "直接复用可用结果的次数。每次复用省去一次对应的检测或识别调用。",
   workflowMs: "ComfyUI 记录的工作流开始至结束用时，逐次累加。包含节点内部的 CPU 与 GPU 时间。",
-  busyMs: "模型请求在途的时间并集。重叠的请求只计一次。",
+  busyMs: "模型请求在途的墙钟时间，并发重叠只计一次。查看「模型请求合计」时，并发请求重叠的部分会被逐次累加，因此可能大于该步骤实际经过的时间。",
   idleMs: "步骤运行中没有任何模型请求在途的时间。",
 };
 
@@ -172,7 +172,7 @@ function GameModelServiceTiming({ timing, requests, onToggle }: {
   timing: NonNullable<ModelStats["serviceTiming"]>; requests: number; onToggle: () => void;
 }) {
   const [total, phases] = modelServiceTimingLines(timing, requests, formatTiming);
-  return <small className="game-flow-model-service" style={{ display: "block", flexBasis: "100%" }}>
+  return <small className="game-flow-model-service">
     <GameMetricHint onClick={onToggle} detail="模型就绪可能包含 Ollama 内部等待。服务外开销为同一请求的总耗时减去 Ollama 回报的服务耗时，包含后台处理与往返。并发时逐次累加。输入评估与输出生成合计包含 CPU 与 GPU 时间。">
       {total}<br />{phases}
     </GameMetricHint>
