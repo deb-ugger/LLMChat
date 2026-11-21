@@ -45,6 +45,7 @@ export function createMosaicGridScanner() {
 }
 
 export type MosaicSettings = {
+  concurrency?: number;
   detector: "grid" | "lada" | "lada-accurate"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
 export const defaultMosaicSettings: MosaicSettings = { detector: "lada", scope: "scenes", model: "turbo", steps: 8, protect: true };
@@ -97,7 +98,7 @@ export function ladaVisibleBox(image: ImageData, box: MosaicBox) {
 }
 
 export function ladaBoxes(values: Float32Array, dims: readonly number[], classes: number,
-  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox) => boolean = () => true, minimumScore = threshold) {
+  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox, score: number) => boolean = () => true, minimumScore = threshold) {
   if (dims.length !== 3 || dims[0] !== 1 || dims[1] !== 4 + classes + 32 || dims[2] <= 0)
     throw new Error("Lada ONNX 需使用原始 YOLO11 分割输出（关闭 NMS 导出）");
   const { left, top, scaleX, scaleY, width, height } = geometry;
@@ -115,8 +116,8 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
     if (box[2] > box[0] && box[3] > box[1]) candidates.push({ box, score });
   }
   const boxes: MosaicBox[] = [];
-  for (const { box } of candidates.sort((a, b) => b.score - a.score)) {
-    if (!boxes.some(previous => overlap(previous, box) > 0.45) && validBox(box)) boxes.push(box);
+  for (const { box, score } of candidates.sort((a, b) => b.score - a.score)) {
+    if (!boxes.some(previous => overlap(previous, box) > 0.45) && validBox(box, score)) boxes.push(box);
   }
   return boxes;
 }
@@ -188,7 +189,7 @@ export async function loadLadaDetector(model: File | undefined, options: {
   if (!context) { await release(); throw new Error("无法读取检测模型输入像素"); }
   onDevice?.(device);
   const outputName = output.name;
-  const infer = async (feeds: InstanceType<typeof ort.Tensor>) => {
+  const runInference = async (feeds: InstanceType<typeof ort.Tensor>) => {
     signal?.throwIfAborted();
     if (!session) throw new Error("Lada 检测会话已关闭");
     try {
@@ -203,58 +204,88 @@ export async function loadLadaDetector(model: File | undefined, options: {
       return session.run({ [session.inputNames[0]]: feeds }, [outputName]);
     }
   };
+  let inferenceQueue: Promise<unknown> = Promise.resolve();
+  const infer = (feeds: InstanceType<typeof ort.Tensor>) => {
+    const pending = inferenceQueue.then(() => runInference(feeds));
+    inferenceQueue = pending.catch(() => {});
+    return pending;
+  };
+  const scanImage = async (blob: Blob): Promise<MosaicScan> => {
+    const source = await createImageBitmap(blob);
+    const original = document.createElement("canvas");
+    original.width = source.width; original.height = source.height;
+    const originalContext = original.getContext("2d", { willReadFrequently: true });
+    if (!originalContext) { source.close(); throw new Error("无法读取图片像素"); }
+    let full: ImageData;
+    try {
+      originalContext.drawImage(source, 0, 0);
+      full = originalContext.getImageData(0, 0, original.width, original.height);
+    } finally { source.close(); }
+    const signature = sceneSignature(full.data, full.width, full.height);
+    let hasVisiblePixel = false;
+    for (let index = 3; index < full.data.length; index += 4) {
+      if (full.data[index] >= 64) { hasVisiblePixel = true; break; }
+    }
+    if (!hasVisiblePixel) return { signature, boxes: [] };
+    const scale = Math.min(size / full.width, size / full.height);
+    const width = Math.max(1, Math.round(scale * full.width)), height = Math.max(1, Math.round(scale * full.height));
+    const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
+    context.fillStyle = "#727272";
+    context.fillRect(0, 0, size, size);
+    context.drawImage(original, left, top, width, height);
+    const { data } = context.getImageData(0, 0, size, size);
+    const plane = size * size;
+    const values = new Float32Array(3 * plane);
+    for (let index = 0; index < plane; index++) {
+      values[index] = data[4 * index] / 255;
+      values[index + plane] = data[4 * index + 1] / 255;
+      values[index + 2 * plane] = data[4 * index + 2] / 255;
+    }
+    const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
+    let tensors: Awaited<ReturnType<typeof infer>> | undefined;
+    try {
+      tensors = await infer(feeds);
+      const result = tensors[outputName];
+      const data = result.data;
+      if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
+      const geometry = { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height };
+      const boxes: MosaicBox[] = [];
+      const candidates = ladaBoxes(data, result.dims, channels - 36, geometry, (box, score) => {
+        if (!ladaVisibleBox(full, box)) return false;
+        if (score >= threshold) boxes.push(box);
+        return true;
+      }, 0.05);
+      // Local grid evidence corroborates low-score regions without accepting background-sized predictions.
+      const grid = scanMosaicPixels(full.data, full.width, full.height, signature).boxes;
+      for (const box of candidates)
+        if (grid.some(local => overlap(local, box) > 0.2) && !boxes.some(previous => overlap(previous, box) > 0.45))
+          boxes.push(box);
+      for (const box of grid)
+        if (!boxes.some(previous => overlap(previous, box) > 0.2)) boxes.push(box);
+      if (boxes.length) return { signature, boxes };
+      const reviewBoxes = candidates;
+      return { signature, boxes, reviewBoxes, review: reviewBoxes.length ? "检测模型分数较低，请检查候选区域" : undefined };
+    } finally {
+      feeds.dispose();
+      for (const value of Object.values(tensors || {})) value.dispose();
+    }
+  };
+  const cache = new Map<string, Promise<MosaicScan>>();
+  let reused = 0;
   return {
-    release,
+    release: async () => { cache.clear(); await release(); },
+    get reused() { return reused; },
     scan: async (blob: Blob): Promise<MosaicScan> => {
-      const full = await bitmapPixels(blob);
-      const signature = sceneSignature(full.data, full.width, full.height);
-      let hasVisiblePixel = false;
-      for (let index = 3; index < full.data.length; index += 4) {
-        if (full.data[index] >= 64) { hasVisiblePixel = true; break; }
-      }
-      if (!hasVisiblePixel) return { signature, boxes: [] };
-      const source = await createImageBitmap(blob);
-      const scale = Math.min(size / full.width, size / full.height);
-      const width = Math.max(1, Math.round(scale * full.width)), height = Math.max(1, Math.round(scale * full.height));
-      const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
-      try {
-        context.fillStyle = "#727272";
-        context.fillRect(0, 0, size, size);
-        context.drawImage(source, left, top, width, height);
-      } finally { source.close(); }
-      const { data } = context.getImageData(0, 0, size, size);
-      const plane = size * size;
-      const values = new Float32Array(3 * plane);
-      for (let index = 0; index < plane; index++) {
-        values[index] = data[4 * index] / 255;
-        values[index + plane] = data[4 * index + 1] / 255;
-        values[index + 2 * plane] = data[4 * index + 2] / 255;
-      }
-      const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
-      let tensors: Awaited<ReturnType<typeof infer>> | undefined;
-      try {
-        tensors = await infer(feeds);
-        const result = tensors[outputName];
-        const data = result.data;
-        if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
-        const geometry = { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height };
-        const validate = (box: MosaicBox) => ladaVisibleBox(full, box);
-        const boxes = ladaBoxes(data, result.dims, channels - 36, geometry, validate);
-        // Local grid evidence corroborates low-score regions without accepting background-sized predictions.
-        const grid = scanMosaicPixels(full.data, full.width, full.height).boxes;
-        const candidates = ladaBoxes(data, result.dims, channels - 36, geometry, validate, 0.05);
-        for (const box of candidates)
-          if (grid.some(local => overlap(local, box) > 0.2) && !boxes.some(previous => overlap(previous, box) > 0.45))
-            boxes.push(box);
-        for (const box of grid)
-          if (!boxes.some(previous => overlap(previous, box) > 0.2)) boxes.push(box);
-        if (boxes.length) return { signature, boxes };
-        const reviewBoxes = candidates;
-        return { signature, boxes, reviewBoxes, review: reviewBoxes.length ? "检测模型分数较低，请检查候选区域" : undefined };
-      } finally {
-        feeds.dispose();
-        for (const value of Object.values(tensors || {})) value.dispose();
-      }
+      signal?.throwIfAborted();
+      const hash = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      signal?.throwIfAborted();
+      const key = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2,"0")).join("");
+      const existing = cache.get(key);
+      if (existing) { reused++; return existing; }
+      const pending = scanImage(blob).catch(cause => { cache.delete(key); throw cause; });
+      cache.set(key, pending);
+      if (cache.size > 64) cache.delete(cache.keys().next().value!);
+      return pending;
     },
   };
 }

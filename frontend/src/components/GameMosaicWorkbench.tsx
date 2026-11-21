@@ -130,7 +130,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     });
   }, [images, storage?.index]);
   const [query, setQuery] = useState("");
-  const [page, setPage] = useState(0);
+  const [groupPages, setGroupPages] = useState<Partial<Record<MosaicStatus, number>>>({});
+  const [collapsed, setCollapsed] = useState<Partial<Record<MosaicStatus, boolean>>>(() =>
+    Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, true])));
   const listId = useId();
   const listRef = useRef<HTMLUListElement>(null);
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
@@ -205,27 +207,18 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const groups = new Map<MosaicStatus, UnityImage[]>();
     for (const status of Object.keys(mosaicStatusLabels) as MosaicStatus[]) {
       const images = grouped.get(status);
-      if (images?.length) groups.set(status, images);
+      if (statusFilter === "all" || statusFilter === status) groups.set(status, images || []);
     }
-    return { groups, ordered: [...groups].flatMap(([id, images]) => images.map(image => ({ id, image }))) };
-  }, [visible, rows, storage?.index]);
-  const pages = Math.max(1, Math.ceil(ordered.length / mosaicPageSize));
-  const currentPage = Math.min(page, pages - 1);
-  const pageImages = ordered.slice(currentPage * mosaicPageSize, (currentPage + 1) * mosaicPageSize);
-  const pageGroups = new Map<MosaicStatus, UnityImage[]>();
-  for (const { id, image } of pageImages) {
-    const list = pageGroups.get(id);
-    if (list) list.push(image);
-    else pageGroups.set(id, [image]);
-  }
-  const active = activeId === null ? undefined : (pageImages.find(item => item.image.id === activeId) ?? pageImages[0])?.image;
+    return { groups, ordered: [...groups].filter(([id]) => !collapsed[id]).flatMap(([id, images]) => images.map(image => ({ id, image }))) };
+  }, [visible, rows, storage?.index, collapsed, statusFilter]);
+  const active = activeId === null ? undefined : visible.find(image => image.id === activeId) ?? ordered[0]?.image;
   const activeResult = active && resultFor(rows, active);
   const group = active && (activeResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
   const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
   useLayoutEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [currentPage, needle, scope, sceneFilter, statusFilter]);
+  }, [needle, scope, sceneFilter, statusFilter]);
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
     const button = listRef.current?.querySelector<HTMLButtonElement>(
@@ -233,27 +226,46 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     button?.focus({ preventScroll: true });
     button?.scrollIntoView({ block: "nearest" });
     setKeyboardTarget(undefined);
-  }, [keyboardTarget, currentPage]);
+  }, [keyboardTarget, groupPages, collapsed]);
 
   function navigateList(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (busy || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
         !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const element = event.target as HTMLElement;
     if (element.matches("input:not([type=checkbox]), select, textarea")) return;
+    const summary = element.closest<HTMLElement>("summary[data-mosaic-status]");
+    if (summary) {
+      const status = summary.dataset.mosaicStatus as MosaicStatus;
+      event.preventDefault();
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+        setCollapsed(previous => ({ ...previous, [status]: event.key === "ArrowLeft" }));
+      else {
+        const headings = [...listRef.current!.querySelectorAll<HTMLElement>("summary[data-mosaic-status]")];
+        headings[Math.max(0, Math.min(headings.length - 1, headings.indexOf(summary) + (event.key === "ArrowUp" ? -1 : 1)))]?.focus();
+      }
+      return;
+    }
     if (!ordered.length) return;
     event.preventDefault();
     const focused = element.closest<HTMLElement>("[data-mosaic-item]")?.dataset.mosaicItem;
     const index = ordered.findIndex(item => item.image.id === (focused || active?.id));
-    let next = currentPage * mosaicPageSize;
+    let next = Math.max(0, index);
     if (index >= 0 && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       next = Math.max(0, Math.min(ordered.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
     } else if (index >= 0) {
-      const destination = currentPage + (event.key === "ArrowLeft" ? -1 : 1);
-      if (destination < 0 || destination >= pages) return;
-      next = Math.min(ordered.length - 1, destination * mosaicPageSize + index % mosaicPageSize);
+      const status = ordered[index].id;
+      const images = groups.get(status)!;
+      const local = images.findIndex(image => image.id === ordered[index].image.id);
+      const page = Math.min(groupPages[status] || 0, Math.ceil(images.length / mosaicPageSize) - 1);
+      const destination = page + (event.key === "ArrowLeft" ? -1 : 1);
+      if (destination < 0 || destination * mosaicPageSize >= images.length) return;
+      const image = images[Math.min(images.length - 1, destination * mosaicPageSize + local % mosaicPageSize)];
+      next = ordered.findIndex(item => item.image.id === image.id);
     }
-    const id = ordered[next].image.id;
-    setPage(Math.floor(next / mosaicPageSize));
+    const { id: status, image } = ordered[next];
+    const id = image.id;
+    const local = groups.get(status)!.findIndex(item => item.id === id);
+    setGroupPages(previous => ({ ...previous, [status]: Math.floor(local / mosaicPageSize) }));
     setActiveId(id);
     setKeyboardTarget(id);
     setError("");
@@ -533,7 +545,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         } finally { if (!lada) await scanner.release(); }
       }
       try {
-        const lanes = lada || navigator.hardwareConcurrency < 4 || targets.some(image => image.width * image.height > 8_000_000) ? 1 : 2;
+        const lanes = Math.max(1, Math.min(4, preferences.concurrency ?? (lada ? 1 : 2)));
         const settled = await Promise.allSettled(Array.from({ length: Math.min(lanes, targets.length) }, lane));
         for (const item of settled) if (item.status === "rejected") throw item.reason;
       } finally {
@@ -552,7 +564,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         for (const list of proposals) for (const image of list) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
         return next;
       });
-      setProgress(failures ? `${failures} 张读取失败，可在待复核列表查看。` : "");
+      setProgress([failures ? failures + " 张读取失败，可在待复核列表查看。" : "", lada?.reused ? "已复用 " + lada.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
       return failures === 0;
     }, { id: "screen", total: currentScope.length, completed: initial, summary: detectorLabels[detectorKind] });
   }
@@ -746,7 +758,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     setProgressStep(undefined);
     setProgress("");
     setError("");
-    setPage(0);
+    setGroupPages({});
     setSceneFilter(false);
     setActiveId(null);
     setSource(undefined);
@@ -778,8 +790,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         </>, <>
           {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn" disabled={actionsDisabled}
             onClick={() => screen(true)}>重新筛选全部范围</button>}
-          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setPage(0); }}>
+          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setGroupPages({}); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
+          </select></label>
+          <label>筛选并发<select aria-label="去码筛选并发" value={preferences.concurrency ?? (detectorKind==="grid"?2:1)} disabled={!!busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
+            {[1,2,4].map(value=><option key={value} value={value}>{value}</option>)}
           </select></label>
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
             <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option><option value="lada-accurate">{detectorLabels["lada-accurate"]}</option>
@@ -810,28 +825,45 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     </div>, controls)}
     <div className="unity-offline-toolbar unity-image-toolbar">
       <GameImageFilter menuRef={filterMenu}>
-        <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }}>
+        <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setGroupPages({}); }}>
           <option value="all">全部状态</option>{(Object.entries(mosaicStatusLabels) as [MosaicStatus, string][]).map(([id, label])=><option key={id} value={id}>{label}</option>)}
         </select></label>
         <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => {
           if (event.target.checked && active) setActiveId(active.id);
           setSceneFilter(event.target.checked);
-          setPage(0);
+          setGroupPages({});
         }} />仅本组</label>
       </GameImageFilter>
       <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已确认 {counts.saved} 张</span>
       <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query} disabled={!!busy}
-        onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setPage(0); }} />
+        onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }} />
     </div>
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={navigateList}
       list={<>
-        <ul ref={listRef}>{[...pageGroups].map(([id, items]) => {
+        <ul ref={listRef}>{[...groups].map(([id, items]) => {
           const label = mosaicStatusLabels[id];
-          return <li key={id} className="game-mosaic-scene-group">
-            <div className="game-mosaic-scene-heading" data-tooltip={label}><strong>{label}</strong>
-              <span>{groups.get(id)?.length ?? items.length} 张</span>
-            </div>
-            <ul>{items.map(image => {
+          const pages = Math.max(1, Math.ceil(items.length / mosaicPageSize));
+          const page = Math.min(groupPages[id] || 0, pages - 1);
+          const checked = items.filter(image => resultFor(rows, image).checked).length;
+          return <li key={id} className="game-mosaic-status-group">
+            <details className="unity-image-result-group" open={!collapsed[id]} onToggle={event => {
+              const closed = !event.currentTarget.open;
+              setCollapsed(previous => previous[id] === closed ? previous : { ...previous, [id]: closed });
+            }}>
+              <summary tabIndex={0} data-mosaic-status={id}><span>{label} · {items.length}</span>
+                <input type="checkbox" className="unity-image-group-check" aria-label={"全选：" + label}
+                  disabled={!!busy || !items.length} checked={!!items.length && checked === items.length}
+                  ref={node => { if (node) node.indeterminate = checked > 0 && checked < items.length; }}
+                  onClick={event => event.stopPropagation()} onChange={event => {
+                    const checked = event.target.checked;
+                    setRows(previous => {
+                      const next = { ...previous };
+                      for (const image of items) next[image.id] = { ...resultFor(previous,image),checked,manualChecked:true,review:undefined };
+                      return next;
+                    });
+                  }}/>
+              </summary>
+            <ul>{!collapsed[id] && items.slice(page*mosaicPageSize,(page+1)*mosaicPageSize).map(image => {
                 const row = resultFor(rows, image);
                 const state = mosaicStatus(row, !!storage?.index[image.id]?.included);
                 const status = mosaicStatusLabels[state] + (state === "candidate" ? ` · ${row.boxes.length} 区域` : "");
@@ -844,9 +876,10 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
                     <small>{detail}</small>
                   </button>
                 </li>;
-            })}</ul></li>;
+            })}</ul>
+            {!collapsed[id] && <GameImageListPagination label={label+"列表分页"} page={page} pages={pages} onPage={page => setGroupPages(previous => ({...previous,[id]:page}))}/>}
+            </details></li>;
         })}</ul>
-        <GameImageListPagination label="去码图片列表分页" page={currentPage} pages={pages} onPage={setPage} />
       </>}>
       {!active && <div className="unity-offline-empty">{visible.length ? "从左侧列表选择图片预览" : "没有符合筛选条件的图片。"}</div>}
       {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">

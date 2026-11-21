@@ -78,9 +78,8 @@ export function sceneSignature(rgba: Uint8ClampedArray, width: number, height: n
   return signature;
 }
 
-export function scanMosaicPixels(rgba: Uint8ClampedArray, width: number, height: number): MosaicScan {
+export function scanMosaicPixels(rgba: Uint8ClampedArray, width: number, height: number, signature = sceneSignature(rgba, width, height)): MosaicScan {
   const boxes: MosaicBox[] = [];
-  const signature = sceneSignature(rgba, width, height);
   const shortest = Math.min(width, height);
   const stride = width * 4;
   const distance = (a: number, b: number) =>
