@@ -12,7 +12,7 @@ type ExpectedText = { box: MosaicBox; text?: string; language?: string; keep?: b
   translations?: Record<string, string>; drafts?: Record<string, string> };
 type Annotation = {
   provenance?: string;
-  mosaic?: { state: Presence; boxes?: MosaicBox[] };
+  mosaic?: { state: Presence; boxes?: MosaicBox[]; partialBoxes?: boolean };
   text?: { state: Presence; regions?: ExpectedText[]; initialBoxes?: MosaicBox[] };
 };
 type Manifest = { version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string };
@@ -173,16 +173,22 @@ function compareBoxes(expected: readonly MosaicBox[], predicted: readonly Mosaic
 }
 
 export function mosaicBoxScore(rows: Iterable<readonly [Annotation, MosaicBox[]]>) {
-  let matched = 0, expectedCount = 0, predictedCount = 0;
+  let matched = 0, expectedCount = 0, extra = 0, fullSamples = 0;
   for (const [annotation, predicted] of rows) {
     const mosaic = annotation.mosaic;
     const expected = mosaic?.state === "none" ? [] : mosaic?.boxes;
     if (!expected || (mosaic?.state === "present" && !expected.length)) continue;
-    matched += compareBoxes(expected,predicted).length;
+    const count = compareBoxes(expected,predicted).length;
+    matched += count;
     expectedCount += expected.length;
-    predictedCount += predicted.length;
+    if (!mosaic?.partialBoxes) {
+      extra += predicted.length - count;
+      fullSamples++;
+    }
   }
-  return expectedCount || predictedCount ? "定位匹配 " + matched + "/" + expectedCount + " 框（IoU≥0.5）· 多余框 " + (predictedCount - matched) : "";
+  if (!expectedCount && !extra) return "";
+  return "定位匹配 " + matched + "/" + expectedCount + " 框（IoU≥0.5）" +
+    (fullSamples ? " · 多余框 " + extra + "（仅完整标注）" : "");
 }
 
 export function textBoxScore(rows: Iterable<readonly [Annotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
