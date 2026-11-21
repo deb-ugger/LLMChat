@@ -25,7 +25,7 @@ export type StepPerformance = {
   endedAt?: string;
   benchmark?: Record<string, unknown>;
 };
-type Archive = Omit<StepPerformance, "started"> & { totalMs: number; scope: string; step: string; reason: "completed" | "cleared" };
+type Archive = Omit<StepPerformance, "started"> & { totalMs: number; scope: string; step: string; reason: "completed" | "cleared" | "paused" };
 const mainArchiveKey = "llmchat-game-performance-outbox";
 const benchmarkArchiveKey = mainArchiveKey + ":benchmark-window";
 const archiveKey = isGameBenchmarkWindow ? benchmarkArchiveKey : mainArchiveKey;
@@ -47,7 +47,8 @@ export function flushGamePerformanceArchive(key = archiveKey) {
       const record = pendingArchives(key)[0];
       if (!record) break;
       await invoke("append_game_performance", { record });
-      localStorage.setItem(key, JSON.stringify(pendingArchives(key).filter(item => item.taskId !== record.taskId)));
+      localStorage.setItem(key, JSON.stringify(pendingArchives(key).filter(item =>
+        item.taskId !== record.taskId || item.endedAt !== record.endedAt)));
     }
   };
   const writing = (navigator.locks?.request(key, append) ?? append())
@@ -60,12 +61,17 @@ export function recoverGamePerformanceArchives() {
   if (!isGameBenchmarkWindow) void flushGamePerformanceArchive(benchmarkArchiveKey);
 }
 
+export function pendingGameBenchmarkArchives(scope: string, step: string) {
+  return [mainArchiveKey, benchmarkArchiveKey].flatMap(key => pendingArchives(key))
+    .filter(record => record.scope === scope && record.step === step);
+}
+
 function archiveStep(scope: string, step: string, meter: StepPerformance, reason: Archive["reason"]) {
   if (meter.endedAt || !meter.taskId) return;
   const { started: _, ...results } = meter;
   const endedAt = new Date().toISOString();
   localStorage.setItem(archiveKey, JSON.stringify([...pendingArchives(), { ...results, totalMs: results.elapsedMs, scope, step, reason, endedAt }]));
-  meter.endedAt = endedAt;
+  if (reason !== "paused") meter.endedAt = endedAt;
   flushGamePerformanceArchive();
 }
 const checkpoints = new Map<string, ReturnType<typeof setInterval>>();
@@ -169,6 +175,7 @@ export function beginGameStep(scope: string, step: string, benchmark?: Record<st
     all[step] = { elapsedMs: 0, requestTimingComplete: true, models: {}, modelWallTiming: {}, taskId: crypto.randomUUID(), beginTime: new Date().toISOString(), benchmark };
   }
   const meter = all[step];
+  if (benchmark) meter.benchmark = benchmark;
   meter.started ??= performance.now(); commit(scope);
 }
 export function reportGameStepItems(scope: string, step: string, itemsDone: number, failures?: number) {
@@ -186,6 +193,11 @@ export function finishGameStep(scope: string, completed = false) {
   }
   commit(scope);
 }
+export function archivePausedGameStep(scope: string, step: string) {
+  const meter = records(scope)[step];
+  if (meter) { stopMeter(meter); archiveStep(scope, step, meter, "paused"); commit(scope); }
+}
+
 export function completeGameStep(scope: string, step: string) {
   const meter = records(scope)[step];
   if (meter) { stopMeter(meter); archiveStep(scope, step, meter, "completed"); commit(scope); }

@@ -239,12 +239,22 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     props.initialPart === "mosaic" && props.mosaicSetup ? "mosaic" : props.initialPart === "images" && imageSteps.length ? "images" : "text");
   const [textStep, setTextStep] = useState<"translate" | "screen">("translate");
   const [imageStep, setImageStep] = useState<ImageBenchmarkStep>(imageSteps[0] || "recognize");
-  const [mosaicStep, setMosaicStep] = useState<MosaicBenchmarkStep>("mosaicScreen");
+  const mosaicStepKey = "llmchat-game-benchmark-mosaic-step:" + props.scope;
+  const [mosaicStep, setMosaicStep] = useState<MosaicBenchmarkStep>(() => {
+    const queued = props.snapshot.jobs.find(job => job.requestScope === props.scope &&
+      (job.status === "运行中" || job.status === "已暂停") && isMosaicStep(job.step));
+    if (queued && isMosaicStep(queued.step)) return queued.step;
+    const saved = localStorage.getItem(mosaicStepKey);
+    if (saved && Object.hasOwn(mosaicBenchmarkSteps, saved)) return saved as MosaicBenchmarkStep;
+    return props.snapshot.formalJobs.some(job => job.label === "复筛打码图片") ? "mosaicRefine" : "mosaicScreen";
+  });
+  useEffect(() => { localStorage.setItem(mosaicStepKey, mosaicStep); }, [mosaicStepKey, mosaicStep]);
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
   const { jobs, running, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
-  const queue = jobs.filter(job => job.status === "等待" || job.status === "运行中" || job.status === "失败" && !job.progress?.total);
-  const hasWaiting = queue.some(job => job.status === "等待");
+  const queue = jobs.filter(job => job.status === "等待" || job.status === "运行中" || job.status === "已暂停" || job.status === "失败" && !job.progress?.total);
+  const hasPaused = queue.some(job => job.status === "已暂停");
+  const hasWaiting = hasPaused || queue.some(job => job.status === "等待");
   const control = (kind: BenchmarkQueueCommand, id?: string) =>
     void props.control(kind, id).catch(error => showAppNotice(String(error), "error"));
   return <GameTextBenchmarkDialog key={step} {...props} step={step} draft={drafts.current[step]}
@@ -252,11 +262,11 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     queueControls={<button type="button" className="unity-btn" disabled={stopping || !running && !hasWaiting}
       title={!running && formalBusy ? formalBlockingReason : undefined}
       onClick={() => control(running ? "benchmark-stop" : "benchmark-start")}>
-      {running || stopping ? formalBusy ? "暂停测试队列" : "中止当前并暂停队列" : "运行队列"}</button>}
+      {running || stopping ? "暂停测试队列" : hasPaused ? "继续队列" : "运行队列"}</button>}
     queueContents={<div className="game-benchmark-results">
       {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
-      {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status="运行中" role="status">
-        <div><strong>正式任务 · {job.label}</strong>
+      {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
+        <div><strong>{job.state === "unfinished" ? "正式任务未完成" : "正式任务"} · {job.label}</strong>
           <div className="hint">{job.game}{job.total ? " · " + (job.completed ?? 0) + "/" + job.total : ""}</div>
         </div>
       </div>)}
@@ -277,12 +287,13 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               </span>
             </div>
             <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
-              {stopping && job.status === "运行中" && <div>正在中止…</div>}
+              {stopping && job.status === "运行中" && <div>正在暂停并保存…</div>}
               <div className="hint" title={progress?.detail}>
-                {job.status === "等待" ? (formalBusy ? formalBlockingReason : "等待前一项") : job.status === "失败" ? progress?.detail : progress &&
+                {job.status === "等待" ? (formalBusy ? formalBlockingReason : running ? "等待前一项" : "等待运行") : job.status === "失败" ? progress?.detail : progress &&
                   <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
               </div>
+              {job.status === "已暂停" && <div className="hint">{job.resumeSamples ? "继续时复用已复筛样本" : "继续时从暂停的配置重新计时"}</div>}
             </div>
           </div>
           {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
@@ -500,8 +511,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </BenchmarkSection>
       <div className="game-benchmark-toolbar game-benchmark-task-actions">
         <button type="button" className="settings-panel-save" disabled={!!issue || adding || snapshot.stopping}
-          title={issue || (snapshot.stopping ? "正在中止当前测试，请稍候" : undefined)} onClick={() => void start(true)}>
-          {running ? "插到队首" : "立即运行"}
+          title={issue || (snapshot.stopping ? "正在暂停当前测试，请稍候" : undefined)} onClick={() => void start(true)}>
+          {running ? "插到队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即运行"}
         </button>
         <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
         <span role="status">{adding && "正在准备样本…"}</span>
@@ -644,7 +655,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         {!historyLoading && !historyError && !tasks.length && <p className="hint">当前步骤暂无测试记录。</p>}
         {tasks.map(task => <details key={task.id} className="game-benchmark-record-task">
           <summary><span className="game-benchmark-record-date">{task.firstTime && new Date(task.firstTime).toLocaleString("zh-CN", { hour12: false })}</span>
-            {task.rounds} 轮 · {task.configs} 个配置 · {task.runs.length} 项{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项中止`}
+            {task.rounds} 轮 · {task.configs} 个配置 · {task.runs.length} 项{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项暂停或中止`}
           </summary>
           <div className="game-benchmark-record-runs">
           {task.runs.map((result, index) => <details key={result.performance.taskId || index}>

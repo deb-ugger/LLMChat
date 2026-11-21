@@ -1,4 +1,5 @@
 import { benchmarkImageInput, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
+import { clearMosaicReviews } from "../gameMosaicRefine";
 import { clearGameImageRefinement } from "../gameImageScreening";
 import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } from "./imageSampleSet";
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
@@ -53,9 +54,10 @@ type BenchmarkJob = {
   step: BenchmarkTarget;
   label: string;
   progress?: BenchmarkProgress;
-  status: "等待" | "运行中" | "完成" | "失败" | "已中止";
+  status: "等待" | "运行中" | "已暂停" | "完成" | "失败";
+  resumeSamples?: boolean;
 };
-type FormalActivity = { id: string; game: string; label: string; completed?: number; total?: number };
+type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number };
 export type BenchmarkSnapshot = {
   version: number;
   jobs: readonly BenchmarkJob[];
@@ -193,12 +195,16 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const title = benchmarkTargetLabel(step);
   const runScope = historyScope + ":benchmark:" + (mosaic ? "mosaic" : imageStep ? "images" : "text");
   const totalScope = historyScope + ":benchmark-total";
+  let failures = 0, failedSamples = 0, runs = 0, finishedSamples = 0;
   return { count: count * configs.length * rounds, scope: displayScope, cleanup: () => {
+    const runId = stepPerformance(runScope, step).taskId;
+    if (step === "mosaicRefine" && runId) clearMosaicReviews("benchmark:" + runId);
     clearGamePerformance(runScope, [step], false);
     clearGamePerformance(totalScope, ["queue"], false);
   }, run: async context => {
     const sampleLabel = (sample: string) => sample.replace(/\s+/g, " ").trim().slice(0, 140);
-    let failures = 0, failedSamples = 0, runs = 0, finishedSamples = 0, runSamples = 0;
+    let runSamples = 0;
+    const resumeAt = runs;
     const progress = (value: UnityProgress) => {
       // Terminology preparation counts names, not completed translation samples.
       if (step !== "translate" || value.textStage !== "names") {
@@ -211,24 +217,29 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       ...context,
       report: patch => context.report(patch.sample ? { ...patch, sample: sampleLabel(patch.sample) } : patch),
     }, progress) } : undefined;
-    clearGamePerformance(totalScope, ["queue"], false);
     beginGameStep(totalScope, "queue");
-    input.onMessage("开始" + title + "测试 · " + configs.length + " 个配置 · " + rounds + " 轮", "info");
+    input.onMessage((resumeAt || stepPerformance(runScope, step).taskId ? "继续" : "开始") + title + "测试 · " + configs.length + " 个配置 · " + rounds + " 轮", "info");
     try {
       await runGameTextBenchmarks(configs, rounds, workload, runScope, context.id, context.signal, input.onMessage,
         (round, config) => {
           runSamples = 0;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
-            configId: config.id, sample: "", detail: undefined });
+            configId: config.id, sample: "", detail: undefined,
+            ...(step === "mosaicRefine" ? {} : { current: finishedSamples }), failed: failedSamples });
         },
         progress,
         result => {
-          if (result.status !== "已中止") runs++;
+          const done = Math.max(runSamples, Math.min(count, result.translated + result.failed));
+          if (result.status === "已暂停") {
+            context.report({ current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail });
+            return;
+          }
+          runs++;
           if (result.status === "失败") failures++;
           failedSamples += result.failed;
-          finishedSamples += Math.max(runSamples, Math.min(count, result.translated + result.failed));
+          finishedSamples += done;
           context.report({ current: finishedSamples, failed: failedSamples, detail: result.detail });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }));
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt);
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -261,17 +272,22 @@ export function useBenchmarkRunning() {
   return useSyncExternalStore(benchmarkRunner.subscribe, isBenchmarkRunning);
 }
 
-export function useFormalWorkflowActivity(active: boolean, game: string, label: string, completed?: number, total?: number) {
+export function useFormalWorkflowActivity(active: boolean, game: string, label: string, completed?: number, total?: number,
+  unfinished = false) {
   const id = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const key = id.current ??= crypto.randomUUID();
-    if (active) formalWorkflows.set(key,{ id:key,game,label,completed,total });
+    if (active || unfinished) formalWorkflows.set(key,{ id:key,game,label,completed,total, state: active ? "running" : "unfinished" });
     else formalWorkflows.delete(key);
     publish();
     if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
-  }, [active, game, label, completed, total]);
+  }, [active, game, label, completed, total, unfinished]);
   useLayoutEffect(() => () => {
-    if (!id.current || !formalWorkflows.delete(id.current)) return;
+    const job = id.current && formalWorkflows.get(id.current);
+    if (!job) return;
+    formalWorkflows.delete(job.id);
+    // Leaving an unfinished workspace does not release queued tests automatically.
+    if (job.state === "unfinished" && nextJob()) running = false;
     publish();
     if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
   }, []);
@@ -294,8 +310,8 @@ function publish() {
 
 async function cleanupJob(job?: QueuedJob) {
   if (job) {
-    // A waiting job has only a snapshot. Its scope may belong to the active job.
-    if (job.status === "运行中") job.prepared?.cleanup();
+    // Only a started job owns the shared meters and its run checkpoint.
+    job.prepared?.cleanup();
     job.prepared = undefined;
     job.prepare = undefined;
     job.onMessage = undefined;
@@ -303,23 +319,30 @@ async function cleanupJob(job?: QueuedJob) {
   await flushGamePerformanceArchive();
 }
 
+function nextJob() {
+  return jobs.find(item => item.status === "已暂停") ?? jobs.find(item => item.status === "等待");
+}
+
 async function runJobs() {
   while (running && !formalWorkflows.size) {
-    const job = jobs.find(item => item.status === "等待");
+    const job = nextJob();
     if (!job) break;
     const abort = new AbortController();
     controller = abort;
     job.status = "运行中";
-    startedAt = performance.now();
+    const previous = job.progress;
+    startedAt = performance.now() - (previous?.elapsedMs ?? 0);
     progress = { type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
-      phase: "prepare", label: job.label, current: 0, total: job.prepared?.count ?? 0, sample: "", elapsedMs: 0, percent: 0, failed: 0 };
+      phase: "prepare", label: job.label, current: previous?.current ?? 0, total: job.prepared?.count ?? 0,
+      sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ?? 0, failed: previous?.failed ?? 0 };
     publish();
     const timer = window.setInterval(publish, 1000);
-    let failed = false;
+    let failed = false, waitForFormal = false, finished = false;
     try {
       job.prepared ??= await job.prepare?.();
       abort.signal.throwIfAborted();
       if (!job.prepared) throw new Error("未能准备测试样本");
+      if (formalWorkflows.size) { waitForFormal = true; continue; }
       job.scope = job.prepared.scope;
       progress = { ...progress, scope: job.scope, total: job.prepared.count };
       publish();
@@ -333,20 +356,22 @@ async function runJobs() {
           publish();
         },
       });
+      finished = true;
     } catch (cause) {
       failed = true;
-      const detail = cause instanceof Error ? cause.message : String(cause);
+      const detail = abort.signal.aborted ? "测试已暂停，继续队列可恢复" : cause instanceof Error ? cause.message : String(cause);
       progress = { ...progress, phase: "finish", detail };
       job.onMessage?.(job.label + " · " + detail, abort.signal.aborted ? "info" : "error");
     } finally {
+      const paused = !finished && abort.signal.aborted;
       try {
-        await cleanupJob(job);
+        await cleanupJob(paused || waitForFormal ? undefined : job);
         historyRevision++;
       } finally {
         window.clearInterval(timer);
         controller = undefined;
-        job.status = abort.signal.aborted ? "已中止" : failed ? "失败" : "完成";
-        progress = { ...progress, state: abort.signal.aborted ? "paused" : "idle", elapsedMs: performance.now() - startedAt };
+        job.status = paused ? "已暂停" : waitForFormal ? previous ? "已暂停" : "等待" : failed ? "失败" : "完成";
+        progress = { ...progress, state: job.status === "已暂停" ? "paused" : "idle", elapsedMs: performance.now() - startedAt };
         job.progress = progress;
         publish();
       }
@@ -363,7 +388,7 @@ function stopQueue() {
 
 function pumpQueue() {
   if (!running || executing || formalWorkflows.size) return;
-  if (!jobs.some(job => job.status === "等待")) {
+  if (!nextJob()) {
     running = false;
     publish();
     return;
@@ -374,7 +399,7 @@ function pumpQueue() {
 }
 
 function startQueue() {
-  if (!jobs.some(job => job.status === "等待")) return;
+  if (!nextJob()) return;
   running = true;
   publish();
   pumpQueue();
@@ -382,21 +407,22 @@ function startQueue() {
 
 export const benchmarkRunner = {
   async enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
+    if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
     const occupied = formalWorkflows.size > 0;
     const frozen = structuredClone(request);
     const deferred = occupied && !request.sampleSetPath;
     const prepare = deferred ? () => prepareJob(input,frozen,true) : undefined;
     const prepared = deferred ? undefined : await prepareJob(input,frozen);
-    if (request.priority && controller?.signal.aborted) throw new Error("正在中止当前测试，请稍候");
+    if (request.priority && controller?.signal.aborted) throw new Error("正在暂停当前测试，请稍候");
     const configs = request.configs.filter(config => config.enabled !== false);
     const title = benchmarkTargetLabel(request.step);
     const label = configs.length === 1 ? title + " · " + configs[0].label : title + " · " + configs.length + " 个配置";
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
-      label, status: "等待", prepared, prepare, onMessage: input.onMessage };
+      label, status: "等待", prepared, prepare, onMessage: input.onMessage, resumeSamples: request.step === "mosaicRefine" };
     const firstWaiting = request.priority ? jobs.findIndex(item => item.status === "等待") : -1;
     jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
     publish();
-    if (request.priority || occupied || formalWorkflows.size) startQueue();
+    if (request.priority) startQueue();
     else if (running) pumpQueue();
     return job.id;
   },
@@ -407,7 +433,7 @@ export const benchmarkRunner = {
     if (index < 0) return;
     const [job] = jobs.splice(index, 1);
     publish();
-    await cleanupJob(job);
+    await cleanupJob(job.status === "已暂停" ? job : undefined);
     pumpQueue();
   },
   cleanup: () => cleanupJob(),
@@ -427,11 +453,15 @@ export function useBenchmarkProgress(scope: string) {
 
 export function attachBenchmarkRunner() {
   let disposed = false, unregister: (() => void) | undefined;
+  const discardPaused = () => {
+    for (const job of jobs) if (job.status === "已暂停") job.prepared?.cleanup();
+  };
+  window.addEventListener("pagehide", discardPaused);
   void registerAppCloseGuard(async () => {
     stopQueue();
     await executing;
     await cleanupJob();
     return true;
   }).then(remove => { if (disposed) remove(); else unregister = remove; }).catch(console.error);
-  return () => { disposed = true; unregister?.(); };
+  return () => { disposed = true; unregister?.(); window.removeEventListener("pagehide", discardPaused); };
 }

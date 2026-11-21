@@ -425,8 +425,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }, [root]);
   const formalProgress = mosaicBusy ? undefined : localActivity?.value.state === "running" ? localActivity.value :
     generationState?.state === "running" ? generationState : undefined;
+  const formalUnfinished = !preparingRescan && !!checkpoint && !checkpoint.finished &&
+    ["stopped", "error"].includes(checkpoint.progress.state);
   useFormalWorkflowActivity(!!busy || restoring || textScreening || !!imageEditorBusy, game?.gameDir || root,
-    typeof busy === "string" && busy ? busy : "工程处理", formalProgress?.completed ?? undefined, formalProgress?.total ?? undefined);
+    typeof busy === "string" && busy ? busy : formalUnfinished ? checkpoint.progress.detail || "工程流程" : "工程处理",
+    formalProgress?.completed ?? undefined, formalProgress?.total ?? undefined, formalUnfinished);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   useEffect(() => { onBusyChange?.(!!busy || restoring || applyingTestConfiguration); }, [busy, restoring, applyingTestConfiguration, onBusyChange]);

@@ -15,7 +15,7 @@ import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
 import { GameMetricHint, GameModelUsage, GameStepTimingDetails } from "./GameFlowSequence";
-import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
@@ -1068,6 +1068,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const canClear = canClearStep(screenStatus.state) || canClearRefine || canClearRedraw;
   const pausedRedraw = (stepRuns.redraw?.state === "stopped" || stepRuns.redraw?.state === "error") ? pendingRedraw.current : null;
   const redrawRemaining = pausedRedraw?.targets.filter(target => target.pending.size).length ?? 0;
+  const reviewCheckpoint = resumableMosaicMetrics(gamePath, "refine", true);
+  const hasUnfinishedReview = scoped.some(image => {
+    const row = resultFor(rows, image);
+    return row.checked && row.scanned && !row.saved && !row.manualBoxes && !isReviewed(row) &&
+      (!!row.refineError || !!reviewCheckpoint);
+  });
+  const pausedScreen = (screenStatus.state === "stopped" || screenStatus.state === "error") && !!remaining.length;
+  useFormalWorkflowActivity(false, gamePath, hasUnfinishedReview ? "复筛打码图片" : pausedScreen ? "筛选打码图片" : "重绘打码区域",
+    hasUnfinishedReview ? reviewedCount : pausedScreen ? screenedCount : undefined,
+    hasUnfinishedReview ? reviewTotal : pausedScreen ? screenTotal : undefined,
+    !busy && (hasUnfinishedReview || pausedScreen || redrawRemaining > 0));
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const benchmarkProgress = useBenchmarkProgress(gamePath);
   const testing = useBenchmarkRunning();

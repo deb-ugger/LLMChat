@@ -1,7 +1,7 @@
 import type { RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
-import { clearMosaicReviews, refineMosaicBatch } from "./gameMosaicRefine";
+import { refineMosaicBatch } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
@@ -63,7 +63,7 @@ export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
   onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet): BenchmarkStepRunner {
-  return async (config, settings, scope, record?: RecordImageBenchmarkOutcome) => {
+  return async (config, settings, scope, record?: RecordImageBenchmarkOutcome, runId?: string) => {
     const recordScan = (image: UnityImage, scan: MosaicScan) => record?.(image.id, {
       category: mosaicStatusLabels[mosaicScreeningStatus({
         ...scan, scanned: true, refined: step === "mosaicRefine" ? step : undefined, refineQuickExcluded: scan.quickExcluded,
@@ -81,22 +81,21 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
     };
     const readSample = (image: UnityImage, signal: AbortSignal) => measureGameAsync(scope, "processingMs", () => read(image, signal));
     if (step === "mosaicRefine") {
-      // The production runner checkpoints its work. Give each benchmark run its own key.
-      const root = "benchmark:" + crypto.randomUUID();
+      if (!runId) throw new Error("缺少复筛测试编号");
+      // Use the same isolated review checkpoint when a paused configuration resumes.
+      const root = "benchmark:" + runId;
       const selection = { ...config.prompts };
       rememberBenchmarkExecution(selection, scope, step, options.refineConcurrency ?? 1);
-      try {
-        const result = await refineMosaicBatch(images, {
-          root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample,
-          request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
-          onResult: recordScan,
-          onError: (image, reason) => record?.(image.id,{ category:"待复核",status:"失败",reason }),
-          onProgress: (completed, detail) => onProgress({ completed, total: images.length, detail }),
-        });
-        const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
-        const review = [...result.results.values()].filter(scan => !!scan.review).length;
-        return { translated: result.results.size, failed: result.failed, summary: mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
-      } finally { clearMosaicReviews(root); }
+      const result = await refineMosaicBatch(images, {
+        root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
+        request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
+        onResult: recordScan,
+        onError: (image, reason) => record?.(image.id,{ category:"待复核",status:"失败",reason }),
+        onProgress: (completed, detail) => onProgress({ completed, total: images.length, detail }),
+      });
+      const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
+      const review = [...result.results.values()].filter(scan => !!scan.review).length;
+      return { translated: result.results.size, failed: result.failed, summary: mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
     }
     let cursor = 0, completed = 0, failed = 0, located = 0, review = 0, regions = 0;
     let firstFailure = "";

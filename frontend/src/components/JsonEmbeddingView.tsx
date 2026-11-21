@@ -201,10 +201,18 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [backups, setBackups] = useState<Backup[]>([]), [backupId, setBackupId] = useState("");
   const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
   const touched = useRef(false);
-  const workflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
+  const textBusy = textInfo.running || textInfo.state === "screening";
+  const workflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textBusy || status.state === "running" || launching;
   const busy = workflowBusy || mosaicBusy;
-  useFormalWorkflowActivity(busy,game.name,mosaicBusy ? "图片去码" : imageBusy ? "图片翻译" : textInfo.running ? "文本翻译" : status.detail || "工程流程",
-    status.state === "running" ? status.completed : undefined,status.state === "running" ? status.total : undefined);
+  const textUnfinished = !workflow.textSkipped && !!textInfo.sourcePath && !textInfo.loadResult?.error &&
+    (textInfo.state === "screen-stopped" || textInfo.selected > textInfo.done && ["stopped", "error"].includes(textInfo.state));
+  const imageUnfinished = !workflow.imagesSkipped && imageWorkflow.loaded && !imageWorkflow.complete &&
+    ["stopped", "error"].includes(imageWorkflow.state);
+  const deploymentUnfinished = deployment?.mode === "automatic" && (deployment.state === "stopped" || deployment.state === "error");
+  useFormalWorkflowActivity(busy, game.name,
+    mosaicBusy ? "图片去码" : imageBusy || imageUnfinished ? "图片翻译" : textBusy || textUnfinished ? "文本翻译" : status.detail || "工程流程",
+    status.state === "running" ? status.completed : undefined, status.state === "running" ? status.total : undefined,
+    textUnfinished || imageUnfinished || deploymentUnfinished);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   const latestWorkflow = useRef({ text: textInfo, mosaicComplete }); latestWorkflow.current = { text: textInfo, mosaicComplete };

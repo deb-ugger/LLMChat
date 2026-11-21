@@ -1,5 +1,6 @@
-import { saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
+import { readImageBenchmarkDetails, saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import type { MosaicBenchmarkSetup } from "./gameMosaicBenchmark";
+import { clearMosaicReviews } from "./gameMosaicRefine";
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText, translateRpgSystemMessage } from "./gameDisplayText";
@@ -9,7 +10,7 @@ import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetr
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "./gameOllama";
-import { beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameWork, modelServiceTimingLines, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+import { archivePausedGameStep, beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameWork, modelServiceTimingLines, pendingGameBenchmarkArchives, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
@@ -29,7 +30,7 @@ export type BenchmarkConfig = {
 };
 export type BenchmarkResult = {
   round: number; label: string; selected: number; translated: number; failed: number;
-  status: "完成" | "失败" | "已中止"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
+  status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
@@ -49,7 +50,7 @@ export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
     const configs = new Set(runs.map(run => (run.performance.benchmark?.config as { id?: string } | undefined)?.id || run.label));
     return { id, runs, firstTime, rounds: new Set(runs.map(run => run.round)).size, configs: configs.size,
       failed: runs.filter(run => run.status === "失败").length,
-      stopped: runs.filter(run => run.status === "已中止").length };
+      stopped: runs.filter(run => run.status === "已中止" || run.status === "已暂停").length };
   }).sort((left, right) => right.firstTime.localeCompare(left.firstTime));
 }
 
@@ -58,7 +59,9 @@ export function benchmarkHistoryResults(records: StepPerformance[]): BenchmarkRe
   for (const record of records) {
     const benchmark = record.benchmark;
     if (!benchmark || typeof benchmark.round !== "number" || typeof benchmark.label !== "string" || !record.taskId) continue;
-    const status = benchmark.status === "完成" || benchmark.status === "失败" ? benchmark.status : "已中止";
+    const status = benchmark.status === "完成" || benchmark.status === "失败" || benchmark.status === "已暂停" ? benchmark.status : "已中止";
+    const previous = unique.get(record.taskId);
+    if (previous?.performance.endedAt && record.endedAt && previous.performance.endedAt > record.endedAt) continue;
     unique.set(record.taskId, { round: benchmark.round, label: benchmark.label,
       selected: Number(benchmark.selected) || 0, translated: Number(benchmark.translated) || 0, failed: Number(benchmark.failed) || 0,
       status, detail: typeof benchmark.detail === "string" ? benchmark.detail : undefined,
@@ -72,10 +75,8 @@ export function benchmarkHistoryResults(records: StepPerformance[]): BenchmarkRe
 
 export async function readGameBenchmarkHistory(scope: string, step: string): Promise<BenchmarkResult[]> {
   await flushGamePerformanceArchive();
-  const records = isTauri() ? await invoke<StepPerformance[]>("read_game_performance", { scope, step }) :
-    (JSON.parse(localStorage.getItem("llmchat-game-performance-outbox") || "[]") as (StepPerformance & { scope: string; step: string })[])
-      .filter(record => record.scope === scope && record.step === step);
-  return benchmarkHistoryResults(records);
+  const records = isTauri() ? await invoke<StepPerformance[]>("read_game_performance", { scope, step }) : [];
+  return benchmarkHistoryResults([...records, ...pendingGameBenchmarkArchives(scope, step)]);
 }
 export function inspectBenchmarkSample(entries: UnityEntry[], configs: BenchmarkConfig[]): Record<string, BenchmarkSample> {
   const byLanguage = new Map<string, BenchmarkSample>();
@@ -159,7 +160,7 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   return { failed, translated: rows.length - failed };
 }
 
-export type BenchmarkStepRunner = (config: BenchmarkConfig, settings: Settings, scope: string, record?: RecordImageBenchmarkOutcome) => Promise<{ translated: number; failed: number; summary?: string }>;
+export type BenchmarkStepRunner = (config: BenchmarkConfig, settings: Settings, scope: string, record?: RecordImageBenchmarkOutcome, runId?: string) => Promise<{ translated: number; failed: number; summary?: string }>;
 
 export function benchmarkResultLines(result: BenchmarkResult) {
   const seconds = (milliseconds: number | undefined) => milliseconds === undefined ? "—" : (milliseconds / 1000).toFixed(2) + " 秒";
@@ -202,53 +203,86 @@ export async function runGameTextScreenSample(config: BenchmarkConfig, selected:
 export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: number, workload: Workload, scope: string, queueId: string, signal: AbortSignal,
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
-  target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void) {
-  const settings = await api.getSettings();
+  target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
+  resumeAt = 0) {
+  let settings: Settings | undefined;
+  let modelsReady = false;
   const step = target?.step || "translate";
   const activeRoles = target ? ["text"] as const : benchmarkRoles;
   const local = loadLocalModelProfiles();
-  await prepareGameOllamaModels(configs.flatMap(config => (target || config.models.text.id ? activeRoles : []).map(role => config.models[role]))
+  const prepareModels = (settings: Settings) => prepareGameOllamaModels(configs
+    .flatMap(config => (target || config.models.text.id ? activeRoles : []).map(role => config.models[role]))
     .filter(model => !!model.id && !!local[model.id])
     .map(model => ({ connection: { ...resolveFeatureLlm(settings, model.id), localModel: true }, lanes: model.lanes })), signal, report);
   const samples = target?.imageSamples;
   const index = samples ? new Map(samples.map((sample, number) => [sample.id,number])) : undefined;
   let savedSamples = false;
-  for (let round = 1; round <= rounds; round++) {
+  for (let round = Math.floor(resumeAt / configs.length) + 1; round <= rounds; round++) {
     signal.throwIfAborted();
     const roundStarted = performance.now();
-    let finishedConfigs = 0, failedConfigs = 0;
+    const firstConfig = Math.max(0, resumeAt - (round - 1) * configs.length);
+    let finishedConfigs = firstConfig, failedConfigs = 0;
     report(`开始第 ${round} / ${rounds} 轮测试 · ${configs.length} 个配置`, "info");
-    clearGamePerformance(scope, [step], false);
-    for (const config of configs) {
+    for (const config of configs.slice(firstConfig)) {
       signal.throwIfAborted();
       const selected = target?.selected ?? workload.selectedIds.size;
       const unobservedModels: string[] = [];
+      const saved = stepPerformance(scope, step);
+      const former = saved.benchmark?.queueId === queueId && saved.benchmark.round === round &&
+        (saved.benchmark.config as Pick<BenchmarkConfig, "id"> | undefined)?.id === config.id ? saved.benchmark : undefined;
+      if (saved.taskId && !former) {
+        if (step === "mosaicRefine") clearMosaicReviews("benchmark:" + saved.taskId);
+        clearGamePerformance(scope, [step], false);
+      }
       const metadata = { queueId, round, unobservedModels, label: config.label, selected, config, translated: 0, failed: 0, status: "运行中", detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);
+      const runId = stepPerformance(scope,step).taskId!;
       onStart(round, config);
       const roleNames = { text: "正文", dialogue: "对白", names: "术语" };
       const modelDetails = (target || config.models.text.id ? activeRoles : []).map(role => {
         const model = config.models[role].id ? config.models[role] : config.models.text;
         return model.id ? `${roleNames[role]} ${model.id} · 并发 ${model.lanes}` : "";
       }).filter(Boolean);
-      report(`第 ${round} 轮 · 开始 ${config.label} · 样本 ${selected} · ${modelDetails.join("；") || "本地处理或翻译引擎"}`, "info");
+      report(`第 ${round} 轮 · ${former ? "继续" : "开始"} ${config.label} · 样本 ${selected} · ${modelDetails.join("；") || "本地处理或翻译引擎"}`, "info");
       const results: Record<string, ImageBenchmarkOutcome> = {};
       const record: RecordImageBenchmarkOutcome | undefined = index && ((id, outcome) => {
         const number = index.get(id);
         if (number !== undefined) results[number] = outcome;
       });
       let status: BenchmarkResult["status"] = "完成", detail: string | undefined;
+      let partialTranslated = 0, partialFailed = 0;
+      const progress = (value: UnityProgress) => {
+        if (step === "translate" && value.coverageCompleted !== undefined) {
+          partialTranslated = value.coverageCompleted;
+          partialFailed = value.translation?.failedEntries ?? 0;
+        } else if (step === "screen") partialTranslated = value.completed;
+        onProgress(value);
+      };
       try {
-        const result = await (target ? target.run(config, settings, scope, record) : runSample(config, workload, settings, scope, signal, report, onProgress, onSample));
+        if (former?.imageDetails) {
+          const previous = await readImageBenchmarkDetails(queueId, runId);
+          Object.assign(results, previous.results);
+          savedSamples = true;
+        }
+        settings ??= await api.getSettings();
+        if (!modelsReady) { await prepareModels(settings); modelsReady = true; }
+        signal.throwIfAborted();
+        const result = await (target ? target.run(config, settings, scope, record, runId) : runSample(config, workload, settings, scope, signal, report, progress, onSample));
         Object.assign(metadata, result);
         if (result.failed) status = "失败";
       } catch (error) {
-        status = signal.aborted ? "已中止" : "失败";
-        detail = error instanceof Error ? error.message : String(error);
+        status = signal.aborted ? "已暂停" : "失败";
+        detail = signal.aborted ? "测试已暂停" : error instanceof Error ? error.message : String(error);
       } finally {
         const complete = metadata.translated + metadata.failed >= selected;
         const interrupted = signal.aborted && !complete;
-        if (interrupted) status = "已中止";
+        if (interrupted) {
+          status = "已暂停";
+          if (!samples) {
+            metadata.translated = Math.min(selected, partialTranslated);
+            metadata.failed = Math.min(selected - metadata.translated, partialFailed);
+          }
+        }
         metadata.status = status;
         metadata.detail = detail;
         const recorded = new Set(Object.values(stepPerformance(scope, step).models).filter(model => model.requests > 0).map(model => model.model));
@@ -256,8 +290,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
           if (id && !recorded.has(id)) unobservedModels.push(id);
         }
         finishGameStep(scope, false);
-        const runId = stepPerformance(scope,step).taskId;
-        if (samples && runId) {
+        if (samples) {
           if (interrupted) {
             const outcomes = Object.values(results);
             metadata.failed = outcomes.filter(row => row.status === "失败").length;
@@ -268,14 +301,19 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
             savedSamples = true;
             metadata.imageDetails = true;
           } catch (error) {
-            status = interrupted ? "已中止" : "失败";
+            status = interrupted ? "已暂停" : "失败";
             metadata.status = status;
             metadata.detail = detail = [detail, "逐图记录保存失败：" + String(error)].filter(Boolean).join(" · ");
           }
         }
-        completeGameStep(scope, step);
+        const checkpointed = interrupted && step === "mosaicRefine";
+        if (checkpointed) archivePausedGameStep(scope, step);
+        else completeGameStep(scope, step);
         const performance = stepPerformance(scope,step);
-        clearGamePerformance(scope, [step], false);
+        if (!checkpointed) {
+          if (step === "mosaicRefine") clearMosaicReviews("benchmark:" + runId);
+          clearGamePerformance(scope, [step], false);
+        }
         const result: BenchmarkResult = { round, label: config.label, selected, translated: metadata.translated, failed: metadata.failed, status, detail, summary: metadata.summary, unobservedModels, performance };
         onResult(result);
         for (const line of benchmarkResultLines(result)) report(line, status === "完成" ? "success" : status === "失败" ? "error" : "info");
@@ -283,7 +321,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         if (status === "失败") failedConfigs++;
       }
       if (signal.aborted) {
-        report(`第 ${round} 轮已中止 · 已执行 ${finishedConfigs}/${configs.length} 个配置 · 耗时 ${((performance.now() - roundStarted) / 1000).toFixed(2)} 秒`, "info");
+        report(`第 ${round} 轮已暂停 · 已执行 ${finishedConfigs}/${configs.length} 个配置 · 耗时 ${((performance.now() - roundStarted) / 1000).toFixed(2)} 秒`, "info");
         signal.throwIfAborted();
       }
     }
