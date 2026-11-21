@@ -1,6 +1,24 @@
+/* 自绘窗口外壳：一条固定高度的标题带 + 右上角三个窗口按钮。
+   标题带占位（.app-shell 顶部留白），所以任何页面都不会再和按钮重叠；
+   拖动与最大化还原交给 WindowControls 里的指针处理。 */
 :root:has(.window-controls) {
   --window-control-width: 46px;
-  --window-controls-reserve: calc(3 * var(--window-control-width));
+  --window-bar-height: 32px;
+}
+
+.window-bar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 90;
+  block-size: var(--window-bar-height, 32px);
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:root:has(.window-controls) .app-shell {
+  padding-block-start: var(--window-bar-height);
 }
 
 .window-controls {
@@ -17,7 +35,7 @@
   place-items: center;
   box-sizing: border-box;
   inline-size: var(--window-control-width);
-  block-size: 32px;
+  block-size: var(--window-bar-height, 32px);
   margin: 0;
   padding: 0;
   border: 0;
@@ -60,30 +78,4 @@
 .window-controls > button:focus-visible > span {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-:root:has(.window-controls) .chat-topbar {
-  padding-inline-end: calc(14px + var(--window-controls-reserve));
-}
-
-@media (max-width: 720px) {
-  :root:has(.window-controls) .chat-topbar {
-    padding-inline-end: calc(var(--space-2) + var(--window-controls-reserve));
-  }
-}
-
-:root:has(.window-controls) .settings-tabs {
-  padding-inline-end: calc(var(--page-inset) + var(--window-controls-reserve));
-}
-
-:root:has(.window-controls) :is(.unity-top, .embed-unity-workspace > .embed-game-header, .style-redraw-workspace-bar) {
-  padding-inline-end: calc(var(--space-4) + var(--window-controls-reserve));
-}
-
-:root:has(.window-controls) :is(.text-toolbar, .ocr-toolbar, .pdf-toolbar) {
-  padding-inline-end: calc(var(--space-3) + var(--window-controls-reserve));
-}
-
-:root:has(.window-controls) .stats-header {
-  padding-inline-end: var(--window-controls-reserve);
 }

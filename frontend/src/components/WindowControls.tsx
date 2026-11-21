@@ -49,7 +49,9 @@ function DesktopWindowControls() {
     { label: "关闭窗口", path: "m2 2 8 8M10 2l-8 8", action: close, danger: true },
   ];
 
-  return <div className="window-controls" role="group" aria-label="窗口控制">
+  return <>
+    <div className="window-bar" data-tauri-drag-region="deep" aria-hidden="true" />
+    <div className="window-controls" role="group" aria-label="窗口控制">
     {buttons.map(({ label, path, action, danger }, index) => <button key={index} type="button"
       className={danger ? "is-close" : undefined} aria-label={label} data-tooltip={label}
       onClick={() => void action().catch(error => showAppNotice(label + "失败：" + String(error), "error"))}>
@@ -59,7 +61,8 @@ function DesktopWindowControls() {
         </svg>
       </span>
     </button>)}
-  </div>;
+    </div>
+  </>;
 }
 
 export function WindowControls() {
