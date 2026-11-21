@@ -2,6 +2,7 @@ import { scanMosaicPixels, sceneSignature } from "./gameMosaicGrid";
 export { scanMosaicPixels } from "./gameMosaicGrid";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { runtimeAssetBase } from "./runtimeAssets";
+import { measureGameAsync, recordGameCacheHit, recordGameWorkflowTiming } from "./gameModelPerformance";
 import type { UnityImage } from "./unityOffline";
 
 export type MosaicBox = [left: number, top: number, right: number, bottom: number];
@@ -69,9 +70,9 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
   localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(normalizeMosaicSettings(settings)));
   window.dispatchEvent(new CustomEvent("game-mosaic-settings", { detail: root }));
 }
-export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal) {
+export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal, timingScope?: string) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  return loadMosaicDetector(gameDetectorFile(root), { signal });
+  return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope });
 }
 
 const threshold = 0.25;
@@ -133,7 +134,7 @@ export function mosaicBoxes(values: Float32Array, dims: readonly number[], class
 export type MosaicDevice = { kind: "gpu" | "cpu"; reason?: string };
 
 export async function loadMosaicDetector(model: File | undefined, options: {
-  signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void;
+  signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void; timingScope?: string;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
@@ -142,7 +143,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
     wasm: new URL("./manga-ort/ort-wasm-simd-threaded.asyncify.wasm", assets).href,
   };
   ort.env.wasm.numThreads = 1;
-  const { signal, onDevice } = options;
+  const { signal, onDevice, timingScope } = options;
   const readModel = async (name: string) => {
     const response=await fetch(new URL("./mosaic-detector/"+name,assets),{signal});
     if(!response.ok)throw new Error("检测模型资源读取失败："+name);
@@ -203,11 +204,13 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   if (!context) { await release(); throw new Error("无法读取检测模型输入像素"); }
   onDevice?.(device);
   const outputName = output.name;
+  const runSession = (active: NonNullable<typeof session>, feeds: InstanceType<typeof ort.Tensor>, output: string) =>
+    measureGameAsync(timingScope, "detectorMs", () => active.run({ [active.inputNames[0]]: feeds }, [output]));
   const runInference = async (feeds: InstanceType<typeof ort.Tensor>) => {
     signal?.throwIfAborted();
     if (!session) throw new Error("检测会话已关闭");
     try {
-      return await session.run({ [session.inputNames[0]]: feeds }, [outputName]);
+      return await runSession(session, feeds, outputName);
     } catch (cause) {
       if (device.kind === "cpu") throw cause;
       signal?.throwIfAborted();
@@ -215,7 +218,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       session = await openCpu("WebGPU 推理失败：" + (cause instanceof Error ? cause.message : String(cause)));
       signal?.throwIfAborted();
       onDevice?.(device);
-      return session.run({ [session.inputNames[0]]: feeds }, [outputName]);
+      return runSession(session, feeds, outputName);
     }
   };
   let inferenceQueue: Promise<unknown> = Promise.resolve();
@@ -227,13 +230,13 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   const runPresence=async(feeds:InstanceType<typeof ort.Tensor>)=>{
     signal?.throwIfAborted();
     if(!presenceSession)throw new Error("分类检测会话已关闭");
-    try {return await presenceSession.run({[presenceSession.inputNames[0]]:feeds},[presenceSession.outputNames[0]]);}
+    try {return await runSession(presenceSession, feeds, presenceSession.outputNames[0]);}
     catch(cause){
       if(device.kind==="cpu")throw cause;
       signal?.throwIfAborted();await release();
       session=await openCpu("WebGPU 分类推理失败："+String(cause));
       signal?.throwIfAborted();onDevice?.(device);
-      return presenceSession!.run({[presenceSession!.inputNames[0]]:feeds},[presenceSession!.outputNames[0]]);
+      return runSession(presenceSession!, feeds, presenceSession!.outputNames[0]);
     }
   };
   const classify=async(original:HTMLCanvasElement)=>{
@@ -334,7 +337,12 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       signal?.throwIfAborted();
       const key = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2,"0")).join("");
       const existing = cache.get(key);
-      if (existing) { reused++; return existing; }
+      if (existing) {
+        const result = await existing;
+        reused++;
+        recordGameCacheHit(timingScope);
+        return result;
+      }
       const pending = scanImage(blob).catch(cause => { cache.delete(key); throw cause; });
       cache.set(key, pending);
       if (cache.size > 64) cache.delete(cache.keys().next().value!);
@@ -420,7 +428,7 @@ async function mosaicWeights(directory: string, model: MosaicModel) {
 
 export async function redrawMosaic(input: {
   source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
-  signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean; benchmark?: boolean;
+  signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean; benchmark?: boolean; timingScope?: string;
 }) {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
   const saved = localStorage.getItem("llmchat-comfy-directory");
@@ -433,11 +441,12 @@ export async function redrawMosaic(input: {
   progress.onmessage = detail => { if (!input.signal.aborted) input.progress(detail); };
   const weights = await mosaicWeights(directory, input.model);
   input.signal.throwIfAborted();
-  const result = await invoke<{ image: string }>("run_style_redraw", {
+  const result = await invoke<{ image: string; workflowMs?: number }>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic", image, progress,
     regions: input.boxes.map(box => ({ box })),
     profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark },
   });
+  recordGameWorkflowTiming(input.timingScope, result.workflowMs);
   if (!input.keepResultOnStop) input.signal.throwIfAborted();
   return new Blob([Uint8Array.from(atob(result.image), char => char.charCodeAt(0))], { type: "image/png" });
 }

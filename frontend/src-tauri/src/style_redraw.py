@@ -201,7 +201,7 @@ def refine_transparent_lettering(draft, layer, protected):
     return Image.fromarray(result)
 
 
-async def render(session, crop, draft, translation, steps, label, profile):
+async def render(session, crop, draft, translation, steps, label, profile, workflow_times):
     reference, matte = prepare(crop)
     if matte:
         backdrop = Image.new("RGBA", draft.size, matte + (255,))
@@ -212,12 +212,12 @@ async def render(session, crop, draft, translation, steps, label, profile):
     # A complete Japanese reference tends to replace the Chinese draft on transparent sprites.
     ref_name = None if matte and profile["kind"] == "turbo" else await upload_image(session, reference)
     graph = workflow(draft_name, ref_name, translation, steps, matte, profile)
-    raw = await run_image_graph(session, graph, profile.get("output"), label)
+    raw = await run_image_graph(session, graph, profile.get("output"), label, workflow_times)
     with Image.open(io.BytesIO(raw)) as output:
         return extract(output, matte, crop.size)
 
 
-async def run_image_graph(session, graph, output_id, label, prompt_ids=None):
+async def run_image_graph(session, graph, output_id, label, workflow_times, prompt_ids=None):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
@@ -257,6 +257,17 @@ async def run_image_graph(session, graph, output_id, label, prompt_ids=None):
                 continue
             if record.get("status", {}).get("status_str") == "error":
                 raise RuntimeError(str(record["status"].get("messages", []))[-1200:])
+            start = end = None
+            for message in record.get("status", {}).get("messages") or []:
+                if not isinstance(message, list) or len(message) != 2 or not isinstance(message[1], dict):
+                    continue
+                event, details = message
+                if event == "execution_start":
+                    start = details.get("timestamp")
+                elif event == "execution_success":
+                    end = details.get("timestamp")
+            if isinstance(start, int) and isinstance(end, int) and end >= start:
+                workflow_times.append(end - start)
             image = record["outputs"][output_id]["images"][0]
             return await request(session, "GET", "/view", params={k: image[k] for k in ("filename", "subfolder", "type")})
         raise TimeoutError("等待 ComfyUI 结果超时")
@@ -339,7 +350,7 @@ async def benchmark_redraw_storage(session, root, argv, enabled):
                 remove_benchmark_directory(output, subfolder)
 
 
-async def repair_mosaic(original, data, steps):
+async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in ("2511", "turbo"):
         raise ValueError("请选择可用的去码重绘模型")
@@ -376,7 +387,7 @@ async def repair_mosaic(original, data, steps):
             if subfolder:
                 graph["15"] = {"class_type": "SaveImage", "inputs": {
                     "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
-            raw = await run_image_graph(session, graph, "15", "蒙版重绘", prompt_ids)
+            raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids)
     with Image.open(io.BytesIO(raw)) as output:
         restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
     restored.putalpha(crop.getchannel("A"))
@@ -1420,9 +1431,11 @@ async def run(data):
             name = await upload_image(session, original, "input", filename)
         emit("result", {"name": name})
         return
+    workflow_times = []
     if data["mode"] == "mosaic":
-        result = await repair_mosaic(original, data, steps)
-        emit("result", {"image": base64.b64encode(png(result)).decode("ascii")})
+        result = await repair_mosaic(original, data, steps, workflow_times)
+        emit("result", {"image": base64.b64encode(png(result)).decode("ascii"),
+                        **({"workflowMs": sum(workflow_times)} if workflow_times else {})})
         return
     if data["mode"] == "ocr-prepare":
         extra=data["profile"]
@@ -1490,14 +1503,15 @@ async def run(data):
         for i, box, translation, crop, draft, lettering, protected, transparent in drafts:
             label = f"区域 {i} / {len(regions)}"
             try:
-                layer = await render(session, crop, lettering if transparent else draft, translation, steps, label, profile)
+                layer = await render(session, crop, lettering if transparent else draft, translation, steps, label, profile, workflow_times)
                 if transparent:
                     layer = refine_transparent_lettering(draft, layer, protected)
                 layer.paste(crop, (0,0), Image.fromarray(protected))
             except Exception as exc:
                 raise RuntimeError(f"{label}：{exc}") from exc
             composed.paste(layer, box)
-    emit("result", {"image": base64.b64encode(png(composed)).decode("ascii")})
+    emit("result", {"image": base64.b64encode(png(composed)).decode("ascii"),
+                    **({"workflowMs": sum(workflow_times)} if workflow_times else {})})
 
 
 if __name__ == "__main__":

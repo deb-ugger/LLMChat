@@ -295,11 +295,11 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     setProgress({detail:"正在准备分级筛选",state:"working"});
     try{const counts=await screenGameImages(base,controller.signal,{source,target,timingScope:promptState.scope + ":images",strategy:stageModels.filter?"full":strategy,concurrency:screeningLanes,resume,model:stageModels.filter||"fast"},{read:image=>measureGameAsync(promptState.scope + ":images", "processingMs", () => readImage(image,false,false,controller.signal)),recognize:async(blob,stage,index=0)=>{if(stageModels.filter){stage("大模型筛选");const lines=await recognizeGameImage(settings,stageModels.filter,blob,controller.signal,"screen",promptState.selection,{source,target},onMessage,async image=>(await workers[index].recognize(image,stage)).lines);return {lines,detectedBoxes:lines.length};}try{await(prepared??=workers[0].prepare());}catch(error){throw new ScreeningModelError(String(error));}
       const worker=workers[index];
-      if(strategy==="full")return measureGameAsync(promptState.scope + ":images", "processingMs", () => worker.recognize(blob,stage,{maxSide:1280,boxThresh:.3}));
-      stage("快速文字检测");const rough=await measureGameAsync(promptState.scope + ":images", "processingMs", () => worker.recognize(blob,stage,{maxSide:768,boxThresh:.5}));controller.signal.throwIfAborted();
+      if(strategy==="full")return measureGameAsync(promptState.scope + ":images", "ocrMs", () => worker.recognize(blob,stage,{maxSide:1280,boxThresh:.3}));
+      stage("快速文字检测");const rough=await measureGameAsync(promptState.scope + ":images", "ocrMs", () => worker.recognize(blob,stage,{maxSide:768,boxThresh:.5}));controller.signal.throwIfAborted();
       if(!rough.detectedBoxes)return rough;
       const state=classifyImageText(rough,{source,target}).state;
-      if(state==="review"){stage("复核疑似文字");return measureGameAsync(promptState.scope + ":images", "processingMs", () => worker.recognize(blob,stage,{maxSide:1280,boxThresh:.3}));}return rough;
+      if(state==="review"){stage("复核疑似文字");return measureGameAsync(promptState.scope + ":images", "ocrMs", () => worker.recognize(blob,stage,{maxSide:1280,boxThresh:.3}));}return rough;
 },persist:persistMany},publishProgress);const detail=`筛选完成 · 候选 ${counts.candidate} · 未检测到字 ${counts["no-text"]} · 待复核 ${counts.review} · 无需翻译 ${counts["not-needed"]} · 失败 ${counts.failed}`;setProgress({detail,state:"done"});onMessage(detail,counts.failed?"warning":"success");if(counts.failed)throw new Error("部分图片筛选失败，请检查失败条目后继续。");}finally{await Promise.all(workers.map(worker=>worker.dispose()));}};
 
   const filterStep = () => {
@@ -444,7 +444,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     const visionModel = phase === "recognize" ? stageModels.recognize : undefined;
     const recognitionGroup = visionModel ? (image: UnityImage) => gameImageVisionForAsset(visionModel, image.name, models) : undefined;
     const names = (visionModel || phase === "translate" && outputMode !== "render") ? await readImageNames(controller.signal) : undefined;
-    const ocrReuse = createGameImageOcrReuse();
+    const ocrReuse = createGameImageOcrReuse(promptState.scope + ":images");
     const recognitionLanes = visionModel ? modelConcurrency(promptState.scope, "recognize", visionModel) : concurrency;
     const ocr = Array.from({ length: phase === "recognize" ? recognitionLanes : 1 }, () => createUnityImageOcr(ocrMode, backend, reportDevice));
     let pendingWrites:UnityImage[]=[];let writes=Promise.resolve();let lastWrite=performance.now();
@@ -490,7 +490,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
           fallback => recognizeGameImage(settings, model, blob, controller.signal, "recognize", promptState.selection, { source, target, ...placement, names }, report, fallback),
           message => report(message, "warning")));
       }
-      return measureGameAsync(promptState.scope + ":images", "processingMs", () => recognizeLocalGameImage(blob,
+      return measureGameAsync(promptState.scope + ":images", "ocrMs", () => recognizeLocalGameImage(blob,
         input => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(input, stage), controller.signal));
     },translate:translator.translate,render:(blob,regions,image)=>renderGameImage(settings,stageModels.render||"",blob,regions,controller.signal,promptState.selection,{source,target},(text,level)=>onMessage(`${image.name} · ${text}`,level),{assetName:image.name,cleanBase:gameImageCleanBase(image,base.images||[],candidate=>readImage(candidate,false,false,controller.signal))}),write:(_project,image,blob)=>measureGameAsync(promptState.scope + ":images", "saveMs", () => write(image,blob)),persist:async(_project,image)=>{const value=only ? {...image,selected:image.selected && only.selected} : image;pendingWrites.push(value);if(pendingWrites.length>=32||performance.now()-lastWrite>=750)await flushWrites();},validate:validateImageTranslation},publishProgress,confidence,phase === "recognize" ? phase : outputMode === "review" ? "translate-only" : outputMode);await flushWrites();if(ocrReuse.hits)onMessage(`已复用 ${ocrReuse.hits} 张相同图片的正式识别结果`,"info");onMessage(phase==="recognize"?"图片识别完成":"图片翻译完成","success");}finally{try{await flushWrites();}finally{translator.dispose();await Promise.all(ocr.map(engine=>engine.dispose()));}}
   },{kind:phase==="recognize"?"recognize":outputMode==="review"?"review":outputMode==="render"?"render":"translate",imageId:only?.id,mode:ocrMode});
@@ -743,6 +743,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     abort.current = controller;
     const result = await redrawGameImages(current.current?.images || [], redrawProfile, target, controller.signal, {
       onStart: setRedrawingId,
+      timingScope: promptState.scope + ":images",
       regions: translationRegions,
       read: image => readImage(image, false, false, controller.signal),
       write: (image, blob) => measureGameAsync(promptState.scope + ":images", "saveMs", () => write(image, blob)),

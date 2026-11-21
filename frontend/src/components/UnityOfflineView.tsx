@@ -1106,6 +1106,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       try {
         const result = await redrawGameImages(images, run.imageRedrawProfile ?? "turbo", run.target, controller.signal, {
           onStart: setRedrawingId,
+          timingScope: scope,
           regions: image => unityImageTranslationRegions(image.regions, run.imageConfidenceThreshold ?? imageConfidenceThreshold, image)
             .filter(region => include(region.text)),
           read: image => readUnitySourceImage(p, image, controller.signal),
@@ -1198,7 +1199,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const activeLocalOcr = () => ocr[0].isGpu && !fastLocalOcr ? Math.min(2, ocrCount) : ocrCount;
     const primaryProvider = options.provider; if (!primaryProvider) throw new Error("未选择图片翻译引擎");
     const imageNames = collectGameImageNames(p.entries, root, options.target || run.target, settings.textGlossary);
-    const ocrReuse = createGameImageOcrReuse();
+    const ocrReuse = createGameImageOcrReuse(promptState.scope + ":images");
     const request = (provider: string, text: string) => translateNamedImageText(text,
       input => requestImageTranslation(options, provider, input, controller.signal, phase === "review" ? "review" : "translate"), options.target || "", imageNames);
     const translationLanes = Math.max(options.llmConcurrency || 1, options.imageReviewOptions?.llmConcurrency || 1);
@@ -1234,7 +1235,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           count => imageLog(count + " 张图片有待复核的区域，已保存成功译文", "warning") : undefined,
         read: image => measureGameAsync(promptState.scope + ":images", "processingMs", () => readUnitySourceImage(p, image, controller.signal)),
         recognize: (blob, stage, worker = 0, image) => {
-          if (!visionModel) return measureGameAsync(promptState.scope + ":images", "processingMs",
+          if (!visionModel) return measureGameAsync(promptState.scope + ":images", "ocrMs",
             () => ocr[worker % activeLocalOcr()].recognize(blob, stage));
           const model = gameImageVisionForAsset(visionModel, image?.name || "", gameModels);
           const placement = { assetName: image?.name, cleanBase: image && gameImageCleanBase(image, p.images || [],
@@ -2440,7 +2441,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       reportGameStepItems(scope, "mosaic", reviews.results.size + failed, failed);
       throw new Error(reviews.failed + " 张图片复筛失败");
     }
-    const detector = reviews ? undefined : await openDeploymentDetector(root, preferences, signal);
+    const detector = reviews ? undefined : await openDeploymentDetector(root, preferences, signal, scope);
     let committed = false;
     try {
       for (const [index, image] of images.entries()) {
@@ -2454,7 +2455,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         signal.throwIfAborted();
         if (!boxes.length) continue;
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
-        const rendered = await redrawMosaic({ source: sourceImage, boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal,
+        const rendered = await redrawMosaic({ source: sourceImage, boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal, timingScope: scope,
           progress: detail => report({ completed: index, total: images.length, detail }) });
         const imageData = await imageBase64(rendered);
         await measureGameAsync(scope, "saveMs", () => unityRun("mosaic-save", {

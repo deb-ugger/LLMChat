@@ -101,7 +101,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
     let cursor = 0, completed = 0, failed = 0, located = 0, review = 0, regions = 0;
     let firstFailure = "";
     const results = new Map<string, MosaicScan>();
-    const detector = step === "mosaicScreen" && options.detector !== "grid" ? await loadMosaicDetector(workload.modelFile, { signal }) : undefined;
+    const detector = step === "mosaicScreen" && options.detector !== "grid" ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope }) : undefined;
     const lane = async () => {
       const grid = step === "mosaicScreen" && !detector ? createMosaicGridScanner() : undefined;
       try {
@@ -114,7 +114,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
               const keep: MosaicBox[] = options.protect ? image.regions.filter(region => region.selected && region.text)
                 .map(region => [region.x0, region.y0, region.x1, region.y1]) : [];
               await redrawMosaic({ source, boxes: workload.boxes[image.id], keep, model: options.model, steps: options.steps,
-                seed: 1, signal, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
+                seed: 1, signal, timingScope: scope, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
               record?.(image.id,{category:"已生成去码候选",boxes:workload.boxes[image.id]});
             } else {
               const scan = await (detector ?? grid!).scan(source);

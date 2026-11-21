@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LlmClient.h"
 #include <string>
 
 struct TranslateResult {
@@ -12,6 +13,7 @@ struct TranslateResult {
     int promptTokens = 0;
     int completionTokens = 0;
     double generationTokensPerSecond = 0;
+    std::optional<LlmServiceTiming> serviceTiming;
     int totalTokens = 0;
     int cacheReadTokens = 0;
     int cacheWriteTokens = 0;

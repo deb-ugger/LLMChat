@@ -155,6 +155,14 @@ json errorJson(const std::string& message)
     return json{{"ok", false}, {"error", message}};
 }
 
+void appendServiceTiming(json& result, const std::optional<LlmServiceTiming>& timing)
+{
+    if (timing) {
+        result["serviceTiming"] = {{"totalMs", timing->totalMs}, {"loadMs", timing->loadMs},
+            {"promptMs", timing->promptMs}, {"generationMs", timing->generationMs}};
+    }
+}
+
 /** Writes markPending on construction and finalize on destruction (same event id). */
 class ScopedUsageLog {
 public:
@@ -2140,7 +2148,10 @@ int HttpServer::run()
                     {"promptTokens", response.promptTokens}, {"completionTokens", response.completionTokens}}.dump(), "application/json");
                 return;
             }
-            res.set_content(json{{"ok", true}, {"content", response.content}, {"completionTokens", response.completionTokens}, {"generationTokensPerSecond", response.generationTokensPerSecond}}.dump(), "application/json");
+            json result = {{"ok", true}, {"content", response.content}, {"completionTokens", response.completionTokens},
+                {"generationTokensPerSecond", response.generationTokensPerSecond}};
+            appendServiceTiming(result, response.serviceTiming);
+            res.set_content(result.dump(), "application/json");
         } catch (const std::exception& error) { res.status = 400; res.set_content(errorJson(error.what()).dump(), "application/json"); }
     }));
 
@@ -2292,7 +2303,7 @@ int HttpServer::run()
                 return;
             }
 
-            res.set_content(json{
+            json result = {
                 {"ok", true},
                 {"source", text},
                 {"translation", tr.translation},
@@ -2303,7 +2314,9 @@ int HttpServer::run()
                 {"totalTokens", tr.totalTokens},
                 {"cacheReadTokens", tr.cacheReadTokens},
                 {"cacheWriteTokens", tr.cacheWriteTokens},
-            }.dump(), "application/json");
+            };
+            appendServiceTiming(result, tr.serviceTiming);
+            res.set_content(result.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {

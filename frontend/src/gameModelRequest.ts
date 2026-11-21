@@ -1,4 +1,4 @@
-import { gameModelExecution } from "./gameModelPerformance";
+import { gameModelExecution, type ModelServiceTiming } from "./gameModelPerformance";
 import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
 import { withGameOllama, gameOllamaNative, type OllamaOutput } from "./gameOllama";
 import { API_BASE, type Settings } from "./api";
@@ -10,7 +10,7 @@ export async function requestGameModelJson(settings: Settings, model: string, pr
   const connection = { ...resolveFeatureLlm(settings, model), ...(execution ? gameModelExecution(execution.selection, execution.role, model) : {}) };
   if (!connection.apiUrl) throw new Error("所选模型未配置接口地址");
   const localModel = !!loadLocalModelProfiles()[model];
-  return withGameOllama({ ...connection, localModel }, signal, report, () => runModelRequest({ ...connection, localModel }, signal, async signal => {
+  const result = await withGameOllama({ ...connection, localModel }, signal, report, () => runModelRequest({ ...connection, localModel }, signal, async signal => {
     const taskId = crypto.randomUUID();
     const cancel = () => { void fetch(`${API_BASE}/api/translate/cancel`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({taskId})}).catch(() => {}); };
     signal.throwIfAborted(); signal.addEventListener("abort", cancel, { once: true });
@@ -28,10 +28,11 @@ export async function requestGameModelJson(settings: Settings, model: string, pr
       if (!response.ok) throw Object.assign(new Error(result.error || "模型处理失败"), {
         code: result.code, outputTokenLimit: result.outputTokenLimit, completionTokens: result.completionTokens, promptTokens: result.promptTokens,
       });
-      const raw = String(result.content).trim();
-      const fence = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
-      const content = (image || execution?.role === "layout") && fence?.length === 1 ? fence[0].replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-      try { return { value: JSON.parse(content), completionTokens: result.completionTokens, generationTokensPerSecond: result.generationTokensPerSecond }; } catch { throw Object.assign(new Error("模型未返回有效 JSON"), { code: "GAME_MODEL_INVALID_JSON" }); }
+      return result as { content: unknown; completionTokens?: number; generationTokensPerSecond?: number; serviceTiming?: ModelServiceTiming };
     } finally { signal.removeEventListener("abort", cancel); }
-  }).then(result => result.value));
+  }));
+  const raw = String(result.content).trim();
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
+  const content = (image || execution?.role === "layout") && fence?.length === 1 ? fence[0].replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try { return JSON.parse(content); } catch { throw Object.assign(new Error("模型未返回有效 JSON"), { code: "GAME_MODEL_INVALID_JSON" }); }
 }

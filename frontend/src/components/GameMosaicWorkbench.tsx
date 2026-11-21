@@ -7,14 +7,14 @@ import { refineMosaicBatch, mosaicReviewKey, readMosaicReviews, clearMosaicRevie
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
-import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, type StepPerformance } from "../gameModelPerformance";
+import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
 import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
-import { deploymentMetricScope } from "../unityWorkflow";
+import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
-import { GameMetricHint, GameModelUsage } from "./GameFlowSequence";
+import { GameMetricHint, GameModelUsage, GameStepTimingDetails } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
@@ -57,6 +57,7 @@ function groupMosaicModels(snapshot: StepPerformance): StepPerformance {
       requestMs: previous.requestMs + row.requestMs,
       generationTokens: previous.generationTokens + row.generationTokens,
       generationMs: previous.generationMs + row.generationMs,
+      serviceTiming: sumModelServiceTiming(previous.serviceTiming, row.serviceTiming),
     } : { ...row });
   }
   return { ...snapshot, models: Object.fromEntries(models) };
@@ -541,7 +542,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     });
     deploymentHandle.current = {
       selectedIds: () => selected.map(image => image.id),
-      automatic: async signal => {
+      automatic: signal => measureDeploymentStage(gamePath, "mosaic", async () => {
+        const timingScope = deploymentMetricScope(gamePath, "mosaic");
         const ids = new Set(selected.map(image => image.id));
         const status = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-status", {
           method: "POST", signal, headers: { "Content-Type":"application/json" }, body: JSON.stringify({ gamePath })
@@ -556,7 +558,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         if (!unscreened.length) return [...ids];
         const reviews=preferences.refine!==false ? await performReviews(unscreened.filter(image=>!resultFor(rows,image).manualBoxes),signal,(_completed,detail)=>setProgress(detail),false,true) : undefined;
         if(reviews?.failed)throw new Error(reviews.failed+" 张图片复筛失败");
-        const detector = reviews ? undefined : await openDeploymentDetector(gamePath, preferences, signal);
+        const detector = reviews ? undefined : await openDeploymentDetector(gamePath, preferences, signal, timingScope);
         try {
           for (const image of unscreened) {
             signal.throwIfAborted();
@@ -571,14 +573,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             }
             const boxes = scan.boxes;
             if (!boxes.length) { update(image, { boxes, scanned:true, detector:detectorKey, reason:undefined }); continue; }
-            const rendered = await redrawMosaic({ source, boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, progress: setProgress });
+            const rendered = await redrawMosaic({ source, boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, timingScope, progress: setProgress });
             await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: rendered, signal }));
             ids.add(image.id);
             update(image, { boxes, scanned: true, detector: detectorKey, saved: true, checked: true, discardedHash: undefined });
           }
           return [...ids];
         } finally { await detector?.release(); }
-      },
+      }, ids => ids.length),
       prepare: async (signal, imageIds = selected.map(image => image.id)) => {
         const patchId = crypto.randomUUID().replaceAll("-", "");
         const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-prepare", {
@@ -803,7 +805,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const lanes = Math.min(targets.length, Math.max(1, Math.min(4, preferences.concurrency ?? 2)));
       const modelName = detectorKind !== "grid" && detectorFile ? detectorFile.name : detectorLabels[detectorKind];
       const detector = detectorKind !== "grid" ? await loadMosaicDetector(detectorFile, {
-        signal,
+        signal, timingScope: usage?.scope,
         onDevice: device => setStepRuns(previous => previous.screen
           ? { ...previous, screen: { ...previous.screen, device } }
           : previous),
@@ -948,7 +950,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               try {
                 const blob = await usage!.measure(mosaicModelLabels[engine], 1, () => redrawMosaic({
                   source: original, boxes, keep, model: engine, steps: stepCount, seed: plan.seed, signal, reference,
-                  keepResultOnStop: true,
+                  keepResultOnStop: true, timingScope: usage?.scope,
                   progress: detail => setProgress(title + " · " + detail),
                 }));
                 usage!.refresh();
@@ -959,7 +961,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 failures.push(title + " · " + String(cause));
                 continue;
               }
-            }
+            } else recordGameCacheHit(usage?.scope);
             const { blob, seconds } = outcome;
             setCandidates(previous => {
               const current = previous[image.id]?.revision === image.sourceHash ? previous[image.id] : undefined;
@@ -1094,7 +1096,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       {multipleModels && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
       <div className="game-flow-model-values">
         {!expanded ? <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
-          : running && id === "refine" && !model.tokens && model.requests > 0
+          : running && id === "refine" && !model.tokens && !model.serviceTiming && model.requests > 0
             ? <small role="status">已发送 {model.requests} 次请求 · 速率在模型返回后更新</small>
             : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
               perImage={id !== "refine"} onToggle={toggle} />}
@@ -1128,6 +1130,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             </>}
             {!!status?.failed && <span>失败 <span className="game-flow-metric">{status.failed} 张</span></span>}
           </small>}
+        {expanded && <GameStepTimingDetails measured={measured} onToggle={toggle} />}
         {expanded && running && id === "refine" && !models.length && <small className="game-flow-model-rates" role="status">
           {(status?.prepared ?? 0) < (status?.total ?? 0) ? "正在准备候选区域" : "等待模型请求开始"} · 模型速率 —
         </small>}

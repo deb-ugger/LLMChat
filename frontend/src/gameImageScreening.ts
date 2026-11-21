@@ -1,6 +1,6 @@
 import { LocalPaddleOcr } from "./ocr/paddleOcr";
 import type { OcrMode } from "./api";
-import { measureGameAsync, measureGameWork } from "./gameModelPerformance";
+import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
 import {applyImageTextRules, IMAGE_TEXT_RULE_VERSION} from "./imageTextRules";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 import type { UnityImage, UnityProject } from "./unityOffline";
@@ -215,7 +215,11 @@ function reuseScreenRecognition(images: UnityImage[], signal: AbortSignal, timin
     signal.throwIfAborted();
     const existing = results.get(key);
     if (existing) {
-      try { return await existing; }
+      try {
+        const result = await existing;
+        recordGameCacheHit(timingScope);
+        return result;
+      }
       catch (error) {
         // A failed request must not turn identical files into failed matches.
         signal.throwIfAborted();
@@ -339,7 +343,7 @@ export function createLocalImageRefiner(mode: LocalRefineMode, concurrency: numb
     },
     recognize: (blob: Blob, index: number) => {
       const worker = workers[index % workers.length];
-      return measureGameAsync(timingScope, "processingMs", () => worker.recognize(blob));
+      return measureGameAsync(timingScope, "ocrMs", () => worker.recognize(blob));
     },
     dispose,
   };

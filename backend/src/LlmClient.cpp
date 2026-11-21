@@ -579,8 +579,16 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
             parsed.error += "）。";
             if (parsed.errorCode == "OLLAMA_CONTEXT_LIMIT" || reachedContext) parsed.error += "请提高「设置 → 通用 → 本地大模型 → Ollama」中的上下文长度，或缩短输入。";
         }
-        const double duration = output.value("eval_duration", 0.0);
-        if (duration > 0 && parsed.completionTokens > 0) parsed.generationTokensPerSecond = parsed.completionTokens * 1e9 / duration;
+        const auto durationMs = [&output](const char* field) {
+            const auto value = output.find(field);
+            return value != output.end() && value->is_number() ? value->get<double>() / 1e6 : -1.0;
+        };
+        const LlmServiceTiming timing{durationMs("total_duration"), durationMs("load_duration"),
+            durationMs("prompt_eval_duration"), durationMs("eval_duration")};
+        if (timing.generationMs > 0 && parsed.completionTokens > 0)
+            parsed.generationTokensPerSecond = parsed.completionTokens * 1000.0 / timing.generationMs;
+        if (timing.totalMs > 0 && timing.loadMs >= 0 && timing.promptMs >= 0 && timing.generationMs >= 0)
+            parsed.serviceTiming = timing;
         return parsed;
     }
     return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy, request.requireComplete);

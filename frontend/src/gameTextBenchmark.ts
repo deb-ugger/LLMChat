@@ -9,7 +9,7 @@ import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetr
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "./gameOllama";
-import { beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameWork, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+import { beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameWork, modelServiceTimingLines, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
@@ -170,9 +170,14 @@ export function benchmarkResultLines(result: BenchmarkResult) {
     const generation = model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—";
     const average = model.requestMs > 0 && model.tokens > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—";
     lines.push(`${model.model} · 并发 ${model.concurrency} · 请求 ${model.requests} 次 · 输出 ${model.tokens} tokens · 纯生成 ${generation} tok/s · 请求平均 ${average} tok/s · 请求耗时合计 ${seconds(model.requestMs)}`);
+    if (model.serviceTiming) lines.push(...modelServiceTimingLines(model.serviceTiming, model.requests, seconds));
   }
   const timing = measured.wallTiming || measured.timing;
   if (timing) lines.push(`分项用时 · 排队 ${seconds(timing.queueMs)} · 处理与校验 ${seconds(timing.processingMs)} · 保存 ${seconds(timing.saveMs)} · 模型请求占用 ${seconds(timing.modelRequestMs)}`);
+  if (measured.wallTiming?.detectorMs !== undefined) lines.push("检测推理 " + seconds(measured.wallTiming.detectorMs));
+  if (measured.wallTiming?.ocrMs !== undefined) lines.push("本地 OCR " + seconds(measured.wallTiming.ocrMs));
+  if (measured.cacheHits) lines.push("结果复用 " + measured.cacheHits + " 次");
+  if (measured.timing?.workflowMs !== undefined) lines.push("ComfyUI 执行 " + seconds(measured.timing.workflowMs));
   if (result.summary) lines.push(result.summary);
   if (result.detail) lines.push(result.detail);
   if (result.unobservedModels.length) lines.push("未记录模型请求：" + result.unobservedModels.join("、"));

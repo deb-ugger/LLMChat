@@ -18,10 +18,14 @@ export type FlowMetricInput = {
   itemsDone?: number;
   elapsedMs?: number;
   failures?: number;
+  cacheHits?: number;
   concurrency?: number;
   queueMs?: number;
   processingMs?: number;
   saveMs?: number;
+  detectorMs?: number;
+  ocrMs?: number;
+  workflowMs?: number;
   busyMs?: number;
   idleMs?: number;
 };
@@ -43,6 +47,9 @@ const timingFields = [
   ["queueMs", "排队"],
   ["processingMs", "处理与校验"],
   ["saveMs", "保存"],
+  ["detectorMs", "检测推理"],
+  ["ocrMs", "本地 OCR"],
+  ["workflowMs", "ComfyUI 执行"],
   ["busyMs", "模型请求占用"],
   ["idleMs", "无在途模型请求"],
 ] as const;
@@ -86,6 +93,8 @@ export function deriveFlowMetrics(input: FlowMetricInput): FlowMetric[] {
     if (ms !== undefined) metrics.push({ key, label, value: formatSeconds(nonNegative(ms)) });
   }
 
+  const cacheHits = nonNegative(input.cacheHits);
+  if (cacheHits > 0) metrics.push({ key: "cacheHits", label: "结果复用", value: String(cacheHits), unit: "次" });
   const failures = nonNegative(input.failures);
   if (failures > 0) metrics.push({ key: "failures", label: "失败", value: String(failures), unit: "张" });
   return metrics;

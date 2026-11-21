@@ -3,12 +3,15 @@ import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
 import { logRuntimeError } from "./runtimeLog";
 
 type Execution = { llmConcurrency?: number; performanceConcurrency?: number; performanceScope: string; performanceStep: string };
-type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number };
-export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs";
+export type ModelServiceTiming = { totalMs: number; loadMs: number; promptMs: number; generationMs: number };
+type ServiceTimingTotals = ModelServiceTiming & { requests: number; outsideMs: number };
+type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number; serviceTiming?: ServiceTimingTotals };
+export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs" | "detectorMs" | "ocrMs" | "workflowMs";
 export type StepPerformance = {
   elapsedMs: number;
   itemsDone?: number;
   failures?: number;
+  cacheHits?: number;
   started?: number;
   requestTimingComplete?: boolean;
   busyMs?: number;
@@ -295,6 +298,30 @@ export async function measureGameAsync<T>(context: string | Partial<Execution> |
   try { return await work(); } finally { finish(); }
 }
 
+function activeStepMeter(scope: string | undefined) {
+  return scope ? Object.values(records(scope)).find(step => step.started !== undefined) : undefined;
+}
+
+export function recordGameCacheHit(scope: string | undefined) {
+  const meter = activeStepMeter(scope);
+  if (meter) meter.cacheHits = (meter.cacheHits ?? 0) + 1;
+}
+
+export function recordGameWorkflowTiming(scope: string | undefined, durationMs: number | undefined) {
+  if (durationMs === undefined) return;
+  const meter = activeStepMeter(scope);
+  if (!meter) return;
+  const timing = meter.timing ??= {};
+  timing.workflowMs = (timing.workflowMs ?? 0) + durationMs;
+}
+
+export function modelServiceTimingLines(timing: ServiceTimingTotals, requests: number, format: (ms: number) => string) {
+  return [
+    `服务总计 ${format(timing.totalMs)} · 计时 ${timing.requests}/${requests} 次`,
+    `模型就绪 ${format(timing.loadMs)} · 输入评估 ${format(timing.promptMs)} · 输出生成 ${format(timing.generationMs)} · 服务外开销 ${format(timing.outsideMs)}`,
+  ];
+}
+
 const inFlight = new WeakMap<StepPerformance, Map<string, number>>();
 
 function modelStats(meter: StepPerformance, key: string, model: string, concurrency: number) {
@@ -341,7 +368,19 @@ export function isGameModelActive(scope: string, step: string, model: string, co
   return meter?.started !== undefined && !!inFlight.get(meter)?.get(JSON.stringify([model, concurrency]));
 }
 
-export function recordGameRequest(execution: Partial<Execution>, model: string, tokens: number, requestMs: number, generationRate?: number) {
+export function sumModelServiceTiming(first?: ServiceTimingTotals, second?: ServiceTimingTotals): ServiceTimingTotals | undefined {
+  if (!first || !second) return first ?? second;
+  return {
+    requests: first.requests + second.requests,
+    outsideMs: first.outsideMs + second.outsideMs,
+    totalMs: first.totalMs + second.totalMs,
+    loadMs: first.loadMs + second.loadMs,
+    promptMs: first.promptMs + second.promptMs,
+    generationMs: first.generationMs + second.generationMs,
+  };
+}
+
+export function recordGameRequest(execution: Partial<Execution>, model: string, tokens: number, requestMs: number, generationRate?: number, serviceTiming?: ModelServiceTiming) {
   const scope = execution.performanceScope;
   if (!scope) return;
   const meter = requestMeter(execution);
@@ -352,6 +391,9 @@ export function recordGameRequest(execution: Partial<Execution>, model: string, 
   stats.tokens += Math.max(0, tokens); stats.requestMs += requestMs;
   if (!inFlight.get(meter)?.has(key)) stats.requests++;
   if (generationRate && generationRate > 0 && tokens > 0) { stats.generationTokens += tokens; stats.generationMs += tokens / generationRate * 1000; }
+  if (serviceTiming) stats.serviceTiming = sumModelServiceTiming(stats.serviceTiming, {
+    ...serviceTiming, requests: 1, outsideMs: Math.max(0, requestMs - serviceTiming.totalMs),
+  });
   if (!checkpoints.has(scope)) commit(scope);
 }
 export function gameDuration(ms: number) { return [3600000, 60000, 1000].map((unit, index) => String(index ? Math.floor(ms / unit) % 60 : Math.floor(ms / unit)).padStart(2, "0")).join(":"); }

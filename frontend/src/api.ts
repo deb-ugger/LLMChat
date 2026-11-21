@@ -1,4 +1,5 @@
 import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
+import type { ModelServiceTiming } from "./gameModelPerformance";
 import { createLlmTranslationScheduler } from "./llmTranslationScheduler";
 import { toFriendlyError } from "./friendlyError";
 import { ollamaRequestContext } from "./ollamaContext";
@@ -116,6 +117,7 @@ export type Settings = {
 };
 
 export type TranslateResponse = {
+  serviceTiming?: ModelServiceTiming;
   ok: boolean;
   source: string;
   translation: string;

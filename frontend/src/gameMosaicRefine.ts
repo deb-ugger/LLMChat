@@ -1,6 +1,6 @@
 import { loadMosaicDetector, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
-import { measureGameAsync, measureGameWork } from "./gameModelPerformance";
+import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
@@ -202,7 +202,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           const hash = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2, "0")).join("");
           let scan = proposalCache.get(hash);
           if (!scan) {
-            detector ??= await loadMosaicDetector(options.modelFile, { signal });
+            detector ??= await loadMosaicDetector(options.modelFile, { signal, timingScope: options.timingScope });
             const loaded = detector;
             scan = await measureGameAsync(options.timingScope, "processingMs", () => proposals(blob, loaded, signal));
             proposalCache.set(hash, scan);
@@ -244,6 +244,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           const { hash, scan: proposed } = prepared.get(image.id)!;
           const identity = JSON.stringify([model, hash]);
           let pending=verified.get(identity);
+          const reused = !!pending;
           if(!pending) {
             const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
             pending=!fullReview && !hasCandidates
@@ -255,6 +256,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
             void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
           }
           scan=await pending;
+          if (reused && !scan.quickExcluded) recordGameCacheHit(options.timingScope);
           checkpoint.images[image.id] = { source: image.sourceHash, scan: { ...scan, signature: [] } };
           delete savedProposals[image.id];
           saveCheckpoint();

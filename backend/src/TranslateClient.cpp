@@ -2543,6 +2543,7 @@ TranslateResult TranslateClient::translateWithLlm(
     result.promptTokens = llm.promptTokens;
     result.completionTokens = llm.completionTokens;
     result.generationTokensPerSecond = llm.generationTokensPerSecond;
+    result.serviceTiming = llm.serviceTiming;
     result.totalTokens = llm.totalTokens;
     result.cacheReadTokens = llm.cacheReadTokens;
     result.cacheWriteTokens = llm.cacheWriteTokens;

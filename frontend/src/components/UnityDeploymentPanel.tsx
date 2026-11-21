@@ -4,6 +4,7 @@ import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type Uni
 
 import type { DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
+import { modelServiceTimingLines } from "../gameModelPerformance";
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
 
@@ -554,6 +555,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
 
 
 const throughputStages = [
+  ["mosaic", "筛选与重绘", "张"],
   ["generate", "生成补丁", "个"],
   ["generateImages", "生成译图", "张"],
   ["generateMosaic", "生成去码补丁", "张"],
@@ -567,8 +569,18 @@ export function DeploymentThroughput({ metrics }: { metrics?: DeploymentMetrics 
     const rate = formatFlowThroughput(metrics?.[stage], unit);
     return rate ? [{ stage, label, rate }] : [];
   });
-  return rates.length ? <div className="game-flow-stage-throughput" role="group" aria-label="生成与应用吞吐">
+  const mosaic = metrics?.mosaic;
+  const detectorMs = mosaic?.wallTiming?.detectorMs;
+  const workflowMs = mosaic?.timing?.workflowMs;
+  const seconds = (ms: number) => (ms / 1000).toFixed(1) + " 秒";
+  const modelLines = Object.values(mosaic?.models ?? {}).flatMap(model => model.serviceTiming
+    ? [{ name: model.model, lanes: model.concurrency, timing: modelServiceTimingLines(model.serviceTiming, model.requests, seconds).join(" · ") }] : []);
+  return rates.length || detectorMs !== undefined || workflowMs !== undefined || modelLines.length > 0
+    ? <div className="game-flow-stage-throughput" role="group" aria-label="生成与应用性能">
     {rates.map(({ stage, label, rate }) => <span key={stage}>{label} <b>{rate}</b></span>)}
+    {detectorMs !== undefined && <span>检测推理 <b>{seconds(detectorMs)}</b></span>}
+    {workflowMs !== undefined && <span>ComfyUI 执行 <b>{seconds(workflowMs)}</b></span>}
+    {modelLines.map(({ name, lanes, timing }) => <span key={name + ":" + lanes}>{name.split("/").at(-1)} · {timing}</span>)}
   </div> : null;
 }
 

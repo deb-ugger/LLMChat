@@ -11,7 +11,7 @@ import { benchmarkChannelName, requestBenchmarkWindow, type BenchmarkQueueComman
 import { benchmarkRunner, benchmarkSampleCounts, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, type BenchmarkInput, type BenchmarkRequest, type BenchmarkSnapshot } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
 import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
-import { gameDuration, modelConcurrency } from "../gameModelPerformance";
+import { gameDuration, modelConcurrency, modelServiceTimingLines } from "../gameModelPerformance";
 import type { UnityEntry } from "../unityOffline";
 import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
@@ -654,8 +654,14 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
             <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
           {!!result.unobservedModels.length && <p>未记录模型请求：{result.unobservedModels.map(id => id.split("/").at(-1)).join("、")}</p>}
+          {result.performance.wallTiming?.detectorMs !== undefined && <div>检测推理 {(result.performance.wallTiming.detectorMs / 1000).toFixed(2)} 秒</div>}
+          {result.performance.wallTiming?.ocrMs !== undefined && <div>本地 OCR {(result.performance.wallTiming.ocrMs / 1000).toFixed(2)} 秒</div>}
+          {!!result.performance.cacheHits && <div>结果复用 {result.performance.cacheHits} 次</div>}
+          {result.performance.timing?.workflowMs !== undefined && <div>ComfyUI 执行 {(result.performance.timing.workflowMs / 1000).toFixed(2)} 秒</div>}
           {Object.values(result.performance.models).map(model => <div key={model.model + model.concurrency}>
             {model.model.split("/").at(-1)} · 并发 {model.concurrency} · {model.requests} 次 · 纯生成 {model.generationMs ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—"} tok/s · 请求平均 {model.requestMs ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—"} tok/s
+            {model.serviceTiming && modelServiceTimingLines(model.serviceTiming, model.requests, ms => (ms / 1000).toFixed(2) + " 秒")
+              .map(line => <div key={line}>{line}</div>)}
           </div>)}
           </details>)}
           </div>

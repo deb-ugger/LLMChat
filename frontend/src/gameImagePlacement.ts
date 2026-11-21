@@ -1,6 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { UnityImage, UnityImageRegion, UnityProgress } from "./unityOffline";
 import type { OllamaOutput } from "./gameOllama";
+import { recordGameCacheHit, recordGameWorkflowTiming } from "./gameModelPerformance";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 
 type Box = [number, number, number, number];
@@ -39,7 +40,7 @@ export function gameImageVisionForAsset(standard: string, name: string, models: 
     ? "qwen3-vl:4b-instruct" : standard;
 }
 
-export function createGameImageOcrReuse() {
+export function createGameImageOcrReuse(timingScope?: string) {
   const records = new Map<string, Promise<PaddleOcrLine[]>>();
   let hits = 0;
   return {
@@ -51,7 +52,12 @@ export function createGameImageOcrReuse() {
       const key = model + ":" + isGameLogoName(placement.assetName) + ":" +
         Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
       const existing = records.get(key);
-      if (existing) { hits++; return (await existing).map(region => ({ ...region })); }
+      if (existing) {
+        const result = await existing;
+        hits++;
+        recordGameCacheHit(timingScope);
+        return result.map(region => ({ ...region }));
+      }
       const pending = recognize().catch(error => { records.delete(key); throw error; });
       records.set(key, pending);
       return (await pending).map(region => ({ ...region }));
@@ -144,6 +150,7 @@ export function gameImageRedrawSummary(progress: Partial<Pick<UnityProgress, "co
 export async function redrawGameImages(images: UnityImage[], profileId: StyleRedrawProfileId, target: string,
   signal: AbortSignal, io: {
     onStart?: (id: string) => void;
+    timingScope?: string;
     regions: (image: UnityImage) => UnityImageRegion[];
     read: (image: UnityImage) => Promise<Blob>;
     write: (image: UnityImage, blob: Blob) => Promise<{ path: string; hash: string }>;
@@ -170,9 +177,10 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
       if (!regions.length) throw new Error("没有可用的已翻译文字区域");
       if (regions.some(({ box }) => box[0] >= box[2] || box[1] >= box[3])) throw new Error("请检查重绘文字区域的范围");
       const input = await io.read(image);
-      const result = await runProgram<{ image: string }>(input, "model", { ...profile, kind: profileId }, regions,
+      const result = await runProgram<{ image: string; workflowMs?: number }>(input, "model", { ...profile, kind: profileId }, regions,
         signal, (message, level) => report(image.name + " · " + message, level), profileId === "turbo" ? 8 : 20);
       if (!result) throw new Error("请先在 AI 风格重绘中设置 ComfyUI 目录");
+      recordGameWorkflowTiming(io.timingScope, result.workflowMs);
       const bytes = Uint8Array.from(atob(result.image), char => char.charCodeAt(0));
       const blob = new Blob([bytes], { type: "image/png" });
       const bitmap = await createImageBitmap(blob);

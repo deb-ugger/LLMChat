@@ -1,7 +1,7 @@
 import { createContext, useLayoutEffect, useRef, useState, useContext, useEffect, type ReactNode, type RefObject } from "react";
 import { GamePromptContext } from "../gamePrompts";
 import { deriveFlowMetrics, type FlowMetric, type FlowMetricInput } from "../gameFlowMetrics";
-import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency, type StepPerformance } from "../gameModelPerformance";
+import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency, sumModelServiceTiming, modelServiceTimingLines, type StepPerformance } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
@@ -37,7 +37,11 @@ const stateLabels: Record<string, string> = {
   running: "正在处理", error: "失败", stopped: "已中止",
 };
 // Layout-only session state. Closing the app starts a new module instance.
-const formatTiming = (value: number | undefined) => value === undefined ? "—" : value < 60000 ? (value / 1000).toFixed(1) + " 秒" : gameDuration(value);
+const formatTiming = (value: number | undefined) => {
+  if (value === undefined) return "—";
+  if (value > 0 && value < 100) return value.toFixed(value < 1 ? 2 : 0) + " 毫秒";
+  return value < 60000 ? (value / 1000).toFixed(1) + " 秒" : gameDuration(value);
+};
 const settingsHeights = new Map<string, number>();
 
 type FlowMeasurement = StepPerformance & FlowMetricInput & {
@@ -64,7 +68,8 @@ function groupModels(measured: FlowMeasurement, configured: ConfiguredModel[]) {
     const total = records.reduce((sum, item) => ({
       tokens: sum.tokens + item.tokens, requests: sum.requests + item.requests,
       generationTokens: sum.generationTokens + item.generationTokens,
-    }), { tokens: 0, requests: 0, generationTokens: 0 });
+      serviceTiming: sumModelServiceTiming(sum.serviceTiming, item.serviceTiming),
+    }), { tokens: 0, requests: 0, generationTokens: 0, serviceTiming: undefined as ModelStats["serviceTiming"] });
     const [record] = records;
     const sequential = records.length === 1 && (record.concurrency <= 1 || record.requests <= 1);
     const wall = measured.modelWallTiming?.[model];
@@ -102,6 +107,10 @@ const metricDetails: Record<string, string> = {
   queueMs: "请求发出前在应用侧等待的时段。",
   processingMs: "应用侧处理和校验结果的时段。",
   saveMs: "应用写入结果的时段。",
+  detectorMs: "ONNX 运行时执行检测的经过时间，包含运行时调度和数据传输。",
+  ocrMs: "本地 OCR 调用的经过时间，包含识别内部的图像预处理和结果解析。",
+  cacheHits: "直接复用可用结果的次数。每次复用省去一次对应的检测或识别调用。",
+  workflowMs: "ComfyUI 记录的工作流开始至结束用时，逐次累加。包含节点内部的 CPU 与 GPU 时间。",
   busyMs: "模型请求在途的时间并集。重叠的请求只计一次。",
   idleMs: "步骤运行中没有任何模型请求在途的时间。",
 };
@@ -129,6 +138,10 @@ function stepMetrics(measured: FlowMeasurement, samples?: { done: number; elapse
     queueMs: measured.queueMs ?? measured.wallTiming?.queueMs ?? measured.timing?.queueMs,
     processingMs: measured.processingMs ?? measured.wallTiming?.processingMs ?? measured.timing?.processingMs,
     saveMs: measured.saveMs ?? measured.wallTiming?.saveMs ?? measured.timing?.saveMs,
+    detectorMs: measured.wallTiming?.detectorMs,
+    ocrMs: measured.wallTiming?.ocrMs,
+    cacheHits: measured.cacheHits,
+    workflowMs: measured.timing?.workflowMs,
     busyMs,
     idleMs: measured.idleMs ?? (measured.requestTimingComplete && busyMs !== undefined
       ? Math.max(0, measured.elapsedMs - busyMs) : undefined),
@@ -146,6 +159,24 @@ function stepMetrics(measured: FlowMeasurement, samples?: { done: number; elapse
 
 export function GameMetricHint({ detail, onClick, children }: { detail: string; onClick: () => void; children: ReactNode }) {
   return <span data-tooltip={detail} onClick={onClick} style={{ pointerEvents: "auto", cursor: "pointer" }}>{children}</span>;
+}
+
+export function GameStepTimingDetails({ measured, onToggle }: { measured: StepPerformance; onToggle: () => void }) {
+  const timings = stepMetrics(measured).timings.filter(metric => metric.key !== "failures");
+  return timings.length > 0 ? <small className="game-flow-model-rates" aria-label="分项用时">
+    {timings.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={onToggle} />)}
+  </small> : null;
+}
+
+function GameModelServiceTiming({ timing, requests, onToggle }: {
+  timing: NonNullable<ModelStats["serviceTiming"]>; requests: number; onToggle: () => void;
+}) {
+  const [total, phases] = modelServiceTimingLines(timing, requests, formatTiming);
+  return <small style={{ display: "block", flexBasis: "100%" }}>
+    <GameMetricHint onClick={onToggle} detail="模型就绪可能包含 Ollama 内部等待。服务外开销为同一请求的总耗时减去 Ollama 回报的服务耗时，包含后台处理与往返。并发时逐次累加。输入评估与输出生成合计包含 CPU 与 GPU 时间。">
+      {total}<br />{phases}
+    </GameMetricHint>
+  </small>;
 }
 
 export function GameModelUsage({ model, wallRequestMs, perImage = false, onToggle }: {
@@ -166,11 +197,12 @@ export function GameModelUsage({ model, wallRequestMs, perImage = false, onToggl
       {" · "}<span className="game-flow-metric">{requests} 次</span>
     </GameMetricHint>
   </small> : null;
-  if (metrics.length) return <>
-    <small className="game-flow-model-rates">
+  if (metrics.length || model.serviceTiming) return <>
+    {metrics.length > 0 && <small className="game-flow-model-rates">
       {metrics.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={onToggle} />)}
-    </small>
+    </small>}
     {requestSummary}
+    {model.serviceTiming && <GameModelServiceTiming timing={model.serviceTiming} requests={requests} onToggle={onToggle} />}
   </>;
   if (usesWallTime) return requestSummary;
   if (requests <= 0 || requestMs <= 0) return null;
@@ -388,6 +420,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
               {!rates.length && model.concurrency > 0 && <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
               {expanded && !rates.some(metric => metric.key === "requestRate") && model.requests > 0 &&
                 <small>请求 <span className="game-flow-metric">{model.requests} 次</span></small>}
+              {expanded && model.serviceTiming && <GameModelServiceTiming timing={model.serviceTiming} requests={model.requests} onToggle={toggle} />}
             </div>
           </div>;
         });

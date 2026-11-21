@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -18,6 +19,13 @@ struct LlmRequest {
     bool ollamaRawChat = false;
 };
 
+struct LlmServiceTiming {
+    double totalMs;
+    double loadMs;
+    double promptMs;
+    double generationMs;
+};
+
 struct LlmResponse {
     bool ok = false;
     std::string content;
@@ -27,6 +35,7 @@ struct LlmResponse {
     int promptTokens = 0;
     int completionTokens = 0;
     double generationTokensPerSecond = 0;
+    std::optional<LlmServiceTiming> serviceTiming;
     int totalTokens = 0;
     /** Prompt-cache hit / read tokens (vendor-specific; 0 if unsupported). */
     int cacheReadTokens = 0;
