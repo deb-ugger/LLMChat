@@ -2,10 +2,26 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
 import { logRuntimeError } from "./runtimeLog";
 
-type Execution = { llmConcurrency: number; performanceScope: string; performanceStep: string };
+type Execution = { llmConcurrency?: number; performanceConcurrency?: number; performanceScope: string; performanceStep: string };
 type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number };
 export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs";
-export type StepPerformance = { requestTimingComplete?: boolean; wallTiming?: Partial<Record<GameTimingCategory, number>>; timing?: Partial<Record<GameTimingCategory, number>>; elapsedMs: number; started?: number; models: Record<string, Meter>; taskId?: string; beginTime?: string; endedAt?: string; benchmark?: Record<string, unknown> };
+export type StepPerformance = {
+  elapsedMs: number;
+  itemsDone?: number;
+  failures?: number;
+  started?: number;
+  requestTimingComplete?: boolean;
+  busyMs?: number;
+  idleMs?: number;
+  wallTiming?: Partial<Record<GameTimingCategory, number>>;
+  timing?: Partial<Record<GameTimingCategory, number>>;
+  modelWallTiming?: Record<string, { requestMs: number }>;
+  models: Record<string, Meter>;
+  taskId?: string;
+  beginTime?: string;
+  endedAt?: string;
+  benchmark?: Record<string, unknown>;
+};
 type Archive = Omit<StepPerformance, "started"> & { totalMs: number; scope: string; step: string; reason: "completed" | "cleared" };
 const mainArchiveKey = "llmchat-game-performance-outbox";
 const benchmarkArchiveKey = mainArchiveKey + ":benchmark-window";
@@ -81,10 +97,24 @@ export function maximumModelConcurrency() {
   }
   return maximum;
 }
-const benchmarkExecutions = new WeakMap<object, Pick<Execution, "llmConcurrency" | "performanceScope" | "performanceStep">>();
+const benchmarkExecutions = new WeakMap<object, Execution>();
 export function rememberBenchmarkExecution(selection: object, scope: string, step: string, lanes: number) {
   benchmarkExecutions.set(selection, { performanceScope: scope, performanceStep: step, llmConcurrency: lanes });
 }
+export function gameStepSelections(scope: string, step: string, llmConcurrency?: number) {
+  const selections = new Map<number, object>();
+  return (lanes: number) => {
+    let selection = selections.get(lanes);
+    if (!selection) {
+      selection = {};
+      // Report worker lanes without changing the request scheduler's existing limit.
+      benchmarkExecutions.set(selection, { performanceScope: scope, performanceStep: step, performanceConcurrency: lanes, llmConcurrency });
+      selections.set(lanes, selection);
+    }
+    return selection;
+  };
+}
+
 export function gameModelExecution(selection: object | undefined, role: string, model: string): Partial<Execution> {
   const benchmark = selection && benchmarkExecutions.get(selection);
   if (benchmark) return benchmark;
@@ -133,11 +163,18 @@ export function beginGameStep(scope: string, step: string, benchmark?: Record<st
     }
   }
   if (!all[step] || all[step].endedAt) {
-    all[step] = { elapsedMs: 0, requestTimingComplete: true, models: {}, taskId: crypto.randomUUID(), beginTime: new Date().toISOString(), benchmark };
+    all[step] = { elapsedMs: 0, requestTimingComplete: true, models: {}, modelWallTiming: {}, taskId: crypto.randomUUID(), beginTime: new Date().toISOString(), benchmark };
   }
   const meter = all[step];
   meter.started ??= performance.now(); commit(scope);
 }
+export function reportGameStepItems(scope: string, step: string, itemsDone: number, failures?: number) {
+  const meter = records(scope)[step];
+  if (meter?.started === undefined) return;
+  meter.itemsDone = itemsDone;
+  if (failures !== undefined) meter.failures = failures;
+}
+
 export function finishGameStep(scope: string, completed = false) {
   for (const [step, meter] of Object.entries(records(scope))) {
     if (meter.started === undefined) continue;
@@ -194,19 +231,31 @@ function requestMeter(execution: Partial<Execution>) {
 
 type TimingWindow = { started: number; count: number };
 const timingWindows = new WeakMap<StepPerformance, Map<GameTimingCategory, TimingWindow>>();
+const modelTimingWindows = new WeakMap<StepPerformance, Map<string, TimingWindow>>();
 function performanceSnapshot(meter: StepPerformance, now = performance.now()): StepPerformance {
   const active = timingWindows.get(meter);
   const wallTiming = { ...meter.wallTiming };
   for (const [category, interval] of active || []) wallTiming[category] = (wallTiming[category] || 0) + now - interval.started;
-  return { ...meter, wallTiming: Object.keys(wallTiming).length ? wallTiming : undefined,
-    elapsedMs: meter.elapsedMs + (meter.started === undefined ? 0 : now - meter.started) };
+  const elapsedMs = meter.elapsedMs + (meter.started === undefined ? 0 : now - meter.started);
+  const busyMs = wallTiming.modelRequestMs ?? (meter.requestTimingComplete ? 0 : undefined);
+  const idleMs = meter.requestTimingComplete && busyMs !== undefined ? Math.max(0, elapsedMs - busyMs) : undefined;
+  const modelWallTiming = meter.modelWallTiming && Object.assign(Object.create(null) as NonNullable<StepPerformance["modelWallTiming"]>, meter.modelWallTiming);
+  if (modelWallTiming) {
+    for (const [model, interval] of modelTimingWindows.get(meter) || []) {
+      modelWallTiming[model] = { requestMs: (modelWallTiming[model]?.requestMs ?? 0) + now - interval.started };
+    }
+  }
+  return { ...meter, elapsedMs, busyMs, idleMs, modelWallTiming,
+    wallTiming: Object.keys(wallTiming).length ? wallTiming : undefined };
 }
 function stopMeter(meter: StepPerformance) {
   if (meter.started === undefined) return;
   const snapshot = performanceSnapshot(meter);
   meter.elapsedMs = snapshot.elapsedMs;
   meter.wallTiming = snapshot.wallTiming;
+  meter.modelWallTiming = snapshot.modelWallTiming;
   timingWindows.delete(meter);
+  modelTimingWindows.delete(meter);
   delete meter.started;
 }
 
@@ -247,16 +296,37 @@ export async function measureGameAsync<T>(context: string | Partial<Execution> |
 }
 
 const inFlight = new WeakMap<StepPerformance, Map<string, number>>();
+
+function modelStats(meter: StepPerformance, key: string, model: string, concurrency: number) {
+  return meter.models[key] ??= { model, concurrency, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 };
+}
+
 export function trackGameModel(execution: Partial<Execution>, model: string) {
   const meter = requestMeter(execution);
   if (meter?.started === undefined || meter.endedAt) return;
   const models = inFlight.get(meter) || new Map<string, number>();
   inFlight.set(meter, models);
-  const key = JSON.stringify([model, execution.llmConcurrency || 1]);
+  const concurrency = execution.performanceConcurrency ?? execution.llmConcurrency ?? 1;
+  const key = JSON.stringify([model, concurrency]);
+  modelStats(meter, key, model, concurrency).requests++;
   const previous = models.get(key) || 0;
   models.set(key, previous + 1);
+
+  const timings = modelTimingWindows.get(meter) ?? new Map<string, TimingWindow>();
+  modelTimingWindows.set(meter, timings);
+  const interval = timings.get(model) ?? { started: performance.now(), count: 0 };
+  timings.set(model, interval);
+  interval.count++;
   if (!previous) window.dispatchEvent(new Event("llmchat-game-performance"));
   return () => {
+    if (--interval.count === 0 && modelTimingWindows.get(meter) === timings) {
+      timings.delete(model);
+      // Older interrupted runs lack an exact per-model denominator for their saved requests.
+      if (meter.modelWallTiming) {
+        const requestMs = Object.hasOwn(meter.modelWallTiming, model) ? meter.modelWallTiming[model].requestMs : 0;
+        meter.modelWallTiming = { ...meter.modelWallTiming, [model]: { requestMs: requestMs + performance.now() - interval.started } };
+      }
+    }
     const remaining = (models.get(key) || 1) - 1;
     if (remaining) models.set(key, remaining);
     else {
@@ -276,9 +346,11 @@ export function recordGameRequest(execution: Partial<Execution>, model: string, 
   if (!scope) return;
   const meter = requestMeter(execution);
   if (meter?.started === undefined || meter.endedAt) return;
-  const concurrency = execution.llmConcurrency || 1, key = JSON.stringify([model, concurrency]);
-  const stats = meter.models[key] ||= { model, concurrency, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 };
-  stats.tokens += Math.max(0, tokens); stats.requestMs += requestMs; stats.requests++;
+  const concurrency = execution.performanceConcurrency ?? execution.llmConcurrency ?? 1;
+  const key = JSON.stringify([model, concurrency]);
+  const stats = modelStats(meter, key, model, concurrency);
+  stats.tokens += Math.max(0, tokens); stats.requestMs += requestMs;
+  if (!inFlight.get(meter)?.has(key)) stats.requests++;
   if (generationRate && generationRate > 0 && tokens > 0) { stats.generationTokens += tokens; stats.generationMs += tokens / generationRate * 1000; }
   if (!checkpoints.has(scope)) commit(scope);
 }

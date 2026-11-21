@@ -15,6 +15,8 @@ import { UnityActionIcon } from "./UnityActionIcon";
 import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { gameTextRequest } from "../gameTextProject";
+import { beginGameStep, finishGameStep, reportGameStepItems } from "../gameModelPerformance";
+import { deploymentMetrics, deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { gamePatchCanGenerate, type GamePatchWorkflow } from "../gamePatchWorkflow";
 import { GameWorkDirectory } from "./GameWorkDirectory";
 import { gameDropTarget } from "../hooks/useGameFileDrop";
@@ -267,12 +269,26 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const scanStarted = useRef<number | null>(null);
   const [scanElapsed, setScanElapsed] = useState<number | null>(null);
   const scanning = (pending && pendingAction === "extract") || (status.action === "extract" && status.state === "running");
+  useEffect(() => () => {
+    if (scanStarted.current === null) return;
+    finishGameStep(deploymentMetricScope(game.path, "scan"));
+    scanStarted.current = null;
+  }, [game.path]);
   useEffect(() => {
-    if (scanning && scanStarted.current === null) scanStarted.current = performance.now();
-    if (!scanning && scanStarted.current !== null) {
+    const scope = deploymentMetricScope(game.path, "scan");
+    if (scanning && scanStarted.current === null) {
+      scanStarted.current = performance.now();
+      beginGameStep(scope, "scan");
+    }
+    if (scanStarted.current === null) return;
+    const currentScan = status.action === "extract" && status.gamePath === game.path;
+    if (currentScan && (status.state === "running" || !scanning) && status.completed !== undefined && (status.total ?? 0) > 0)
+      reportGameStepItems(scope, "scan", status.completed);
+    if (!scanning) {
+      finishGameStep(scope, currentScan && status.state === "exported");
       setScanElapsed((performance.now()-scanStarted.current)/1000); scanStarted.current = null;
     }
-  }, [scanning]);
+  }, [game.path, scanning, status.action, status.gamePath, status.state, status.completed, status.total]);
   useEffect(() => {
     if (textSource === "locres" && status.state === "error" && (status.action === "extract" || status.action === "inspect")
         && status.detail?.startsWith("未找到散装 .locres")) {
@@ -407,14 +423,14 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       return path;
     });
     await step("generateText", async () => {
-      const { patchPath } = await runTextAction("embed", signal, translated);
+      const { patchPath } = await measureDeploymentStage(game.path, "generate", () => runTextAction("embed", signal, translated));
       if (!patchPath) throw new Error("生成完成后没有返回补丁目录");
       setArtifacts(previous => ({ ...previous, text: { path: patchPath, applied: false } }));
     });
     return translated;
   };
   const applyText = async (signal: AbortSignal, translated: string) => {
-    await runTextAction("apply", signal, translated);
+    await measureDeploymentStage(game.path, "apply", () => runTextAction("apply", signal, translated));
     setArtifacts(previous => previous.text ? { ...previous, text: { ...previous.text, applied: true } } : previous);
   };
   const applyImageArtifacts = async (kind: "images" | "mosaic", ids: string[], draft?: ImageArtifact) => {
@@ -422,13 +438,16 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       if (!await imageHandle.current?.apply(ids)) throw new Error("译图应用未完成");
     } else {
       if (!mosaicHandle.current) throw new Error("去码工程尚未加载");
-      await mosaicHandle.current.apply(ids, false, draft?.patchId);
+      const handle = mosaicHandle.current;
+      await measureDeploymentStage(game.path, "applyMosaic", () => handle.apply(ids, false, draft?.patchId), files => files);
     }
     recordImageArtifact(kind, ids, true, draft);
   };
   const prepareMosaic = async (signal: AbortSignal, ids?: string[]) => {
     if (!mosaicHandle.current) throw new Error("去码工程尚未加载");
-    const artifact = { ...await mosaicHandle.current.prepare(signal, ids), applied: false };
+    const handle = mosaicHandle.current;
+    const prepared = await measureDeploymentStage(game.path, "generateMosaic", () => handle.prepare(signal, ids), result => result.ids.length);
+    const artifact = { ...prepared, applied: false };
     recordImageArtifact("mosaic", artifact.ids, false, artifact);
     return artifact;
   };
@@ -532,7 +551,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     setFile(await generateText(step, signal));
   });
   const generateImages = () => void runDeployment("manual", (step, signal) => step("generateImages", async () => {
-    const ids = await imageHandle.current?.generate(signal) || [];
+    const ids = await measureDeploymentStage(game.path, "generateImages", async () => await imageHandle.current?.generate(signal) || []);
     if (!ids.length) throw new Error("没有可用于部署的译图");
     recordImageArtifact("images", ids);
   }));
@@ -783,7 +802,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     total: validation.enabledSteps.length, stopping: !!deploymentAbort.current?.signal.aborted,
   } : null;
   const canvas: DeploymentModel = {
-    root: game.path, supportedPhases, plan, run, stoppedStep: deployment?.state === "stopped" ? activeCanvasStep ?? null : null,
+    root: game.path, supportedPhases, plan, run, metrics: deploymentMetrics(game.path), stoppedStep: deployment?.state === "stopped" ? activeCanvasStep ?? null : null,
     completed, canStop: deploymentRunning, textCount: textInfo.changed, busyLabel: deploymentRunning ? phaseLabel : null,
     locked: busy || !(canUseTextResources || imageProject), patchReady: canGenerate, patch: null, staged: !!stagedProducts, applied,
     installed: patch.installed, fontPath, fontName: "", extraCharacters: "", fontPlan: null, entries: [],

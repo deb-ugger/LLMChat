@@ -4,7 +4,7 @@ import { GameMosaicWorkbench, type GameMosaicDeploymentHandle } from "./GameMosa
 import { matchImagePatchConflicts, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { showAppNotice } from "./AppNotice";
 import type { BenchmarkImageSource } from "./GameTextBenchmarkDialog";
-import { beginGameStep, finishGameStep, modelConcurrency, clearGamePerformance, measureGameAsync } from "../gameModelPerformance";
+import { beginGameStep, finishGameStep, modelConcurrency, clearGamePerformance, measureGameAsync, reportGameStepItems } from "../gameModelPerformance";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { translateGameWithOllama, prepareGameOllamaModels, prepareGameOllamaParallel, reportRefinementGpu } from "../gameOllama";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
@@ -39,7 +39,7 @@ import { UnityEngineList } from "./UnityEngineList";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { normalizeUnityImageSelection, createUnityImageOcr, translateCurrentUnityImage, mergeUnityOcrLines, processUnityImages, unityImageResultGroup, unityImageTranslationRegions } from "../unityImages";
 import type { UnityImage, UnityImageRegion, UnityProgress, UnityProject } from "../unityOffline";
-import { unityImageReadyForTarget, unityImageWorkDone, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget } from "../unityWorkflow";
+import { unityImageReadyForTarget, unityImageWorkDone, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, measureDeploymentStage } from "../unityWorkflow";
 import { ImagePreviewReaderContext, UnityImageWorkbench } from "./UnityImageWorkbench";
 import { reconcileImageEdit } from "../unityImageEdits";
 import "../unityOffline.css";
@@ -74,7 +74,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const [imagePhaseStarted, setImagePhaseStarted] = useState<"initial" | "filter" | "recognize" | "translate" | "cache">(() => task.task?.kind === "translate" ? "translate" : task.task?.kind === "screen" ? "filter" : task.task?.kind === "recognize" ? "recognize" : "initial");
   const etaUpdate=useRef({time:0,value:undefined as number|undefined});
   const lastProgressPaint=useRef(0),operationActive=useRef(false);
-  const publishProgress=(value:Pick<UnityProgress,"detail"|"completed"|"total"|"redrawFailed">&{etaMs?:number})=>{if(!operationActive.current)return;const now=performance.now();if(value.etaMs!==undefined&&(now-etaUpdate.current.time>=1000||value.etaMs===0))etaUpdate.current={time:now,value:value.etaMs};if(now-lastProgressPaint.current>=100||value.completed===value.total){lastProgressPaint.current=now;setProgress({...value,etaMs:etaUpdate.current.value,state:"working"});}};
+  const publishProgress=(value:Pick<UnityProgress,"detail"|"completed"|"total"|"redrawFailed">&{etaMs?:number})=>{
+    if(!operationActive.current)return;
+    if (value.total !== null) reportGameStepItems(promptState.scope + ":images", operationStep.current, value.completed, value.redrawFailed);
+    const now=performance.now();if(value.etaMs!==undefined&&(now-etaUpdate.current.time>=1000||value.etaMs===0))etaUpdate.current={time:now,value:value.etaMs};if(now-lastProgressPaint.current>=100||value.completed===value.total){lastProgressPaint.current=now;setProgress({...value,etaMs:etaUpdate.current.value,state:"working"});}};
   const [existing,setExisting]=useState<boolean|null>(null);
   const [project,setProject]=useState<UnityProject|null>(null),current=useRef(project);current.current=project;
   const [busy,setBusy]=useState(""),[dirty,setDirty]=useState(false);
@@ -349,7 +352,21 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     }, { kind: "refine" });
   };
 
-  const scan=()=>execute("扫描图片",async()=>{await save(true); task.reset(); setImagePhaseStarted("initial");const controller=new AbortController();abort.current=controller;const value=await readProject("scan",controller.signal);if(!value)throw new Error("扫描没有返回图片工程");imageIndex.current=null;current.current=value;setProject(value);setExisting(true);const count=value.images?.length||0;setProgress({detail:`扫描完成 · ${count} 张图片`,completed:count,total:count,state:"done"});onMessage(`扫描完成 · ${count} 张图片`,"success");},{kind:"scan"});
+  const scan = () => execute("扫描图片", async () => {
+    await measureDeploymentStage(gamePath, "scanImages", async () => {
+      await save(true); task.reset(); setImagePhaseStarted("initial");
+      const controller = new AbortController(); abort.current = controller;
+      const value = await readProject("scan", controller.signal);
+      if (!value) throw new Error("扫描没有返回图片工程");
+      imageIndex.current = null; current.current = value; setProject(value); setExisting(true);
+      const count = value.images?.length ?? 0;
+      const detail = "扫描完成 · " + count + " 张图片";
+      setProgress({ detail, completed: count, total: count, state: "done" });
+      onMessage(detail, "success");
+      const timing = (value as UnityProject & { imageScanTiming?: ImageScanTiming }).imageScanTiming;
+      return timing ? timing.parsed + timing.reused : count;
+    }, count => count);
+  }, { kind: "scan" });
 
   const autoReadAttempted=useRef(false);
   useEffect(()=>{if(existing&&!project&&!busy&&!clearing&&!disabled&&scanRequest<=handledScan.current&&!autoReadAttempted.current){autoReadAttempted.current=true;void loadExisting();}},[existing,project,busy,clearing,disabled,scanRequest]);
@@ -571,7 +588,9 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     await save(true);
     const ready = new Set(imageOutputIds());
     if (!ids.length || ids.some(id => !ready.has(id))) throw new Error("可应用的译图已改变，请再生成一次");
-    const result = await post<{ files: number; unchanged?: number; composed?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: ids });
+    const result = await measureDeploymentStage(gamePath, "applyImages",
+      () => post<{ files: number; unchanged?: number; composed?: number; backupDetail?: string }>("apply", { backupMode, backupScopes, imageIds: ids }),
+      result => result.files);
     if (result.backupDetail) onMessage(result.backupDetail, "success");
     const detail = result.composed ? ` · ${result.composed} 张与去码图合成` : "";
     onMessage(result.files ? `已应用 ${result.files} 张译图${detail}` : `${result.unchanged ?? 0} 张译图已是当前版本`, "success");

@@ -4,7 +4,7 @@ import { formatUnityStructure, planUnityStructuredLines } from "../unityTextStru
 import { UnitySegmentation } from "../unitySegmentation";
 import type { BatchRow } from "./GameBatchResults";
 import type { BenchmarkInput } from "./GameTextBenchmarkDialog";
-import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, gameDuration, measureGameAsync, measureGameWork } from "../gameModelPerformance";
+import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, gameDuration, measureGameAsync, measureGameWork, reportGameStepItems } from "../gameModelPerformance";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
@@ -305,7 +305,10 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       const preserved = await screenGameText(screeningEntries, {
         settings, model: options.screeningModel, prompts: promptState.selection, source: sourceFilter,
         target: options.target, skipTarget: options.skipTargetLanguage !== false, signal: screening.signal, onOllamaStatus: report,
-        onProgress: (completed, total) => setProgress({ completed, total, detail: "正在用大模型筛选文本", textStage: "screening", model: options.screeningModel }),
+        onProgress: (completed, total) => {
+          reportGameStepItems(promptState.scope + ":text", "screen", completed);
+          setProgress({ completed, total, detail: "正在用大模型筛选文本", textStage: "screening", model: options.screeningModel });
+        },
       });
       for (const entry of screeningEntries)
         if (entry.translation === entry.source) entry.translationTarget = options.target;
@@ -383,6 +386,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         const entriesById = new Map(next.entries.map(entry => [entry.id, entry]));
         const reportProgress = (value: UnityProgress) => {
           currentProgress = value;
+          if (value.translation)
+            reportGameStepItems(promptState.scope + ":text", "translate", value.translation.processed, value.translation.failed);
           const failed = value.translation?.last;
           if (failed?.failed) {
             const entry = entriesById.get(failed.id);

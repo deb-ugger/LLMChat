@@ -1,6 +1,41 @@
 import type { UnityEntry, UnityProject, UnityImage } from "./unityOffline";
 import { isTranslationRefusal, unityTranslationTokens } from "./unityTokens";
 import { gameImageJapaneseTextIssue, gameTextMatchesSource } from "./gameDisplayText";
+import { beginGameStep, finishGameStep, reportGameStepItems, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+
+const deploymentStages = ["scan", "scanImages", "mosaic", "generate", "generateImages", "generateMosaic", "apply", "applyImages", "applyMosaic"] as const;
+type DeploymentMetricStage = typeof deploymentStages[number];
+export type DeploymentMetrics = Partial<Record<DeploymentMetricStage, StepPerformance>>;
+
+export function deploymentMetricScope(root: string, stage: DeploymentMetricStage) {
+  return root + ":deployment:" + stage;
+}
+
+export function deploymentMetrics(root: string): DeploymentMetrics {
+  const result: DeploymentMetrics = {};
+  for (const stage of deploymentStages) {
+    const measurement = stepPerformance(deploymentMetricScope(root, stage), stage);
+    if (measurement.taskId) result[stage] = measurement;
+  }
+  return result;
+}
+
+export async function measureDeploymentStage<T>(
+  root: string, stage: DeploymentMetricStage, work: () => Promise<T>, count?: (result: T) => number | undefined,
+): Promise<T> {
+  const scope = deploymentMetricScope(root, stage);
+  beginGameStep(scope, stage);
+  let completed = false;
+  try {
+    const result = await work();
+    const itemsDone = count?.(result);
+    if (itemsDone !== undefined) reportGameStepItems(scope, stage, itemsDone);
+    completed = true;
+    return result;
+  } finally {
+    finishGameStep(scope, completed);
+  }
+}
 
 export const UNITY_STEPS = ["扫描资源", "文本翻译", "生成补丁", "应用到游戏"];
 export const UNITY_STAGE_TABS = [

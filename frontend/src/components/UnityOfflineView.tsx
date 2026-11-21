@@ -14,7 +14,7 @@ import { screenGameText } from "../gameTextScreening";
 import { createGameTranslationContext, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { sameTextEdit } from "../gameTextProject";
-import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork } from "../gameModelPerformance";
+import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
 import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
@@ -61,7 +61,7 @@ import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslate
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
-import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges } from "../unityWorkflow";
+import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges, deploymentMetrics, deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
@@ -871,7 +871,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     };
   }
   async function scan(onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint, deploymentBatch?: string) {
-    const p = await unityRun<UnityProject>("scan", { root, outputRoot: output, includeCode: run?.includeCode ?? includeCode, textMode: run?.textMode || textMode, codeAssemblies: run?.codeAssemblies ?? codeAssemblies, typeDirectory: run?.typeDirectory ?? typeDirectory, path: run?.scanFolder || "", reusePath: run?.previousProjectFolder || "", deploymentBatch }, onProgress, signal);
+    const p = await measureDeploymentStage(root, "scan",
+      () => unityRun<UnityProject>("scan", { root, outputRoot: output, includeCode: run?.includeCode ?? includeCode, textMode: run?.textMode || textMode, codeAssemblies: run?.codeAssemblies ?? codeAssemblies, typeDirectory: run?.typeDirectory ?? typeDirectory, path: run?.scanFolder || "", reusePath: run?.previousProjectFolder || "", deploymentBatch }, onProgress, signal),
+      scanned => scanned.scanMetrics ? scanned.scanMetrics.parsed + scanned.scanMetrics.reused : undefined);
     if (!run?.previousProjectFolder) publish(p);
     setPage(0); setDirty(false); setPatch(null);
     setFontPlan(null);
@@ -1379,7 +1381,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const fontRequest = { project: p, selectedIds: textEnabled ? selectedIds : [], patchImageIds: excluded.includes("image") ? [] : patchImageIds,
       excludeMosaic: excluded.includes("mosaic"), fontPath: textEnabled ? run?.fontPath ?? fontPath : "", extraCharacters: textEnabled ? run?.extraCharacters ?? extraCharacters : "" };
     let result: UnityPatch & { mosaicImages?: number };
-    try { result = await unityRun<UnityPatch & { mosaicImages?: number }>("export", { ...fontRequest, path: run?.patchFolder || "", deploymentBatch }, onProgress, signal); }
+    try {
+      result = await measureDeploymentStage(root, "generate",
+        () => unityRun<UnityPatch & { mosaicImages?: number }>("export", { ...fontRequest, path: run?.patchFolder || "", deploymentBatch }, onProgress, signal),
+        written => written.files);
+    }
     catch (error) {
       if (/所选字体缺少/.test(String(error))) {
         const report = JSON.parse(new TextDecoder().decode(await readFileBytes(p.folder + "/font-plan/font-plan.json"))) as UnityFontPlan;
@@ -1394,10 +1400,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function applyPatch(result: UnityPatch, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, discardOnStop = false) {
     setBusy("应用到游戏");
-    const response = await unityRun<{ restoredPatches: number }>("apply", { root, path: result.folder, discardOnStop }, progress => {
-      if (progress.detail.includes("旧补丁")) logAction(progress.detail, "info", "补丁恢复");
-      onProgress?.(progress);
-    }, signal).catch(async cause => {
+    const response = await measureDeploymentStage(root, "apply",
+      () => unityRun<{ files?: number; restoredPatches: number }>("apply", { root, path: result.folder, discardOnStop }, progress => {
+        if (progress.detail.includes("旧补丁")) logAction(progress.detail, "info", "补丁恢复");
+        onProgress?.(progress);
+      }, signal),
+      applied => applied.files ?? result.files,
+    ).catch(async cause => {
       try {
         const [status] = await unityRun<Array<{ installed: boolean }>>("installation-status", { roots: [root] });
         setInstalled(status.installed);
@@ -1514,7 +1523,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           }, progress: { step: 2, state: "running", completed: 0, total: null, detail: "文本和图片任务分别处理并保存" } };
           const partReported = { text: 0, images: 0 };
           const reportPart = (part: UnityTranslationPart, value: UnityProgress) => {
-            beginGameStep(promptState.scope + ":" + part, part === "text" ? value.textStage === "screening" ? "screen" : "translate" : run.imageTask || imageTask.current);
+            const scope = promptState.scope + ":" + part;
+            const phase = part === "text" ? value.textStage === "screening" ? "screen" : "translate" : run.imageTask || imageTask.current;
+            beginGameStep(scope, phase);
+            if (value.translation)
+              reportGameStepItems(scope, phase, value.translation.processed, value.translation.failed);
+            else if (value.total !== null && (part === "images" || phase === "screen"))
+              reportGameStepItems(scope, phase, value.completed, value.redrawFailed);
             run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], ...value, textStage: value.textStage, model: value.model,
               redrawFailed: value.redrawFailed, step: 2, state: "running" } } };
             checkpointRef.current = run;
@@ -1701,7 +1716,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const kept = await screenGameText(rows, {
         settings, model: textScreenModel, prompts: promptState.selection, source: onlySourceLanguage ? source : "auto",
         target, skipTarget: skipTargetLanguage, signal: controller.signal, onOllamaStatus: logAction,
-        onProgress: (completed, total) => showLocalActivity("正在用大模型筛选文本", "running", false, completed, total),
+        onProgress: (completed, total) => {
+          reportGameStepItems(promptState.scope + ":text", "screen", completed);
+          showLocalActivity("正在用大模型筛选文本", "running", false, completed, total);
+        },
       });
       controller.signal.throwIfAborted(); await saveTranslation(next, "text"); controller.signal.throwIfAborted(); setTextScreened(true);
       finishGameStep(promptState.scope + ":text", true);
@@ -2382,7 +2400,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (stage) selectWorkflowStage(stage);
   }
 
-  async function runDeploymentMosaic(current: UnityProject, signal: AbortSignal, report: (value: UnityProgress) => void) {
+  function runDeploymentMosaic(current: UnityProject, signal: AbortSignal, report: (value: UnityProgress) => void) {
+    return measureDeploymentStage(root, "mosaic", () => performDeploymentMosaic(current, signal, report));
+  }
+
+  async function performDeploymentMosaic(current: UnityProject, signal: AbortSignal, report: (value: UnityProgress) => void) {
     const { candidates } = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-status", { root });
     const preferences = readMosaicSettings(root);
     const usable = (current.images || []).filter(image => image.sourceFile && image.width > 0 && image.height > 0 &&
@@ -2391,20 +2413,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const request = { root, path: current.folder, deploymentBatch: batch };
     const scenes = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
     const images = preferences.scope === "scenes" && scenes.length ? scenes : usable;
+    const scope = deploymentMetricScope(root, "mosaic");
+    const selections = gameStepSelections(scope, "mosaic");
+    let failed = 0;
     const reviews=preferences.refine!==false ? await refineMosaicBatch(images,{
       root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile:gameDetectorFile(root),read:readMosaicSource,prepare:prepareMosaicSources,
-      request:(model,prompt,image,signal)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
+      timingScope: scope,
+      request:(model,prompt,image,signal,lanes)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection:selections(lanes)}),
+      onError: () => { failed++; },
       onProgress:(completed,detail)=>report({completed,total:images.length,detail})
     }) : undefined;
-    if(reviews?.failed)throw new Error(reviews.failed+" 张图片复筛失败");
+    if (reviews?.failed) {
+      reportGameStepItems(scope, "mosaic", reviews.results.size + failed, failed);
+      throw new Error(reviews.failed + " 张图片复筛失败");
+    }
     const detector = reviews ? undefined : await openDeploymentDetector(root, preferences, signal);
     let committed = false;
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();
         report({ completed: index, total: images.length, detail: image.name || image.id });
-        const sourceImage = await readUnitySourceImage(current, image, signal);
-        const detected = reviews?.results.get(image.id) || await detector!.scan(sourceImage);
+        reportGameStepItems(scope, "mosaic", index);
+        const sourceImage = await measureGameAsync(scope, "processingMs", () => readUnitySourceImage(current, image, signal));
+        const detected = reviews?.results.get(image.id) || await measureGameAsync(scope, "processingMs", () => detector!.scan(sourceImage));
         if (detected.review) throw new Error(image.name + " · " + detected.review);
         const { boxes } = detected;
         signal.throwIfAborted();
@@ -2412,11 +2443,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
         const rendered = await redrawMosaic({ source: sourceImage, boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal,
           progress: detail => report({ completed: index, total: images.length, detail }) });
-        await unityRun("mosaic-save", { ...request, imageId: image.id, imageSourceHash: image.sourceHash,
-          imageData: await imageBase64(rendered) }, undefined, signal);
+        const imageData = await imageBase64(rendered);
+        await measureGameAsync(scope, "saveMs", () => unityRun("mosaic-save", {
+          ...request, imageId: image.id, imageSourceHash: image.sourceHash, imageData,
+        }, undefined, signal));
       }
       signal.throwIfAborted();
-      const result = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-finish-deployment", { ...request, includeMosaic: true }, undefined, signal);
+      const result = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>(
+        "mosaic-finish-deployment", { ...request, includeMosaic: true }, undefined, signal));
+      reportGameStepItems(scope, "mosaic", images.length, 0);
       committed = true;
       setMosaicStatus({ root, candidates: result.candidates });
       setMosaicCompleted(current.folder);
@@ -2581,6 +2616,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     model: {
       root,
       busyLabel: busy,
+      metrics: deploymentMetrics(root),
       plan: deploymentPlan, run: deploymentRun, stoppedStep: currentStoppedStep,
       completed: deploymentCompleted, canStop: !!deploymentController.current || !!abort.current,
       textCount,

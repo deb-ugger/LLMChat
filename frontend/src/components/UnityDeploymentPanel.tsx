@@ -2,6 +2,8 @@ import { benchmarkBlockingReason, useBenchmarkRunning } from "../benchmark/bench
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
+import type { DeploymentMetrics } from "../unityWorkflow";
+
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
 
 export type DeploymentModel = {
@@ -20,6 +22,7 @@ export type DeploymentModel = {
   patch: UnityPatch | null;
   applied: boolean;
   installed: boolean;
+  metrics?: DeploymentMetrics;
   fontPath: string;
   fontName: string;
   extraCharacters: string;

@@ -1,7 +1,8 @@
 import { loadMosaicDetector, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
+import { measureGameAsync, measureGameWork } from "./gameModelPerformance";
 
-export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal) => Promise<unknown>;
+export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
 type StoredProposal = { source: string; hash: string; scan: MosaicScan };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
@@ -86,7 +87,7 @@ async function proposals(blob: Blob, detector: Awaited<ReturnType<typeof loadMos
   return {...result,boxes,modelBoxes,reviewBoxes,presenceScore,review:!boxes.length&&(reviewBoxes.length||presenceScore>=mosaicPresenceThreshold)?"候选区域需要视觉模型复筛确认":undefined};
 }
 
-async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal): Promise<MosaicScan> {
+async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal, lanes: number): Promise<MosaicScan> {
   const {canvas,pixels}=await imageCanvas(blob),bounds=foreground(pixels);
   if (!bounds) return {boxes:[],signature:proposed.signature};
   const regions: MosaicBox[]=[];
@@ -107,7 +108,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
     const prompt=candidate
       ? '检查这张局部图是否有真正的像素化遮挡（马赛克）或黑白遮挡条。透明背景、普通色块、线稿和自然纹理不算。只判断候选区域，不要枚举小方格。只返回JSON {"pixelation":true或false,"confidence":0到1}，不要描述人物或场景。'
       : '检查图片是否有真正的像素化遮挡（马赛克）或黑白遮挡条。透明背景、普通色块、线稿和自然纹理不算。只返回JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}，坐标为0到1000归一化，最多返回3个整体区域框，不要枚举小方格，不要描述人物或场景。';
-    const response=await request(model,prompt,crop.toDataURL("image/png"),signal) as Record<string,unknown>;
+    const response=await request(model,prompt,crop.toDataURL("image/png"),signal,lanes) as Record<string,unknown>;
     if (typeof response?.pixelation!=="boolean" || typeof response.confidence!=="number" ||
         response.confidence<0 || response.confidence>1) throw new Error("复筛模型未返回有效的判断和置信度");
     if (!response.pixelation) {
@@ -137,7 +138,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   root: string; settings: MosaicSettings; signal: AbortSignal; modelFile?: File;
   read: (image:UnityImage,signal:AbortSignal)=>Promise<Blob>;
   prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<Record<string, string>>;
-  request: MosaicReviewRequest; restart?: boolean;
+  request: MosaicReviewRequest; restart?: boolean; timingScope?: string;
   onResult?: (image:UnityImage,scan:MosaicScan)=>void; onError?: (image:UnityImage,error:string)=>void;
   onProgress?: (completed:number,detail:string)=>void;
   onPreparation?: (prepared: number, total: number) => void;
@@ -146,7 +147,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   signal.throwIfAborted();
   const checkpoint = readReviewCheckpoint(options.root, key);
   const savedProposals = checkpoint.proposals ??= {};
-  const saveCheckpoint = () => localStorage.setItem(checkpointPath(options.root), JSON.stringify(checkpoint));
+  const saveCheckpoint = () => measureGameWork(options.timingScope, "saveMs", () =>
+    localStorage.setItem(checkpointPath(options.root), JSON.stringify(checkpoint)));
   if (options.restart) {
     for (const image of images) {
       delete checkpoint.images[image.id];
@@ -184,7 +186,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
       const batch = remaining.slice(offset, offset + batchSize);
       let prepareErrors: Record<string, string> | undefined;
       try {
-        prepareErrors = await options.prepare?.(batch, signal);
+        const prepare = options.prepare;
+        if (prepare) prepareErrors = await measureGameAsync(options.timingScope, "processingMs", () => prepare(batch, signal));
       } catch (cause) {
         signal.throwIfAborted();
         for (const image of batch) errors.set(image.id, String(cause));
@@ -194,13 +197,14 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
         try {
           const failure = errors.get(image.id) ?? prepareErrors?.[image.id];
           if (failure) throw new Error(failure);
-          const blob = await options.read(image, signal);
+          const blob = await measureGameAsync(options.timingScope, "processingMs", () => options.read(image, signal));
           const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
           const hash = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2, "0")).join("");
           let scan = proposalCache.get(hash);
           if (!scan) {
             detector ??= await loadMosaicDetector(options.modelFile, { signal });
-            scan = await proposals(blob, detector, signal);
+            const loaded = detector;
+            scan = await measureGameAsync(options.timingScope, "processingMs", () => proposals(blob, loaded, signal));
             proposalCache.set(hash, scan);
             if (proposalCache.size > 64) proposalCache.delete(proposalCache.keys().next().value!);
           }
@@ -230,7 +234,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
     const group=groups.get(model);
     if(group)group.push(image);else groups.set(model,[image]);
   }
-  const lane=async(model:string,batch:UnityImage[])=>{
+  const lane=async(model:string,batch:UnityImage[],lanes:number)=>{
     while(cursor<batch.length) {
       signal.throwIfAborted();const image=batch[cursor++];
       try {
@@ -244,7 +248,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
             const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
             pending=!fullReview && !hasCandidates
               ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
-              : options.read(image,signal).then(blob=>reviewImage(blob,proposed,model,options.request,signal));
+              : measureGameAsync(options.timingScope, "processingMs", () => options.read(image,signal))
+                .then(blob=>reviewImage(blob,proposed,model,options.request,signal,lanes));
             verified.set(identity,pending);
             if(verified.size>128)verified.delete(verified.keys().next().value!);
             void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
@@ -265,7 +270,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   for(const [model,batch] of groups) {
     cursor=0;
     const lanes=Math.min(batch.length,Math.max(1,Math.min(2,settings.refineConcurrency ?? 1)));
-    const settled=await Promise.allSettled(Array.from({length:lanes},()=>lane(model,batch)));
+    const settled=await Promise.allSettled(Array.from({length:lanes},()=>lane(model,batch,lanes)));
     for(const item of settled)if(item.status==="rejected")throw item.reason;
   }
   return {results,failed};
