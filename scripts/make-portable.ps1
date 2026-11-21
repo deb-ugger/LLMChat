@@ -17,7 +17,7 @@ if (-not (Test-Path $exe)) {
 Write-Output "Using release binary: $exe ($(Get-Item $exe | Select-Object -ExpandProperty LastWriteTime))"
 
 $webAssets = Join-Path $root 'frontend\src-tauri\resources\web-assets'
-foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'lada')) {
+foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'mosaic-detector')) {
     if (!(Test-Path -LiteralPath (Join-Path $webAssets $group) -PathType Container)) {
         throw "Run the frontend build before packaging (missing runtime assets: $group)."
     }
@@ -55,6 +55,15 @@ foreach ($name in $preserveHint) {
 $webAssetsOutput = Join-Path $out 'resources\web-assets'
 New-Item -ItemType Directory -Force -Path $webAssetsOutput | Out-Null
 Copy-BuildTree $webAssets $webAssetsOutput
+# Remove only obsolete bundled detector files from older portable versions.
+$oldDetectorDirectory = Join-Path $webAssetsOutput 'lada'
+foreach ($name in @('lada-v4-fast.onnx','lada-v4-accurate.onnx','fast.json','accurate.json','manifest.json','LICENSE.txt')) {
+    $oldFile = Join-Path $oldDetectorDirectory $name
+    if (Test-Path -LiteralPath $oldFile -PathType Leaf) { Remove-Item -LiteralPath $oldFile }
+}
+if ((Test-Path -LiteralPath $oldDetectorDirectory -PathType Container) -and !(Get-ChildItem -LiteralPath $oldDetectorDirectory -Force)) {
+    Remove-Item -LiteralPath $oldDetectorDirectory
+}
 Copy-BuildFile $exe $out
 
 $speechTools = Join-Path $root 'frontend\src-tauri\resources\ffmpeg'

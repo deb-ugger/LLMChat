@@ -46,26 +46,31 @@ export function createMosaicGridScanner() {
 
 export type MosaicSettings = {
   concurrency?: number;
-  detector: "grid" | "lada" | "lada-accurate"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
+  detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "lada", scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
   if (file) detectorFiles.set(root, file);
   return detectorFiles.get(root);
 }
+export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
+  const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
+  return { ...defaultMosaicSettings, ...value, detector: value?.detector === "grid" ? "grid" : "anime",
+    concurrency: legacy ? 2 : value?.concurrency ?? 2 };
+}
 export function readMosaicSettings(root: string): MosaicSettings {
   const saved = localStorage.getItem("llmchat-mosaic-settings:" + root);
-  return { ...defaultMosaicSettings, ...(saved ? JSON.parse(saved) : {}) };
+  return normalizeMosaicSettings(saved ? JSON.parse(saved) : undefined);
 }
 export function saveMosaicSettings(root: string, settings: MosaicSettings) {
-  localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(settings));
+  localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(normalizeMosaicSettings(settings)));
   window.dispatchEvent(new CustomEvent("game-mosaic-settings", { detail: root }));
 }
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  return loadLadaDetector(gameDetectorFile(root), { signal, variant: settings.detector === "lada-accurate" ? "accurate" : "fast" });
+  return loadMosaicDetector(gameDetectorFile(root), { signal });
 }
 
 const threshold = 0.25;
@@ -76,7 +81,7 @@ function overlap(a: MosaicBox, b: MosaicBox) {
 }
 
 // Detection runs on RGB, so validate predictions against the original alpha channel.
-export function ladaVisibleBox(image: ImageData, box: MosaicBox) {
+export function mosaicVisibleBox(image: ImageData, box: MosaicBox) {
   const [left, top, right, bottom] = box;
   const area = (right - left) * (bottom - top);
   let visible = 0;
@@ -97,10 +102,10 @@ export function ladaVisibleBox(image: ImageData, box: MosaicBox) {
   return visible >= area / 2 && maximum.some((value, channel) => value - minimum[channel] >= 12);
 }
 
-export function ladaBoxes(values: Float32Array, dims: readonly number[], classes: number,
+export function mosaicBoxes(values: Float32Array, dims: readonly number[], classes: number,
   geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox, score: number) => boolean = () => true, minimumScore = threshold) {
   if (dims.length !== 3 || dims[0] !== 1 || dims[1] !== 4 + classes + 32 || dims[2] <= 0)
-    throw new Error("Lada ONNX 需使用原始 YOLO11 分割输出（关闭 NMS 导出）");
+    throw new Error("检测模型需使用原始 YOLO11 分割输出（关闭 NMS 导出）");
   const { left, top, scaleX, scaleY, width, height } = geometry;
   const count = dims[2];
   const candidates: { box: MosaicBox; score: number }[] = [];
@@ -122,10 +127,10 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
   return boxes;
 }
 
-export type LadaDevice = { kind: "gpu" | "cpu"; reason?: string };
+export type MosaicDevice = { kind: "gpu" | "cpu"; reason?: string };
 
-export async function loadLadaDetector(model: File | undefined, options: {
-  variant?: "fast" | "accurate"; signal?: AbortSignal; onDevice?: (device: LadaDevice) => void;
+export async function loadMosaicDetector(model: File | undefined, options: {
+  signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
@@ -138,13 +143,13 @@ export async function loadLadaDetector(model: File | undefined, options: {
   let bytes: ArrayBuffer;
   if (model) bytes = await model.arrayBuffer();
   else {
-    const response = await fetch(new URL("./lada/lada-v4-" + (options.variant || "fast") + ".onnx", assets), { signal });
-    if (!response.ok) throw new Error("内置 Lada 模型读取失败，请重新准备软件资源");
+    const response = await fetch(new URL("./mosaic-detector/model.onnx", assets), { signal });
+    if (!response.ok) throw new Error("内置二次元检测模型读取失败，请重新准备软件资源");
     bytes = await response.arrayBuffer();
   }
   const create = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(bytes, { executionProviders: [provider] });
   let session: Awaited<ReturnType<typeof create>> | undefined;
-  let device: LadaDevice = { kind: "gpu" };
+  let device: MosaicDevice = { kind: "gpu" };
 
   const release = async () => {
     const former = session;
@@ -181,7 +186,7 @@ export async function loadLadaDetector(model: File | undefined, options: {
   if (shape.length !== 4 || shape[0] !== 1 || shape[1] !== 3 || typeof size !== "number" ||
       size < 256 || size > 1024 || size !== shape[3] || typeof channels !== "number" || ![37, 38].includes(channels) || !output) {
     await release();
-    throw new Error("请选择固定方形输入、未内置 NMS 的 Lada YOLO11 分割 ONNX");
+    throw new Error("请选择固定方形输入、未内置 NMS 的 YOLO11 分割 ONNX");
   }
   const canvas = document.createElement("canvas");
   canvas.width = size; canvas.height = size;
@@ -191,7 +196,7 @@ export async function loadLadaDetector(model: File | undefined, options: {
   const outputName = output.name;
   const runInference = async (feeds: InstanceType<typeof ort.Tensor>) => {
     signal?.throwIfAborted();
-    if (!session) throw new Error("Lada 检测会话已关闭");
+    if (!session) throw new Error("检测会话已关闭");
     try {
       return await session.run({ [session.inputNames[0]]: feeds }, [outputName]);
     } catch (cause) {
@@ -247,11 +252,11 @@ export async function loadLadaDetector(model: File | undefined, options: {
       tensors = await infer(feeds);
       const result = tensors[outputName];
       const data = result.data;
-      if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
+      if (!(data instanceof Float32Array)) throw new Error("请选择输出为 FP32 的检测 ONNX");
       const geometry = { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height };
       const boxes: MosaicBox[] = [];
-      const candidates = ladaBoxes(data, result.dims, channels - 36, geometry, (box, score) => {
-        if (!ladaVisibleBox(full, box)) return false;
+      const candidates = mosaicBoxes(data, result.dims, channels - 36, geometry, (box, score) => {
+        if (!mosaicVisibleBox(full, box)) return false;
         if (score >= threshold) boxes.push(box);
         return true;
       }, 0.05);

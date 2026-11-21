@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const runtimeAssetDirectories = ["ocr", "ort", "manga-ort", "wtp", "lada"];
+export const runtimeAssetDirectories = ["ocr", "ort", "manga-ort", "wtp", "mosaic-detector"];
 
 // ONNX and WASM files can be hundreds of MiB. Compare the actual bytes without
 // holding both complete assets in memory on an incremental build.

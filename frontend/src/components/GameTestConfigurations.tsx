@@ -1,3 +1,4 @@
+import { normalizeMosaicSettings } from "../gameMosaic";
 import { useMemo, useState, type ReactNode } from "react";
 import type { GameConfigurationSetup } from "../gameAuxWindows";
 import { GAME_PROMPT_SCENES, useGamePromptCatalog, type GamePromptScene } from "../gamePrompts";
@@ -94,7 +95,7 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
   const text = value?.text, images = value?.images;
   const updateText = (patch: Partial<GameTestTextOptions>) => { if (value && text) updateValue({ ...value, text: { ...text, options: { ...text.options, ...patch } } }); };
   const updateImages = (patch: Partial<NonNullable<typeof images>["options"]>) => { if (value && images) updateValue({ ...value, images: { ...images, options: { ...images.options, ...patch } } }); };
-  const mosaic = images?.options.mosaic;
+  const mosaic = images?.options.mosaic && normalizeMosaicSettings(images.options.mosaic);
   const updateMosaic = (patch: Partial<NonNullable<typeof mosaic>>) => {
     if (mosaic) updateImages({ mosaic: { ...mosaic, ...patch } });
   };
@@ -205,8 +206,8 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"},{value:"custom",label:"自定义工作流"}]} change={redrawProfile => updateImages({redrawProfile})}/></Group>}
         {mosaic && <Group title="图片去码">
           <Select label="筛选范围" value={mosaic.scope} choices={[{value:"scenes",label:"场景图片"},{value:"all",label:"全部图片"}]} change={scope=>updateMosaic({scope})}/>
-          <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"lada",label:"Lada v4 Fast（内置）"},{value:"lada-accurate",label:"Lada v4 Accurate（内置）"}]} change={detector=>updateMosaic({detector})}/>
-          <Count label="筛选并发" value={mosaic.concurrency ?? (mosaic.detector==="grid"?2:1)} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
+          <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"二次元遮挡检测（内置）"}]} change={detector=>updateMosaic({detector})}/>
+          <Count label="筛选并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
           <Select label="去码模型" value={mosaic.model} choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"}]} change={model=>updateMosaic({model,steps:model==="turbo"?8:20})}/>
           {mosaic.model==="2511" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
           <Flag label="保护已识别文字" value={mosaic.protect} change={protect=>updateMosaic({protect})}/>

@@ -38,7 +38,7 @@ frontend/src-tauri/binaries/config.ini
 dist-portable/
 frontend/public/hanlp/
 frontend/public/wtp/
-frontend/public/lada/
+frontend/public/mosaic-detector/
 tools/LineBreakPrototype/
 dist/
 release/

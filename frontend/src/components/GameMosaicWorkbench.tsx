@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -18,7 +18,7 @@ type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 type MosaicStep = "screen" | "redraw";
-type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: LadaDevice };
+type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: MosaicDevice };
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
@@ -57,7 +57,7 @@ function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   if (row.boxes.length) return "candidate";
   return row.scanned ? "clear" : "pending";
 }
-const detectorLabels = { grid: "方格规则", lada: "Lada v4 Fast（内置）", "lada-accurate": "Lada v4 Accurate（内置）" };
+const detectorLabels = { grid: "方格规则", anime: "二次元遮挡检测（内置）" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -472,7 +472,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["lada-alpha-v3", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640-alpha-v3";
+    ? JSON.stringify(["custom-yolo-alpha-v3", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-640-alpha-v3";
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);
@@ -486,8 +486,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
     void run("筛选打码区域", async (signal, report) => {
-      const lada = detectorKind !== "grid" ? await loadLadaDetector(detectorFile, {
-        signal, variant: detectorKind === "lada-accurate" ? "accurate" : "fast",
+      const detector = detectorKind !== "grid" ? await loadMosaicDetector(detectorFile, {
+        signal,
         onDevice: device => setStepRuns(previous => previous.screen
           ? { ...previous, screen: { ...previous.screen, device } }
           : previous),
@@ -506,7 +506,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         setRows(previous => ({ ...previous, ...changes }));
       };
       async function lane() {
-        const scanner = lada ?? createMosaicGridScanner();
+        const scanner = detector ?? createMosaicGridScanner();
         try {
           while (!signal.aborted && cursor < targets.length) {
             const start = cursor;
@@ -542,16 +542,16 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               }
             }
           }
-        } finally { if (!lada) await scanner.release(); }
+        } finally { if (!detector) await scanner.release(); }
       }
       try {
-        const lanes = Math.max(1, Math.min(4, preferences.concurrency ?? (lada ? 1 : 2)));
+        const lanes = Math.max(1, Math.min(4, preferences.concurrency ?? 2));
         const settled = await Promise.allSettled(Array.from({ length: Math.min(lanes, targets.length) }, lane));
         for (const item of settled) if (item.status === "rejected") throw item.reason;
       } finally {
         checkpoint();
         report(completed);
-        await lada?.release();
+        await detector?.release();
       }
       setRows(previous => {
         const next = { ...previous };
@@ -564,7 +564,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         for (const list of proposals) for (const image of list) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
         return next;
       });
-      setProgress([failures ? failures + " 张读取失败，可在待复核列表查看。" : "", lada?.reused ? "已复用 " + lada.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
+      setProgress([failures ? failures + " 张读取失败，可在待复核列表查看。" : "", detector?.reused ? "已复用 " + detector.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
       return failures === 0;
     }, { id: "screen", total: currentScope.length, completed: initial, summary: detectorLabels[detectorKind] });
   }
@@ -777,7 +777,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
-    ? `${detectorLabels.lada} · ${detectorFile.name}` : detectorLabels[detectorKind];
+    ? "自定义检测 · " + detectorFile.name : detectorLabels[detectorKind];
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
@@ -793,11 +793,11 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setGroupPages({}); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
-          <label>筛选并发<select aria-label="去码筛选并发" value={preferences.concurrency ?? (detectorKind==="grid"?2:1)} disabled={!!busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
+          <label>筛选并发<select aria-label="去码筛选并发" value={preferences.concurrency ?? 2} disabled={!!busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
             {[1,2,4].map(value=><option key={value} value={value}>{value}</option>)}
           </select></label>
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
-            <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option><option value="lada-accurate">{detectorLabels["lada-accurate"]}</option>
+            <option value="grid">{detectorLabels.grid}</option><option value="anime">{detectorLabels.anime}</option>
           </select></label>
           {detectorKind !== "grid" && <label>自定义 ONNX（可选）
             <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
