@@ -2075,7 +2075,7 @@ int HttpServer::run()
                     request.options["reasoning_effort"] = "none";
                     request.options["keep_alive"] = "5m";
                     request.options["format"] = json::parse(R"schema({
-                        "type":"object","required":["pixelation","confidence"],"additionalProperties":false,
+                        "type":"object","required":["pixelation","boxes","confidence"],"additionalProperties":false,
                         "properties":{
                             "pixelation":{"type":"boolean"},
                             "confidence":{"type":"number","minimum":0,"maximum":1},

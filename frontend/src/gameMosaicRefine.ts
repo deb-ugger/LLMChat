@@ -12,6 +12,7 @@ export type MosaicStoredResult = { source: string; refined?: string; refineError
   manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean; discardedHash?: string };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
+const regionCheckpointPrefix = (root: string) => checkpointPath(root) + ":regions:";
 export const mosaicRowsStorageKey = (root: string) => "llmchat-game-mosaic:" + root;
 
 export function readMosaicRows<T extends MosaicStoredResult = MosaicStoredResult>(root: string): Record<string, T> {
@@ -86,7 +87,16 @@ export function readMosaicReviews(root: string, key: string): Record<string, Sto
 }
 export function clearMosaicReviews(root: string, ids?: readonly string[]) {
   const path = checkpointPath(root);
-  if (!ids) { localStorage.removeItem(path); return; }
+  const prefix = regionCheckpointPrefix(root);
+  if (!ids) {
+    localStorage.removeItem(path);
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(prefix)) localStorage.removeItem(key);
+    }
+    return;
+  }
+  for (const id of ids) localStorage.removeItem(prefix + id);
   const saved = localStorage.getItem(path);
   if (!saved) return;
   const checkpoint = JSON.parse(saved) as ReviewCheckpoint;
@@ -162,16 +172,30 @@ async function proposals(blob: Blob, detector: Awaited<ReturnType<typeof loadMos
 
 const reviewSize = 512;
 const reviewConfidence = 0.85;
+type RegionReview = { pixelation: boolean; confidence: number; boxes: MosaicBox[] };
+type PartialReview = { key: string; source: string; regions: Record<string, RegionReview> };
 
-function localizedReviewBoxes(values: unknown, area: MosaicBox, content: MosaicBox, pixels: ImageData, candidate?: MosaicBox): MosaicBox[] {
-  if (!Array.isArray(values)) return [];
+async function sha256(bytes: BufferSource) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function parseRegionReview(value: unknown): RegionReview {
+  const result = value as Partial<RegionReview> | null;
+  if (typeof result?.pixelation !== "boolean" || typeof result.confidence !== "number" ||
+      !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1 ||
+      !Array.isArray(result.boxes) || result.boxes.length > 3 || !result.boxes.every(box =>
+        Array.isArray(box) && box.length === 4 && box.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000)))
+    throw new Error("复筛模型未返回有效的判断、置信度和坐标数组");
+  return { pixelation: result.pixelation, confidence: result.confidence, boxes: result.boxes };
+}
+
+function localizedReviewBoxes(values: MosaicBox[], area: MosaicBox, content: MosaicBox, pixels: ImageData, candidate?: MosaicBox): MosaicBox[] {
   const [left, top, right, bottom] = content;
   const scaleX = (area[2] - area[0]) / (right - left);
   const scaleY = (area[3] - area[1]) / (bottom - top);
   const boxes: MosaicBox[] = [];
-  for (const value of values.slice(0, 3)) {
-    if (!Array.isArray(value) || value.length !== 4 ||
-        !value.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000)) continue;
+  for (const value of values) {
     const [x0, y0, x1, y1] = value.map(v => v * reviewSize / 1000);
     const box: MosaicBox = [
       Math.max(area[0], Math.floor(area[0] + (x0 - left) * scaleX)),
@@ -190,8 +214,8 @@ function localizedReviewBoxes(values: unknown, area: MosaicBox, content: MosaicB
   return boxes;
 }
 
-async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal, lanes: number,
-  onRequest: (position: number, total: number, local: boolean) => void): Promise<MosaicScan> {
+async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal,
+  request: (prompt: string, image: string, position: number, total: number, local: boolean) => Promise<RegionReview>): Promise<MosaicScan> {
   const {canvas,pixels}=await imageCanvas(blob),bounds=foreground(pixels);
   if (!bounds) return {boxes:[],signature:proposed.signature};
   const regions: MosaicBox[]=[];
@@ -201,6 +225,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
   const confirmations: MosaicBox[]=[],uncertain: MosaicBox[]=[];
   const classifierPositive = (proposed.presenceScore ?? 0) >= mosaicPresenceThreshold;
   let unlocalizedReview: string | undefined;
+  let firstFailure: Error | undefined;
   const views: (MosaicBox | undefined)[]=regions.length?regions:[undefined];
   for (const [index, candidate] of views.entries()) {
     signal.throwIfAborted();
@@ -220,11 +245,14 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
       '识别人为叠加的成片马赛克或不透明遮挡条。自然纹理、轮廓线、高光、透明背景和灰色填充不是遮挡。' +
       '只返回 JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}。坐标按整张输入图（含填充）归一化到0到1000。' +
       '有遮挡时最多返回3个贴合遮挡的框，无法准确定位或没有遮挡时 boxes 为 []。';
-    onRequest(index + 1, views.length, !!candidate);
-    const response=await request(model,prompt,crop.toDataURL("image/png"),signal,lanes) as Record<string,unknown>;
-    if (typeof response?.pixelation !== "boolean" || typeof response.confidence !== "number" ||
-        !Number.isFinite(response.confidence) || response.confidence < 0 || response.confidence > 1)
-      throw new Error("复筛模型未返回有效的判断和置信度");
+    let response: RegionReview;
+    try {
+      response = await request(prompt, crop.toDataURL("image/png"), index + 1, views.length, !!candidate);
+    } catch (cause) {
+      signal.throwIfAborted();
+      firstFailure ??= new Error(`候选区域 ${index + 1}/${views.length} · ${cause instanceof Error ? cause.message : String(cause)}`);
+      continue;
+    }
 
     const confident = response.confidence >= reviewConfidence;
     if (!response.pixelation) {
@@ -244,6 +272,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
     }
     appendBoxes(confident ? confirmations : uncertain, boxes);
   }
+  if (firstFailure) throw firstFailure;
   if (unlocalizedReview || uncertain.some(box => !confirmations.some(confirmed => intersect(box, confirmed) > .45)))
     return {boxes:confirmations,reviewBoxes:[...confirmations,...uncertain],signature:proposed.signature,
       review:unlocalizedReview || "复筛结果存在分歧、置信度不足或定位无效，请人工检查候选区域"};
@@ -263,12 +292,15 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   signal.throwIfAborted();
   const checkpoint = readReviewCheckpoint(options.root, key);
   const savedProposals = checkpoint.proposals ??= {};
+  const regionPrefix = regionCheckpointPrefix(options.root);
+  const partialKey = JSON.stringify([key, "required-boxes-v1"]);
   const saveCheckpoint = () => measureGameWork(options.timingScope, "saveMs", () =>
     localStorage.setItem(checkpointPath(options.root), JSON.stringify(checkpoint)));
   if (options.restart) {
     for (const image of images) {
       delete checkpoint.images[image.id];
       delete savedProposals[image.id];
+      localStorage.removeItem(regionPrefix + image.id);
     }
     saveCheckpoint();
   }
@@ -319,8 +351,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           const failure = errors.get(image.id) ?? prepareErrors?.[image.id];
           if (failure) throw new Error(failure);
           const blob = await measureGameAsync(options.timingScope, "processingMs", () => options.read(image, signal));
-          const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
-          const hash = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2, "0")).join("");
+          const hash = await sha256(await blob.arrayBuffer());
           let scan = proposalCache.get(hash);
           if (!scan) {
             detector ??= await loadMosaicDetector(options.modelFile, { signal, timingScope: options.timingScope });
@@ -346,7 +377,20 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
     try { if (unsaved) saveCheckpoint(); }
     finally { await detector?.release(); }
   }
-  const verified=new Map<string,Promise<MosaicScan>>();
+  const requests = new Map<string, Promise<RegionReview>>();
+  const partialReviews = new Map<string, PartialReview>();
+  for (const image of images) {
+    const path = regionPrefix + image.id;
+    const value = localStorage.getItem(path);
+    if (!value) continue;
+    const saved = JSON.parse(value) as PartialReview;
+    if (results.has(image.id) || saved.key !== partialKey || saved.source !== image.sourceHash) {
+      localStorage.removeItem(path);
+      continue;
+    }
+    partialReviews.set(image.id, saved);
+    for (const [id, response] of Object.entries(saved.regions)) requests.set(id, Promise.resolve(response));
+  }
   let cursor=0;
   const groups=new Map<string,UnityImage[]>();
   for(const image of images) {
@@ -361,28 +405,37 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
       signal.throwIfAborted();const image=batch[cursor++];
       try {
         const failure=errors.get(image.id);if(failure)throw new Error(failure);
-        const { hash, scan: proposed } = prepared.get(image.id)!;
-        const identity = JSON.stringify([model, hash]);
-        let pending=verified.get(identity);
-        const reused = !!pending;
-        if(!pending) {
-          const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
-          pending=!fullReview && !hasCandidates
-            ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
-            : measureGameAsync(options.timingScope, "processingMs", () => options.read(image,signal))
-              .then(blob => reviewImage(blob, proposed, model, options.request, signal, lanes, (position, total, local) => {
+        const { scan: proposed } = prepared.get(image.id)!;
+        const hasCandidates = !!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
+        const scan = !fullReview && !hasCandidates
+          ? { boxes: [], signature: proposed.signature, quickExcluded: true }
+          : await reviewImage(await measureGameAsync(options.timingScope, "processingMs", () => options.read(image, signal)),
+            proposed, signal, async (prompt, crop, position, total, local) => {
+              const id = await sha256(new TextEncoder().encode(JSON.stringify([model, prompt, crop])));
+              signal.throwIfAborted();
+              let pending = requests.get(id);
+              const reused = !!pending;
+              if (!pending) {
                 const region = local ? "候选区域 " + position + "/" + total : "整图";
                 options.onProgress?.(results.size, model + " · " + image.name + " · " + region + " · 等待模型返回");
-              }));
-          verified.set(identity,pending);
-          if(verified.size>128)verified.delete(verified.keys().next().value!);
-          void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
-        }
-        const scan = await pending;
-        if (reused && !scan.quickExcluded) recordGameCacheHit(options.timingScope);
+                pending = options.request(model, prompt, crop, signal, lanes).then(parseRegionReview);
+                requests.set(id, pending);
+              }
+              const response = await pending;
+              if (reused) recordGameCacheHit(options.timingScope);
+              const partial = partialReviews.get(image.id) ?? { key: partialKey, source: image.sourceHash, regions: {} };
+              if (!partial.regions[id]) {
+                partial.regions[id] = response;
+                measureGameWork(options.timingScope, "saveMs", () =>
+                  localStorage.setItem(regionPrefix + image.id, JSON.stringify(partial)));
+                partialReviews.set(image.id, partial);
+              }
+              return response;
+            });
         checkpoint.images[image.id] = { source: image.sourceHash, scan: { ...scan, signature: [] } };
         delete savedProposals[image.id];
         saveCheckpoint();
+        if (partialReviews.delete(image.id)) localStorage.removeItem(regionPrefix + image.id);
         results.set(image.id,scan);options.onResult?.(image,scan);
         options.onProgress?.(results.size,model+" · "+image.name);
       } catch(cause) {
