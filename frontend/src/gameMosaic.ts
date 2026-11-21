@@ -48,7 +48,7 @@ export type MosaicSettings = {
   concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number; refineIncludeMissed?: boolean;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "suspected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
@@ -58,7 +58,8 @@ export function gameDetectorFile(root: string, file?: File) {
 export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
   const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
   return { ...defaultMosaicSettings, ...value, detector: value?.detector === "grid" ? "grid" : "anime",
-    concurrency: legacy ? 2 : value?.concurrency ?? 2 };
+    concurrency: legacy ? 2 : value?.concurrency ?? 2,
+    refineScope: "selected" };
 }
 export function readMosaicSettings(root: string): MosaicSettings {
   const saved = localStorage.getItem("llmchat-mosaic-settings:" + root);

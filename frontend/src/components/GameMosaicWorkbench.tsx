@@ -6,7 +6,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -17,7 +17,8 @@ import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./G
 import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
-type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
+type InitialScreening = { boxes: MosaicBox[]; checked: boolean; scanned?: boolean; detector?: string; reason?: string; review?: string };
+type Result = { source: string; beforeRefine?: InitialScreening; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
@@ -57,7 +58,7 @@ type Props = {
   deploymentHandle?: { current: GameMosaicDeploymentHandle | null };
 };
 
-const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
+const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: true });
 const mosaicPageSize = 40;
 const mosaicStatusLabels = {
   pending: "待筛选", review: "待复核", candidate: "疑似有码",
@@ -74,6 +75,42 @@ const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类�
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
+}
+
+function restoreDefaultSelection(row: Result): Result {
+  if (row.checked || row.manualChecked || row.manualBoxes || row.saved || row.discardedHash || row.refined || row.refineError)
+    return row;
+  const checked = !row.scanned || (!row.reason && (row.boxes.length > 0 || !!row.review));
+  return checked ? { ...row, checked } : row;
+}
+
+function rememberInitialScreening(row: Result): InitialScreening {
+  const { boxes, checked, scanned, detector, reason, review } = row;
+  return row.beforeRefine ?? { boxes, checked, scanned, detector, reason, review };
+}
+
+function reviewedResult(row: Result, scan: MosaicScan, reviewKey: string, detectorKey: string): Result {
+  return { ...row, beforeRefine: rememberInitialScreening(row),
+    boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
+    checked: row.manualChecked ? row.checked : !!scan.boxes.length && !scan.review,
+    refined: reviewKey, refineQuickExcluded: scan.quickExcluded, scanned: true, detector: detectorKey,
+    reason: undefined, refineError: undefined, review: scan.review };
+}
+
+function clearReviewResult(row: Result): Result {
+  const hadLegacyError = row.scanned && !!row.reason;
+  if (row.saved || !(row.beforeRefine || row.refined || row.refineError || hadLegacyError)) return row;
+  const { beforeRefine, refined, refineError, refineQuickExcluded, ...rest } = row;
+  if (!beforeRefine || row.manualBoxes) {
+    return restoreDefaultSelection({ ...rest,
+      reason: hadLegacyError ? undefined : row.reason,
+      review: refined && row.review && !row.manualBoxes ? "候选区域待复核" : row.review,
+    });
+  }
+  return restoreDefaultSelection({ ...rest, ...beforeRefine,
+    scanned: beforeRefine.scanned, detector: beforeRefine.detector, reason: beforeRefine.reason,
+    checked: row.manualChecked ? row.checked : beforeRefine.checked,
+    review: row.manualChecked ? row.review : beforeRefine.review });
 }
 
 function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
@@ -115,7 +152,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const onCompletionChange = useContext(GameMosaicCompletionContext);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
   const [rows, setRows] = useState<Results>(() => {
-    try { return JSON.parse(localStorage.getItem(savedKey) || "{}") || {}; } catch { return {}; }
+    try {
+      const saved: Results = JSON.parse(localStorage.getItem(savedKey) || "{}") || {};
+      for (const id of Object.keys(saved)) saved[id] = restoreDefaultSelection(saved[id]);
+      return saved;
+    } catch { return {}; }
   });
   useEffect(() => {
     if (!storage) return;
@@ -173,17 +214,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const confirmation = useGameActionConfirm(() => {});
   const usable = useMemo(() => images.filter(image => image.sourceFile && image.width > 0 && image.height > 0)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })), [images]);
-  useEffect(() => {
-    if (!onCompletionChange) return;
-    const selectedRows = usable.map(image => resultFor(rows, image)).filter(row => row.checked);
-    onCompletionChange(selectedRows.length > 0 && selectedRows.every(row => row.saved === true));
-  }, [onCompletionChange, rows, usable]);
   useEffect(() => () => onCompletionChange?.(false), [onCompletionChange]);
   const scenes = useMemo(() => {
     const files = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
     return files.length ? files : usable;
   }, [usable]);
   const scoped = scope === "scenes" ? scenes : usable;
+  useEffect(() => {
+    if (!onCompletionChange) return;
+    const selectedRows = scoped.map(image => resultFor(rows, image)).filter(row => row.checked);
+    onCompletionChange(selectedRows.length > 0 && selectedRows.every(row => row.saved === true));
+  }, [onCompletionChange, rows, scoped]);
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => needle ? scoped.filter(image => (image.name + " " + image.file).toLowerCase().includes(needle)) : scoped, [needle, scoped]);
   const imageGroup = useMemo(() => {
@@ -503,13 +544,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     ? JSON.stringify(["custom-yolo-presence-v1", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-presence-v1";
   const reviewKey = mosaicReviewKey(preferences, detectorFile);
   const reviewModels = settings ? gameAvailableModels(settings) : ["qwen3-vl:8b-instruct"];
-  function applyReview(image: UnityImage, scan: import("../gameMosaic").MosaicScan) {
+  function applyReview(image: UnityImage, scan: MosaicScan) {
     setRows(previous => {
       const old = resultFor(previous,image);
       if (old.manualBoxes || old.saved) return previous;
-      return { ...previous, [image.id]: { ...old, boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
-        checked: old.manualChecked ? old.checked : !!scan.boxes.length && !scan.review,
-        refined: reviewKey, refineQuickExcluded: scan.quickExcluded, scanned:true, detector:detectorKey, reason:undefined, refineError:undefined, review:scan.review } };
+      return { ...previous, [image.id]: reviewedResult(old, scan, reviewKey, detectorKey) };
     });
   }
   useEffect(() => {
@@ -519,44 +558,49 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       for(const image of usable) {
         const record=completed[image.id],old=resultFor(previous,image);
         if(record?.source!==image.sourceHash || (old.refined===reviewKey && !!old.refineQuickExcluded===!!record.scan.quickExcluded) || old.manualBoxes || old.saved)continue;
-        const scan=record.scan;
-        next[image.id]={...old,boxes:scan.review?scan.reviewBoxes||scan.boxes:scan.boxes,
-          checked:old.manualChecked?old.checked:!!scan.boxes.length&&!scan.review,
-          refined:reviewKey,refineQuickExcluded:scan.quickExcluded,scanned:true,detector:detectorKey,reason:undefined,refineError:undefined,review:scan.review};
+        next[image.id] = reviewedResult(old, record.scan, reviewKey, detectorKey);
         changed=true;
       }
       return changed?next:previous;
     });
   },[gamePath,usable,reviewKey,detectorKey]);
-  const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, preferences.refineScope, needle, scopedGroup]);
+  const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, needle, scopedGroup]);
   const previousReview = lastReview.current?.key === reviewSessionKey ? lastReview.current : undefined;
-  const reviewScope = currentScope.filter(image => {
+  const isReviewed = (row: Result) => row.refined === reviewKey && !row.refineQuickExcluded;
+  const checkedReviewScope: UnityImage[] = [];
+  const pendingReview: UnityImage[] = [];
+  let reviewedCount = 0;
+  for (const image of currentScope) {
     const row = resultFor(rows,image);
-    if (!row.scanned || row.saved || row.manualBoxes) return false;
-    if (previousReview?.images.get(image.id) === image.sourceHash) return true;
-    if (preferences.refineScope === "selected") return row.checked;
-    return preferences.refineScope === "all" || !!(row.boxes.length || row.review || row.refineError || row.reason);
-  });
-  const pendingReview = reviewScope.filter(image => {
-    const row = resultFor(rows,image);
-    return row.refined !== reviewKey || (row.refineQuickExcluded && preferences.refineScope !== "suspected");
-  });
-  const reviewedCount = reviewScope.length - pendingReview.length;
+    if (!row.scanned || row.saved || row.manualBoxes) continue;
+    if (row.checked) checkedReviewScope.push(image);
+    if (isReviewed(row)) {
+      if (row.checked || previousReview?.images.get(image.id) === image.sourceHash) reviewedCount++;
+    } else if (row.checked) pendingReview.push(image);
+  }
+  const reviewTotal = reviewedCount + pendingReview.length;
   async function performReviews(targets: readonly UnityImage[], signal: AbortSignal, report?: (completed:number,detail:string)=>void,
     restart=false, automatic=false, onPreparation?: (prepared: number) => void) {
     const configuration=settings || await api.getSettings();
     const reviewSettings=automatic ? {...preferences,refineScope:preferences.refineIncludeMissed?"all" as const:"suspected" as const} : preferences;
     return refineMosaicBatch(targets,{root:gamePath,settings:reviewSettings,signal,modelFile:detectorFile,read,prepare:prepareSources,restart,
       request:(model,prompt,image,signal)=>requestGameModelJson(configuration,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
-      onResult:applyReview,onError:(image,error)=>update(image,{refineError:error,refined:undefined,refineQuickExcluded:undefined,checked:false}),
+      onResult: applyReview,
+      onError: (image,error) => setRows(previous => {
+        const row = resultFor(previous, image);
+        return { ...previous, [image.id]: { ...row, beforeRefine: rememberInitialScreening(row),
+          refineError: error, refined: undefined, refineQuickExcluded: undefined } };
+      }),
       onProgress:report,onPreparation});
   }
   function refine(restart=false) {
-    const targets = restart ? reviewScope : pendingReview;
+    const targets = restart ? checkedReviewScope : pendingReview;
     if (!targets.length) return;
     const initial = restart ? 0 : reviewedCount;
     void run("复筛打码图片",async(signal,report)=>{
-      lastReview.current = { key: reviewSessionKey, images: new Map(reviewScope.map(image => [image.id, image.sourceHash])) };
+      const tracked = restart ? new Map<string, string>() : new Map(previousReview?.images);
+      for (const image of checkedReviewScope) tracked.set(image.id, image.sourceHash);
+      lastReview.current = { key: reviewSessionKey, images: tracked };
       if (restart) setRows(previous => {
         const next = { ...previous };
         for (const image of targets) next[image.id] = { ...resultFor(previous,image), refined: undefined, refineQuickExcluded: undefined };
@@ -570,18 +614,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       setProgress("本轮复筛结束 · "+uncertain+" 张待人工确认");
       if(result.failed)setError(result.failed+" 张复筛失败，请查看待复核分组");
       return !result.failed;
-    },{id:"refine",total:reviewScope.length,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
+    },{id:"refine",total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       previousElapsed:restart || !previousReview ? undefined : stepRuns.refine?.elapsed});
   }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
-  const remaining = useMemo(() => currentScope.filter(image => {
+  const screenTargets = currentScope.filter(image => resultFor(rows, image).checked);
+  const isScreened = (image: UnityImage) => {
     const row = resultFor(rows, image);
-    return !row.scanned || (row.detector ?? "grid") !== detectorKey;
-  }), [currentScope, rows, detectorKey]);
-  const screenedCount = currentScope.length - remaining.length;
+    return row.scanned && (row.detector ?? "grid") === detectorKey;
+  };
+  const remaining = screenTargets.filter(image => !isScreened(image));
+  const screenedCount = currentScope.filter(isScreened).length;
+  const screenTotal = screenedCount + remaining.length;
 
   function screen(restart = remaining.length === 0) {
-    const targets = restart ? currentScope : remaining;
+    const targets = restart ? screenTargets : remaining;
     if (!targets.length) return;
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
@@ -625,8 +672,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 const { signature } = scan;
                 const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
                 batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0 && !scan.review && preferences.refine === false,
-                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, refined:undefined, refineQuickExcluded:undefined, refineError:undefined, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
+                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0 || !!scan.review,
+                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, beforeRefine:undefined, refined:undefined, refineQuickExcluded:undefined, refineError:undefined, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
               } catch (cause) {
                 if (signal.aborted) break;
                 failures++;
@@ -666,7 +713,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       });
       setProgress([failures ? failures + " 张读取失败，可在待复核列表查看。" : "", detector?.reused ? "已复用 " + detector.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
       return failures === 0;
-    }, { id: "screen", total: currentScope.length, completed: initial, summary: detectorLabels[detectorKind] });
+    }, { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind] });
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
@@ -819,13 +866,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     (previousScreen.scope === currentScope || previousScreen.scope.every((image, i) =>
       image.id === currentScope[i].id && image.sourceHash === currentScope[i].sourceHash));
   const stoppedScreen = sameScreen && stepRuns.screen?.state === "stopped";
-  const screenAction = currentScope.length && !remaining.length ? "重新筛选"
+  const screenAction = screenTargets.length && !remaining.length ? "重新筛选"
     : screenedCount || stoppedScreen ? "继续筛选" : "开始筛选";
   const lastScreenRun = stepRuns.screen;
   const idleScreen: StepRun = {
-    state: currentScope.length && screenedCount === currentScope.length ? "done" : screenedCount ? "stopped"
+    state: screenTotal && !remaining.length ? "done" : screenedCount ? "stopped"
       : currentScope.some(image => resultFor(rows, image).reason) ? "error" : "pending",
-    total: currentScope.length, completed: screenedCount,
+    total: screenTotal, completed: screenedCount,
   };
   const screenStatus = lastScreenRun?.state === "running" ? lastScreenRun : {
     ...idleScreen,
@@ -834,13 +881,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     device: sameScreen ? lastScreenRun?.device : undefined,
   };
   const refineStatus: StepRun = stepRuns.refine?.state==="running" ? stepRuns.refine : {
-    state:reviewScope.length && !pendingReview.length ? "done"
+    state:reviewTotal && !pendingReview.length ? "done"
       : previousReview && stepRuns.refine?.state==="error" ? "error"
       : (previousReview && stepRuns.refine?.state==="stopped") || reviewedCount ? "stopped" : "pending",
-    total:reviewScope.length,completed:reviewedCount,elapsed:previousReview ? stepRuns.refine?.elapsed : undefined,
+    total:reviewTotal,completed:reviewedCount,elapsed:previousReview ? stepRuns.refine?.elapsed : undefined,
     prepared:previousReview ? stepRuns.refine?.prepared : undefined
   };
-  const canClear = [refineStatus.state,screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
+  const canClearStep = (state?: GameProgressState) => state === "stopped" || state === "error" || state === "done";
+  const canClearRefine = canClearStep(refineStatus.state) || canClearStep(stepRuns.refine?.state);
+  const canClearRedraw = canClearStep(stepRuns.redraw?.state) || Object.keys(candidates).length > 0;
+  const canClear = canClearStep(screenStatus.state) || canClearRefine || canClearRedraw;
   const pausedRedraw = (stepRuns.redraw?.state === "stopped" || stepRuns.redraw?.state === "error") ? pendingRedraw.current : null;
   const redrawRemaining = pausedRedraw?.targets.filter(target => target.pending.size).length ?? 0;
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
@@ -873,11 +923,59 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
 
   const actionsDisabled = !!busy || disabled;
+  function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
+    setStepRuns(previous => ({ ...previous, [step]: undefined, ...(resetRedraw && { redraw: undefined }) }));
+    if (progressStep === step || resetRedraw && progressStep === "redraw") {
+      setProgressStep(undefined);
+      setProgress("");
+      setError("");
+    }
+  }
+
+  async function clearRefine() {
+    if (actionsDisabled || !canClearRefine) return;
+    if (!await confirmation.confirm("清理本工程的复筛进度和结果，并恢复已有的初筛记录？", {
+      title: "清理复筛", okLabel: "清理",
+    }) || task.current) return;
+
+    clearMosaicReviews(gamePath);
+    const changedMasks = new Set<string>();
+    const next: Results = {};
+    for (const [id, row] of Object.entries(rows)) {
+      const cleared = clearReviewResult(row);
+      next[id] = cleared;
+      if (cleared.boxes !== row.boxes && JSON.stringify(cleared.boxes) !== JSON.stringify(row.boxes)) changedMasks.add(id);
+    }
+    const resetRedraw = pendingRedraw.current?.targets.some(({ image }) => changedMasks.has(image.id)) ?? false;
+    if (resetRedraw) pendingRedraw.current = null;
+    if (changedMasks.size) {
+      setCandidates(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !changedMasks.has(id))));
+      if (active && changedMasks.has(active.id)) setPreferredResult(undefined);
+    }
+    setRows(next);
+    lastReview.current = null;
+    clearStepProgress("refine", resetRedraw);
+    showAppNotice("已清理复筛");
+  }
+
+  async function clearRedraw() {
+    if (actionsDisabled || !canClearRedraw) return;
+    if (!await confirmation.confirm("清理未确认的重绘候选和重绘进度？已确认的去码图会保留。", {
+      title: "清理重绘", okLabel: "清理",
+    }) || task.current) return;
+
+    pendingRedraw.current = null;
+    setCandidates({});
+    setPreferredResult(undefined);
+    clearStepProgress("redraw");
+    showAppNotice("已清理重绘");
+  }
+
   async function clearTask() {
     if (!canClear || actionsDisabled) return;
     const count = usable.filter(image => {
       const row = resultFor(rows, image);
-      return row.scanned || row.checked || row.saved && !storage?.index[image.id]?.included ||
+      return row.scanned || row.manualChecked || row.saved && !storage?.index[image.id]?.included ||
         row.boxes.length || row.reason || row.refineError || row.manualGroup || candidates[image.id]?.revision === image.sourceHash;
     }).length;
     if (count > 0 && !await confirmation.confirm(`清除本次任务中 ${count} 张图片的筛选、选择、确认结果和进度？已纳入补丁的去码图将保留。`, {
@@ -933,13 +1031,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
       <div className="game-flow-list"><ol>
         {stepCard("screen", "筛选打码图片", screenSummary, <>
-          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length}
+          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !screenTargets.length}
             onClick={() => screen()}>{screenAction}</button>
           {canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
             onClick={() => void clearTask()}>清理</button>}
         </>, <>
           {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled}
-            onClick={() => screen(true)}>重新筛选全部范围</button>}
+            onClick={() => screen(true)}>重新筛选已勾选图片</button>}
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setGroupPages({}); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
@@ -954,9 +1052,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {detectorFile && <button type="button" className="unity-btn" disabled={!!busy} onClick={()=>{clearGameDetectorFile(gamePath);setDetectorFile(undefined);}}>使用内置模型</button>}
           </label>}
         </>)}
-        {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest",
-          <button type="button" className="unity-btn game-flow-start" disabled={actionsDisabled || !reviewScope.length}
-            onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&reviewScope.length?"重新复筛":reviewedCount||stepRuns.refine?.state==="stopped"?"继续复筛":"开始复筛"}</button>,<>
+        {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest", <>
+          <button type="button" className="unity-btn game-flow-start" disabled={actionsDisabled || !checkedReviewScope.length}
+            onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&checkedReviewScope.length?"重新复筛":reviewedCount||stepRuns.refine?.state==="stopped"?"继续复筛":"开始复筛"}</button>
+          {canClearRefine && <button type="button" className="unity-btn game-flow-clear"
+            aria-label="清理复筛" disabled={actionsDisabled} onClick={() => void clearRefine()}>清理</button>}
+        </>,<>
           <label>候选区域推理模型<select aria-label="去码复筛视觉模型" value={preferences.refineModel || "qwen3.5:latest"} disabled={!!busy} onChange={e=>changePreferences({refineModel:e.target.value})}>
             {[...new Set(["qwen3.5:latest",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
           </select></label>
@@ -964,19 +1065,19 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {[...new Set(["qwen3-vl:8b-instruct",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
           </select></label>
           <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
-          <label>手动复筛范围<select value={preferences.refineScope || "suspected"} disabled={!!busy} onChange={e=>changePreferences({refineScope:e.target.value as typeof preferences.refineScope})}>
-            <option value="all">全部已筛选图片（含未发现，耗时长）</option><option value="suspected">疑似及待复核</option><option value="selected">已勾选图片</option>
-          </select></label>
           <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={!!busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}><option value={1}>1</option><option value={2}>2</option></select></label>
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={!!preferences.refineIncludeMissed} disabled={!!busy} onChange={e=>changePreferences({refineIncludeMissed:e.target.checked})}/>自动流程使用大模型补查未发现（耗时长）</label>
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={preferences.refine!==false} disabled={!!busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
         </>)}
-        {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model],
+        {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model], <>
           <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason}
             data-tooltip={batchReason ?? (pausedRedraw ? "按上一次重绘的图片及配置继续" : undefined)}
             onClick={() => pausedRedraw ? startRedraw(pausedRedraw,true) : generate(redrawGroup, [model])}>
             {pausedRedraw ? "继续重绘 · 剩余 " + redrawRemaining : "重绘本组所选 · " + redrawGroup.length} 张
-          </button>, <>
+          </button>
+          {canClearRedraw && <button type="button" className="unity-btn game-flow-clear"
+            aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void clearRedraw()}>清理</button>}
+        </>, <>
           <label>去码模型<select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => {
             const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: next === "turbo" ? 8 : 20 });
           }}>
