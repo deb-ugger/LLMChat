@@ -41,7 +41,7 @@ function embeddingCapabilities(game: EmbeddingGame) {
   return {
     textSource: unreal ? "locres" : rpgMaker || wolf ? "engine-data" : null,
     imageProject: rpgMaker || wolf || unreal,
-    selfMosaic: rpgMaker || wolf,
+    selfMosaic: rpgMaker || wolf || unreal,
     thirdPartyMosaic: unreal,
     runtimeDictionary: rpgMaker,
     backupScopes: [
@@ -210,10 +210,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     },
     apply: async preset => {
       const text = textHandle.current, images = imageHandle.current;
-      if (busyRef.current || !text || !textInfo.sourcePath || preset.images && !images) throw new Error("请等待工程读取或当前任务结束");
+      if (busyRef.current || !text || !(textInfo.sourcePath || preset.images && imageWorkflow.loaded) || preset.images && !images) throw new Error("请等待工程读取或当前任务结束");
       setApplyingTestConfiguration(true);
       try {
-        await text.applyTestConfiguration(preset.text);
+        if (textInfo.sourcePath) await text.applyTestConfiguration(preset.text);
         if (preset.images && images) {
           try { await images.applyTestConfiguration(preset.images); }
           catch (error) { throw new Error(`文本测试配置已保存，图片配置保存失败：${error instanceof Error ? error.message : String(error)}`); }
@@ -259,7 +259,15 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     "当前游戏已有文本补丁。继续会按当前生成的译文更新补丁，请先关闭游戏。",
     {title:"已有文本补丁",okLabel:"继续更新",cancelLabel:"取消"});
   const hasTextScan = !!(scanPath || textInfo.sourcePath);
+  const scanStarted = useRef<number | null>(null);
+  const [scanElapsed, setScanElapsed] = useState<number | null>(null);
   const scanning = (pending && pendingAction === "extract") || (status.action === "extract" && status.state === "running");
+  useEffect(() => {
+    if (scanning && scanStarted.current === null) scanStarted.current = performance.now();
+    if (!scanning && scanStarted.current !== null) {
+      setScanElapsed((performance.now()-scanStarted.current)/1000); scanStarted.current = null;
+    }
+  }, [scanning]);
   useEffect(() => {
     if (textSource === "locres" && status.state === "error" && (status.action === "extract" || status.action === "inspect")
         && status.detail?.startsWith("未找到散装 .locres")) {
@@ -410,9 +418,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     }
     recordImageArtifact(kind, ids, true, draft);
   };
-  const prepareMosaic = async (signal: AbortSignal) => {
+  const prepareMosaic = async (signal: AbortSignal, ids?: string[]) => {
     if (!mosaicHandle.current) throw new Error("去码工程尚未加载");
-    const artifact = { ...await mosaicHandle.current.prepare(signal), applied: false };
+    const artifact = { ...await mosaicHandle.current.prepare(signal, ids), applied: false };
     recordImageArtifact("mosaic", artifact.ids, false, artifact);
     return artifact;
   };
@@ -453,8 +461,16 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             throw new Error("图片翻译未完成，请检查失败图片");
           imageIds = imageHandle.current!.outputIds();
           recordImageArtifact("images", imageIds);
-        } else if (phase === "mosaic" && mosaicHandle.current?.selectedIds().length) {
-          mosaicDraft = await step("generateMosaic", () => prepareMosaic(signal));
+        } else if (phase === "mosaic") {
+          await step("generateMosaic", async () => {
+            if (!imageHandle.current) throw new Error("图片工程尚未加载");
+            if (!await imageHandle.current.ensureIndex(signal)) return;
+            await deploymentPoll();
+            signal.throwIfAborted();
+            if (!mosaicHandle.current) throw new Error("去码工程尚未加载");
+            const ids = await mosaicHandle.current.automatic(signal);
+            if (ids.length) mosaicDraft = await prepareMosaic(signal, ids);
+          });
         } else if (phase === "apply") {
           if (followAutomatic.current) { setPart("text"); setTextStep(3); }
           const text = latestWorkflow.current.text;
@@ -621,15 +637,14 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const phaseStatus = deployment?.state === "running" ? `正在${phaseLabel}`
     : deployment?.state === "stopped" ? `已中止 · ${phaseLabel} · 已完成产物保留`
       : deployment?.state === "error" ? `失败 · ${phaseLabel} · ${deployment.detail}` : "";
-  const canApplyText = !!artifacts.text && !artifacts.text.applied && status.state === "done";
+  const canApplyText = !!artifacts.text?.path && !artifacts.text.applied;
   const deploymentPanel = <div className="embed-deployment">
     <section className="embed-deploy-main" aria-label="生成与应用">
-      {(canUseTextResources || imageProject) && <div className="embed-deploy-actions" role="group" aria-label="生成">
-        <strong>生成</strong>
-        {canUseTextResources && <button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={busy || !canGenerate} onClick={generateTextPatch}>生成补丁</button>}
-        {imageProject && <button type="button" className="unity-btn" disabled={busy || !imageWorkflow.loaded} onClick={generateImages}>生成译图</button>}
-        {selfMosaic && <button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={busy || !imageWorkflow.loaded} onClick={generateMosaic}>生成去码图</button>}
-      </div>}
+      <div className="dpl dpl-grid embed-product-grid">
+        {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={busy || !canGenerate} onClick={generateTextPatch}>生成补丁</button></div></section>}
+        {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={busy || !imageWorkflow.loaded} onClick={generateImages}>生成译图</button></div></section>}
+        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={busy || !imageWorkflow.loaded} onClick={generateMosaic}>生成去码图</button></div></section>}
+        <section className="dpl-panel" aria-label="应用到游戏"><div className="dpl-panel-head"><h3>应用到游戏</h3></div>
       <div className="embed-deploy-status" role="status">
         {stagedProducts && <strong>已生成，未应用 · {stagedProducts}</strong>}
         {appliedProducts && <strong className="is-installed">已应用 · {appliedProducts}</strong>}
@@ -664,6 +679,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" disabled={busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
         <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" disabled={busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
       </div>
+        </section></div>
     </section>
     {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running" />}
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
@@ -750,7 +766,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   if (hasTextScan && (workflow.textSkipped || textInfo.selected === textInfo.done)) completed.push("text");
   if (imageWorkflow.complete || workflow.imagesSkipped) completed.push("image");
   if (mosaicComplete) completed.push("mosaic");
-  if (automatic === "done" || patch.installed) completed.push("apply");
+  const applied = !stagedProducts && (!!appliedProducts || patch.installed || automatic === "done");
+  if (applied) completed.push("apply");
   const activeCanvasStep = (Object.keys(stageIds) as CanvasStep[]).find(id => stageIds[id] === deploymentStep);
   const run = deploymentRunning && deployment?.mode === "automatic" ? {
     mode: "automatic" as const, steps: activeCanvasStep ? [activeCanvasStep] : [],
@@ -760,7 +777,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const canvas: DeploymentModel = {
     root: game.path, supportedPhases, plan, run, stoppedStep: deployment?.state === "stopped" ? activeCanvasStep ?? null : null,
     completed, canStop: deploymentRunning, textCount: textInfo.changed, busyLabel: deploymentRunning ? phaseLabel : null,
-    locked: busy || !(canUseTextResources || imageProject), patchReady: canGenerate, patch: null, applied: automatic === "done",
+    locked: busy || !(canUseTextResources || imageProject), patchReady: canGenerate, patch: null, staged: !!stagedProducts, applied,
     installed: patch.installed, fontPath, fontName: "", extraCharacters: "", fontPlan: null, entries: [],
     images: { total: imageWorkflow.count ?? 0, ready: imageWorkflow.valid },
     mosaic: { enabled: selfMosaic, count: mosaicHandle.current?.selectedIds().length ?? 0 },
@@ -768,6 +785,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel"
     edges={deploymentPage ? validation.effectiveEdges.map(({ from, to }) => ({ from: stageIds[from], to: stageIds[to] })) : undefined}
+    skipped={deploymentPage ? plan.disabled.map(id => stageIds[id]) : undefined}
     enabled={deploymentPage ? validation.enabledSteps.map(id => stageIds[id]) : undefined}
     disconnected={deploymentPage ? validation.disconnected.map(id => stageIds[id]) : undefined} steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(imageProject?[{id:"2.2",label:"图片翻译"}]:[]),...(selfMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
     const selected=item.id===activeWorkflowId;
@@ -793,6 +811,13 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           onClick={() => automatic === "running" ? stopDeployment() : void runAutomatic()}>
           <UnityActionIcon kind={automatic === "running" ? "cancel" : "run"} />
         </UnityIconButton>}
+        <UnityIconButton aria-label="保存工程" title="保存文本与图片修改" disabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} onClick={async()=>{
+          try {
+            if (textInfo.dirty && !await textHandle.current?.prepare()) return;
+            await imageHandle.current?.saveChanges();
+            showAppNotice("工程已保存");
+          } catch (cause) { setError(String(cause)); }
+        }}><UnityActionIcon kind="save"/></UnityIconButton>
         <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
@@ -811,7 +836,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           {(status.state === "running" || status.state === "error" || status.state === "stopped") && progress(["inspect","embed"])}
           {output("补丁目录",artifacts.text?.path)}
           <div className="dpl embed-deployment-canvas">
-            <DeploymentCanvas model={canvas} percent={run ? 100 * run.completed / Math.max(1, run.total) : canvas.applied ? 100 : 0}
+            <DeploymentCanvas model={canvas} percent={run ? 100 * run.completed / Math.max(1, run.total) : canvas.applied ? 100 : canvas.staged ? 80 : 0}
               running={deploymentRunning} onFocusStep={id => selectWorkflow(stageIds[id])} actions={{
                 execute: () => void runAutomatic(),
                 stop: stopDeployment,
@@ -832,6 +857,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             : "扫描 Content/Localization 下的散装 .locres。按游戏实际使用的原文语言筛选后再翻译。"}
         </p>}
         {textStep===1&&scanResources}
+        {textStep===1 && imageWorkflow.scanTiming && <details><summary>图片扫描 · 重新解析 {imageWorkflow.scanTiming.parsed} 张 · 复用 {imageWorkflow.scanTiming.reused} 张</summary>
+          <p>读取旧工程 {imageWorkflow.scanTiming.loadMs} ms · 查找资源 {imageWorkflow.scanTiming.listMs} ms · 校验与解析 {imageWorkflow.scanTiming.parseMs} ms</p></details>}
+        {textStep===1 && scanElapsed!==null && !scanning && <details><summary>扫描计时 · {scanElapsed.toFixed(1)} 秒</summary><p>文本 {textInfo.count} 条 · 图片 {imageWorkflow.count ?? 0} 张</p></details>}
         {textStep===3&&validationErrors.length>0&&<div className="unity-step-batch"><GameBatchResults errors={validationErrors} onLocate={locateBatch}/></div>}
         {textStep===3&&fileConflicts.length>0&&<div className="unity-step-batch"><GameBatchResults errors={fileConflicts} onLocate={locateBatch}/></div>}
         {textStep===3&&imageProject&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}

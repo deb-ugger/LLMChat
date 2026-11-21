@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -23,7 +23,8 @@ type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string 
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
 export type GameMosaicDeploymentHandle = {
-  prepare: (signal: AbortSignal) => Promise<{ ids: string[]; patchId: string; path: string }>;
+  prepare: (signal: AbortSignal, ids?: string[]) => Promise<{ ids: string[]; patchId: string; path: string }>;
+  automatic: (signal: AbortSignal) => Promise<string[]>;
   selectedIds: () => string[];
   apply: (ids: string[], undo?: boolean, patchId?: string) => Promise<number>;
 };
@@ -125,14 +126,17 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
   const filterMenu = useRef<HTMLDivElement>(null);
   const [configured, setConfigured] = useState<MosaicStep | null>(null);
-  const [scope, setScope] = useState<"scenes" | "all">("scenes");
-  const [detectorKind, setDetectorKind] = useState<"grid" | "lada">("grid");
-  const [detectorFile, setDetectorFile] = useState<File>();
+  const [preferences, setPreferences] = useState(() => readMosaicSettings(gamePath));
+  const { scope, detector: detectorKind, model, steps, protect } = preferences;
+  const changePreferences = (patch: Partial<typeof preferences>) => saveMosaicSettings(gamePath, { ...preferences, ...patch });
+  useEffect(() => {
+    const refresh = () => setPreferences(readMosaicSettings(gamePath));
+    refresh(); window.addEventListener("game-mosaic-settings", refresh);
+    return () => window.removeEventListener("game-mosaic-settings", refresh);
+  }, [gamePath]);
+  const [detectorFile, setDetectorFile] = useState(() => gameDetectorFile(gamePath));
   const [sceneFilter, setSceneFilter] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"all" | "candidate" | "unknown" | "clear">("all");
-  const [model, setModel] = useState<MosaicModel>("turbo");
-  const [steps, setSteps] = useState(8);
-  const [protect, setProtect] = useState(true);
   const [activeId, setActiveId] = useState<string | null>("");
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
@@ -336,8 +340,37 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     });
     deploymentHandle.current = {
       selectedIds: () => selected.map(image => image.id),
-      prepare: async signal => {
-        const imageIds = selected.map(image => image.id);
+      automatic: async signal => {
+        const ids = new Set(selected.map(image => image.id));
+        const status = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-status", {
+          method: "POST", signal, headers: { "Content-Type":"application/json" }, body: JSON.stringify({ gamePath })
+        }));
+        const { candidates: existing } = await status.json() as { candidates: Record<string,string> };
+        for (const image of usable) {
+          const row = resultFor(rows, image);
+          if (existing[image.id] === image.sourceHash && row.discardedHash !== image.sourceHash && !(row.manualChecked && !row.checked))
+            ids.add(image.id);
+        }
+        const unscreened = scoped.filter(image => !ids.has(image.id) && !(resultFor(rows, image).manualChecked && !resultFor(rows, image).checked));
+        if (!unscreened.length) return [...ids];
+        const detector = await openDeploymentDetector(gamePath, preferences, signal);
+        try {
+          for (const image of unscreened) {
+            signal.throwIfAborted();
+            const row = resultFor(rows, image);
+            const source = await read(image, signal);
+            const boxes = row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
+              ? row.boxes : (await detector.scan(source)).boxes;
+            if (!boxes.length) { update(image, { boxes, scanned:true, detector:detectorKey, reason:undefined }); continue; }
+            const rendered = await redrawMosaic({ source, boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, progress: setProgress });
+            await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: rendered, signal }));
+            ids.add(image.id);
+            update(image, { boxes, scanned: true, detector: detectorKey, saved: true, checked: true, discardedHash: undefined });
+          }
+          return [...ids];
+        } finally { await detector.release(); }
+      },
+      prepare: async (signal, imageIds = selected.map(image => image.id)) => {
         const patchId = crypto.randomUUID().replaceAll("-", "");
         const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-prepare", {
           method: "POST", signal, headers: { "Content-Type": "application/json" },
@@ -731,28 +764,28 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         </>, <>
           {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn" disabled={actionsDisabled}
             onClick={() => screen(true)}>重新筛选全部范围</button>}
-          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { setScope(event.target.value as typeof scope); setPage(0); }}>
+          <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setPage(0); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
-          <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => setDetectorKind(event.target.value as typeof detectorKind)}>
+          <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
             <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option>
           </select></label>
           {detectorKind === "lada" && <label>本地模型
-            <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(event.target.files?.[0])} />
+            <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
           </label>}
         </>)}
         {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model],
           <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason} data-tooltip={batchReason}
             onClick={() => generate(redrawGroup, [model])}>重绘本组所选 · {redrawGroup.length} 张</button>, <>
           <label>去码模型<select aria-label="去码模型" value={model} disabled={!!busy} onChange={event => {
-            const next = event.target.value as MosaicModel; setModel(next); setSteps(next === "turbo" ? 8 : 20);
+            const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: next === "turbo" ? 8 : 20 });
           }}>
             <option value="turbo">{mosaicModelLabels.turbo}</option><option value="2511">{mosaicModelLabels["2511"]}</option>
           </select></label>
           {model === "2511" && <label>步数<input type="number" min={1} max={100} value={steps} disabled={!!busy}
-            onChange={event => setSteps(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} /></label>}
+            onChange={event => changePreferences({ steps: Math.max(1, Math.min(100, Number(event.target.value) || 1)) })} /></label>}
           <label className="game-mosaic-checkbox"><input type="checkbox" checked={protect} disabled={!!busy}
-            onChange={event => setProtect(event.target.checked)} />保护已识别文字</label>
+            onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label>
         </>)}
       </ol></div>
       {(progress || error) && <div className="game-flow-progress">

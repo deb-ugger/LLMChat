@@ -21,6 +21,8 @@ export type GameTestTextOptions = Omit<GameTextOptions, "model" | "screeningMode
   engines: UnityEngineChoice[]; lineMode?: UnityLineMode;
 };
 export type GameTestImageOptions = {
+  mosaic?: import("./gameMosaic").MosaicSettings;
+  redrawProfile?: import("./gameImagePlacement").StyleRedrawProfileId;
   mode: OcrMode; concurrency: number; confidence?: number; strategy?: "staged" | "full";
   refine?: { method: "local" | "llm" | "off"; mode: Exclude<OcrMode, "manga">; concurrency: number; confidence: number };
   translation?: Pick<GameTextOptions, "source" | "target" | "onlySourceLanguage" | "skipTargetLanguage" | "kind"> & {
@@ -133,6 +135,8 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   setRole(text.roles, "names", modelId(testModels.qwen));
   const images = value.images;
   if (!images) return value;
+  if (images.options.mosaic) images.options.mosaic = { detector: "grid", scope: "scenes", model: "turbo", steps: 8, protect: true };
+  if (images.options.redrawProfile) images.options.redrawProfile = "turbo";
   const imageLanguage = images.options.translation ?? text.options;
   const hasScreeningStep = images.options.strategy !== undefined;
   images.options.mode = hasScreeningStep ? (imageLanguage.source === "ja" || imageLanguage.source === "auto" ? "manga" : "precise") : "fast";

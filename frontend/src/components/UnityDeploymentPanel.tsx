@@ -15,6 +15,7 @@ export type DeploymentModel = {
   busyLabel: string | null;
   locked: boolean;
   patchReady: boolean;
+  staged?: boolean;
   patch: UnityPatch | null;
   applied: boolean;
   installed: boolean;
@@ -42,6 +43,7 @@ export type DeploymentActions = {
   regenerate: () => void;
   apply: () => void;
   uninstall: () => void;
+  removeLayer?: (phase: DeploymentPhase) => void;
   reapply: () => void;
   launch: () => void;
   openReport: () => void;
@@ -248,7 +250,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
       : id === "text" ? `${model.textCount} 条`
       : id === "image" ? `${model.images.ready} / ${model.images.total}`
       : id === "mosaic" ? `${model.mosaic.count} 张`
-      : model.applied ? "已应用" : model.patch ? "待应用" : "未生成",
+      : model.applied ? "已应用" : model.patch || model.staged ? "待应用" : "未生成",
   }));
   const enabled = (id: DeploymentStep) => !plan.disabled.includes(id);
   const validation = validateDeploymentPlan(plan);
@@ -261,7 +263,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
   const remaining = new Set(steps.filter(id => id === model.stoppedStep || !model.completed.includes(id)));
   releaseSkipped({ ...plan, disabled: plan.disabled.filter(isPhase) }, remaining);
   const canRun = !!model.root && !locked && !run && !running;
-  const canApply = !model.applied && (!!model.patch || model.patchReady && !deploymentPhases.some(id => enabled(id) && remaining.has(id)));
+  const canApply = !model.applied && (!!model.patch || model.staged || model.patchReady && !deploymentPhases.some(id => enabled(id) && remaining.has(id)));
   const nodePoint = (step: DeploymentStep) => motion?.step === step ? motion.at : plan.positions[step];
   const graph = (): FlowGraph => ({ positions: plan.positions, edges: plan.edges });
   const point = (element: HTMLElement, clientX: number, clientY: number): Point => {
@@ -679,6 +681,11 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
               : <button className="dpl-btn dpl-btn-primary" disabled={!model.patch || model.locked} onClick={actions.apply}>应用到游戏</button>}
             <button className="dpl-btn dpl-btn-danger" disabled={!model.installed || model.locked} onClick={actions.uninstall}>卸载</button>
           </div>
+          {model.applied && model.installed && model.patch && actions.removeLayer && <div className="dpl-actions">
+            {deploymentPhases.filter(phase => phase === "text" ? model.patch!.entries > 0 || model.patch!.fontReplacements > 0
+              : phase === "image" ? !!model.patch!.images : !!(model.patch as UnityPatch & {mosaicImages?: number}).mosaicImages)
+              .map(phase => <button key={phase} className="dpl-btn" disabled={model.locked} onClick={()=>actions.removeLayer?.(phase)}>卸载{phase === "text" ? "文本" : phase === "image" ? "译图" : "去码图"}</button>)}
+          </div>}
           <div className="dpl-mosaic">
             <span>第三方去码补丁</span>
             {mosaic}

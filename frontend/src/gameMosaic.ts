@@ -44,6 +44,30 @@ export function createMosaicGridScanner() {
   };
 }
 
+export type MosaicSettings = {
+  detector: "grid" | "lada"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
+};
+export const defaultMosaicSettings: MosaicSettings = { detector: "grid", scope: "scenes", model: "turbo", steps: 8, protect: true };
+const detectorFiles = new Map<string, File>();
+export function gameDetectorFile(root: string, file?: File) {
+  if (file) detectorFiles.set(root, file);
+  return detectorFiles.get(root);
+}
+export function readMosaicSettings(root: string): MosaicSettings {
+  const saved = localStorage.getItem("llmchat-mosaic-settings:" + root);
+  return { ...defaultMosaicSettings, ...(saved ? JSON.parse(saved) : {}) };
+}
+export function saveMosaicSettings(root: string, settings: MosaicSettings) {
+  localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(settings));
+  window.dispatchEvent(new CustomEvent("game-mosaic-settings", { detail: root }));
+}
+export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal) {
+  if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
+  const file = gameDetectorFile(root);
+  if (!file) throw new Error("请在图片去码页选择本次使用的 Lada ONNX 文件");
+  return loadLadaDetector(file, { signal });
+}
+
 const threshold = 0.25;
 function overlap(a: MosaicBox, b: MosaicBox) {
   const area = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *

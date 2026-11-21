@@ -5,6 +5,7 @@
 #include "GameImageStateStore.h"
 #include "RpgImageComposition.h"
 #include <memory>
+#include <chrono>
 #include <set>
 #include <mutex>
 #include <sstream>
@@ -195,7 +196,7 @@ public:
     Json info(const Path& game){data(game);return {{"exists",std::filesystem::is_regular_file(folder(game)/"project.json")},{"folder",utf8path::pathUtf8(folder(game))}};}
     Json stopReading(const Path& game){readEpoch_.fetch_add(1);std::lock_guard lock(mutex_);data(game);catalogs_.erase(game);stores_.erase(game);restored_.erase(game);indexes_.erase(game);return {{"cleared",true}};}
     Json load(const Path& game,const std::function<void(size_t,size_t,const std::string&)>& progress={}){const auto epoch=readEpoch_.load();std::lock_guard lock(mutex_);checkRead(epoch);data(game);const auto path=folder(game)/"project.json";if(!std::filesystem::is_regular_file(path))return nullptr;auto result=catalog(game,epoch,progress);checkRead(epoch);if(progress)progress(result.at("images").size(),result.at("images").size(),"图片工程读取完成");return result;}
-    Json scan(const Path& game,const std::function<void(size_t,size_t,const std::string&)>& progress={}){std::lock_guard lock(mutex_);const auto scanEpoch=readEpoch_.load();checkRead(scanEpoch);if(progress)progress(0,0,"读取图片工程");auto db=data(game);auto previous=load(game);
+    Json scan(const Path& game,const std::function<void(size_t,size_t,const std::string&)>& progress={}){std::lock_guard lock(mutex_);using Clock = std::chrono::steady_clock; const auto started=Clock::now(); const auto scanEpoch=readEpoch_.load();checkRead(scanEpoch);if(progress)progress(0,0,"读取图片工程");auto db=data(game);auto previous=load(game); const auto loaded=Clock::now();
         struct Source { Path file; Path archive; std::string revision; std::string fileStamp; };
         std::map<Path, Source> files;
         std::vector<Path> archives;
@@ -248,13 +249,14 @@ public:
             byFile.reserve(oldImages.size());
             for (size_t i=0;i<oldImages.size();++i) byFile.emplace(oldImages[i].at("file").get<std::string>(),i);
         }
+        const auto listed=Clock::now(); size_t reused=0;
         Json images=Json::array();
         const auto key=(db.empty() || wolf)?std::string():imageKey(game/db/"System.json");
         size_t completed=0;if(progress)progress(0,files.size(),"读取图片信息");
         for(const auto& [logical,source]:files){const auto& file=source.file;checkRead(scanEpoch);if(progress&&(completed%16==0))progress(completed,files.size(),"读取图片信息："+utf8path::pathUtf8(file.filename()));++completed;const auto name=gamefiles::key(logical);auto hash=source.archive.empty()?stamp(file):packedStamp(source.revision,source.fileStamp);if(auto found=byFile.find(name);found!=byFile.end()){
             auto& old=previous["images"][found->second];
             const auto oldId=old.at("id").get<std::string>();
-            if(old.at("sourceHash").get<std::string>()==hash && old.value("archiveRevision","")==source.revision){images.push_back(std::move(old));continue;}
+            if(old.at("sourceHash").get<std::string>()==hash && old.value("archiveRevision","")==source.revision){++reused; images.push_back(std::move(old));continue;}
             const auto translation=installedImage(game,oldId,false);
             const auto mosaic=installedImage(game,oldId,true);
             const auto combined=composedImage(game,oldId);
@@ -264,7 +266,7 @@ public:
                 const auto current=gamefiles::read(file);
                 if(matchesInstalled(translation,current)||matchesInstalled(mosaic,current)||matchesInstalled(combined,current)||
                    (std::filesystem::is_regular_file(original)&&current==imageBytes(old,gamefiles::read(original),key,true))){
-                    images.push_back(std::move(old));
+                    ++reused; images.push_back(std::move(old));
                     continue;
                 }
             }
@@ -277,7 +279,11 @@ public:
             }
         }
         checkRead(scanEpoch);if(progress)progress(completed,files.size(),"保存图片索引");
-        Json project={{"version",1},{"scanRevision",5},{"root",utf8path::pathUtf8(game)},{"folder",utf8path::pathUtf8(folder(game))},{"entries",Json::array()},{"images",std::move(images)},{"fonts",Json::array()},{"warnings",Json::array()},{"hashes",Json::object()}};saveJson(folder(game)/"project.json",project);catalogs_[game]=project;restored_.insert(game);indexes_.erase(game);return project;
+        const auto finished=Clock::now();
+        auto ms=[](auto start,auto end){return std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();};
+        Json timing={{"parsed",images.size()-reused},{"reused",reused},{"loadMs",ms(started,loaded)},
+                     {"listMs",ms(loaded,listed)},{"parseMs",ms(listed,finished)}};
+        Json project={{"imageScanTiming",timing},{"version",1},{"scanRevision",5},{"root",utf8path::pathUtf8(game)},{"folder",utf8path::pathUtf8(folder(game))},{"entries",Json::array()},{"images",std::move(images)},{"fonts",Json::array()},{"warnings",Json::array()},{"hashes",Json::object()}};saveJson(folder(game)/"project.json",project);catalogs_[game]=project;restored_.insert(game);indexes_.erase(game);return project;
     }
     std::string preview(const Path& game,const std::string& imageId,bool translated){std::lock_guard lock(mutex_);validId(imageId);auto image=imageRow(game,imageId);if(translated){if(image.value("renderedFile","").empty())throw std::runtime_error("尚未生成译图");return gamefiles::read(folder(game)/"rendered"/(imageId+".png"));}const auto cache=originalCache(game,image);if(std::filesystem::is_regular_file(cache))return gamefiles::read(cache);auto file=originalSource(game,image);if(sourceStamp(file,image)!=image.at("sourceHash").get<std::string>())throw std::runtime_error("原图片已改变，请重新扫描");auto bytes=gamefiles::read(file);if(image.value("encrypted",false)){bytes=codec(std::move(bytes),imageKey(game/data(game)/"System.json"),false);}dimensions(bytes);return bytes;}
     Json saveImage(const Path& game,const Json& edit){return saveMany(game,Json::array({edit})).at(0);}

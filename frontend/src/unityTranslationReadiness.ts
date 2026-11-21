@@ -3,13 +3,13 @@ import { unityTranslationStats, unityTranslationContextKey } from "./unityTransl
 import { unityImageReadyForTarget, unityImageWorkDone } from "./unityWorkflow";
 import { unityImageResultGroup } from "./unityImages";
 
-export function unityTranslationReadiness(project: UnityProject | null, selected: UnityEntry[], validate: (source: string, translation: string) => string, partial = false, target?: string) {
+export function unityTranslationReadiness(project: UnityProject | null, selected: UnityEntry[], validate: (source: string, translation: string) => string, partial = false, target?: string, imageTarget = target) {
   const stats = unityTranslationStats(selected, validate, unityTranslationContextKey, target);
   const textComplete = !!project && stats.coverageCompleted === selected.length;
   const textSkipped = !!project?.textSkipped || partial && stats.coverageCompleted > 0 && !textComplete;
   const images = (project?.images || []).filter(image => image.selected);
-  const validImages = images.filter(image => unityImageReadyForTarget(image, target));
-  const completedImages = images.filter(image => unityImageWorkDone(image, target)).length;
+  const validImages = images.filter(image => unityImageReadyForTarget(image, imageTarget));
+  const completedImages = images.filter(image => unityImageWorkDone(image, imageTarget)).length;
   const manualReviewImages = (project?.images || []).filter(image => unityImageResultGroup(image) === "manual-review").length;
   const imagesComplete = !!project && !manualReviewImages && (!images.length || (project.scanRevision || 0) >= 5 && completedImages === images.length);
   return {

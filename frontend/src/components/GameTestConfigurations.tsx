@@ -94,6 +94,10 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
   const text = value?.text, images = value?.images;
   const updateText = (patch: Partial<GameTestTextOptions>) => { if (value && text) updateValue({ ...value, text: { ...text, options: { ...text.options, ...patch } } }); };
   const updateImages = (patch: Partial<NonNullable<typeof images>["options"]>) => { if (value && images) updateValue({ ...value, images: { ...images, options: { ...images.options, ...patch } } }); };
+  const mosaic = images?.options.mosaic;
+  const updateMosaic = (patch: Partial<NonNullable<typeof mosaic>>) => {
+    if (mosaic) updateImages({ mosaic: { ...mosaic, ...patch } });
+  };
   const updateRole = (where: "text" | "images", scene: GamePromptScene, patch: Partial<GameTestRole>) => {
     const current = value?.[where];
     const role = current?.roles[scene];
@@ -197,6 +201,15 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           {(imageTranslation?.kind ?? textOptions.kind) !== "engine" && roleFields("images", "image", "图片初译模型")}
         </Group>
         {(imageTranslation || textOptions.kind !== "engine") && <Group title="复核与重译">{roleFields("images", "review", "校验失败重译模型", "关闭")}</Group>}
+        {imageOptions.redrawProfile && <Group title="AI 风格重绘"><Select label="模型工作流" value={imageOptions.redrawProfile}
+          choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"},{value:"custom",label:"自定义工作流"}]} change={redrawProfile => updateImages({redrawProfile})}/></Group>}
+        {mosaic && <Group title="图片去码">
+          <Select label="筛选范围" value={mosaic.scope} choices={[{value:"scenes",label:"场景图片"},{value:"all",label:"全部图片"}]} change={scope=>updateMosaic({scope})}/>
+          <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"lada",label:"Lada 本地 ONNX"}]} change={detector=>updateMosaic({detector})}/>
+          <Select label="去码模型" value={mosaic.model} choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"}]} change={model=>updateMosaic({model,steps:model==="turbo"?8:20})}/>
+          {mosaic.model==="2511" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
+          <Flag label="保护已识别文字" value={mosaic.protect} change={protect=>updateMosaic({protect})}/>
+        </Group>}
         <Group title="生成译图">{toggleModel("images", "layout", "排版方式", "本地原位排版")}</Group>
       </>}
     </div></fieldset>

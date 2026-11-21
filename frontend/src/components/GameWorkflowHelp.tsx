@@ -35,18 +35,16 @@ function offlineGuide(unity: boolean, images: boolean): Section[] {
     sections.push({
       number: "2.2", title: "图片翻译",
       description: "识别图内文字并生成译图。可在右侧检查区域、修改译文、重绘或导入替换图。",
-      details: unity ? [
-        ["识字与定位", "对所选图片使用 OCR 或视觉大模型，记录识别原文、区域坐标和置信度。"],
-        ["翻译图片文字", "翻译符合条件的区域文字，可用指定模型重译校验失败的区域。随后用本地排版或大模型辅助断行生成译图。"],
-      ] : [
+      details: [
         ["筛选图片", "从扫描出的图片中找出可能含有待译文字的候选。"],
         ["复筛图片（可选）", "用本地 OCR 或视觉大模型检查「待复核」和「待正式识别」的图片，更新分组和默认勾选。"],
         ["识字与定位", "正式识别已勾选的图片，记录文字、区域坐标和置信度，供翻译和排版使用。"],
         ["翻译图片文字", "用所选引擎或大模型翻译区域文字，保存译文以供复核。"],
         ["复核与重译", "检查翻译结果。配置了重译模型时，可重新处理未通过校验的区域。"],
         ["生成译图", "把区域译文排回原图。可选本地原位排版或大模型辅助断行，生成供应用的译图。"],
+        ["AI 风格重绘", "可选择模型工作流，对译图继续重绘并采用结果。"],
       ],
-    });
+    }, { number: "2.3", title: "图片去码", description: "按方格规则或 Lada 模型筛选图片。检查蒙版、重绘并确认要纳入补丁的结果。" });
   }
   sections.push({
     number: "3", title: "生成与应用",
@@ -101,7 +99,7 @@ export function GameWorkflowHelpPage({ mode, supportsImages, onClose }: Omit<Gam
       </header>
       <div className="game-workflow-help-content">
         {!runtime && <p className="game-workflow-help-summary">
-          「一键生成并应用」会连续执行各阶段。{supportsImages && "文本和图片可并行处理。"}中止后可继续，跳过剩余内容会保留已完成结果。
+          「一键生成并应用」会连续执行各阶段。{supportsImages && "文本与图片按流程图顺序串行处理。"}中止后可继续，跳过剩余内容会保留已完成结果。
         </p>}
         <nav className="game-workflow-help-index" aria-label="流程目录">
           {sections.map(section => {

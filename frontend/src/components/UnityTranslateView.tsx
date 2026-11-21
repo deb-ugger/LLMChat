@@ -2432,7 +2432,7 @@ export function UnityTranslateView({
                 </div>
               ) : null}
 
-                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}<span className="unity-recent-engine">{game.engine}</span></div><div className="unity-game-meta">{game.engine === "Unreal Engine" && game.textSupported === false ? "归档资源 · 去码补丁可用" : game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path" data-tooltip={game.path}>{game.path}</div></button></li>)}</ul>}
+                  {otherGames.length > 0 && <ul className="unity-game-list">{filteredOtherGames.map(game => <li key={game.path}><button type="button" className="unity-game-card" disabled={!game.supported} onClick={() => openEmbeddingGame(game)}><div className="unity-game-title">{game.name}<span className="unity-recent-engine">{game.engine}</span></div><div className="unity-game-meta">{game.engine === "Unreal Engine" && game.textSupported === false ? "散装 PNG 图片翻译 · 第三方去码补丁" : game.supported ? "文本提取与嵌入" : "暂不支持"}</div><div className="unity-game-path" data-tooltip={game.path}>{game.path}</div></button></li>)}</ul>}
                   {awaitingPath || games.length === 0 && otherGames.length > 0 ? null : games.length === 0 ? (
                     <EmptyState className={scanning ? "unity-game-empty" : "unity-game-empty is-none-found"}
                       size="sm" role="status"

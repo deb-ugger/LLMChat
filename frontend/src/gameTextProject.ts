@@ -6,7 +6,7 @@ import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRo
 import { unityTranslationError } from "./unityOffline";
 import { hasTranslationPromptLeak, TRANSLATION_PROMPT_LEAK } from "./unityTokens";
 
-export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; screeningModel?: string; nameModel?: string; source: string; target: string; joinLines: boolean; includeContext?: boolean; wrapMode?: GameWrapMode; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
+export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; screeningModel?: string; nameModel?: string; source: string; target: string; joinLines: boolean; includeContext?: boolean; wrapMode?: GameWrapMode; lineMode?: import("./unityLineLayout").UnityLineMode; lineModel?: string; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
 export type DialogueRepair = "position" | "continuation" | "alignment" | "name";
 export const dialogueRepairLabels: Record<DialogueRepair, string> = { position: "定位参数", continuation: "句尾对齐", alignment: "缺少行首定位", name: "姓名框" };
 export type DialogueRepairPreview = { input: string; text: string };

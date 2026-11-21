@@ -576,3 +576,13 @@
 .embed-deploy-maintenance .game-backup-scopes { margin-top:8px; }
 .embed-deployment .embed-runtime-options { margin:0; padding:9px 0 0; border-top:1px solid var(--border); }
 .embed-deployment .embed-runtime-options[open] .embed-form-row { margin-top:8px; }
+
+.game-import-backdrop { position: fixed; inset: 0; z-index: 1200; background: #0007; display: grid; place-items: center; }
+.game-import-dialog { background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); padding: 16px; width: min(760px, 92vw); max-height: 85vh; display: flex; flex-direction: column; gap: 12px; }
+.game-import-dialog header, .game-import-dialog footer { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.game-import-rows { overflow: auto; }
+.game-import-rows label { display: grid; gap: 4px; margin-block: 8px; }
+.game-import-rows small { color: var(--danger); }
+
+.embed-product-grid { flex: 1 1 100%; min-width: 0; }
+.embed-product-grid .embed-deploy-status { flex: none; }
