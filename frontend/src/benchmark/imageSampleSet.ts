@@ -15,7 +15,7 @@ type Annotation = {
   mosaic?: { state: Presence; boxes?: MosaicBox[] };
   text?: { state: Presence; regions?: ExpectedText[]; initialBoxes?: MosaicBox[] };
 };
-type Manifest = { version: number; kind: string; title: string; images: SampleImage[] };
+type Manifest = { version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string };
 type Annotations = { version: number; samples: Record<string, Annotation> };
 export type AnnotatedImage = UnityImage & { annotation: Annotation };
 export type AnnotatedSampleSet = {
@@ -52,14 +52,17 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
   const absolute = path.replaceAll("\\", "/");
   const directory = absolute.slice(0, absolute.lastIndexOf("/") + 1);
   if (!directory) throw new Error("请选择样本集的 manifest.json");
-  const [manifest, annotations] = await Promise.all([
-    readJson<Manifest>(absolute),
-    readJson<Annotations>(directory + "annotations.json"),
-  ]);
+  const manifest = await readJson<Manifest>(absolute);
   if (manifest?.version !== 1 || manifest.kind !== "llmchat-image-sample-set" ||
-      typeof manifest.title !== "string" || !Array.isArray(manifest.images) ||
-      annotations?.version !== 1 || !annotations.samples || typeof annotations.samples !== "object" || Array.isArray(annotations.samples))
-    throw new Error("样本集清单或标注文件格式不正确");
+      typeof manifest.title !== "string" || !Array.isArray(manifest.images))
+    throw new Error("样本集清单格式不正确");
+
+  const annotationsFile = manifest.annotationsFile ?? "annotations.json";
+  if (typeof annotationsFile !== "string" || !/^annotations(?:\.[^/\\:*?"<>|]+)?\.json$/u.test(annotationsFile))
+    throw new Error("样本集标注文件名无效");
+  const annotations = await readJson<Annotations>(directory + annotationsFile);
+  if (annotations?.version !== 1 || !annotations.samples || typeof annotations.samples !== "object" || Array.isArray(annotations.samples))
+    throw new Error("样本集标注文件格式不正确");
 
   const unique = new Set<string>();
   const images: AnnotatedImage[] = [];
