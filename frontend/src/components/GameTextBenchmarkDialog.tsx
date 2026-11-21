@@ -557,6 +557,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   };
 
   const tasks = groupBenchmarkTasks(history);
+  const lastRunFor = (label: string) => {
+    for (const task of tasks) for (const run of task.runs)
+      if (run.label === label) return "上次 " + gameDuration(run.performance.elapsedMs) + " · " + run.translated + "/" + run.selected;
+    return "";
+  };
   const page = <main className={"game-benchmark-page" + (channel ? "" : " game-benchmark-browser-fallback")}>
     <header className="game-benchmark-page-header">
       <h2>测试队列</h2>
@@ -585,15 +590,17 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <label>样本上限<input type="number" min={0} step={1} value={sampleSettings.sampleLimit}
           title="填 0 处理范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
       </div>}
-      {configs.map((config, index) => <details key={config.id} className="game-benchmark-item" open={expanded.has(config.id)}
+      {configs.map((config, index) => <details key={config.id} className={"game-benchmark-item" + (lastRunFor(config.label) ? " has-run" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
         <summary>
+          <span className="game-benchmark-item-badge">Q{index + 1}</span>
           <strong>{config.label || "配置 " + (index + 1)}</strong>
-          <span>{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
+          <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
             ? (config.mosaic.detector === "grid" ? "方格规则" : "分类＋定位") + " · 并发 " + (config.mosaic.concurrency ?? 2)
             : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
             : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
             : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
+          {lastRunFor(config.label) && <span className="game-benchmark-item-score">{lastRunFor(config.label)}</span>}
         </summary>
         <fieldset disabled={adding} className="game-benchmark-item-fields">
         <div className="game-benchmark-toolbar">
