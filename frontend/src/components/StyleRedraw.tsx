@@ -25,7 +25,7 @@ const writingModes = {
 type WritingMode = keyof typeof writingModes;
 type GameInput = {
   name: string; regions: Region[]; load: () => Promise<Blob>;
-  apply: (file: File) => Promise<unknown>; failure: (message: string) => Promise<void>;
+  apply: (file: File, modelCandidate: boolean) => Promise<unknown>; failure: (message: string) => Promise<void>;
 };
 const comfyUrl = "http://127.0.0.1:8188";
 const openPreferenceKey = "llmchat-comfy-open-preference";
@@ -434,7 +434,7 @@ function Editor({ active, game, onBusy }: { active: boolean; game?: GameInput; o
       const blob = await (await fetch(result)).blob();
       const filename = name.replace(/\.[^.]+$/, "") + "-重绘.png";
       if (game) {
-        const accepted = await game.apply(new File([blob], filename, { type: "image/png" }));
+        const accepted = await game.apply(new File([blob], filename, { type: "image/png" }), choice !== "program");
         if (accepted === false) throw new Error("译图未能采用，请查看当前图片的处理结果");
         setStatus("已采用译图"); setResult("");
       } else {

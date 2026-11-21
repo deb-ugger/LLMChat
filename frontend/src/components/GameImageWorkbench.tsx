@@ -8,7 +8,7 @@ import { translateGameWithOllama, prepareGameOllamaModels, prepareGameOllamaPara
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { classifyGameImagePresence, gameImageTranslationProblem, mergeGameImageFieldLines, recognizeGameImage, renderGameImage } from "../gameImageModel";
 import { recognizeLocalGameImage } from "../gameImageRecognitionInput";
-import { createGameImageOcrReuse, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
+import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { readRpgGameImageNames, translateNamedImageText, type ImageNameMemory } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
@@ -117,6 +117,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     return recognize ? { recognize } : {};
   });
   useEffect(()=>{localStorage.setItem("llmchat-image-stage-models:"+gamePath,JSON.stringify(stageModels));},[gamePath,stageModels]);
+  const [redrawingId, setRedrawingId] = useState<string>();
   const redrawProfile = (stageModels.redraw || "turbo") as StyleRedrawProfileId;
   const [reviewModel, setReviewModel] = useState(() => task.task?.options?.reviewModel ?? savedOptions.reviewModel ?? defaultGameImageReview(models) ?? "");
   useEffect(()=>{try{localStorage.setItem("llmchat-game-image-options:"+gamePath,JSON.stringify({strategy,concurrency,mode,provider,source:committedSource.current.source,target:committedSource.current.target,translationKind,translationModel,reviewModel,onlySourceLanguage:committedSource.current.onlySourceLanguage,skipTargetLanguage}));}catch(error){onMessage(`图片参数自动保存失败：${String(error)}`,"error");}},[gamePath,strategy,concurrency,mode,provider,source,target,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage]);
@@ -491,7 +492,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     } finally { translator.dispose(); }
   });
   const render=(image:UnityImage)=>void execute("生成译图",async()=>{const controller=new AbortController();abort.current=controller;if(stageModels.render!==undefined&&!stageModels.render)throw new Error("请选择断行排版模型");const regions=unityImageTranslationRegions(image.regions,50,image).map(region=>includesRegion(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");const blob=await renderGameImage(settings,stageModels.render||"",await readImage(image),regions,abort.current!.signal,promptState.selection,{source,target},(message,level)=>onMessage(`${image.name} · ${message}`,level),{assetName:image.name,cleanBase:gameImageCleanBase(image,current.current?.images||[],candidate=>readImage(candidate,false,false,controller.signal))});const result=await write(image,blob);await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"generated",renderedTarget:target,noTranslationNeeded:false,completed:true,error:""});onMessage("译图已保存","success");});
-  const importImage=(image:UnityImage,source?:GameImportSource)=>execute("替换译图",async()=>{const path=source||await open({multiple:false,filters:[{name:"静态图片",extensions:["png","jpg","jpeg","webp","bmp"]}]});if(!path)return;const result=await write(image,await imageImportPng(path,image));await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"imported",completed:true,error:""});onMessage("替换译图已保存","success");});
+  const importImage=(image:UnityImage,source?:GameImportSource,modelCandidate=false)=>execute("替换译图",async()=>{const path=source||await open({multiple:false,filters:[{name:"静态图片",extensions:["png","jpg","jpeg","webp","bmp"]}]});if(!path)return;const result=await write(image,await imageImportPng(path,image));await persist({...image,renderedFile:result.path,renderedHash:result.hash,renderedKind:"imported",...(modelCandidate?{screening:savedGameImageRedraw(image,result.hash)}:{}),completed:true,error:""});onMessage("替换译图已保存","success");});
   const images=project?.images||EMPTY_GAME_IMAGES;
   const patchConflicts = useMemo(() => matchImagePatchConflicts(patchConflictPaths, images), [patchConflictPaths, images]);
   useEffect(() => { if (patchConflictPaths.length) onMatchedPatchConflicts?.(patchConflicts.matched); }, [patchConflicts, patchConflictPaths, onMatchedPatchConflicts]);
@@ -529,7 +530,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         const restored = clearRecognition ? restoreGameImageRecognition(image) : image;
         const next = { ...(phase === "refine" ? clearGameImageRefinement(restored) : restored), completed: false, noTranslationNeeded: false, error: image.sourceFile ? "" : image.error };
         if (next.screening) {
-          const { redrawError: _error, redrawSelected: _selected, ...screening } = next.screening;
+          const { redrawError: _error, redrawSelected: _selected, redrawResultHash: _result, ...screening } = next.screening;
           next.screening = screening;
         }
         if (clearScreening) Object.assign(next, { screening: undefined, selected: false, selectionManual: false });
@@ -702,11 +703,12 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     const controller = new AbortController();
     abort.current = controller;
     const result = await redrawGameImages(current.current?.images || [], redrawProfile, target, controller.signal, {
+      onStart: setRedrawingId,
       regions: translationRegions,
       read: image => readImage(image, false, false, controller.signal),
       write: (image, blob) => measureGameAsync(promptState.scope + ":images", "saveMs", () => write(image, blob)),
       persist,
-    }, publishProgress, onMessage);
+    }, publishProgress, onMessage).finally(() => setRedrawingId(undefined));
     if (result.failed) throw new Error(`${result.failed} / ${result.total} 张重绘失败，失败项仍可重试`);
   }, { kind: "redraw" });
   const clearRendered = async () => {
@@ -880,7 +882,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       </div></GameFlowSequence></GamePromptContext.Provider></div>
     </>;
   const readMosaicSource=useCallback((image:UnityImage,signal:AbortSignal)=>readImage(image,false,false,signal),[readImage]);
-  const resultContent=<>    {project?.images?.length ? <ImagePreviewReaderContext.Provider value={readImage}><UnityImageWorkbench initialScreeningComplete={complete.filter} onRedrawFailure={async (image, reason) => {
+  const resultContent=<>    {project?.images?.length ? <ImagePreviewReaderContext.Provider value={readImage}><UnityImageWorkbench redrawingId={redrawingId} initialScreeningComplete={complete.filter} onRedrawFailure={async (image, reason) => {
       const row = current.current?.images?.find(item => item.id === image.id);
       if (row) await persist({ ...row, error: reason });
       onMessage(reason, "error");

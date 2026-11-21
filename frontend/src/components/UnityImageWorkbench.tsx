@@ -2,7 +2,7 @@ import { getFixedMenuPoint, getLayoutRect, getLayoutViewport } from "../viewport
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
 import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GameStyleRedrawButton } from "./StyleRedraw";
-import { gameImageRedrawSelected } from "../gameImagePlacement";
+import { gameImageRedrawScreening, gameImageRedrawSelected, gameImageRedrawStatus } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
@@ -142,11 +142,8 @@ function canQueueImageRedraw(image: UnityImage) {
 }
 
 function setImageRedrawQueued(image: UnityImage, checked: boolean): UnityImage {
-  const screening = image.screening || {
-    version: 1 as const, sourceHash: image.sourceHash, source: "", target: "",
-    state: "candidate" as const, reason: "正式识别完成", boxes: image.regions.length,
-  };
-  return { ...image, screening: { ...screening, state: "candidate", redrawSelected: checked } };
+  return { ...image, error: image.error?.startsWith("AI 风格重绘失败：") ? "" : image.error,
+    screening: { ...gameImageRedrawScreening(image), state: "candidate", redrawSelected: checked, redrawError: undefined } };
 }
 
 function ImageRedrawQueueAction({ images, disabled, onChange }: {
@@ -262,6 +259,44 @@ function imageListStatus(image: UnityImage) {
 export function imagePageIndex(index: number, page: number, count: number) {
   return Math.min(count - 1, page * imageListPageSize + Math.max(0, index) % imageListPageSize);
 }
+const redrawStates = ["重绘中", "待重绘", "失败", "已完成"] as const;
+
+function ImageRedrawGroup({ images, runningId, selectedId, onSelect, onMenu }: {
+  images: readonly UnityImage[]; runningId?: string; selectedId?: string;
+  onSelect: (id: string) => void; onMenu: (event: React.MouseEvent, image: UnityImage) => void;
+}) {
+  const [open,setOpen] = useState(false);
+  const [page,setPage] = useState(0);
+  const rows = useMemo(() => {
+    const groups: Record<typeof redrawStates[number], UnityImage[]> = { "待重绘": [], "重绘中": [], "已完成": [], "失败": [] };
+    for (const image of images) {
+      const state = gameImageRedrawStatus(image,runningId);
+      if (state) groups[state].push(image);
+    }
+    return groups;
+  }, [images,runningId]);
+  const total = redrawStates.reduce((sum,state) => sum + rows[state].length,0);
+  const pages = Math.max(1,Math.ceil(total / imageListPageSize));
+  const current = Math.min(page,pages-1);
+  const start = current * imageListPageSize;
+  let offset = 0;
+  return <details className="unity-image-result-group" data-redraw-index open={open} onToggle={event=>setOpen(event.currentTarget.open)}>
+    <summary><span>AI 风格重绘 · {total}</span>{total > 0 && <small>已完成 {rows["已完成"].length}/{total}</small>}</summary>
+    {open && !total && <small>可右键图片，将它加入 AI 风格重绘队列。</small>}
+    {open && redrawStates.map(state => {
+      const items=rows[state];
+      const begin=Math.max(0,start-offset), end=start+imageListPageSize-offset;
+      offset+=items.length;
+      if (!items.length || begin>=items.length || end<=0) return null;
+      return <div key={state}><strong className={state==="失败"?"unity-offline-error":undefined}>{state} · {items.length}</strong>
+        {items.slice(begin,end).map(item=><div key={item.id} className={`unity-image-item${selectedId===item.id?" is-selected":""}${state==="失败"?" has-error":""}`}
+          onContextMenu={event=>onMenu(event,item)}><button type="button" onClick={()=>onSelect(item.id)}
+            data-tooltip={[item.file,state==="失败" && (item.screening?.redrawError || item.error)].filter(Boolean).join("\n")}><strong>{item.name}</strong></button></div>)}
+      </div>;
+    })}
+    {open && pages>1 && <GameImageListPagination label="AI 风格重绘分页" page={current} pages={pages} onPage={setPage}/>}
+  </details>;
+}
 function ImageErrorGroup({ title, issues, names, selected, onSelect, onMenu }: {
   title: string; issues: readonly ImageIndexIssue[]; names: ReadonlyMap<string, string>;
   selected?: ImageIndexIssue; onSelect: (issue: ImageIndexIssue) => void; onMenu: (event: React.MouseEvent, id: string) => void;
@@ -279,14 +314,14 @@ function ImageErrorGroup({ title, issues, names, selected, onSelect, onMenu }: {
     {open && <GameImageListPagination label={title + "分页"} page={current} pages={pages} onPage={setPage} />}
   </details>;
 }
-export function UnityImageWorkbench({ project, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
+export function UnityImageWorkbench({ project, redrawingId, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
   project: UnityProject | null; disabled: boolean; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
   patchIssues?: readonly ImageIndexIssue[];
-  initialScreeningComplete: boolean;
+  initialScreeningComplete: boolean; redrawingId?: string;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onRedrawFailure: (image: UnityImage, reason: string) => Promise<void>;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
-  onImport: (image: UnityImage,source?:GameImportSource) => Promise<unknown>; onSave: () => Promise<boolean>;onDiscard:()=>Promise<boolean>;leaveGuard?:{current:((change:()=>void)=>void)|null};
+  onImport: (image: UnityImage,source?:GameImportSource,modelCandidate?:boolean) => Promise<unknown>; onSave: () => Promise<boolean>;onDiscard:()=>Promise<boolean>;leaveGuard?:{current:((change:()=>void)=>void)|null};
 }) {
   const reader=useContext(ImagePreviewReaderContext);
   const confirmation = useGameActionConfirm(text => onArchiveMessage(text)); const confirm = confirmation.confirm;
@@ -438,7 +473,7 @@ export function UnityImageWorkbench({ project, initialScreeningComplete, disable
   }, [active, listTarget, images, groups, deferredSearch, imageFilters]);
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const eventTarget = event.target as HTMLElement;
-    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index")) return;
+    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index, [data-redraw-index]")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
@@ -580,7 +615,8 @@ export function UnityImageWorkbench({ project, initialScreeningComplete, disable
           <small>{imageListStatus(item)}</small>
         </button>
       </div>)}{!collapsed[group] && <GameImageListPagination label={`${label}列表分页`} page={page} pages={pages} onPage={changePage} />}</details>;
-      })}{errorIndex.count > 0 && <details key={project.folder} className="unity-image-result-group unity-image-error-index">
+      })}<ImageRedrawGroup key={project.folder+":redraw"} images={filtered} runningId={redrawingId} selectedId={image?.id}
+        onSelect={selectImage} onMenu={(event,item)=>openRowMenu(event,item.id,item.file,true)} />{errorIndex.count > 0 && <details key={project.folder} className="unity-image-result-group unity-image-error-index">
         <summary><span>失败条目 <span className="unity-image-error-count">{errorIndex.count}</span></span></summary>
         {errorIndex.sections.map(({ title, rows }) => rows.length > 0 && <ImageErrorGroup key={title} title={title} issues={rows} names={errorIndex.names}
           selected={selectedFailure} onSelect={issue => { setSelectedId(issue.id); setSelectedFailure(issue); }}
@@ -603,7 +639,7 @@ export function UnityImageWorkbench({ project, initialScreeningComplete, disable
             input={{ name: image.name, regions: renderRegions.map(r => ({
               box: [Math.round(r.x0), Math.round(r.y0), Math.round(r.x1), Math.round(r.y1)], translation: r.translation,
             })), load: () => reader ? reader(image, false, false, new AbortController().signal) : readUnitySourceImage(project, image),
-            apply: file => onImport(image, file), failure: reason => onRedrawFailure(image, reason) }} />
+            apply: (file, modelCandidate) => onImport(image, file, modelCandidate), failure: reason => onRedrawFailure(image, reason) }} />
           <select aria-label="当前图片识别模型" data-tooltip="选择重新识别当前图片时使用的本地模型，不影响其他图片" value={detailMode} disabled={disabled||!!archiveBusy} onChange={event => setDetailMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select><button className="unity-btn unity-image-text-action" aria-label={reuseRecognition ? "识字与定位" : "重新识别"} data-tooltip={reuseRecognition && image.ocrCompleted ? "已有识字结果" : "使用所选模型识别当前图片"} disabled={disabled || !!archiveBusy || !onRecognize || !image.sourceFile || reuseRecognition && image.ocrCompleted} onClick={() => onRecognize?.(image, detailMode)}>识别</button><button className="unity-btn unity-image-text-action" aria-label="翻译当前图片" data-tooltip="仅翻译当前图片的勾选区域，覆盖这些区域的已有译文；未勾选区域保留" disabled={disabled||!onTranslate||!image.ocrCompleted||!renderRegions.length} onClick={()=>onTranslate?.(image)}>翻译</button><button className="unity-btn unity-image-text-action" aria-label="重新生成译图" disabled={disabled || !!archiveBusy || !image.sourceFile || !image.ocrCompleted} data-tooltip={renderHint} onClick={() => onRender(image)}>重绘</button><button className="unity-btn unity-image-text-action" aria-label="替换译图" disabled={disabled || !!archiveBusy || !image.sourceFile} data-tooltip="选择同尺寸静态图片替换当前译图，导入时转为 PNG；也可直接拖入详情" onClick={() => onImport(image)}>替换</button>{focusedDetail&&<button className="unity-btn unity-image-discard" disabled={disabled||!!archiveBusy||!dirty||saving} onClick={()=>void discardCurrent()}>取消修改</button>}{focusedDetail && <button className="unity-btn" disabled={disabled || !!archiveBusy || !dirty || saving} data-tooltip="保存图片与译文编辑内容" aria-label="保存图片与译文编辑内容" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存图片与译文修改"}</button>}{focusedDetail && saveNotice === "保存失败" && <span role="status">{saveNotice}</span>}</div></div>
         {image.ocrCompleted && canSelectUnityImage(image) && unityImageResultGroup(image) === "text" && <button className="unity-btn"
           data-tooltip="调整这张图是否参加批量操作和译图写回，保留已有识别、译文和译图"

@@ -114,6 +114,22 @@ export function gameImageRedrawSelected(image: UnityImage) {
     !image.noTranslationNeeded && !!image.screening.redrawSelected;
 }
 
+export function gameImageRedrawScreening(image: UnityImage) {
+  return image.screening ?? { version: 1 as const, sourceHash: image.sourceHash, source: "", target: "",
+    state: "candidate" as const, reason: "正式识别完成", boxes: image.regions.length };
+}
+
+export function savedGameImageRedraw(image: UnityImage, hash: string) {
+  return { ...gameImageRedrawScreening(image), redrawResultHash: hash, redrawSelected: false, redrawError: undefined };
+}
+
+export function gameImageRedrawStatus(image: UnityImage, runningId?: string) {
+  if (image.id === runningId) return "重绘中";
+  if (image.screening?.redrawError || image.error?.startsWith("AI 风格重绘失败：")) return "失败";
+  if (gameImageRedrawSelected(image)) return "待重绘";
+  if (image.renderedFile && image.renderedHash && image.renderedHash === image.screening?.redrawResultHash) return "已完成";
+}
+
 export function gameImageRedrawSummary(progress: Partial<Pick<UnityProgress, "completed" | "total" | "redrawFailed">> | null, errored: boolean) {
   if (!progress?.total || progress.completed === undefined || progress.redrawFailed === undefined) return;
   const { total, redrawFailed: failed } = progress;
@@ -127,6 +143,7 @@ export function gameImageRedrawSummary(progress: Partial<Pick<UnityProgress, "co
 
 export async function redrawGameImages(images: UnityImage[], profileId: StyleRedrawProfileId, target: string,
   signal: AbortSignal, io: {
+    onStart?: (id: string) => void;
     regions: (image: UnityImage) => UnityImageRegion[];
     read: (image: UnityImage) => Promise<Blob>;
     write: (image: UnityImage, blob: Blob) => Promise<{ path: string; hash: string }>;
@@ -140,8 +157,9 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
   if (profileId === "custom" && !profile.graph) throw new Error("请先在 AI 风格重绘中配置自定义 API 工作流");
   for (const [index, image] of queue.entries()) {
     signal.throwIfAborted();
+    io.onStart?.(image.id);
     update(index, image.name);
-    let blob: Blob;
+    let saved: { path: string; hash: string };
     try {
       const regions = io.regions(image).filter(region => region.selected && !region.error && region.translation.trim() &&
         (!region.translationTarget || region.translationTarget === target)).map(region => ({
@@ -156,11 +174,13 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
         signal, (message, level) => report(image.name + " · " + message, level), profileId === "turbo" ? 8 : 20);
       if (!result) throw new Error("请先在 AI 风格重绘中设置 ComfyUI 目录");
       const bytes = Uint8Array.from(atob(result.image), char => char.charCodeAt(0));
-      blob = new Blob([bytes], { type: "image/png" });
+      const blob = new Blob([bytes], { type: "image/png" });
       const bitmap = await createImageBitmap(blob);
       try {
         if (bitmap.width !== image.width || bitmap.height !== image.height) throw new Error("重绘译图与原图尺寸不一致");
       } finally { bitmap.close(); }
+      signal.throwIfAborted();
+      saved = await io.write(image, blob);
     } catch (error) {
       signal.throwIfAborted();
       const reason = error instanceof Error ? error.message : String(error);
@@ -170,11 +190,9 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
       update(index + 1, image.name);
       continue;
     }
-    signal.throwIfAborted();
-    const saved = await io.write(image, blob);
     await io.persist({ ...image, renderedFile: saved.path, renderedHash: saved.hash, renderedKind: "generated",
       renderedTarget: target, noTranslationNeeded: false, completed: true, error: "",
-      screening: { ...image.screening!, redrawSelected: false, redrawError: undefined } });
+      screening: savedGameImageRedraw(image, saved.hash) });
     update(index + 1, image.name);
   }
   return { total: queue.length, failed };

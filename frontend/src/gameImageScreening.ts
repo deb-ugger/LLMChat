@@ -26,6 +26,7 @@ export type ImageScreening = {
   reviewSelected?: boolean;
   redrawSelected?: boolean;
   redrawError?: string;
+  redrawResultHash?: string;
   presence?: ImagePresence;
   beforeRefine?: Pick<ImageScreening, "state" | "reason" | "boxes">;
   beforeRecognition?: Pick<ImageScreening, "state" | "reason">;
@@ -151,7 +152,7 @@ export function moveScreenedImageToGroup(image: UnityImage, state: ManualImageGr
   if (!image.sourceFile || !image.screening || image.completed && !image.ocrCompleted) return image;
   const hasRecognizedText = image.regions.some(region => !!region.text.trim());
   if (state === "candidate" && image.ocrCompleted && !hasRecognizedText) return image;
-  const { beforeRefine, refineKey, refineFailed, presence, sourceSkip, reviewSelected, redrawSelected, redrawError, ...screening } = image.screening;
+  const { beforeRefine, refineKey, refineFailed, presence, sourceSkip, reviewSelected, redrawSelected, redrawError, redrawResultHash, ...screening } = image.screening;
   const reactivating = selectedScreeningState(state) && !!image.noTranslationNeeded;
   return { ...image, selected: selectedScreeningState(state) && (!image.ocrCompleted || hasRecognizedText), selectionManual: true,
     ...(reactivating ? { noTranslationNeeded: false, completed: false } : {}),

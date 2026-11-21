@@ -16,7 +16,7 @@ import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } fro
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
 import { gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "../gameImageModel";
-import { createGameImageOcrReuse, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
+import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { collectGameImageNames, translateNamedImageText } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
@@ -146,6 +146,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [imagePart, setImagePart] = useState(false);
   const [imageResetRevision, setImageResetRevision] = useState(0);
   const [imageVisionModel,setImageVisionModel] = useState<string|undefined>(() => defaultGameImageVision(gameAvailableModels(settings))), [imageLayoutModel,setImageLayoutModel] = useState<string|undefined>(undefined);
+  const [redrawingId, setRedrawingId] = useState<string>();
   const [imageRedrawProfile, setImageRedrawProfile] = useState<StyleRedrawProfileId>("turbo");
   const [imageOcrMode, setImageOcrMode] = useState<OcrMode>("fast");
   const [imageConcurrency,setImageConcurrency]=useState(() => navigator.hardwareConcurrency >= 4 ? GAME_IMAGE_SCREENING_LANES : 1);
@@ -1182,6 +1183,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       let next = p;
       try {
         const result = await redrawGameImages(images, run.imageRedrawProfile ?? "turbo", run.target, controller.signal, {
+          onStart: setRedrawingId,
           regions: image => unityImageTranslationRegions(image.regions, run.imageConfidenceThreshold ?? imageConfidenceThreshold, image)
             .filter(region => include(region.text)),
           read: image => readUnitySourceImage(p, image, controller.signal),
@@ -1193,7 +1195,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             publishTranslation(next, "images");
             invalidatePatch();
           },
-        }, onProgress, imageLog);
+        }, onProgress, imageLog).finally(() => setRedrawingId(undefined));
         if (result.failed) throw new Error(`${result.failed} / ${result.total} 张重绘失败，失败项仍可重试`);
         imageLog(`AI 风格重绘完成 · ${result.total} 张`, "success");
       } finally {
@@ -1420,14 +1422,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setMessage("图片识别完成");
     } finally { controller.signal.removeEventListener("abort", cancel); await ocr.dispose(); imageEditorAbort.current = null; }
   });
-  const updateImagePreview = (image: UnityImage, imported = false,importSource?:GameImportSource) => imageOperation(imported ? "替换译图" : "生成译图", async () => {
+  const updateImagePreview = (image: UnityImage, imported = false,importSource?:GameImportSource, modelCandidate = false) => imageOperation(imported ? "替换译图" : "生成译图", async () => {
     const base=latest.current;if(!base)return;
     let blob: Blob;
     if (imported) { const selected = importSource||await open({ filters: [{ name: "静态图片", extensions: ["png","jpg","jpeg","webp","bmp"] }] }); if (!selected) return; blob = await imageImportPng(selected,image); }
     else {const controller=new AbortController();imageEditorAbort.current=controller;try{if(imageLayoutModel!==undefined&&!imageLayoutModel)throw new Error("请选择断行排版模型");const include=gameImageRegionLanguageFilter(source,target,onlySourceLanguage,skipTargetLanguage);const regions=unityImageTranslationRegions(image.regions,imageConfidenceThreshold,image).map(region=>include(region.text)?region:{...region,selected:false});if(regions.some(region=>region.selected&&region.translationTarget&&region.translationTarget!==target))throw new Error("请先翻译成当前目标语言");const issue=regions.filter(region=>region.selected).map(region=>gameImageJapaneseTextIssue(region.text,region.translation,target)).find(Boolean);if(issue)throw new Error(issue);blob=await renderGameImage(settings,imageLayoutModel||"",await readUnitySourceImage(base,image,controller.signal),regions,controller.signal,promptState.selection,{source,target},logAction,{assetName:image.name,cleanBase:gameImageCleanBase(image,base.images||[],candidate=>readUnitySourceImage(base,candidate,controller.signal))});}finally{imageEditorAbort.current=null;}}
     const result = await writeImage(base, image, blob);
     pendingImageMasks.current.delete(image.id);
-    const current=latest.current||base;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);const next = { ...current, imagesSkipped: false, images: (current.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash,renderedKind:imported?"imported" as const:"generated" as const,renderedTarget:imported?undefined:target,noTranslationNeeded:false } : item) };
+    const current=latest.current||base;if(!imageDraftOriginals.current.has(image.id))imageDraftOriginals.current.set(image.id,image);const next = { ...current, imagesSkipped: false, images: (current.images || []).map(item => item.id === image.id ? { ...image, completed: true, error: "", renderedFile: result.path, renderedHash: result.hash,...(modelCandidate ? { screening: savedGameImageRedraw(image,result.hash) } : {}),renderedKind:imported?"imported" as const:"generated" as const,renderedTarget:imported?undefined:target,noTranslationNeeded:false } : item) };
     pendingEdits.current.add(`译图${imported ? "替换" : "生成"}：${image.name || image.id}`);
     publish(next); setDirty(true); setSaveNotice(""); invalidatePatch(); setMessage(imported ? "译图已替换" : "译图已生成");
   });
@@ -2972,7 +2974,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
         <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
     </div>}
-    <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
+    <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench redrawingId={redrawingId} key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
       const current = latest.current;
       const row = current?.images?.find(item => item.id === image.id);
       if (current?.images && row) {
@@ -2982,7 +2984,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         setDirty(true);
       }
       logAction(reason, "error");
-    }} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart&&!mosaicPage} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source)=>updateImagePreview(image,true,source)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!deploymentPage&&!mosaicPage&&!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
+    }} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart&&!mosaicPage} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source,modelCandidate)=>updateImagePreview(image,true,source,modelCandidate)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!deploymentPage&&!mosaicPage&&!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
       <div className="unity-offline-toolbar">
       <div className="unity-result-filters">
         <strong>{importPreview ? `导入预览 · ${importPreview.entries.length} 条` : "文本与译文"}</strong><GameTextFileMenu kind="download" active={active} disabled={!!busy || restoring || !scanReady || !!importPreview} options={[
