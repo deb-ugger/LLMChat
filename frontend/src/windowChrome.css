@@ -1,6 +1,4 @@
-/* 自绘窗口外壳：一条固定高度的标题带 + 右上角三个窗口按钮。
-   标题带占位（.app-shell 顶部留白），所以任何页面都不会再和按钮重叠；
-   拖动与最大化还原交给 WindowControls 里的指针处理。 */
+/* 标题带与窗口按钮共享高度，页面从标题带下方开始。拖动与双击由 Tauri 处理。 */
 :root:has(.window-controls) {
   --window-control-width: 46px;
   --window-bar-height: 32px;

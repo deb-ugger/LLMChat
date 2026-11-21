@@ -50,7 +50,7 @@ function DesktopWindowControls() {
   ];
 
   return <>
-    <div className="window-bar" data-tauri-drag-region="deep" aria-hidden="true" />
+    <div className="window-bar" data-tauri-drag-region="" aria-hidden="true" />
     <div className="window-controls" role="group" aria-label="窗口控制">
     {buttons.map(({ label, path, action, danger }, index) => <button key={index} type="button"
       className={danger ? "is-close" : undefined} aria-label={label} data-tooltip={label}
