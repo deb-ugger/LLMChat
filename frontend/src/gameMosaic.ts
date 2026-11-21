@@ -419,7 +419,7 @@ async function mosaicWeights(directory: string, model: MosaicModel) {
 
 export async function redrawMosaic(input: {
   source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
-  signal: AbortSignal; progress: (detail: string) => void;
+  signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean;
 }) {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
   const saved = localStorage.getItem("llmchat-comfy-directory");
@@ -437,6 +437,6 @@ export async function redrawMosaic(input: {
     regions: input.boxes.map(box => ({ box })),
     profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed },
   });
-  input.signal.throwIfAborted();
+  if (!input.keepResultOnStop) input.signal.throwIfAborted();
   return new Blob([Uint8Array.from(atob(result.image), char => char.charCodeAt(0))], { type: "image/png" });
 }

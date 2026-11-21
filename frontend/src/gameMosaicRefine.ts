@@ -3,18 +3,24 @@ import type { UnityImage } from "./unityOffline";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
-type ReviewCheckpoint = { key: string; images: Record<string, StoredReview> };
+type StoredProposal = { source: string; hash: string; scan: MosaicScan };
+type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
 
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
   return JSON.stringify(["visual-review-v4", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
     file ? [file.name,file.size,file.lastModified] : "anime-640"]);
 }
-export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
+function readReviewCheckpoint(root: string, key: string): ReviewCheckpoint {
   const value = localStorage.getItem(checkpointPath(root));
-  if (!value) return {};
-  const saved = JSON.parse(value) as ReviewCheckpoint;
-  return saved.key === key ? saved.images : {};
+  if (value) {
+    const saved = JSON.parse(value) as ReviewCheckpoint;
+    if (saved.key === key) return saved;
+  }
+  return { key, images: {} };
+}
+export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
+  return readReviewCheckpoint(root, key).images;
 }
 export function clearMosaicReviews(root: string) {
   localStorage.removeItem(checkpointPath(root));
@@ -130,53 +136,96 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {
   root: string; settings: MosaicSettings; signal: AbortSignal; modelFile?: File;
   read: (image:UnityImage,signal:AbortSignal)=>Promise<Blob>;
-  prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<unknown>;
+  prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<Record<string, string>>;
   request: MosaicReviewRequest; restart?: boolean;
   onResult?: (image:UnityImage,scan:MosaicScan)=>void; onError?: (image:UnityImage,error:string)=>void;
   onProgress?: (completed:number,detail:string)=>void;
+  onPreparation?: (prepared: number, total: number) => void;
 }) {
   const {signal,settings}=options,key=mosaicReviewKey(settings,options.modelFile);
-  const checkpoint=readMosaicReviews(options.root,key);
-  if(options.restart)for(const image of images)delete checkpoint[image.id];
-  const fullReview=settings.refineScope==="all" || settings.refineScope==="selected";
-  const completedReview=(image:UnityImage)=>{
-    const record=checkpoint[image.id];
-    return record?.source===image.sourceHash && (!fullReview || !record.scan.quickExcluded) ? record.scan : undefined;
-  };
-  const results=new Map<string,MosaicScan>(),prepared=new Map<string,MosaicScan>(),hashes=new Map<string,string>();
-  const proposalCache=new Map<string,MosaicScan>();
-  let detector:Awaited<ReturnType<typeof loadMosaicDetector>>|undefined,failed=0,preparedUntil=0;
-  const errors=new Map<string,string>();
-  try {
-    for (let i=0;i<images.length;i++) {
-      signal.throwIfAborted();const image=images[i];
-      if (completedReview(image)) continue;
-      options.onProgress?.(0,"局部放大与候选准备 "+(i+1)+"/"+images.length);
-      try {
-        if (options.prepare && i>=preparedUntil) { await options.prepare(images.slice(i,i+16),signal); preparedUntil=i+16; }
-        const blob=await options.read(image,signal);
-        const hash=await crypto.subtle.digest("SHA-256",await blob.arrayBuffer());
-        const identity=Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,"0")).join("");
-        hashes.set(image.id,identity);
-        let proposed=proposalCache.get(identity);
-        if (!proposed) {
-          detector ??= await loadMosaicDetector(options.modelFile,{signal});
-          proposed=await proposals(blob,detector,signal);
-          proposalCache.set(identity,proposed);
-          if (proposalCache.size>64) proposalCache.delete(proposalCache.keys().next().value!);
-        }
-        prepared.set(image.id,proposed);
-      } catch(cause) {
-        if (signal.aborted) throw cause;
-        errors.set(image.id,String(cause));
-      }
+  signal.throwIfAborted();
+  const checkpoint = readReviewCheckpoint(options.root, key);
+  const savedProposals = checkpoint.proposals ??= {};
+  const saveCheckpoint = () => localStorage.setItem(checkpointPath(options.root), JSON.stringify(checkpoint));
+  if (options.restart) {
+    for (const image of images) {
+      delete checkpoint.images[image.id];
+      delete savedProposals[image.id];
     }
-  } finally {await detector?.release();}
+    saveCheckpoint();
+  }
+  const fullReview = settings.refineScope === "all" || settings.refineScope === "selected";
+  const completedReview = (image: UnityImage) => {
+    const record = checkpoint.images[image.id];
+    return record?.source === image.sourceHash && (!fullReview || !record.scan.quickExcluded) ? record.scan : undefined;
+  };
+  const results = new Map<string, MosaicScan>(), prepared = new Map<string, StoredProposal>();
+  const proposalCache = new Map<string, MosaicScan>();
+  const errors = new Map<string, string>();
+  const remaining: UnityImage[] = [];
+  for (const image of images) {
+    if (completedReview(image)) continue;
+    const record = savedProposals[image.id];
+    if (record?.source === image.sourceHash) prepared.set(image.id, record);
+    else remaining.push(image);
+  }
+  let preparedThisRun = 0, unsaved = 0, failed = 0;
+  const reportPreparation = () => {
+    const count = images.length - remaining.length + preparedThisRun;
+    options.onPreparation?.(count, images.length);
+    options.onProgress?.(0, "候选区域准备 · " + count + "/" + images.length + " 张");
+  };
+  let detector: Awaited<ReturnType<typeof loadMosaicDetector>> | undefined;
+  reportPreparation();
+  try {
+    const batchSize = 16;
+    for (let offset = 0; offset < remaining.length; offset += batchSize) {
+      signal.throwIfAborted();
+      const batch = remaining.slice(offset, offset + batchSize);
+      let prepareErrors: Record<string, string> | undefined;
+      try {
+        prepareErrors = await options.prepare?.(batch, signal);
+      } catch (cause) {
+        signal.throwIfAborted();
+        for (const image of batch) errors.set(image.id, String(cause));
+      }
+      for (const image of batch) {
+        signal.throwIfAborted();
+        try {
+          const failure = errors.get(image.id) ?? prepareErrors?.[image.id];
+          if (failure) throw new Error(failure);
+          const blob = await options.read(image, signal);
+          const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+          const hash = Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2, "0")).join("");
+          let scan = proposalCache.get(hash);
+          if (!scan) {
+            detector ??= await loadMosaicDetector(options.modelFile, { signal });
+            scan = await proposals(blob, detector, signal);
+            proposalCache.set(hash, scan);
+            if (proposalCache.size > 64) proposalCache.delete(proposalCache.keys().next().value!);
+          }
+          const record = { source: image.sourceHash, hash, scan: { ...scan, signature: [] } };
+          savedProposals[image.id] = record;
+          prepared.set(image.id, record);
+          unsaved++;
+          preparedThisRun++;
+          reportPreparation();
+        } catch (cause) {
+          signal.throwIfAborted();
+          errors.set(image.id, cause instanceof Error ? cause.message : String(cause));
+        }
+      }
+      if (unsaved) { saveCheckpoint(); unsaved = 0; }
+    }
+  } finally {
+    try { if (unsaved) saveCheckpoint(); }
+    finally { await detector?.release(); }
+  }
   const verified=new Map<string,Promise<MosaicScan>>();
   let cursor=0,completed=0;
   const groups=new Map<string,UnityImage[]>();
   for(const image of images) {
-    const learned=prepared.get(image.id)?.modelBoxes?.length;
+    const learned=prepared.get(image.id)?.scan.modelBoxes?.length;
     const model=learned ? settings.refineModel || "qwen3.5:latest" : settings.refineGuardModel || "qwen3-vl:8b-instruct";
     const group=groups.get(model);
     if(group)group.push(image);else groups.set(model,[image]);
@@ -188,28 +237,29 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
         const failure=errors.get(image.id);if(failure)throw new Error(failure);
         let scan=completedReview(image);
         if(!scan) {
-          const identity=hashes.get(image.id)!;
+          const { hash, scan: proposed } = prepared.get(image.id)!;
+          const identity = JSON.stringify([model, hash]);
           let pending=verified.get(identity);
           if(!pending) {
-            const proposed=prepared.get(image.id)!;
             const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
             pending=!fullReview && !hasCandidates
               ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
               : options.read(image,signal).then(blob=>reviewImage(blob,proposed,model,options.request,signal));
             verified.set(identity,pending);
             if(verified.size>128)verified.delete(verified.keys().next().value!);
-            pending.catch(()=>verified.delete(identity));
+            void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
           }
           scan=await pending;
-          checkpoint[image.id]={source:image.sourceHash,scan:{...scan,signature:[]}};
-          localStorage.setItem(checkpointPath(options.root),JSON.stringify({key,images:checkpoint}));
+          checkpoint.images[image.id] = { source: image.sourceHash, scan: { ...scan, signature: [] } };
+          delete savedProposals[image.id];
+          saveCheckpoint();
         }
         results.set(image.id,scan);options.onResult?.(image,scan);
+        options.onProgress?.(++completed,model+" · "+image.name);
       } catch(cause) {
         if(signal.aborted)throw cause;
         failed++;options.onError?.(image,String(cause));
       }
-      options.onProgress?.(++completed,model+" · "+image.name);
     }
   };
   for(const [model,batch] of groups) {
