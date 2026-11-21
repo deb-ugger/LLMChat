@@ -2151,7 +2151,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     openGameTextBenchmark({
       scope: initial.scope,
       getWorkload: () => benchmarkWorkload.current.scope === initial.scope ? benchmarkWorkload.current : initial,
-      models: gameModels, onMessage: logAction, screenModel: textScreenModel, initialPart: imagePart ? "images" : "text",
+      models: gameModels, onMessage: logAction, screenModel: textScreenModel, mosaicRoot: root, initialPart: mosaicPage ? "mosaic" : imagePart ? "images" : "text",
       images: {
         setup: { scope: promptState.scope, source: picture.onlySourceLanguage ? picture.source : "auto", target: picture.target, skipTarget: picture.skipTargetLanguage !== false,
           prompts: promptState.selection, mode: imageOcrMode, strategy: imageScreeningOptions.strategy, concurrency: imageConcurrency,

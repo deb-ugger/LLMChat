@@ -1,3 +1,4 @@
+import type { MosaicBenchmarkSetup } from "./gameMosaicBenchmark";
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText, translateRpgSystemMessage } from "./gameDisplayText";
@@ -21,6 +22,7 @@ type Role = typeof benchmarkRoles[number];
 export type BenchmarkConfig = {
   id: string; label: string; source: string; target: string;
   models: Record<Role, { id: string; lanes: number }>;
+  mosaic?: MosaicBenchmarkSetup;
   imageMode?: OcrMode; imageStrategy?: "staged" | "full"; localLanes?: number; imageConfidence?: number; engines?: UnityEngineChoice[];
   prompts: GamePromptSelection; wrap: GameWrapMode; includeContext: boolean; skipTarget: boolean;
 };

@@ -820,7 +820,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         }}><UnityActionIcon kind="save"/></UnityIconButton>
         <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
       const input = textHandle.current?.benchmark?.();
-      if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
+      if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), mosaicRoot: selfMosaic ? game.path : undefined, initialPart: part === "mosaic" ? "mosaic" : part === "images" ? "images" : "text" });
     }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
 
       <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
