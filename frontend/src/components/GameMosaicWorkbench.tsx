@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -18,7 +18,7 @@ type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 type MosaicStep = "screen" | "redraw";
-type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string };
+type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: LadaDevice };
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
@@ -429,7 +429,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     const initial = restart ? 0 : screenedCount;
     void run("筛选打码区域", async (signal, report) => {
       if (detectorKind === "lada" && !detectorFile) throw new Error("请选择 Lada v4 的 ONNX 文件");
-      const lada = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile) : undefined;
+      const lada = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile, {
+        signal,
+        onDevice: device => setStepRuns(previous => previous.screen
+          ? { ...previous, screen: { ...previous.screen, device } }
+          : previous),
+      }) : undefined;
       if (restart) setRows(previous => {
         const next = { ...previous };
         for (const image of targets) next[image.id] = { ...resultFor(previous, image), scanned: false };
@@ -633,6 +638,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     ...idleScreen,
     state: sameScreen && (lastScreenRun?.state === "error" || lastScreenRun?.state === "stopped") ? lastScreenRun.state : idleScreen.state,
     elapsed: sameScreen ? lastScreenRun?.elapsed : undefined,
+    device: sameScreen ? lastScreenRun?.device : undefined,
   };
   const canClear = [screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
@@ -647,7 +653,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={() => setConfigured(expanded ? null : id)}
       status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
       summary={<div className="game-mosaic-step-summary">
-        <span>{running ? status?.summary : summary}</span>
+        <span data-tooltip={status?.device?.reason}>{running ? status?.summary : summary}
+          {status?.device && (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}
+        </span>
         {status?.total ? <small className="game-flow-model-rates">
           <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
         </small> : null}

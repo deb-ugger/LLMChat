@@ -76,15 +76,51 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
   return boxes;
 }
 
-export async function loadLadaDetector(model: File) {
+export type LadaDevice = { kind: "gpu" | "cpu"; reason?: string };
+
+export async function loadLadaDetector(model: File, options: {
+  signal?: AbortSignal; onDevice?: (device: LadaDevice) => void;
+} = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
   ort.env.wasm.wasmPaths = {
-    mjs: new URL("./ort/ort-wasm-simd-threaded.jsep.mjs", assets).href,
-    wasm: new URL("./ort/ort-wasm-simd-threaded.jsep.wasm", assets).href,
+    mjs: new URL("./manga-ort/ort-wasm-simd-threaded.asyncify.mjs", assets).href,
+    wasm: new URL("./manga-ort/ort-wasm-simd-threaded.asyncify.wasm", assets).href,
   };
   ort.env.wasm.numThreads = 1;
-  const session = await ort.InferenceSession.create(await model.arrayBuffer(), { executionProviders: ["wasm"] });
+  const bytes = await model.arrayBuffer();
+  const { signal, onDevice } = options;
+  const create = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(bytes, { executionProviders: [provider] });
+  let session: Awaited<ReturnType<typeof create>> | undefined;
+  let device: LadaDevice = { kind: "gpu" };
+
+  const release = async () => {
+    const former = session;
+    session = undefined;
+    await former?.release();
+  };
+  const openCpu = async (reason: string) => {
+    signal?.throwIfAborted();
+    const cpu = await create("wasm");
+    device = { kind: "cpu", reason };
+    return cpu;
+  };
+
+  signal?.throwIfAborted();
+  const gpu = (globalThis.navigator as (Navigator & { gpu?: unknown }) | undefined)?.gpu;
+  if (gpu) {
+    try {
+      session = await create("webgpu");
+    } catch (cause) {
+      session = await openCpu("WebGPU 启动失败：" + (cause instanceof Error ? cause.message : String(cause)));
+    }
+  } else {
+    session = await openCpu("当前运行环境不支持 WebGPU");
+  }
+  if (signal?.aborted) {
+    await release();
+    signal.throwIfAborted();
+  }
   const input = session.inputMetadata[0];
   const output = session.outputMetadata.find(item => item.isTensor && item.shape.length === 3);
   const shape = input?.isTensor ? input.shape : [];
@@ -92,15 +128,32 @@ export async function loadLadaDetector(model: File) {
   const channels = output?.isTensor ? output.shape[1] : undefined;
   if (shape.length !== 4 || shape[0] !== 1 || shape[1] !== 3 || typeof size !== "number" ||
       size < 256 || size > 1024 || size !== shape[3] || typeof channels !== "number" || ![37, 38].includes(channels) || !output) {
-    await session.release();
+    await release();
     throw new Error("请选择固定方形输入、未内置 NMS 的 Lada YOLO11 分割 ONNX");
   }
   const canvas = document.createElement("canvas");
   canvas.width = size; canvas.height = size;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) { await session.release(); throw new Error("无法读取检测模型输入像素"); }
+  if (!context) { await release(); throw new Error("无法读取检测模型输入像素"); }
+  onDevice?.(device);
+  const outputName = output.name;
+  const infer = async (feeds: InstanceType<typeof ort.Tensor>) => {
+    signal?.throwIfAborted();
+    if (!session) throw new Error("Lada 检测会话已关闭");
+    try {
+      return await session.run({ [session.inputNames[0]]: feeds }, [outputName]);
+    } catch (cause) {
+      if (device.kind === "cpu") throw cause;
+      signal?.throwIfAborted();
+      await release();
+      session = await openCpu("WebGPU 推理失败：" + (cause instanceof Error ? cause.message : String(cause)));
+      signal?.throwIfAborted();
+      onDevice?.(device);
+      return session.run({ [session.inputNames[0]]: feeds }, [outputName]);
+    }
+  };
   return {
-    release: () => session.release(),
+    release,
     scan: async (blob: Blob): Promise<MosaicScan> => {
       const full = await bitmapPixels(blob);
       const source = await createImageBitmap(blob);
@@ -121,10 +174,10 @@ export async function loadLadaDetector(model: File) {
         values[index + 2 * plane] = data[4 * index + 2] / 255;
       }
       const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
-      let tensors: Awaited<ReturnType<typeof session.run>> | undefined;
+      let tensors: Awaited<ReturnType<typeof infer>> | undefined;
       try {
-        tensors = await session.run({ [session.inputNames[0]]: feeds }, [output.name]);
-        const result = tensors[output.name];
+        tensors = await infer(feeds);
+        const result = tensors[outputName];
         const data = result.data;
         if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
         return { signature: sceneSignature(full.data, full.width, full.height), boxes: ladaBoxes(data, result.dims, channels - 36,
