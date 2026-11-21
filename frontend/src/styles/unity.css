@@ -2694,7 +2694,9 @@ body.ocr-image-resizing * {
 .game-benchmark-item > summary { cursor: pointer; padding: 10px var(--space-3); overflow-wrap: anywhere; }
 .game-benchmark-item[open] > summary { border-bottom: 1px solid var(--border, #dcd6c6); }
 .game-benchmark-item > summary > span { margin-inline-start: 12px; color: var(--text-muted, #6a675c); }
-.game-benchmark-item-fields { display: grid; gap: 10px; margin: 0; padding: var(--space-3); min-width: 0; border: 0; }
+.game-benchmark-item-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px 16px; margin: 0; padding: var(--space-3); min-width: 0; border: 0; }
+.game-benchmark-item-fields > .game-benchmark-toolbar, .game-benchmark-item-fields > .game-benchmark-model { grid-column: 1 / -1; }
+@media (max-width: 720px) { .game-benchmark-item-fields { grid-template-columns: minmax(0, 1fr); } }
 .game-benchmark-item-fields :is(input:not([type="checkbox"]), select), .game-benchmark-target select, .game-benchmark-toolbar input[type="number"] {
   box-sizing: border-box; padding: 6px var(--space-2); min-height: 34px; border: 1px solid var(--border, #dcd6c6); border-radius: var(--radius-md);
   background: var(--panel, var(--bg-panel)); color: var(--text, #1b1a16); font: inherit;
