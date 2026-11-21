@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-runtime-log"
 description = "Write diagnostic messages and game performance records to application logs."
-commands.allow = ["write_runtime_log", "finish_app_close", "append_game_performance", "read_game_performance", "open_game_benchmark_window", "open_game_aux_window"]
+commands.allow = ["write_runtime_log", "finish_app_close", "append_game_performance", "read_game_performance", "write_game_benchmark_image_details", "read_game_benchmark_image_details", "open_game_benchmark_window", "open_game_aux_window"]

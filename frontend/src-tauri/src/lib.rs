@@ -362,6 +362,42 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+fn benchmark_details_path(queue_id: &str, run_id: &str) -> Result<std::path::PathBuf, String> {
+    let valid = |id: &str| id.len() == 36 && id.bytes().enumerate().all(|(i, byte)| {
+        if matches!(i, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() }
+    });
+    if !valid(queue_id) || !valid(run_id) { return Err("无效的测试记录编号".into()); }
+    Ok(LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?.join("game-benchmark-images").join(queue_id))
+}
+
+#[tauri::command]
+async fn write_game_benchmark_image_details(queue_id: String, run_id: String, samples: Option<serde_json::Value>, results: serde_json::Value) -> Result<(), String> {
+    let directory = benchmark_details_path(&queue_id, &run_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let write_json = |path: &std::path::Path, value: &serde_json::Value| {
+            write_atomic_export(path, |file| serde_json::to_writer(file, value).map_err(std::io::Error::other))
+                .map_err(|cause| format!("保存测试逐图历史失败：{cause}"))
+        };
+        let reference = directory.join("samples.json");
+        if let Some(value) = samples { write_json(&reference, &value)?; }
+        if !reference.is_file() { return Err("测试样本快照缺失".into()); }
+        write_json(&directory.join(format!("{run_id}.json")), &results)
+    }).await.map_err(|cause| cause.to_string())?
+}
+
+#[tauri::command]
+async fn read_game_benchmark_image_details(queue_id: String, run_id: String) -> Result<serde_json::Value, String> {
+    let directory = benchmark_details_path(&queue_id, &run_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let read_json = |file: std::path::PathBuf| -> Result<serde_json::Value, String> {
+            let bytes = std::fs::read(file).map_err(|cause| format!("读取测试逐图历史失败：{cause}"))?;
+            serde_json::from_slice(&bytes).map_err(|cause| cause.to_string())
+        };
+        Ok(serde_json::json!({ "samples": read_json(directory.join("samples.json"))?,
+            "results": read_json(directory.join(format!("{run_id}.json")))? }))
+    }).await.map_err(|cause| cause.to_string())?
+}
+
 #[tauri::command]
 async fn open_game_benchmark_window(webview: tauri::Webview) -> Result<bool, String> {
     open_game_window(webview, BENCHMARK_WINDOW, "测试队列 · LLMChat", 930.0, 760.0)
@@ -711,6 +747,8 @@ pub fn run() {
             write_runtime_log,
             append_game_performance,
             read_game_performance,
+            write_game_benchmark_image_details,
+            read_game_benchmark_image_details,
             open_game_benchmark_window,
             open_game_aux_window,
             finish_app_close,

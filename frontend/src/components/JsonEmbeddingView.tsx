@@ -200,7 +200,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const touched = useRef(false);
   const workflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textInfo.running || status.state === "running" || launching;
   const busy = workflowBusy || mosaicBusy;
-  useFormalWorkflowActivity(busy);
+  useFormalWorkflowActivity(busy,game.name,mosaicBusy ? "图片去码" : imageBusy ? "图片翻译" : textInfo.running ? "文本翻译" : status.detail || "工程流程",
+    status.state === "running" ? status.completed : undefined,status.state === "running" ? status.total : undefined);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   const latestWorkflow = useRef({ text: textInfo, mosaicComplete }); latestWorkflow.current = { text: textInfo, mosaicComplete };
@@ -825,7 +826,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             showAppNotice("工程已保存");
           } catch (cause) { setError(String(cause)); }
         }}><UnityActionIcon kind="save"/></UnityIconButton>
-        <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" disabled={busy} onClick={() => {
+        <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), mosaicRoot: selfMosaic ? game.path : undefined, initialPart: part === "mosaic" ? "mosaic" : part === "images" ? "images" : "text" });
     }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>

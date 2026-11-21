@@ -422,7 +422,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     })();
     return () => { cancelled = true; };
   }, [root]);
-  useFormalWorkflowActivity(!!busy || restoring || textScreening || !!imageEditorBusy);
+  const formalProgress = mosaicBusy ? undefined : localActivity?.value.state === "running" ? localActivity.value :
+    generationState?.state === "running" ? generationState : undefined;
+  useFormalWorkflowActivity(!!busy || restoring || textScreening || !!imageEditorBusy, game?.gameDir || root,
+    typeof busy === "string" && busy ? busy : "工程处理", formalProgress?.completed ?? undefined, formalProgress?.total ?? undefined);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   useEffect(() => { onBusyChange?.(!!busy || restoring || applyingTestConfiguration); }, [busy, restoring, applyingTestConfiguration, onBusyChange]);
@@ -2646,7 +2649,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
     {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
     {toolbarTarget && createPortal(<>
-      <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!project || !!busy || saving || restoring || !!importPreview} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
+      <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!game} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
       <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbarTarget)}
     <aside ref={panelRef} className="unity-offline-config" style={deploymentPage ? undefined : panelStyle}>

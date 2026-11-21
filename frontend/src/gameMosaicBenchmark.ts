@@ -1,3 +1,4 @@
+import type { RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { clearMosaicReviews, refineMosaicBatch } from "./gameMosaicRefine";
@@ -18,22 +19,35 @@ export type MosaicBenchmarkSetup = MosaicSettings & { sampleLimit: number; selec
 export type MosaicBenchmarkWorkload = ImageBenchmarkWorkload & {
   checked: string[];
   boxes: Record<string, MosaicBox[]>;
+  categories?: Record<string, string>;
   modelFile?: File;
 };
 
-export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: string): MosaicBenchmarkWorkload {
-  const saved = localStorage.getItem("llmchat-game-mosaic:" + root);
-  const rows = (saved ? JSON.parse(saved) : {}) as Record<string, { source: string; checked: boolean; boxes: MosaicBox[] }>;
+type MosaicReviewSource = { checked: boolean; boxes: MosaicBox[]; scanned?: boolean; review?: string; reason?: string };
+type MosaicSourceRow = MosaicReviewSource & { source: string; refined?: string; refineError?: string; beforeRefine?: MosaicReviewSource };
+const liveSources = new Map<string, Record<string, MosaicSourceRow>>();
+
+export function publishMosaicBenchmarkSource(root: string, rows?: Record<string, MosaicSourceRow>) {
+  if (rows) liveSources.set(root,rows);
+  else liveSources.delete(root);
+}
+
+export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: string, initialSnapshot = false): MosaicBenchmarkWorkload {
+  const rows = liveSources.get(root) ?? JSON.parse(localStorage.getItem("llmchat-game-mosaic:" + root) || "{}") as Record<string, MosaicSourceRow>;
   const images = (workload.project?.images || []).filter(image => !!image.sourceFile && image.width > 0 && image.height > 0);
   const checked: string[] = [];
   const boxes: Record<string, MosaicBox[]> = {};
+  const categories: Record<string, string> = {};
   for (const image of images) {
     const row = rows[image.id];
-    const current = row?.source === image.sourceHash ? row : undefined;
-    if (current?.checked ?? true) checked.push(image.id);
+    const saved = row?.source === image.sourceHash ? row : undefined;
+    const current = initialSnapshot ? saved?.beforeRefine ?? (saved?.refined || saved?.refineError ? undefined : saved) : saved;
+    if (initialSnapshot ? Boolean(current?.scanned && current.checked) : current?.checked ?? true) checked.push(image.id);
     if (current?.boxes.length) boxes[image.id] = current.boxes;
+    categories[image.id] = current?.review || current?.reason || (!initialSnapshot && saved?.refineError) ? "待复核"
+      : current?.boxes.length ? "疑似有码" : current?.scanned ? "未发现" : "待筛选";
   }
-  return { ...workload, selected: images, checked, boxes, modelFile: gameDetectorFile(root) };
+  return { ...workload, selected: images, checked, boxes, categories, modelFile: gameDetectorFile(root) };
 }
 
 export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage, signal: AbortSignal) {
@@ -45,7 +59,11 @@ export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
   onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet): BenchmarkStepRunner {
-  return async (config, settings, scope) => {
+  return async (config, settings, scope, record?: RecordImageBenchmarkOutcome) => {
+    const recordScan = (image: UnityImage, scan: MosaicScan) => record?.(image.id, {
+      category: scan.review ? "待复核" : scan.boxes.length ? "疑似有码" : "未发现",
+      boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes, checked: !!scan.boxes.length && !scan.review, reason: scan.review,
+    });
     const options = config.mosaic!;
     const expected = annotated ? new Map(annotated.images.map(image => [image.id,image.annotation])) : undefined;
     const measureAccuracy = (results: ReadonlyMap<string,MosaicScan>) => {
@@ -65,6 +83,8 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
         const result = await refineMosaicBatch(images, {
           root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample,
           request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
+          onResult: recordScan,
+          onError: (image, reason) => record?.(image.id,{ category:"待复核",status:"失败",reason }),
           onProgress: (completed, detail) => onProgress({ completed, total: images.length, detail }),
         });
         const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
@@ -89,9 +109,11 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
                 .map(region => [region.x0, region.y0, region.x1, region.y1]) : [];
               await redrawMosaic({ source, boxes: workload.boxes[image.id], keep, model: options.model, steps: options.steps,
                 seed: 1, signal, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
+              record?.(image.id,{category:"已生成去码候选",boxes:workload.boxes[image.id]});
             } else {
               const scan = await (detector ?? grid!).scan(source);
               if (expected) results.set(image.id,scan);
+              recordScan(image,scan);
               if (scan.boxes.length) located++;
               if (scan.review) review++;
               regions += scan.boxes.length;
@@ -99,6 +121,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
           } catch (cause) {
             signal.throwIfAborted();
             failed++;
+            record?.(image.id,{category:"处理失败",status:"失败",reason:String(cause)});
             firstFailure ||= image.name + " · " + (cause instanceof Error ? cause.message : String(cause));
           }
           onProgress({ completed: ++completed, total: images.length, detail: image.name });

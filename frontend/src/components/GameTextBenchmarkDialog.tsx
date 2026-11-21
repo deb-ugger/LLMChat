@@ -1,3 +1,4 @@
+import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
@@ -171,6 +172,56 @@ export function GameTextBenchmarkWindow() {
     control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} onClose={() => void close()} />;
 }
 
+function ImageBenchmarkRunDetails({ queueId, runId }: { queueId: string; runId: string }) {
+  const [open,setOpen] = useState(false);
+  const [detail,setDetail] = useState<ImageBenchmarkDetails>();
+  const [error,setError] = useState("");
+  const [changedOnly,setChangedOnly] = useState(false);
+  const [page,setPage] = useState(0);
+  const size = 40;
+  useEffect(() => {
+    if (!open || detail) return;
+    let alive = true;
+    setError("");
+    void readImageBenchmarkDetails(queueId,runId).then(value => { if (alive) setDetail(value); })
+      .catch(cause => { if (alive) setError(String(cause)); });
+    return () => { alive = false; };
+  }, [queueId, runId, open, detail]);
+  const rows = useMemo(() => detail?.samples.flatMap((sample,index) => {
+    const outcome = detail.results[index];
+    const changed = !!outcome && (outcome.category !== sample.category || outcome.checked !== undefined && outcome.checked !== sample.checked);
+    return changedOnly && !changed ? [] : [{ sample, outcome, changed }];
+  }) || [], [detail, changedOnly]);
+  return <details open={open} onToggle={event => {
+    const expanded = event.currentTarget.open;
+    setOpen(expanded);
+    if (!expanded) setDetail(undefined);
+  }}>
+    <summary>逐图结果</summary>
+    {open && (error ? <p role="alert">{error}</p> : !detail ? <p role="status">正在读取逐图结果…</p> : <>
+      <label><input type="checkbox" checked={changedOnly} onChange={event => { setChangedOnly(event.target.checked); setPage(0); }} />只看变动</label>
+      {!rows.length && <p className="hint">没有符合条件的图片</p>}
+      {rows.slice(page*size,(page+1)*size).map(({sample,outcome}) => <details key={sample.id}>
+        <summary>{sample.file} · {sample.category} → {outcome?.category || "未执行"}
+          {outcome?.status && " · " + outcome.status}
+          {outcome?.checked !== undefined && " · " + (sample.checked ? "已勾选" : "未勾选") + " → " + (outcome.checked ? "已勾选" : "未勾选")}
+        </summary>
+        {sample.boxes?.length ? <p>原定位框 {JSON.stringify(sample.boxes)}</p> : null}
+        {outcome?.boxes?.length ? <p>结果定位框 {JSON.stringify(outcome.boxes)}</p> : null}
+        {outcome?.reason && <p>{outcome.reason}</p>}
+        {outcome?.regions?.map((region,i) => <p key={i}>
+          {JSON.stringify(region.box)} · {region.text}{region.translation && " → " + region.translation}{region.reason && " · " + region.reason}
+        </p>)}
+      </details>)}
+      {rows.length > size && <div className="game-benchmark-toolbar">
+        <button type="button" className="unity-btn" disabled={!page} onClick={() => setPage(page - 1)}>上一页</button>
+        <span>{page + 1} / {Math.ceil(rows.length / size)}</span>
+        <button type="button" className="unity-btn" disabled={(page+1)*size >= rows.length} onClick={() => setPage(page+1)}>下一页</button>
+      </div>}
+    </>)}
+  </details>;
+}
+
 function BenchmarkSection({ title, className = "", action, children }: {
   title: string; className?: string; action?: ReactNode; children: ReactNode;
 }) {
@@ -191,19 +242,24 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const [mosaicStep, setMosaicStep] = useState<MosaicBenchmarkStep>("mosaicScreen");
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
-  const { jobs, running, stopping, formalBusy, historyRevision } = props.snapshot;
-  const queue = jobs.filter(job => job.status === "等待" || job.status === "运行中");
+  const { jobs, running, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
+  const queue = jobs.filter(job => job.status === "等待" || job.status === "运行中" || job.status === "失败" && !job.progress?.total);
   const hasWaiting = queue.some(job => job.status === "等待");
   const control = (kind: BenchmarkQueueCommand, id?: string) =>
     void props.control(kind, id).catch(error => showAppNotice(String(error), "error"));
   return <GameTextBenchmarkDialog key={step} {...props} step={step} draft={drafts.current[step]}
     onDraft={draft => { drafts.current[step] = draft; }} historyRevision={historyRevision}
-    queueControls={<button type="button" className="unity-btn" disabled={stopping || !running && (!hasWaiting || formalBusy)}
+    queueControls={<button type="button" className="unity-btn" disabled={stopping || !running && !hasWaiting}
       title={!running && formalBusy ? formalBlockingReason : undefined}
       onClick={() => control(running ? "benchmark-stop" : "benchmark-start")}>
-      {running || stopping ? "中止当前并暂停队列" : "运行队列"}</button>}
+      {running || stopping ? formalBusy ? "暂停测试队列" : "中止当前并暂停队列" : "运行队列"}</button>}
     queueContents={<div className="game-benchmark-results">
-      {!queue.length && <p className="hint">暂无正在运行或排队的任务。</p>}
+      {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
+      {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status="运行中" role="status">
+        <div><strong>正式任务 · {job.label}</strong>
+          <div className="hint">{job.game}{job.total ? " · " + (job.completed ?? 0) + "/" + job.total : ""}</div>
+        </div>
+      </div>)}
       {queue.map(job => {
         const progress = job.progress;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
@@ -223,7 +279,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
             <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
               {stopping && job.status === "运行中" && <div>正在中止…</div>}
               <div className="hint" title={progress?.detail}>
-                {job.status === "等待" ? "等待前一项" : progress &&
+                {job.status === "等待" ? (formalBusy ? formalBlockingReason : "等待前一项") : job.status === "失败" ? progress?.detail : progress &&
                   <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
               </div>
@@ -316,15 +372,15 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       if (!options) return "缺少去码测试配置";
       if (mosaicStep === "mosaicRefine" && (!options.refineModel || !options.refineGuardModel))
         return "请先选择候选区域推理模型和纹理与漏检复核模型";
-      const checked = options.selection === "checked";
+      const checked = mosaicStep === "mosaicRefine" || options.selection === "checked";
       if (mosaicStep === "mosaicRedraw") {
-        if (!sampleSetMode && !(checked ? mosaicCounts?.redrawChecked : mosaicCounts?.redrawAll)) return "请先为测试图片准备蒙版";
-      } else if (!sampleSetMode && !(checked ? mosaicCounts?.checked : mosaicCounts?.all)) {
+        if (!sampleSetMode && !snapshot.formalBusy && !(checked ? mosaicCounts?.redrawChecked : mosaicCounts?.redrawAll)) return "请先为测试图片准备蒙版";
+      } else if (!sampleSetMode && !snapshot.formalBusy && !(mosaicStep === "mosaicRefine" ? mosaicCounts?.refineChecked : checked ? mosaicCounts?.checked : mosaicCounts?.all)) {
         return "没有可测试的去码图片，请检查勾选或调整样本范围";
       }
       return "";
     }
-    if (!sampleSetMode && !(imageStep ? imageCounts?.[imageStep] : selectionCount))
+    if (!sampleSetMode && !snapshot.formalBusy && !(imageStep ? imageCounts?.[imageStep] : selectionCount))
       return imageStep ? "没有符合当前步骤的图片样本" : "请先勾选要测试的文本";
     if (!config.models.text.id) {
       if (requiresModel) return "请先选择复核模型";
@@ -336,7 +392,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     return "";
   };
   const enabledConfigs = configs.filter(config => config.enabled !== false);
-  const issue = snapshot.formalBusy ? formalBlockingReason : !enabledConfigs.length ? "请至少启用一张配置卡" :
+  const issue = !enabledConfigs.length ? "请至少启用一张配置卡" :
     enabledConfigs.map(configIssue).find(Boolean);
   useEffect(() => { onDraft({ configs, rounds, sampleLimit, sampleSetPath, useSampleSet }); }, [configs, rounds, sampleLimit, sampleSetPath, useSampleSet]);
   const saveQueue = (silent = false) => {
@@ -418,9 +474,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </BenchmarkSection>
       <BenchmarkSection title="测试范围">
         {targetControls}
-        <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
+        <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
         <div className="game-benchmark-toolbar">
-        {(imageStep || mosaicStep) ? <><label>样本范围<select value={sampleSetMode ? "annotated" : sampleSettings?.selection || "checked"}
+        {(imageStep || mosaicStep) ? <><label>样本范围<select value={sampleSetMode ? "annotated" : mosaicStep === "mosaicRefine" ? "checked" : sampleSettings?.selection || "checked"}
           onChange={event => {
             const value = event.target.value;
             setUseSampleSet(value === "annotated");
@@ -428,7 +484,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             else if (value === "checked" || value === "all") changeSample({ selection: value });
           }}>
           <option value="checked">{mosaicStep ? "去码页已勾选" : "当前项目已勾选"}</option>
-          {mosaicStep && <option value="all">当前项目全部可用图片</option>}
+          {mosaicStep && mosaicStep !== "mosaicRefine" && <option value="all">当前项目全部可用图片</option>}
           {isTauri() && <option value="annotated">已标注样本集</option>}
         </select></label>
         {isTauri() && <button type="button" className="unity-btn" onClick={() => setBrowseSampleSet(true)}>查看测试集</button>}
@@ -595,6 +651,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           <summary>第 {result.round} 轮 · {result.label} · {result.status} · {gameDuration(result.performance.elapsedMs)} · 完成 {result.translated}/{result.selected}</summary>
           {result.detail && <p>{result.detail}</p>}
           {result.summary && <p>{result.summary}</p>}
+          {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
+            <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
           {!!result.unobservedModels.length && <p>未记录模型请求：{result.unobservedModels.map(id => id.split("/").at(-1)).join("、")}</p>}
           {Object.values(result.performance.models).map(model => <div key={model.model + model.concurrency}>
             {model.model.split("/").at(-1)} · 并发 {model.concurrency} · {model.requests} 次 · 纯生成 {model.generationMs ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—"} tok/s · 请求平均 {model.requestMs ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—"} tok/s

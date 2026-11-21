@@ -1,3 +1,4 @@
+import { imageScreenOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 
 import { API_BASE, type OcrMode, type Settings, type TranslateProvider } from "./api";
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "./gameDisplayText";
@@ -50,7 +51,7 @@ export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImag
 export async function runGameImageSample(step: ImageBenchmarkStep, sample: UnityImage[], workload: ImageBenchmarkWorkload,
   config: BenchmarkConfig, setup: ImageBenchmarkSetup, settings: Settings, scope: string, signal: AbortSignal,
   readUnity: (image: UnityImage) => Promise<Blob>, report: OllamaOutput, progress: (value: UnityProgress) => void,
-  onSample?: (sample: string) => void, annotated?: AnnotatedSampleSet) {
+  onSample?: (sample: string) => void, annotated?: AnnotatedSampleSet, record?: RecordImageBenchmarkOutcome) {
   if (!workload.project) throw new Error("请先读取图片工程");
   const { source, target, skipTarget } = config;
   const prompts = { ...config.prompts };
@@ -61,8 +62,9 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   const observed = new Map<string, PresenceVerdict>();
   const recognized = new Map<string,UnityImage["regions"]>();
   const recordScreening = async (rows: UnityImage[]) => {
-    if (!labeledInputs) return;
     for (const image of rows) {
+      record?.(image.id,imageScreenOutcome(image));
+      if (!labeledInputs) continue;
       const state = image.screening?.state;
       if (image.screening?.refineFailed || state === "failed") observed.set(image.id, "failed");
       else if (image.screening?.sourceSkip || state === "not-needed") observed.set(image.id, "skip");
@@ -204,6 +206,16 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       render: (blob, regions) => renderGameImage(settings, model, blob, regions, signal, prompts, { source, target }, report),
       write: async () => ({ path: "benchmark", hash: "" }), validate: (source, translation) => gameImageTranslationProblem(source, translation, target),
       persist: async (_project, image) => {
+        if (record) {
+          const failed = image.error || image.regions.some(region => region.selected && !!region.error);
+          const category = failed ? "处理失败" : step === "recognize"
+            ? image.regions.some(region => region.text.trim()) ? "识别到文字" : "未检测到文字"
+            : image.noTranslationNeeded ? "无需翻译" : step === "render" ? "已生成译图" : "已翻译文字";
+          record(image.id,{ category, checked:image.selected, reason:image.error || (image.noTranslationNeeded ? "按语言或保留规则跳过" : undefined),
+            status:failed ? "失败" : image.noTranslationNeeded && step !== "recognize" ? "跳过" : "完成",
+            regions:image.regions.map(region => ({ box:[region.x0,region.y0,region.x1,region.y1],text:region.text,
+              translation:region.translation || undefined, reason:region.error || undefined })) });
+        }
         processed++;
         if (image.error || image.regions.some(region => region.selected && !!region.error)) {
           failed++;

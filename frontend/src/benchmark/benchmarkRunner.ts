@@ -1,5 +1,7 @@
+import { benchmarkImageInput, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
+import { clearGameImageRefinement } from "../gameImageScreening";
 import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } from "./imageSampleSet";
-import { useLayoutEffect, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { registerAppCloseGuard } from "../appClose";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
 import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, gameDuration, stepPerformance } from "../gameModelPerformance";
@@ -53,6 +55,7 @@ type BenchmarkJob = {
   progress?: BenchmarkProgress;
   status: "等待" | "运行中" | "完成" | "失败" | "已中止";
 };
+type FormalActivity = { id: string; game: string; label: string; completed?: number; total?: number };
 export type BenchmarkSnapshot = {
   version: number;
   jobs: readonly BenchmarkJob[];
@@ -60,11 +63,12 @@ export type BenchmarkSnapshot = {
   running: boolean;
   stopping: boolean;
   formalBusy: boolean;
+  formalJobs: readonly FormalActivity[];
   historyRevision: number;
 };
 
 export const emptyBenchmarkSnapshot: BenchmarkSnapshot = {
-  version: 0, jobs: [], progress: null, running: false, stopping: false, formalBusy: false, historyRevision: 0,
+  version: 0, jobs: [], progress: null, running: false, stopping: false, formalBusy: false, formalJobs: [], historyRevision: 0,
 };
 
 export function isMosaicBenchmarkStep(step: BenchmarkTarget): step is MosaicBenchmarkStep {
@@ -79,7 +83,11 @@ export function benchmarkTargetLabel(step: BenchmarkTarget) {
 type ProgressPatch = Partial<Omit<BenchmarkProgress, "elapsedMs" | "percent">>;
 type JobContext = { id: string; signal: AbortSignal; report: (patch: ProgressPatch) => void };
 type Prepared = { count: number; scope: string; run: (context: JobContext) => Promise<number>; cleanup: () => void };
-type QueuedJob = BenchmarkJob & { prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
+type QueuedJob = BenchmarkJob & { prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
+
+function initialImageRows(workload: ImageBenchmarkWorkload) {
+  return (workload.project?.images || []).map(clearGameImageRefinement).filter(image => image.selected);
+}
 
 function mosaicBenchmarkRows(step: MosaicBenchmarkStep, workload: MosaicBenchmarkWorkload, selection: "checked" | "all") {
   const checked = new Set(workload.checked);
@@ -93,7 +101,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
   const workload = images.getWorkload();
   const imageCounts: Partial<Record<ImageBenchmarkStep, number>> = {};
   for (const step of Object.keys(images.setup.steps) as ImageBenchmarkStep[]) {
-    imageCounts[step] = imageBenchmarkRows(step, workload.selected).length;
+    imageCounts[step] = imageBenchmarkRows(step, step === "refine" ? initialImageRows(workload) : workload.selected).length;
   }
   if (!input.mosaicRoot) return { imageCounts };
   const mosaic = captureMosaicBenchmark(workload, input.mosaicRoot);
@@ -101,6 +109,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
     imageCounts,
     mosaicCounts: {
       checked: mosaicBenchmarkRows("mosaicScreen", mosaic, "checked").length,
+      refineChecked: captureMosaicBenchmark(workload,input.mosaicRoot,true).checked.length,
       all: mosaic.selected.length,
       redrawChecked: mosaicBenchmarkRows("mosaicRedraw", mosaic, "checked").length,
       redrawAll: mosaicBenchmarkRows("mosaicRedraw", mosaic, "all").length,
@@ -127,6 +136,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Pro
   const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
+  let imageSamples: ImageBenchmarkInput[] | undefined;
   let createStepRunner: ((context: JobContext, report: (value: UnityProgress) => void) => BenchmarkStepRunner) | undefined;
   if (mosaic) {
     if (!imageSource || configs.some(config => !config.mosaic)) throw new Error("当前工程没有去码测试样本或配置");
@@ -134,12 +144,15 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Pro
       project: annotated.project, selected: [], embedded: false, checked: [],
       boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
         ? [[image.id,image.annotation.mosaic.boxes]] : [])),
-    } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope));
+    } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope, step === "mosaicRefine"));
     const options = configs[0].mosaic!;
-    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, options.selection);
+    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, step === "mosaicRefine" ? "checked" : options.selection);
     const sample = selectSamples(eligible);
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
+    const checked = new Set(snapshot.checked);
+    imageSamples = sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
+      annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
     createStepRunner = (context, report) => runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
       context.report({ sample: image.name });
       if (annotated) return annotated.read(image,signal);
@@ -151,12 +164,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Pro
     const snapshot = annotated ? { project: annotated.project, selected: [], embedded: currentImages.embedded } : structuredClone(currentImages);
     const setup = structuredClone(imageSource.setup);
     const sample = selectSamples(annotated ? annotatedTextSamples(annotated,imageStep,[...new Set(configs.map(config => config.target))])
-      : imageBenchmarkRows(imageStep, snapshot.selected));
+      : imageBenchmarkRows(imageStep, imageStep === "refine" ? initialImageRows(snapshot) : snapshot.selected));
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该步骤及目标语言的已标注图片" : "所勾选的图片没有符合当前步骤的样本");
     count = sample.length;
-    createStepRunner = (context, report) => (config, settings, scope) => runGameImageSample(imageStep, sample, snapshot, config,
+    imageSamples = sample.map(image => benchmarkImageInput(image));
+    createStepRunner = (context, report) => (config, settings, scope, record) => runGameImageSample(imageStep, sample, snapshot, config,
       setup, settings, scope, context.signal, image => imageSource.readImage!(snapshot.project!, image), input.onMessage,
-      report, sample => context.report({ sample }), annotated);
+      report, sample => context.report({ sample }), annotated, record);
   } else {
     const text = structuredClone(input.getWorkload());
     text.selected = selectSamples(text.selected);
@@ -193,7 +207,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Pro
       context.report({ current: finishedSamples + runSamples, detail: value.detail,
         failed: failedSamples + (value.translation?.failedEntries ?? value.redrawFailed ?? 0) });
     };
-    const target = createStepRunner ? { step, selected: count, run: createStepRunner({
+    const target = createStepRunner ? { step, selected: count, imageSamples, run: createStepRunner({
       ...context,
       report: patch => context.report(patch.sample ? { ...patch, sample: sampleLabel(patch.sample) } : patch),
     }, progress) } : undefined;
@@ -235,30 +249,32 @@ let running = false;
 let controller: AbortController | undefined;
 let executing: Promise<void> | undefined;
 let historyRevision = 0;
-const formalWorkflows = new Set<symbol>();
+const formalWorkflows = new Map<string, FormalActivity>();
 export const benchmarkBlockingReason = "测试进行中，完成后可操作";
-export const formalBlockingReason = "正式流程进行中，完成后可操作";
+export const formalBlockingReason = "等待正式任务结束";
 
 export function isBenchmarkRunning() {
-  return running || !!controller;
+  return !!controller || (running && !formalWorkflows.size);
 }
 
 export function useBenchmarkRunning() {
   return useSyncExternalStore(benchmarkRunner.subscribe, isBenchmarkRunning);
 }
 
-export function useFormalWorkflowActivity(active: boolean) {
+export function useFormalWorkflowActivity(active: boolean, game: string, label: string, completed?: number, total?: number) {
+  const id = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
-    if (!active) return;
-    const id = Symbol();
-    formalWorkflows.add(id);
+    const key = id.current ??= crypto.randomUUID();
+    if (active) formalWorkflows.set(key,{ id:key,game,label,completed,total });
+    else formalWorkflows.delete(key);
     publish();
-    return () => { formalWorkflows.delete(id); publish(); };
-  }, [active]);
-}
-
-function assertFormalIdle() {
-  if (formalWorkflows.size) throw new Error(formalBlockingReason);
+    if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
+  }, [active, game, label, completed, total]);
+  useLayoutEffect(() => () => {
+    if (!id.current || !formalWorkflows.delete(id.current)) return;
+    publish();
+    if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
+  }, []);
 }
 
 function publish() {
@@ -267,11 +283,11 @@ function publish() {
     : progress;
   snapshot = {
     version: snapshot.version + 1,
-    jobs: jobs.map(({ prepared, onMessage, ...job }) => ({
+    jobs: jobs.map(({ prepared, prepare, onMessage, ...job }) => ({
       ...job, progress: job.status === "运行中" ? visibleProgress ?? undefined : job.progress,
     })),
     progress: visibleProgress,
-    running, stopping: !!controller?.signal.aborted, formalBusy: formalWorkflows.size > 0, historyRevision,
+    running, stopping: !!controller?.signal.aborted, formalBusy: formalWorkflows.size > 0, formalJobs: [...formalWorkflows.values()], historyRevision,
   };
   for (const listener of listeners) listener();
 }
@@ -281,6 +297,7 @@ async function cleanupJob(job?: QueuedJob) {
     // A waiting job has only a snapshot. Its scope may belong to the active job.
     if (job.status === "运行中") job.prepared?.cleanup();
     job.prepared = undefined;
+    job.prepare = undefined;
     job.onMessage = undefined;
   }
   await flushGamePerformanceArchive();
@@ -289,17 +306,23 @@ async function cleanupJob(job?: QueuedJob) {
 async function runJobs() {
   while (running && !formalWorkflows.size) {
     const job = jobs.find(item => item.status === "等待");
-    if (!job?.prepared) break;
+    if (!job) break;
     const abort = new AbortController();
     controller = abort;
     job.status = "运行中";
     startedAt = performance.now();
     progress = { type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
-      phase: "prepare", label: job.label, current: 0, total: job.prepared.count, sample: "", elapsedMs: 0, percent: 0, failed: 0 };
+      phase: "prepare", label: job.label, current: 0, total: job.prepared?.count ?? 0, sample: "", elapsedMs: 0, percent: 0, failed: 0 };
     publish();
     const timer = window.setInterval(publish, 1000);
     let failed = false;
     try {
+      job.prepared ??= await job.prepare?.();
+      abort.signal.throwIfAborted();
+      if (!job.prepared) throw new Error("未能准备测试样本");
+      job.scope = job.prepared.scope;
+      progress = { ...progress, scope: job.scope, total: job.prepared.count };
+      publish();
       failed = !!await job.prepared.run({
         id: job.id, signal: abort.signal,
         report: patch => {
@@ -338,31 +361,43 @@ function stopQueue() {
   if (!executing) void cleanupJob().catch(console.error);
 }
 
+function pumpQueue() {
+  if (!running || executing || formalWorkflows.size) return;
+  if (!jobs.some(job => job.status === "等待")) {
+    running = false;
+    publish();
+    return;
+  }
+  // Claim execution before any synchronous progress callback can start a second pump.
+  executing = Promise.resolve().then(runJobs);
+  void executing.finally(() => { executing = undefined; if (running) pumpQueue(); else publish(); }).catch(console.error);
+}
+
 function startQueue() {
-  if (executing || !jobs.some(job => job.status === "等待")) return;
-  assertFormalIdle();
+  if (!jobs.some(job => job.status === "等待")) return;
   running = true;
   publish();
-  const work = runJobs();
-  executing = work;
-  void work.finally(() => { executing = undefined; running = false; publish(); }).catch(console.error);
+  pumpQueue();
 }
 
 export const benchmarkRunner = {
   async enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
-    assertFormalIdle();
-    const prepared = await prepareJob(input, request);
-    assertFormalIdle();
+    const occupied = formalWorkflows.size > 0;
+    const frozen = structuredClone(request);
+    const deferred = occupied && !request.sampleSetPath;
+    const prepare = deferred ? () => prepareJob(input,frozen) : undefined;
+    const prepared = deferred ? undefined : await prepareJob(input,frozen);
     if (request.priority && controller?.signal.aborted) throw new Error("正在中止当前测试，请稍候");
     const configs = request.configs.filter(config => config.enabled !== false);
     const title = benchmarkTargetLabel(request.step);
     const label = configs.length === 1 ? title + " · " + configs[0].label : title + " · " + configs.length + " 个配置";
-    const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared.scope, requestScope: request.scope, step: request.step,
-      label, status: "等待", prepared, onMessage: input.onMessage };
+    const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
+      label, status: "等待", prepared, prepare, onMessage: input.onMessage };
     const firstWaiting = request.priority ? jobs.findIndex(item => item.status === "等待") : -1;
     jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
     publish();
-    if (request.priority) startQueue();
+    if (request.priority || occupied || formalWorkflows.size) startQueue();
+    else if (running) pumpQueue();
     return job.id;
   },
   start: startQueue,
@@ -373,6 +408,7 @@ export const benchmarkRunner = {
     const [job] = jobs.splice(index, 1);
     publish();
     await cleanupJob(job);
+    pumpQueue();
   },
   cleanup: () => cleanupJob(),
   snapshot: () => snapshot,
