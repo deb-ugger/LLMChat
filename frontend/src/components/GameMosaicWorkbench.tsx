@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, 
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { gameDuration } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadLadaDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type LadaDevice, type MosaicBox, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -47,7 +47,7 @@ type Props = {
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
 const mosaicPageSize = 40;
 const ungroupedMosaicImages = "ungrouped";
-const detectorLabels = { grid: "方格规则", lada: "Lada 专用检测" };
+const detectorLabels = { grid: "方格规则", lada: "Lada v4 Fast（内置）" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -447,7 +447,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : "";
+    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : "lada-v4-fast-640";
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);
@@ -461,8 +461,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
     void run("筛选打码区域", async (signal, report) => {
-      if (detectorKind === "lada" && !detectorFile) throw new Error("请选择 Lada v4 的 ONNX 文件");
-      const lada = detectorKind === "lada" && detectorFile ? await loadLadaDetector(detectorFile, {
+      const lada = detectorKind === "lada" ? await loadLadaDetector(detectorFile, {
         signal,
         onDevice: device => setStepRuns(previous => previous.screen
           ? { ...previous, screen: { ...previous.screen, device } }
@@ -757,7 +756,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
       <div className="game-flow-list"><ol>
         {stepCard("screen", "筛选打码图片", screenSummary, <>
-          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length || detectorKind === "lada" && !detectorFile}
+          <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={actionsDisabled || !currentScope.length}
             onClick={() => screen()}>{screenAction}</button>
           {canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
             onClick={() => void clearTask()}>清理</button>}
@@ -770,8 +769,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
             <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option>
           </select></label>
-          {detectorKind === "lada" && <label>本地模型
+          {detectorKind === "lada" && <label>自定义 ONNX（可选）
             <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
+            {detectorFile && <button type="button" className="unity-btn" disabled={!!busy} onClick={()=>{clearGameDetectorFile(gamePath);setDetectorFile(undefined);}}>使用内置模型</button>}
           </label>}
         </>)}
         {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model],

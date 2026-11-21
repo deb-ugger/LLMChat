@@ -135,7 +135,7 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   setRole(text.roles, "names", modelId(testModels.qwen));
   const images = value.images;
   if (!images) return value;
-  if (images.options.mosaic) images.options.mosaic = { detector: "grid", scope: "scenes", model: "turbo", steps: 8, protect: true };
+  if (images.options.mosaic) images.options.mosaic = { detector: "lada", scope: "scenes", model: "turbo", steps: 8, protect: true };
   if (images.options.redrawProfile) images.options.redrawProfile = "turbo";
   const imageLanguage = images.options.translation ?? text.options;
   const hasScreeningStep = images.options.strategy !== undefined;

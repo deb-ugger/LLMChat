@@ -47,8 +47,9 @@ export function createMosaicGridScanner() {
 export type MosaicSettings = {
   detector: "grid" | "lada"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "grid", scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "lada", scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
+export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
   if (file) detectorFiles.set(root, file);
   return detectorFiles.get(root);
@@ -63,9 +64,7 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
 }
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  const file = gameDetectorFile(root);
-  if (!file) throw new Error("请在图片去码页选择本次使用的 Lada ONNX 文件");
-  return loadLadaDetector(file, { signal });
+  return loadLadaDetector(gameDetectorFile(root), { signal });
 }
 
 const threshold = 0.25;
@@ -102,7 +101,7 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
 
 export type LadaDevice = { kind: "gpu" | "cpu"; reason?: string };
 
-export async function loadLadaDetector(model: File, options: {
+export async function loadLadaDetector(model: File | undefined, options: {
   signal?: AbortSignal; onDevice?: (device: LadaDevice) => void;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
@@ -112,8 +111,14 @@ export async function loadLadaDetector(model: File, options: {
     wasm: new URL("./manga-ort/ort-wasm-simd-threaded.asyncify.wasm", assets).href,
   };
   ort.env.wasm.numThreads = 1;
-  const bytes = await model.arrayBuffer();
   const { signal, onDevice } = options;
+  let bytes: ArrayBuffer;
+  if (model) bytes = await model.arrayBuffer();
+  else {
+    const response = await fetch(new URL("./lada/lada-v4-fast.onnx", assets), { signal });
+    if (!response.ok) throw new Error("内置 Lada 模型读取失败，请重新准备软件资源");
+    bytes = await response.arrayBuffer();
+  }
   const create = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(bytes, { executionProviders: [provider] });
   let session: Awaited<ReturnType<typeof create>> | undefined;
   let device: LadaDevice = { kind: "gpu" };

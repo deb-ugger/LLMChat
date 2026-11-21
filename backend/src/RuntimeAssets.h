@@ -13,7 +13,7 @@ inline std::filesystem::path resolve(const std::filesystem::path& root, const st
     if (rel.empty() || rel.is_absolute() || rel.has_root_name()) return {};
     for (const auto& part : rel) if (part == "..") return {};
     const auto group = *rel.begin();
-    if (group != "ocr" && group != "ort" && group != "manga-ort" && group != "wtp") return {};
+    if (group != "ocr" && group != "ort" && group != "manga-ort" && group != "wtp" && group != "lada") return {};
     std::error_code ec;
     const auto base = fs::weakly_canonical(root, ec);
     if (ec) return {};

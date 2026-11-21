@@ -17,7 +17,7 @@ if (-not (Test-Path $exe)) {
 Write-Output "Using release binary: $exe ($(Get-Item $exe | Select-Object -ExpandProperty LastWriteTime))"
 
 $webAssets = Join-Path $root 'frontend\src-tauri\resources\web-assets'
-foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp')) {
+foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'lada')) {
     if (!(Test-Path -LiteralPath (Join-Path $webAssets $group) -PathType Container)) {
         throw "Run the frontend build before packaging (missing runtime assets: $group)."
     }
