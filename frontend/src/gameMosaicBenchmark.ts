@@ -1,8 +1,9 @@
 import { API_BASE } from "./api";
-import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicSettings } from "./gameMosaic";
+import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { clearMosaicReviews, refineMosaicBatch } from "./gameMosaicRefine";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
+import { mosaicBoxScore, presenceScore, type AnnotatedSampleSet } from "./benchmark/imageSampleSet";
 import type { ImageBenchmarkWorkload } from "./gameImageBenchmark";
 import type { BenchmarkStepRunner } from "./gameTextBenchmark";
 import type { UnityImage, UnityProgress } from "./unityOffline";
@@ -28,9 +29,9 @@ export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: s
   const boxes: Record<string, MosaicBox[]> = {};
   for (const image of images) {
     const row = rows[image.id];
-    if (row?.source !== image.sourceHash) continue;
-    if (row.checked) checked.push(image.id);
-    if (row.boxes.length) boxes[image.id] = row.boxes;
+    const current = row?.source === image.sourceHash ? row : undefined;
+    if (current?.checked ?? true) checked.push(image.id);
+    if (current?.boxes.length) boxes[image.id] = current.boxes;
   }
   return { ...workload, selected: images, checked, boxes, modelFile: gameDetectorFile(root) };
 }
@@ -43,9 +44,17 @@ export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage
 
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
-  onProgress: (value: UnityProgress) => void): BenchmarkStepRunner {
+  onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet): BenchmarkStepRunner {
   return async (config, settings, scope) => {
     const options = config.mosaic!;
+    const expected = annotated ? new Map(annotated.images.map(image => [image.id,image.annotation])) : undefined;
+    const measureAccuracy = (results: ReadonlyMap<string,MosaicScan>) => {
+      if (!expected) return "";
+      const pairs = Array.from(results, ([id, result]) => [expected.get(id)!, result] as const);
+      const presence = presenceScore(pairs.map(([label, scan]) => [label, scan.review ? "uncertain" : scan.boxes.length ? "present" : "none"]),"mosaic");
+      const localization = mosaicBoxScore(pairs.filter(([,scan]) => !scan.review).map(([label, scan]) => [label,scan.boxes]));
+      return " · " + presence + (localization ? " · " + localization : "");
+    };
     const readSample = (image: UnityImage, signal: AbortSignal) => measureGameAsync(scope, "processingMs", () => read(image, signal));
     if (step === "mosaicRefine") {
       // The production runner checkpoints its work. Give each benchmark run its own key.
@@ -60,11 +69,12 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
         });
         const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
         const review = [...result.results.values()].filter(scan => !!scan.review).length;
-        return { translated: result.results.size, failed: result.failed, summary: "已确认 " + located + " 张 · 待人工复核 " + review + " 张" };
+        return { translated: result.results.size, failed: result.failed, summary: "已确认 " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
       } finally { clearMosaicReviews(root); }
     }
     let cursor = 0, completed = 0, failed = 0, located = 0, review = 0, regions = 0;
     let firstFailure = "";
+    const results = new Map<string, MosaicScan>();
     const detector = step === "mosaicScreen" && options.detector !== "grid" ? await loadMosaicDetector(workload.modelFile, { signal }) : undefined;
     const lane = async () => {
       const grid = step === "mosaicScreen" && !detector ? createMosaicGridScanner() : undefined;
@@ -81,6 +91,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
                 seed: 1, signal, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
             } else {
               const scan = await (detector ?? grid!).scan(source);
+              if (expected) results.set(image.id,scan);
               if (scan.boxes.length) located++;
               if (scan.review) review++;
               regions += scan.boxes.length;
@@ -99,7 +110,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       const settled = await Promise.allSettled(Array.from({ length: Math.min(lanes, images.length) }, lane));
       for (const result of settled) if (result.status === "rejected") throw result.reason;
     } finally { await detector?.release(); }
-    const summary = step === "mosaicScreen" ? "检出区域 " + regions + " 个 · " + located + " 张有定位 · " + review + " 张待复核"
+    const summary = step === "mosaicScreen" ? "检出区域 " + regions + " 个 · " + located + " 张有定位 · " + review + " 张待复核" + measureAccuracy(results)
       : "已生成 " + (completed - failed) + " 张测试结果";
     return { translated: completed - failed, failed, summary: summary + (firstFailure ? " · 首个失败 " + firstFailure : "") };
   };

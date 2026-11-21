@@ -7,6 +7,7 @@ import { classifyImageText, clearGameImageRefinement, refineGameImages, screenGa
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu, type OllamaOutput } from "./gameOllama";
 import { gameTaskPrompt, type GamePromptScene } from "./gamePrompts";
+import { annotatedTextInput, presenceScore, sampleTextMatchesScope, textBoxScore, type AnnotatedSampleSet, type PresenceVerdict } from "./benchmark/imageSampleSet";
 import type { BenchmarkConfig } from "./gameTextBenchmark";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "./modelPresets";
 import { LocalPaddleOcr } from "./ocr/paddleOcr";
@@ -48,14 +49,36 @@ export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImag
 
 export async function runGameImageSample(step: ImageBenchmarkStep, sample: UnityImage[], workload: ImageBenchmarkWorkload,
   config: BenchmarkConfig, setup: ImageBenchmarkSetup, settings: Settings, scope: string, signal: AbortSignal,
-  readUnity: (image: UnityImage) => Promise<Blob>, report: OllamaOutput, progress: (value: UnityProgress) => void, onSample?: (sample: string) => void) {
+  readUnity: (image: UnityImage) => Promise<Blob>, report: OllamaOutput, progress: (value: UnityProgress) => void,
+  onSample?: (sample: string) => void, annotated?: AnnotatedSampleSet) {
   if (!workload.project) throw new Error("请先读取图片工程");
   const { source, target, skipTarget } = config;
   const prompts = { ...config.prompts };
   const { id: model, lanes } = config.models.text;
   const role = imageBenchmarkSteps[step].role;
   rememberBenchmarkExecution(prompts, scope, step, lanes);
-  const project = { ...workload.project, entries: [], images: structuredClone(sample).map(image => {
+  const labeledInputs = annotated ? new Map(annotated.images.map(image => [image.id, image])) : undefined;
+  const observed = new Map<string, PresenceVerdict>();
+  const recognized = new Map<string,UnityImage["regions"]>();
+  const recordScreening = async (rows: UnityImage[]) => {
+    if (!labeledInputs) return;
+    for (const image of rows) {
+      const state = image.screening?.state;
+      if (image.screening?.refineFailed || state === "failed") observed.set(image.id, "failed");
+      else if (image.screening?.sourceSkip || state === "not-needed") observed.set(image.id, "skip");
+      else if (state === "no-text") observed.set(image.id, "none");
+      else if (state === "review") observed.set(image.id, "uncertain");
+      else if (state === "candidate") observed.set(image.id, "present");
+    }
+  };
+  const scoring = () => labeledInputs ? presenceScore(Array.from(observed, ([id, verdict]) => {
+    const expected = labeledInputs.get(id)!;
+    const comparable = (verdict === "none" || verdict === "uncertain") && !sampleTextMatchesScope(expected,source,target,skipTarget)
+      ? "skip" : verdict;
+    return [expected.annotation, comparable] as const;
+  }),"text") : undefined;
+  const inputSample = labeledInputs ? sample.map(image => annotatedTextInput(labeledInputs.get(image.id)!,step,source,target,skipTarget)) : sample;
+  const project = { ...workload.project, entries: [], images: structuredClone(inputSample).map(image => {
     let initial = step === "refine" ? clearGameImageRefinement(image) : image;
     if (step === "refine" && !workload.embedded && initial.screening) {
       const screening = initial.screening;
@@ -74,6 +97,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   }) };
   const read = (image: UnityImage) => measureGameAsync(scope, "processingMs", async () => {
     onSample?.(image.name);
+    if (annotated) return annotated.read(image, signal);
     if (!workload.embedded) return readUnity(image);
     const query = new URLSearchParams({ gamePath: project.root, id: image.id });
     const response = await fetch(API_BASE + "/api/game-images/preview?" + query, { signal });
@@ -89,7 +113,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     const mode = LOCAL_REFINE_MODELS.find(item => item.id === config.imageMode)?.id || setup.refineMode || "precise";
     if (!workload.embedded) {
       const confidence = config.imageConfidence ?? setup.refineConfidence ?? (model ? 70 : 50);
-      const io = { read, persist: async () => {} };
+      const io = { read, persist: recordScreening };
       if (model) {
         const connection = { ...resolveFeatureLlm(settings, model), localModel: !!loadLocalModelProfiles()[model] };
         await prepareGameOllamaParallel(connection, concurrency, signal, report);
@@ -98,7 +122,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
         recognize: (blob, regions) => recognizeUnityReviewCrops(settings, model, blob, regions, signal, prompts, report, confidence) }, progress)
         : await refineUnityImagesLocally(project, signal, scope, { method: "local", mode, confidence, concurrency }, io, progress);
       if (!result.completed) throw new Error(model ? "选择有初筛疑似文字区域的图片后，再测试 Unity 视觉复筛" : "没有可复筛的 Unity 样本图片");
-      return { translated: result.completed - result.failed, failed: result.failed };
+      return { translated: result.completed - result.failed, failed: result.failed, summary: scoring() };
     }
     const local = model ? undefined : createLocalImageRefiner(mode, concurrency, scope);
     const connection = model ? { ...resolveFeatureLlm(settings, model), localModel: !!loadLocalModelProfiles()[model] } : undefined;
@@ -113,10 +137,10 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
           const presence = await classifyGameImagePresence(settings, model, blob, signal, prompts, { source, target }, report, confidence);
           if (!gpuChecked && connection) { gpuChecked = true; await reportRefinementGpu(connection, signal, report); }
           return { lines: [], detectedBoxes: 0, presence };
-        }, persist: async () => {} }, progress);
+        }, persist: recordScreening }, progress);
       const { completed, counts, changed, unchanged } = result;
       return { translated: completed - counts.failed, failed: counts.failed,
-        summary: `复筛样本 ${completed} 张 · 分类变化 ${changed} · 未变化 ${unchanged} · 待正式识别 ${counts.candidate} · 待复核 ${counts.review} · 无文字 ${counts["no-text"]} · 无需翻译 ${counts["not-needed"]} · 失败 ${counts.failed}。本轮结果归入测试记录。` };
+        summary: `复筛样本 ${completed} 张 · 分类变化 ${changed} · 未变化 ${unchanged} · 待正式识别 ${counts.candidate} · 待复核 ${counts.review} · 无文字 ${counts["no-text"]} · 无需翻译 ${counts["not-needed"]} · 失败 ${counts.failed}。本轮结果归入测试记录。${labeledInputs ? " · " + scoring() : ""}` };
     } finally { await local?.dispose(); }
   }
   if (step === "filter") {
@@ -124,14 +148,14 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     const count = model ? lanes : localGameImageScreeningLanes(config.localLanes || setup.concurrency);
     if (!workload.embedded) {
       const result = await screenUnityImages(project, signal, { source, target, strategy, model: model || undefined, concurrency: count, timingScope: scope },
-        { read, persist: async () => {}, recognize: model ? async blob => (await vision(blob, "screen")).lines : undefined }, progress);
-      return { translated: result.completed - result.failed, failed: result.failed };
+        { read, persist: recordScreening, recognize: model ? async blob => (await vision(blob, "screen")).lines : undefined }, progress);
+      return { translated: result.completed - result.failed, failed: result.failed, summary: scoring() };
     }
     const workers = model ? [] : Array.from({ length: count }, () => new LocalPaddleOcr("fast", { upscale: false, maxSide: 1280, boxThresh: .3 }));
     let prepare: Promise<void> | undefined;
     try {
       const result = await screenGameImages(project, signal, { source, target, strategy, concurrency: count, model: model || "fast", timingScope: scope }, {
-        read, persist: async () => {},
+        read, persist: recordScreening,
         recognize: (blob, stage, index = 0) => model ? vision(blob, "screen") : measureGameAsync(scope, "processingMs", async () => {
           await (prepare ??= workers[0].prepare());
           const worker = workers[index];
@@ -141,7 +165,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
           return classifyImageText(rough, { source, target }).state === "review" ? worker.recognize(blob, stage, { maxSide: 1280, boxThresh: .3 }) : rough;
         }),
       }, progress);
-      return { translated: sample.length - result.failed, failed: result.failed };
+      return { translated: sample.length - result.failed, failed: result.failed, summary: scoring() };
     } finally { await Promise.all(workers.map(worker => worker.dispose())); }
   }
 
@@ -149,7 +173,6 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   const mode = config.imageMode || setup.mode;
   const workers = step === "recognize" && (!model || mode === "manga") ? Array.from({ length: model ? lanes : localLanes }, () => createUnityImageOcr(mode)) : [];
   const request = async (provider: TranslateProvider, text: string) => {
-    if (!gameTextMatchesSource(text, source) || skipTarget && gameTextNeedsNoTranslation(text, target)) return text;
     const options = buildUnityTranslateOptions(settings, provider, source, target, model, false, !!loadLocalModelProfiles()[model],
       gameTaskPrompt(role, prompts, { source, target }), "keep", { selection: prompts, role });
     const result = await translateGameWithOllama(text, { signal }, { ...options, autoFallback: false }, report);
@@ -159,7 +182,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
   const engines = step === "imageTranslate" && !model ? (config.engines || setup.engines || []).filter(choice => choice.enabled && engineReady(parseEngineKeys(settings.translateEngineKeys), choice.id)) : [];
   if (step === "imageTranslate" && !model && !engines.length) throw new Error("请先启用可用的图片翻译引擎");
   const pool = engines.length ? createUnityEnginePool(engines, signal, request, { timingScope: scope }) : null;
-  let processed = 0, failed = 0;
+  let processed = 0, failed = 0, skipped = 0;
   try {
     if (workers.length && !model) {
       await workers[0].prepare();
@@ -167,7 +190,8 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     }
     await processUnityImages(project, signal, {
       timingScope: scope, concurrency: model ? lanes : localLanes, translationConcurrency: pool?.concurrency || lanes,
-      regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read,
+      regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read, targetLanguage: target,
+      includeRegion: labeledInputs ? undefined : text => gameTextMatchesSource(text,source) && (!skipTarget || !gameTextNeedsNoTranslation(text,target)),
       recognize: (blob, stage, index = 0) => {
         if (!model) return measureGameAsync(scope, "processingMs", () => recognizeLocalGameImage(blob,
           input => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(input, stage), signal));
@@ -179,7 +203,17 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       translate: text => pool ? pool.translate(text) : request("llm", text),
       render: (blob, regions) => renderGameImage(settings, model, blob, regions, signal, prompts, { source, target }, report),
       write: async () => ({ path: "benchmark", hash: "" }), validate: (source, translation) => gameImageTranslationProblem(source, translation, target),
-      persist: async (_project, image) => { processed++; if (image.error || image.regions.some(region => !!region.error)) failed++; },
+      persist: async (_project, image) => {
+        processed++;
+        if (image.error || image.regions.some(region => region.selected && !!region.error)) {
+          failed++;
+          if (labeledInputs && step === "recognize") observed.set(image.id,"failed");
+        } else if (labeledInputs && step === "recognize") {
+          const regions = image.regions.filter(region => region.text.trim());
+          observed.set(image.id, regions.length ? "present" : "none");
+          if (sampleTextMatchesScope(labeledInputs.get(image.id)!,source,target,skipTarget)) recognized.set(image.id,regions);
+        } else if (image.noTranslationNeeded) skipped++;
+      },
     }, progress, config.imageConfidence ?? setup.confidence ?? 50, step === "recognize" || step === "render" ? step : "translate-only");
   } catch (error) {
     if (signal.aborted || !failed) throw error;
@@ -187,6 +221,10 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     pool?.dispose();
     await Promise.all(workers.map(worker => worker.dispose()));
   }
-  return { translated: processed - failed, failed };
+  const localization = labeledInputs && step === "recognize"
+    ? textBoxScore(Array.from(recognized, ([id, regions]) => [labeledInputs.get(id)!.annotation, regions] as const)) : "";
+  return { translated: processed - failed, failed,
+    summary: step === "recognize" ? [scoring(),localization].filter(Boolean).join(" · ") || undefined
+      : skipped ? "按语言或保留规则跳过 " + skipped + " 张" : undefined };
 }
 

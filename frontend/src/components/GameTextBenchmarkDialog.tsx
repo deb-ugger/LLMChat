@@ -1,3 +1,4 @@
+import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
@@ -29,7 +30,7 @@ type BenchmarkPageInput = BenchmarkSetup & {
   onClose: () => void;
   channel?: BroadcastChannel;
 };
-type QueueDraft = { configs: BenchmarkConfig[]; rounds: string };
+type QueueDraft = { configs: BenchmarkConfig[]; rounds: string; sampleSetPath?: string; useSampleSet?: boolean };
 const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
   scope: input.scope, current: input.current, models: input.models, screenModel: input.screenModel,
   initialPart: input.initialPart, selectedCount: input.getWorkload().selected.length,
@@ -78,7 +79,7 @@ export function GameTextBenchmarkHost() {
         showAppNotice("打开测试队列失败：" + String(error), "error");
       }).finally(() => { opening = undefined; });
     };
-    channel.onmessage = (event: MessageEvent) => {
+    channel.onmessage = async (event: MessageEvent) => {
       const message = event.data;
       if (message?.type !== "request") return;
       try {
@@ -90,7 +91,7 @@ export function GameTextBenchmarkHost() {
           if (!active) throw new Error("测试队列没有关联的游戏工程");
           if (message.kind === "setup") value = setupFor(active);
           else if (message.kind === "selection") value = active.getWorkload().selected;
-          else if (message.kind === "benchmark-enqueue") value = benchmarkRunner.enqueue(active, message.data);
+          else if (message.kind === "benchmark-enqueue") value = await benchmarkRunner.enqueue(active, message.data);
           else throw new Error("未知的测试队列请求");
         }
         channel.postMessage({ type: "response", id: message.id, value });
@@ -232,13 +233,23 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       imageConfidence: imageStep === "refine" ? images.refineConfidence : images.confidence, engines: images.engines } : {}),
       prompts: { ...(images?.prompts || settings.prompts) }, id: crypto.randomUUID(), label: "配置 " + number, models: selectedModels };
   };
-  const [saved] = useState<{ configs?: BenchmarkConfig[]; rounds?: number }>(() => {
+  const [saved] = useState<{ configs?: BenchmarkConfig[]; rounds?: number; sampleSetPath?: string }>(() => {
     try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
   });
   const [configs, setConfigs] = useState(() => draft?.configs || saved.configs || [capture(1)]);
   const [rounds, setRounds] = useState(draft?.rounds || String(saved.rounds || 1));
+  const sampleSetKey = "llmchat-annotated-image-samples:" + textScope;
+  const [sampleSetPath,setSampleSetPath] = useState(() => draft?.sampleSetPath || saved.sampleSetPath || localStorage.getItem(sampleSetKey) || "");
+  const [useSampleSet,setUseSampleSet] = useState(() => draft?.useSampleSet ?? !!saved.sampleSetPath);
+  const [browseSampleSet,setBrowseSampleSet] = useState(false);
+  const sampleSetMode = !!(imageStep || mosaicStep) && useSampleSet;
+  const chooseSampleSet = (path: string) => {
+    setSampleSetPath(path);
+    localStorage.setItem(sampleSetKey,path);
+    setUseSampleSet(true);
+  };
   const [savedQueue, setSavedQueue] = useState(() =>
-    saved.configs ? JSON.stringify({ configs: saved.configs, rounds: saved.rounds || 1 }) : "");
+    saved.configs ? JSON.stringify({ configs: saved.configs, rounds: saved.rounds || 1, sampleSetPath: saved.sampleSetPath }) : "");
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const [history, setHistory] = useState<BenchmarkResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
@@ -249,10 +260,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [adding, setAdding] = useState(false);
   const totalRounds = Number(rounds);
   const validRounds = Number.isInteger(totalRounds) && totalRounds >= 1 && totalRounds <= 100;
-  const serialized = JSON.stringify({ configs, rounds: totalRounds });
+  const serialized = JSON.stringify({ configs, rounds: totalRounds, sampleSetPath: sampleSetMode ? sampleSetPath || undefined : undefined });
   const queue = snapshot.jobs.filter(job => job.status === "等待" || job.status === "运行中");
   const configIssue = (config: BenchmarkConfig) => {
     if (!validRounds) return "循环轮次必须为 1 至 100";
+    if (sampleSetMode && !sampleSetPath) return "请先选择已标注样本集";
     if (mosaicStep) {
       const options = config.mosaic;
       if (!options) return "缺少去码测试配置";
@@ -260,13 +272,13 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         return "请先选择候选区域推理模型和纹理与漏检复核模型";
       const checked = options.selection === "checked";
       if (mosaicStep === "mosaicRedraw") {
-        if (!(checked ? mosaicCounts?.redrawChecked : mosaicCounts?.redrawAll)) return "请先为测试图片准备蒙版";
-      } else if (!(checked ? mosaicCounts?.checked : mosaicCounts?.all)) {
+        if (!sampleSetMode && !(checked ? mosaicCounts?.redrawChecked : mosaicCounts?.redrawAll)) return "请先为测试图片准备蒙版";
+      } else if (!sampleSetMode && !(checked ? mosaicCounts?.checked : mosaicCounts?.all)) {
         return "没有可测试的去码图片，请检查勾选或调整样本范围";
       }
       return "";
     }
-    if (!(imageStep ? imageCounts?.[imageStep] : selectionCount))
+    if (!sampleSetMode && !(imageStep ? imageCounts?.[imageStep] : selectionCount))
       return imageStep ? "没有符合当前步骤的图片样本" : "请先勾选要测试的文本";
     if (!config.models.text.id) {
       if (requiresModel) return "请先选择复核模型";
@@ -278,7 +290,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     return "";
   };
   const canRun = configs.length > 0 && configs.every(config => !configIssue(config));
-  useEffect(() => { onDraft({ configs, rounds }); }, [configs, rounds]);
+  useEffect(() => { onDraft({ configs, rounds, sampleSetPath, useSampleSet }); }, [configs, rounds, sampleSetPath, useSampleSet]);
   const saveQueue = (silent = false) => {
     if (!validRounds || serialized === savedQueue) return;
     localStorage.setItem(key, serialized);
@@ -329,7 +341,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     const configsSnapshot = structuredClone(single ? [single] : configs).map(config => ({ ...config, engines: config.engines || (imageStep ? images?.engines : current.engines) }));
     setAdding(true);
     try {
-      await enqueue({ scope: textScope, step, configs: configsSnapshot, rounds: totalRounds, priority: !!single });
+      await enqueue({ scope: textScope, step, configs: configsSnapshot, rounds: totalRounds, priority: !!single, sampleSetPath: sampleSetMode ? sampleSetPath : undefined });
     } catch (error) {
       showAppNotice(String(error), "error");
     } finally { setAdding(false); }
@@ -354,7 +366,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     <header className="game-benchmark-page-header">
       <h2>测试队列</h2>
       {targetControls}
-      <p className="hint">{mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
+      <p className="hint">{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
     </header>
     <section className="game-benchmark-scroll"><div className="game-text-benchmark">
       {queueContents}
@@ -371,14 +383,29 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         }}>加入当前配置</button>
         {step === "translate" && <button type="button" className="unity-btn" disabled={checking || !configs.length} onClick={() => void inspect()}>检查样本</button>}
       </div>
-      {mosaicStep && sampleSettings && <div className="game-benchmark-toolbar">
-        <label>样本范围<select value={sampleSettings.selection} onChange={event => changeSample({ selection: event.target.value as typeof sampleSettings.selection })}>
-          <option value="checked">去码页已勾选</option><option value="all">全部可用图片</option>
+      {(imageStep || mosaicStep) && <div className="game-benchmark-toolbar">
+        <label>样本范围<select value={sampleSetMode ? "annotated" : sampleSettings?.selection || "checked"}
+          onChange={event => {
+            const value = event.target.value;
+            setUseSampleSet(value === "annotated");
+            if (value === "annotated" && !sampleSetPath) setBrowseSampleSet(true);
+            else if (value === "checked" || value === "all") changeSample({ selection: value });
+          }}>
+          <option value="checked">{mosaicStep ? "去码页已勾选" : "当前项目已勾选"}</option>
+          {mosaicStep && <option value="all">当前项目全部可用图片</option>}
+          {isTauri() && <option value="annotated">已标注样本集</option>}
         </select></label>
-        <label>样本上限<input type="number" min={0} step={1} value={sampleSettings.sampleLimit || ""} placeholder="不限"
-          title="留空时测试范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
-        {sampleSettings.sampleLimit > 0 && <button type="button" className="unity-btn" onClick={() => changeSample({ sampleLimit: 0 })}>取消上限</button>}
+        {isTauri() && <button type="button" className="unity-btn" onClick={() => setBrowseSampleSet(true)}>查看测试集</button>}
+        {sampleSetMode && sampleSetPath && <span className="hint" title={sampleSetPath}>
+          {sampleSetPath.replaceAll("\\\\", "/").split("/").slice(-2,-1)[0] || sampleSetPath}
+        </span>}
+        {sampleSettings && <>
+          <label>样本上限<input type="number" min={0} step={1} value={sampleSettings.sampleLimit || ""} placeholder="不限"
+            title="留空时测试范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
+          {sampleSettings.sampleLimit > 0 && <button type="button" className="unity-btn" onClick={() => changeSample({ sampleLimit: 0 })}>取消上限</button>}
+        </>}
       </div>}
+      {browseSampleSet && <ImageSampleSetBrowser path={sampleSetPath} onChoose={chooseSampleSet} onClose={() => setBrowseSampleSet(false)} />}
       {configs.map((config, index) => {
         const lastRun = latestRunByConfig.get(config.id)?.run;
         const queueIndex = queue.findIndex(job => job.requestScope === textScope && job.step === step && job.configIds.includes(config.id));

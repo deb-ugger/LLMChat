@@ -1,3 +1,4 @@
+import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } from "./imageSampleSet";
 import { useSyncExternalStore } from "react";
 import { registerAppCloseGuard } from "../appClose";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
@@ -24,7 +25,7 @@ export type BenchmarkInput = {
   models: string[];
   onMessage: (text: string, level: "info" | "success" | "error") => void;
 };
-export type BenchmarkRequest = { scope: string; step: BenchmarkTarget; configs: BenchmarkConfig[]; rounds: number; priority?: boolean };
+export type BenchmarkRequest = { scope: string; step: BenchmarkTarget; configs: BenchmarkConfig[]; rounds: number; priority?: boolean; sampleSetPath?: string };
 type BenchmarkProgress = {
   phase: "prepare" | "execute" | "finish";
   label: string;
@@ -106,7 +107,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
   };
 }
 
-function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Prepared {
+async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs);
   if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
@@ -118,31 +119,40 @@ function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Prepared 
   const displayScope = mosaic ? input.mosaicRoot : historyScope;
   if (!displayScope) throw new Error("当前工程没有去码测试设置");
 
+  if (request.sampleSetPath && !mosaic && !imageStep) throw new Error("当前测试步骤不接受图片样本集");
+  const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
   let createStepRunner: ((context: JobContext, report: (value: UnityProgress) => void) => BenchmarkStepRunner) | undefined;
   if (mosaic) {
     if (!imageSource || configs.some(config => !config.mosaic)) throw new Error("当前工程没有去码测试样本或配置");
-    const snapshot = structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope));
+    const snapshot: MosaicBenchmarkWorkload = annotated ? {
+      project: annotated.project, selected: [], embedded: false, checked: [],
+      boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
+        ? [[image.id,image.annotation.mosaic.boxes]] : [])),
+    } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope));
     const options = configs[0].mosaic!;
-    const eligible = mosaicBenchmarkRows(step, snapshot, options.selection);
+    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, options.selection);
     const sample = options.sampleLimit ? eligible.slice(0, options.sampleLimit) : eligible;
-    if (!sample.length) throw new Error(step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
+    if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
     createStepRunner = (context, report) => runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
       context.report({ sample: image.name });
+      if (annotated) return annotated.read(image,signal);
       return snapshot.embedded ? readEmbeddedBenchmarkImage(snapshot.project!.root, image, signal) : imageSource.readImage!(snapshot.project!, image);
-    }, report);
+    }, report, annotated);
   } else if (imageStep) {
     if (!imageSource || !Object.hasOwn(imageSource.setup.steps, imageStep)) throw new Error("当前工程没有该图片测试步骤");
-    const snapshot = structuredClone(imageSource.getWorkload());
+    const currentImages = imageSource.getWorkload();
+    const snapshot = annotated ? { project: annotated.project, selected: [], embedded: currentImages.embedded } : structuredClone(currentImages);
     const setup = structuredClone(imageSource.setup);
-    const sample = imageBenchmarkRows(imageStep, snapshot.selected);
-    if (!sample.length) throw new Error("所勾选的图片没有符合当前步骤的样本，请检查选择及前置结果。");
+    const sample = annotated ? annotatedTextSamples(annotated,imageStep,[...new Set(configs.map(config => config.target))])
+      : imageBenchmarkRows(imageStep, snapshot.selected);
+    if (!sample.length) throw new Error(annotated ? "样本集中没有符合该步骤及目标语言的已标注图片" : "所勾选的图片没有符合当前步骤的样本");
     count = sample.length;
     createStepRunner = (context, report) => (config, settings, scope) => runGameImageSample(imageStep, sample, snapshot, config,
       setup, settings, scope, context.signal, image => imageSource.readImage!(snapshot.project!, image), input.onMessage,
-      report, sample => context.report({ sample }));
+      report, sample => context.report({ sample }), annotated);
   } else {
     const text = structuredClone(input.getWorkload());
     if (!text.selected.length) throw new Error("请先勾选要测试的文本");
@@ -181,7 +191,7 @@ function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Prepared 
     }, progress) } : undefined;
     clearGamePerformance(totalScope, ["queue"]);
     const metadata = { part: mosaic ? "mosaic" : imageStep ? "images" : "text", step, queueId: context.id,
-      rounds, configs: configs.length, selected: count, status: "运行中", runs: 0, failedRuns: 0 };
+      rounds, configs: configs.length, selected: count, sampleSet: annotated?.title, status: "运行中", runs: 0, failedRuns: 0 };
     beginGameStep(totalScope, "queue", metadata);
     input.onMessage("开始" + title + "测试 · " + configs.length + " 个配置 · " + rounds + " 轮", "info");
     try {
@@ -305,7 +315,8 @@ function startQueue() {
 }
 
 export const benchmarkRunner = {
-  enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
+  async enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
+    const prepared = await prepareJob(input, request);
     const configIds = request.configs.map(config => config.id);
     if (request.priority) {
       if (configIds.length !== 1) throw new Error("立即运行每次只接受一个配置");
@@ -315,7 +326,6 @@ export const benchmarkRunner = {
         throw new Error("该配置已在队列中");
       }
     }
-    const prepared = prepareJob(input, request);
     const title = benchmarkTargetLabel(request.step);
     const label = configIds.length === 1 ? title + " · " + request.configs[0].label : title + " · " + configIds.length + " 个配置";
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared.scope, requestScope: request.scope, step: request.step,
