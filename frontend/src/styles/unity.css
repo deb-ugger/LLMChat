@@ -2300,6 +2300,10 @@ body.ocr-image-resizing * {
 }
 .game-flow-model-list :is(.game-flow-model-values, .game-flow-model-rates) { justify-content: flex-start; }
 .game-flow-model-list .game-flow-model-values { column-gap: var(--space-1); }
+/* 折叠态：模型行右侧补一条摘要，避免整行右半边空着。 */
+.game-flow-model-list .game-flow-model-values:has(> .game-flow-model-glance) { justify-content: space-between; }
+.game-flow-model-glance { margin-inline-start: auto; color: var(--text-dim); white-space: nowrap; }
+.game-flow-model-glance .game-flow-metric { color: var(--text-muted); }
 .game-flow-model-list .game-flow-model-values .game-flow-metric { font-size: var(--fs-caption); }
 .game-flow-model-list .game-flow-model-rates > span { white-space: normal; }
 .game-flow-row:has(> .game-flow-summary .game-flow-model-list) { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
