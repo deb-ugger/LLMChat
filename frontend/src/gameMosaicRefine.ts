@@ -163,7 +163,8 @@ function localizedReviewBoxes(values: unknown, area: MosaicBox, content: MosaicB
   return boxes;
 }
 
-async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal, lanes: number): Promise<MosaicScan> {
+async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal, lanes: number,
+  onRequest: (position: number, total: number, local: boolean) => void): Promise<MosaicScan> {
   const {canvas,pixels}=await imageCanvas(blob),bounds=foreground(pixels);
   if (!bounds) return {boxes:[],signature:proposed.signature};
   const regions: MosaicBox[]=[];
@@ -174,7 +175,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
   const classifierPositive = (proposed.presenceScore ?? 0) >= mosaicPresenceThreshold;
   let unlocalizedReview: string | undefined;
   const views: (MosaicBox | undefined)[]=regions.length?regions:[undefined];
-  for (const candidate of views) {
+  for (const [index, candidate] of views.entries()) {
     signal.throwIfAborted();
     const area=expand(candidate || bounds,canvas.width,canvas.height);
     const crop=document.createElement("canvas");crop.width=reviewSize;crop.height=reviewSize;
@@ -192,6 +193,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, requ
       '识别人为叠加的成片马赛克或不透明遮挡条。自然纹理、轮廓线、高光、透明背景和灰色填充不是遮挡。' +
       '只返回 JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}。坐标按整张输入图（含填充）归一化到0到1000。' +
       '有遮挡时最多返回3个贴合遮挡的框，无法准确定位或没有遮挡时 boxes 为 []。';
+    onRequest(index + 1, views.length, !!candidate);
     const response=await request(model,prompt,crop.toDataURL("image/png"),signal,lanes) as Record<string,unknown>;
     if (typeof response?.pixelation !== "boolean" || typeof response.confidence !== "number" ||
         !Number.isFinite(response.confidence) || response.confidence < 0 || response.confidence > 1)
@@ -341,7 +343,10 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           pending=!fullReview && !hasCandidates
             ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
             : measureGameAsync(options.timingScope, "processingMs", () => options.read(image,signal))
-              .then(blob=>reviewImage(blob,proposed,model,options.request,signal,lanes));
+              .then(blob => reviewImage(blob, proposed, model, options.request, signal, lanes, (position, total, local) => {
+                const region = local ? "候选区域 " + position + "/" + total : "整图";
+                options.onProgress?.(results.size, model + " · " + image.name + " · " + region + " · 等待模型返回");
+              }));
           verified.set(identity,pending);
           if(verified.size>128)verified.delete(verified.keys().next().value!);
           void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
@@ -355,7 +360,9 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
         options.onProgress?.(results.size,model+" · "+image.name);
       } catch(cause) {
         if(signal.aborted)throw cause;
-        failed++;options.onError?.(image,String(cause));
+        failed++;
+        options.onError?.(image, String(cause));
+        options.onProgress?.(results.size, "复筛失败 · " + image.name);
       }
     }
   };

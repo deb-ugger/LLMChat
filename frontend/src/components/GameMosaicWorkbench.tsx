@@ -1165,7 +1165,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const status = id === "screen" ? screenStatus : id === "refine" ? refineStatus : stepRuns.redraw;
     const state = status?.state || "pending";
     const running = state === "running";
-    const percent = status?.total ? status.completed / status.total * 100 : undefined;
+    const failed = status?.failed ?? 0;
+    const processed = status && Math.min(status.total, status.completed + (id === "refine" ? failed : 0));
+    const percent = status?.total && processed !== undefined ? processed / status.total * 100 : undefined;
     const measured = groupMosaicModels(mosaicCardMetrics(gamePath, id));
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : performance.now() - status.started);
@@ -1200,11 +1202,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </span>}
         {multipleModels ? <div className="game-flow-model-list">{modelRows}</div> : modelRows}
         {status?.total ? <small className="game-flow-model-rates">
-          <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
-          {id === "refine" && status.prepared !== undefined && status.prepared > status.completed &&
+          <span>{id === "refine" && "已处理 "}{processed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
+          {id === "refine" && failed > 0 && <span>成功 {status.completed} 张 · 失败 {failed} 张</span>}
+          {id === "refine" && status.prepared !== undefined && status.prepared > (processed ?? 0) &&
             <span>候选已准备 {status.prepared} / {status.total} 张</span>}
         </small> : null}
-        {expanded && (imageRate !== undefined || detection || !!status?.failed) &&
+        {expanded && (imageRate !== undefined || detection || id !== "refine" && failed > 0) &&
           <small className="game-flow-model-rates">
             {imageRate !== undefined && <GameMetricHint onClick={toggle} detail="本批已处理张数除以整批经过时间。含读图、准备、等待和结果处理，不含步骤结束后的异步保存。">
               <span className="game-flow-metric">{imageRate.toFixed(imageRate < 0.1 ? 3 : 2)}</span> 张/秒
@@ -1216,7 +1219,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               <span>并发 <span className="game-flow-metric">{detection.concurrency}</span></span>
               <span>请求 <span className="game-flow-metric">{detection.requests} 次</span></span>
             </>}
-            {!!status?.failed && <span>失败 <span className="game-flow-metric">{status.failed} 张</span></span>}
+            {id !== "refine" && failed > 0 && <span>失败 <span className="game-flow-metric">{failed} 张</span></span>}
           </small>}
         {expanded && <GameStepTimingDetails measured={measured} onToggle={toggle} />}
         {expanded && running && id === "refine" && !models.length && <small className="game-flow-model-rates" role="status">
