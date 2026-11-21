@@ -126,6 +126,21 @@
 }
 .game-mosaic-list > ul { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .game-mosaic-list > nav { flex-shrink: 0; }
+.game-mosaic-scene-group + .game-mosaic-scene-group { margin-block-start: 8px; }
+.game-mosaic-scene-group > ul { list-style: none; margin: 0; padding: 0; }
+.game-mosaic-scene-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-block-end: 1px solid var(--border-strong);
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+.game-mosaic-scene-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-mosaic-scene-heading span { flex: none; white-space: nowrap; }
 .unity-image-filter-menu .game-mosaic-filter-status { justify-content: space-between; }
 .game-mosaic-filter-status select {
   min-width: 0; padding: var(--space-1) 6px; border: 1px solid var(--border); border-radius: var(--radius-md);
