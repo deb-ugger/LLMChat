@@ -2,6 +2,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { UnityImage, UnityImageRegion, UnityProgress } from "./unityOffline";
 import type { OllamaOutput } from "./gameOllama";
 import { recordGameCacheHit, recordGameWorkflowTiming } from "./gameModelPerformance";
+import { gameImageDigest, readImageCheckpoint, saveImageCheckpoint } from "./gameImageCheckpoints";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
 
 type Box = [number, number, number, number];
@@ -96,19 +97,24 @@ async function toBase64(blob: Blob) {
   return (await dataUrl(blob)).split(",", 2)[1];
 }
 
-async function runProgram<T>(blob: Blob, mode: "layout" | "ocr-prepare" | "model", profile: object,
-  regions: { box: Box; text?: string; translation: string }[], signal: AbortSignal, report?: OllamaOutput, steps = 1): Promise<T | undefined> {
-  if (!isTauri()) return undefined;
-  const directory = localStorage.getItem(styleRedrawDirectoryKey) || await (detectedDirectory ??=
+function redrawProgramDirectory() {
+  return localStorage.getItem(styleRedrawDirectoryKey) || (detectedDirectory ??=
     invoke<string[]>("find_redraw_directories").then(paths => paths[0] || "").catch(() => ""));
-  if (!directory) return undefined;
+}
+
+async function runProgram<T>(blob: Blob, mode: "layout" | "ocr-prepare" | "model", profile: object,
+  regions: { box: Box; text?: string; translation: string }[], signal: AbortSignal, report?: OllamaOutput, steps = 1,
+  directory?: string): Promise<T | undefined> {
+  if (!isTauri()) return undefined;
+  const programDirectory = directory ?? await redrawProgramDirectory();
+  if (!programDirectory) return undefined;
   const image = await toBase64(blob);
   const task = programQueue.then(async () => {
     signal.throwIfAborted();
     const progress = new Channel<string>();
     progress.onmessage = message => { if (!signal.aborted) report?.(message, "info"); };
-    const result = await invoke<T>("run_style_redraw", { directory, image, steps, regions, mode, profile, progress });
-    signal.throwIfAborted();
+    const result = await invoke<T>("run_style_redraw", { directory: programDirectory, image, steps, regions, mode, profile, progress });
+    if (mode !== "model") signal.throwIfAborted();
     return result;
   });
   programQueue = task.catch(() => {});
@@ -162,6 +168,7 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
   update(0, "正在准备重绘");
   const profile = loadStyleRedrawProfiles()[profileId];
   if (profileId === "custom" && !profile.graph) throw new Error("请先在 AI 风格重绘中配置自定义 API 工作流");
+  const steps = profileId === "turbo" ? 8 : 20;
   for (const [index, image] of queue.entries()) {
     signal.throwIfAborted();
     io.onStart?.(image.id);
@@ -176,17 +183,33 @@ export async function redrawGameImages(images: UnityImage[], profileId: StyleRed
       }));
       if (!regions.length) throw new Error("没有可用的已翻译文字区域");
       if (regions.some(({ box }) => box[0] >= box[2] || box[1] >= box[3])) throw new Error("请检查重绘文字区域的范围");
+      const directory = isTauri() && await redrawProgramDirectory();
+      if (!directory) throw new Error("请先在 AI 风格重绘中设置 ComfyUI 目录");
       const input = await io.read(image);
-      const result = await runProgram<{ image: string; workflowMs?: number }>(input, "model", { ...profile, kind: profileId }, regions,
-        signal, (message, level) => report(image.name + " · " + message, level), profileId === "turbo" ? 8 : 20);
-      if (!result) throw new Error("请先在 AI 风格重绘中设置 ComfyUI 目录");
-      recordGameWorkflowTiming(io.timingScope, result.workflowMs);
-      const bytes = Uint8Array.from(atob(result.image), char => char.charCodeAt(0));
-      const blob = new Blob([bytes], { type: "image/png" });
-      const bitmap = await createImageBitmap(blob);
-      try {
-        if (bitmap.width !== image.width || bitmap.height !== image.height) throw new Error("重绘译图与原图尺寸不一致");
-      } finally { bitmap.close(); }
+      const digest = await gameImageDigest(await input.arrayBuffer());
+      // Identical built-in tasks must submit the same seed as well as the same input.
+      const key = await gameImageDigest(new TextEncoder().encode(JSON.stringify([
+        "style-redraw-v1", directory, profileId, profile, steps, target, digest, regions,
+      ])));
+      let blob = await readImageCheckpoint("redraw", key);
+      signal.throwIfAborted();
+      if (blob) {
+        recordGameCacheHit(io.timingScope);
+        report(image.name + " · 已复用相同输入和配置的重绘结果", "info");
+      } else {
+        const seed = Number.parseInt(key.slice(0, 12), 16);
+        const result = await runProgram<{ image: string; workflowMs?: number }>(input, "model", { ...profile, kind: profileId, seed }, regions,
+          signal, (message, level) => report(image.name + " · " + message, level), steps, directory);
+        if (!result) throw new Error("请先在 AI 风格重绘中设置 ComfyUI 目录");
+        recordGameWorkflowTiming(io.timingScope, result.workflowMs);
+        const bytes = Uint8Array.from(atob(result.image), char => char.charCodeAt(0));
+        blob = new Blob([bytes], { type: "image/png" });
+        const bitmap = await createImageBitmap(blob);
+        try {
+          if (bitmap.width !== image.width || bitmap.height !== image.height) throw new Error("重绘译图与原图尺寸不一致");
+        } finally { bitmap.close(); }
+        await saveImageCheckpoint("redraw", key, blob);
+      }
       signal.throwIfAborted();
       saved = await io.write(image, blob);
     } catch (error) {

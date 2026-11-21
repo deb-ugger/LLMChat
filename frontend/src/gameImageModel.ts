@@ -3,6 +3,7 @@ import type { OllamaOutput } from "./gameOllama";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import type { Settings } from "./api";
 import { requestGameModelJson } from "./gameModelRequest";
+import { gameImageDigest, readImageCheckpoint, removeImageCheckpoint, saveImageCheckpoint } from "./gameImageCheckpoints";
 import { gameJapaneseTextIssue } from "./gameDisplayText";
 import { gameLetteringProof, mapGameOcrCrop, prepareGameOcrCrop, recognizeLocalGameImage } from "./gameImageRecognitionInput";
 import { gameOcrMissingTile, isGameLogoName, prepareGameOcrSheet, renderPlacedGameImage, type GameImagePlacement } from "./gameImagePlacement";
@@ -168,46 +169,74 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
     });
     const logo = scene === "recognize" && isGameLogoName(variables?.assetName);
     const nameHint = scene === "recognize" ? gameImageNameHint(variables?.names,logo) : "";
+    let emptyGroupCheckpoint: string | undefined;
     if (scene === "recognize" && !logo && (crop || variables?.cleanBase) && variables?.assetName) {
       const started = performance.now();
+      let groupingPrepared = false;
       try {
         const sheet = await prepareGameOcrSheet(blob, variables, signal);
         if (sheet?.image && sheet.regions.length) {
           const mode = sheet.kind === "annotated" ? "对照无批注底图定位正文" : "透明花字分组旋平";
           report?.(`识字 · ${mode} · ${sheet.regions.length} 组`, "info");
-          const raw = await requestGameModelJson(settings, model,
-            '抄录图中每个编号下方的原文。编号是定位标记，不能写进原文。保留同组文字的换行和句尾，箭头、爱心轮廓等独立装饰不抄成文字。不确定的字不要猜。只返回 {"regions":[{"index":1,"text":"原文","confidence":90}]}，每个编号至多一项，confidence 用 0–100 的百分数。' + nameHint,
-            signal, "data:image/png;base64," + sheet.image, "game-images", report, { selection, role: scene, groupedImageOcr: true });
-          const mapped = new Map<number, PaddleOcrLine>();
-          const readRows = (value: unknown) => {
-            const rows = Array.isArray(value) ? value : value && typeof value === "object" && "regions" in value && Array.isArray(value.regions) ? value.regions : [];
+          const groupPrompt = '抄录图中每个编号下方的原文。编号是定位标记，不能写进原文。保留同组文字的换行和句尾，箭头、爱心轮廓等独立装饰不抄成文字。不确定的字不要猜。只返回 {"regions":[{"index":1,"text":"原文","confidence":90}]}，每个编号至多一项，confidence 用 0–100 的百分数。' + nameHint;
+          const key = await gameImageDigest(new TextEncoder().encode(JSON.stringify(["group-ocr-v1", model, sheet.kind, groupPrompt, sheet.image, sheet.regions])));
+          const saved = await readImageCheckpoint("ocr", key);
+          signal.throwIfAborted();
+          const mapped = new Map<number, PaddleOcrLine>(saved?.lines);
+          const checked = new Set(saved?.checked);
+          const save = () => saveImageCheckpoint("ocr", key, { lines: [...mapped], checked: [...checked] });
+          const readRows = (value: unknown, onlyIndex?: number) => {
+            const rows = Array.isArray(value) ? value : value && typeof value === "object" && "regions" in value && Array.isArray(value.regions) ? value.regions : undefined;
+            if (!rows) throw new Error("分组识字未返回有效的区域数组");
+            let matched = false;
             for (const row of rows) {
               const index = Number(row?.index) - 1;
               const region = sheet.regions[index];
-              if (!region || mapped.has(index) || typeof row.text !== "string" || !row.text.trim()) continue;
+              if (!region || (onlyIndex !== undefined && onlyIndex !== index) || typeof row.text !== "string" || !row.text.trim()) continue;
               const rawConfidence = Number(row.confidence);
               const confidence = rawConfidence > 0 && rawConfidence < 1 ? rawConfidence * 100 : rawConfidence;
               if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) continue;
+              matched = true;
+              if (confidence <= (mapped.get(index)?.confidence ?? -1)) continue;
               const [x0, y0, x1, y1] = region.box;
               mapped.set(index, { text: row.text.trim(), confidence, x0, y0, x1, y1 });
             }
+            if (onlyIndex !== undefined && rows.length > 0 && !matched) throw new Error("局部识字返回的编号或内容无效");
           };
-          readRows(raw);
-          if (sheet.kind === "lettering" && mapped.size >= 2 && mapped.size === sheet.regions.length - 1) {
-            const missing = sheet.regions.findIndex((_, index) => !mapped.has(index));
-            const tile = await gameOcrMissingTile(sheet, missing);
-            if (tile) {
+          if (!saved) {
+            const raw = await requestGameModelJson(settings, model, groupPrompt, signal, "data:image/png;base64," + sheet.image,
+              "game-images", report, { selection, role: scene, groupedImageOcr: true });
+            readRows(raw);
+            for (const [index, line] of mapped) if (line.confidence >= 50) checked.add(index);
+            await save();
+          }
+          groupingPrepared = true;
+          const failed: number[] = [];
+          let firstError = "";
+          for (const index of sheet.regions.keys()) {
+            signal.throwIfAborted();
+            if (checked.has(index)) continue;
+            try {
+              const tile = await gameOcrMissingTile(sheet, index);
+              if (!tile) throw new Error("未能读取分组裁区");
               const recovered = await requestGameModelJson(settings, model,
-                `只抄录编号 ${missing + 1} 下的实际文字，保留原文和符号，辨认不清时返回空数组。JSON {"regions":[{"index":${missing + 1},"text":"原文","confidence":90}]}。`,
+                `只抄录编号 ${index + 1} 下的实际文字，保留原文和符号，辨认不清时返回空数组。JSON {"regions":[{"index":${index + 1},"text":"原文","confidence":90}]}。` + nameHint,
                 signal, tile, "game-images", report, { selection, role: scene, groupedImageOcr: true });
-              readRows(recovered);
-              if (mapped.has(missing)) report?.("花字漏框 · 已局部补读", "info");
+              readRows(recovered, index);
+              checked.add(index);
+              await save();
+            } catch (error) {
+              signal.throwIfAborted();
+              failed.push(index + 1);
+              firstError ||= error instanceof Error ? error.message : String(error);
             }
           }
-          if (mapped.size === sheet.regions.length) {
-            const found = [...mapped.entries()].sort(([a],[b]) => a-b).map(([,region]) => region);
+          if (failed.length) throw new Error(`分组 ${failed.join("、")} 补读失败：${firstError}`);
+          if (mapped.size || sheet.contextImage) {
+            const ordered = [...mapped.entries()].sort(([a],[b]) => a-b);
+            const found = ordered.map(([,region]) => region);
             if (sheet.kind === "lettering") {
-              const checks=found.flatMap((region,index)=>{
+              const checks=ordered.flatMap(([index,region])=>{
                 const candidate=gameLetteringCandidate(region.text,variables.names);
                 return candidate ? [{region,index,...candidate}] : [];
               }).slice(0,2);
@@ -268,13 +297,16 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
               if (!labels.length) report?.("未在底图识别到独立界面文字", "info");
               else report?.(`无批注底图 · 另识别 ${labels.length} 个标题或标签`, "info");
             }
-            report?.(`识字完成 · ${model} · ${mapped.size} 组 · ${((performance.now()-started)/1000).toFixed(2)} 秒`, "info");
+            await removeImageCheckpoint("ocr", key);
+            report?.(`识字完成 · ${model} · 已读 ${mapped.size}/${sheet.regions.length} 组 · ${((performance.now()-started)/1000).toFixed(2)} 秒`, "info");
             return [...found,...labels];
           }
-          report?.(`${mode}仅识别 ${mapped.size}/${sheet.regions.length} 组，回到整图核对`, "info");
+          report?.("分组裁区未读出文字，改用整图核对", "info");
+          emptyGroupCheckpoint = key;
         }
       } catch (error) {
         signal.throwIfAborted();
+        if (groupingPrepared) throw error;
         report?.(`分组识别失败，改用整图识别 · ${String(error)}`, "info");
       }
     }
@@ -282,7 +314,7 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
     const prompt = gameTaskPrompt(scene, selection, variables) + '\n识别图片全部可读文字及位置，不翻译、不推测。仅返回包含 regions 数组的 JSON 对象。每项的 text 是原文字符串，confidence、x0、y0、x1、y1 是数值。坐标以收到的图片左上角为原点，横纵均归一化至0–1000，必须满足 0<=x0<x1<=1000、0<=y0<y1<=1000。confidence 必须为0–100的数值，不带百分号。无文字返回 {"regions":[]}，不要输出说明。' + (scene === "recognize" ? "同一段落或同一标签的内容因排版换行时，用一个区域包住整段，合成完整原文。不同列、独立标题或下一个带标签的字段分别返回。" : "");
     const recognize = async (instruction: string) => {
       const value = await requestGameModelJson(settings, model, instruction, signal, image, "game-images", report, { selection, role: scene });
-      return measureGameWork(execution, "processingMs", () => {
+      const recognized = measureGameWork(execution, "processingMs", () => {
         const lines = parseGameImageRegions(value, crop ? canvas.width : bitmap.width, crop ? canvas.height : bitmap.height, edges => {
           const detail = edges.length === 1 ? edges[0] : `已裁正 ${edges.length} 个越界坐标（${edges[0]}）`;
           report?.(`${model} · ${detail}。已保留识别结果。`, "error");
@@ -291,6 +323,8 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
         return logo ? original.map(region => ({ ...region, text: correctGameLogoText(region.text,variables?.names) }))
           : scene === "recognize" ? mergeGameImageFieldLines(original) : original;
       });
+      if (emptyGroupCheckpoint) await removeImageCheckpoint("ocr", emptyGroupCheckpoint);
+      return recognized;
     };
     const instruction = logo
       ? prompt + "\n每段不同颜色、字号或位置的标题字给自己的紧框。独立的拉丁缩写及 & 也分别给框，禁止把彼此错行的字排成一个大框。坐标只包住这一组实际笔画。" + nameHint
