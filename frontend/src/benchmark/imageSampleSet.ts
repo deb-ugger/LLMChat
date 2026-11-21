@@ -185,11 +185,11 @@ export function mosaicBoxScore(rows: Iterable<readonly [Annotation, MosaicBox[]]
   return expectedCount || predictedCount ? "定位匹配 " + matched + "/" + expectedCount + " 框（IoU≥0.5）· 多余框 " + (predictedCount - matched) : "";
 }
 
-export function textBoxScore(rows: Iterable<readonly [Annotation, UnityImageRegion[]]>) {
+export function textBoxScore(rows: Iterable<readonly [Annotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
   let matched = 0, expectedCount = 0, correctText = 0, matchedWithText = 0;
   const normalize = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
   for (const [annotation, observed] of rows) {
-    const expected = annotation.text?.regions;
+    const expected = annotation.text?.regions?.filter(region => regionInScope(region,source,target,skipTarget));
     if (!expected?.length) continue;
     const pairs = compareBoxes(expected.map(region => region.box), observed.map(region => [region.x0,region.y0,region.x1,region.y1]));
     matched += pairs.length;

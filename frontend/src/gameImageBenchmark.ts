@@ -222,7 +222,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     await Promise.all(workers.map(worker => worker.dispose()));
   }
   const localization = labeledInputs && step === "recognize"
-    ? textBoxScore(Array.from(recognized, ([id, regions]) => [labeledInputs.get(id)!.annotation, regions] as const)) : "";
+    ? textBoxScore(Array.from(recognized, ([id, regions]) => [labeledInputs.get(id)!.annotation, regions] as const),source,target,skipTarget) : "";
   return { translated: processed - failed, failed,
     summary: step === "recognize" ? [scoring(),localization].filter(Boolean).join(" · ") || undefined
       : skipped ? "按语言或保留规则跳过 " + skipped + " 张" : undefined };
