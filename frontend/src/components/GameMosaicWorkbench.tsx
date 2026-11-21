@@ -1214,7 +1214,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
       {multipleModels && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
       <div className="game-flow-model-values">
-        {!expanded ? <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
+        {!expanded ? <>
+          <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
+          <small className="game-flow-model-glance">{model.requests > 0
+            ? <>{model.requests} 次 · 均 <span className="game-flow-metric">{(model.requestMs / model.requests / 1000).toFixed(1)}</span> 秒</>
+            : "等待返回"}</small>
+        </>
           : running && id === "refine" && !model.tokens && !model.serviceTiming && model.requests > 0
             ? <small role="status">已发送 {model.requests} 次请求 · 速率在模型返回后更新</small>
             : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
