@@ -2238,6 +2238,24 @@ body.ocr-image-resizing * {
 .game-flow-item.is-pending::before { opacity: .45; }
 .game-flow-item.is-configured { border-color: color-mix(in srgb, var(--flow-color) 45%, var(--border)); }
 .game-flow-item.is-current-step { border-color: var(--flow-color); }
+/* 正式运行与测试运行的呼吸：状态色边框 + 背景 tint */
+.game-flow-item.is-running,
+.game-flow-item.is-current-step {
+  background: color-mix(in srgb, var(--flow-color) 8%, var(--panel, #15130f));
+  animation: game-flow-pulse 2.2s ease-in-out infinite;
+}
+.game-flow-item.is-benchmark-running {
+  --flow-color: #a855f7;
+  background: color-mix(in srgb, #a855f7 9%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, #a855f7 55%, var(--border, #2a2721));
+  animation: game-flow-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-flow-item.is-running,
+  .game-flow-item.is-current-step,
+  .game-flow-item.is-benchmark-running { animation: none; }
+  .game-flow-item.is-benchmark-running { box-shadow: 0 0 0 1px color-mix(in srgb, #a855f7 40%, transparent); }
+}
 .game-flow-step { padding: 10px var(--space-3); border-radius: inherit; background: var(--flow-background); }
 .game-flow-item.is-configured > .game-flow-step { border-radius: var(--radius-md) var(--radius-md) 0 0; background: transparent; }
 .game-flow-item:not(:last-child)::after { content: ""; position: absolute; left: calc(50% - 12px); bottom: -19px; width: 24px; height: 10px; background: var(--flow-color); opacity: .65; clip-path: polygon(0 0, 50% 57%, 100% 0, 100% 36%, 50% 100%, 0 36%); filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--flow-color) 30%, transparent)); }
