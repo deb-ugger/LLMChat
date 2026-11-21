@@ -447,7 +447,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640";
+    ? JSON.stringify(["lada-alpha-v2", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640-alpha-v2";
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);

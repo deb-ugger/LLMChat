@@ -74,8 +74,30 @@ function overlap(a: MosaicBox, b: MosaicBox) {
   return area / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - area);
 }
 
+// Detection runs on RGB, so validate predictions against the original alpha channel.
+export function ladaVisibleBox(image: ImageData, box: MosaicBox) {
+  const [left, top, right, bottom] = box;
+  const area = (right - left) * (bottom - top);
+  let visible = 0;
+  const minimum = [255, 255, 255], maximum = [0, 0, 0];
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const offset = (y * image.width + x) * 4;
+      if (image.data[offset + 3] < 64) continue;
+      visible++;
+      for (let channel = 0; channel < 3; channel++) {
+        const value = image.data[offset + channel];
+        minimum[channel] = Math.min(minimum[channel], value);
+        maximum[channel] = Math.max(maximum[channel], value);
+      }
+    }
+  }
+  // A candidate dominated by transparent pixels, or uniform visible fill, is background.
+  return visible >= area / 2 && maximum.some((value, channel) => value - minimum[channel] >= 12);
+}
+
 export function ladaBoxes(values: Float32Array, dims: readonly number[], classes: number,
-  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }) {
+  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox) => boolean = () => true) {
   if (dims.length !== 3 || dims[0] !== 1 || dims[1] !== 4 + classes + 32 || dims[2] <= 0)
     throw new Error("Lada ONNX 需使用原始 YOLO11 分割输出（关闭 NMS 导出）");
   const { left, top, scaleX, scaleY, width, height } = geometry;
@@ -94,7 +116,7 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
   }
   const boxes: MosaicBox[] = [];
   for (const { box } of candidates.sort((a, b) => b.score - a.score)) {
-    if (!boxes.some(previous => overlap(previous, box) > 0.45)) boxes.push(box);
+    if (!boxes.some(previous => overlap(previous, box) > 0.45) && validBox(box)) boxes.push(box);
   }
   return boxes;
 }
@@ -185,6 +207,12 @@ export async function loadLadaDetector(model: File | undefined, options: {
     release,
     scan: async (blob: Blob): Promise<MosaicScan> => {
       const full = await bitmapPixels(blob);
+      const signature = sceneSignature(full.data, full.width, full.height);
+      let hasVisiblePixel = false;
+      for (let index = 3; index < full.data.length; index += 4) {
+        if (full.data[index] >= 64) { hasVisiblePixel = true; break; }
+      }
+      if (!hasVisiblePixel) return { signature, boxes: [] };
       const source = await createImageBitmap(blob);
       const scale = Math.min(size / full.width, size / full.height);
       const width = Math.max(1, Math.round(scale * full.width)), height = Math.max(1, Math.round(scale * full.height));
@@ -209,8 +237,8 @@ export async function loadLadaDetector(model: File | undefined, options: {
         const result = tensors[outputName];
         const data = result.data;
         if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
-        return { signature: sceneSignature(full.data, full.width, full.height), boxes: ladaBoxes(data, result.dims, channels - 36,
-          { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height }) };
+        return { signature, boxes: ladaBoxes(data, result.dims, channels - 36,
+          { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height }, box => ladaVisibleBox(full, box)) };
       } finally {
         feeds.dispose();
         for (const value of Object.values(tensors || {})) value.dispose();
