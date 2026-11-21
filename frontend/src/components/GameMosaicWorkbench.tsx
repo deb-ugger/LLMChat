@@ -11,6 +11,7 @@ import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
+import { useBenchmarkProgress } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
@@ -894,6 +895,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const pausedRedraw = (stepRuns.redraw?.state === "stopped" || stepRuns.redraw?.state === "error") ? pendingRedraw.current : null;
   const redrawRemaining = pausedRedraw?.targets.filter(target => target.pending.size).length ?? 0;
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
+  const benchmarkProgress = useBenchmarkProgress(gamePath);
+  const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
     const status = id === "screen" ? screenStatus : id === "refine" ? refineStatus : stepRuns.redraw;
     const state = status?.state || "pending";
@@ -901,10 +904,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
     const elapsed = status?.elapsed ?? (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
-    return <GameFlowCard title={title} state={state} current={running} expanded={expanded}
+    const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
+    return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={() => setConfigured(expanded ? null : id)}
       status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
-      summary={<div className="game-mosaic-step-summary">
+      summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
         <span data-tooltip={status?.device?.reason}>{(running || id === "redraw" && pausedRedraw) ? status?.summary : summary}
           {status?.device && (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}
         </span>

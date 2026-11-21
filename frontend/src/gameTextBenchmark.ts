@@ -100,7 +100,7 @@ type Workload = { entries: UnityEntry[]; dialoguePages?: GameDialoguePage[]; sel
 type Reporter = Parameters<typeof translateGameWithOllama>[3];
 
 async function runSample(config: BenchmarkConfig, workload: Workload, settings: Settings, scope: string,
-  signal: AbortSignal, report: Reporter, progress: (value: UnityProgress) => void) {
+  signal: AbortSignal, report: Reporter, progress: (value: UnityProgress) => void, onSample?: (sample: string) => void) {
   const entries = workload.entries.map(entry => workload.selectedIds.has(entry.id)
     ? { ...entry, selected: true, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined }
     : { ...entry, selected: false });
@@ -125,6 +125,7 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   }, { timingScope: scope }) : null;
   let terms: ReadonlyMap<string,string> = new Map();
   const request = (input: string, entry?: UnityEntry, nameContext?: string) => {
+    onSample?.(entry?.source ?? input);
     const systemTranslation = translateRpgSystemMessage(entry, config.target);
     if (systemTranslation !== undefined) return Promise.resolve(systemTranslation);
     const role = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
@@ -178,14 +179,16 @@ export function benchmarkResultLines(result: BenchmarkResult) {
 }
 
 export async function runGameTextScreenSample(config: BenchmarkConfig, selected: UnityEntry[], settings: Settings, scope: string,
-  signal: AbortSignal, report: Reporter, progress: (value: UnityProgress) => void) {
+  signal: AbortSignal, report: Reporter, progress: (value: UnityProgress) => void, onSample?: (sample: string) => void) {
   const rows = selected.map(entry => ({ ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined }));
   const prompts = { ...config.prompts };
   rememberBenchmarkExecution(prompts, scope, "screen", config.models.text.lanes);
+  if (rows[0]) onSample?.(rows[0].source);
   await screenGameText(rows, {
     settings, prompts, signal, onOllamaStatus: report, model: config.models.text.id || undefined,
     source: config.source, target: config.target, skipTarget: config.skipTarget,
     onProgress: (completed, total) => progress({ completed, total, detail: "正在筛选文本 " + completed + " / " + total }),
+    onSample,
   });
   return { translated: rows.length, failed: 0 };
 }
@@ -193,7 +196,7 @@ export async function runGameTextScreenSample(config: BenchmarkConfig, selected:
 export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: number, workload: Workload, scope: string, queueId: string, signal: AbortSignal,
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
-  target?: { step: string; selected: number; run: BenchmarkStepRunner }) {
+  target?: { step: string; selected: number; run: BenchmarkStepRunner }, onSample?: (sample: string) => void) {
   const settings = await api.getSettings();
   const step = target?.step || "translate";
   const activeRoles = target ? ["text"] as const : benchmarkRoles;
@@ -222,7 +225,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
       report(`第 ${round} 轮 · 开始 ${config.label} · 样本 ${selected} · ${modelDetails.join("；") || "本地处理或翻译引擎"}`, "info");
       let status: BenchmarkResult["status"] = "完成", detail: string | undefined;
       try {
-        const result = await (target ? target.run(config, settings, scope) : runSample(config, workload, settings, scope, signal, report, onProgress));
+        const result = await (target ? target.run(config, settings, scope) : runSample(config, workload, settings, scope, signal, report, onProgress, onSample));
         Object.assign(metadata, result);
         if (result.failed) status = "失败";
       } catch (error) {

@@ -48,7 +48,7 @@ export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImag
 
 export async function runGameImageSample(step: ImageBenchmarkStep, sample: UnityImage[], workload: ImageBenchmarkWorkload,
   config: BenchmarkConfig, setup: ImageBenchmarkSetup, settings: Settings, scope: string, signal: AbortSignal,
-  readUnity: (image: UnityImage) => Promise<Blob>, report: OllamaOutput, progress: (value: UnityProgress) => void) {
+  readUnity: (image: UnityImage) => Promise<Blob>, report: OllamaOutput, progress: (value: UnityProgress) => void, onSample?: (sample: string) => void) {
   if (!workload.project) throw new Error("请先读取图片工程");
   const { source, target, skipTarget } = config;
   const prompts = { ...config.prompts };
@@ -73,6 +73,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     };
   }) };
   const read = (image: UnityImage) => measureGameAsync(scope, "processingMs", async () => {
+    onSample?.(image.name);
     if (!workload.embedded) return readUnity(image);
     const query = new URLSearchParams({ gamePath: project.root, id: image.id });
     const response = await fetch(API_BASE + "/api/game-images/preview?" + query, { signal });

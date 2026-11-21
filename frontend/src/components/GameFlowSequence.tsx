@@ -6,6 +6,7 @@ import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { openGameAuxWindow } from "../gameAuxWindows";
 import { GameFlowCard } from "./GameFlowCard";
+import { useBenchmarkProgress } from "../benchmark/benchmarkRunner";
 
 export type GameFlowStep = {
   id: string;
@@ -61,16 +62,15 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const imageFlow = steps.some(step => step.id === "filter" || step.id === "recognize");
   const scope = promptContext?.scope || configurationScope || "game";
   const performanceScope = scope + (imageFlow ? ":images" : ":text");
-  const benchmarkQueue = configurationScope ? stepPerformance(scope + ":benchmark-total", "queue") : undefined;
-  const benchmarkRunning = benchmarkQueue?.started !== undefined &&
-    (benchmarkQueue.benchmark?.part ?? "text") === (imageFlow ? "images" : "text");
+  const benchmark = useBenchmarkProgress(scope);
+  const benchmarkRunning = !!benchmark && (benchmark.step === "screen" || benchmark.step === "translate") !== imageFlow;
   const [, refreshPerformance] = useState(0);
   useEffect(() => {
     const refresh = () => refreshPerformance(value => value + 1);
     window.addEventListener("llmchat-game-performance", refresh);
-    const timer = activity?.state === "running" || benchmarkRunning ? window.setInterval(refresh, 1000) : undefined;
+    const timer = activity?.state === "running" ? window.setInterval(refresh, 1000) : undefined;
     return () => { window.removeEventListener("llmchat-game-performance", refresh); window.clearInterval(timer); };
-  }, [performanceScope, activity?.state, benchmarkRunning]);
+  }, [performanceScope, activity?.state]);
   const [savingConfiguration, setSavingConfiguration] = useState(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
   const [configurationError, setConfigurationError] = useState("");
@@ -200,15 +200,14 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         {actions}
       </div>}
       <ol>{steps.map(step => {
-        const benchmarkStep = benchmarkQueue?.benchmark?.step || "translate";
-        const showingBenchmark = benchmarkRunning && (benchmarkStep === step.id || benchmarkStep === "imageTranslate" && step.id === "translate");
-        const displayScope = showingBenchmark ? scope + (imageFlow ? ":benchmark:images" : ":benchmark:text") : performanceScope;
-        const metricStep = showingBenchmark && benchmarkStep === "imageTranslate" ? "imageTranslate" : step.id;
-        const measured = stepPerformance(displayScope, metricStep);
-        const chosen = showingBenchmark ? undefined : saved.scope === configurationScope ? saved.models[step.id] : step.models;
-        const round = measured.benchmark?.round;
-        const rounds = benchmarkQueue?.benchmark?.rounds;
-        const label = measured.benchmark?.label;
+        const benchmarkStep = benchmark?.step === "imageTranslate" ? "translate" : benchmark?.step;
+        const showingBenchmark = benchmarkRunning && benchmarkStep === step.id;
+        const matchesActivity = activity?.step === step.id;
+        const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
+        const testMetrics = showingBenchmark && state !== "running";
+        const displayScope = testMetrics ? scope + (imageFlow ? ":benchmark:images" : ":benchmark:text") : performanceScope;
+        const measured = stepPerformance(displayScope, testMetrics && benchmark ? benchmark.step : step.id);
+        const chosen = testMetrics ? undefined : saved.scope === configurationScope ? saved.models[step.id] : step.models;
         const modelKeys = new Map<string, { model: string; concurrency: number }>();
         for (const { role, id } of chosen || []) {
           if (!id) continue;
@@ -216,26 +215,18 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           modelKeys.set(JSON.stringify([id, concurrency]), { model: id, concurrency });
         }
         const models = chosen ? [...modelKeys].map(([key, model]) => measured.models[key] || { ...model, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 }) : Object.values(measured.models);
-        const matchesActivity = activity?.step === step.id;
-        const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
         const statusLabel = matchesActivity && state === "error" ? activity.label : undefined;
-        const current = showingBenchmark || !benchmarkRunning && (state === "running" || activity?.state !== "running" && state === "current");
+        const current = state === "running" || showingBenchmark || !benchmarkRunning && activity?.state !== "running" && state === "current";
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
         const actionLabel = step.stop ? step.stopDisabled ? "正在中止" : "中止" : runLabel;
         const expanded = configured === step.id;
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
-        return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark} current={current}
+        return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark ? benchmark : undefined} current={current}
           expanded={expanded} toggleTooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"}
           onToggle={() => onConfigure(expanded ? null : step.id)}
-          status={<>{showingBenchmark ? "性能测试中" : statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
+          status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
           summary={<>
-              {showingBenchmark && benchmarkQueue && <div className="game-flow-model-rates">
-                <span className="game-flow-model-name">性能测试</span>
-                {typeof round === "number" && typeof rounds === "number" && <span>第 {round} / {rounds} 轮</span>}
-                <span>{typeof label === "string" ? label : "正在准备"}</span>
-                <span>队列用时 <b className="game-flow-metric">{gameDuration(benchmarkQueue.elapsedMs)}</b></span>
-              </div>}
               {models.length ? models.map(model => {
                 const pureRate = model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—";
                 const requestRate = model.requestMs > 0 && model.tokens > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—";
@@ -252,7 +243,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
                   <small style={{ display: "block" }} data-tooltip="已计入的模型请求逐次相加。应用排队、本地处理与保存另计，并发请求的耗时可能重叠。">请求耗时合计 <span className="game-flow-metric">{gameDuration(model.requestMs)}</span> · <span className="game-flow-metric">{model.requests} 次</span></small>
                   </>}
                 </div>;
-              }) : <><span>{showingBenchmark ? "等待模型统计" : step.summary}</span>{expanded && <small style={{ display: "block" }}>纯生成 — tok/s · 请求平均 — tok/s</small>}</>}
+              }) : <><span>{testMetrics ? "" : step.summary}</span>{expanded && <small style={{ display: "block" }}>纯生成 — tok/s · 请求平均 — tok/s</small>}</>}
               {expanded && (measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
                 <span>{measured.wallTiming ? "非模型用时" : "历史累计"}</span>
                 <span>排队 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.queueMs)}</span></span>

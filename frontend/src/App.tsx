@@ -1,5 +1,6 @@
 import { getLayoutRect, getLayoutViewport } from "./viewportLayout";
 import { FeatureIcon } from "./components/FeatureIcon";
+import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
 import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
@@ -105,6 +106,7 @@ function AppearanceButton({ railHidden }: { railHidden: boolean }) {
 }
 
 export default function App() {
+  useEffect(attachBenchmarkRunner, []);
   const [page, setPage] = useState<Page>("chat");
   const [outputExpanded, setOutputExpanded] = useState(false);
   const startupInteracted = useRef(false);
