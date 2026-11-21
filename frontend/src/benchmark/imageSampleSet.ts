@@ -117,8 +117,8 @@ export function annotatedTextSamples(set: AnnotatedSampleSet, step: ImageBenchma
   });
 }
 
-export function annotatedTextInput(image: AnnotatedImage, step: ImageBenchmarkStep, source: string, target: string, skipTarget: boolean): UnityImage {
-  const text = image.annotation.text!;
+export function annotatedTextInput({ annotation, ...image }: AnnotatedImage, step: ImageBenchmarkStep, source: string, target: string, skipTarget: boolean): UnityImage {
+  const text = annotation.text!;
   if (step === "refine") {
     const regions = text.initialBoxes!.map(([x0,y0,x1,y1]): UnityImageRegion =>
       ({ x0,y0,x1,y1,text:"",confidence:100,translation:"",selected:false,error:"" }));

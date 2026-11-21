@@ -3,5 +3,5 @@
   "identifier": "game-benchmark",
   "description": "Permissions for the local game benchmark window",
   "windows": ["game-benchmark"],
-  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-destroy", "allow-runtime-log", "allow-ollama-service"]
+  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-destroy", "allow-runtime-log", "allow-ollama-service", "dialog:allow-open", "allow-read-file-bytes"]
 }
