@@ -2071,6 +2071,8 @@ int HttpServer::run()
             if (!image.empty() && body.value("mosaicReview", false)) {
                 request.options["temperature"] = 0;
                 if (request.nativeOllama) {
+                    request.options["max_tokens"] = maxOutputTokens > 0 ? std::min(maxOutputTokens, 256) : 256;
+                    request.options["reasoning_effort"] = "none";
                     request.options["keep_alive"] = "5m";
                     request.options["format"] = json::parse(R"schema({
                         "type":"object","required":["pixelation","confidence"],"additionalProperties":false,
@@ -2132,18 +2134,20 @@ int HttpServer::run()
             ScopedUsageLog usageLog(usage_, event);
             const auto response = LlmClient::chat(request);
             auto& ev = usageLog.ev();
-            ev.ok = response.ok && !task->stopped();
+            const bool cancelled = task->cancelled.load();
+            const bool timedOut = !cancelled && request_cancel::Clock::now() >= task->deadline;
+            ev.ok = response.ok && !cancelled && !timedOut;
             ev.promptTokens = response.promptTokens; ev.completionTokens = response.completionTokens;
             ev.totalTokens = response.totalTokens; ev.cacheReadTokens = response.cacheReadTokens; ev.cacheWriteTokens = response.cacheWriteTokens;
             if (response.externalCall && response.totalTokens <= 0) {
                 ev.promptTokens = ev.completionTokens = ev.totalTokens = kUsageTokensUnknown;
                 ev.cacheReadTokens = ev.cacheWriteTokens = kUsageTokensUnknown;
             }
-            ev.errorCode = ev.ok ? "" : task->stopped() ? "CANCELLED" : "ERROR";
-            ev.errorMessage = ev.ok ? "" : task->stopped() ? "在线任务已取消或超过时限" : response.error;
+            ev.errorCode = ev.ok ? "" : cancelled ? "CANCELLED" : timedOut ? "TIMEOUT" : "ERROR";
+            ev.errorMessage = ev.ok ? "" : cancelled ? "模型请求已取消" : timedOut ? "模型请求超时，未在时限内返回结果" : response.error;
             if (!ev.ok) {
-                res.status = task->stopped() ? 499 : 502;
-                res.set_content(json{{"error", ev.errorMessage}, {"code", response.errorCode},
+                res.status = cancelled ? 499 : timedOut ? 504 : 502;
+                res.set_content(json{{"error", ev.errorMessage}, {"code", cancelled || timedOut ? ev.errorCode : response.errorCode},
                     {"outputTokenLimit", request.options.value("max_tokens", 0)},
                     {"promptTokens", response.promptTokens}, {"completionTokens", response.completionTokens}}.dump(), "application/json");
                 return;
