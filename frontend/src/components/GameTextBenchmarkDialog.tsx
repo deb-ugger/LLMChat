@@ -1,7 +1,7 @@
 import { mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -297,12 +297,21 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     } finally { setAdding(false); }
   };
 
-  const tasks = groupBenchmarkTasks(history);
-  const lastRunFor = (label: string) => {
-    for (const task of tasks) for (const run of task.runs)
-      if (run.label === label) return "上次 " + gameDuration(run.performance.elapsedMs) + " · " + run.translated + "/" + run.selected;
-    return "";
-  };
+  const tasks = useMemo(() => groupBenchmarkTasks(history), [history]);
+  const latestRunByConfig = useMemo(() => {
+    const latest = new Map<string, { run: BenchmarkResult; finishedAt: number }>();
+    for (const run of history) {
+      const config = run.performance.benchmark?.config as { id?: unknown } | undefined;
+      const id = config?.id;
+      if (typeof id !== "string" || !id) continue;
+      const finishedAt = Date.parse(run.performance.endedAt || run.performance.beginTime || "") || 0;
+      const previous = latest.get(id);
+      if (!previous || finishedAt > previous.finishedAt || finishedAt === previous.finishedAt && run.round > previous.run.round) {
+        latest.set(id, { run, finishedAt });
+      }
+    }
+    return latest;
+  }, [history]);
   const page = <main className={"game-benchmark-page" + (channel ? "" : " game-benchmark-browser-fallback")}>
     <header className="game-benchmark-page-header">
       <h2>测试队列</h2>
@@ -332,7 +341,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           title="留空时测试范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
         {sampleSettings.sampleLimit > 0 && <button type="button" className="unity-btn" onClick={() => changeSample({ sampleLimit: 0 })}>取消上限</button>}
       </div>}
-      {configs.map((config, index) => <details key={config.id} className={"game-benchmark-item" + (lastRunFor(config.label) ? " has-run" : "")} open={expanded.has(config.id)}
+      {configs.map((config, index) => {
+        const lastRun = latestRunByConfig.get(config.id)?.run;
+        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
         <summary>
           <span className="game-benchmark-item-badge">Q{index + 1}</span>
@@ -342,7 +353,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
             : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
             : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
-          {lastRunFor(config.label) && <span className="game-benchmark-item-score">{lastRunFor(config.label)}</span>}
+          {lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
         </summary>
         <fieldset disabled={adding} className="game-benchmark-item-fields">
         <div className="game-benchmark-toolbar">
@@ -445,7 +456,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           {config.models.dialogue.id && config.models.dialogue.id !== config.models.text.id && samplePreview[config.id].dialogue === 0 &&
             <strong> · 此样本测不到专用对白模型</strong>}
         </p>}
-      </details>)}
+        </details>;
+      })}
       <div className="game-benchmark-results" aria-label="测试记录">
         <header className="game-benchmark-records-head"><strong>测试记录 · {tasks.length} 个任务</strong>
           <button type="button" className="unity-btn" disabled={historyLoading} onClick={() => setReload(value => value + 1)}>刷新</button></header>
