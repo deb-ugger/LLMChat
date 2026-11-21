@@ -117,7 +117,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
   };
 }
 
-async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Promise<Prepared> {
+async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
@@ -144,7 +144,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest): Pro
       project: annotated.project, selected: [], embedded: false, checked: [],
       boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
         ? [[image.id,image.annotation.mosaic.boxes]] : [])),
-    } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope, step === "mosaicRefine"));
+    } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
     const options = configs[0].mosaic!;
     const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, step === "mosaicRefine" ? "checked" : options.selection);
     const sample = selectSamples(eligible);
@@ -385,7 +385,7 @@ export const benchmarkRunner = {
     const occupied = formalWorkflows.size > 0;
     const frozen = structuredClone(request);
     const deferred = occupied && !request.sampleSetPath;
-    const prepare = deferred ? () => prepareJob(input,frozen) : undefined;
+    const prepare = deferred ? () => prepareJob(input,frozen,true) : undefined;
     const prepared = deferred ? undefined : await prepareJob(input,frozen);
     if (request.priority && controller?.signal.aborted) throw new Error("正在中止当前测试，请稍候");
     const configs = request.configs.filter(config => config.enabled !== false);

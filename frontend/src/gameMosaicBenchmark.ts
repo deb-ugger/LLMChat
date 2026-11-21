@@ -32,19 +32,23 @@ export function publishMosaicBenchmarkSource(root: string, rows?: Record<string,
   else liveSources.delete(root);
 }
 
-export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: string, initialSnapshot = false): MosaicBenchmarkWorkload {
+export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: string, initialSnapshot = false, requireScreened = false): MosaicBenchmarkWorkload {
   const rows = liveSources.get(root) ?? JSON.parse(localStorage.getItem("llmchat-game-mosaic:" + root) || "{}") as Record<string, MosaicSourceRow>;
   const images = (workload.project?.images || []).filter(image => !!image.sourceFile && image.width > 0 && image.height > 0);
   const checked: string[] = [];
   const boxes: Record<string, MosaicBox[]> = {};
   const categories: Record<string, string> = {};
+  const useSnapshot = initialSnapshot && (requireScreened || images.some(image => {
+    const row = rows[image.id];
+    return row?.source === image.sourceHash && (row.beforeRefine || row.refined || row.refineError);
+  }));
   for (const image of images) {
     const row = rows[image.id];
     const saved = row?.source === image.sourceHash ? row : undefined;
-    const current = initialSnapshot ? saved?.beforeRefine ?? (saved?.refined || saved?.refineError ? undefined : saved) : saved;
-    if (initialSnapshot ? Boolean(current?.scanned && current.checked) : current?.checked ?? true) checked.push(image.id);
+    const current = useSnapshot ? saved?.beforeRefine ?? (saved?.refined || saved?.refineError ? undefined : saved) : saved;
+    if (useSnapshot ? Boolean(current?.scanned && current.checked) : current?.checked ?? true) checked.push(image.id);
     if (current?.boxes.length) boxes[image.id] = current.boxes;
-    categories[image.id] = current?.review || current?.reason || (!initialSnapshot && saved?.refineError) ? "待复核"
+    categories[image.id] = current?.review || current?.reason || (!useSnapshot && saved?.refineError) ? "待复核"
       : current?.boxes.length ? "疑似有码" : current?.scanned ? "未发现" : "待筛选";
   }
   return { ...workload, selected: images, checked, boxes, categories, modelFile: gameDetectorFile(root) };
