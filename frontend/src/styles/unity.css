@@ -2269,6 +2269,59 @@ body.ocr-image-resizing * {
 .game-flow-actions .game-flow-start { min-width: 76px; min-height: 36px; padding: 6px var(--space-3); }
 .game-flow-actions .game-flow-clear { min-width: 48px; min-height: 34px; padding: 5px var(--space-2); color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border)); }
 .game-flow-actions .game-flow-clear:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, var(--danger-soft)); border-color: var(--danger); }
+
+/* ── 去码页按钮分级：主（实心）/ 次（描边）/ 弱（无边框）/ 破坏性（红字） ── */
+.game-mosaic-workbench .unity-btn.is-secondary {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.game-mosaic-workbench .unity-btn.is-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.game-mosaic-workbench .unity-btn.is-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.game-mosaic-workbench .unity-btn.is-ghost.is-danger {
+  color: var(--danger);
+}
+
+.game-mosaic-workbench .unity-btn.is-ghost.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+/* 卡片头的「清理」降级成弱化红字，不再是一整块红底按钮 */
+.game-mosaic-workbench .game-flow-actions .game-flow-clear {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px var(--space-2);
+  color: var(--danger);
+  background: transparent;
+  border-color: transparent;
+}
+
+.game-mosaic-workbench .game-flow-actions .game-flow-clear:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: transparent;
+}
+
+/* 工具条与结果条：按钮之间留出呼吸，并让弱操作和主操作分开 */
+.game-mosaic-workbench .unity-image-actions {
+  gap: var(--space-2);
+}
+
+.game-mosaic-workbench .unity-image-actions > .unity-btn.is-ghost + .unity-btn.is-ghost {
+  margin-inline-start: -2px;
+}
+
 .game-flow-progress { margin-top:10px; }
 .game-flow-config { --flow-config-padding: 14px; min-width: 0; padding: var(--flow-config-padding); border-radius: 0 0 var(--radius-md) var(--radius-md); background: color-mix(in srgb, var(--accent, #1b1a16) 5%, var(--panel, var(--bg-panel))); }
 .game-flow-config-content { display: flow-root; }

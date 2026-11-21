@@ -788,7 +788,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           {canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
             onClick={() => void clearTask()}>清理</button>}
         </>, <>
-          {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn" disabled={actionsDisabled}
+          {screenedCount > 0 && remaining.length > 0 && <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled}
             onClick={() => screen(true)}>重新筛选全部范围</button>}
           <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={!!busy} onChange={event => { changePreferences({ scope: event.target.value as typeof scope }); setGroupPages({}); }}>
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
@@ -907,9 +907,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             data-tooltip={redrawReason} onClick={() => generate([active], [model])}>重绘当前图</button>
           <button className="unity-btn" aria-pressed={drawing} disabled={!!busy || !originalUrl}
             onClick={() => setDrawing(value => !value)}>框选蒙版</button>
-          <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, activeResult.boxes.slice(0, -1))}>删除最后一框</button>
-          <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, [])}>清空蒙版</button>
-          <button className="unity-btn" disabled={!!busy || !activeResult.boxes.length || members.length < 2} onClick={() => {
+          <button className="unity-btn is-ghost" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, activeResult.boxes.slice(0, -1))}>删除最后一框</button>
+          <button className="unity-btn is-ghost is-danger" disabled={!!busy || !activeResult.boxes.length} onClick={() => editMask(active, [])}>清空蒙版</button>
+          <button className="unity-btn is-ghost" disabled={!!busy || !activeResult.boxes.length || members.length < 2} onClick={() => {
             for (const image of members) if (!resultFor(rows, image).boxes.length && Math.abs(image.width / image.height / (active.width / active.height) - 1) <= 0.04)
               editMask(image, mapMosaicBoxes(activeResult.boxes, active, image));
           }}>复制蒙版到组内空白图</button>
@@ -923,7 +923,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
               setPreferredResult(showSaved ? preferredVersion.id : "saved");
             }}>{showSaved ? "查看候选" : "查看已确认"}</button>}
-            <button type="button" className="unity-btn" disabled={!!redrawReason} data-tooltip={redrawReason}
+            <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} data-tooltip={redrawReason}
               onClick={() => generate([active], ["turbo", "2511"])}>两种模型各生成一版</button>
             {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
               onKeyDown={event => {
