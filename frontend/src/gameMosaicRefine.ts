@@ -5,6 +5,8 @@ import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameMod
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
 type StoredProposal = { source: string; hash: string; scan: MosaicScan };
+type SavedReviewRow = { source: string; refined?: string; refineError?: string; boxes: MosaicBox[];
+  review?: string; manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
 
@@ -12,13 +14,34 @@ export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
   return JSON.stringify(["visual-review-v5", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
     file ? [file.name,file.size,file.lastModified] : "anime-640"]);
 }
+function formerMosaicReviewKey(key: string) {
+  return key.startsWith('["visual-review-v5",') ? key.replace('"visual-review-v5"', '"visual-review-v4"') : undefined;
+}
+
+export function matchesMosaicReviewKey(recorded: string | undefined, key: string) {
+  return !!recorded && (recorded === key || recorded === formerMosaicReviewKey(key));
+}
+
 function readReviewCheckpoint(root: string, key: string): ReviewCheckpoint {
   const value = localStorage.getItem(checkpointPath(root));
-  if (value) {
-    const saved = JSON.parse(value) as ReviewCheckpoint;
-    if (saved.key === key) return saved;
+  const saved = value ? JSON.parse(value) as ReviewCheckpoint : undefined;
+  const checkpoint = saved?.key === key ? saved : {
+    key, images: matchesMosaicReviewKey(saved?.key, key) ? saved!.images : {},
+  };
+  const former = formerMosaicReviewKey(key);
+  // Older builds could replace the checkpoint while the completed rows remained in the workbench.
+  const workbench = former && !root.startsWith("benchmark:") && localStorage.getItem("llmchat-game-mosaic:" + root);
+  if (workbench) {
+    const rows = JSON.parse(workbench) as Record<string, SavedReviewRow>;
+    for (const [id, row] of Object.entries(rows)) {
+      if (row.refined !== former || row.refineError || row.manualBoxes || row.saved || checkpoint.images[id]?.source === row.source) continue;
+      checkpoint.images[id] = { source: row.source, scan: {
+        boxes: row.review ? [] : row.boxes, ...(row.review && { review: row.review, reviewBoxes: row.boxes }),
+        signature: [], quickExcluded: row.refineQuickExcluded,
+      } };
+    }
   }
-  return { key, images: {} };
+  return checkpoint;
 }
 export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
   return readReviewCheckpoint(root, key).images;
@@ -207,7 +230,12 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const errors = new Map<string, string>();
   const remaining: UnityImage[] = [];
   for (const image of images) {
-    if (completedReview(image)) continue;
+    const scan = completedReview(image);
+    if (scan) {
+      results.set(image.id, scan);
+      options.onResult?.(image, scan);
+      continue;
+    }
     const record = savedProposals[image.id];
     if (record?.source === image.sourceHash) prepared.set(image.id, record);
     else remaining.push(image);
@@ -216,7 +244,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const reportPreparation = () => {
     const count = images.length - remaining.length + preparedThisRun;
     options.onPreparation?.(count, images.length);
-    options.onProgress?.(0, "候选区域准备 · " + count + "/" + images.length + " 张");
+    options.onProgress?.(results.size, "候选区域准备 · " + count + "/" + images.length + " 张");
   };
   let detector: Awaited<ReturnType<typeof loadMosaicDetector>> | undefined;
   reportPreparation();
@@ -267,9 +295,10 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
     finally { await detector?.release(); }
   }
   const verified=new Map<string,Promise<MosaicScan>>();
-  let cursor=0,completed=0;
+  let cursor=0;
   const groups=new Map<string,UnityImage[]>();
   for(const image of images) {
+    if (results.has(image.id)) continue;
     const learned=prepared.get(image.id)?.scan.boxes.length;
     const model=learned ? settings.refineModel || "qwen3.5:latest" : settings.refineGuardModel || "qwen3-vl:8b-instruct";
     const group=groups.get(model);
@@ -280,30 +309,27 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
       signal.throwIfAborted();const image=batch[cursor++];
       try {
         const failure=errors.get(image.id);if(failure)throw new Error(failure);
-        let scan=completedReview(image);
-        if(!scan) {
-          const { hash, scan: proposed } = prepared.get(image.id)!;
-          const identity = JSON.stringify([model, hash]);
-          let pending=verified.get(identity);
-          const reused = !!pending;
-          if(!pending) {
-            const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
-            pending=!fullReview && !hasCandidates
-              ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
-              : measureGameAsync(options.timingScope, "processingMs", () => options.read(image,signal))
-                .then(blob=>reviewImage(blob,proposed,model,options.request,signal,lanes));
-            verified.set(identity,pending);
-            if(verified.size>128)verified.delete(verified.keys().next().value!);
-            void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
-          }
-          scan=await pending;
-          if (reused && !scan.quickExcluded) recordGameCacheHit(options.timingScope);
-          checkpoint.images[image.id] = { source: image.sourceHash, scan: { ...scan, signature: [] } };
-          delete savedProposals[image.id];
-          saveCheckpoint();
+        const { hash, scan: proposed } = prepared.get(image.id)!;
+        const identity = JSON.stringify([model, hash]);
+        let pending=verified.get(identity);
+        const reused = !!pending;
+        if(!pending) {
+          const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
+          pending=!fullReview && !hasCandidates
+            ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
+            : measureGameAsync(options.timingScope, "processingMs", () => options.read(image,signal))
+              .then(blob=>reviewImage(blob,proposed,model,options.request,signal,lanes));
+          verified.set(identity,pending);
+          if(verified.size>128)verified.delete(verified.keys().next().value!);
+          void pending.catch(() => { if (verified.get(identity) === pending) verified.delete(identity); });
         }
+        const scan = await pending;
+        if (reused && !scan.quickExcluded) recordGameCacheHit(options.timingScope);
+        checkpoint.images[image.id] = { source: image.sourceHash, scan: { ...scan, signature: [] } };
+        delete savedProposals[image.id];
+        saveCheckpoint();
         results.set(image.id,scan);options.onResult?.(image,scan);
-        options.onProgress?.(++completed,model+" · "+image.name);
+        options.onProgress?.(results.size,model+" · "+image.name);
       } catch(cause) {
         if(signal.aborted)throw cause;
         failed++;options.onError?.(image,String(cause));

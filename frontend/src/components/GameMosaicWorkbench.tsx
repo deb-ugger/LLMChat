@@ -3,7 +3,7 @@ import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot
 import { api, type Settings } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
-import { refineMosaicBatch, mosaicReviewKey, readMosaicReviews, clearMosaicReviews } from "../gameMosaicRefine";
+import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, readMosaicReviews, clearMosaicReviews } from "../gameMosaicRefine";
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
@@ -684,7 +684,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   function applyReview(image: UnityImage, scan: MosaicScan) {
     setRows(previous => {
       const old = resultFor(previous,image);
-      if (old.manualBoxes || old.saved) return previous;
+      if (old.manualBoxes || old.saved || old.refined !== reviewKey && matchesMosaicReviewKey(old.refined, reviewKey)) return previous;
       return { ...previous, [image.id]: reviewedResult(old, scan, reviewKey, detectorKey) };
     });
   }
@@ -694,7 +694,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const next={...previous};let changed=false;
       for(const image of usable) {
         const record=completed[image.id],old=resultFor(previous,image);
-        if(record?.source!==image.sourceHash || (old.refined===reviewKey && !!old.refineQuickExcluded===!!record.scan.quickExcluded) || old.manualBoxes || old.saved)continue;
+        if(record?.source!==image.sourceHash || (matchesMosaicReviewKey(old.refined, reviewKey) && !!old.refineQuickExcluded===!!record.scan.quickExcluded) || old.manualBoxes || old.saved)continue;
         next[image.id] = reviewedResult(old, record.scan, reviewKey, detectorKey);
         changed=true;
       }
@@ -703,7 +703,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   },[gamePath,usable,reviewKey,detectorKey]);
   const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, needle, scopedGroup]);
   const previousReview = lastReview.current?.key === reviewSessionKey ? lastReview.current : undefined;
-  const isReviewed = (row: Result) => row.refined === reviewKey && !row.refineQuickExcluded;
+  const isReviewed = (row: Result) => matchesMosaicReviewKey(row.refined, reviewKey) && !row.refineQuickExcluded;
   const checkedReviewScope: UnityImage[] = [];
   const pendingReview: UnityImage[] = [];
   let reviewedCount = 0;
@@ -712,7 +712,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (!row.scanned || row.saved || row.manualBoxes) continue;
     if (row.checked) checkedReviewScope.push(image);
     if (isReviewed(row)) {
-      if (row.checked || previousReview?.images.get(image.id) === image.sourceHash) reviewedCount++;
+      if (row.checked || row.beforeRefine?.checked && !row.manualChecked ||
+          previousReview?.images.get(image.id) === image.sourceHash) reviewedCount++;
     } else if (row.checked) pendingReview.push(image);
   }
   const reviewTotal = reviewedCount + pendingReview.length;

@@ -32,6 +32,7 @@ export type BenchmarkResult = {
   round: number; label: string; selected: number; translated: number; failed: number;
   status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
+export type ArchivedBenchmarkRef = { queueId: string; runId: string };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
 export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
@@ -204,7 +205,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
   target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
-  resumeAt = 0) {
+  resumeAt = 0, source?: { continuedFrom?: string; sampleSetPath?: string }) {
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
@@ -234,7 +235,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         if (step === "mosaicRefine") clearMosaicReviews("benchmark:" + saved.taskId);
         clearGamePerformance(scope, [step], false);
       }
-      const metadata = { queueId, round, unobservedModels, label: config.label, selected, config, translated: 0, failed: 0, status: "运行中", detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
+      const metadata = { queueId, round, unobservedModels, ...source, label: config.label, selected, config, translated: 0, failed: 0, status: "运行中", detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);
       const runId = stepPerformance(scope,step).taskId!;
       onStart(round, config);

@@ -1,4 +1,4 @@
-import type { RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
+import type { ImageBenchmarkDetails, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { refineMosaicBatch } from "./gameMosaicRefine";
@@ -54,6 +54,21 @@ export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: s
   return { ...workload, selected: images, checked, boxes, categories, modelFile: gameDetectorFile(root) };
 }
 
+export function archivedMosaicSamples(available: readonly UnityImage[], archived: ImageBenchmarkDetails) {
+  const sources = new Map(available.map(image => [image.id, image]));
+  const images: UnityImage[] = [];
+  const recovered = new Map<string, ImageBenchmarkOutcome>();
+  for (const [index, sample] of archived.samples.entries()) {
+    const image = sources.get(sample.id);
+    if (!image || image.sourceHash !== sample.sourceHash || image.width !== sample.width || image.height !== sample.height)
+      throw new Error("原测试样本已更换或未加载 · " + sample.file);
+    images.push(image);
+    const result = archived.results[index];
+    if (result && result.status !== "失败") recovered.set(image.id, result);
+  }
+  return { images, recovered };
+}
+
 export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage, signal: AbortSignal) {
   const response = await fetch(API_BASE + "/api/game-images/preview?" + new URLSearchParams({ gamePath: root, id: image.id }), { signal });
   if (!response.ok) throw new Error((await response.json()).error || "图片读取失败");
@@ -62,7 +77,8 @@ export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage
 
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
-  onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet): BenchmarkStepRunner {
+  onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet,
+  recovered?: ReadonlyMap<string, ImageBenchmarkOutcome>): BenchmarkStepRunner {
   return async (config, settings, scope, record?: RecordImageBenchmarkOutcome, runId?: string) => {
     const recordScan = (image: UnityImage, scan: MosaicScan) => record?.(image.id, {
       category: mosaicStatusLabels[mosaicScreeningStatus({
@@ -86,16 +102,21 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       const root = "benchmark:" + runId;
       const selection = { ...config.prompts };
       rememberBenchmarkExecution(selection, scope, step, options.refineConcurrency ?? 1);
-      const result = await refineMosaicBatch(images, {
+      const prior = recovered?.size ?? 0;
+      if (recovered) for (const [id, outcome] of recovered) record?.(id, outcome);
+      const pending = prior ? images.filter(image => !recovered?.has(image.id)) : images;
+      const result = await refineMosaicBatch(pending, {
         root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
         request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
         onResult: recordScan,
         onError: (image, reason) => record?.(image.id,{ category:"待复核",status:"失败",reason }),
-        onProgress: (completed, detail) => onProgress({ completed, total: images.length, detail }),
+        onProgress: (completed, detail) => onProgress({ completed: prior + completed, total: images.length, detail }),
       });
       const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
       const review = [...result.results.values()].filter(scan => !!scan.review).length;
-      return { translated: result.results.size, failed: result.failed, summary: mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张" + measureAccuracy(result.results) };
+      const summary = mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张";
+      return { translated: prior + result.results.size, failed: result.failed,
+        summary: prior ? "复用 " + prior + " 张归档结果 · 续跑结果 · " + summary : summary + measureAccuracy(result.results) };
     }
     let cursor = 0, completed = 0, failed = 0, located = 0, review = 0, regions = 0;
     let firstFailure = "";

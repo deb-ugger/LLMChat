@@ -1,13 +1,15 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { BenchmarkRequest } from "./benchmark/benchmarkRunner";
+import type { ArchivedBenchmarkRef } from "./gameTextBenchmark";
 
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
 export const benchmarkChannelName = "llmchat-game-benchmark-window";
 
-export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup";
+export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-archive";
+export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef;
 
-export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | string): Promise<T> {
+export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkQueueArgument): Promise<T> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const finish = () => { window.clearTimeout(timer); channel.removeEventListener("message", receive); };

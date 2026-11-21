@@ -1,4 +1,4 @@
-import { benchmarkImageInput, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
+import { benchmarkImageInput, readImageBenchmarkDetails, type ImageBenchmarkDetails, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
 import { clearMosaicReviews } from "../gameMosaicRefine";
 import { clearGameImageRefinement } from "../gameImageScreening";
 import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } from "./imageSampleSet";
@@ -6,8 +6,8 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { registerAppCloseGuard } from "../appClose";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
 import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, gameDuration, stepPerformance } from "../gameModelPerformance";
-import { captureMosaicBenchmark, mosaicBenchmarkSteps, readEmbeddedBenchmarkImage, runMosaicBenchmark, type MosaicBenchmarkStep, type MosaicBenchmarkWorkload } from "../gameMosaicBenchmark";
-import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameTextScreenSample, type BenchmarkConfig, type BenchmarkStepRunner } from "../gameTextBenchmark";
+import { archivedMosaicSamples, captureMosaicBenchmark, mosaicBenchmarkSteps, readEmbeddedBenchmarkImage, runMosaicBenchmark, type MosaicBenchmarkStep, type MosaicBenchmarkWorkload } from "../gameMosaicBenchmark";
+import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameTextScreenSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkStepRunner } from "../gameTextBenchmark";
 import type { GameDialoguePage } from "../gameTranslationContext";
 import type { UnityEntry, UnityImage, UnityProgress } from "../unityOffline";
 
@@ -56,6 +56,7 @@ type BenchmarkJob = {
   progress?: BenchmarkProgress;
   status: "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
+  continuedFrom?: string;
 };
 type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number };
 export type BenchmarkSnapshot = {
@@ -84,7 +85,7 @@ export function benchmarkTargetLabel(step: BenchmarkTarget) {
 
 type ProgressPatch = Partial<Omit<BenchmarkProgress, "elapsedMs" | "percent">>;
 type JobContext = { id: string; signal: AbortSignal; report: (patch: ProgressPatch) => void };
-type Prepared = { count: number; scope: string; run: (context: JobContext) => Promise<number>; cleanup: () => void };
+type Prepared = { count: number; scope: string; restored?: number; run: (context: JobContext) => Promise<number>; cleanup: () => void };
 type QueuedJob = BenchmarkJob & { prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
 
 function initialImageRows(workload: ImageBenchmarkWorkload) {
@@ -119,7 +120,8 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
   };
 }
 
-async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false): Promise<Prepared> {
+async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false,
+  archive?: { runId: string; details: ImageBenchmarkDetails }): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
@@ -138,6 +140,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
+  let restored: number | undefined;
   let imageSamples: ImageBenchmarkInput[] | undefined;
   let createStepRunner: ((context: JobContext, report: (value: UnityProgress) => void) => BenchmarkStepRunner) | undefined;
   if (mosaic) {
@@ -149,17 +152,19 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
     const options = configs[0].mosaic!;
     const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, step === "mosaicRefine" ? "checked" : options.selection);
-    const sample = selectSamples(eligible);
+    const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
+    const sample = recovered?.images ?? selectSamples(eligible);
+    restored = recovered?.recovered.size;
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
     const checked = new Set(snapshot.checked);
-    imageSamples = sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
+    imageSamples = archive?.details.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
       annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
     createStepRunner = (context, report) => runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
       context.report({ sample: image.name });
       if (annotated) return annotated.read(image,signal);
       return snapshot.embedded ? readEmbeddedBenchmarkImage(snapshot.project!.root, image, signal) : imageSource.readImage!(snapshot.project!, image);
-    }, report, annotated);
+    }, report, annotated, recovered?.recovered);
   } else if (imageStep) {
     if (!imageSource || !Object.hasOwn(imageSource.setup.steps, imageStep)) throw new Error("当前工程没有该图片测试步骤");
     const currentImages = imageSource.getWorkload();
@@ -196,7 +201,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const runScope = historyScope + ":benchmark:" + (mosaic ? "mosaic" : imageStep ? "images" : "text");
   const totalScope = historyScope + ":benchmark-total";
   let failures = 0, failedSamples = 0, runs = 0, finishedSamples = 0;
-  return { count: count * configs.length * rounds, scope: displayScope, cleanup: () => {
+  return { count: count * configs.length * rounds, scope: displayScope, restored, cleanup: () => {
     const runId = stepPerformance(runScope, step).taskId;
     if (step === "mosaicRefine" && runId) clearMosaicReviews("benchmark:" + runId);
     clearGamePerformance(runScope, [step], false);
@@ -239,7 +244,8 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           failedSamples += result.failed;
           finishedSamples += done;
           context.report({ current: finishedSamples, failed: failedSamples, detail: result.detail });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt);
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt,
+        { continuedFrom: archive?.runId, sampleSetPath: request.sampleSetPath });
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -333,8 +339,9 @@ async function runJobs() {
     const previous = job.progress;
     startedAt = performance.now() - (previous?.elapsedMs ?? 0);
     progress = { type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
-      phase: "prepare", label: job.label, current: previous?.current ?? 0, total: job.prepared?.count ?? 0,
-      sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ?? 0, failed: previous?.failed ?? 0 };
+      phase: "prepare", label: job.label, current: previous?.current ?? job.prepared?.restored ?? 0, total: job.prepared?.count ?? 0,
+      sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ??
+        (job.prepared?.restored ? Math.floor(100 * job.prepared.restored / job.prepared.count) : 0), failed: previous?.failed ?? 0 };
     publish();
     const timer = window.setInterval(publish, 1000);
     let failed = false, waitForFormal = false, finished = false;
@@ -425,6 +432,33 @@ export const benchmarkRunner = {
     if (request.priority) startQueue();
     else if (running) pumpQueue();
     return job.id;
+  },
+  async continueArchivedMosaic(input: BenchmarkInput, { queueId, runId }: ArchivedBenchmarkRef) {
+    const findJob = () => jobs.find(job => job.requestScope === input.scope && job.step === "mosaicRefine" &&
+      (job.id === queueId || job.continuedFrom === runId) && ["等待", "运行中", "已暂停"].includes(job.status));
+    if (findJob()) { startQueue(); return; }
+    const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", "mosaicRefine");
+    const record = history.find(item => item.performance.taskId === runId && item.performance.benchmark?.queueId === queueId);
+    const metadata = record?.performance.benchmark;
+    const config = metadata?.config as BenchmarkConfig | undefined;
+    if (!record || !config?.mosaic || !metadata?.imageDetails || !["已暂停", "已中止"].includes(record.status) ||
+        record.translated >= record.selected) throw new Error("该记录没有可继续的复筛样本");
+    if (history.some(item => item.performance.benchmark?.continuedFrom === runId &&
+        (item.status === "完成" || item.status === "已暂停" && item.performance.benchmark?.imageDetails)))
+      throw new Error("该记录已有续跑结果，请打开最新的续跑记录");
+    const details = await readImageBenchmarkDetails(queueId, runId);
+    if (details.samples.length !== record.selected) throw new Error("原测试样本清单不完整");
+    const prepared = await prepareJob(input, {
+      scope: input.scope, step: "mosaicRefine", configs: [{ ...config, enabled: true }], rounds: 1,
+      sampleSetPath: typeof metadata.sampleSetPath === "string" ? metadata.sampleSetPath : undefined,
+    }, false, { runId, details });
+    if (!findJob()) {
+      jobs.push({ id: crypto.randomUUID(), scope: prepared.scope, requestScope: input.scope, step: "mosaicRefine",
+        label: "继续复筛测试 · " + config.label, status: "等待", prepared, onMessage: input.onMessage,
+        resumeSamples: true, continuedFrom: runId });
+      publish();
+    }
+    startQueue();
   },
   start: startQueue,
   stop: stopQueue,
