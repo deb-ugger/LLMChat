@@ -1439,7 +1439,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices, source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage, lineMode, lineModel, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters, scopeVersion: 1,
       partial: !!project?.textSkipped || startStep >= 3 && !!checkpointRef.current?.partial,
       translationRuns: checkpointRef.current?.translationRuns,
-      scanElapsedMs: checkpointRef.current?.scanElapsedMs || 0,
+      scanElapsedMs: startStep === 1 ? 0 : checkpointRef.current?.scanElapsedMs || 0,
       progress: { step: startStep, state: "running", detail: "准备处理", completed: 0, total: null },
     };
     if (automatic) run.automatic = true;
@@ -1525,12 +1525,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           const reportPart = (part: UnityTranslationPart, value: UnityProgress) => {
             const scope = promptState.scope + ":" + part;
             const phase = part === "text" ? value.textStage === "screening" ? "screen" : "translate" : run.imageTask || imageTask.current;
-            beginGameStep(scope, phase);
-            if (value.translation)
+            const alreadyComplete = value.total === 0 && !!stepPerformance(scope,phase).endedAt;
+            if (!alreadyComplete) beginGameStep(scope, phase);
+            if (!alreadyComplete && value.translation)
               reportGameStepItems(scope, phase, value.translation.processed, value.translation.failed);
-            else if (value.total !== null && (part === "images" || phase === "screen"))
+            else if (!alreadyComplete && value.total !== null && (part === "images" || phase === "screen"))
               reportGameStepItems(scope, phase, value.completed, value.redrawFailed);
-            run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], ...value, textStage: value.textStage, model: value.model,
+            run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], ...value,
+              elapsedMs: run.translationRuns![part].elapsedMs, textStage: value.textStage, model: value.model,
               redrawFailed: value.redrawFailed, step: 2, state: "running" } } };
             checkpointRef.current = run;
             if (value.total !== null && value.completed === value.total || performance.now() - partReported[part] >= 100) { remember(run); partReported[part] = performance.now(); }
@@ -1549,9 +1551,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               try {
               const current = latest.current || p!;
               if (part === "images") {
-                run.imageTask = imageTask.current;
+                run.imageTask = resume && run.imageTask ? run.imageTask : imageTask.current;
                 if (run.automatic || run.imageChain) {
-                  for (const phase of unityImagePhases) {
+                  const firstPhase = resume ? Math.max(0,unityImagePhases.indexOf(run.imageTask)) : 0;
+                  for (const phase of unityImagePhases.slice(firstPhase)) {
                     job.signal.throwIfAborted();
                     if (phase === "redraw" && !(latest.current || current).images?.some(gameImageRedrawSelected)) continue;
                     run.imageTask = phase; imageTask.current = phase;
@@ -2289,7 +2292,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       : textScreening || !screenComplete ? "筛选文本" : "翻译正文"
     : GENERATION_STEPS[(activeStep === 3 ? visibleGeneration?.step ?? (patch ? 4 : 3) : activeStep) - 1];
   const scanTiming = activeStep === 1 && progressState === "done" ? project?.scanMetrics : undefined;
-  const elapsed = (activeStep === 1 ? scanTiming?.totalMs ?? checkpoint?.scanElapsedMs : visibleGeneration?.elapsedMs) ?? 0;
+  const deploymentPhase = activeStep === 3 ? (visibleGeneration?.step === 4 || !visibleGeneration && applied ? "apply" : "generate") : undefined;
+  const deploymentElapsed = deploymentPhase
+    ? stepPerformance(deploymentMetricScope(root,deploymentPhase),deploymentPhase).elapsedMs : undefined;
+  const elapsed = (activeStep === 1 ? checkpoint?.scanElapsedMs || scanTiming?.totalMs
+    : activeStep === 3 ? deploymentElapsed : visibleGeneration?.elapsedMs) ?? 0;
   const elapsedLabel = [3600000, 60000, 1000].map((unit, index) => {
     const count = Math.floor(elapsed / unit);
     return String(index ? count % 60 : count).padStart(2, "0");

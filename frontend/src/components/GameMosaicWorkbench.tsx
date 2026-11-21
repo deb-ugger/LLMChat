@@ -65,14 +65,26 @@ function mosaicStepSnapshot(scope: string, step: MosaicStep): StepPerformance {
   return { ...snapshot, models: Object.fromEntries(models) };
 }
 
+function mosaicMetricScope(gamePath: string, step: MosaicStep) {
+  return gamePath + ":mosaic:" + step;
+}
+
+function resumableMosaicMetrics(gamePath: string, step: MosaicStep, resume: boolean) {
+  if (!resume) return undefined;
+  const previous = stepPerformance(mosaicMetricScope(gamePath,step),step);
+  return previous.taskId && !previous.endedAt ? previous : undefined;
+}
+
 function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolean, refresh = () => {}) {
-  const scope = gamePath + ":mosaic:" + step;
-  if (!resume) clearGamePerformance(scope, [step]);
+  const scope = mosaicMetricScope(gamePath,step);
+  const previous = resumableMosaicMetrics(gamePath,step,resume);
+  if (!previous) clearGamePerformance(scope,[step]);
   beginGameStep(scope, step);
   return {
     scope,
     snapshot: () => mosaicStepSnapshot(scope, step),
-    recordItems: (itemsDone: number, failures?: number) => reportGameStepItems(scope, step, itemsDone, failures),
+    recordItems: (itemsDone: number, failures?: number) => reportGameStepItems(scope, step,
+      (previous?.itemsDone ?? 0) + itemsDone, failures === undefined ? undefined : (previous?.failures ?? 0) + failures),
     async measure<T>(model: string, concurrency: number, work: () => Promise<T>) {
       const started = performance.now();
       try { return await measureGameAsync(scope, "processingMs", work); }
@@ -459,7 +471,19 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   useEffect(() => {
     if (!paneVisible || !busy || !progressStep) return;
     const timer = window.setInterval(() => refreshElapsed(value => value + 1), 1000);
-    return () => window.clearInterval(timer);
+    let frame: number | undefined;
+    const refresh = () => {
+      frame ??= window.requestAnimationFrame(() => {
+        frame = undefined;
+        refreshElapsed(value => value + 1);
+      });
+    };
+    window.addEventListener("llmchat-game-performance",refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("llmchat-game-performance",refresh);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
   }, [paneVisible, busy, progressStep]);
   useEffect(() => {
     try { localStorage.setItem(savedKey, JSON.stringify(rows)); }
@@ -592,13 +616,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   async function run(label: string, work: (signal: AbortSignal, report: (progress: StepReport) => void, usage?: MosaicStepUsage) => Promise<void | boolean>,
-    step?: { id: MosaicStep; total: number; completed?: number; summary: string; previousElapsed?: number }) {
+    step?: { id: MosaicStep; total: number; completed?: number; summary: string; resume?: boolean }) {
     if (task.current || disabled || isBenchmarkRunning()) return;
     const controller = new AbortController();
     task.current = controller;
     onBusy?.(true);
     const batchStarted = performance.now();
-    const started = batchStarted - (step?.previousElapsed ?? 0);
+    const elapsedBefore = step ? resumableMosaicMetrics(gamePath,step.id,!!step.resume)?.elapsedMs ?? 0 : 0;
+    const started = batchStarted - elapsedBefore;
     setProgressStep(step?.id);
     if (step) setStepRuns(previous => ({ ...previous, [step.id]: {
       state: "running", completed: step.completed ?? 0, total: step.total, summary: step.summary, started, batchStarted,
@@ -615,7 +640,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     let state: GameProgressState = "error";
     try {
       if (step) {
-        usage = beginMosaicStepUsage(gamePath, step.id, step.previousElapsed !== undefined,
+        usage = beginMosaicStepUsage(gamePath, step.id, !!step.resume,
           () => { if (usage) updateStep(usage.snapshot()); });
         usage.refresh();
       }
@@ -634,10 +659,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       state = controller.signal.aborted ? "stopped" : "error";
     } finally {
       const ended = performance.now();
+      usage?.finish(state === "done");
       updateStep({ ...usage?.snapshot(), state, elapsed: ended - started, batchElapsed: ended - batchStarted });
       task.current = null; setBusy("");
       onBusy?.(false);
-      usage?.finish(state === "done");
     }
   }
 
@@ -684,8 +709,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     restart=false, automatic=false, metrics?: { onPreparation: (prepared: number) => void; onFailure: () => void; usage?: MosaicStepUsage }) {
     const configuration=settings || await api.getSettings();
     const reviewSettings=automatic ? {...preferences,refineScope:preferences.refineIncludeMissed?"all" as const:"suspected" as const} : preferences;
-    const ownedUsage = !metrics?.usage && targets.length ? beginMosaicStepUsage(gamePath, "refine", false) : undefined;
+    const cached = automatic && !restart ? readMosaicReviews(gamePath,reviewKey) : undefined;
+    const isCached = (image: UnityImage) => {
+      const old = cached?.[image.id];
+      return old?.source === image.sourceHash && !(reviewSettings.refineScope === "all" && old.scan.quickExcluded);
+    };
+    const ownedUsage = !metrics?.usage && targets.some(image => !isCached(image))
+      ? beginMosaicStepUsage(gamePath,"refine",!restart) : undefined;
     const usage = metrics?.usage ?? ownedUsage;
+    let processed = 0, failures = 0;
     const requestConcurrency = metrics?.usage && Math.min(targets.length, Math.max(1, Math.min(2, reviewSettings.refineConcurrency ?? 1)));
     const selections = usage && gameStepSelections(usage.scope, "refine", requestConcurrency);
     let succeeded = false;
@@ -693,18 +725,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const result = await refineMosaicBatch(targets,{root:gamePath,settings:reviewSettings,signal,modelFile:detectorFile,read,prepare:prepareSources,restart,timingScope:usage?.scope,
         request:(model,prompt,image,signal,lanes)=>requestGameModelJson(configuration,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection:selections?.(lanes)})
           .finally(() => usage?.refresh()),
-       onResult: applyReview,
+       onResult: (image,scan) => {
+         applyReview(image,scan);
+         if (ownedUsage && !isCached(image)) ownedUsage.recordItems(++processed,failures);
+       },
        onError: (image,error) => {
          metrics?.onFailure();
+         if (ownedUsage) { failures++; ownedUsage.recordItems(++processed,failures); }
          setRows(previous => {
            const row = resultFor(previous, image);
            return { ...previous, [image.id]: attachRefineMovement(row,{ ...row,
              refineError: error, refined: undefined, refineQuickExcluded: undefined }) };
          });
        },
-        onProgress: (completed, detail) => { ownedUsage?.recordItems(completed); report?.(completed, detail); },
+        onProgress: report,
         onPreparation:metrics?.onPreparation});
-       ownedUsage?.recordItems(result.results.size + result.failed, result.failed);
        succeeded = result.failed === 0;
        return result;
      } finally { ownedUsage?.finish(succeeded); }
@@ -738,7 +773,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       if(result.failed)setError(result.failed+" 张复筛失败，请查看待复核分组");
       return !result.failed;
     },{id:"refine",total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
-      previousElapsed:restart || !previousReview ? undefined : stepRuns.refine?.elapsed});
+      resume: !restart});
   }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const screenTargets = currentScope.filter(image => resultFor(rows, image).checked);
@@ -771,7 +806,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       });
       let batch: Results = {};
       let cursor = 0, completed = initial, failures = 0;
-      const reportBatch = () => report({ completed, processed: completed - initial });
+      const reportBatch = () => report({ completed, processed: completed - initial, failed: failures });
       let lastReport = 0;
       const checkpoint = () => {
         const changes = batch;
@@ -838,7 +873,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       });
       setProgress([failures ? failures + " 张读取失败，可在待复核列表查看。" : "", detector?.reused ? "已复用 " + detector.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
       return failures === 0;
-    }, { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind] });
+    }, { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind], resume: !restart });
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
@@ -878,7 +913,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }
     const summary = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
     const total = plan.targets.length;
-    let completed = plan.targets.filter(target => !target.pending.size).length;
+    const initial = plan.targets.filter(target => !target.pending.size).length;
+    let completed = initial;
     void run("生成去码候选", async (signal, report, usage) => {
       pendingRedraw.current = plan;
       if (plan.reference && !plan.referenceBlob) plan.referenceBlob = await readSaved(plan.reference, signal);
@@ -923,7 +959,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             });
             if (image.id === active?.id) setPreferredResult(engine);
             pending.delete(engine);
-            if (!pending.size) report(++completed);
+            if (!pending.size) {
+              completed++;
+              report({ completed, processed: completed - initial });
+            }
           }
         } catch (cause) {
           if (signal.aborted) throw cause;
@@ -934,7 +973,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       setProgress("");
       if (failures.length) setError(failures.join("\n"));
       return completed === total;
-    }, { id: "redraw", total, completed, summary, previousElapsed: resume ? stepRuns.redraw?.elapsed : undefined });
+    }, { id: "redraw", total, completed, summary, resume });
   }
 
   function generate(targets: UnityImage[], models: MosaicModel[]) {
@@ -1028,11 +1067,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const state = status?.state || "pending";
     const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
-    const elapsed = status?.elapsed ?? (status?.started == null ? undefined : performance.now() - status.started);
+    const modelScope = mosaicMetricScope(gamePath,id);
+    const measured = mosaicStepSnapshot(modelScope,id);
+    const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
+      (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
     const toggle = () => setConfigured(expanded ? null : id);
     const modelTitle = (running || id === "redraw" && pausedRedraw) ? status?.summary : summary;
-    const models = Object.entries(status?.models ?? {});
+    const models = Object.entries(measured.models);
     const showModelNames = models.length > 1 || models[0]?.[1].model !== modelTitle;
     const detection = id === "screen" ? models[0]?.[1] : undefined;
     const detectionMs = detection?.requests ? detection.requestMs / detection.requests : 0;
@@ -1065,9 +1107,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             </>}
             {!!status?.failed && <span>失败 <span className="game-flow-metric">{status.failed} 张</span></span>}
           </small>}
+        {expanded && running && id === "refine" && !models.length && <small className="game-flow-model-rates" role="status">
+          {(status?.prepared ?? 0) < (status?.total ?? 0) ? "正在准备候选区域" : "等待模型请求开始"} · 模型速率 —
+        </small>}
         {expanded && id !== "screen" && models.map(([key, model]) => <div key={key}>
           {showModelNames && <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>}
-          <GameModelUsage model={model} perImage={id !== "refine"} onToggle={toggle} />
+          {running && id === "refine" && !model.tokens && model.requests > 0 ? <small className="game-flow-model-rates" role="status">
+            已发送 {model.requests} 次请求 · 速率在模型返回后更新
+          </small> : <GameModelUsage model={model} perImage={id !== "refine"} onToggle={toggle} />}
         </div>)}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
@@ -1080,6 +1127,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
   const actionsDisabled = !!busy || disabled;
   function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
+    clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
+    if (resetRedraw) clearGamePerformance(mosaicMetricScope(gamePath,"redraw"),["redraw"]);
     setStepRuns(previous => ({ ...previous, [step]: undefined, ...(resetRedraw && { redraw: undefined }) }));
     if (progressStep === step || resetRedraw && progressStep === "redraw") {
       setProgressStep(undefined);
@@ -1157,6 +1206,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     lastScreen.current = null;
     lastReview.current = null;
     pendingRedraw.current = null;
+    for (const step of ["screen","refine","redraw"] as const)
+      clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     setStepRuns({});
     setProgressStep(undefined);
     setProgress("");

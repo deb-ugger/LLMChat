@@ -15,7 +15,7 @@ import { UnityActionIcon } from "./UnityActionIcon";
 import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { gameTextRequest } from "../gameTextProject";
-import { beginGameStep, finishGameStep, reportGameStepItems } from "../gameModelPerformance";
+import { beginGameStep, finishGameStep, gameDuration, reportGameStepItems, stepPerformance } from "../gameModelPerformance";
 import { deploymentMetrics, deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { gamePatchCanGenerate, type GamePatchWorkflow } from "../gamePatchWorkflow";
 import { GameWorkDirectory } from "./GameWorkDirectory";
@@ -266,29 +266,52 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     "当前游戏已有文本补丁。继续会按当前生成的译文更新补丁，请先关闭游戏。",
     {title:"已有文本补丁",okLabel:"继续更新",cancelLabel:"取消"});
   const hasTextScan = !!(scanPath || textInfo.sourcePath);
-  const scanStarted = useRef<number | null>(null);
-  const [scanElapsed, setScanElapsed] = useState<number | null>(null);
+  const remoteMeasurement = useRef<string | undefined>(undefined);
+  const backendMetricScope = (action: string) => game.path + ":backend:" + action;
+  const activeBackendAction = pending ? pendingAction : status.action;
+  const backendActionBusy = pending || status.state === "running";
+  useEffect(() => {
+    const action = activeBackendAction;
+    const next = backendActionBusy && action && ["inspect","backup","rollback","runtime","uninstall-text","cleanup-text"].includes(action)
+      ? action : undefined;
+    const previous = remoteMeasurement.current;
+    if (previous === next) return;
+    if (previous) {
+      const completed = status.action === previous && status.gamePath === game.path && status.state !== "stopped" && status.state !== "error";
+      finishGameStep(backendMetricScope(previous),completed);
+    }
+    remoteMeasurement.current = next;
+    if (next) beginGameStep(backendMetricScope(next),next);
+  }, [game.path, activeBackendAction, backendActionBusy, status.action, status.gamePath, status.state]);
+  useEffect(() => () => {
+    if (remoteMeasurement.current) finishGameStep(backendMetricScope(remoteMeasurement.current));
+    remoteMeasurement.current = undefined;
+  }, [game.path]);
+
+  const scanMeasuring = useRef(false);
   const scanning = (pending && pendingAction === "extract") || (status.action === "extract" && status.state === "running");
   useEffect(() => () => {
-    if (scanStarted.current === null) return;
+    if (!scanMeasuring.current) return;
     finishGameStep(deploymentMetricScope(game.path, "scan"));
-    scanStarted.current = null;
+    scanMeasuring.current = false;
   }, [game.path]);
   useEffect(() => {
     const scope = deploymentMetricScope(game.path, "scan");
-    if (scanning && scanStarted.current === null) {
-      scanStarted.current = performance.now();
+    if (scanning && !scanMeasuring.current) {
+      scanMeasuring.current = true;
       beginGameStep(scope, "scan");
     }
-    if (scanStarted.current === null) return;
+    if (!scanMeasuring.current) return;
     const currentScan = status.action === "extract" && status.gamePath === game.path;
     if (currentScan && (status.state === "running" || !scanning) && status.completed !== undefined && (status.total ?? 0) > 0)
       reportGameStepItems(scope, "scan", status.completed);
     if (!scanning) {
       finishGameStep(scope, currentScan && status.state === "exported");
-      setScanElapsed((performance.now()-scanStarted.current)/1000); scanStarted.current = null;
+      scanMeasuring.current = false;
     }
   }, [game.path, scanning, status.action, status.gamePath, status.state, status.completed, status.total]);
+  const scanMeasurement = stepPerformance(deploymentMetricScope(game.path,"scan"),"scan");
+  const scanElapsed = scanMeasurement.taskId ? scanMeasurement.elapsedMs / 1000 : null;
   useEffect(() => {
     if (textSource === "locres" && status.state === "error" && (status.action === "extract" || status.action === "inspect")
         && status.detail?.startsWith("未找到散装 .locres")) {
@@ -605,8 +628,12 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const done=!failed&&(matches?!running&&!stopped:!!idle?.done);
     const total = matches && !pending ? status.total : undefined;
     const completed = status.completed ?? 0;
+    const metricStage = step === "1" ? "scan" : action === "embed" ? "generate" : action === "apply" ? "apply" : undefined;
+    const measurement = metricStage ? stepPerformance(deploymentMetricScope(game.path,metricStage),metricStage)
+      : matches && action ? stepPerformance(backendMetricScope(action),action) : undefined;
     return <GameStepProgress title={`步骤 ${step} · ${title}`}
       state={running ? "running" : failed ? "error" : stopped ? "stopped" : done ? "done" : "pending"}
+      elapsed={measurement?.taskId ? gameDuration(measurement.elapsedMs) : undefined}
       percent={total ? Math.floor(completed / total * 100) : undefined}
       count={total ? `${completed} / ${total}` : undefined}
       actions={running && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}>
