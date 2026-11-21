@@ -2864,3 +2864,89 @@ body.ocr-image-resizing * {
 .game-mosaic-files { max-height:210px; margin:0; padding:0; list-style:none; overflow:auto; border:1px solid var(--border); border-radius:var(--radius-sm); }
 .game-mosaic-files li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--space-2); padding:5px var(--space-2); }
 .game-mosaic-files li + li { border-top:1px solid var(--border); }
+
+
+/* ============ 测试队列：顶部运行条 + 三栏 ============ */
+.game-benchmark-runbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg-panel);
+  margin-block-end: 10px;
+  flex-wrap: wrap;
+}
+.game-benchmark-scope {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.game-benchmark-scope > .game-benchmark-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.game-benchmark-scope > .hint {
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+.game-benchmark-scope label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.game-benchmark-scope label > select,
+.game-benchmark-scope label > input {
+  height: 28px;
+  min-width: 0;
+}
+.game-benchmark-scope label + label::before,
+.game-benchmark-scope .game-benchmark-toolbar > label::before {
+  content: "";
+  inline-size: 1px;
+  block-size: 14px;
+  background: var(--border);
+  margin-inline-end: 8px;
+  align-self: center;
+}
+/* 当前步骤：实心底，整条里唯一的重点 */
+.game-benchmark-scope-step > select {
+  background: var(--text);
+  color: var(--bg-panel);
+  border-color: var(--text);
+  font-weight: 600;
+}
+.game-benchmark-scope-step > select option {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-weight: 400;
+}
+.game-benchmark-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.game-benchmark-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 1400px) {
+  .game-benchmark-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
