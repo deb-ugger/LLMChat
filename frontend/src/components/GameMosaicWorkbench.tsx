@@ -1081,19 +1081,32 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const toggle = () => setConfigured(expanded ? null : id);
     const modelTitle = (running || id === "redraw" && pausedRedraw) ? status?.summary : summary;
     const models = Object.entries(measured.models);
-    const showModelNames = models.length > 1 || models[0]?.[1].model !== modelTitle;
+    const multipleModels = id !== "screen" && models.length > 1;
+    const showModelTitle = id === "screen" || models.length === 0;
     const detection = id === "screen" ? models[0]?.[1] : undefined;
     const detectionMs = detection?.requests ? detection.requestMs / detection.requests : 0;
     const batchElapsed = status?.batchElapsed ?? (status?.batchStarted === undefined ? 0 : performance.now() - status.batchStarted);
     const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
     const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
+    const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
+      {multipleModels && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
+      <div className="game-flow-model-values">
+        {!expanded ? <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
+          : running && id === "refine" && !model.tokens && model.requests > 0
+            ? <small role="status">已发送 {model.requests} 次请求 · 速率在模型返回后更新</small>
+            : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
+              perImage={id !== "refine"} onToggle={toggle} />}
+      </div>
+    </div>);
     return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={toggle}
       status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
       summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
-        <span data-tooltip={status?.device?.reason}>{modelTitle}
-          {status?.device && (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}
-        </span>
+        {(showModelTitle || status?.device) && <span data-tooltip={status?.device?.reason}>
+          {showModelTitle && modelTitle}
+          {status?.device && <>{showModelTitle && " · "}{status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"}</>}
+        </span>}
+        {multipleModels ? <div className="game-flow-model-list">{modelRows}</div> : modelRows}
         {status?.total ? <small className="game-flow-model-rates">
           <span>{status.completed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
           {id === "refine" && status.prepared !== undefined && status.prepared > status.completed &&
@@ -1116,13 +1129,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         {expanded && running && id === "refine" && !models.length && <small className="game-flow-model-rates" role="status">
           {(status?.prepared ?? 0) < (status?.total ?? 0) ? "正在准备候选区域" : "等待模型请求开始"} · 模型速率 —
         </small>}
-        {expanded && id !== "screen" && models.map(([key, model]) => <div key={key}>
-          {showModelNames && <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>}
-          {running && id === "refine" && !model.tokens && model.requests > 0 ? <small className="game-flow-model-rates" role="status">
-            已发送 {model.requests} 次请求 · 速率在模型返回后更新
-          </small> : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
-            perImage={id !== "refine"} onToggle={toggle} />}
-        </div>)}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {

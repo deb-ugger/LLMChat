@@ -371,30 +371,33 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const toggle = () => onConfigure(expanded ? null : step.id);
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
+        const multipleModels = models.length > 1;
+        const modelRows = models.map(model => {
+          const rates = expanded ? tokenMetrics(model) : [];
+          return <div className="game-flow-model-row" data-model-row={model.model} key={model.model}>
+            {multipleModels && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>
+              {model.model.split("/").at(-1)}
+            </span>}
+            <div className="game-flow-model-values">
+              {rates.map(metric => <MetricValue key={metric.key} onToggle={toggle} compact metric={
+                metric.key === "requestRate" && model.requests > 0
+                  ? { ...metric, tooltip: (metric.tooltip ?? metricDetails.requestRate) +
+                    " 重叠请求时段只计一次，已记录 " + model.requests + " 次请求。" }
+                  : metric
+              } />)}
+              {!rates.length && model.concurrency > 0 && <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
+              {expanded && !rates.some(metric => metric.key === "requestRate") && model.requests > 0 &&
+                <small>请求 <span className="game-flow-metric">{model.requests} 次</span></small>}
+            </div>
+          </div>;
+        });
         return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark ? benchmark : undefined} current={current}
           expanded={expanded} toggleTooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"}
           onToggle={toggle}
           status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{(measured.elapsedMs > 0 || measured.started !== undefined) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
           summary={<>
-            {models.length ? models.map(model => {
-              const rates = expanded ? tokenMetrics(model) : [];
-              return <div className="game-flow-model-rates" data-model-row={model.model} key={model.model}
-                style={{ flexWrap: "nowrap", fontSize: "var(--fs-caption)" }}>
-                {models.length > 1 && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}
-                  style={{ pointerEvents: "auto", cursor: "pointer", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {model.model.split("/").at(-1)}
-                </span>}
-                {rates.map(metric => <MetricValue key={metric.key} onToggle={toggle} compact metric={
-                  metric.key === "requestRate" && model.requests > 0
-                    ? { ...metric, tooltip: (metric.tooltip ?? metricDetails.requestRate) +
-                      " 重叠请求时段只计一次，已记录 " + model.requests + " 次请求。" }
-                    : metric
-                } />)}
-                {!rates.length && model.concurrency > 0 && <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
-                {expanded && !rates.some(metric => metric.key === "requestRate") && model.requests > 0 &&
-                  <small>请求 <span className="game-flow-metric">{model.requests} 次</span></small>}
-              </div>;
-            }) : step.summary && !testMetrics && <span>{step.summary}</span>}
+            {multipleModels ? <div className="game-flow-model-list">{modelRows}</div>
+              : modelRows.length ? modelRows : step.summary && !testMetrics && <span>{step.summary}</span>}
             {expanded && throughput.length > 0 && <small className="game-flow-model-rates" aria-label="处理吞吐">
               {throughput.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={toggle} itemUnit={itemUnit} />)}
             </small>}

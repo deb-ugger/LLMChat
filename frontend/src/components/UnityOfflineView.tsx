@@ -23,6 +23,7 @@ import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, 
 import { collectGameImageNames, translateNamedImageText } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
+import { formatFlowThroughput } from "../gameFlowMetrics";
 import { GameProgressBar, GameStepProgress } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
@@ -2292,6 +2293,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       : textScreening || !screenComplete ? "筛选文本" : "翻译正文"
     : GENERATION_STEPS[(activeStep === 3 ? visibleGeneration?.step ?? (patch ? 4 : 3) : activeStep) - 1];
   const scanTiming = activeStep === 1 && progressState === "done" ? project?.scanMetrics : undefined;
+  const scanThroughput = activeStep === 1 && progressState === "done" && project
+    ? formatFlowThroughput(stepPerformance(deploymentMetricScope(root, "scan"), "scan"), "个") ??
+      formatFlowThroughput(scanTiming && { itemsDone: scanTiming.parsed + scanTiming.reused, elapsedMs: scanTiming.totalMs }, "个")
+    : undefined;
   const deploymentPhase = activeStep === 3 ? (visibleGeneration?.step === 4 || !visibleGeneration && applied ? "apply" : "generate") : undefined;
   const deploymentElapsed = deploymentPhase
     ? stepPerformance(deploymentMetricScope(root,deploymentPhase),deploymentPhase).elapsedMs : undefined;
@@ -2344,6 +2349,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <div className="unity-scan-resource-metrics"><span>对象 <b>{scanResource[2]}</b> / {scanResource[3]}</span><span>已提取 <b>{scanResource[4]}</b> 条文本</span></div>
       <GameProgressBar label="当前文件的对象进度" value={Math.min(100, Math.floor(Number(scanResource[2]) / Math.max(1, Number(scanResource[3])) * 100))} />
     </div> : taskDetail && (activeStep !== 2 || imagePart) && <p className="unity-task-detail">{taskDetail}</p>}
+    {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
     {scanTiming && <details className="unity-task-detail">
       <summary>扫描计时 · 重新解析 {scanTiming.parsed} 个 · 复用 {scanTiming.reused} 个</summary>
       <p>{([

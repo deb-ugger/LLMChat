@@ -90,3 +90,10 @@ export function deriveFlowMetrics(input: FlowMetricInput): FlowMetric[] {
   if (failures > 0) metrics.push({ key: "failures", label: "失败", value: String(failures), unit: "张" });
   return metrics;
 }
+
+export function formatFlowThroughput(measurement: Pick<FlowMetricInput, "itemsDone" | "elapsedMs"> | undefined, unit: "个" | "张") {
+  if (!measurement) return undefined;
+  const rate = deriveFlowMetrics({ itemsDone: measurement.itemsDone, elapsedMs: measurement.elapsedMs })
+    .find(metric => metric.key === "itemsRate");
+  return rate && rate.value + " " + unit + "/秒";
+}

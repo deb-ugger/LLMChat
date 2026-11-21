@@ -3,6 +3,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
 import type { DeploymentMetrics } from "../unityWorkflow";
+import { formatFlowThroughput } from "../gameFlowMetrics";
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
 
@@ -552,6 +553,25 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
 }
 
 
+const throughputStages = [
+  ["generate", "生成补丁", "个"],
+  ["generateImages", "生成译图", "张"],
+  ["generateMosaic", "生成去码补丁", "张"],
+  ["apply", "应用写入", "个"],
+  ["applyImages", "写入译图", "张"],
+  ["applyMosaic", "写入去码图", "张"],
+] as const;
+
+export function DeploymentThroughput({ metrics }: { metrics?: DeploymentMetrics }) {
+  const rates = throughputStages.flatMap(([stage, label, unit]) => {
+    const rate = formatFlowThroughput(metrics?.[stage], unit);
+    return rate ? [{ stage, label, rate }] : [];
+  });
+  return rates.length ? <div className="game-flow-stage-throughput" role="group" aria-label="生成与应用吞吐">
+    {rates.map(({ stage, label, rate }) => <span key={stage}>{label} <b>{rate}</b></span>)}
+  </div> : null;
+}
+
 export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFlowChange }: {
   model: DeploymentModel;
   actions: DeploymentActions;
@@ -584,6 +604,8 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
         <span className="dpl-run-text">{model.progress.detail}</span>
         {model.progress.percent !== null && <span className="dpl-run-count">{Math.round(percent)}%</span>}
       </div>}
+
+      <DeploymentThroughput metrics={model.metrics} />
 
       <div className="dpl-grid">
         <section className="dpl-panel" aria-label="文本补丁">

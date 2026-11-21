@@ -2278,13 +2278,49 @@ body.ocr-image-resizing * {
 .game-flow-step-main strong { display: block; font-size: var(--fs-section); line-height: 1.35; }
 .game-flow-step-main small { display: block; color: var(--text-muted, #6a675c); font-size: var(--fs-caption); margin-top: 3px; }
 .game-flow-summary { position: relative; z-index: 1; pointer-events: none; min-width: 0; text-align: center; font-size: var(--fs-body); line-height: 1.4; color: var(--text-muted, #6a675c); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.game-flow-item.is-expanded .game-flow-summary { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.game-flow-item.is-expanded .game-flow-summary,
+.game-flow-summary:has(.game-flow-model-list) { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.game-flow-model-row { min-inline-size: 0; font-size: var(--fs-caption); }
+.game-flow-model-values { display: flex; min-inline-size: 0; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0 var(--space-2); }
+.game-flow-model-values > * { min-inline-size: 0; max-inline-size: 100%; }
+.game-flow-model-list { display: grid; gap: var(--space-1); }
+.game-flow-model-list .game-flow-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, min(26%, 12rem)) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.game-flow-model-list .game-flow-model-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.game-flow-model-list :is(.game-flow-model-values, .game-flow-model-rates) { justify-content: flex-start; }
+.game-flow-model-list .game-flow-model-values { column-gap: var(--space-1); }
+.game-flow-model-list .game-flow-model-values .game-flow-metric { font-size: var(--fs-caption); }
+.game-flow-model-list .game-flow-model-rates > span { white-space: normal; }
+.game-flow-row:has(> .game-flow-summary .game-flow-model-list) { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
+.game-flow-row:has(> .game-flow-summary .game-flow-model-list) > .game-flow-summary { grid-column: 1 / -1; grid-row: 2; text-align: start; }
+.game-flow-row:has(> .game-flow-summary .game-flow-model-list) > .game-flow-actions { grid-column: 2; grid-row: 1; }
 .game-flow-model-name { color: var(--text-muted, #6a675c); font-weight: 600; }
 .game-flow-model-heading, .game-flow-model-rates { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0 9px; }
 .game-flow-model-concurrency, .game-flow-model-rates > span { white-space: nowrap; }
 .unity-offline-table-scroll:has(.game-text-no-matches) { display: flex; flex-direction: column; }
 .game-text-no-matches { flex: 1; align-content: center; text-align: center; display: grid; justify-items: center; gap: 6px; padding: 42px var(--space-3); color: var(--text-muted, #6a675c); }
 .game-text-no-matches strong { font-size: var(--fs-body); color: var(--text, #1b1a16); }
+.game-flow-stage-throughput {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+}
+.game-flow-stage-throughput b { color: var(--text); font-weight: 600; }
 .game-flow-model-concurrency .game-flow-metric { font-size: var(--fs-body); }
 .game-flow-metric { color: var(--text-muted, #6a675c); font-size: var(--fs-body); font-weight: 600; font-variant-numeric: tabular-nums; }
 .game-flow-item.is-current-step .game-flow-metric, .game-flow-item.is-current-step .game-flow-model-name { color: var(--text, #1b1a16); }

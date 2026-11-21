@@ -3,6 +3,7 @@ import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { GameStepProgress } from "./GameStepProgress";
+import { formatFlowThroughput } from "../gameFlowMetrics";
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels } from "./GameTranslationTabs";
@@ -23,7 +24,7 @@ import { gameDropTarget } from "../hooks/useGameFileDrop";
 import { GameTextWorkspace, type GameTextHandle, type GameTextInfo } from "./GameTextWorkspace";
 import { UnityGameWorkspace } from "./UnityGameWorkspace";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { DeploymentCanvas, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
+import { DeploymentCanvas, DeploymentThroughput, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
   type DeploymentStep as CanvasStep, type DeploymentPhase as CanvasPhase, type DeploymentModel } from "./UnityDeploymentPanel";
 import { GameImageWorkbench, type GameImageInfo, type GameImageHandle } from "./GameImageWorkbench";
 import { createPortal } from "react-dom";
@@ -631,12 +632,16 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const metricStage = step === "1" ? "scan" : action === "embed" ? "generate" : action === "apply" ? "apply" : undefined;
     const measurement = metricStage ? stepPerformance(deploymentMetricScope(game.path,metricStage),metricStage)
       : matches && action ? stepPerformance(backendMetricScope(action),action) : undefined;
+    const scanThroughput = step === "1" && (running || done) ? formatFlowThroughput(measurement, "个") ??
+      formatFlowThroughput(imageWorkflow.loaded ? stepPerformance(deploymentMetricScope(game.path, "scanImages"), "scanImages") : undefined, "张")
+      : undefined;
     return <GameStepProgress title={`步骤 ${step} · ${title}`}
       state={running ? "running" : failed ? "error" : stopped ? "stopped" : done ? "done" : "pending"}
       elapsed={measurement?.taskId ? gameDuration(measurement.elapsedMs) : undefined}
       percent={total ? Math.floor(completed / total * 100) : undefined}
       count={total ? `${completed} / ${total}` : undefined}
       actions={running && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}>
+      {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
       {running && <p className="unity-task-detail">{pending ? "正在准备…" : status.detail}</p>}
     </GameStepProgress>;
   };
@@ -890,6 +895,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           {(status.state === "running" || status.state === "error" || status.state === "stopped") && progress(["inspect","embed"])}
           {output("补丁目录",artifacts.text?.path)}
           <div className="dpl embed-deployment-canvas">
+            <DeploymentThroughput metrics={canvas.metrics} />
             <DeploymentCanvas model={canvas} percent={run ? 100 * run.completed / Math.max(1, run.total) : canvas.applied ? 100 : canvas.staged ? 80 : 0}
               running={deploymentRunning} onFocusStep={id => selectWorkflow(stageIds[id])} actions={{
                 execute: () => void runAutomatic(),
