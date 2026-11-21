@@ -134,7 +134,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
     }
     if (prior) onProgress({ completed, total: images.length, detail: "已恢复 " + prior + " 张样本结果" });
     const detector = pending.length && step === "mosaicScreen" && options.detector !== "grid"
-      ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope }) : undefined;
+      ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope, initialScreening: true }) : undefined;
     const lane = async () => {
       const grid = step === "mosaicScreen" && !detector ? createMosaicGridScanner() : undefined;
       try {

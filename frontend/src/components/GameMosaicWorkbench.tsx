@@ -863,6 +863,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const lanes = Math.min(targets.length, Math.max(1, Math.min(4, preferences.concurrency ?? 2)));
       const modelName = detectorKind !== "grid" && detectorFile ? detectorFile.name : detectorLabels[detectorKind];
       const detector = detectorKind !== "grid" ? await loadMosaicDetector(detectorFile, {
+        initialScreening: true,
         signal, timingScope: usage?.scope,
         onDevice: device => setStepRuns(previous => previous.screen
           ? { ...previous, screen: { ...previous.screen, device } }

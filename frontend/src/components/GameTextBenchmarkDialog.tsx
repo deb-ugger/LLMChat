@@ -563,6 +563,25 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             setConfigs(previous => [...previous, config]);
             toggleConfig(config.id, true);
           }}>添加配置</button>
+          {mosaicStep === "mosaicRefine" &&
+            <button type="button" className="unity-btn" disabled={adding} onClick={() => {
+              const presets: { label: string; options: Partial<MosaicSettings> }[] = [["2b", "2b"], ["4b", "4b"], ["4b", "8b"], ["8b", "8b"]].map(([candidate, guard]) => ({
+                  label: `Qwen3-VL · 候选 ${candidate.toUpperCase()} / 纹理 ${guard.toUpperCase()}`,
+                  options: { refineModel: `qwen3-vl:${candidate}-instruct`, refineGuardModel: `qwen3-vl:${guard}-instruct`, refineConcurrency: 1 },
+                }));
+              const additions: BenchmarkConfig[] = [];
+              for (const { label, options } of presets) {
+                if (configs.some(item => item.enabled !== false && item.mosaic &&
+                    Object.entries(options).every(([k,v]) => item.mosaic![k as keyof MosaicSettings] === v))) continue;
+                const item = capture(configs.length + additions.length + 1);
+                if (!item.mosaic) continue;
+                item.label = label;
+                item.mosaic = { ...item.mosaic, selection: sampleSettings?.selection ?? "checked", ...options };
+                additions.push(item);
+              }
+              if (additions.length) setConfigs(previous => [...previous, ...additions]);
+              else showAppNotice("对照组合已在配置列表中");
+            }}>添加对照组合</button>}
         </div>
       {configs.map((config, index) => {
         const lastRun = latestRunByConfig.get(config.id)?.run;

@@ -72,12 +72,12 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
 }
 export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File) {
   if (kind === "grid") return "grid-v2";
-  return file ? JSON.stringify(["custom-yolo-presence-v1", file.name, file.size, file.lastModified]) : kind + "-2d-presence-v1";
+  return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : kind + "-2d-presence-v2";
 }
 
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal, timingScope?: string) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope });
+  return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope, initialScreening: true });
 }
 
 const threshold = 0.25;
@@ -86,6 +86,25 @@ function overlap(a: MosaicBox, b: MosaicBox) {
   const area = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *
     Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
   return area / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - area);
+}
+
+function screeningBounds(image: ImageData): MosaicBox {
+  const { width, height, data } = image;
+  const full: MosaicBox = [0, 0, width, height];
+  if (data[3] >= 64 && data[data.length - 1] >= 64) return full;
+  let left = width, top = height, right = 0, bottom = 0;
+  for (let y = 0; y < height; y++) {
+    let first = width, last = -1;
+    for (let x = 0, i = (y * width) * 4 + 3; x < width; x++, i += 4) {
+      if (data[i] >= 64) { first = Math.min(first, x); last = x; }
+    }
+    if (last < 0) continue;
+    left = Math.min(left, first); right = Math.max(right, last + 1);
+    top = Math.min(top, y); bottom = y + 1;
+  }
+  if (right <= left || (right - left) * (bottom - top) >= width * height / 2) return full;
+  const margin = Math.max(12, Math.ceil(Math.max(right - left, bottom - top) * 0.05));
+  return [Math.max(0, left - margin), Math.max(0, top - margin), Math.min(width, right + margin), Math.min(height, bottom + margin)];
 }
 
 // Detection runs on RGB, so validate predictions against the original alpha channel.
@@ -139,7 +158,7 @@ export function mosaicBoxes(values: Float32Array, dims: readonly number[], class
 export type MosaicDevice = { kind: "gpu" | "cpu"; reason?: string };
 
 export async function loadMosaicDetector(model: File | undefined, options: {
-  signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void; timingScope?: string;
+  signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void; timingScope?: string; initialScreening?: boolean;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
@@ -244,11 +263,11 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       return runSession(presenceSession!, feeds, presenceSession!.outputNames[0]);
     }
   };
-  const classify=async(original:HTMLCanvasElement)=>{
+  const classify=async(original:HTMLCanvasElement, [x, y, right, bottom]: MosaicBox)=>{
     const canvas=document.createElement("canvas");canvas.width=384;canvas.height=384;
     const ctx=canvas.getContext("2d",{willReadFrequently:true});
     if(!ctx)throw new Error("无法读取分类模型输入");
-    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,384,384);ctx.drawImage(original,0,0,384,384);
+    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,384,384);ctx.drawImage(original,x,y,right-x,bottom-y,0,0,384,384);
     const pixels=ctx.getImageData(0,0,384,384).data,plane=384*384,values=new Float32Array(plane*3);
     for(let i=0;i<plane;i++){
       values[i]=(pixels[i*4]/255-.5)*2;values[i+plane]=(pixels[i*4+1]/255-.5)*2;values[i+plane*2]=(pixels[i*4+2]/255-.5)*2;
@@ -287,12 +306,15 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       if(maximum.some((value,channel)=>value-minimum[channel]>=1)){varied=true;break;}
     }
     if(!hasVisiblePixel || !varied)return {signature,boxes:[]};
-    const scale = Math.min(size / full.width, size / full.height);
-    const width = Math.max(1, Math.round(scale * full.width)), height = Math.max(1, Math.round(scale * full.height));
+    const bounds: MosaicBox = options.initialScreening ? screeningBounds(full) : [0, 0, full.width, full.height];
+    const [x, y, right, bottom] = bounds;
+    const viewWidth = right - x, viewHeight = bottom - y;
+    const scale = Math.min(size / viewWidth, size / viewHeight);
+    const width = Math.max(1, Math.round(scale * viewWidth)), height = Math.max(1, Math.round(scale * viewHeight));
     const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
     context.fillStyle = "#727272";
     context.fillRect(0, 0, size, size);
-    context.drawImage(original, left, top, width, height);
+    context.drawImage(original, x, y, viewWidth, viewHeight, left, top, width, height);
     const { data } = context.getImageData(0, 0, size, size);
     const plane = size * size;
     const values = new Float32Array(3 * plane);
@@ -301,7 +323,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       values[index + plane] = data[4 * index + 1] / 255;
       values[index + 2 * plane] = data[4 * index + 2] / 255;
     }
-    const presenceScore=await classify(original);
+    const presenceScore=await classify(original, bounds);
     const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
     let tensors: Awaited<ReturnType<typeof infer>> | undefined;
     try {
@@ -309,18 +331,28 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       const result = tensors[outputName];
       const data = result.data;
       if (!(data instanceof Float32Array)) throw new Error("请选择输出为 FP32 的检测 ONNX");
-      const geometry = { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height };
+      const geometry = { left, top, scaleX: width / viewWidth, scaleY: height / viewHeight, width: viewWidth, height: viewHeight };
+      const onOriginal = ([x0, y0, x1, y1]: MosaicBox): MosaicBox => [x0 + x, y0 + y, x1 + x, y1 + y];
       const boxes: MosaicBox[] = [];
-      const candidates = mosaicBoxes(data, result.dims, channels - 36, geometry, (box, score) => {
+      const candidates = mosaicBoxes(data, result.dims, channels - 36, geometry, (relative, score) => {
+        const box = onOriginal(relative);
         if (!mosaicVisibleBox(full, box)) return false;
         if (score >= threshold) boxes.push(box);
         return true;
-      }, 0.05);
-      // Grid-only evidence remains unselected until the independent review confirms it.
-      const grid = scanMosaicPixels(full.data, full.width, full.height, signature).boxes;
-      const reviewBoxes = [...candidates];
-      for (const box of grid)
-        if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
+      }, 0.05).map(onOriginal);
+      const classifierPositive = presenceScore >= mosaicPresenceThreshold;
+      let reviewBoxes = candidates;
+      if (!options.initialScreening || (!boxes.length && (candidates.length || classifierPositive))) {
+        const view = viewWidth === full.width && viewHeight === full.height ? full : originalContext.getImageData(x, y, viewWidth, viewHeight);
+        const grid = scanMosaicPixels(view.data, viewWidth, viewHeight, signature).boxes.map(onOriginal);
+        if (options.initialScreening && !classifierPositive) {
+          reviewBoxes = candidates.filter(box => grid.some(tile => overlap(tile, box) > 0.2));
+        } else {
+          reviewBoxes = [...candidates];
+          for (const box of grid)
+            if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
+        }
+      }
       return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore,
         review: boxes.length && presenceScore<mosaicPresenceThreshold ? "图片分类与区域定位模型存在分歧，请复核"
           : !boxes.length && (reviewBoxes.length || presenceScore>=mosaicPresenceThreshold)
