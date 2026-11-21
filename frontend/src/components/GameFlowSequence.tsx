@@ -1,5 +1,6 @@
 import { createContext, useLayoutEffect, useRef, useState, useContext, useEffect, type ReactNode, type RefObject } from "react";
 import { GamePromptContext } from "../gamePrompts";
+import { deriveFlowMetrics, type FlowMetric, type FlowMetricInput } from "../gameFlowMetrics";
 import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency, type StepPerformance } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
@@ -39,6 +40,110 @@ const stateLabels: Record<string, string> = {
 const formatTiming = (value: number | undefined) => value === undefined ? "—" : value < 60000 ? (value / 1000).toFixed(1) + " 秒" : gameDuration(value);
 const settingsHeights = new Map<string, number>();
 
+type FlowMeasurement = StepPerformance & FlowMetricInput & {
+  modelWallTiming?: Readonly<Record<string, { requestMs?: number; generationMs?: number }>>;
+};
+type ModelStats = StepPerformance["models"][string];
+type ConfiguredModel = Pick<ModelStats, "model" | "concurrency">;
+type ModelGroup = ConfiguredModel & { records: ModelStats[] };
+
+function groupModels(measured: FlowMeasurement, configured: ConfiguredModel[]) {
+  const groups = new Map<string, ModelGroup>();
+  for (const model of configured) {
+    const existing = groups.get(model.model);
+    if (existing) existing.concurrency = Math.max(existing.concurrency, model.concurrency);
+    else groups.set(model.model, { ...model, records: [] });
+  }
+  for (const model of Object.values(measured.models)) {
+    const group = groups.get(model.model) ?? { model: model.model, concurrency: 0, records: [] };
+    group.records.push(model);
+    group.concurrency = Math.max(group.concurrency, model.concurrency);
+    groups.set(model.model, group);
+  }
+  return [...groups.values()].map(({ records, model, concurrency }) => {
+    const total = records.reduce((sum, item) => ({
+      tokens: sum.tokens + item.tokens, requests: sum.requests + item.requests,
+      generationTokens: sum.generationTokens + item.generationTokens,
+    }), { tokens: 0, requests: 0, generationTokens: 0 });
+    const [record] = records;
+    const sequential = records.length === 1 && (record.concurrency <= 1 || record.requests <= 1);
+    const wall = measured.modelWallTiming?.[model];
+    const wholeStep = groups.size === 1 && measured.requestTimingComplete
+      ? measured.busyMs ?? measured.wallTiming?.modelRequestMs : undefined;
+    return {
+      model, concurrency, ...total,
+      requestMs: wall?.requestMs ?? (sequential ? record.requestMs : wholeStep),
+      generationMs: wall?.generationMs ?? (sequential ? record.generationMs : undefined),
+    };
+  });
+}
+
+function tokenMetrics(input: FlowMetricInput) {
+  const generationTokens = input.generationTokens ?? 0;
+  const generationMs = input.generationMs ?? 0;
+  const hasGeneration = Number.isFinite(generationTokens) && generationTokens > 0 &&
+    Number.isFinite(generationMs) && generationMs > 0;
+  const rates = deriveFlowMetrics(input).filter(metric => metric.unit === "tok/s" &&
+    (metric.key !== "generationRate" || hasGeneration));
+  if (hasGeneration && !rates.length) {
+    // Derive the independent generation rate even when the request denominator is unavailable.
+    return deriveFlowMetrics({
+      ...input, tokens: input.generationTokens, requestMs: input.generationMs,
+    }).filter(metric => metric.key === "generationRate");
+  }
+  return rates;
+}
+
+const metricDetails: Record<string, string> = {
+  generationRate: "生成 token 数除以模型报告的生成耗时。只计生成，不含排队、网络往返或应用校验。",
+  requestRate: "生成 token 数除以请求耗时，含网络往返和回包解析，不含应用侧排队和请求结束后的业务校验。",
+  itemsRate: "已处理数量除以整步经过时间，含排队、读写 I/O 和结果处理。",
+  secondsPerItem: "整步经过时间除以已处理数量，含排队、读写 I/O 和结果处理。",
+  queueMs: "请求发出前在应用侧等待的时段。",
+  processingMs: "应用侧处理和校验结果的时段。",
+  saveMs: "应用写入结果的时段。",
+  busyMs: "模型请求在途的时间并集。重叠的请求只计一次。",
+  idleMs: "步骤运行中没有任何模型请求在途的时间。",
+};
+
+function MetricValue({ metric, onToggle, itemUnit = "张", compact = false }: {
+  metric: FlowMetric; onToggle: () => void; itemUnit?: "张" | "条"; compact?: boolean;
+}) {
+  const detail = metric.tooltip ?? metricDetails[metric.key];
+  const label = metric.key === "itemsRate" ? undefined :
+    metric.key === "secondsPerItem" ? "每" + itemUnit : metric.label;
+  const unit = metric.unit === "张/s" ? itemUnit + "/秒" :
+    metric.unit === "秒/张" ? "秒" : metric.unit === "张" ? itemUnit : metric.unit;
+  const content = <>{label && label + " "}<span className="game-flow-metric" style={compact ? { fontSize: "inherit" } : undefined}>
+    {metric.value}{unit && " " + unit}
+  </span></>;
+  return detail ? <GameMetricHint detail={detail} onClick={onToggle}>{content}</GameMetricHint> : <span>{content}</span>;
+}
+
+function stepMetrics(measured: FlowMeasurement, samples?: { done: number; elapsedMs: number; failed: number }) {
+  const busyMs = measured.busyMs ?? measured.wallTiming?.modelRequestMs;
+  const input: FlowMetricInput = {
+    itemsDone: measured.itemsDone ?? samples?.done,
+    elapsedMs: samples?.elapsedMs ?? (measured.taskId || measured.elapsedMs > 0 ? measured.elapsedMs : undefined),
+    failures: measured.failures ?? samples?.failed,
+    queueMs: measured.queueMs ?? measured.wallTiming?.queueMs ?? measured.timing?.queueMs,
+    processingMs: measured.processingMs ?? measured.wallTiming?.processingMs ?? measured.timing?.processingMs,
+    saveMs: measured.saveMs ?? measured.wallTiming?.saveMs ?? measured.timing?.saveMs,
+    busyMs,
+    idleMs: measured.idleMs ?? (measured.requestTimingComplete && busyMs !== undefined
+      ? Math.max(0, measured.elapsedMs - busyMs) : undefined),
+  };
+  const metrics = deriveFlowMetrics(input).filter(metric => {
+    if (metric.key === "itemsDone") return input.itemsDone !== undefined;
+    if (metric.key === "elapsedMs") return input.elapsedMs !== undefined;
+    return true;
+  });
+  const throughput = metrics.filter(metric => ["itemsRate", "secondsPerItem", "itemsDone", "elapsedMs"].includes(metric.key));
+  const timings = metrics.filter(metric => !throughput.includes(metric));
+  return { throughput, timings };
+}
+
+
 export function GameMetricHint({ detail, onClick, children }: { detail: string; onClick: () => void; children: ReactNode }) {
   return <span data-tooltip={detail} onClick={onClick} style={{ pointerEvents: "auto", cursor: "pointer" }}>{children}</span>;
 }
@@ -48,17 +153,11 @@ export function GameModelUsage({ model, perImage = false, onToggle }: {
   perImage?: boolean;
   onToggle: () => void;
 }) {
-  const { tokens, requests, requestMs, generationTokens, generationMs, concurrency } = model;
-  const hasGenerationRate = generationMs > 0 && generationTokens > 0;
-  const hasRequestRate = requestMs > 0 && tokens > 0;
-  if (hasGenerationRate || hasRequestRate) return <>
+  const { requests, requestMs, concurrency } = model;
+  const metrics = tokenMetrics(model);
+  if (metrics.length) return <>
     <small className="game-flow-model-rates">
-      {hasGenerationRate && <GameMetricHint onClick={onToggle} detail="生成 token 数除以模型报告的生成耗时。只计生成，不含排队、网络往返或应用校验。">
-        纯生成 <span className="game-flow-metric">{(generationTokens * 1000 / generationMs).toFixed(1)} tok/s</span>
-      </GameMetricHint>}
-      {hasRequestRate && <GameMetricHint onClick={onToggle} detail="生成 token 数除以请求耗时，含网络往返和回包解析，不含应用侧排队和请求结束后的业务校验。">
-        请求平均 <span className="game-flow-metric">{(tokens * 1000 / requestMs).toFixed(1)} tok/s</span>
-      </GameMetricHint>}
+      {metrics.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={onToggle} />)}
     </small>
     {requests > 0 && requestMs > 0 && <small style={{ display: "block" }}
       data-tooltip="实际请求耗时逐次相加，并发请求的耗时可能重叠。">
@@ -249,13 +348,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const displayScope = testMetrics ? scope + (imageFlow ? ":benchmark:images" : ":benchmark:text") : performanceScope;
         const measured = stepPerformance(displayScope, testMetrics && benchmark ? benchmark.step : step.id);
         const chosen = testMetrics ? undefined : saved.scope === configurationScope ? saved.models[step.id] : step.models;
-        const modelKeys = new Map<string, { model: string; concurrency: number }>();
-        for (const { role, id } of chosen || []) {
-          if (!id) continue;
-          const concurrency = modelConcurrency(promptScope, role, id);
-          modelKeys.set(JSON.stringify([id, concurrency]), { model: id, concurrency });
-        }
-        const models = chosen ? [...modelKeys].map(([key, model]) => measured.models[key] || { ...model, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 }) : Object.values(measured.models);
+        const configuredModels = (chosen || []).flatMap(({ role, id }) => id
+          ? [{ model: id, concurrency: modelConcurrency(promptScope, role, id) }] : []);
+        const models = groupModels(measured, configuredModels);
+        const { throughput, timings } = stepMetrics(measured, testMetrics && benchmark
+          ? { done: benchmark.current, elapsedMs: benchmark.elapsedMs, failed: benchmark.failed } : undefined);
+        const itemUnit = imageFlow ? "张" : "条";
         const statusLabel = matchesActivity && state === "error" ? activity.label : undefined;
         const current = state === "running" || showingBenchmark || !benchmarkRunning && activity?.state !== "running" && state === "current";
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
@@ -267,29 +365,33 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark ? benchmark : undefined} current={current}
           expanded={expanded} toggleTooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"}
           onToggle={toggle}
-          status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
+          status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{(measured.elapsedMs > 0 || measured.started !== undefined) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
           summary={<>
-              {models.length ? models.map(model => (
-                <div key={JSON.stringify([model.model, model.concurrency])} style={{ marginBlock: 4 }}>
-                  <div className="game-flow-model-heading">
-                    <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>
-                    {!(expanded && model.tokens <= 0 && model.requests > 0 && model.requestMs > 0) &&
-                      <small className="game-flow-model-concurrency">并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
-                  </div>
-                  {expanded && <GameModelUsage model={model} onToggle={toggle} />}
-                </div>
-              )) : <span>{testMetrics ? "" : step.summary}</span>}
-              {expanded && (measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
-                <span>{measured.wallTiming ? "非模型用时" : "历史累计"}</span>
-                <span>排队 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.queueMs)}</span></span>
-                <span>处理与校验 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.processingMs)}</span></span>
-                <span>保存 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.saveMs)}</span></span>
-              </small>}
-              {expanded && measured.wallTiming?.modelRequestMs !== undefined && <small className="game-flow-model-rates"
-                data-tooltip="从模型请求发出到返回，重叠请求只计一次；没有在途请求的时间单独显示。">
-                <span>模型请求占用 <span className="game-flow-metric">{formatTiming(measured.wallTiming.modelRequestMs)}</span></span>
-                {measured.requestTimingComplete && <span>无在途模型请求 <span className="game-flow-metric">{formatTiming(Math.max(0, measured.elapsedMs - measured.wallTiming.modelRequestMs))}</span></span>}
-              </small>}
+            {models.length ? models.map(model => {
+              const rates = expanded ? tokenMetrics(model) : [];
+              return <div className="game-flow-model-rates" data-model-row={model.model} key={model.model}
+                style={{ flexWrap: "nowrap", fontSize: "var(--fs-caption)" }}>
+                {models.length > 1 && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}
+                  style={{ pointerEvents: "auto", cursor: "pointer", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {model.model.split("/").at(-1)}
+                </span>}
+                {rates.map(metric => <MetricValue key={metric.key} onToggle={toggle} compact metric={
+                  metric.key === "requestRate" && model.requests > 0
+                    ? { ...metric, tooltip: (metric.tooltip ?? metricDetails.requestRate) +
+                      " 重叠请求时段只计一次，已记录 " + model.requests + " 次请求。" }
+                    : metric
+                } />)}
+                {!rates.length && model.concurrency > 0 && <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
+                {expanded && !rates.some(metric => metric.key === "requestRate") && model.requests > 0 &&
+                  <small>请求 <span className="game-flow-metric">{model.requests} 次</span></small>}
+              </div>;
+            }) : step.summary && !testMetrics && <span>{step.summary}</span>}
+            {expanded && throughput.length > 0 && <small className="game-flow-model-rates" aria-label="处理吞吐">
+              {throughput.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={toggle} itemUnit={itemUnit} />)}
+            </small>}
+            {expanded && timings.length > 0 && <small className="game-flow-model-rates" aria-label="分项用时与失败">
+              {timings.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={toggle} itemUnit={itemUnit} />)}
+            </small>}
           </>}
           actions={<>
               {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
