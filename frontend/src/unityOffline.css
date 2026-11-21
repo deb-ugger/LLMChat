@@ -583,9 +583,6 @@
 .unity-image-result-group > summary > span:first-of-type { flex: 1; min-width: 0; }
 .unity-image-result-group > summary > .unity-image-group-check { cursor:pointer; }
 .unity-image-result-group > summary > span { overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
-.unity-image-change-counts { display:inline-flex; flex:none; justify-content:flex-end; gap:5px; margin-inline-start:auto; white-space:nowrap; font-size:var(--fs-caption); font-weight:550; font-variant-numeric:tabular-nums; }
-.unity-image-change-counts .is-added { color:color-mix(in srgb,var(--success,#2f6b46) 85%,var(--bg-panel,var(--bg-panel))); }
-.unity-image-change-counts .is-removed { color:color-mix(in srgb,var(--danger,#a3231a) 85%,var(--bg-panel,var(--bg-panel))); }
 .unity-image-error-count { color:var(--danger,#a3231a); margin-inline-start:4px; font-variant-numeric:tabular-nums; }
 .unity-image-result-group.unity-image-error-index > summary { color:var(--danger,#a3231a); }
 .unity-image-error-index > details { margin-inline-start:12px; }
@@ -596,11 +593,6 @@
 .unity-image-item { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-radius: var(--radius-md); }
 .unity-image-item + .unity-image-item { margin-block-start: 3px; border-block-start: 1px solid var(--border-strong, #c2bba8); }
 .unity-image-item.is-selected { background: var(--bg-hover, #e4dfd1); }
-.unity-image-item.is-added { background:color-mix(in srgb,var(--success,#2f6b46) 13%,var(--bg-panel,var(--bg-panel))); }
-.unity-image-item.is-added.is-selected { box-shadow:inset 0 0 0 1px var(--success,#2f6b46); }
-.unity-image-item.is-removed { background:var(--danger-soft,#f7e4df); color:var(--danger,#a3231a); padding-inline-start:25px; }
-.unity-image-item.is-removed.is-selected { box-shadow: inset 0 0 0 1px var(--danger, var(--danger, #a3231a)); }
-.unity-image-item.is-removed small { color:inherit; }
 .unity-image-item > button { scroll-margin-block:38px 6px; }
 .unity-image-item > button { flex: 1; min-width: 0; text-align: left; padding: 3px 0; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
 .unity-image-item strong, .unity-image-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

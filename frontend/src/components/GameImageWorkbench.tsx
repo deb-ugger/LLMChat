@@ -1,5 +1,5 @@
 import { GameMosaicWorkbench, type GameMosaicDeploymentHandle } from "./GameMosaicWorkbench";
-import { matchImagePatchConflicts, resetImageGroupHistory } from "../gameImageGroupChanges";
+import { matchImagePatchConflicts } from "../gameImageGroupChanges";
 import { showAppNotice } from "./AppNotice";
 import type { BenchmarkImageSource } from "./GameTextBenchmarkDialog";
 import { beginGameStep, finishGameStep, modelConcurrency, clearGamePerformance, measureGameAsync } from "../gameModelPerformance";
@@ -548,7 +548,6 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       setImagePhaseStarted(phase === "review" ? "translate" : phase === "translate" ? "recognize" : (phase === "recognize" || phase === "refine") ? "filter" : phase === "filter" ? "cache" : "initial");
       setStep(phase === "cache" ? "filter" : phase === "review" ? "translate" : phase);
       if (clearRecognition) {
-        resetImageGroupHistory(base.folder);
         setImageResetRevision(value => value + 1);
       }
     });
@@ -880,7 +879,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       </div></GameFlowSequence></GamePromptContext.Provider></div>
     </>;
   const readMosaicSource=useCallback((image:UnityImage,signal:AbortSignal)=>readImage(image,false,false,signal),[readImage]);
-  const resultContent=<>    {project?.images?.length ? <ImagePreviewReaderContext.Provider value={readImage}><UnityImageWorkbench initialScreeningComplete={complete.filter} onRedrawFailure={async (image, reason) => {
+  const resultContent=<>    {project?.images?.length ? <ImagePreviewReaderContext.Provider value={readImage}><UnityImageWorkbench onRedrawFailure={async (image, reason) => {
       const row = current.current?.images?.find(item => item.id === image.id);
       if (row) await persist({ ...row, error: reason });
       onMessage(reason, "error");
