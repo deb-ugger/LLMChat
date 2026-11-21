@@ -172,7 +172,7 @@ function GameModelServiceTiming({ timing, requests, onToggle }: {
   timing: NonNullable<ModelStats["serviceTiming"]>; requests: number; onToggle: () => void;
 }) {
   const [total, phases] = modelServiceTimingLines(timing, requests, formatTiming);
-  return <small style={{ display: "block", flexBasis: "100%" }}>
+  return <small className="game-flow-model-service" style={{ display: "block", flexBasis: "100%" }}>
     <GameMetricHint onClick={onToggle} detail="模型就绪可能包含 Ollama 内部等待。服务外开销为同一请求的总耗时减去 Ollama 回报的服务耗时，包含后台处理与往返。并发时逐次累加。输入评估与输出生成合计包含 CPU 与 GPU 时间。">
       {total}<br />{phases}
     </GameMetricHint>
