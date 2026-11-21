@@ -14,9 +14,9 @@ mod window_frame {
     use tauri::{PhysicalPosition, PhysicalSize, Rect, Webview};
     use windows::core::w;
     use windows::Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            GetMonitorInfoW, IntersectRect, MonitorFromRect, ValidateRect, MONITORINFO,
+            ClientToScreen, GetMonitorInfoW, IntersectRect, MonitorFromRect, ValidateRect, MONITORINFO,
             MONITOR_DEFAULTTONEAREST,
         },
         UI::{
@@ -26,7 +26,7 @@ mod window_frame {
                 CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongW, GetWindowRect,
                 IsIconic, IsZoomed, PostMessageW, SetWindowLongW, SetWindowPos, ShowWindow,
                 GWL_STYLE, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP,
-                HTTOPLEFT, HTTOPRIGHT, HWND_TOP, NCCALCSIZE_PARAMS, SWP_FRAMECHANGED,
+                HTTOPLEFT, HTTOPRIGHT, HTTRANSPARENT, HWND_TOP, NCCALCSIZE_PARAMS, SWP_FRAMECHANGED,
                 SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
                 WM_ACTIVATE, WM_APP, WM_DPICHANGED, WM_ERASEBKGND, WM_NCCALCSIZE,
                 WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WS_CAPTION,
@@ -39,7 +39,7 @@ mod window_frame {
     const SYNC_LAYOUT: u32 = WM_APP + 0x347;
 
     struct Frame {
-        grip: HWND,
+        grips: [HWND; 4],
         webview: Webview,
         layout_pending: Cell<bool>,
     }
@@ -47,23 +47,35 @@ mod window_frame {
     pub fn install(hwnd: HWND, webview: Webview) -> std::io::Result<()> {
         // Tauri's setup callback runs on the thread that owns the main window.
         unsafe {
-            // The WebView covers the top edge. A paint-free child lets Windows hit the grip.
-            let grip = CreateWindowExW(
-                WS_EX_TRANSPARENT, w!("STATIC"), w!(""), WS_CHILD, 0, 0, 0, 0, Some(hwnd),
-                None, None, None,
-            ).map_err(std::io::Error::other)?;
-            let mut frame = Box::new(Frame { grip, webview, layout_pending: Cell::new(false) });
-            let data = std::ptr::from_mut(frame.as_mut()) as usize;
-            if !SetWindowSubclass(grip, Some(grip_proc), SUBCLASS_ID, hwnd.0 as usize).as_bool()
-                || !SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, data).as_bool()
-            {
-                let _ = DestroyWindow(grip);
-                return Err(std::io::Error::other("无法安装主窗口边框处理"));
+            let mut grips = [HWND::default(); 4];
+            let result = (|| {
+                // The WebView covers the client area. Paint-free edge windows keep the
+                // visible resize handles above it while preserving the restored DWM frame.
+                for grip in &mut grips {
+                    *grip = CreateWindowExW(
+                        WS_EX_TRANSPARENT, w!("STATIC"), w!(""), WS_CHILD, 0, 0, 0, 0,
+                        Some(hwnd), None, None, None,
+                    ).map_err(std::io::Error::other)?;
+                    if !SetWindowSubclass(*grip, Some(grip_proc), SUBCLASS_ID, hwnd.0 as usize).as_bool() {
+                        return Err(std::io::Error::other("无法安装窗口缩放热区"));
+                    }
+                }
+                let mut frame = Box::new(Frame { grips, webview, layout_pending: Cell::new(false) });
+                let data = std::ptr::from_mut(frame.as_mut()) as usize;
+                if !SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, data).as_bool() {
+                    return Err(std::io::Error::other("无法安装主窗口边框处理"));
+                }
+                let _ = Box::into_raw(frame);
+                place_grips(hwnd, &grips);
+                Ok(())
+            })();
+            if result.is_err() {
+                for grip in grips.into_iter().filter(|grip| !grip.0.is_null()) {
+                    let _ = DestroyWindow(grip);
+                }
             }
-            let _ = Box::into_raw(frame);
-            place_grip(hwnd, grip);
+            result
         }
-        Ok(())
     }
 
     unsafe extern "system" fn grip_proc(
@@ -71,7 +83,11 @@ mod window_frame {
     ) -> LRESULT {
         unsafe {
             match msg {
-                WM_NCHITTEST => return LRESULT(HTTOP as isize),
+                WM_NCHITTEST => {
+                    let owner = HWND(parent as _);
+                    let hit = can_resize(owner).then(|| resize_hit(owner, lparam)).flatten();
+                    return LRESULT(hit.map_or(HTTRANSPARENT as isize, |value| value as isize));
+                }
                 WM_NCLBUTTONDOWN => {
                     let _ = PostMessageW(Some(HWND(parent as _)), msg, wparam, lparam);
                     return LRESULT(0);
@@ -101,16 +117,31 @@ mod window_frame {
         ((8 * unsafe { GetDpiForWindow(hwnd) } + 48) / 96) as i32
     }
 
-    fn place_grip(hwnd: HWND, grip: HWND) {
+    fn place_grips(hwnd: HWND, grips: &[HWND; 4]) {
         unsafe {
-            if can_resize(hwnd) {
-                let mut client = RECT::default();
-                if GetClientRect(hwnd, &mut client).is_ok() {
-                    let _ = SetWindowPos(grip, Some(HWND_TOP), 0, 0, client.right, grip_size(hwnd),
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if !can_resize(hwnd) {
+                for &grip in grips {
+                    let _ = ShowWindow(grip, SW_HIDE);
                 }
-            } else {
-                let _ = ShowWindow(grip, SW_HIDE);
+                return;
+            }
+            let mut client = RECT::default();
+            if GetClientRect(hwnd, &mut client).is_err() || client.right <= 0 || client.bottom <= 0 {
+                return;
+            }
+            let width = client.right;
+            let height = client.bottom;
+            let edge = grip_size(hwnd).min(width / 2).min(height / 2);
+            let middle = height - 2 * edge;
+            let areas = [
+                (0, 0, width, edge),
+                (0, edge, edge, middle),
+                (width - edge, edge, edge, middle),
+                (0, height - edge, width, edge),
+            ];
+            for (&grip, (x, y, width, height)) in grips.iter().zip(areas) {
+                let _ = SetWindowPos(grip, Some(HWND_TOP), x, y, width, height,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
         }
     }
@@ -148,12 +179,12 @@ mod window_frame {
                     return result;
                 }
                 WM_SIZE | WM_DPICHANGED | WM_ACTIVATE => {
-                    let grip = frame.grip;
+                    let grips = frame.grips;
                     if msg != WM_ACTIVATE {
                         request_layout_sync(hwnd, frame);
                     }
                     let result = DefSubclassProc(hwnd, msg, wparam, lparam);
-                    place_grip(hwnd, grip);
+                    place_grips(hwnd, &grips);
                     return result;
                 }
                 WM_NCHITTEST if can_resize(hwnd) => {
@@ -238,12 +269,22 @@ mod window_frame {
         if unsafe { GetWindowRect(hwnd, &mut frame) }.is_err() {
             return None;
         }
-        let grip = grip_size(hwnd);
         if !(frame.left..frame.right).contains(&x) || !(frame.top..frame.bottom).contains(&y) {
             return None;
         }
-        let col = if x < frame.left + grip { -1 } else if x >= frame.right - grip { 1 } else { 0 };
-        let row = if y < frame.top + grip { -1 } else if y >= frame.bottom - grip { 1 } else { 0 };
+        let mut client = RECT::default();
+        let mut origin = POINT::default();
+        if unsafe { GetClientRect(hwnd, &mut client) }.is_err()
+            || !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool()
+            || client.right <= 0 || client.bottom <= 0
+        {
+            return None;
+        }
+        // The outer rectangle includes the invisible DWM frame. Measure the
+        // accessible edge from the client origin so all 8 logical pixels can be used.
+        let edge = grip_size(hwnd).min(client.right / 2).min(client.bottom / 2);
+        let col = if x < origin.x + edge { -1 } else if x >= origin.x + client.right - edge { 1 } else { 0 };
+        let row = if y < origin.y + edge { -1 } else if y >= origin.y + client.bottom - edge { 1 } else { 0 };
 
         match (col, row) {
             (-1, -1) => Some(HTTOPLEFT),
