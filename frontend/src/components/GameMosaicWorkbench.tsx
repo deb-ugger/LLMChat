@@ -65,6 +65,12 @@ function groupMosaicModels(snapshot: StepPerformance): StepPerformance {
   return { ...snapshot, models: Object.fromEntries(models) };
 }
 
+function formatMosaicRequestTime(ms: number) {
+  if (ms < 1) return "不足 1 毫秒";
+  if (ms < 100) return Math.round(ms) + " 毫秒";
+  return ms < 60_000 ? (ms / 1000).toFixed(1) + " 秒" : gameDuration(ms);
+}
+
 function mosaicMetricScope(gamePath: string, step: MosaicStep) {
   return gamePath + ":mosaic:" + step;
 }
@@ -1245,6 +1251,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const modelTitle = (running || id === "redraw" && pausedRedraw) ? status?.summary : summary;
     const models = Object.entries(measured.models);
     const multipleModels = id !== "screen" && models.length > 1;
+    const foldedModels = id !== "screen" && !expanded && models.length > 0;
     const showModelTitle = id === "screen" || models.length === 0;
     const detection = id === "screen" ? models[0]?.[1] : undefined;
     const detectionMs = detection?.requests ? detection.requestMs / detection.requests : 0;
@@ -1252,13 +1259,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
     const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
-      {multipleModels && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
+      {(multipleModels || foldedModels) && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
       <div className="game-flow-model-values">
         {!expanded ? <>
           <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
-          <small className="game-flow-model-glance">{model.requests > 0
-            ? <>{model.requests} 次 · 均 <span className="game-flow-metric">{(model.requestMs / model.requests / 1000).toFixed(1)}</span> 秒</>
-            : "等待返回"}</small>
+          {model.requests > 0 && <small className="game-flow-model-glance">
+            {model.requests} 次 · 均 {formatMosaicRequestTime(model.requestMs / model.requests)}
+          </small>}
         </>
           : running && id === "refine" && !model.tokens && !model.serviceTiming && model.requests > 0
             ? <small role="status">已发送 {model.requests} 次请求 · 速率在模型返回后更新</small>
@@ -1274,7 +1281,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           {showModelTitle && modelTitle}
           {status?.device && <>{showModelTitle && " · "}{status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"}</>}
         </span>}
-        {multipleModels ? <div className="game-flow-model-list">{modelRows}</div> : modelRows}
+        {multipleModels || foldedModels ? <div className={"game-flow-model-list" + (foldedModels ? " is-folded" : "")}>{modelRows}</div> : modelRows}
         {status && (status.total > 0 || id === "refine" && unresolvedRefineFailures > 0) ? <small className="game-flow-model-rates">
           {status.total > 0 && <>
             <span>{id === "refine" && "已处理 "}{processed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
