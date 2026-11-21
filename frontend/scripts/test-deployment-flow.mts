@@ -50,7 +50,7 @@ const expectedRegions = [
   [[], [], []],
 ];
 
-async function runWithStubs(plan, options: { abortAfter?: string; failAt?: string; completed?: string[] } = {}) {
+async function runWithStubs(plan, options: { abortAfter?: string; failAt?: string; completed?: string[]; benchmarkRunning?: boolean } = {}) {
   const executed: string[] = [], counts: number[] = [], runSteps: string[][] = [], stopped: string[] = [], errors: string[] = [];
   let task: Promise<void> | undefined;
   const deploymentController = { current: undefined as AbortController | undefined };
@@ -62,6 +62,7 @@ async function runWithStubs(plan, options: { abortAfter?: string; failAt?: strin
   };
   const noop = () => {};
   const deps = {
+    isBenchmarkRunning: () => options.benchmarkRunning ?? false,
     root: "fixture", locked: false, deploymentController, running: {current:false}, mosaicBusy:false,
     deploymentPlan:plan, deploymentValidation:{issues:[]}, deploymentSequence, deploymentPhases,
     disabledPhases:plan.disabled, deploymentCompleted:options.completed ?? [], currentStoppedStep:undefined,
@@ -92,7 +93,8 @@ async function runWithStubs(plan, options: { abortAfter?: string; failAt?: strin
   };
   const start = new Function("deps", "const {" + Object.keys(deps).join(",") + "} = deps;\n" + runner + "\nreturn runDeployment;")(deps);
   start("automatic");
-  assert.ok(task, "stub must enter the production operation");
+  if (options.benchmarkRunning) assert.equal(task, undefined, "benchmark must block the production operation");
+  else assert.ok(task, "stub must enter the production operation");
   await task;
   assert.ok(runSteps.every(steps => steps.length <= 1), "never display a whole layer as running");
   assert.deepEqual(runSteps.slice(1).flat(), executed, "running UI must match the actual dispatch");
@@ -182,6 +184,9 @@ const edgeSkip = {...base,disabled:["scan","apply","mosaic"]};
 assert.deepEqual(deploymentSequence(edgeSkip),["text","image"]);
 assert.deepEqual((await runWithStubs(edgeSkip)).executed,["text","image"]);
 console.log("PASS 阶段逐一执行、完成计数、停止和失败截断");
+assert.deepEqual(await runWithStubs(base, { benchmarkRunning: true }),
+  { executed: [], counts: [], stopped: [], errors: [] });
+console.log("PASS 性能测试运行时禁止启动正式部署");
 
 const ordinary = [{id:"a",state:"current",running:true},{id:"b",state:"current",running:true,selected:true}];
 const rail = deriveRailView(ordinary);

@@ -9,6 +9,7 @@ import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, type StepPerformance } from "../gameModelPerformance";
 import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
+import { deploymentMetricScope } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
@@ -43,8 +44,7 @@ type StepRun = {
 } & Partial<StepPerformance>;
 type StepReport = number | Partial<Pick<StepRun, "completed" | "prepared" | "processed" | "failed">>;
 
-function mosaicStepSnapshot(scope: string, step: MosaicStep): StepPerformance {
-  const snapshot = stepPerformance(scope, step);
+function groupMosaicModels(snapshot: StepPerformance): StepPerformance {
   const models = new Map<string, StepPerformance["models"][string]>();
   for (const row of Object.values(snapshot.models)) {
     const previous = models.get(row.model);
@@ -58,15 +58,22 @@ function mosaicStepSnapshot(scope: string, step: MosaicStep): StepPerformance {
       generationMs: previous.generationMs + row.generationMs,
     } : { ...row });
   }
-  for (const [model, row] of models) {
-    const wall = snapshot.modelWallTiming?.[model];
-    if (wall) row.requestMs = wall.requestMs;
-  }
   return { ...snapshot, models: Object.fromEntries(models) };
 }
 
 function mosaicMetricScope(gamePath: string, step: MosaicStep) {
   return gamePath + ":mosaic:" + step;
+}
+
+function mosaicCardMetrics(gamePath: string, step: MosaicStep): StepPerformance {
+  const local = stepPerformance(mosaicMetricScope(gamePath, step), step);
+  if (step !== "refine" || local.started !== undefined) return local;
+
+  const deployment = stepPerformance(deploymentMetricScope(gamePath, "mosaic"), "mosaic");
+  if (!Object.keys(deployment.models).length) return local;
+  const localTime = local.endedAt ?? local.beginTime ?? "";
+  const deploymentTime = deployment.endedAt ?? deployment.beginTime ?? "";
+  return !local.taskId || deployment.started !== undefined || deploymentTime > localTime ? deployment : local;
 }
 
 function resumableMosaicMetrics(gamePath: string, step: MosaicStep, resume: boolean) {
@@ -82,7 +89,7 @@ function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolea
   beginGameStep(scope, step);
   return {
     scope,
-    snapshot: () => mosaicStepSnapshot(scope, step),
+    snapshot: () => groupMosaicModels(stepPerformance(scope, step)),
     recordItems: (itemsDone: number, failures?: number) => reportGameStepItems(scope, step,
       (previous?.itemsDone ?? 0) + itemsDone, failures === undefined ? undefined : (previous?.failures ?? 0) + failures),
     async measure<T>(model: string, concurrency: number, work: () => Promise<T>) {
@@ -469,8 +476,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (!paneVisible) { filterMenu.current?.hidePopover(); setViewer(null); }
   }, [paneVisible]);
   useEffect(() => {
-    if (!paneVisible || !busy || !progressStep) return;
-    const timer = window.setInterval(() => refreshElapsed(value => value + 1), 1000);
+    if (!paneVisible) return;
+    const timer = busy && progressStep ? window.setInterval(() => refreshElapsed(value => value + 1), 1000) : undefined;
     let frame: number | undefined;
     const refresh = () => {
       frame ??= window.requestAnimationFrame(() => {
@@ -1067,8 +1074,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const state = status?.state || "pending";
     const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
-    const modelScope = mosaicMetricScope(gamePath,id);
-    const measured = mosaicStepSnapshot(modelScope,id);
+    const measured = groupMosaicModels(mosaicCardMetrics(gamePath, id));
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
@@ -1114,7 +1120,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           {showModelNames && <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>}
           {running && id === "refine" && !model.tokens && model.requests > 0 ? <small className="game-flow-model-rates" role="status">
             已发送 {model.requests} 次请求 · 速率在模型返回后更新
-          </small> : <GameModelUsage model={model} perImage={id !== "refine"} onToggle={toggle} />}
+          </small> : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
+            perImage={id !== "refine"} onToggle={toggle} />}
         </div>)}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
@@ -1128,6 +1135,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const actionsDisabled = !!busy || disabled;
   function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
     clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
+    if (step === "refine") clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
     if (resetRedraw) clearGamePerformance(mosaicMetricScope(gamePath,"redraw"),["redraw"]);
     setStepRuns(previous => ({ ...previous, [step]: undefined, ...(resetRedraw && { redraw: undefined }) }));
     if (progressStep === step || resetRedraw && progressStep === "redraw") {
@@ -1208,6 +1216,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     pendingRedraw.current = null;
     for (const step of ["screen","refine","redraw"] as const)
       clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
+    clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
     setStepRuns({});
     setProgressStep(undefined);
     setProgress("");

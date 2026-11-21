@@ -148,22 +148,31 @@ export function GameMetricHint({ detail, onClick, children }: { detail: string; 
   return <span data-tooltip={detail} onClick={onClick} style={{ pointerEvents: "auto", cursor: "pointer" }}>{children}</span>;
 }
 
-export function GameModelUsage({ model, perImage = false, onToggle }: {
+export function GameModelUsage({ model, wallRequestMs, perImage = false, onToggle }: {
   model: StepPerformance["models"][string];
+  wallRequestMs?: number;
   perImage?: boolean;
   onToggle: () => void;
 }) {
   const { requests, requestMs, concurrency } = model;
-  const metrics = tokenMetrics(model);
+  const duration = wallRequestMs ?? requestMs;
+  const usesWallTime = wallRequestMs !== undefined;
+  const metrics = tokenMetrics({ ...model, requestMs: duration });
+  const requestSummary = requests > 0 && duration > 0 ? <small style={{ display: "block" }}>
+    <GameMetricHint onClick={onToggle} detail={usesWallTime
+      ? "同一模型有请求在途的墙钟耗时，并发重叠只计一次。"
+      : "各次模型请求的耗时逐次相加，并发重叠可计入多次。"}>
+      {usesWallTime ? "模型请求在途" : "模型请求合计"} <span className="game-flow-metric">{formatTiming(duration)}</span>
+      {" · "}<span className="game-flow-metric">{requests} 次</span>
+    </GameMetricHint>
+  </small> : null;
   if (metrics.length) return <>
     <small className="game-flow-model-rates">
       {metrics.map(metric => <MetricValue key={metric.key} metric={metric} onToggle={onToggle} />)}
     </small>
-    {requests > 0 && requestMs > 0 && <small style={{ display: "block" }}
-      data-tooltip="实际请求耗时逐次相加，并发请求的耗时可能重叠。">
-      请求耗时合计 <span className="game-flow-metric">{formatTiming(requestMs)}</span> · <span className="game-flow-metric">{requests} 次</span>
-    </small>}
+    {requestSummary}
   </>;
+  if (usesWallTime) return requestSummary;
   if (requests <= 0 || requestMs <= 0) return null;
   const seconds = requestMs / requests / 1000;
   return <small className="game-flow-model-rates">
