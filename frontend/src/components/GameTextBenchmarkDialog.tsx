@@ -284,10 +284,9 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
         const progress = job.progress;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
-        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}
-          style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", paddingBlock: "var(--space-1)" }}>
-          <div role={job.status === "运行中" ? "status" : undefined} style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
+          <div className="game-benchmark-queue-copy" role={job.status === "运行中" ? "status" : undefined}>
+            <div className="game-benchmark-queue-title">
               <span role="img" aria-label={job.status} title={job.status} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
                 background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
                   job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
@@ -320,7 +319,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
         {imageSteps.length > 0 && <option value="images">图片翻译</option>}
         {props.mosaicSetup && <option value="mosaic">图片去码</option>}
       </select></label>
-      <label>步骤{part === "text" ?
+      <label className="game-benchmark-scope-step">步骤{part === "text" ?
         <select value={textStep} onChange={event => setTextStep(event.target.value as typeof textStep)}>
           <option value="screen">筛选文本</option><option value="translate">翻译正文</option>
         </select> : part === "mosaic" ? <select value={mosaicStep} onChange={event => setMosaicStep(event.target.value as MosaicBenchmarkStep)}>
@@ -517,19 +516,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
     <header className="game-benchmark-page-header"><h2>测试队列</h2></header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
-      <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")} action={queueControls}>
-        {queueContents}
-        {latestResume && <div className="game-benchmark-toolbar">
-          <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
-            onClick={() => { const reference = resumeRef(latestResume); if (reference) void runArchive(reference, true); }}>继续上次测试</button>
-          <span className="hint">{latestResume.label} · 已完成 {latestResume.translated} / {latestResume.selected} 张
-            {snapshot.formalBusy && " · 正式任务结束后执行"}</span>
-        </div>}
-      </BenchmarkSection>
-      <BenchmarkSection title="测试范围">
+      <div className="game-benchmark-runbar">
+        <div className="game-benchmark-scope" role="region" aria-label="测试范围">
         {targetControls}
         <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
-        <div className="game-benchmark-toolbar">
+        <div className="game-benchmark-toolbar game-benchmark-sample-tools">
         {(imageStep || mosaicStep) ? <><label>样本范围<select value={sampleSetMode ? "annotated" : mosaicStep === "mosaicRefine" ? "checked" : sampleSettings?.selection || "checked"}
           onChange={event => {
             const value = event.target.value;
@@ -548,18 +539,20 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </> : <span className="hint">样本范围 · 当前项目已勾选文本</span>}
         <label>样本上限<input type="number" min={0} step={1} value={sampleLimit || ""} placeholder="不限"
           title="留空时测试范围内的全部样本" onChange={event => setSampleLimit(Math.max(0, Math.trunc(Number(event.target.value))))} /></label>
-        {step === "translate" && <button type="button" className="unity-btn" disabled={checking || !enabledConfigs.length} onClick={() => void inspect()}>检查样本</button>}
+        {step === "translate" && <button type="button" className="unity-btn game-benchmark-inspect" disabled={checking || !enabledConfigs.length} onClick={() => void inspect()}>检查样本</button>}
         </div>
         {browseSampleSet && <ImageSampleSetBrowser path={sampleSetPath} onChoose={chooseSampleSet} onClose={() => setBrowseSampleSet(false)} />}
-      </BenchmarkSection>
-      <div className="game-benchmark-toolbar game-benchmark-task-actions">
+        </div>
+        <div className="game-benchmark-task-actions">
         <button type="button" className="settings-panel-save" disabled={!!issue || adding || snapshot.stopping}
           title={issue || (snapshot.stopping ? "正在暂停当前测试，请稍候" : undefined)} onClick={() => void start(true)}>
           {running ? "插到队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即运行"}
         </button>
         <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
         <span role="status">{adding && "正在准备样本…"}</span>
+        </div>
       </div>
+      <div className="game-benchmark-columns">
       <BenchmarkSection title="测试配置">
         <div className="game-benchmark-toolbar">
           <label>循环轮次 <input type="number" min={1} max={100} step={1} value={rounds} disabled={adding} onChange={event => setRounds(event.target.value)} /></label>
@@ -710,6 +703,15 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </details>;
       })}
       </BenchmarkSection>
+      <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")} action={queueControls}>
+        {queueContents}
+        {latestResume && <div className="game-benchmark-toolbar">
+          <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
+            onClick={() => { const reference = resumeRef(latestResume); if (reference) void runArchive(reference, true); }}>继续上次测试</button>
+          <span className="hint">{latestResume.label} · 已完成 {latestResume.translated} / {latestResume.selected} 张
+            {snapshot.formalBusy && " · 正式任务结束后执行"}</span>
+        </div>}
+      </BenchmarkSection>
       <BenchmarkSection title="测试记录" className="game-benchmark-results" action={
         <button type="button" className="unity-btn" disabled={historyLoading} onClick={() => setReload(value => value + 1)}>刷新</button>}>
         {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
@@ -745,6 +747,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           </div>
         </details>)}
       </BenchmarkSection>
+      </div>
     </div></div>
     <footer className="game-benchmark-footer">
     <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { saveQueue(); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>
