@@ -2473,6 +2473,9 @@ body.ocr-image-resizing * {
 .game-model-prompt-row .searchable-select { min-width:0; width:100%; }
 @container (max-width:420px) { .game-model-prompt-row { grid-template-columns:minmax(0,1fr); } }
 
+.game-mosaic-model-field { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 260px; }
+.game-mosaic-model-field > span { flex:none; color:var(--text-muted); font-size:var(--fs-caption); }
+.game-mosaic-model-field > .model-filter-select { flex:1; min-width:0; }
 .model-filter-select { display:flex; align-items:stretch; gap:7px; min-width:0; }
 .model-filter-select > .searchable-select { flex:1; min-width:0; }
 .model-filter-trigger { flex:none; display:grid; place-items:center; width:26px; border:0; padding:0; color:var(--accent,#1b1a16); background:transparent; cursor:pointer; }
