@@ -96,16 +96,27 @@ export function scanMosaicPixels(rgba: Uint8ClampedArray, width: number, height:
     const vertical = new Float64Array(edgeCount);
     const samples = Math.ceil(size / pass.sampleStep);
     const horizontalStrip = new Float64Array(width - 1);
-    // Windows on the same row share their horizontal edge samples.
+    const horizontalSum = new Float64Array(width - 1);
+    const addRow = (y: number, direction: number) => {
+      const start = y * stride;
+      for (let edge = 0, a = start; edge < horizontalSum.length; edge++, a += 4)
+        horizontalSum[edge] += direction * distance(a, a + 4);
+    };
+    let previousY = -size;
+    // Neighbouring windows reuse sampled rows that are still inside the window.
     for (const y of ys) {
-      horizontalStrip.fill(0);
-      for (let offset = 0; offset < size; offset += pass.sampleStep) {
-        const start = (y + offset) * stride;
-        for (let edge = 0, a = start; edge < horizontalStrip.length; edge++, a += 4) {
-          horizontalStrip[edge] += distance(a, a + 4);
+      const shift = (y - previousY) / pass.sampleStep;
+      if (previousY >= 0 && Number.isInteger(shift) && shift * 2 < samples) {
+        for (let row = previousY; row < y; row += pass.sampleStep) {
+          addRow(row, -1);
+          addRow(row + size, 1);
         }
+      } else {
+        horizontalSum.fill(0);
+        for (let offset = 0; offset < size; offset += pass.sampleStep) addRow(y + offset, 1);
       }
-      for (let edge = 0; edge < horizontalStrip.length; edge++) horizontalStrip[edge] /= samples;
+      previousY = y;
+      for (let edge = 0; edge < horizontalStrip.length; edge++) horizontalStrip[edge] = horizontalSum[edge] / samples;
 
       for (const x of xs) {
         if (pass.periodTolerance && boxes.some(([left, top, right, bottom]) =>
