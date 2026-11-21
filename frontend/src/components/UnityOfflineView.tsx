@@ -424,13 +424,18 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     })();
     return () => { cancelled = true; };
   }, [root]);
-  const formalProgress = mosaicBusy ? undefined : localActivity?.value.state === "running" ? localActivity.value :
-    generationState?.state === "running" ? generationState : undefined;
   const formalUnfinished = !preparingRescan && !!checkpoint && !checkpoint.finished &&
     ["stopped", "error"].includes(checkpoint.progress.state);
-  useFormalWorkflowActivity(!!busy || restoring || textScreening || !!imageEditorBusy, game?.gameDir || root,
-    typeof busy === "string" && busy ? busy : formalUnfinished ? checkpoint.progress.detail || "工程流程" : "工程处理",
-    formalProgress?.completed ?? undefined, formalProgress?.total ?? undefined, formalUnfinished);
+  const formalProgress = localActivity?.value.state === "running" ? localActivity.value :
+    generationState?.state === "running" ? generationState : formalUnfinished ? checkpoint.progress : undefined;
+  const formalImagePhase = checkpoint?.imageTask ?? imageTask.current;
+  const formalLabel = restoring ? "恢复工程" : textScreening ? "筛选文本" : imageEditorBusy ||
+    deploymentRun?.steps.map(step => deploymentLabel[step]).join("、") ||
+    (formalProgress?.step === 2 && (checkpoint?.imageOnly || localActivity?.images) ? unityImagePhaseNames[formalImagePhase] :
+      formalProgress ? GENERATION_STEPS[formalProgress.step - 1] : workflowBusy || "工程处理");
+  useFormalWorkflowActivity(!!workflowBusy || restoring || textScreening || !!imageEditorBusy, game?.gameDir || root,
+    formalLabel, formalProgress?.completed ?? undefined, formalProgress?.total ?? undefined, formalUnfinished,
+    formalProgress?.failure || formalProgress?.detail);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   useEffect(() => { onBusyChange?.(!!busy || restoring || applyingTestConfiguration); }, [busy, restoring, applyingTestConfiguration, onBusyChange]);

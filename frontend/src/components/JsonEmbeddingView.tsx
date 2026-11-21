@@ -81,6 +81,24 @@ type DeploymentRun = {
   state: "running" | "stopped" | "error" | "done";
   detail?: string;
 };
+function restoreAutomaticDeployment(raw: string | null): DeploymentRun | null {
+  const saved = JSON.parse(raw || "null");
+  if (!saved || typeof saved.phase !== "string" || !Object.hasOwn(deploymentLabels, saved.phase) ||
+      !["running", "stopped", "error"].includes(saved.state)) return null;
+  return {
+    mode: "automatic",
+    phase: saved.phase as DeploymentPhase,
+    state: saved.state === "error" ? "error" : "stopped",
+    detail: typeof saved.detail === "string" ? saved.detail : undefined,
+  };
+}
+
+const backendStepLabels: Record<string, string> = {
+  extract: "扫描资源", inspect: "检查译文", embed: "生成文本补丁", apply: "应用文本补丁",
+  backup: "备份游戏", rollback: "恢复备份", runtime: "安装翻译插件",
+  "uninstall-text": "卸载文本补丁", "cleanup-text": "清理文本补丁",
+};
+
 type ImageArtifact = { ids: string[]; applied: boolean; patchId?: string; path?: string };
 type DeploymentArtifacts = {
   text?: { path: string; applied: boolean };
@@ -112,12 +130,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const followAutomatic = useRef(true);
   const automaticKey = "llmchat-game-automatic:" + game.path;
   const [deployment, setDeployment] = useState<DeploymentRun | null>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(automaticKey) || "null");
-      if (!saved || saved.state === "done") return null;
-      const phase = typeof saved.phase === "string" && Object.hasOwn(deploymentLabels, saved.phase) ? saved.phase as DeploymentPhase : undefined;
-      return { mode: "automatic", phase, state: "stopped" };
-    } catch { return null; }
+    try { return restoreAutomaticDeployment(localStorage.getItem(automaticKey)); }
+    catch { return null; }
   });
   const deploymentRunning = deployment?.state === "running";
   const automatic = deployment?.mode === "automatic" ? deployment.state : "idle";
@@ -209,10 +223,24 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const imageUnfinished = !workflow.imagesSkipped && imageWorkflow.loaded && !imageWorkflow.complete &&
     ["stopped", "error"].includes(imageWorkflow.state);
   const deploymentUnfinished = deployment?.mode === "automatic" && (deployment.state === "stopped" || deployment.state === "error");
-  useFormalWorkflowActivity(busy, game.name,
-    mosaicBusy ? "图片去码" : imageBusy || imageUnfinished ? "图片翻译" : textBusy || textUnfinished ? "文本翻译" : status.detail || "工程流程",
-    status.state === "running" ? status.completed : undefined, status.state === "running" ? status.total : undefined,
-    textUnfinished || imageUnfinished || deploymentUnfinished);
+  const deploymentLabel = deployment?.phase ? deploymentLabels[deployment.phase] : undefined;
+  const textScreening = textInfo.state === "screening" || textInfo.state === "screen-stopped";
+  const formalActivity = deploymentRunning || (!workflowBusy && deploymentUnfinished)
+    ? { label: deploymentLabel || "一键流程", detail: deployment?.state === "error" ? deployment.detail || "失败待重试"
+        : deployment?.state === "stopped" ? "已中止，等待继续" : undefined }
+    : imageBusy || (!workflowBusy && imageUnfinished)
+      ? { label: imageWorkflow.operation?.label || "图片翻译", detail: imageWorkflow.operation?.detail,
+          completed: imageWorkflow.operation?.completed, total: imageWorkflow.operation?.total }
+      : textBusy || (!workflowBusy && textUnfinished)
+        ? { label: textScreening ? "筛选文本" : "翻译正文",
+            detail: textUnfinished ? textInfo.state === "error" ? "失败待重试" : "已中止，等待继续" : undefined,
+            completed: textScreening ? undefined : textInfo.done, total: textScreening ? undefined : textInfo.selected }
+        : { label: applyingTestConfiguration ? "应用测试配置" : checkingTextSource ? "检查文本资源" :
+            detecting ? "检测已安装补丁" : launching ? "启动游戏" : backendStepLabels[(pending ? pendingAction : status.action) || ""] || "工程处理",
+            detail: status.state === "running" ? status.detail : undefined,
+            completed: status.state === "running" ? status.completed : undefined, total: status.state === "running" ? status.total : undefined };
+  useFormalWorkflowActivity(workflowBusy, game.name, formalActivity.label, formalActivity.completed, formalActivity.total,
+    textUnfinished || imageUnfinished || deploymentUnfinished, formalActivity.detail);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   const latestWorkflow = useRef({ text: textInfo, mosaicComplete }); latestWorkflow.current = { text: textInfo, mosaicComplete };

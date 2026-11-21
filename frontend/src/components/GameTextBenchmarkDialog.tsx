@@ -279,6 +279,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
         <div><strong>{job.state === "unfinished" ? "正式任务未完成" : "正式任务"} · {job.label}</strong>
           <div className="hint">{job.game}{job.total ? " · " + (job.completed ?? 0) + "/" + job.total : ""}</div>
+          {job.detail && job.detail !== job.label && <div className="hint" title={job.detail}>{job.detail}</div>}
         </div>
       </div>)}
       {queue.map(job => {

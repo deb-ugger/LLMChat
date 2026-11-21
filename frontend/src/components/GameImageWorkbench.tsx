@@ -47,7 +47,12 @@ import "../unityOffline.css";
 type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;error:string}};
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 type ImageScanTiming = { parsed:number; reused:number; loadMs:number; listMs:number; parseMs:number };
-export type GameImageInfo = {scanTiming?:ImageScanTiming;state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number};
+export type GameImageInfo = {scanTiming?:ImageScanTiming;state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number;
+  operation?: { label: string; detail?: string; completed?: number; total?: number }};
+const imageOperationLabels = {
+  filter: "筛选图片", refine: "复筛图片", recognize: "识字与定位", translate: "翻译图片文字",
+  review: "复核与重译", render: "生成译图", redraw: "AI 风格重绘", restore: "应用译图", other: "图片工程",
+};
 type ImageTestConfiguration = NonNullable<GameTestConfiguration["images"]>;
 export type GameImageHandle = {
   benchmark: () => BenchmarkImageSource;
@@ -533,7 +538,25 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const redrawCount = images.filter(gameImageRedrawSelected).length;
   const complete=useMemo(()=>({restore:false,filter:images.length>0&&!images.some(needsGameImageScreening),refine:!refineNeedsResume&&!images.some(needsRefinement),recognize:selected.every(image=>image.ocrCompleted),translate:selected.every(image=>unityImageWorkDone(image,target))}),[images,selected,refineKey,refineNeedsResume,target]);
   const manualReviewPending = images.some(image => unityImageResultGroup(image) === "manual-review");
-  useEffect(()=>{onTaskStateChange?.({scanTiming:(project as (UnityProject & {imageScanTiming?:ImageScanTiming}) | null)?.imageScanTiming,state:!busy&&task.task&&progress?.state!=="error"?"stopped":progress?.state||"idle",stage:step,complete:!!project&&(images.length===0||complete.filter&&complete.refine&&!manualReviewPending&&!redrawCount&&selected.every(image=>unityImageWorkDone(image,target))),count:project?images.length:null,folder:project?.folder||"",exists:existing,loaded:!!project,selected:selected.length,valid:selected.filter(image=>unityImageReadyForTarget(image,target)).length});},[busy,task.task,progress?.state,step,project?.folder,images.length,existing,selected,complete.filter,complete.refine,complete.translate,manualReviewPending,redrawCount,onTaskStateChange,target,(project as (UnityProject & {imageScanTiming?:ImageScanTiming}) | null)?.imageScanTiming]);
+  useEffect(() => {
+    onTaskStateChange?.({
+      scanTiming: (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming,
+      state: !busy && task.task && progress?.state !== "error" ? "stopped" : progress?.state || "idle",
+      stage: step,
+      complete: !!project && (images.length === 0 || complete.filter && complete.refine && !manualReviewPending &&
+        !redrawCount && selected.every(image => unityImageWorkDone(image, target))),
+      count: project ? images.length : null, folder: project?.folder || "", exists: existing, loaded: !!project,
+      selected: selected.length, valid: selected.filter(image => unityImageReadyForTarget(image, target)).length,
+      operation: {
+        label: busy || imageOperationLabels[operationStep.current],
+        detail: progress?.detail,
+        completed: progress?.completed,
+        total: progress?.total ?? undefined,
+      },
+    });
+  }, [busy, task.task, progress?.state, progress?.detail, progress?.completed, progress?.total, step, project?.folder,
+    images.length, existing, selected, complete.filter, complete.refine, complete.translate, manualReviewPending,
+    redrawCount, onTaskStateChange, target, (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming]);
   const resetImages = async (phase: keyof typeof resetLabels) => {
     const label = resetLabels[phase];
     const descriptions = {

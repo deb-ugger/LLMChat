@@ -58,7 +58,7 @@ type BenchmarkJob = {
   resumeSamples?: boolean;
   continuedFrom?: string;
 };
-type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number };
+type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number; detail?: string };
 export type BenchmarkSnapshot = {
   version: number;
   jobs: readonly BenchmarkJob[];
@@ -287,15 +287,15 @@ export function useBenchmarkRunning() {
 }
 
 export function useFormalWorkflowActivity(active: boolean, game: string, label: string, completed?: number, total?: number,
-  unfinished = false) {
+  unfinished = false, detail?: string) {
   const id = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const key = id.current ??= crypto.randomUUID();
-    if (active || unfinished) formalWorkflows.set(key,{ id:key,game,label,completed,total, state: active ? "running" : "unfinished" });
+    if (active || unfinished) formalWorkflows.set(key,{ id:key,game,label,completed,total,detail, state: active ? "running" : "unfinished" });
     else formalWorkflows.delete(key);
     publish();
     if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
-  }, [active, game, label, completed, total, unfinished]);
+  }, [active, game, label, completed, total, unfinished, detail]);
   useLayoutEffect(() => () => {
     const job = id.current && formalWorkflows.get(id.current);
     if (!job) return;

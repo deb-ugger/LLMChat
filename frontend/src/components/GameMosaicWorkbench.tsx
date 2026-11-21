@@ -1245,10 +1245,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       (!!row.refineError || !!reviewCheckpoint);
   });
   const pausedScreen = (screenStatus.state === "stopped" || screenStatus.state === "error") && !!remaining.length;
-  useFormalWorkflowActivity(false, gamePath, hasUnfinishedReview ? "复筛打码图片" : pausedScreen ? "筛选打码图片" : "重绘打码区域",
-    hasUnfinishedReview ? reviewedCount : pausedScreen ? screenedCount : undefined,
-    hasUnfinishedReview ? reviewTotal : pausedScreen ? screenTotal : undefined,
-    !busy && (hasUnfinishedReview || pausedScreen || redrawRemaining > 0));
+  const formalMosaicStep = busy ? progressStep :
+    hasUnfinishedReview ? "refine" : pausedScreen ? "screen" : redrawRemaining ? "redraw" : undefined;
+  const formalMosaicRun = formalMosaicStep === "refine" ? refineStatus :
+    formalMosaicStep === "screen" ? screenStatus : formalMosaicStep === "redraw" ? stepRuns.redraw : undefined;
+  const mosaicStepLabels = { screen: "筛选打码图片", refine: "复筛打码图片", redraw: "重绘打码区域" };
+  useFormalWorkflowActivity(!!busy, gamePath.split(/[\\/]/).filter(Boolean).at(-1) || gamePath,
+    formalMosaicStep ? mosaicStepLabels[formalMosaicStep] : busy,
+    formalMosaicRun?.completed, formalMosaicRun?.total,
+    !busy && !!formalMosaicStep, busy ? progress :
+      formalMosaicRun?.state === "error" ? "失败待重试" : "已中止，等待继续");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const benchmarkProgress = useBenchmarkProgress(gamePath);
   const testing = useBenchmarkRunning();
