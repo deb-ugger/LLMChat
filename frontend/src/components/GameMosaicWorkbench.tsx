@@ -62,7 +62,7 @@ function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   if (row.boxes.length) return "candidate";
   return row.scanned ? "clear" : "pending";
 }
-const detectorLabels = { grid: "方格规则", anime: "二次元遮挡检测（内置）" };
+const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类＋定位）" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -489,7 +489,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["custom-yolo-alpha-v4", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-640-alpha-v4";
+    ? JSON.stringify(["custom-yolo-presence-v1", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-presence-v1";
   const reviewKey = mosaicReviewKey(preferences, detectorFile);
   const reviewModels = settings ? gameAvailableModels(settings) : ["qwen3-vl:8b-instruct"];
   function applyReview(image: UnityImage, scan: import("../gameMosaic").MosaicScan) {
@@ -596,7 +596,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 const { signature } = scan;
                 const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
                 batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0 && preferences.refine === false,
+                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0 && !scan.review && preferences.refine === false,
                   signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, refined:undefined, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
               } catch (cause) {
                 if (signal.aborted) break;
@@ -641,7 +641,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function editMask(image: UnityImage, boxes: MosaicBox[]) {
-    update(image, { boxes, manualBoxes: true, saved: storage ? resultFor(rows, image).saved : false, reference: false, checked: boxes.length > 0 });
+    update(image, { boxes, manualBoxes: true, review:undefined, saved: storage ? resultFor(rows, image).saved : false, reference: false, checked: boxes.length > 0 });
     setCandidates(previous => {
       const next = { ...previous };
       delete next[image.id];
@@ -879,7 +879,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
             <option value="grid">{detectorLabels.grid}</option><option value="anime">{detectorLabels.anime}</option>
           </select></label>
-          {detectorKind !== "grid" && <label>自定义 ONNX（可选）
+          {detectorKind !== "grid" && <label>自定义定位 ONNX（可选）
             <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
             {detectorFile && <button type="button" className="unity-btn" disabled={!!busy} onClick={()=>{clearGameDetectorFile(gamePath);setDetectorFile(undefined);}}>使用内置模型</button>}
           </label>}
@@ -955,7 +955,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                     const checked = event.target.checked;
                     setRows(previous => {
                       const next = { ...previous };
-                      for (const image of items) next[image.id] = { ...resultFor(previous,image),checked,manualChecked:true,review:undefined };
+                      for (const image of items) {
+                        const row=resultFor(previous,image);
+                        next[image.id]={...row,checked,manualChecked:true,review:row.boxes.length?undefined:row.review};
+                      }
                       return next;
                     });
                   }}/>
@@ -966,7 +969,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 const status = mosaicStatusLabels[state] + (state === "candidate" ? ` · ${row.boxes.length} 区域` : "");
                 const detail = `${image.width} × ${image.height} · ${status}`;
                 return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}`}>
-                  <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: undefined })} />
+                  <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: row.boxes.length ? undefined : row.review })} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail} disabled={!!busy}
                     onClick={() => { setActiveId(image.id); setError(""); }}>
                     <strong><SearchHighlight text={image.name} query={needle} /></strong>

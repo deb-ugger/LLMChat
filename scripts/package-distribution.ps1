@@ -22,6 +22,8 @@ $files = @(
     'resources/unity/THIRD-PARTY.txt', 'resources/unity/WTP-LICENSE.txt',
     'resources/unity/WTP-manifest.json', 'resources/unity/wtp-model.onnx',
     'resources/web-assets/mosaic-detector/model.onnx',
+    'resources/web-assets/mosaic-detector/presence.onnx', 'resources/web-assets/mosaic-detector/presence.json',
+    'resources/web-assets/mosaic-detector/PRESENCE-LICENSE.txt', 'resources/web-assets/mosaic-detector/PRESENCE-NOTICE.txt',
     'resources/web-assets/mosaic-detector/manifest.json', 'resources/web-assets/mosaic-detector/LICENSE.txt',
     'resources/web-assets/manga-ort/ort-wasm-simd-threaded.asyncify.mjs',
     'resources/web-assets/manga-ort/ort-wasm-simd-threaded.asyncify.wasm',

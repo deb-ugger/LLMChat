@@ -206,7 +206,7 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"},{value:"custom",label:"自定义工作流"}]} change={redrawProfile => updateImages({redrawProfile})}/></Group>}
         {mosaic && <Group title="图片去码">
           <Select label="筛选范围" value={mosaic.scope} choices={[{value:"scenes",label:"场景图片"},{value:"all",label:"全部图片"}]} change={scope=>updateMosaic({scope})}/>
-          <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"二次元遮挡检测（内置）"}]} change={detector=>updateMosaic({detector})}/>
+          <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"高召回初筛（分类＋定位）"}]} change={detector=>updateMosaic({detector})}/>
           <Count label="筛选并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
           <Flag label="自动流程执行视觉复筛" value={mosaic.refine!==false} change={refine=>updateMosaic({refine})}/>
           <Flag label="自动流程使用大模型补查未发现" value={!!mosaic.refineIncludeMissed} change={refineIncludeMissed=>updateMosaic({refineIncludeMissed})}/>

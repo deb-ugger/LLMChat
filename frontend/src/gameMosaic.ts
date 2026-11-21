@@ -9,7 +9,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -74,6 +74,7 @@ export async function openDeploymentDetector(root: string, settings: MosaicSetti
 }
 
 const threshold = 0.25;
+export const mosaicPresenceThreshold = 0.47;
 function overlap(a: MosaicBox, b: MosaicBox) {
   const area = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *
     Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
@@ -141,25 +142,29 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   };
   ort.env.wasm.numThreads = 1;
   const { signal, onDevice } = options;
-  let bytes: ArrayBuffer;
-  if (model) bytes = await model.arrayBuffer();
-  else {
-    const response = await fetch(new URL("./mosaic-detector/model.onnx", assets), { signal });
-    if (!response.ok) throw new Error("内置二次元检测模型读取失败，请重新准备软件资源");
-    bytes = await response.arrayBuffer();
-  }
+  const readModel = async (name: string) => {
+    const response=await fetch(new URL("./mosaic-detector/"+name,assets),{signal});
+    if(!response.ok)throw new Error("检测模型资源读取失败："+name);
+    return response.arrayBuffer();
+  };
+  const [bytes,presenceBytes]=await Promise.all([model?model.arrayBuffer():readModel("model.onnx"),readModel("presence.onnx")]);
   const create = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(bytes, { executionProviders: [provider] });
+  const createPresence = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(presenceBytes, { executionProviders: [provider] });
   let session: Awaited<ReturnType<typeof create>> | undefined;
+  let presenceSession: Awaited<ReturnType<typeof createPresence>> | undefined;
   let device: MosaicDevice = { kind: "gpu" };
 
   const release = async () => {
-    const former = session;
-    session = undefined;
+    const former = session,formerPresence=presenceSession;
+    session = undefined;presenceSession=undefined;
     await former?.release();
+    await formerPresence?.release();
   };
   const openCpu = async (reason: string) => {
     signal?.throwIfAborted();
     const cpu = await create("wasm");
+    try { presenceSession=await createPresence("wasm"); }
+    catch(cause){await cpu.release();throw cause;}
     device = { kind: "cpu", reason };
     return cpu;
   };
@@ -169,7 +174,9 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   if (gpu) {
     try {
       session = await create("webgpu");
+      presenceSession=await createPresence("webgpu");
     } catch (cause) {
+      await release();
       session = await openCpu("WebGPU 启动失败：" + (cause instanceof Error ? cause.message : String(cause)));
     }
   } else {
@@ -216,6 +223,37 @@ export async function loadMosaicDetector(model: File | undefined, options: {
     inferenceQueue = pending.catch(() => {});
     return pending;
   };
+  const runPresence=async(feeds:InstanceType<typeof ort.Tensor>)=>{
+    signal?.throwIfAborted();
+    if(!presenceSession)throw new Error("分类检测会话已关闭");
+    try {return await presenceSession.run({[presenceSession.inputNames[0]]:feeds},[presenceSession.outputNames[0]]);}
+    catch(cause){
+      if(device.kind==="cpu")throw cause;
+      signal?.throwIfAborted();await release();
+      session=await openCpu("WebGPU 分类推理失败："+String(cause));
+      signal?.throwIfAborted();onDevice?.(device);
+      return presenceSession!.run({[presenceSession!.inputNames[0]]:feeds},[presenceSession!.outputNames[0]]);
+    }
+  };
+  const classify=async(original:HTMLCanvasElement)=>{
+    const canvas=document.createElement("canvas");canvas.width=384;canvas.height=384;
+    const ctx=canvas.getContext("2d",{willReadFrequently:true});
+    if(!ctx)throw new Error("无法读取分类模型输入");
+    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,384,384);ctx.drawImage(original,0,0,384,384);
+    const pixels=ctx.getImageData(0,0,384,384).data,plane=384*384,values=new Float32Array(plane*3);
+    for(let i=0;i<plane;i++){
+      values[i]=(pixels[i*4]/255-.5)*2;values[i+plane]=(pixels[i*4+1]/255-.5)*2;values[i+plane*2]=(pixels[i*4+2]/255-.5)*2;
+    }
+    const feeds=new ort.Tensor("float32",values,[1,3,384,384]);
+    let tensors:Awaited<ReturnType<typeof runPresence>>|undefined;
+    try {
+      const pending=inferenceQueue.then(()=>runPresence(feeds));inferenceQueue=pending.catch(()=>{});
+      tensors=await pending;
+      const result=Object.values(tensors)[0].data;
+      if(!(result instanceof Float32Array)||result.length!==4||!Number.isFinite(result[0]))throw new Error("分类模型输出格式无效");
+      return result[0];
+    }finally{feeds.dispose();for(const tensor of Object.values(tensors||{}))tensor.dispose();}
+  };
   const scanImage = async (blob: Blob): Promise<MosaicScan> => {
     const source = await createImageBitmap(blob);
     const original = document.createElement("canvas");
@@ -228,11 +266,18 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       full = originalContext.getImageData(0, 0, original.width, original.height);
     } finally { source.close(); }
     const signature = sceneSignature(full.data, full.width, full.height);
-    let hasVisiblePixel = false;
-    for (let index = 3; index < full.data.length; index += 4) {
-      if (full.data[index] >= 64) { hasVisiblePixel = true; break; }
+    let hasVisiblePixel=false,varied=false;
+    const minimum=[255,255,255],maximum=[0,0,0];
+    for(let i=0;i<full.data.length;i+=4){
+      if(full.data[i+3]<64)continue;
+      hasVisiblePixel=true;
+      for(let channel=0;channel<3;channel++){
+        minimum[channel]=Math.min(minimum[channel],full.data[i+channel]);
+        maximum[channel]=Math.max(maximum[channel],full.data[i+channel]);
+      }
+      if(maximum.some((value,channel)=>value-minimum[channel]>=1)){varied=true;break;}
     }
-    if (!hasVisiblePixel) return { signature, boxes: [] };
+    if(!hasVisiblePixel || !varied)return {signature,boxes:[]};
     const scale = Math.min(size / full.width, size / full.height);
     const width = Math.max(1, Math.round(scale * full.width)), height = Math.max(1, Math.round(scale * full.height));
     const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
@@ -247,6 +292,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       values[index + plane] = data[4 * index + 1] / 255;
       values[index + 2 * plane] = data[4 * index + 2] / 255;
     }
+    const presenceScore=await classify(original);
     const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
     let tensors: Awaited<ReturnType<typeof infer>> | undefined;
     try {
@@ -266,8 +312,11 @@ export async function loadMosaicDetector(model: File | undefined, options: {
       const reviewBoxes = [...candidates];
       for (const box of grid)
         if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
-      return { signature, boxes, modelBoxes: candidates, reviewBoxes,
-        review: !boxes.length && reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : undefined };
+      return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore,
+        review: boxes.length && presenceScore<mosaicPresenceThreshold ? "图片分类与区域定位模型存在分歧，请复核"
+          : !boxes.length && (reviewBoxes.length || presenceScore>=mosaicPresenceThreshold)
+            ? reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : "图片分类提示疑似遮挡，定位模型尚未给出区域"
+            : undefined };
     } finally {
       feeds.dispose();
       for (const value of Object.values(tensors || {})) value.dispose();

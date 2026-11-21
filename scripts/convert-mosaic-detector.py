@@ -12,6 +12,36 @@ manifest = output / "manifest.json"
 source = ("https://huggingface.co/kitsumed/yolov11m_seg-2d-censorship-detection/"
           "resolve/3acab0bd97658a9c63fcb4a577eec815e4b38641/model_fp16_dynamic.onnx")
 checksum = "c58d61183be02522a10ef915c554f85de75f3064017e4904bf3c501809f309b9"
+presence_source = ("https://huggingface.co/Maltox/anime-censorship-tagger-mnv3-384/"
+                   "resolve/b6c017a5c9ee4273f27db51b0fe96956184ffa0e/")
+presence_checksum = "25f04c26c4375f72740f6a4c756f4316d6ae30fff12a979ac9dae603ab743509"
+presence = output / "presence.onnx"
+presence_manifest = output / "presence.json"
+presence_files = [presence, presence_manifest, output / "PRESENCE-LICENSE.txt", output / "PRESENCE-NOTICE.txt"]
+if not all(path.is_file() for path in presence_files):
+    output.mkdir(parents=True, exist_ok=True)
+    temporary_presence = output / "presence.download.onnx"
+    temporary_manifest = output / "presence.download.json"
+    try:
+        print("Downloading the lightweight censorship classifier...", flush=True)
+        urllib.request.urlretrieve(presence_source + "model.onnx", temporary_presence)
+        if hashlib.sha256(temporary_presence.read_bytes()).hexdigest() != presence_checksum:
+            raise RuntimeError("Censorship classifier checksum mismatch")
+        urllib.request.urlretrieve(presence_source + "LICENSE", output / "PRESENCE-LICENSE.txt")
+        urllib.request.urlretrieve(presence_source + "NOTICE", output / "PRESENCE-NOTICE.txt")
+        temporary_manifest.write_text(json.dumps({
+            "name": "Anime Censorship Tagger MobileNetV3-384", "author": "Maltox",
+            "source": presence_source + "model.onnx", "sha256": presence_checksum,
+            "license": "Apache-2.0", "input": [1, 3, 384, 384],
+            "preprocessing": "RGB, white alpha composite, bilinear squash, (x/255-0.5)/0.5",
+            "columns": ["censored", "bar", "ineffective", "mosaic"], "candidateThreshold": 0.47,
+        }, ensure_ascii=False, indent=2), encoding="utf8")
+        os.replace(temporary_presence, presence)
+        os.replace(temporary_manifest, presence_manifest)
+    finally:
+        temporary_presence.unlink(missing_ok=True)
+        temporary_manifest.unlink(missing_ok=True)
+
 if model.is_file() and manifest.is_file() and (output / "LICENSE.txt").is_file():
     print("Built-in 2D censorship detector is ready.")
     sys.exit(0)

@@ -1,4 +1,4 @@
-import { loadMosaicDetector, mosaicVisibleBox, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
+import { loadMosaicDetector, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal) => Promise<unknown>;
@@ -7,7 +7,7 @@ type ReviewCheckpoint = { key: string; images: Record<string, StoredReview> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
 
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
-  return JSON.stringify(["visual-review-v3", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
+  return JSON.stringify(["visual-review-v4", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
     file ? [file.name,file.size,file.lastModified] : "anime-640"]);
 }
 export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
@@ -64,6 +64,7 @@ async function proposals(blob: Blob, detector: Awaited<ReturnType<typeof loadMos
     for (const x of new Set([0,canvas.width-side])) for (const y of new Set([0,canvas.height-side]))
       regions.push([x,y,x+side,y+side]);
   }
+  let presenceScore=result.presenceScore || 0;
   const boxes=[...result.boxes],modelBoxes=[...(result.modelBoxes || [])],reviewBoxes=[...(result.reviewBoxes || [])];
   for (const [left,top,right,bottom] of regions) {
     signal.throwIfAborted();
@@ -72,10 +73,11 @@ async function proposals(blob: Blob, detector: Awaited<ReturnType<typeof loadMos
     if (!context) throw new Error("无法准备局部放大复筛");
     context.drawImage(canvas,left,top,crop.width,crop.height,0,0,crop.width,crop.height);
     const local=await detector.scan(await png(crop));
+    presenceScore=Math.max(presenceScore,local.presenceScore || 0);
     const mapped=(values: MosaicBox[] = [])=>values.map(([x0,y0,x1,y1]):MosaicBox=>[left+x0,top+y0,left+x1,top+y1]);
     appendBoxes(boxes,mapped(local.boxes));appendBoxes(modelBoxes,mapped(local.modelBoxes));appendBoxes(reviewBoxes,mapped(local.reviewBoxes));
   }
-  return {...result,boxes,modelBoxes,reviewBoxes,review:!boxes.length&&reviewBoxes.length?"候选区域需要视觉模型复筛确认":undefined};
+  return {...result,boxes,modelBoxes,reviewBoxes,presenceScore,review:!boxes.length&&(reviewBoxes.length||presenceScore>=mosaicPresenceThreshold)?"候选区域需要视觉模型复筛确认":undefined};
 }
 
 async function reviewImage(blob: Blob, proposed: MosaicScan, model: string, request: MosaicReviewRequest, signal: AbortSignal): Promise<MosaicScan> {
@@ -190,7 +192,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           let pending=verified.get(identity);
           if(!pending) {
             const proposed=prepared.get(image.id)!;
-            const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length);
+            const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
             pending=!fullReview && !hasCandidates
               ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
               : options.read(image,signal).then(blob=>reviewImage(blob,proposed,model,options.request,signal));
