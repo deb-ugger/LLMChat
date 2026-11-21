@@ -21,6 +21,7 @@
 #endif
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wrl/implements.h>
 #include <objbase.h>
 #include <windows.h>
 #include <winhttp.h>
@@ -3077,58 +3078,127 @@ void UnityAutoTranslator::detectStream(
          + "\",\"count\":" + std::to_string(count) + "}\n");
 }
 
+#ifdef _WIN32
+namespace
+{
+using Microsoft::WRL::ComPtr;
+
+class GamePathDialogEvents final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IFileDialogEvents, IFileDialogControlEvents>
+{
+public:
+    static constexpr DWORD chooseFolder = 1001;
+    ComPtr<IShellItem> selectedFolder;
+
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog* dialog) override
+    {
+        ComPtr<IFileDialogCustomize> controls;
+        const HRESULT hr = dialog->QueryInterface(IID_PPV_ARGS(controls.GetAddressOf()));
+        if (FAILED(hr)) return hr;
+        return controls->SetControlState(chooseFolder, currentFolder(dialog) ? CDCS_ENABLEDVISIBLE : CDCS_VISIBLE);
+    }
+
+    HRESULT STDMETHODCALLTYPE OnButtonClicked(IFileDialogCustomize* controls, DWORD control) override
+    {
+        if (control != chooseFolder) return S_OK;
+        ComPtr<IFileDialog> dialog;
+        const HRESULT hr = controls->QueryInterface(IID_PPV_ARGS(dialog.GetAddressOf()));
+        if (FAILED(hr)) return hr;
+        selectedFolder = currentFolder(dialog.Get());
+        if (!selectedFolder) return S_OK;
+        const HRESULT closed = dialog->Close(S_OK);
+        if (FAILED(closed)) selectedFolder.Reset();
+        return closed;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override
+    {
+        *response = FDESVR_DEFAULT;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override
+    {
+        *response = FDEOR_DEFAULT;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnItemSelected(IFileDialogCustomize*, DWORD, DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnCheckButtonToggled(IFileDialogCustomize*, DWORD, BOOL) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnControlActivating(IFileDialogCustomize*, DWORD) override { return S_OK; }
+
+private:
+    static ComPtr<IShellItem> currentFolder(IFileDialog* dialog)
+    {
+        ComPtr<IShellItem> folder;
+        if (FAILED(dialog->GetFolder(folder.GetAddressOf()))) return {};
+        constexpr SFGAOF wanted = SFGAO_FOLDER | SFGAO_FILESYSTEM;
+        SFGAOF attributes = 0;
+        if (FAILED(folder->GetAttributes(wanted, &attributes)) || (attributes & wanted) != wanted) return {};
+        return folder;
+    }
+};
+
+void checkGamePathDialog(HRESULT result)
+{
+    if (FAILED(result)) throw std::runtime_error("无法打开 Windows 游戏位置选择窗口");
+}
+}
+#endif
+
 std::string UnityAutoTranslator::pickPath(const std::string& defaultPath)
 {
 #ifndef _WIN32
     (void)defaultPath;
     return {};
 #else
-    // Prefer IFileOpenDialog: pick folder OR .exe in one modern dialog via
-    // FOS_PATHMUSTEXIST without FOS_PICKFOLDERS, using a custom filter that
-    // still can't open folders — so use SHBrowseForFolder with files included.
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    const bool needUninit = (hr == S_OK);
+    checkGamePathDialog(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
+    struct Apartment { ~Apartment() { CoUninitialize(); } } apartment;
 
-    std::wstring startWide;
-    if (!defaultPath.empty())
-    {
-        fs::path start = pathFromUtf8(defaultPath);
-        std::error_code ec;
-        if (fs::is_regular_file(start, ec))
-            start = start.parent_path();
-        while (!start.empty() && !fs::is_directory(start, ec))
-            start = start.parent_path();
-        if (!start.empty())
-            startWide = start.wstring();
-    }
+    ComPtr<IFileOpenDialog> dialog;
+    checkGamePathDialog(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(dialog.GetAddressOf())));
+    FILEOPENDIALOGOPTIONS options{};
+    checkGamePathDialog(dialog->GetOptions(&options));
+    checkGamePathDialog(dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR));
+    checkGamePathDialog(dialog->SetTitle(L"选择游戏目录或主程序（.exe）"));
+    checkGamePathDialog(dialog->SetOkButtonLabel(L"选择程序"));
+    const COMDLG_FILTERSPEC fileTypes[] = {{L"游戏程序 (*.exe)", L"*.exe"}};
+    checkGamePathDialog(dialog->SetFileTypes(1, fileTypes));
 
-    wchar_t display[MAX_PATH]{};
-    BROWSEINFOW bi{};
-    bi.hwndOwner = GetForegroundWindow();
-    bi.pszDisplayName = display;
-    bi.lpszTitle = L"选择游戏目录或主程序（.exe）";
-    bi.ulFlags = BIF_NEWDIALOGSTYLE | BIF_USENEWUI | BIF_BROWSEINCLUDEFILES;
-    if (!startWide.empty())
+    auto folder = pathFromUtf8(defaultPath);
+    std::error_code error;
+    while (!folder.empty() && !fs::is_directory(folder, error))
     {
-        bi.lpfn = [](HWND hwnd, UINT uMsg, LPARAM /*lParam*/, LPARAM lpData) -> int {
-            if (uMsg == BFFM_INITIALIZED && lpData)
-                SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, lpData);
-            return 0;
-        };
-        bi.lParam = reinterpret_cast<LPARAM>(startWide.c_str());
+        const auto parent = folder.parent_path();
+        if (parent == folder) { folder.clear(); break; }
+        folder = parent;
     }
+    ComPtr<IShellItem> start;
+    if (!folder.empty() && SUCCEEDED(SHCreateItemFromParsingName(folder.c_str(), nullptr, IID_PPV_ARGS(start.GetAddressOf()))))
+        dialog->SetFolder(start.Get());
 
-    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
-    std::string result;
-    if (pidl)
-    {
-        wchar_t pathBuf[MAX_PATH]{};
-        if (SHGetPathFromIDListW(pidl, pathBuf))
-            result = toUtf8(pathBuf);
-        CoTaskMemFree(pidl);
-    }
-    if (needUninit)
-        CoUninitialize();
+    ComPtr<IFileDialogCustomize> controls;
+    checkGamePathDialog(dialog.As(&controls));
+    checkGamePathDialog(controls->AddPushButton(GamePathDialogEvents::chooseFolder, L"选择当前文件夹"));
+    checkGamePathDialog(controls->MakeProminent(GamePathDialogEvents::chooseFolder));
+    const auto events = Microsoft::WRL::Make<GamePathDialogEvents>();
+    if (!events) throw std::bad_alloc();
+    DWORD cookie = 0;
+    checkGamePathDialog(dialog->Advise(events.Get(), &cookie));
+    const HRESULT shown = dialog->Show(GetForegroundWindow());
+    dialog->Unadvise(cookie);
+    if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return {};
+    checkGamePathDialog(shown);
+
+    ComPtr<IShellItem> item = events->selectedFolder;
+    if (!item) checkGamePathDialog(dialog->GetResult(item.GetAddressOf()));
+    PWSTR path = nullptr;
+    checkGamePathDialog(item->GetDisplayName(SIGDN_FILESYSPATH, &path));
+    const auto result = toUtf8(path);
+    CoTaskMemFree(path);
     return result;
 #endif
 }
