@@ -203,6 +203,7 @@
 .game-mosaic-version-picker > button { min-width: 32px; }
 .game-mosaic-result-version { display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: end; min-width: 0; min-height: 0; gap: 6px; }
 .game-mosaic-result-version > figure { width: 100%; box-sizing: border-box; }
+.game-mosaic-group-picker .unity-description-trigger { height: 30px; padding: 3px 7px; }
 .game-mosaic-workbench .unity-image-actions button[aria-pressed="true"] {
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }

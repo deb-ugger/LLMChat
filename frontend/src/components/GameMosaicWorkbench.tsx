@@ -4,7 +4,7 @@ import { api, type Settings } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, mosaicRowsStorageKey, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
-import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
@@ -20,6 +20,8 @@ import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameIm
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
+import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
+import { getFixedMenuPoint } from "../viewportLayout";
 import "../gameMosaic.css";
 
 type InitialScreening = MosaicScreeningSnapshot & { checked: boolean; detector?: string };
@@ -147,6 +149,21 @@ function mosaicStatus(row: Result, included: boolean, queuedForRetry: boolean): 
   return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
 }
 const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类＋定位）" };
+function isIndependentGroup(key: string | undefined) {
+  return !!key && /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(key);
+}
+
+function dissolveIndependentGroup(rows: Results, key: string): Results {
+  if (!isIndependentGroup(key)) return rows;
+  let next = rows;
+  for (const [id, row] of Object.entries(rows)) {
+    if (row.group !== key) continue;
+    if (next === rows) next = { ...rows };
+    next[id] = { ...row, group: undefined, manualGroup: undefined, reference: undefined };
+  }
+  return next;
+}
+
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -254,6 +271,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       return saved;
     } catch { return {}; }
   });
+  const latestRows = useRef(rows);
+  latestRows.current = rows;
   useLayoutEffect(() => {
     publishMosaicBenchmarkSource(gamePath,rows);
   }, [gamePath,rows]);
@@ -294,6 +313,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
   const filterMenu = useRef<HTMLDivElement>(null);
   const [configured, setConfigured] = useState<MosaicStep | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ group: string; x: number; y: number } | null>(null);
+  const groupMenuRef = useRef<HTMLDivElement>(null);
   const [preferences, setPreferences] = useState(() => readMosaicSettings(gamePath));
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const changePreferences = (patch: Partial<typeof preferences>) => saveMosaicSettings(gamePath, { ...preferences, ...patch });
@@ -1292,6 +1313,62 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
 
   const actionsDisabled = !!busy || disabled;
+  useEffect(() => {
+    if (actionsDisabled || !paneVisible) setGroupMenu(null);
+  }, [actionsDisabled, paneVisible]);
+  useEffect(() => {
+    if (!groupMenu) return;
+    const focused = document.activeElement;
+    groupMenuRef.current?.querySelector("button")?.focus({ preventScroll: true });
+    const close = () => setGroupMenu(null);
+    const outside = (event: Event) => {
+      if (!groupMenuRef.current?.contains(event.target as Node)) close();
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      close();
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", key);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [groupMenu]);
+
+  function openGroupMenu(event: ReactMouseEvent<HTMLElement>, key: string | undefined) {
+    if (actionsDisabled || !key || !isIndependentGroup(key) || !imageGroup.has(key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const point = event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : { x: bounds.left, y: bounds.bottom };
+    setGroupMenu({ group: key, ...getFixedMenuPoint(point.x, point.y, 166, 55) });
+  }
+
+  async function deleteGroup(key: string) {
+    setGroupMenu(null);
+    if (actionsDisabled || task.current || !isIndependentGroup(key)) return;
+    const count = imageGroup.get(key)?.length;
+    if (!count || !await confirmation.confirm(`删除这个独立组？组内 ${count} 张图片将恢复默认分组，蒙版和处理结果会保留。`, {
+      title: "删除独立组", okLabel: "删除",
+    }) || task.current) return;
+    const current = latestRows.current;
+    const next = dissolveIndependentGroup(current, key);
+    if (next === current) return;
+    try { replaceRows(next); }
+    catch { showAppNotice("无法保存分组修改", "error"); return; }
+    if (scopedGroup === key) {
+      setSceneFilter(false);
+      setGroupPages({});
+    }
+    showAppNotice("已删除独立组");
+  }
+
   function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
     clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     if (step === "refine") clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
@@ -1554,7 +1631,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}`}>
                   <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={actionsDisabled} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: row.boxes.length ? undefined : row.review })} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail}
-                    onClick={() => selectPreview(image.id)}>
+                    onClick={() => selectPreview(image.id)}
+                    onContextMenu={event => openGroupMenu(event, row.group)}>
                     <strong><SearchHighlight text={image.name} query={needle} /></strong>
                     <small>{detail}</small>
                   </button>
@@ -1569,14 +1647,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         <div className="unity-image-actions">
           <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
           <div className="unity-image-button-group">
-            <span>{members.length} 张 · 本组已选 {selected.length} 张</span>
-            <select aria-label="移动当前图片到场景组" disabled={actionsDisabled} value="" onChange={event => {
-              const next = event.target.value;
-              if (next) update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false });
-            }}>
-              <option value="" disabled>移动到分组…</option><option value="new">新建独立组</option>
-              {[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => <option key={key} value={key}>{list[0].name} · {list.length} 张</option>)}
-            </select>
+            <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
+              onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
+            <div className="game-mosaic-group-picker" onContextMenu={event => openGroupMenu(event, group)}>
+              <UnityDescriptionSelect label="移动到分组…" value="" menuWidth={248} disabled={actionsDisabled}
+                choices={[{ value: "new", label: "新建独立组" },
+                  ...[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => ({
+                    value: key, label: list[0].name + " · " + list.length + " 张" + (isIndependentGroup(key) ? " · 独立组" : ""),
+                  }))]}
+                onChange={next => update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false })}
+                onOptionContextMenu={(key, event) => openGroupMenu(event, key)} />
+            </div>
             <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
               const next = { ...previous };
               for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
@@ -1668,5 +1749,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </div>
       </section>}
     </GameImageSplit>
+    {groupMenu && createPortal(<div ref={groupMenuRef} className="unity-gallery-menu" role="menu" aria-label="独立组操作"
+      style={{ left: groupMenu.x, top: groupMenu.y }}>
+      <button type="button" role="menuitem" onClick={() => void deleteGroup(groupMenu.group)}>删除独立组</button>
+    </div>, document.body)}
   </section>;
 }

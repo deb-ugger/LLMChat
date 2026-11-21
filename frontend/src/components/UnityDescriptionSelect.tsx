@@ -1,5 +1,5 @@
 import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import "../unityOffline.css";
 
 type Choice = { value: string; label: string; description?: string; warning?: string };
@@ -21,8 +21,9 @@ export const UNITY_LINE_CHOICES: readonly Choice[] = [
 ];
 
 /** Descriptions are visible only in the open menu; the trigger shows the short label. */
-export function UnityDescriptionSelect({ label, value, choices, disabled, onChange }: {
+export function UnityDescriptionSelect({ label, value, choices, disabled, onChange, menuWidth = 440, onOptionContextMenu }: {
   label: string; value: string; choices: readonly Choice[]; disabled?: boolean; onChange: (value: string) => void;
+  menuWidth?: number; onOptionContextMenu?: (value: string, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   const id = useId(), trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -32,16 +33,17 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
     const viewport = getLayoutViewport();
     const rect = getLayoutRect(trigger.current!.getBoundingClientRect(), viewport.scale);
     const list = menu.current!;
-    const width = Math.min(Math.max(rect.width, 440), viewport.width - 24);
+    const width = Math.min(Math.max(rect.width, menuWidth), viewport.width - 24);
     const below = viewport.height - rect.bottom - 8, above = rect.top - 8;
     const upwards = below < 300 && above > below;
     Object.assign(list.style, { width: `${width}px`, left: `${Math.max(12, Math.min(rect.left, viewport.width - width - 12))}px`, top: upwards ? "auto" : `${rect.bottom + 6}px`, bottom: upwards ? `${viewport.height - rect.top + 6}px` : "auto", maxHeight: `${Math.max(100, Math.min(560, upwards ? above : below))}px` });
-  }, []);
+  }, [menuWidth]);
   const close = (focus = false) => { menu.current?.hidePopover(); if (focus) trigger.current?.focus(); };
   const show = () => {
     if (disabled) return;
     position(); menu.current!.showPopover();
-    menu.current!.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus();
+    const selectedOption = menu.current!.querySelector<HTMLButtonElement>('[aria-selected="true"]');
+    (selectedOption ?? menu.current!.querySelector<HTMLButtonElement>('[role="option"]'))?.focus();
   };
   useEffect(() => {
     if (!open) return;
@@ -55,7 +57,7 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
       onPointerDown={()=>{pointerWasOpen.current=!!menu.current?.matches(":popover-open");}}
       onClick={() => {const shouldClose=pointerWasOpen.current||menu.current!.matches(":popover-open");pointerWasOpen.current=false;if(shouldClose)close();else show();}}
       onKeyDown={event => { if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) { event.preventDefault(); if((event.key==="Enter"||event.key===" ")&&menu.current!.matches(":popover-open"))close();else show(); } }}>
-      <span>{selected?.label || value}</span><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
+      <span>{selected?.label || value || label}</span><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
     </button>
     <div ref={menu} id={id} className="unity-description-menu" popover="auto" role="listbox" aria-label={label}
       onToggle={() => setOpen(!!menu.current?.matches(":popover-open"))}
@@ -73,7 +75,13 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
           options[next]?.focus();
         }
       }}>
-      {choices.map(choice => <button type="button" key={choice.value} role="option" aria-selected={choice.value === value} tabIndex={-1} className="unity-description-option" onClick={() => { onChange(choice.value); close(true); }}>
+      {choices.map(choice => <button type="button" key={choice.value} role="option" aria-selected={choice.value === value} tabIndex={-1} className="unity-description-option"
+        onContextMenu={onOptionContextMenu ? event => {
+          event.stopPropagation();
+          onOptionContextMenu(choice.value, event);
+          if (event.defaultPrevented) close(true);
+        } : undefined}
+        onClick={() => { onChange(choice.value); close(true); }}>
         <strong>{choice.label}</strong>{choice.description && <span>{choice.description}</span>}{choice.warning && <b>{choice.warning}</b>}
       </button>)}
     </div>
