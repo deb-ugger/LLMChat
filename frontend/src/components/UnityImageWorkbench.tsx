@@ -19,7 +19,7 @@ import { api, type OcrMode } from "../api";
 import { showAppNotice } from "./AppNotice";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { moveScreenedImageToGroup, type ManualImageGroup } from "../gameImageScreening";
-import type { ImageIndexIssue } from "../gameImageGroupChanges";
+import { imageGroupHistory, type ImageIndexIssue, type ImageResultGroup } from "../gameImageGroupChanges";
 import { gameImageBatchErrors } from "./GameBatchResults";
 import { rememberRecentGameFailures } from "../unityLastGame";
 import { type UnityImage, type UnityImageRegion, type UnityProject } from "../unityOffline";
@@ -279,9 +279,10 @@ function ImageErrorGroup({ title, issues, names, selected, onSelect, onMenu }: {
     {open && <GameImageListPagination label={title + "分页"} page={current} pages={pages} onPage={setPage} />}
   </details>;
 }
-export function UnityImageWorkbench({ project, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
+export function UnityImageWorkbench({ project, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
   project: UnityProject | null; disabled: boolean; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
   patchIssues?: readonly ImageIndexIssue[];
+  initialScreeningComplete: boolean;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onRedrawFailure: (image: UnityImage, reason: string) => Promise<void>;
   onImportArchive:(items:ImageArchiveReplacement[])=>Promise<boolean>;onArchiveMessage:(text:string,error?:boolean)=>void;
@@ -315,7 +316,7 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ empty: true });
   const [galleryScope,setGalleryScope]=useState<string|null>(null);
   const [listMenu, setListMenu] = useState<(({ kind: "group"; group: string; label: string } |
-    { kind: "image"; file?: string; id: string; locate?: boolean }) & { x: number; y: number }) | null>(null);
+    { kind: "image"; file?: string; id: string; locate?: boolean; origin?: ImageResultGroup }) & { x: number; y: number }) | null>(null);
   const groupMenu = listMenu?.kind === "group" ? listMenu : null;
   const imageMenu = listMenu?.kind === "image" ? listMenu : null;
   const openImageFolder = async (file: string) => {
@@ -341,6 +342,11 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
     if(!dirty||baselineFolder.current!==project?.folder){viewBaseline.current=new Map(rows.map(image=>[image.id,{selected:imageWorkChecked(image),completed:image.completed,error:image.error,group:unityImageResultGroup(image)}]));baselineFolder.current=project?.folder;}
     return sortGameImages(rows,new Map([...viewBaseline.current].map(([id,value])=>[id,value.selected])));
   },[project?.images,project?.folder,dirty]);
+  const groupHistory = useMemo(() => imageGroupHistory(project?.folder), [project?.folder]);
+  const [groupChangesRevision, setGroupChangesRevision] = useState(0);
+  useLayoutEffect(() => {
+    if (!dirty && groupHistory.record(images, initialScreeningComplete)) setGroupChangesRevision(value => value + 1);
+  }, [dirty, groupHistory, images, initialScreeningComplete]);
   const imageErrors = useMemo(() => gameImageBatchErrors(images), [images]);
   useEffect(() => {
     if (project?.root && !dirty && !saving) rememberRecentGameFailures(project.root, "images", imageErrors.length);
@@ -369,8 +375,8 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
   },[searchIndex,deferredSearch,dirty,imageSearchKey]);
   const filtered=useMemo(()=>images.filter(image=>{const view=viewBaseline.current.get(image.id)||image;return ((view===image?imageWorkChecked(image):view.selected)?imageFilters.checked:imageFilters.unchecked)&&(view.error?imageFilters.failed:view.completed?imageFilters.done:imageFilters.pending)&&searchMatches.has(image.id);}),[images,searchMatches,imageFilters,dirty]);
   const groups = useMemo(() => {
-    const result: Record<string, { items: UnityImage[]; eligible: number; checked: number }> = Object.fromEntries(
-      imageListGroups.map(([group]) => [group, { items: [], eligible: 0, checked: 0 }]));
+    const result: Record<string, { items: UnityImage[]; added: Set<string>; removed: number; eligible: number; checked: number }> = Object.fromEntries(
+      imageListGroups.map(([group]) => [group, { items: [], added: new Set<string>(), removed: 0, eligible: 0, checked: 0 }]));
     for (const item of filtered) {
       const currentGroup = unityImageResultGroup(item);
       const eligible = imageWorkSelectable(item);
@@ -379,10 +385,15 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
         previousGroup !== "empty" && previousGroup !== "excluded" ? previousGroup : currentGroup;
       const list = result[group];
       list.items.push(item);
+      const origin = initialScreeningComplete ? groupHistory.origins.get(item.id) : undefined;
+      if (origin !== undefined && origin?.group !== group) {
+        list.added.add(item.id);
+        if (origin) result[origin.group].removed++;
+      }
       if (eligible) { list.eligible++; if (imageWorkChecked(item)) list.checked++; }
     }
     return result;
-  }, [filtered, dirty]);
+  }, [filtered, dirty, groupHistory, groupChangesRevision, initialScreeningComplete]);
   const [groupPages,setGroupPages]=useState<Record<string,number>>({});
   useEffect(()=>setGroupPages({}),[deferredSearch,imageFilters,project?.folder]);
   const counts = useMemo(() => ({
@@ -460,10 +471,10 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
     node?.focus({ preventScroll: true });
     node?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [keyboardTarget]);
-  const openRowMenu = (event: React.MouseEvent, id: string, file?: string, locate = false) => {
+  const openRowMenu = (event: React.MouseEvent, id: string, file?: string, locate = false, origin?: ImageResultGroup) => {
     event.preventDefault();
     event.stopPropagation();
-    setListMenu({ kind: "image", id, file, locate, ...getFixedMenuPoint(event.clientX, event.clientY, 190, 90) });
+    setListMenu({ kind: "image", id, file, locate, origin, ...getFixedMenuPoint(event.clientX, event.clientY, 190, origin ? 118 : 90) });
   };
   useEffect(() => { setActiveRegion(-1);setSelectedRegions(new Set());setOpenRegionDetails(new Set());setRegionMenu(null); setDetailMode(ocrMode); }, [image?.id, ocrMode]);
   const locateRegion = (index: number) => { setActiveRegion(index);setSelectedRegions(new Set([index])); workbench.current?.querySelector<HTMLElement>(`[data-region-index="${index}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
@@ -535,11 +546,11 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
     {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onQueueRedraw={queueRedraw} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <GameImageSplit listId={imageListId} listRef={listRef} listLabel="游戏图片列表"
       widthKey="unity-image-browser-list-width" onListKeyDown={navigateImageList}
       list={focusedDetail ? null : <>{imageListGroups.map(([group, label]) => {
-        const { items, eligible, checked } = groups[group];
+        const { items, added, removed, eligible, checked } = groups[group];
         const pages = Math.max(1, Math.ceil(items.length / imageListPageSize)), page = Math.min(groupPages[group] || 0, pages - 1);
         const visible = collapsed[group] ? [] : items.slice(page * imageListPageSize, (page + 1) * imageListPageSize);
         const changePage = (next: number) => selectListRow(group, imagePageIndex(items.findIndex(row => row.id === image?.id), next, items.length), false);
-        return items.length > 0 && <details key={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => {
+        return (items.length > 0 || removed > 0) && <details key={group} data-image-group={group} className={`unity-image-result-group${groupMenu?.group===group?" is-context-selected":""}`} open={!collapsed[group]} onToggle={event => {
           const closed = !event.currentTarget.open;
           setCollapsed(previous => previous[group] === closed ? previous : { ...previous, [group]: closed });
         }}>
@@ -549,12 +560,16 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
             setListMenu({ kind: "group", group, label, ...getFixedMenuPoint(event.clientX, event.clientY, 200, 90) });
           }}>
             <span>{label} · {items.length}</span>
+            {(added.size > 0 || removed > 0) && <span className="unity-image-change-counts">
+              {added.size > 0 && <span className="is-added" aria-label={`移入或新增 ${added.size} 张`}>+{added.size}</span>}
+              {removed > 0 && <span className="is-removed" aria-label={`移出 ${removed} 张`}>−{removed}</span>}
+            </span>}
             <input className="unity-image-group-check" type="checkbox" aria-label={`${checked === eligible && eligible > 0 ? "取消全选" : "全选"}：${label}`}
               disabled={disabled || !!archiveBusy || !eligible} checked={eligible > 0 && checked === eligible} ref={node => { if (node) node.indeterminate = checked > 0 && checked < eligible; }}
               onClick={event => event.stopPropagation()} onChange={event => selectImages(items, event.target.checked)} />
           </summary>
-          {visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}`}
-              onContextMenu={event => openRowMenu(event, item.id, item.file)}>
+          {visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}${added.has(item.id) ? " is-added" : ""}`}
+              onContextMenu={event => openRowMenu(event, item.id, item.file, false, added.has(item.id) ? groupHistory.origins.get(item.id)?.group : undefined)}>
         <input type="checkbox" aria-label={(isUnityImageReviewable(item) ? "复筛图片 " : "选择图片 ") + item.name}
           disabled={disabled || !!archiveBusy || !imageWorkSelectable(item)} checked={imageWorkChecked(item) && imageWorkSelectable(item)}
           onChange={event => onChange(setImageWorkChecked(item, event.target.checked))} />
@@ -646,6 +661,14 @@ export function UnityImageWorkbench({ project, disabled, patchIssues, active = t
     {groupMenu&&createPortal(<div className="unity-gallery-menu" role="menu" aria-label={`${groupMenu.label}图片操作`} style={{left:groupMenu.x,top:groupMenu.y}}><button role="menuitem" onClick={()=>{const group=groupMenu.group;setListMenu(null);requestFilter(()=>{setGalleryScope(group);setGalleryVisited(true);setGallery(true);setReturnToGallery(false);});}}>批量查看：{groupMenu.label}</button><ImageRedrawQueueAction
       images={groups[groupMenu.group].items} disabled={disabled || !!archiveBusy} onChange={queueRedraw} /></div>,document.body)}
     {imageMenu && createPortal(<div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: imageMenu.x, top: imageMenu.y }}>
+      {imageMenu.origin && <button type="button" role="menuitem" onClick={() => {
+        const group = imageMenu.origin!;
+        setListMenu(null);
+        setCollapsed(previous => ({ ...previous, [group]: false }));
+        const summary = listRef.current?.querySelector<HTMLElement>(`details[data-image-group="${group}"] > summary`);
+        summary?.focus({ preventScroll: true });
+        summary?.scrollIntoView({ block: "nearest" });
+      }}>跳到原分组</button>}
       {imageMenu.locate && <button type="button" role="menuitem" onClick={() => {
         setListMenu(null);
         setListTarget(imageMenu.id);

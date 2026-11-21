@@ -1,6 +1,7 @@
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
 import { rememberRecentGameFailures } from "../unityLastGame";
+import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { GameMosaicWorkbench, type MosaicCandidateIndex } from "./GameMosaicWorkbench";
@@ -801,6 +802,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (p?.images) p.images = p.images.map(normalizeUnityImageSelection);
         if (p && imageReset && workspace.task?.imageTask === imageReset && workspace.task.progress.state === "pending" &&
             (imageReset === "filter" || imageReset === "refine" || imageReset === "recognize")) {
+          resetImageGroupHistory(p.folder);
           setImageResetRevision(value => value + 1);
         }
         latest.current = p; setProject(p);
@@ -837,6 +839,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const { workspace } = await unityRun<{ workspace: UnityWorkspace<RunCheckpoint> }>("reset-step", {
         root, step: 1, path: current.folder, task: checkpointRef.current || projectCheckpoint(current),
       });
+      clearImageGroupHistory(current.folder);
       try { localStorage.removeItem("llmchat-game-mosaic:" + root); } catch { /* Storage can be unavailable. */ }
       clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
       clearGamePerformance(promptState.scope + ":images", unityImagePhases);
@@ -2969,7 +2972,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
         <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
     </div>}
-    <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench key={imageResetRevision} onRedrawFailure={async (image, reason) => {
+    <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
       const current = latest.current;
       const row = current?.images?.find(item => item.id === image.id);
       if (current?.images && row) {
