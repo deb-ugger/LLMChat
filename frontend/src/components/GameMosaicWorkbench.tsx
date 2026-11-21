@@ -12,7 +12,7 @@ import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
-import { GameModelUsage } from "./GameFlowSequence";
+import { GameMetricHint, GameModelUsage } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
@@ -999,6 +999,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
     const elapsed = status?.elapsed ?? (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
+    const toggle = () => setConfigured(expanded ? null : id);
     const modelTitle = (running || id === "redraw" && pausedRedraw) ? status?.summary : summary;
     const models = Object.entries(status?.models ?? {});
     const showModelNames = models.length > 1 || models[0]?.[1].model !== modelTitle;
@@ -1008,7 +1009,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
     const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
-      toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={() => setConfigured(expanded ? null : id)}
+      toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={toggle}
       status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
       summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
         <span data-tooltip={status?.device?.reason}>{modelTitle}
@@ -1021,11 +1022,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </small> : null}
         {expanded && (imageRate !== undefined || detection || !!status?.failed) &&
           <small className="game-flow-model-rates">
-            {imageRate !== undefined && <span data-tooltip="本次已处理张数除以本批次实际经过时间，包含读图、准备和校验。">
+            {imageRate !== undefined && <GameMetricHint onClick={toggle} detail="本批已处理张数除以整批经过时间。含读图、准备、等待和结果处理，不含步骤结束后的异步保存。">
               <span className="game-flow-metric">{imageRate.toFixed(imageRate < 0.1 ? 3 : 2)}</span> 张/秒
-            </span>}
+            </GameMetricHint>}
             {detection && <>
-              <span data-tooltip="从调用本地检测到返回的逐图平均耗时。">每张 <span className="game-flow-metric">{detectionMs.toFixed(detectionMs < 10 ? 1 : 0)}</span> 毫秒</span>
+              <GameMetricHint onClick={toggle} detail="本地检测调用的单张平均耗时，含检测内部的解码与图像处理，不含调用前读图及返回后的结果整理和写回。">
+                检测每张 <span className="game-flow-metric">{detectionMs.toFixed(detectionMs < 10 ? 1 : 0)}</span> 毫秒
+              </GameMetricHint>
               <span>并发 <span className="game-flow-metric">{detection.concurrency}</span></span>
               <span>请求 <span className="game-flow-metric">{detection.requests} 次</span></span>
             </>}
@@ -1033,7 +1036,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           </small>}
         {expanded && id !== "screen" && models.map(([key, model]) => <div key={key}>
           {showModelNames && <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>}
-          <GameModelUsage model={model} perImage={id !== "refine"} />
+          <GameModelUsage model={model} perImage={id !== "refine"} onToggle={toggle} />
         </div>)}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}

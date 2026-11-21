@@ -39,17 +39,26 @@ const stateLabels: Record<string, string> = {
 const formatTiming = (value: number | undefined) => value === undefined ? "—" : value < 60000 ? (value / 1000).toFixed(1) + " 秒" : gameDuration(value);
 const settingsHeights = new Map<string, number>();
 
-export function GameModelUsage({ model, perImage = false }: {
+export function GameMetricHint({ detail, onClick, children }: { detail: string; onClick: () => void; children: ReactNode }) {
+  return <span data-tooltip={detail} onClick={onClick} style={{ pointerEvents: "auto", cursor: "pointer" }}>{children}</span>;
+}
+
+export function GameModelUsage({ model, perImage = false, onToggle }: {
   model: StepPerformance["models"][string];
   perImage?: boolean;
+  onToggle: () => void;
 }) {
   const { tokens, requests, requestMs, generationTokens, generationMs, concurrency } = model;
   const hasGenerationRate = generationMs > 0 && generationTokens > 0;
   const hasRequestRate = requestMs > 0 && tokens > 0;
   if (hasGenerationRate || hasRequestRate) return <>
     <small className="game-flow-model-rates">
-      {hasGenerationRate && <span>纯生成 <span className="game-flow-metric">{(generationTokens * 1000 / generationMs).toFixed(1)} tok/s</span></span>}
-      {hasRequestRate && <span>请求平均 <span className="game-flow-metric">{(tokens * 1000 / requestMs).toFixed(1)} tok/s</span></span>}
+      {hasGenerationRate && <GameMetricHint onClick={onToggle} detail="生成 token 数除以模型报告的生成耗时。只计生成，不含排队、网络往返或应用校验。">
+        纯生成 <span className="game-flow-metric">{(generationTokens * 1000 / generationMs).toFixed(1)} tok/s</span>
+      </GameMetricHint>}
+      {hasRequestRate && <GameMetricHint onClick={onToggle} detail="生成 token 数除以请求耗时，含网络往返和回包解析，不含应用侧排队和请求结束后的业务校验。">
+        请求平均 <span className="game-flow-metric">{(tokens * 1000 / requestMs).toFixed(1)} tok/s</span>
+      </GameMetricHint>}
     </small>
     {requests > 0 && requestMs > 0 && <small style={{ display: "block" }}
       data-tooltip="实际请求耗时逐次相加，并发请求的耗时可能重叠。">
@@ -252,11 +261,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
         const actionLabel = step.stop ? step.stopDisabled ? "正在中止" : "中止" : runLabel;
         const expanded = configured === step.id;
+        const toggle = () => onConfigure(expanded ? null : step.id);
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && !!children;
         return <GameFlowCard key={step.id} title={step.title} state={state} benchmark={showingBenchmark ? benchmark : undefined} current={current}
           expanded={expanded} toggleTooltip={models.length ? undefined : expanded ? "收起设置" : "展开设置"}
-          onToggle={() => onConfigure(expanded ? null : step.id)}
+          onToggle={toggle}
           status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
           summary={<>
               {models.length ? models.map(model => (
@@ -266,7 +276,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
                     {!(expanded && model.tokens <= 0 && model.requests > 0 && model.requestMs > 0) &&
                       <small className="game-flow-model-concurrency">并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
                   </div>
-                  {expanded && <GameModelUsage model={model} />}
+                  {expanded && <GameModelUsage model={model} onToggle={toggle} />}
                 </div>
               )) : <span>{testMetrics ? "" : step.summary}</span>}
               {expanded && (measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
