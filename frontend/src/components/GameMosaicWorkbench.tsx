@@ -46,7 +46,17 @@ type Props = {
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
 const mosaicPageSize = 40;
-const ungroupedMosaicImages = "ungrouped";
+const mosaicStatusLabels = {
+  pending: "待筛选", review: "待复核", candidate: "疑似有码",
+  confirmed: "已确认", included: "已纳入补丁", clear: "未发现",
+} as const;
+type MosaicStatus = keyof typeof mosaicStatusLabels;
+function mosaicStatus(row: Result, included: boolean): MosaicStatus {
+  if (row.saved) return included ? "included" : "confirmed";
+  if (row.reason) return "review";
+  if (row.boxes.length) return "candidate";
+  return row.scanned ? "clear" : "pending";
+}
 const detectorLabels = { grid: "方格规则", lada: "Lada v4 Fast（内置）", "lada-accurate": "Lada v4 Accurate（内置）" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
@@ -136,7 +146,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }, [gamePath]);
   const [detectorFile, setDetectorFile] = useState(() => gameDetectorFile(gamePath));
   const [sceneFilter, setSceneFilter] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<"all" | "candidate" | "unknown" | "clear">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | MosaicStatus>("all");
   const [activeId, setActiveId] = useState<string | null>("");
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
@@ -181,30 +191,28 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const groupAnchor = sceneFilter ? usable.find(image => image.id === activeId) ?? matches[0] : undefined;
   const scopedGroup = groupAnchor && (resultFor(rows, groupAnchor).group || groupAnchor.id);
   const currentScope = scopedGroup ? imageGroup.get(scopedGroup) ?? [] : matches;
-  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image => {
-    const row = resultFor(rows, image);
-    return statusFilter === "candidate" ? row.boxes.length > 0 : statusFilter === "unknown" ? !row.scanned || !!row.reason : row.scanned && !row.reason && !row.boxes.length;
-  }), [currentScope, rows, statusFilter]);
+  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image =>
+    mosaicStatus(resultFor(rows, image), !!storage?.index[image.id]?.included) === statusFilter),
+    [currentScope, rows, statusFilter, storage?.index]);
   const { ordered, groups } = useMemo(() => {
-    const groups = new Map<string, UnityImage[]>();
-    const independent: UnityImage[] = [];
+    const grouped = new Map<MosaicStatus, UnityImage[]>();
     for (const image of visible) {
-      const row = resultFor(rows, image);
-      if (!row.group || !row.manualGroup && (imageGroup.get(row.group)?.length ?? 0) < 2) {
-        independent.push(image);
-        continue;
-      }
-      const list = groups.get(row.group);
+      const status = mosaicStatus(resultFor(rows, image), !!storage?.index[image.id]?.included);
+      const list = grouped.get(status);
       if (list) list.push(image);
-      else groups.set(row.group, [image]);
+      else grouped.set(status, [image]);
     }
-    if (independent.length) groups.set(ungroupedMosaicImages, independent);
+    const groups = new Map<MosaicStatus, UnityImage[]>();
+    for (const status of Object.keys(mosaicStatusLabels) as MosaicStatus[]) {
+      const images = grouped.get(status);
+      if (images?.length) groups.set(status, images);
+    }
     return { groups, ordered: [...groups].flatMap(([id, images]) => images.map(image => ({ id, image }))) };
-  }, [visible, rows, imageGroup]);
+  }, [visible, rows, storage?.index]);
   const pages = Math.max(1, Math.ceil(ordered.length / mosaicPageSize));
   const currentPage = Math.min(page, pages - 1);
   const pageImages = ordered.slice(currentPage * mosaicPageSize, (currentPage + 1) * mosaicPageSize);
-  const pageGroups = new Map<string, UnityImage[]>();
+  const pageGroups = new Map<MosaicStatus, UnityImage[]>();
   for (const { id, image } of pageImages) {
     const list = pageGroups.get(id);
     if (list) list.push(image);
@@ -796,7 +804,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     <div className="unity-offline-toolbar unity-image-toolbar">
       <GameImageFilter menuRef={filterMenu}>
         <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }}>
-          <option value="all">全部状态</option><option value="candidate">疑似打码</option><option value="unknown">待复核</option><option value="clear">未发现</option>
+          <option value="all">全部状态</option>{(Object.entries(mosaicStatusLabels) as [MosaicStatus, string][]).map(([id, label])=><option key={id} value={id}>{label}</option>)}
         </select></label>
         <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => {
           if (event.target.checked && active) setActiveId(active.id);
@@ -811,15 +819,15 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={navigateList}
       list={<>
         <ul ref={listRef}>{[...pageGroups].map(([id, items]) => {
-          const label = id === ungroupedMosaicImages ? "独立图片" : imageGroup.get(id)?.[0]?.name || items[0].name;
+          const label = mosaicStatusLabels[id];
           return <li key={id} className="game-mosaic-scene-group">
-            <div className="game-mosaic-scene-heading" data-tooltip={label}><strong><SearchHighlight text={label} query={needle} /></strong>
+            <div className="game-mosaic-scene-heading" data-tooltip={label}><strong>{label}</strong>
               <span>{groups.get(id)?.length ?? items.length} 张</span>
             </div>
             <ul>{items.map(image => {
                 const row = resultFor(rows, image);
-                const status = row.saved ? storage?.index[image.id]?.included ? "已纳入补丁" : "已确认"
-                  : row.reason ? "待复核" : row.boxes.length ? `疑似打码 · ${row.boxes.length} 区域` : row.scanned ? "未发现" : "未筛选";
+                const state = mosaicStatus(row, !!storage?.index[image.id]?.included);
+                const status = mosaicStatusLabels[state] + (state === "candidate" ? ` · ${row.boxes.length} 区域` : "");
                 const detail = `${image.width} × ${image.height} · ${status}`;
                 return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}`}>
                   <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true })} />
