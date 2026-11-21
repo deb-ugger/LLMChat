@@ -278,10 +278,9 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
         const progress = job.progress;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
-        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}
-          style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", paddingBlock: "var(--space-1)" }}>
-          <div role={job.status === "运行中" ? "status" : undefined} style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
+          <div className="game-benchmark-queue-copy" role={job.status === "运行中" ? "status" : undefined}>
+            <div className="game-benchmark-queue-title">
               <span role="img" aria-label={job.status} title={job.status} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
                 background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
                   job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
@@ -512,10 +511,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     <header className="game-benchmark-page-header"><h2>测试队列</h2></header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       <div className="game-benchmark-runbar">
-        <div className="game-benchmark-scope">
+        <div className="game-benchmark-scope" role="region" aria-label="测试范围">
         {targetControls}
         <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
-        <div className="game-benchmark-toolbar">
+        <div className="game-benchmark-toolbar game-benchmark-sample-tools">
         {(imageStep || mosaicStep) ? <><label>样本范围<select value={sampleSetMode ? "annotated" : mosaicStep === "mosaicRefine" ? "checked" : sampleSettings?.selection || "checked"}
           onChange={event => {
             const value = event.target.value;
@@ -534,7 +533,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </> : <span className="hint">样本范围 · 当前项目已勾选文本</span>}
         <label>样本上限<input type="number" min={0} step={1} value={sampleLimit || ""} placeholder="不限"
           title="留空时测试范围内的全部样本" onChange={event => setSampleLimit(Math.max(0, Math.trunc(Number(event.target.value))))} /></label>
-        {step === "translate" && <button type="button" className="unity-btn" disabled={checking || !enabledConfigs.length} onClick={() => void inspect()}>检查样本</button>}
+        {step === "translate" && <button type="button" className="unity-btn game-benchmark-inspect" disabled={checking || !enabledConfigs.length} onClick={() => void inspect()}>检查样本</button>}
         </div>
         {browseSampleSet && <ImageSampleSetBrowser path={sampleSetPath} onChoose={chooseSampleSet} onClose={() => setBrowseSampleSet(false)} />}
         </div>
