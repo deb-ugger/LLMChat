@@ -28,8 +28,8 @@
 .unity-offline.is-deployment > .unity-offline-config { flex: 1; width: 100%; min-width: 0; max-width: none; height: auto; }
 .unity-offline-upper { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .unity-workspace-divider { width: var(--workflow-divider-width); flex-shrink: 0; border: 0; background: transparent; cursor: col-resize; position: relative; padding: 0; }
-.unity-workspace-divider::after { content: ""; position: absolute; inset: 35% 3px; border-radius: var(--radius-sm); background: var(--border-strong); }
-.unity-workspace-divider:hover::after, .unity-workspace-divider:focus-visible::after { background: var(--accent); }
+.unity-workspace-divider::after { content: ""; position: absolute; inset: 0; width: 3px; height: min(48px, 100%); margin: auto; border-radius: var(--radius-pill); background: var(--border-strong); }
+.unity-workspace-divider:is(:hover, :focus-visible, :active)::after { background: var(--accent); }
 .unity-offline-workbench { border: 1px solid var(--border, var(--border, #dcd6c6)); border-radius: var(--radius-md); background: var(--bg-panel); padding: var(--panel-gap); min-width: 0; }
 .unity-offline-fields, .unity-offline-toolbar, .unity-offline-pagination { display: flex; align-items: center; gap: 10px; }
 .unity-generation { border: 1px solid var(--border,#dcd6c6); border-radius: var(--radius-lg); padding: var(--space-3) 14px; background: var(--panel,var(--bg-panel)); flex-shrink: 0; }
