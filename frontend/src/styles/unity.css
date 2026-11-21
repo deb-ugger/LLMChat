@@ -2695,6 +2695,25 @@ body.ocr-image-resizing * {
 .game-text-progress-failure { margin: 6px 0; color: var(--danger, #a3231a); overflow-wrap: anywhere; }
 
 /* Independent benchmark window. Native window controls handle position and size. */
+/* 测试运行时的呼吸：队列区块与正在跑的配置卡 */
+.game-benchmark-section.is-active {
+  border-color: color-mix(in srgb, #a855f7 55%, var(--border, #2a2721));
+  background: color-mix(in srgb, #a855f7 7%, var(--panel, #15130f));
+  animation: game-benchmark-breathe 1.8s ease-in-out infinite;
+}
+.game-benchmark-item.is-running {
+  border-color: color-mix(in srgb, #a855f7 60%, var(--border, #2a2721));
+  background: color-mix(in srgb, #a855f7 7%, var(--panel, #15130f));
+  animation: game-benchmark-breathe 1.6s ease-in-out infinite;
+}
+@keyframes game-benchmark-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, #a855f7 22%, transparent), 0 0 8px color-mix(in srgb, #a855f7 14%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, #a855f7 42%, transparent), 0 0 20px color-mix(in srgb, #a855f7 34%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-benchmark-section.is-active,
+  .game-benchmark-item.is-running { animation: none; }
+}
 .game-benchmark-page {
   box-sizing: border-box; width: 100%; height: 100dvh; min-width: 0;
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
