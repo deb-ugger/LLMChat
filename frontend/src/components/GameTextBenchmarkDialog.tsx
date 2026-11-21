@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { benchmarkChannelName, requestBenchmarkWindow, type BenchmarkQueueCommand } from "../gameBenchmarkWindow";
-import { benchmarkRunner, emptyBenchmarkSnapshot, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, type BenchmarkInput, type BenchmarkRequest, type BenchmarkSnapshot } from "../benchmark/benchmarkRunner";
+import { benchmarkRunner, benchmarkSampleCounts, emptyBenchmarkSnapshot, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, type BenchmarkInput, type BenchmarkRequest, type BenchmarkSnapshot } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
 import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
 import { gameDuration, modelConcurrency } from "../gameModelPerformance";
@@ -19,8 +19,8 @@ import { showAppNotice } from "./AppNotice";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type BenchmarkSetup = Pick<BenchmarkInput, "scope" | "current" | "models" | "screenModel" | "initialPart"> & {
-  selectedCount: number; imageCount?: number; imageSetup?: ImageBenchmarkSetup; mosaicSetup?: MosaicSettings;
-};
+  selectedCount: number; imageSetup?: ImageBenchmarkSetup; mosaicSetup?: MosaicSettings;
+} & ReturnType<typeof benchmarkSampleCounts>;
 type BenchmarkPageInput = BenchmarkSetup & {
   requestSelection: () => Promise<UnityEntry[]>;
   enqueue: (request: BenchmarkRequest) => Promise<unknown>;
@@ -34,7 +34,7 @@ const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
   scope: input.scope, current: input.current, models: input.models, screenModel: input.screenModel,
   initialPart: input.initialPart, selectedCount: input.getWorkload().selected.length,
   mosaicSetup: input.mosaicRoot ? readMosaicSettings(input.mosaicRoot) : undefined,
-  imageSetup: input.images?.setup, imageCount: input.images?.getWorkload().selected.length,
+  imageSetup: input.images?.setup, ...benchmarkSampleCounts(input),
 });
 const openEvent = "llmchat-open-game-benchmark";
 export function openGameTextBenchmark(input: BenchmarkInput) {
@@ -49,7 +49,8 @@ function controlQueue(kind: BenchmarkQueueCommand, id?: string) {
 
 function LocalGameBenchmark({ input, onClose }: { input: BenchmarkInput; onClose: () => void }) {
   const snapshot = useSyncExternalStore(benchmarkRunner.subscribe, benchmarkRunner.snapshot);
-  return <GameBenchmarkPage {...setupFor(input)} snapshot={snapshot}
+  const setup = useMemo(() => setupFor(input), [input]);
+  return <GameBenchmarkPage {...setup} snapshot={snapshot}
     requestSelection={async () => input.getWorkload().selected}
     enqueue={async request => benchmarkRunner.enqueue(input, request)}
     control={async (kind, id) => controlQueue(kind, id)} onClose={onClose} />;
@@ -149,7 +150,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const [mosaicStep, setMosaicStep] = useState<MosaicBenchmarkStep>("mosaicScreen");
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
-  const { jobs, running, stopping, progress, historyRevision } = props.snapshot;
+  const { jobs, running, stopping, historyRevision } = props.snapshot;
   const hasWaiting = jobs.some(job => job.status === "等待");
   const control = (kind: BenchmarkQueueCommand, id?: string) =>
     void props.control(kind, id).catch(error => showAppNotice(String(error), "error"));
@@ -161,14 +162,31 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     queueContents={<div className="game-benchmark-results" aria-label="任务队列">
       <strong>任务队列 · {jobs.length} 项</strong>
       {!jobs.length && <p className="hint">加入任务后，点击「运行队列」按顺序执行。</p>}
-      {jobs.map(job => <div key={job.id} className="game-benchmark-toolbar">
-        <strong>{job.label}</strong>
-        {job.status === "运行中" && progress?.state === "running" ? <span role="status">
-          {progress.label} · {progress.done}/{progress.total} · {gameDuration(progress.elapsedMs)}
-          {progress.failed > 0 && " · 失败 " + progress.failed}{progress.sample && " · " + progress.sample}
-        </span> : <span>{job.status} · 样本 {job.count} · {job.detail}</span>}
-        {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
-      </div>)}
+      {jobs.map(job => {
+        const progress = job.progress;
+        const phase = progress?.phase === "prepare" ? "准备样本与模型" :
+          progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
+        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}
+          style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", paddingBlock: "var(--space-1)" }}>
+          <div role={job.status === "运行中" ? "status" : undefined} style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+              <span role="img" aria-label={job.status} title={job.status} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
+                background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
+                  job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
+              <strong title={progress?.label}>{job.label}</strong>
+              <span className="game-flow-metric" style={{ marginInlineStart: "auto" }}>
+                {progress?.percent == null ? "—" : progress.percent + "%"}
+              </span>
+            </div>
+            <div className="hint" style={{ marginInlineStart: "calc(8px + var(--space-2))" }} title={progress?.detail}>
+              {job.status === "等待" ? "等待前一项" : progress &&
+                <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
+                  {progress.failed > 0 && " · 失败 " + progress.failed}</>}
+            </div>
+          </div>
+          {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
+        </div>;
+      })}
     </div>}
     targetControls={<div className="game-benchmark-toolbar game-benchmark-target">
       <label>测试内容<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
@@ -189,7 +207,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
 
 
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
-  requestSelection, imageSetup, mosaicSetup, imageCount, selectedCount, models, onClose, channel, queueControls, queueContents, historyRevision }:
+  requestSelection, imageSetup, mosaicSetup, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, queueControls, queueContents, historyRevision }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
     targetControls: ReactNode; queueControls: ReactNode; queueContents: ReactNode; historyRevision: number }) {
   const mosaicStep = isMosaicStep(step) ? step : undefined;
@@ -227,19 +245,39 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [reload, setReload] = useState(0);
   const [samplePreview, setSamplePreview] = useState<Record<string, BenchmarkSample>>({});
   const [checking, setChecking] = useState(false);
-  const [selectionCount, setSelectionCount] = useState(imageStep ? imageCount ?? 0 : selectedCount);
+  const [selectionCount, setSelectionCount] = useState(selectedCount);
   const [adding, setAdding] = useState(false);
   const totalRounds = Number(rounds);
   const validRounds = Number.isInteger(totalRounds) && totalRounds >= 1 && totalRounds <= 100;
   const serialized = JSON.stringify({ configs, rounds: totalRounds });
-  const canRun = configs.length > 0 && validRounds &&
-    configs.every(config => {
-      if (mosaicStep) return !!config.mosaic && (mosaicStep !== "mosaicRefine" ||
-        !!config.mosaic.refineModel && !!config.mosaic.refineGuardModel);
-      if (!config.models.text.id) return !requiresModel &&
-        (step !== "translate" && step !== "imageTranslate" || !!(config.engines || images?.engines || current.engines)?.some(engine => engine.enabled));
-      return roles.every(role => !config.models[role].id || models.includes(config.models[role].id));
-    });
+  const queue = snapshot.jobs.filter(job => job.status === "等待" || job.status === "运行中");
+  const configIssue = (config: BenchmarkConfig) => {
+    if (!validRounds) return "循环轮次必须为 1 至 100";
+    if (mosaicStep) {
+      const options = config.mosaic;
+      if (!options) return "缺少去码测试配置";
+      if (mosaicStep === "mosaicRefine" && (!options.refineModel || !options.refineGuardModel))
+        return "请先选择候选区域推理模型和纹理与漏检复核模型";
+      const checked = options.selection === "checked";
+      if (mosaicStep === "mosaicRedraw") {
+        if (!(checked ? mosaicCounts?.redrawChecked : mosaicCounts?.redrawAll)) return "请先为测试图片准备蒙版";
+      } else if (!(checked ? mosaicCounts?.checked : mosaicCounts?.all)) {
+        return "没有可测试的去码图片，请检查勾选或调整样本范围";
+      }
+      return "";
+    }
+    if (!(imageStep ? imageCounts?.[imageStep] : selectionCount))
+      return imageStep ? "没有符合当前步骤的图片样本" : "请先勾选要测试的文本";
+    if (!config.models.text.id) {
+      if (requiresModel) return "请先选择复核模型";
+      if ((step === "translate" || step === "imageTranslate") &&
+        !(config.engines || images?.engines || current.engines)?.some(engine => engine.enabled)) return "请先选择模型或启用翻译引擎";
+    } else if (roles.some(role => config.models[role].id && !models.includes(config.models[role].id))) {
+      return "所选模型不可用，请重新选择";
+    }
+    return "";
+  };
+  const canRun = configs.length > 0 && configs.every(config => !configIssue(config));
   useEffect(() => { onDraft({ configs, rounds }); }, [configs, rounds]);
   const saveQueue = (silent = false) => {
     if (!validRounds || serialized === savedQueue) return;
@@ -286,12 +324,12 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     [next[index], next[other]] = [next[other], next[index]];
     return next;
   });
-  const start = async () => {
-    if (!canRun || adding) return;
-    const configsSnapshot = structuredClone(configs).map(config => ({ ...config, engines: config.engines || (imageStep ? images?.engines : current.engines) }));
+  const start = async (single?: BenchmarkConfig) => {
+    if (adding || (single ? configIssue(single) : !canRun)) return;
+    const configsSnapshot = structuredClone(single ? [single] : configs).map(config => ({ ...config, engines: config.engines || (imageStep ? images?.engines : current.engines) }));
     setAdding(true);
     try {
-      await enqueue({ scope: textScope, step, configs: configsSnapshot, rounds: totalRounds });
+      await enqueue({ scope: textScope, step, configs: configsSnapshot, rounds: totalRounds, priority: !!single });
     } catch (error) {
       showAppNotice(String(error), "error");
     } finally { setAdding(false); }
@@ -316,7 +354,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     <header className="game-benchmark-page-header">
       <h2>测试队列</h2>
       {targetControls}
-      <p className="hint">{mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : "已勾选 " + selectionCount + (imageStep ? " 张图片" : " 条文本") + "。测试结果独立归档。"}</p>
+      <p className="hint">{mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
     </header>
     <section className="game-benchmark-scroll"><div className="game-text-benchmark">
       {queueContents}
@@ -343,6 +381,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </div>}
       {configs.map((config, index) => {
         const lastRun = latestRunByConfig.get(config.id)?.run;
+        const queueIndex = queue.findIndex(job => job.requestScope === textScope && job.step === step && job.configIds.includes(config.id));
+        const queued = queue[queueIndex]?.status === "等待";
+        const runIssue = queued ? "该配置已在等待队列中" : queueIndex >= 0 ? "该配置所在的任务正在运行" :
+          snapshot.stopping ? "正在中止当前测试，请稍候" : configIssue(config);
         return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
         <summary>
@@ -357,6 +399,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </summary>
         <fieldset disabled={adding} className="game-benchmark-item-fields">
         <div className="game-benchmark-toolbar">
+          <button type="button" className={"unity-btn" + (queued ? "" : " unity-btn-primary")} disabled={adding || !!runIssue}
+            title={runIssue || undefined} onClick={() => void start(config)}>
+            {queued ? "队列 #" + (queueIndex + 1) : snapshot.running ? "插到队首" : "立即运行"}
+          </button>
           <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label} onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
           <button type="button" className="unity-btn" disabled={index === 0} onClick={() => move(index, index - 1)}>上移</button>
           <button type="button" className="unity-btn" disabled={index === configs.length - 1} onClick={() => move(index, index + 1)}>下移</button>

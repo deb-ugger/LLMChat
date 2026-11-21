@@ -31,11 +31,11 @@ export function GameFlowCard({ title, state, current, benchmark, status, summary
             <span>{benchmark.label}</span>
             {benchmark.sample && <> · <span className="game-benchmark-sample" data-tooltip={benchmark.sample}>当前样本：{benchmark.sample}</span></>}
             <small className="game-flow-model-rates">
-              <span>{benchmark.done} / {benchmark.total}</span>
+              <span>{benchmark.current} / {benchmark.total}</span>
               {benchmark.failed > 0 && <span>失败 {benchmark.failed}</span>}
               {state === "running" && <span>测试用时 {gameDuration(benchmark.elapsedMs)}</span>}
             </small>
-            <GameProgressBar label={title + "测试进度"} value={benchmark.total ? 100 * benchmark.done / benchmark.total : 0} />
+            <GameProgressBar label={title + "测试进度"} value={benchmark.percent ?? undefined} />
           </div>}
           {summary}
         </div>
