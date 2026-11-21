@@ -33,7 +33,7 @@ import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { imageImportPng,type GameImportSource } from "../gameImageImport";
 import type { ImageArchiveReplacement } from "../gameImageArchive";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { GAME_IMAGE_SCREENING_LANES, LOCAL_REFINE_MODELS, gameImageRegionLanguageFilter, gameImageTranslationReadiness, localGameImageScreeningLanes } from "../gameImageScreening";
@@ -75,6 +75,7 @@ import { gameTextStageLabels, UnityTranslationProgress } from "./UnityTranslatio
 import { createUnityEnginePool, loadUnityEngines, normalizeUnityEngines, defaultUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "../unityEnginePool";
 import { UnityDescriptionSelect, UNITY_WRAP_CHOICES, UNITY_LINE_CHOICES, UNITY_SEGMENT_CHOICES } from "./UnityDescriptionSelect";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import { useGameWorkspaceSplit } from "../hooks/useGameWorkspaceSplit";
 import "../unityOffline.css";
 
 export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean | "discard"> };
@@ -255,123 +256,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [workRoot, setWorkRoot] = useState("");
   const [rowIssue, setRowIssue] = useState<UnityEntry | null>(null);
   const [rowJump, setRowJump] = useState<{ id: string; sequence: number; error: boolean } | null>(null);
-  const workspaceRef = useRef<HTMLDivElement>(null);
-  const panelMinWidth = mosaicPage ? 360 : 300;
-  const [panelMaxWidth, setPanelMaxWidth] = useState(900);
-  const [mosaicViewport, setMosaicViewport] = useState(() => window.innerWidth);
-  const panelMaxRef = useRef(panelMaxWidth);
-  const workflowWidth = usePersistedWidth("unity-offline-panel-width", 480, 300, panelMaxWidth);
-  const mosaicWidth = usePersistedWidth("game-mosaic-step-column-width",
-    Math.min(600, Math.max(420, mosaicViewport / 4)), 360, Math.max(360, Math.min(720, panelMaxWidth)));
-  const panelWidth = mosaicPage ? mosaicWidth : workflowWidth;
-  const committedPanelWidth = useRef(panelWidth.width);
-  const panelPreviewProperty = "--unity-panel-drag-width";
-  type PanelDrag = {
-    divider: HTMLButtonElement;
-    pointerId: number;
-    startX: number;
-    startWidth: number;
-    latest: number;
-    painted: number;
-    zoom: number;
-    frame: number;
-    detach: () => void;
-  };
-  const panelDrag = useRef<PanelDrag | null>(null);
-  const panelRef = useRef<HTMLElement>(null);
-  const panelPreviewRef = mosaicPage ? workspaceRef : panelRef;
-  const dividerRef = useRef<HTMLButtonElement>(null);
-
-  const paintPanelWidth = useCallback((drag: PanelDrag) => {
-    if (drag.painted === drag.latest) return;
-    drag.painted = drag.latest;
-    panelPreviewRef.current?.style.setProperty(panelPreviewProperty, `${drag.painted}px`);
-    drag.divider.setAttribute("aria-valuenow", String(Math.round(drag.painted)));
-  }, [panelPreviewProperty, panelPreviewRef]);
-
-  useEffect(() => {
-    const workspace = workspaceRef.current;
-    if (!workspace) return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (!entry.contentRect.width) return;
-      const styles = getComputedStyle(workspace);
-      const fixedWidth = parseFloat(styles.getPropertyValue("--workflow-rail-width"))
-        + (mosaicPage ? 3 * parseFloat(styles.columnGap) : parseFloat(styles.getPropertyValue("--workflow-column-gap")))
-        + parseFloat(styles.getPropertyValue("--workflow-divider-width"));
-      const paneSpace = entry.contentRect.width - fixedWidth;
-      const nextMax = Math.max(panelMinWidth, Math.min(mosaicPage ? 720 : 900, Math.floor(paneSpace - (mosaicPage ? 420 : 260))));
-      if (mosaicPage) setMosaicViewport(window.innerWidth);
-      panelMaxRef.current = nextMax;
-      setPanelMaxWidth(nextMax);
-      const drag = panelDrag.current;
-      if (drag) {
-        drag.latest = Math.min(drag.latest, nextMax);
-        if (drag.painted > nextMax) paintPanelWidth(drag);
-      }
-    });
-    observer.observe(workspace);
-    return () => observer.disconnect();
-  }, [mosaicPage, panelMinWidth, paintPanelWidth]);
-
-  const clearPanelPreview = useCallback(() => {
-    panelPreviewRef.current?.style.removeProperty(panelPreviewProperty);
-    dividerRef.current?.setAttribute("aria-valuenow", String(Math.round(committedPanelWidth.current)));
-  }, [panelPreviewProperty, panelPreviewRef]);
-
-  const endPanelDrag = useCallback((pointerId?: number) => {
-    const drag = panelDrag.current;
-    if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
-    panelDrag.current = null;
-    cancelAnimationFrame(drag.frame);
-    drag.detach();
-    if (drag.divider.hasPointerCapture(drag.pointerId)) {
-      drag.divider.releasePointerCapture(drag.pointerId);
-    }
-    return drag;
-  }, []);
-
-  const cancelPanelDrag = useCallback((pointerId?: number) => {
-    if (endPanelDrag(pointerId)) clearPanelPreview();
-  }, [endPanelDrag, clearPanelPreview]);
-
-  useLayoutEffect(() => {
-    committedPanelWidth.current = panelWidth.width;
-    const drag = panelDrag.current;
-    if (drag) {
-      drag.divider.setAttribute("aria-valuenow", String(Math.round(drag.painted)));
-    } else {
-      clearPanelPreview();
-    }
-  }, [panelWidth.width, clearPanelPreview]);
-
-  const panelResizeActive = active && activeStep !== 3 && (!mosaicPage || mosaicViewport > 1080);
-  useLayoutEffect(() => () => cancelPanelDrag(), [panelResizeActive, cancelPanelDrag]);
-
-  function clampPanelWidth(width: number) {
-    return Math.max(panelMinWidth, Math.min(panelMaxWidth, panelMaxRef.current, width));
-  }
-
-  function resizePanel(event: PointerEvent<HTMLButtonElement>) {
-    const drag = panelDrag.current;
-    if (drag?.pointerId !== event.pointerId) return;
-    drag.latest = clampPanelWidth(drag.startWidth + (event.clientX - drag.startX) / drag.zoom);
-    if (!drag.frame) {
-      drag.frame = requestAnimationFrame(() => {
-        drag.frame = 0;
-        if (panelDrag.current === drag) paintPanelWidth(drag);
-      });
-    }
-  }
-
-  function commitPanelDrag(event: PointerEvent<HTMLButtonElement>) {
-    const drag = endPanelDrag(event.pointerId);
-    if (!drag) return;
-    // 保留预览，等 React 写入最终宽度后再清除临时变量。
-    const width = clampPanelWidth(drag.latest);
-    if (width === panelWidth.width) clearPanelPreview();
-    else panelWidth.setWidth(width);
-  }
-
+  const { workspaceRef, workspaceStyle, panelRef, panelStyle, dividerProps } = useGameWorkspaceSplit(active && activeStep !== 3, mosaicPage);
   const workflowRef = useRef<HTMLElement>(null);
   const sourceWidth = usePersistedWidth("unity-offline-source-width", 112, 80, 280);
   const [originalRatio, setOriginalRatio] = useState(() => Math.min(70, Math.max(20, Number(localStorage.getItem("unity-offline-original-ratio")) || 45)));
@@ -2690,7 +2575,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const trackEnabled = deploymentPage ? deploymentValidation.enabledSteps.map(id => deploymentStageId[id]) : undefined;
   const trackSkipped = deploymentPage ? deploymentPlan.disabled.map(id => deploymentStageId[id]) : undefined;
   return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`}
-    style={mosaicPage ? { "--game-mosaic-step-column-width": `${panelWidth.width}px` } as CSSProperties : undefined} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
+    style={workspaceStyle} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
     {active && saveFeedback && createPortal(saveFeedback, document.body)}
     {closingPhase && <ClosingProgress phase={closingPhase} />}
     {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
@@ -2699,11 +2584,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!project || !!busy || saving || restoring || !!importPreview} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
       <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbarTarget)}
-    <aside ref={panelRef} className="unity-offline-config" style={deploymentPage || mosaicPage ? undefined : {
-      width: `calc(var(${panelPreviewProperty}, ${panelWidth.width}px) + var(--workflow-rail-width) + var(--workflow-column-gap))`,
-      minWidth: 0,
-      maxWidth: "none",
-    }}>
+    <aside ref={panelRef} className="unity-offline-config" style={deploymentPage ? undefined : panelStyle}>
     <div className="unity-offline-upper unity-workflow-layout">
       <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} skipped={trackSkipped}
         disconnected={deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined} steps={UNITY_STAGE_TABS.map(tab=>{
@@ -2931,45 +2812,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     </section>
     </div>
     </aside>
-    {!deploymentPage && <button ref={dividerRef} className="unity-workspace-divider" role="separator" aria-orientation="vertical"
-      aria-label="调整步骤区和结果区宽度" aria-valuemin={panelMinWidth} aria-valuemax={panelMaxWidth} aria-valuenow={Math.round(panelWidth.width)}
-      style={{ touchAction: "none", zIndex: 2 }}
-      onPointerDown={event => {
-        if (event.button !== 0 || panelDrag.current) return;
-        event.preventDefault();
-        const divider = event.currentTarget;
-        divider.focus({ preventScroll: true });
-        divider.setPointerCapture(event.pointerId);
-        const onKey = (e: globalThis.KeyboardEvent) => {
-          if (e.key !== "Escape") return;
-          e.preventDefault();
-          cancelPanelDrag();
-        };
-        const onBlur = () => cancelPanelDrag();
-        window.addEventListener("keydown", onKey);
-        window.addEventListener("blur", onBlur);
-        panelDrag.current = {
-          divider, pointerId: event.pointerId, startX: event.clientX,
-          startWidth: panelWidth.width, latest: panelWidth.width, painted: panelWidth.width,
-          zoom: divider.currentCSSZoom || 1, frame: 0,
-          detach: () => {
-            window.removeEventListener("keydown", onKey);
-            window.removeEventListener("blur", onBlur);
-          },
-        };
-      }}
-      onPointerMove={resizePanel}
-      onPointerUp={commitPanelDrag}
-      onPointerCancel={event => cancelPanelDrag(event.pointerId)}
-      onLostPointerCapture={event => cancelPanelDrag(event.pointerId)}
-      onKeyDown={event => {
-        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-        event.preventDefault();
-        if (panelDrag.current) return;
-        const target = clampPanelWidth(panelWidth.width + (event.key === "ArrowRight" ? 16 : -16));
-        // 已经顶到边界时不要再写偏好，否则会把用户更大的窗口宽度记成当前上限。
-        if (target !== panelWidth.width) panelWidth.setWidth(target);
-      }} />}
+    {!deploymentPage && <button {...dividerProps} />}
     {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
         <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}

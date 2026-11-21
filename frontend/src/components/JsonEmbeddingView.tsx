@@ -790,7 +790,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), initialPart: part === "images" ? "images" : "text" });
     }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
 
-      <UnityGameWorkspace deployment={deploymentPage} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
+      <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">
 
         {textStep===1&&<div className="unity-task-actions">
