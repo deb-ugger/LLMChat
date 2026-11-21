@@ -209,7 +209,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       const model = step === "translate" ? modelIds[role] : role === "text" ? id : "";
       selectedModels[role] = { id: model, lanes: modelConcurrency(scope, step === "translate" ? role : mainRole, model || modelIds.text) };
     }
-    return { ...settings, ...(mosaicStep && mosaicSetup ? { mosaic: { ...mosaicSetup, sampleLimit: 20, selection: "checked" } } : {}), ...(images ? { source: images.source, target: images.target, skipTarget: images.skipTarget,
+    return { ...settings, ...(mosaicStep && mosaicSetup ? { mosaic: { ...mosaicSetup, sampleLimit: 0, selection: "checked" } } : {}), ...(images ? { source: images.source, target: images.target, skipTarget: images.skipTarget,
       imageMode: imageStep === "refine" ? images.refineMode || "precise" : images.mode, imageStrategy: images.strategy, localLanes: imageStep === "refine" ? images.refineConcurrency || 2 : images.concurrency,
       imageConfidence: imageStep === "refine" ? images.refineConfidence : images.confidence, engines: images.engines } : {}),
       prompts: { ...(images?.prompts || settings.prompts) }, id: crypto.randomUUID(), label: "配置 " + number, models: selectedModels };
@@ -328,8 +328,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <label>样本范围<select value={sampleSettings.selection} onChange={event => changeSample({ selection: event.target.value as typeof sampleSettings.selection })}>
           <option value="checked">去码页已勾选</option><option value="all">全部可用图片</option>
         </select></label>
-        <label>样本上限<input type="number" min={0} step={1} value={sampleSettings.sampleLimit}
-          title="填 0 处理范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
+        <label>样本上限<input type="number" min={0} step={1} value={sampleSettings.sampleLimit || ""} placeholder="不限"
+          title="留空时测试范围内的全部图片" onChange={event => changeSample({ sampleLimit: Math.max(0, Math.trunc(Number(event.target.value))) })} /></label>
+        {sampleSettings.sampleLimit > 0 && <button type="button" className="unity-btn" onClick={() => changeSample({ sampleLimit: 0 })}>取消上限</button>}
       </div>}
       {configs.map((config, index) => <details key={config.id} className={"game-benchmark-item" + (lastRunFor(config.label) ? " has-run" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
@@ -470,7 +471,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </div>
     </div></section>
     <footer className="game-benchmark-footer">
-    <button type="button" className="settings-panel-save" disabled={!canRun || adding} onClick={() => void start()}>{adding ? "正在准备样本…" : "加入队列"}</button>
+    <button type="button" className="settings-panel-save" disabled={!canRun || adding} onClick={() => void start()}>
+      {adding ? "正在准备样本…" : sampleSettings?.sampleLimit ? "加入队列（每轮最多 " + sampleSettings.sampleLimit + " 张）" : "加入队列"}
+    </button>
     {queueControls}
     <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { saveQueue(); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
