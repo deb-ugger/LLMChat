@@ -1,6 +1,6 @@
 import { createContext, useLayoutEffect, useRef, useState, useContext, useEffect, type ReactNode, type RefObject } from "react";
 import { GamePromptContext } from "../gamePrompts";
-import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency } from "../gameModelPerformance";
+import { stepPerformance, gameDuration, saveModelConcurrency, modelConcurrency, type StepPerformance } from "../gameModelPerformance";
 import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilterSelect";
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
@@ -38,6 +38,32 @@ const stateLabels: Record<string, string> = {
 // Layout-only session state. Closing the app starts a new module instance.
 const formatTiming = (value: number | undefined) => value === undefined ? "—" : value < 60000 ? (value / 1000).toFixed(1) + " 秒" : gameDuration(value);
 const settingsHeights = new Map<string, number>();
+
+export function GameModelUsage({ model, perImage = false }: {
+  model: StepPerformance["models"][string];
+  perImage?: boolean;
+}) {
+  const { tokens, requests, requestMs, generationTokens, generationMs, concurrency } = model;
+  const hasGenerationRate = generationMs > 0 && generationTokens > 0;
+  const hasRequestRate = requestMs > 0 && tokens > 0;
+  if (hasGenerationRate || hasRequestRate) return <>
+    <small className="game-flow-model-rates">
+      {hasGenerationRate && <span>纯生成 <span className="game-flow-metric">{(generationTokens * 1000 / generationMs).toFixed(1)} tok/s</span></span>}
+      {hasRequestRate && <span>请求平均 <span className="game-flow-metric">{(tokens * 1000 / requestMs).toFixed(1)} tok/s</span></span>}
+    </small>
+    {requests > 0 && requestMs > 0 && <small style={{ display: "block" }}
+      data-tooltip="实际请求耗时逐次相加，并发请求的耗时可能重叠。">
+      请求耗时合计 <span className="game-flow-metric">{formatTiming(requestMs)}</span> · <span className="game-flow-metric">{requests} 次</span>
+    </small>}
+  </>;
+  if (requests <= 0 || requestMs <= 0) return null;
+  const seconds = requestMs / requests / 1000;
+  return <small className="game-flow-model-rates">
+    <span>{perImage ? "每张" : "每次"} <span className="game-flow-metric">{seconds.toFixed(seconds < 0.1 ? 3 : 1)} 秒</span></span>
+    <span>· 并发 <span className="game-flow-metric">{concurrency}</span></span>
+    <span>· 请求 <span className="game-flow-metric">{requests} 次</span></span>
+  </small>;
+}
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
@@ -233,23 +259,16 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           onToggle={() => onConfigure(expanded ? null : step.id)}
           status={<>{statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}{!(state === "done" && step.stateLabel && !measured.elapsedMs) && <> · <span data-tooltip="步骤实际经过的时间，包含排队、处理和保存。" className="game-flow-metric">{gameDuration(measured.elapsedMs)}</span></>}</>}
           summary={<>
-              {models.length ? models.map(model => {
-                const pureRate = model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—";
-                const requestRate = model.requestMs > 0 && model.tokens > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—";
-                return <div key={JSON.stringify([model.model, model.concurrency])} style={{ marginBlock: 4 }}>
+              {models.length ? models.map(model => (
+                <div key={JSON.stringify([model.model, model.concurrency])} style={{ marginBlock: 4 }}>
                   <div className="game-flow-model-heading">
                     <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>
-                    <small className="game-flow-model-concurrency">并发 <span className="game-flow-metric">{model.concurrency}</span></small>
+                    {!(expanded && model.tokens <= 0 && model.requests > 0 && model.requestMs > 0) &&
+                      <small className="game-flow-model-concurrency">并发 <span className="game-flow-metric">{model.concurrency}</span></small>}
                   </div>
-                  {expanded && <>
-                  <small className="game-flow-model-rates">
-                    <span>纯生成 <span className="game-flow-metric">{pureRate} tok/s</span></span>
-                    <span>请求平均 <span className="game-flow-metric">{requestRate} tok/s</span></span>
-                  </small>
-                  <small style={{ display: "block" }} data-tooltip="已计入的模型请求逐次相加。应用排队、本地处理与保存另计，并发请求的耗时可能重叠。">请求耗时合计 <span className="game-flow-metric">{gameDuration(model.requestMs)}</span> · <span className="game-flow-metric">{model.requests} 次</span></small>
-                  </>}
-                </div>;
-              }) : <><span>{testMetrics ? "" : step.summary}</span>{expanded && <small style={{ display: "block" }}>纯生成 — tok/s · 请求平均 — tok/s</small>}</>}
+                  {expanded && <GameModelUsage model={model} />}
+                </div>
+              )) : <span>{testMetrics ? "" : step.summary}</span>}
               {expanded && (measured.wallTiming || measured.timing) && <small className="game-flow-model-rates" aria-label="非模型分项用时" data-tooltip="同一分项中重叠的时段只计一次。不同分项之间仍可能重叠。">
                 <span>{measured.wallTiming ? "非模型用时" : "历史累计"}</span>
                 <span>排队 <span className="game-flow-metric">{formatTiming((measured.wallTiming || measured.timing)?.queueMs)}</span></span>

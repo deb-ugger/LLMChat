@@ -6,12 +6,13 @@ import { refineMosaicBatch, mosaicReviewKey, readMosaicReviews, clearMosaicRevie
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
-import { gameDuration } from "../gameModelPerformance";
+import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameRequest, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "../gameModelPerformance";
 import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
+import { GameModelUsage } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
@@ -35,7 +36,31 @@ type RedrawPlan = {
 };
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 type MosaicStep = "screen" | "refine" | "redraw";
-type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: MosaicDevice; prepared?: number };
+type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: MosaicDevice; prepared?: number; models?: StepPerformance["models"] };
+
+function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolean, refresh: () => void) {
+  const scope = gamePath + ":mosaic:" + step;
+  if (!resume) clearGamePerformance(scope, [step]);
+  beginGameStep(scope, step);
+  return {
+    models: () => ({ ...stepPerformance(scope, step).models }),
+    selection(concurrency: number) {
+      const selection = {};
+      rememberBenchmarkExecution(selection, scope, step, concurrency);
+      return selection;
+    },
+    async measure<T>(model: string, concurrency: number, work: () => Promise<T>) {
+      const started = performance.now();
+      try { return await work(); }
+      finally {
+        recordGameRequest({ performanceScope: scope, performanceStep: step, llmConcurrency: concurrency }, model, 0, performance.now() - started);
+      }
+    },
+    refresh,
+    finish: (completed: boolean) => finishGameStep(scope, completed),
+  };
+}
+type MosaicStepUsage = ReturnType<typeof beginMosaicStepUsage>;
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
@@ -542,7 +567,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setRows(previous => ({ ...previous, [image.id]: { ...resultFor(previous, image), ...edit } }));
   }
 
-  async function run(label: string, work: (signal: AbortSignal, report: (progress: number | { prepared: number }) => void) => Promise<void | boolean>,
+  async function run(label: string, work: (signal: AbortSignal, report: (progress: number | { prepared: number }) => void, usage?: MosaicStepUsage) => Promise<void | boolean>,
     step?: { id: MosaicStep; total: number; completed?: number; summary: string; previousElapsed?: number }) {
     if (task.current || disabled || isBenchmarkRunning()) return;
     const controller = new AbortController();
@@ -559,18 +584,29 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         return current ? { ...previous, [step.id]: { ...current, ...edit } } : previous;
       });
     };
+    let usage: MosaicStepUsage | undefined;
+    let state: GameProgressState = "error";
     try {
-      const completed = await work(controller.signal, progress => updateStep(typeof progress === "number" ? { completed: progress } : progress));
+      if (step) {
+        usage = beginMosaicStepUsage(gamePath, step.id, step.previousElapsed !== undefined,
+          () => updateStep({ models: usage?.models() }));
+        usage.refresh();
+      }
+      const completed = await work(controller.signal, progress => updateStep({
+        ...(typeof progress === "number" ? { completed: progress } : progress), models: usage?.models(),
+      }), usage);
       const stopped = controller.signal.aborted && !(step?.id === "redraw" && completed === true);
       if (stopped) setProgress("已停止后续任务");
-      updateStep({ state: stopped ? "stopped" : completed === false ? "error" : "done", elapsed: performance.now() - started });
+      state = stopped ? "stopped" : completed === false ? "error" : "done";
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
       else setProgress("已停止后续任务");
-      updateStep({ state: controller.signal.aborted ? "stopped" : "error", elapsed: performance.now() - started });
+      state = controller.signal.aborted ? "stopped" : "error";
     } finally {
+      updateStep({ state, elapsed: performance.now() - started, models: usage?.models() });
       task.current = null; setBusy("");
       onBusy?.(false);
+      usage?.finish(state === "done");
     }
   }
 
@@ -614,11 +650,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
   const reviewTotal = reviewedCount + pendingReview.length;
   async function performReviews(targets: readonly UnityImage[], signal: AbortSignal, report?: (completed:number,detail:string)=>void,
-    restart=false, automatic=false, onPreparation?: (prepared: number) => void) {
+    restart=false, automatic=false, onPreparation?: (prepared: number) => void, usage?: MosaicStepUsage) {
     const configuration=settings || await api.getSettings();
     const reviewSettings=automatic ? {...preferences,refineScope:preferences.refineIncludeMissed?"all" as const:"suspected" as const} : preferences;
+    const selection = usage?.selection(Math.min(targets.length, Math.max(1, Math.min(2, reviewSettings.refineConcurrency ?? 1))));
     return refineMosaicBatch(targets,{root:gamePath,settings:reviewSettings,signal,modelFile:detectorFile,read,prepare:prepareSources,restart,
-      request:(model,prompt,image,signal)=>requestGameModelJson(configuration,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
+      request:(model,prompt,image,signal)=>requestGameModelJson(configuration,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection})
+        .finally(() => usage?.refresh()),
       onResult: applyReview,
       onError: (image,error) => setRows(previous => {
         const row = resultFor(previous, image);
@@ -631,7 +669,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const targets = restart ? checkedReviewScope : pendingReview;
     if (!targets.length) return;
     const initial = restart ? 0 : reviewedCount;
-    void run("复筛打码图片",async(signal,report)=>{
+    void run("复筛打码图片",async(signal,report,usage)=>{
       const tracked = restart ? new Map<string, string>() : new Map(previousReview?.images);
       for (const image of checkedReviewScope) tracked.set(image.id, image.sourceHash);
       lastReview.current = { key: reviewSessionKey, images: tracked };
@@ -643,7 +681,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const result = await performReviews(targets,signal,(completed,detail)=>{
         report(initial+completed);
         setProgress(detail);
-      },restart,false,prepared=>report({ prepared: initial + prepared }));
+      },restart,false,prepared=>report({ prepared: initial + prepared }),usage);
       const uncertain=[...result.results.values()].filter(scan=>scan.review).length;
       setProgress("本轮复筛结束 · "+uncertain+" 张待人工确认");
       if(result.failed)setError(result.failed+" 张复筛失败，请查看待复核分组");
@@ -666,7 +704,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (!targets.length) return;
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
-    void run("筛选打码区域", async (signal, report) => {
+    void run("筛选打码区域", async (signal, report, usage) => {
+      const lanes = Math.min(targets.length, Math.max(1, Math.min(4, preferences.concurrency ?? 2)));
+      const modelName = detectorKind !== "grid" && detectorFile ? detectorFile.name : detectorLabels[detectorKind];
       const detector = detectorKind !== "grid" ? await loadMosaicDetector(detectorFile, {
         signal,
         onDevice: device => setStepRuns(previous => previous.screen
@@ -702,7 +742,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 if (prepareError) throw new Error(prepareError);
                 const input = await read(image, signal);
                 if (signal.aborted) break;
-                const scan = await scanner.scan(input);
+                const scan = await usage!.measure(modelName, lanes, () => scanner.scan(input));
                 const { signature } = scan;
                 const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
                 batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
@@ -726,8 +766,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         } finally { if (!detector) await scanner.release(); }
       }
       try {
-        const lanes = Math.max(1, Math.min(4, preferences.concurrency ?? 2));
-        const settled = await Promise.allSettled(Array.from({ length: Math.min(lanes, targets.length) }, lane));
+        const settled = await Promise.allSettled(Array.from({ length: lanes }, lane));
         for (const item of settled) if (item.status === "rejected") throw item.reason;
       } finally {
         checkpoint();
@@ -788,7 +827,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const summary = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
     const total = plan.targets.length;
     let completed = plan.targets.filter(target => !target.pending.size).length;
-    void run("生成去码候选", async (signal, report) => {
+    void run("生成去码候选", async (signal, report, usage) => {
       pendingRedraw.current = plan;
       if (plan.reference && !plan.referenceBlob) plan.referenceBlob = await readSaved(plan.reference, signal);
       const cache = new Map<string, { blob: Blob; seconds: number }>();
@@ -810,11 +849,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             if (!outcome) {
               const start = performance.now();
               try {
-                const blob = await redrawMosaic({
+                const blob = await usage!.measure(mosaicModelLabels[engine], 1, () => redrawMosaic({
                   source: original, boxes, keep, model: engine, steps: stepCount, seed: plan.seed, signal, reference,
                   keepResultOnStop: true,
                   progress: detail => setProgress(title + " · " + detail),
-                });
+                }));
+                usage!.refresh();
                 outcome = { blob, seconds: (performance.now() - start) / 1000 };
                 cache.set(key, outcome);
               } catch (cause) {
@@ -913,13 +953,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     state: sameScreen && (lastScreenRun?.state === "error" || lastScreenRun?.state === "stopped") ? lastScreenRun.state : idleScreen.state,
     elapsed: sameScreen ? lastScreenRun?.elapsed : undefined,
     device: sameScreen ? lastScreenRun?.device : undefined,
+    models: sameScreen ? lastScreenRun?.models : undefined,
   };
   const refineStatus: StepRun = stepRuns.refine?.state==="running" ? stepRuns.refine : {
     state:reviewTotal && !pendingReview.length ? "done"
       : previousReview && stepRuns.refine?.state==="error" ? "error"
       : (previousReview && stepRuns.refine?.state==="stopped") || reviewedCount ? "stopped" : "pending",
     total:reviewTotal,completed:reviewedCount,elapsed:previousReview ? stepRuns.refine?.elapsed : undefined,
-    prepared:previousReview ? stepRuns.refine?.prepared : undefined
+    prepared:previousReview ? stepRuns.refine?.prepared : undefined,
+    models:previousReview ? stepRuns.refine?.models : undefined
   };
   const canClearStep = (state?: GameProgressState) => state === "stopped" || state === "error" || state === "done";
   const canClearRefine = canClearStep(refineStatus.state) || canClearStep(stepRuns.refine?.state);
@@ -939,12 +981,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
     const elapsed = status?.elapsed ?? (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
+    const modelTitle = (running || id === "redraw" && pausedRedraw) ? status?.summary : summary;
+    const models = Object.entries(status?.models ?? {});
+    const showModelNames = id !== "screen" && (models.length > 1 || models[0]?.[1].model !== modelTitle);
     const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={() => setConfigured(expanded ? null : id)}
       status={<>{gameProgressLabels[state]}{elapsed != null && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
       summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
-        <span data-tooltip={status?.device?.reason}>{(running || id === "redraw" && pausedRedraw) ? status?.summary : summary}
+        <span data-tooltip={status?.device?.reason}>{modelTitle}
           {status?.device && (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}
         </span>
         {status?.total ? <small className="game-flow-model-rates">
@@ -952,6 +997,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           {id === "refine" && status.prepared !== undefined && status.prepared > status.completed &&
             <span>候选已准备 {status.prepared} / {status.total} 张</span>}
         </small> : null}
+        {expanded && models.map(([key, model]) => <div key={key}>
+          {showModelNames && <span className="game-flow-model-name">{model.model.split("/").at(-1)}</span>}
+          <GameModelUsage model={model} perImage={id !== "refine"} />
+        </div>)}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {
