@@ -1,7 +1,7 @@
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
-import { mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
+import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -388,7 +388,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [adding, setAdding] = useState(false);
   const totalRounds = Number(rounds);
   const validRounds = Number.isInteger(totalRounds) && totalRounds >= 1 && totalRounds <= 100;
-  const serialized = JSON.stringify({ configs, rounds: totalRounds, sampleLimit, sampleSetPath: sampleSetMode ? sampleSetPath || undefined : undefined });
+  const serializeConfigs = (items: BenchmarkConfig[]) =>
+    JSON.stringify({ configs: items, rounds: totalRounds, sampleLimit, sampleSetPath: sampleSetMode ? sampleSetPath || undefined : undefined });
+  const serialized = serializeConfigs(configs);
   const running = snapshot.running || snapshot.stopping;
   const currentJob = snapshot.jobs.find(job => job.status === "运行中" && job.requestScope === textScope && job.step === step);
   const configIssue = (config: BenchmarkConfig) => {
@@ -422,11 +424,25 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const issue = !enabledConfigs.length ? "请至少启用一张配置卡" :
     enabledConfigs.map(configIssue).find(Boolean);
   useEffect(() => { onDraft({ configs, rounds, sampleLimit, sampleSetPath, useSampleSet }); }, [configs, rounds, sampleLimit, sampleSetPath, useSampleSet]);
-  const saveQueue = (silent = false) => {
-    if (!validRounds || serialized === savedQueue) return;
-    localStorage.setItem(key, serialized);
-    setSavedQueue(serialized);
-    if (!silent) showAppNotice("测试配置已保存");
+  const saveQueue = (items = configs) => {
+    if (!validRounds) return false;
+    const next = items === configs ? serialized : serializeConfigs(items);
+    if (next === savedQueue) return false;
+    localStorage.setItem(key, next);
+    setSavedQueue(next);
+    return true;
+  };
+  const replaceWithMosaicRefinePresets = () => {
+    const next = createMosaicRefinePresetConfigs(capture(1));
+    if (!next.length) return;
+    try {
+      if (!saveQueue(next)) return;
+      setConfigs(next);
+      setExpanded(new Set([next[0].id]));
+      showAppNotice(`已替换并保存 ${next.length} 组复筛配置`);
+    } catch (error) {
+      showAppNotice("测试配置保存失败：" + String(error), "error");
+    }
   };
   const sampleSettings = configs[0]?.mosaic;
   const changeMosaic = (id: string, patch: Partial<NonNullable<BenchmarkConfig["mosaic"]>>) => {
@@ -565,25 +581,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             setConfigs(previous => [...previous, config]);
             toggleConfig(config.id, true);
           }}>添加配置</button>
-          {mosaicStep === "mosaicRefine" &&
-            <button type="button" className="unity-btn" disabled={adding} onClick={() => {
-              const presets: { label: string; options: Partial<MosaicSettings> }[] = [["2b", "2b"], ["4b", "4b"], ["4b", "8b"], ["8b", "8b"]].map(([candidate, guard]) => ({
-                  label: `Qwen3-VL · 候选 ${candidate.toUpperCase()} / 纹理 ${guard.toUpperCase()}`,
-                  options: { refineModel: `qwen3-vl:${candidate}-instruct`, refineGuardModel: `qwen3-vl:${guard}-instruct`, refineConcurrency: 1 },
-                }));
-              const additions: BenchmarkConfig[] = [];
-              for (const { label, options } of presets) {
-                if (configs.some(item => item.enabled !== false && item.mosaic &&
-                    Object.entries(options).every(([k,v]) => item.mosaic![k as keyof MosaicSettings] === v))) continue;
-                const item = capture(configs.length + additions.length + 1);
-                if (!item.mosaic) continue;
-                item.label = label;
-                item.mosaic = { ...item.mosaic, selection: sampleSettings?.selection ?? "checked", ...options };
-                additions.push(item);
-              }
-              if (additions.length) setConfigs(previous => [...previous, ...additions]);
-              else showAppNotice("对照组合已在配置列表中");
-            }}>添加对照组合</button>}
+          {mosaicStep === "mosaicRefine" && <button type="button" className="unity-btn"
+            disabled={adding || !validRounds || !mosaicSetup}
+            title="替换当前工程的复筛配置并保存，保留循环轮次、样本设置和测试记录"
+            onClick={replaceWithMosaicRefinePresets}>替换并保存 24 组对照</button>}
         </div>
       {configs.map((config, index) => {
         const lastRun = latestRunByConfig.get(config.id)?.run;
@@ -761,7 +762,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </div>
     </div></div>
     <footer className="game-benchmark-footer">
-    <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { saveQueue(); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>
+    <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
     </footer>
   </main>;

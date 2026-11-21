@@ -7,7 +7,7 @@ import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { mosaicBoxScore, presenceScore, type AnnotatedSampleSet } from "./benchmark/imageSampleSet";
 import type { ImageBenchmarkWorkload } from "./gameImageBenchmark";
-import type { BenchmarkStepRunner } from "./gameTextBenchmark";
+import type { BenchmarkConfig, BenchmarkStepRunner } from "./gameTextBenchmark";
 import type { UnityImage, UnityProgress } from "./unityOffline";
 
 export const mosaicBenchmarkSteps = {
@@ -17,6 +17,44 @@ export const mosaicBenchmarkSteps = {
 } as const;
 export type MosaicBenchmarkStep = keyof typeof mosaicBenchmarkSteps;
 export type MosaicBenchmarkSetup = MosaicSettings & { sampleLimit: number; selection: "checked" | "all" };
+type RefinePresetModel = "2b" | "4b" | "8b" | "3.5";
+
+const mosaicRefinePresets: readonly [RefinePresetModel, RefinePresetModel, readonly (1 | 2)[]][] = [
+  ["3.5", "8b", [1]],
+  ["4b", "8b", [1, 2]],
+  ["4b", "4b", [1, 2]],
+  ["2b", "8b", [1, 2]],
+  ["2b", "2b", [1, 2]],
+  ["8b", "8b", [1]],
+  ["8b", "8b", [2]],
+  ["2b", "4b", [1, 2]],
+  ["4b", "2b", [1, 2]],
+  ["8b", "4b", [1, 2]],
+  ["8b", "2b", [1, 2]],
+  ["3.5", "8b", [2]],
+  ["3.5", "4b", [1, 2]],
+  ["3.5", "2b", [1, 2]],
+];
+
+const refinePresetModel = (model: RefinePresetModel) =>
+  model === "3.5" ? "qwen3.5:latest" : `qwen3-vl:${model}-instruct`;
+
+export function createMosaicRefinePresetConfigs(template: BenchmarkConfig): BenchmarkConfig[] {
+  const { mosaic } = template;
+  if (!mosaic) return [];
+  return mosaicRefinePresets.flatMap(([candidate, guard, lanes]) => lanes.map(refineConcurrency => ({
+    ...template,
+    id: crypto.randomUUID(),
+    label: `候选 ${candidate.toUpperCase()} / 复核 ${guard.toUpperCase()} · 并发 ${refineConcurrency}`,
+    mosaic: {
+      ...mosaic,
+      refineModel: refinePresetModel(candidate),
+      refineGuardModel: refinePresetModel(guard),
+      refineConcurrency,
+    },
+  })));
+}
+
 export type MosaicBenchmarkWorkload = ImageBenchmarkWorkload & {
   checked: string[];
   boxes: Record<string, MosaicBox[]>;
