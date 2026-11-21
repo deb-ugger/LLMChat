@@ -2060,6 +2060,23 @@ int HttpServer::run()
                     })schema");
                 }
             }
+            if (!image.empty() && body.value("mosaicReview", false)) {
+                request.options["temperature"] = 0;
+                if (request.nativeOllama) {
+                    request.options["keep_alive"] = "5m";
+                    request.options["format"] = json::parse(R"schema({
+                        "type":"object","required":["pixelation","confidence"],"additionalProperties":false,
+                        "properties":{
+                            "pixelation":{"type":"boolean"},
+                            "confidence":{"type":"number","minimum":0,"maximum":1},
+                            "boxes":{"type":"array","maxItems":3,"items":{
+                                "type":"array","minItems":4,"maxItems":4,
+                                "items":{"type":"number","minimum":0,"maximum":1000}
+                            }}
+                        }
+                    })schema");
+                }
+            }
             if (request.nativeOllama && !imageClassification && !image.empty() && body.value("groupedImageOcr", false)) {
                 request.options["temperature"] = 0;
                 request.options["format"] = json::parse(R"schema({

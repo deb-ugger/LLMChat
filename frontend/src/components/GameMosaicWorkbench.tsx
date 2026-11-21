@@ -387,7 +387,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         }
         const unscreened = scoped.filter(image => !ids.has(image.id) && !(resultFor(rows, image).manualChecked && !resultFor(rows, image).checked));
         if (!unscreened.length) return [...ids];
-        const reviews=preferences.refine!==false ? await performReviews(unscreened,signal,(_completed,detail)=>setProgress(detail)) : undefined;
+        const reviews=preferences.refine!==false ? await performReviews(unscreened.filter(image=>!resultFor(rows,image).manualBoxes),signal,(_completed,detail)=>setProgress(detail)) : undefined;
         if(reviews?.failed)throw new Error(reviews.failed+" 张图片复筛失败");
         const detector = reviews ? undefined : await openDeploymentDetector(gamePath, preferences, signal);
         try {
@@ -395,8 +395,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             signal.throwIfAborted();
             const row = resultFor(rows, image);
             const source = await read(image, signal);
-            const scan = reviews?.results.get(image.id) || (row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
-              ? { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes } : await detector!.scan(source));
+            const scan = row.manualBoxes ? {boxes:row.boxes} : reviews?.results.get(image.id) ||
+              (row.scanned && row.detector === detectorKey && !row.reason
+                ? { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes } : await detector!.scan(source));
             if (scan.review && !row.manualChecked) {
               update(image, { scanned:true, detector:detectorKey, review:scan.review, boxes:scan.reviewBoxes || [], checked:false });
               throw new Error(image.name + " · " + scan.review);
@@ -772,7 +773,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     device: sameScreen ? lastScreenRun?.device : undefined,
   };
   const refineStatus: StepRun = stepRuns.refine?.state==="running" ? stepRuns.refine : {
-    state:reviewScope.length && !pendingReview.length ? "done" : stepRuns.refine?.state==="error" ? "error" : reviewedCount ? "stopped" : "pending",
+    state:reviewScope.length && !pendingReview.length ? "done" : stepRuns.refine?.state==="error" ? "error" : stepRuns.refine?.state==="stopped" || reviewedCount ? "stopped" : "pending",
     total:reviewScope.length,completed:reviewedCount,elapsed:stepRuns.refine?.elapsed
   };
   const canClear = [refineStatus.state,screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
@@ -884,14 +885,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         </>)}
         {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest",
           <button type="button" className="unity-btn game-flow-start" disabled={actionsDisabled || !reviewScope.length}
-            onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&reviewScope.length?"重新复筛":reviewedCount?"继续复筛":"开始复筛"}</button>,<>
+            onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&reviewScope.length?"重新复筛":reviewedCount||stepRuns.refine?.state==="stopped"?"继续复筛":"开始复筛"}</button>,<>
           <label>候选区域推理模型<select aria-label="去码复筛视觉模型" value={preferences.refineModel || "qwen3.5:latest"} disabled={!!busy} onChange={e=>changePreferences({refineModel:e.target.value})}>
             {[...new Set(["qwen3.5:latest",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
           </select></label>
           <label>纹理与漏检复核模型<select aria-label="去码纹理复核模型" value={preferences.refineGuardModel || "qwen3-vl:8b-instruct"} disabled={!!busy} onChange={e=>changePreferences({refineGuardModel:e.target.value})}>
             {[...new Set(["qwen3-vl:8b-instruct",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
           </select></label>
-          <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理。</p>
+          <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
           <label>手动复筛范围<select value={preferences.refineScope || "all"} disabled={!!busy} onChange={e=>changePreferences({refineScope:e.target.value as typeof preferences.refineScope})}>
             <option value="all">全部已筛选图片</option><option value="suspected">疑似及待复核</option><option value="selected">已勾选图片</option>
           </select></label>

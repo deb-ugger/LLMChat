@@ -134,7 +134,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   onProgress?: (completed:number,detail:string)=>void;
 }) {
   const {signal,settings}=options,key=mosaicReviewKey(settings,options.modelFile);
-  const checkpoint=options.restart?{}:readMosaicReviews(options.root,key);
+  const checkpoint=readMosaicReviews(options.root,key);
+  if(options.restart)for(const image of images)delete checkpoint[image.id];
   const results=new Map<string,MosaicScan>(),prepared=new Map<string,MosaicScan>(),hashes=new Map<string,string>();
   const proposalCache=new Map<string,MosaicScan>();
   let detector:Awaited<ReturnType<typeof loadMosaicDetector>>|undefined,failed=0,preparedUntil=0;
