@@ -209,6 +209,7 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"二次元遮挡检测（内置）"}]} change={detector=>updateMosaic({detector})}/>
           <Count label="筛选并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
           <Flag label="自动流程执行视觉复筛" value={mosaic.refine!==false} change={refine=>updateMosaic({refine})}/>
+          <Flag label="自动流程使用大模型补查未发现" value={!!mosaic.refineIncludeMissed} change={refineIncludeMissed=>updateMosaic({refineIncludeMissed})}/>
           <Select label="候选区域推理模型" value={mosaic.refineModel || "qwen3.5:latest"} choices={[...new Set(["qwen3.5:latest",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineModel=>updateMosaic({refineModel})}/>
           <Select label="纹理与漏检复核模型" value={mosaic.refineGuardModel || "qwen3-vl:8b-instruct"} choices={[...new Set(["qwen3-vl:8b-instruct",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineGuardModel=>updateMosaic({refineGuardModel})}/>
           <Count label="去码复筛并发" value={mosaic.refineConcurrency ?? 1} choices={[1,2]} change={refineConcurrency=>updateMosaic({refineConcurrency})}/>

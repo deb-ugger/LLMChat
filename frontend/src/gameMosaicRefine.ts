@@ -7,7 +7,7 @@ type ReviewCheckpoint = { key: string; images: Record<string, StoredReview> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
 
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
-  return JSON.stringify(["visual-review-v2", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
+  return JSON.stringify(["visual-review-v3", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
     file ? [file.name,file.size,file.lastModified] : "anime-640"]);
 }
 export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
@@ -136,6 +136,11 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const {signal,settings}=options,key=mosaicReviewKey(settings,options.modelFile);
   const checkpoint=readMosaicReviews(options.root,key);
   if(options.restart)for(const image of images)delete checkpoint[image.id];
+  const fullReview=settings.refineScope==="all" || settings.refineScope==="selected";
+  const completedReview=(image:UnityImage)=>{
+    const record=checkpoint[image.id];
+    return record?.source===image.sourceHash && (!fullReview || !record.scan.quickExcluded) ? record.scan : undefined;
+  };
   const results=new Map<string,MosaicScan>(),prepared=new Map<string,MosaicScan>(),hashes=new Map<string,string>();
   const proposalCache=new Map<string,MosaicScan>();
   let detector:Awaited<ReturnType<typeof loadMosaicDetector>>|undefined,failed=0,preparedUntil=0;
@@ -143,7 +148,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   try {
     for (let i=0;i<images.length;i++) {
       signal.throwIfAborted();const image=images[i];
-      if (checkpoint[image.id]?.source===image.sourceHash) continue;
+      if (completedReview(image)) continue;
       options.onProgress?.(0,"局部放大与候选准备 "+(i+1)+"/"+images.length);
       try {
         if (options.prepare && i>=preparedUntil) { await options.prepare(images.slice(i,i+16),signal); preparedUntil=i+16; }
@@ -179,12 +184,16 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
       signal.throwIfAborted();const image=batch[cursor++];
       try {
         const failure=errors.get(image.id);if(failure)throw new Error(failure);
-        let scan=checkpoint[image.id]?.source===image.sourceHash?checkpoint[image.id].scan:undefined;
+        let scan=completedReview(image);
         if(!scan) {
           const identity=hashes.get(image.id)!;
           let pending=verified.get(identity);
           if(!pending) {
-            pending=options.read(image,signal).then(blob=>reviewImage(blob,prepared.get(image.id)!,model,options.request,signal));
+            const proposed=prepared.get(image.id)!;
+            const hasCandidates=!!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length);
+            pending=!fullReview && !hasCandidates
+              ? Promise.resolve({boxes:[],signature:proposed.signature,quickExcluded:true} as MosaicScan)
+              : options.read(image,signal).then(blob=>reviewImage(blob,proposed,model,options.request,signal));
             verified.set(identity,pending);
             if(verified.size>128)verified.delete(verified.keys().next().value!);
             pending.catch(()=>verified.delete(identity));

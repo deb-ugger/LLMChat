@@ -9,7 +9,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[] };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -45,10 +45,10 @@ export function createMosaicGridScanner() {
 }
 
 export type MosaicSettings = {
-  concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number;
+  concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number; refineIncludeMissed?: boolean;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "all", refineConcurrency: 1, scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "suspected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {

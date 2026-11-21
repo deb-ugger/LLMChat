@@ -2385,7 +2385,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const scenes = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
     const images = preferences.scope === "scenes" && scenes.length ? scenes : usable;
     const reviews=preferences.refine!==false ? await refineMosaicBatch(images,{
-      root,settings:preferences,signal,modelFile:gameDetectorFile(root),read:readMosaicSource,prepare:prepareMosaicSources,
+      root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile:gameDetectorFile(root),read:readMosaicSource,prepare:prepareMosaicSources,
       request:(model,prompt,image,signal)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
       onProgress:(completed,detail)=>report({completed,total:images.length,detail})
     }) : undefined;
