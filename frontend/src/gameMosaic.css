@@ -211,4 +211,6 @@
 .game-mosaic-stage > svg.is-drawing { cursor: crosshair; touch-action: none; }
 .game-mosaic-progress, .game-mosaic-error { margin: 0; font-size: var(--fs-body); }
 .game-mosaic-progress { color: var(--text-muted); overflow-wrap: anywhere; }
+.game-mosaic-status-group.has-error > details > summary > span:first-child,
+.game-mosaic-failed-filter { color: var(--danger); }
 .game-mosaic-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }

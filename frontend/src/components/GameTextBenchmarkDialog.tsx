@@ -181,6 +181,7 @@ function ImageBenchmarkRunDetails({ queueId, runId }: { queueId: string; runId: 
   const [detail,setDetail] = useState<ImageBenchmarkDetails>();
   const [error,setError] = useState("");
   const [changedOnly,setChangedOnly] = useState(false);
+  const [failedOnly, setFailedOnly] = useState(false);
   const [page,setPage] = useState(0);
   const size = 40;
   useEffect(() => {
@@ -194,8 +195,10 @@ function ImageBenchmarkRunDetails({ queueId, runId }: { queueId: string; runId: 
   const rows = useMemo(() => detail?.samples.flatMap((sample,index) => {
     const outcome = detail.results[index];
     const changed = !!outcome && (outcome.category !== sample.category || outcome.checked !== undefined && outcome.checked !== sample.checked);
-    return changedOnly && !changed ? [] : [{ sample, outcome, changed }];
-  }) || [], [detail, changedOnly]);
+    if (failedOnly && outcome?.status !== "失败" || changedOnly && !changed) return [];
+    return [{ sample, outcome }];
+  }) || [], [detail, changedOnly, failedOnly]);
+  const failures = useMemo(() => Object.values(detail?.results ?? {}).filter(outcome => outcome.status === "失败").length, [detail]);
   return <details open={open} onToggle={event => {
     const expanded = event.currentTarget.open;
     setOpen(expanded);
@@ -204,10 +207,13 @@ function ImageBenchmarkRunDetails({ queueId, runId }: { queueId: string; runId: 
     <summary>逐图结果</summary>
     {open && (error ? <p role="alert">{error}</p> : !detail ? <p role="status">正在读取逐图结果…</p> : <>
       <label><input type="checkbox" checked={changedOnly} onChange={event => { setChangedOnly(event.target.checked); setPage(0); }} />只看变动</label>
+      {(failures > 0 || failedOnly) && <label><input type="checkbox" checked={failedOnly}
+        onChange={event => { setFailedOnly(event.target.checked); setPage(0); }} />只看失败 · {failures} 张</label>}
       {!rows.length && <p className="hint">没有符合条件的图片</p>}
       {rows.slice(page*size,(page+1)*size).map(({sample,outcome}) => <details key={sample.id}>
-        <summary>{sample.file} · {sample.category} → {outcome?.category || "未执行"}
-          {outcome?.status && " · " + outcome.status}
+        <summary>{sample.file} · {outcome?.status === "失败" ? "处理失败" : sample.category + " → " + (outcome?.category || "未执行")}
+          {outcome?.status === "失败" && outcome.reason && " · " + outcome.reason}
+          {outcome?.status && outcome.status !== "失败" && " · " + outcome.status}
           {outcome?.checked !== undefined && " · " + (sample.checked ? "已勾选" : "未勾选") + " → " + (outcome.checked ? "已勾选" : "未勾选")}
         </summary>
         {sample.boxes?.length ? <p>原定位框 {JSON.stringify(sample.boxes)}</p> : null}

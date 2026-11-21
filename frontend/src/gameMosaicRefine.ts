@@ -5,7 +5,7 @@ import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameMod
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
 type StoredProposal = { source: string; hash: string; scan: MosaicScan };
-export type MosaicStoredResult = { source: string; refined?: string; refineError?: string; boxes: MosaicBox[];
+export type MosaicStoredResult = { source: string; refined?: string; refineError?: string; redrawError?: string; boxes: MosaicBox[];
   checked: boolean; manualChecked?: boolean; scanned?: boolean; detector?: string; reason?: string; review?: string;
   manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean; discardedHash?: string };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
@@ -14,6 +14,29 @@ export const mosaicRowsStorageKey = (root: string) => "llmchat-game-mosaic:" + r
 
 export function readMosaicRows<T extends MosaicStoredResult = MosaicStoredResult>(root: string): Record<string, T> {
   return JSON.parse(localStorage.getItem(mosaicRowsStorageKey(root)) || "{}") || {};
+}
+
+export const mosaicErrorUpdateEvent = "llmchat-game-mosaic-error-update";
+export type MosaicErrorUpdate = {
+  image: Pick<UnityImage, "id" | "sourceHash">;
+  change: Partial<Pick<MosaicStoredResult, "scanned" | "reason" | "refineError" | "redrawError">>;
+};
+
+export function mergeMosaicErrorUpdates(rows: Record<string, MosaicStoredResult>, updates: readonly MosaicErrorUpdate[]) {
+  const next = { ...rows };
+  for (const { image, change } of updates) {
+    const stored = next[image.id];
+    const row = stored?.source === image.sourceHash ? stored : { source: image.sourceHash, boxes: [], checked: true };
+    next[image.id] = { ...row, ...change };
+  }
+  return next;
+}
+
+export function persistMosaicErrorUpdates(root: string, updates: readonly MosaicErrorUpdate[]) {
+  if (!updates.length) return;
+  const rows = mergeMosaicErrorUpdates(readMosaicRows(root), updates);
+  localStorage.setItem(mosaicRowsStorageKey(root), JSON.stringify(rows));
+  window.dispatchEvent(new CustomEvent(mosaicErrorUpdateEvent, { detail: { root, updates } }));
 }
 
 export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: string) {

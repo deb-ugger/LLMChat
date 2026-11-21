@@ -110,7 +110,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
         root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
         request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
         onResult: recordScan,
-        onError: (image, reason) => record?.(image.id,{ category:"待复核",status:"失败",reason }),
+        onError: (image, reason) => record?.(image.id,{ category:mosaicStatusLabels.failed,status:"失败",reason }),
         onProgress: (completed, detail) => onProgress({ completed: prior + completed, total: images.length, detail }),
       });
       const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
@@ -160,7 +160,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
           } catch (cause) {
             signal.throwIfAborted();
             failed++;
-            record?.(image.id,{category:"处理失败",status:"失败",reason:String(cause)});
+            record?.(image.id,{category:mosaicStatusLabels.failed,status:"失败",reason:String(cause)});
             firstFailure ||= image.name + " · " + (cause instanceof Error ? cause.message : String(cause));
           }
           onProgress({ completed: ++completed, total: images.length, detail: image.name });

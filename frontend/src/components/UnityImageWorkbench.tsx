@@ -215,12 +215,12 @@ function ImageGallery({ query, project, images, allImages, filterKey, refreshKey
 }
 
 const imageListGroups = [
-  ["candidate", "待正式识别"], ["text", "识别到文字"], ["pending", "未执行 OCR"], ["failed", "识别失败"],
+  ["candidate", "待正式识别"], ["text", "识别到文字"], ["pending", "未执行 OCR"], ["failed", "处理失败"],
   ["empty", "未检测到文字"], ["review", "待复核"], ["manual-review", "待人工确认"], ["excluded", "无需翻译"],
 ] as const;
 const imageListPageSize = 60;
-function imageListStatus(image: UnityImage) {
-  if (image.screening?.redrawError) return `${image.width} × ${image.height} · 风格重绘失败 · ${image.screening.redrawError}`;
+function imageListStatus(image: UnityImage, failure?: string) {
+  if (failure) return `${image.width} × ${image.height} · 处理失败 · ${failure}`;
   const status = image.completed ? (unityImageHasText(image) ? "已完成" : "未识别出文字") :
     image.error ? "识别或处理失败" : image.ocrCompleted ? "已识别" :
     imageListGroups.find(([group]) => group === unityImageResultGroup(image))?.[1] ?? "未执行 OCR";
@@ -374,11 +374,11 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   const [archiveIssues, setArchiveIssues] = useState<{ folder: string; rows: ImageIndexIssue[] }>();
   useEffect(() => { selectImage(""); setSearch(""); setGalleryScope(null); setListMenu(null); setCollapsed({ empty: true }); setImageFilters(allFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
   }, [project?.folder]);
-  const viewBaseline=useRef(new Map<string,{selected:boolean;completed:boolean;error:string;group:ReturnType<typeof unityImageResultGroup>}>());
+  const viewBaseline=useRef(new Map<string,{selected:boolean;completed:boolean;group:ReturnType<typeof unityImageResultGroup>}>());
   const baselineFolder=useRef(project?.folder);
   const images=useMemo(()=>{
     const rows=(project?.images||[]).filter(unityImageParticipates);
-    if(!dirty||baselineFolder.current!==project?.folder){viewBaseline.current=new Map(rows.map(image=>[image.id,{selected:imageWorkChecked(image),completed:image.completed,error:image.error,group:unityImageResultGroup(image)}]));baselineFolder.current=project?.folder;}
+    if(!dirty||baselineFolder.current!==project?.folder){viewBaseline.current=new Map(rows.map(image=>[image.id,{selected:imageWorkChecked(image),completed:image.completed,group:unityImageResultGroup(image)}]));baselineFolder.current=project?.folder;}
     return sortGameImages(rows,new Map([...viewBaseline.current].map(([id,value])=>[id,value.selected])));
   },[project?.images,project?.folder,dirty]);
   const groupHistory = useMemo(() => imageGroupHistory(project?.folder), [project?.folder]);
@@ -386,10 +386,11 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   useLayoutEffect(() => {
     if (!dirty && groupHistory.record(images, initialScreeningComplete)) setGroupChangesRevision(value => value + 1);
   }, [dirty, groupHistory, images, initialScreeningComplete]);
-  const imageErrors = useMemo(() => gameImageBatchErrors(images), [images]);
+  const imageErrors = useMemo(() => gameImageBatchErrors(images, true), [images]);
+  const failuresByImage = useMemo(() => new Map(imageErrors.map(issue => [issue.id, issue.detail])), [imageErrors]);
   useEffect(() => {
-    if (project?.root && !dirty && !saving) rememberRecentGameFailures(project.root, "images", imageErrors.length);
-  }, [project?.root, dirty, saving, imageErrors.length]);
+    if (project?.root && !dirty && !saving) rememberRecentGameFailures(project.root, "images", gameImageBatchErrors(images).length);
+  }, [project?.root, dirty, saving, images]);
   const errorIndex = useMemo(() => {
     const categories = [
       ["图片失败", imageErrors],
@@ -412,7 +413,14 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
     const ids=new Set(searchIndex.filter(item=>!deferredSearch||item.text.includes(deferredSearch)).map(item=>item.image.id));
     imageSearchSnapshot.current={key:imageSearchKey,ids};return ids;
   },[searchIndex,deferredSearch,dirty,imageSearchKey]);
-  const filtered=useMemo(()=>images.filter(image=>{const view=viewBaseline.current.get(image.id)||image;return ((view===image?imageWorkChecked(image):view.selected)?imageFilters.checked:imageFilters.unchecked)&&(view.error?imageFilters.failed:view.completed?imageFilters.done:imageFilters.pending)&&searchMatches.has(image.id);}),[images,searchMatches,imageFilters,dirty]);
+  const filtered = useMemo(() => images.filter(image => {
+    const view = viewBaseline.current.get(image.id);
+    const checked = view?.selected ?? imageWorkChecked(image);
+    const selectedFilter = checked ? imageFilters.checked : imageFilters.unchecked;
+    const statusFilter = failuresByImage.has(image.id) ? imageFilters.failed :
+      (view?.completed ?? image.completed) ? imageFilters.done : imageFilters.pending;
+    return selectedFilter && statusFilter && searchMatches.has(image.id);
+  }), [images, searchMatches, imageFilters, failuresByImage]);
   const groups = useMemo(() => {
     const result: Record<string, { items: UnityImage[]; added: Set<string>; removed: number; eligible: number; checked: number }> = Object.fromEntries(
       imageListGroups.map(([group]) => [group, { items: [], added: new Set<string>(), removed: 0, eligible: 0, checked: 0 }]));
@@ -420,7 +428,8 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
       const currentGroup = unityImageResultGroup(item);
       const eligible = imageWorkSelectable(item);
       const previousGroup = viewBaseline.current.get(item.id)?.group;
-      const group = dirty && eligible && !item.screening?.manualGroup && previousGroup &&
+      const group = failuresByImage.has(item.id) ? "failed" :
+        dirty && eligible && !item.screening?.manualGroup && previousGroup && previousGroup !== "failed" &&
         previousGroup !== "empty" && previousGroup !== "excluded" ? previousGroup : currentGroup;
       const list = result[group];
       list.items.push(item);
@@ -432,14 +441,14 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
       if (eligible) { list.eligible++; if (imageWorkChecked(item)) list.checked++; }
     }
     return result;
-  }, [filtered, dirty, groupHistory, groupChangesRevision, initialScreeningComplete]);
+  }, [filtered, dirty, groupHistory, groupChangesRevision, initialScreeningComplete, failuresByImage]);
   const [groupPages,setGroupPages]=useState<Record<string,number>>({});
   useEffect(()=>setGroupPages({}),[deferredSearch,imageFilters,project?.folder]);
   const counts = useMemo(() => ({
     selected: images.filter(item => imageWorkSelectable(item) && imageWorkChecked(item)).length,
     done: images.filter(item => item.completed && item.renderedFile).length,
-    failed: images.filter(item => item.error || item.screening?.redrawError).length,
-  }), [images]);
+    failed: imageErrors.length,
+  }), [images, imageErrors]);
   const image = (returnToGallery || selectedFailure ? images : filtered).find(image => image.id === selectedId) || filtered.find(item=>item.screening?.state==="candidate") || filtered.find(unityImageHasText) || filtered[0];
   const failureDetail = selectedFailure?.id === image?.id && selectedFailure &&
     errorIndex.sections.some(({ rows }) => rows.some(row => row.id === selectedFailure.id && row.detail === selectedFailure.detail))
@@ -607,16 +616,16 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
               disabled={disabled || !!archiveBusy || !eligible} checked={eligible > 0 && checked === eligible} ref={node => { if (node) node.indeterminate = checked > 0 && checked < eligible; }}
               onClick={event => event.stopPropagation()} onChange={event => selectImages(items, event.target.checked)} />
           </summary>
-          {visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${item.error ? " has-error" : ""}${added.has(item.id) ? " is-added" : ""}`}
+          {visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${failuresByImage.has(item.id) ? " has-error" : ""}${added.has(item.id) ? " is-added" : ""}`}
               onContextMenu={event => openRowMenu(event, item.id, item.file, false, added.has(item.id) ? groupHistory.origins.get(item.id)?.group : undefined)}>
         <input type="checkbox" aria-label={(isUnityImageReviewable(item) ? "复筛图片 " : "选择图片 ") + item.name}
           disabled={disabled || !!archiveBusy || !imageWorkSelectable(item)} checked={imageWorkChecked(item) && imageWorkSelectable(item)}
           onChange={event => onChange(setImageWorkChecked(item, event.target.checked))} />
         <button data-image-row={item.id} onClick={() => selectImage(item.id)}
-          data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item), item.error].filter(Boolean).join("\n")}
+          data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item, failuresByImage.get(item.id))].filter(Boolean).join("\n")}
           aria-label={item.file || item.name}>
           <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
-          <small>{imageListStatus(item)}</small>
+          <small>{imageListStatus(item, failuresByImage.get(item.id))}</small>
         </button>
       </div>)}{!collapsed[group] && <GameImageListPagination label={`${label}列表分页`} page={page} pages={pages} onPage={changePage} />}</details>;
       })}<RenderedImageGroup key={project.folder+":rendered"} images={filtered} selectedId={image?.id}
@@ -651,7 +660,9 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
           disabled={disabled || !!archiveBusy} onClick={() => onChange({ ...image, selected: !image.selected, selectionManual: true })}>
           {image.selected ? "排除这张译图" : "写入这张译图"}
         </button>}
-        {(failureDetail || image.error || image.screening?.redrawError) && <p className="unity-offline-error" role="alert">{failureDetail || image.error || image.screening?.redrawError}</p>}
+        {(failureDetail || failuresByImage.has(image.id)) && <p className="unity-offline-error" role="alert">
+          {failureDetail || failuresByImage.get(image.id)}
+        </p>}
         <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, ...getFixedMenuPoint(x, y, 170, 70) })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, ...getFixedMenuPoint(x, y, 170, 70) }) : undefined} /></div>
         <div className="unity-image-regions">{unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
           const expanded = openRegionDetails.has(index);

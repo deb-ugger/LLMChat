@@ -8,12 +8,14 @@ import { imageManuallyExcluded, IMAGE_PRESENCE_CONFLICT, IMAGE_PRESENCE_REVIEW_H
 export type BatchRow = { id: string; label: string; detail: string; group?: string } & (
   { kind: "text" } | { kind: "resource"; paths: string[]; text?: { source: string; translation: string } }
 );
-export function gameImageBatchErrors(images: UnityImage[]) {
+export function gameImageBatchErrors(images: UnityImage[], includeExcluded = false) {
   const errors: ImageIndexIssue[] = [];
   for (const image of images) {
     const screening = image.screening;
-    const error = screening?.refineFailed ? screening.reason : image.error;
-    if (error && !imageManuallyExcluded(image)) {
+    const error = screening?.redrawError || image.error ||
+      (screening?.refineFailed || screening?.state === "failed" ? screening.reason : undefined) ||
+      image.regions.find(region => region.selected && region.error)?.error;
+    if (error && (includeExcluded || !imageManuallyExcluded(image))) {
       const conflict = error.indexOf(IMAGE_PRESENCE_CONFLICT);
       const detail = conflict < 0 ? error : error.slice(0, conflict + IMAGE_PRESENCE_CONFLICT.length) + "。" + IMAGE_PRESENCE_REVIEW_HINT;
       errors.push({ id: image.id, detail });
