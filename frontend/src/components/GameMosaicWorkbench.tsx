@@ -47,7 +47,7 @@ type Props = {
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: false });
 const mosaicPageSize = 40;
 const ungroupedMosaicImages = "ungrouped";
-const detectorLabels = { grid: "方格规则", lada: "Lada v4 Fast（内置）" };
+const detectorLabels = { grid: "方格规则", lada: "Lada v4 Fast（内置）", "lada-accurate": "Lada v4 Accurate（内置）" };
 function resultFor(rows: Results, image: UnityImage) {
   const row = rows[image.id];
   return row?.source === image.sourceHash ? row : defaultResult(image);
@@ -447,7 +447,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : "lada-v4-fast-640";
+    ? JSON.stringify(["lada", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640";
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);
@@ -461,8 +461,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
     void run("筛选打码区域", async (signal, report) => {
-      const lada = detectorKind === "lada" ? await loadLadaDetector(detectorFile, {
-        signal,
+      const lada = detectorKind !== "grid" ? await loadLadaDetector(detectorFile, {
+        signal, variant: detectorKind === "lada-accurate" ? "accurate" : "fast",
         onDevice: device => setStepRuns(previous => previous.screen
           ? { ...previous, screen: { ...previous.screen, device } }
           : previous),
@@ -749,7 +749,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const batchReason = busyReason ?? (!redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
-  const screenSummary = detectorKind === "lada" && detectorFile
+  const screenSummary = detectorKind !== "grid" && detectorFile
     ? `${detectorLabels.lada} · ${detectorFile.name}` : detectorLabels[detectorKind];
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
@@ -767,9 +767,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             <option value="scenes">场景图片</option><option value="all">全部图片</option>
           </select></label>
           <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={!!busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
-            <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option>
+            <option value="grid">{detectorLabels.grid}</option><option value="lada">{detectorLabels.lada}</option><option value="lada-accurate">{detectorLabels["lada-accurate"]}</option>
           </select></label>
-          {detectorKind === "lada" && <label>自定义 ONNX（可选）
+          {detectorKind !== "grid" && <label>自定义 ONNX（可选）
             <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
             {detectorFile && <button type="button" className="unity-btn" disabled={!!busy} onClick={()=>{clearGameDetectorFile(gamePath);setDetectorFile(undefined);}}>使用内置模型</button>}
           </label>}

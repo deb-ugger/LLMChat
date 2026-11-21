@@ -45,7 +45,7 @@ export function createMosaicGridScanner() {
 }
 
 export type MosaicSettings = {
-  detector: "grid" | "lada"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
+  detector: "grid" | "lada" | "lada-accurate"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
 export const defaultMosaicSettings: MosaicSettings = { detector: "lada", scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
@@ -64,7 +64,7 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
 }
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  return loadLadaDetector(gameDetectorFile(root), { signal });
+  return loadLadaDetector(gameDetectorFile(root), { signal, variant: settings.detector === "lada-accurate" ? "accurate" : "fast" });
 }
 
 const threshold = 0.25;
@@ -102,7 +102,7 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
 export type LadaDevice = { kind: "gpu" | "cpu"; reason?: string };
 
 export async function loadLadaDetector(model: File | undefined, options: {
-  signal?: AbortSignal; onDevice?: (device: LadaDevice) => void;
+  variant?: "fast" | "accurate"; signal?: AbortSignal; onDevice?: (device: LadaDevice) => void;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
@@ -115,7 +115,7 @@ export async function loadLadaDetector(model: File | undefined, options: {
   let bytes: ArrayBuffer;
   if (model) bytes = await model.arrayBuffer();
   else {
-    const response = await fetch(new URL("./lada/lada-v4-fast.onnx", assets), { signal });
+    const response = await fetch(new URL("./lada/lada-v4-" + (options.variant || "fast") + ".onnx", assets), { signal });
     if (!response.ok) throw new Error("内置 Lada 模型读取失败，请重新准备软件资源");
     bytes = await response.arrayBuffer();
   }
