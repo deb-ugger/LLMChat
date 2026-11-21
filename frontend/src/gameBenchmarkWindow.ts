@@ -6,7 +6,7 @@ import type { ArchivedBenchmarkRef } from "./gameTextBenchmark";
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
 export const benchmarkChannelName = "llmchat-game-benchmark-window";
 
-export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-archive";
+export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-archive" | "benchmark-restart-archive" | "benchmark-restart";
 export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef;
 
 export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkQueueArgument): Promise<T> {

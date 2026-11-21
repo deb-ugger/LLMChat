@@ -85,7 +85,8 @@ export function benchmarkTargetLabel(step: BenchmarkTarget) {
 
 type ProgressPatch = Partial<Omit<BenchmarkProgress, "elapsedMs" | "percent">>;
 type JobContext = { id: string; signal: AbortSignal; report: (patch: ProgressPatch) => void };
-type Prepared = { count: number; scope: string; restored?: number; run: (context: JobContext) => Promise<number>; cleanup: () => void };
+type Prepared = { count: number; scope: string; restored?: number; run: (context: JobContext) => Promise<number>;
+  cleanup: () => void; restart: () => void };
 type QueuedJob = BenchmarkJob & { prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
 
 function initialImageRows(workload: ImageBenchmarkWorkload) {
@@ -121,7 +122,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
 }
 
 async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false,
-  archive?: { runId: string; details: ImageBenchmarkDetails }): Promise<Prepared> {
+  archive?: { runId: string; details: ImageBenchmarkDetails; reuse: boolean }): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
@@ -154,7 +155,9 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, step === "mosaicRefine" ? "checked" : options.selection);
     const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
     const sample = recovered?.images ?? selectSamples(eligible);
-    restored = recovered?.recovered.size;
+    restored = archive?.reuse ? recovered?.recovered.size : undefined;
+    if (archive) snapshot.boxes = Object.fromEntries(archive.details.samples.flatMap(item =>
+      item.boxes?.length ? [[item.id, item.boxes] as const] : []));
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
     const checked = new Set(snapshot.checked);
@@ -164,7 +167,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       context.report({ sample: image.name });
       if (annotated) return annotated.read(image,signal);
       return snapshot.embedded ? readEmbeddedBenchmarkImage(snapshot.project!.root, image, signal) : imageSource.readImage!(snapshot.project!, image);
-    }, report, annotated, recovered?.recovered);
+    }, report, annotated, restored === undefined ? undefined : recovered?.recovered);
   } else if (imageStep) {
     if (!imageSource || !Object.hasOwn(imageSource.setup.steps, imageStep)) throw new Error("当前工程没有该图片测试步骤");
     const currentImages = imageSource.getWorkload();
@@ -201,11 +204,15 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const runScope = historyScope + ":benchmark:" + (mosaic ? "mosaic" : imageStep ? "images" : "text");
   const totalScope = historyScope + ":benchmark-total";
   let failures = 0, failedSamples = 0, runs = 0, finishedSamples = 0;
-  return { count: count * configs.length * rounds, scope: displayScope, restored, cleanup: () => {
+  const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope, restored, cleanup: () => {
     const runId = stepPerformance(runScope, step).taskId;
     if (step === "mosaicRefine" && runId) clearMosaicReviews("benchmark:" + runId);
     clearGamePerformance(runScope, [step], false);
     clearGamePerformance(totalScope, ["queue"], false);
+  }, restart: () => {
+    prepared.cleanup();
+    prepared.restored = restored = undefined;
+    failures = failedSamples = runs = finishedSamples = 0;
   }, run: async context => {
     const sampleLabel = (sample: string) => sample.replace(/\s+/g, " ").trim().slice(0, 140);
     let runSamples = 0;
@@ -230,7 +237,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           runSamples = 0;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
             configId: config.id, sample: "", detail: undefined,
-            ...(step === "mosaicRefine" ? {} : { current: finishedSamples }), failed: failedSamples });
+            ...(mosaic ? {} : { current: finishedSamples }), failed: failedSamples });
         },
         progress,
         result => {
@@ -245,7 +252,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           finishedSamples += done;
           context.report({ current: finishedSamples, failed: failedSamples, detail: result.detail });
         }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt,
-        { continuedFrom: archive?.runId, sampleSetPath: request.sampleSetPath });
+        { continuedFrom: restored === undefined ? undefined : archive?.runId, sampleSetPath: request.sampleSetPath });
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -255,6 +262,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       input.onMessage(title + "测试 · " + detail, failures ? "error" : "info");
     }
   } };
+  return prepared;
 }
 
 const jobs: QueuedJob[] = [];
@@ -425,7 +433,7 @@ export const benchmarkRunner = {
     const title = benchmarkTargetLabel(request.step);
     const label = configs.length === 1 ? title + " · " + configs[0].label : title + " · " + configs.length + " 个配置";
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
-      label, status: "等待", prepared, prepare, onMessage: input.onMessage, resumeSamples: request.step === "mosaicRefine" };
+      label, status: "等待", prepared, prepare, onMessage: input.onMessage, resumeSamples: isMosaicBenchmarkStep(request.step) };
     const firstWaiting = request.priority ? jobs.findIndex(item => item.status === "等待") : -1;
     jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
     publish();
@@ -433,35 +441,48 @@ export const benchmarkRunner = {
     else if (running) pumpQueue();
     return job.id;
   },
-  async continueArchivedMosaic(input: BenchmarkInput, { queueId, runId }: ArchivedBenchmarkRef) {
-    const findJob = () => jobs.find(job => job.requestScope === input.scope && job.step === "mosaicRefine" &&
+  async runArchivedMosaic(input: BenchmarkInput, { queueId, runId, step }: ArchivedBenchmarkRef, reuse: boolean) {
+    if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持此操作");
+    const findJob = () => reuse && jobs.find(job => job.requestScope === input.scope && job.step === step &&
       (job.id === queueId || job.continuedFrom === runId) && ["等待", "运行中", "已暂停"].includes(job.status));
     if (findJob()) { startQueue(); return; }
-    const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", "mosaicRefine");
+    const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", step);
     const record = history.find(item => item.performance.taskId === runId && item.performance.benchmark?.queueId === queueId);
     const metadata = record?.performance.benchmark;
     const config = metadata?.config as BenchmarkConfig | undefined;
-    if (!record || !config?.mosaic || !metadata?.imageDetails || !["已暂停", "已中止"].includes(record.status) ||
-        record.translated >= record.selected) throw new Error("该记录没有可继续的复筛样本");
-    if (history.some(item => item.performance.benchmark?.continuedFrom === runId &&
-        (item.status === "完成" || item.status === "已暂停" && item.performance.benchmark?.imageDetails)))
+    if (!record || !config?.mosaic || !metadata?.imageDetails ||
+        reuse && (record.status === "完成" || record.translated >= record.selected))
+      throw new Error("该记录没有可用的测试样本");
+    if (reuse && history.some(item => item.performance.benchmark?.continuedFrom === runId &&
+        (item.status === "完成" || item.performance.benchmark?.imageDetails && item.translated > record.translated)))
       throw new Error("该记录已有续跑结果，请打开最新的续跑记录");
     const details = await readImageBenchmarkDetails(queueId, runId);
     if (details.samples.length !== record.selected) throw new Error("原测试样本清单不完整");
     const prepared = await prepareJob(input, {
-      scope: input.scope, step: "mosaicRefine", configs: [{ ...config, enabled: true }], rounds: 1,
+      scope: input.scope, step, configs: [{ ...config, enabled: true }], rounds: 1,
       sampleSetPath: typeof metadata.sampleSetPath === "string" ? metadata.sampleSetPath : undefined,
-    }, false, { runId, details });
+    }, false, { runId, details, reuse });
     if (!findJob()) {
-      jobs.push({ id: crypto.randomUUID(), scope: prepared.scope, requestScope: input.scope, step: "mosaicRefine",
-        label: "继续复筛测试 · " + config.label, status: "等待", prepared, onMessage: input.onMessage,
-        resumeSamples: true, continuedFrom: runId });
+      jobs.push({ id: crypto.randomUUID(), scope: prepared.scope, requestScope: input.scope, step,
+        label: (reuse ? "继续测试 · " : "重新测试 · ") + config.label, status: "等待", prepared, onMessage: input.onMessage,
+        resumeSamples: true, continuedFrom: reuse ? runId : undefined });
       publish();
     }
     startQueue();
   },
   start: startQueue,
   stop: stopQueue,
+  restart(id: string) {
+    const job = jobs.find(item => item.id === id && item.status === "已暂停");
+    if (!job) return;
+    job.prepared?.restart();
+    job.id = crypto.randomUUID();
+    job.status = "等待";
+    job.progress = undefined;
+    job.continuedFrom = undefined;
+    publish();
+    startQueue();
+  },
   async remove(id: string) {
     const index = jobs.findIndex(job => job.id === id && job.status !== "运行中");
     if (index < 0) return;
@@ -487,15 +508,11 @@ export function useBenchmarkProgress(scope: string) {
 
 export function attachBenchmarkRunner() {
   let disposed = false, unregister: (() => void) | undefined;
-  const discardPaused = () => {
-    for (const job of jobs) if (job.status === "已暂停") job.prepared?.cleanup();
-  };
-  window.addEventListener("pagehide", discardPaused);
   void registerAppCloseGuard(async () => {
     stopQueue();
     await executing;
     await cleanupJob();
     return true;
   }).then(remove => { if (disposed) remove(); else unregister = remove; }).catch(console.error);
-  return () => { disposed = true; unregister?.(); window.removeEventListener("pagehide", discardPaused); };
+  return () => { disposed = true; unregister?.(); };
 }

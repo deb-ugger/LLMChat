@@ -1,5 +1,5 @@
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { refineMosaicBatch } from "../gameMosaicRefine";
+import { readMosaicRows, refineMosaicBatch, savedMosaicScan } from "../gameMosaicRefine";
 import { requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
@@ -14,7 +14,7 @@ import { screenGameText } from "../gameTextScreening";
 import { createGameTranslationContext, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { sameTextEdit } from "../gameTextProject";
-import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
+import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork, recordGameCacheHit, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
 import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
@@ -67,7 +67,7 @@ import { translateUnitySession, unityTranslationStats, unityTranslationCharacter
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
 import { UnityDeploymentPanel, deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
-import { redrawMosaic, gameDetectorFile, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
+import { redrawMosaic, gameDetectorFile, mosaicDetectorKey, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
 import { reconcileImageEdit } from "../unityImageEdits";
@@ -199,7 +199,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [mosaicPage, setMosaicPage] = useState(false);
   const [mosaicBusy, setMosaicBusy] = useState(false);
   const [mosaicControls, setMosaicControls] = useState<HTMLDivElement | null>(null);
-  const [mosaicStatus, setMosaicStatus] = useState<{ root: string; candidates: MosaicCandidateIndex; error?: string }>();
+  const [mosaicStatus, setMosaicStatus] = useState<{ root: string; candidates: MosaicCandidateIndex; savedDrafts?: ReadonlySet<string>; error?: string }>();
   const setActiveStep = useCallback((step: number) => { setMosaicPage(false); setWorkflowStep(Math.min(step, 3)); }, []);
   const followProgress = useRef(true);
   const [fontPath, setFontPath] = useState("");
@@ -1915,6 +1915,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const mosaicRequest = { root, path: project?.folder || "" };
   const mosaicStorage = mosaicIndex && {
     index: mosaicIndex,
+    savedDrafts: mosaicStatus?.root === root ? mosaicStatus.savedDrafts : undefined,
+    consumeSavedDrafts: () => setMosaicStatus(value => value?.root === root && value.savedDrafts === mosaicStatus?.savedDrafts
+      ? { ...value, savedDrafts: undefined } : value),
     read: async (image: UnityImage, signal: AbortSignal) => {
       const result = await unityRun<{ data: string }>("mosaic-preview", { ...mosaicRequest, imageId: image.id }, undefined, signal);
       return new Blob([Uint8Array.from(atob(result.data), c => c.charCodeAt(0))], { type: "image/png" });
@@ -2422,19 +2425,32 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
 
   async function performDeploymentMosaic(current: UnityProject, signal: AbortSignal, report: (value: UnityProgress) => void) {
-    const { candidates } = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-status", { root });
-    const preferences = readMosaicSettings(root);
-    const usable = (current.images || []).filter(image => image.sourceFile && image.width > 0 && image.height > 0 &&
-      candidates[image.id]?.source !== image.sourceHash);
-    const batch = crypto.randomUUID().replaceAll("-", "");
-    const request = { root, path: current.folder, deploymentBatch: batch };
+    let { candidates } = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-status", { root });
+    const preferences = readMosaicSettings(root), modelFile = gameDetectorFile(root);
+    const detectorKey = mosaicDetectorKey(preferences.detector, modelFile);
+    const rows = readMosaicRows(root);
+    const savedRow = (image: UnityImage) => rows[image.id]?.source === image.sourceHash ? rows[image.id] : undefined;
+    const usable = (current.images || []).filter(image => image.sourceFile && image.width > 0 && image.height > 0);
     const scenes = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
-    const images = preferences.scope === "scenes" && scenes.length ? scenes : usable;
+    const eligible = (preferences.scope === "scenes" && scenes.length ? scenes : usable).filter(image => {
+      const row = savedRow(image);
+      return !row?.manualChecked || row.checked;
+    });
+    const reusable = (image: UnityImage) => {
+      const candidate = candidates[image.id], row = savedRow(image);
+      return candidate?.source === image.sourceHash && (candidate.included ||
+        row?.discardedHash !== candidate.hash && row?.discardedHash !== candidate.source);
+    };
+    const reused = eligible.filter(reusable);
+    const ids = new Set(reused.filter(image => !candidates[image.id].included).map(image => image.id));
+    const images = eligible.filter(image => !reusable(image));
+    const request = { root, path: current.folder };
     const scope = deploymentMetricScope(root, "mosaic");
     const selections = gameStepSelections(scope, "mosaic");
+    for (const _image of reused) recordGameCacheHit(scope);
     let failed = 0;
-    const reviews=preferences.refine!==false ? await refineMosaicBatch(images,{
-      root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile:gameDetectorFile(root),read:readMosaicSource,prepare:prepareMosaicSources,
+    const reviews=preferences.refine!==false ? await refineMosaicBatch(images.filter(image => !savedRow(image)?.manualBoxes),{
+      root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile,read:readMosaicSource,prepare:prepareMosaicSources,
       timingScope: scope,
       request:(model,prompt,image,signal,lanes)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection:selections(lanes)}),
       onError: () => { failed++; },
@@ -2444,37 +2460,51 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       reportGameStepItems(scope, "mosaic", reviews.results.size + failed, failed);
       throw new Error(reviews.failed + " 张图片复筛失败");
     }
-    const detector = reviews ? undefined : await openDeploymentDetector(root, preferences, signal, scope);
-    let committed = false;
+    let detector: Awaited<ReturnType<typeof openDeploymentDetector>> | undefined;
+    const savedDrafts = new Set<string>();
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();
         report({ completed: index, total: images.length, detail: image.name || image.id });
         reportGameStepItems(scope, "mosaic", index);
-        const sourceImage = await measureGameAsync(scope, "processingMs", () => readUnitySourceImage(current, image, signal));
-        const detected = reviews?.results.get(image.id) || await measureGameAsync(scope, "processingMs", () => detector!.scan(sourceImage));
-        if (detected.review) throw new Error(image.name + " · " + detected.review);
+        const row = savedRow(image);
+        const readSource = () => measureGameAsync(scope, "processingMs", () => readUnitySourceImage(current, image, signal));
+        let source: Blob | undefined;
+        const cached = savedMosaicScan(row, detectorKey);
+        let detected = reviews?.results.get(image.id) ?? cached;
+        if (detected && detected === cached) recordGameCacheHit(scope);
+        if (!detected) {
+          detector ??= await openDeploymentDetector(root, preferences, signal, scope);
+          source = await readSource();
+          const imageSource = source;
+          detected = await measureGameAsync(scope, "processingMs", () => detector!.scan(imageSource));
+        }
+        if (detected.review && !row?.manualChecked) throw new Error(image.name + " · " + detected.review);
         const { boxes } = detected;
         signal.throwIfAborted();
         if (!boxes.length) continue;
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
-        const rendered = await redrawMosaic({ source: sourceImage, boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal, timingScope: scope,
+        const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal, timingScope: scope,
           progress: detail => report({ completed: index, total: images.length, detail }) });
         const imageData = await imageBase64(rendered);
-        await measureGameAsync(scope, "saveMs", () => unityRun("mosaic-save", {
+        const saved = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {
           ...request, imageId: image.id, imageSourceHash: image.sourceHash, imageData,
         }, undefined, signal));
+        candidates = saved.candidates;
+        savedDrafts.add(image.id);
+        ids.add(image.id);
       }
       signal.throwIfAborted();
-      const result = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>(
-        "mosaic-finish-deployment", { ...request, includeMosaic: true }, undefined, signal));
+      if (ids.size) {
+        const result = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>(
+          "mosaic-select", { ...request, selectedIds: [...ids], includeMosaic: true }, undefined, signal));
+        candidates = result.candidates;
+      }
       reportGameStepItems(scope, "mosaic", images.length, 0);
-      committed = true;
-      setMosaicStatus({ root, candidates: result.candidates });
       setMosaicCompleted(current.folder);
     } finally {
+      setMosaicStatus({ root, candidates, savedDrafts });
       await detector?.release();
-      if (!committed) await unityRun("mosaic-finish-deployment", request);
     }
   }
 

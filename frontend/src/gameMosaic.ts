@@ -70,6 +70,11 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
   localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(normalizeMosaicSettings(settings)));
   window.dispatchEvent(new CustomEvent("game-mosaic-settings", { detail: root }));
 }
+export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File) {
+  if (kind === "grid") return "grid-v2";
+  return file ? JSON.stringify(["custom-yolo-presence-v1", file.name, file.size, file.lastModified]) : kind + "-2d-presence-v1";
+}
+
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal, timingScope?: string) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
   return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope });

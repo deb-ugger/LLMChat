@@ -1,5 +1,6 @@
 import type { Settings } from "./api";
 import { requestGameModelJson } from "./gameModelRequest";
+import { measureGameAsync, recordGameCacheHit } from "./gameModelPerformance";
 import { classifyImageText, createLocalImageRefiner, needsGameImageRefinement, refineGameImages, screenGameImages, type ImageScreening, type LocalRefineMode } from "./gameImageScreening";
 import type { OllamaOutput } from "./gameOllama";
 import type { GamePromptSelection } from "./gamePrompts";
@@ -84,7 +85,9 @@ export async function screenUnityImages(project: UnityProject, signal: AbortSign
     progress({ completed, total: pending.length, detail: "筛选图片 · " + completed + " / " + pending.length });
   };
   for (let i = 0; i < reused.length; i += 64) {
-    await persist(reused.slice(i, i + 64).map(image => screenUnityResult(image, image.regions, options)));
+    const batch = reused.slice(i, i + 64);
+    await persist(batch.map(image => screenUnityResult(image, image.regions, options)));
+    for (const _image of batch) recordGameCacheHit(options.timingScope);
   }
   if (!fresh.length) return { completed, reused: reused.length, ...counts };
   const lanes = Math.max(1, Math.min(4, options.concurrency));
@@ -100,11 +103,12 @@ export async function screenUnityImages(project: UnityProject, signal: AbortSign
           const lines = await io.recognize(image);
           return { lines, detectedBoxes: lines.length, profile: "unity-vision-screen" };
         }
-        if (options.strategy === "full") return workers[worker].recognize(image, stage, { maxSide: 1280, boxThresh: .3 });
-        const rough = await workers[worker].recognize(image, stage, { maxSide: 768, boxThresh: .5 });
+        const recognize = (maxSide: number, boxThresh: number) => measureGameAsync(options.timingScope, "ocrMs",
+          () => workers[worker].recognize(image, stage, { maxSide, boxThresh }));
+        if (options.strategy === "full") return recognize(1280, .3);
+        const rough = await recognize(768, .5);
         signal.throwIfAborted();
-        return classifyImageText(rough, options).state === "review"
-          ? workers[worker].recognize(image, stage, { maxSide: 1280, boxThresh: .3 }) : rough;
+        return classifyImageText(rough, options).state === "review" ? recognize(1280, .3) : rough;
       },
       persist: rows => persist(rows.map(image => {
         if (image.screening?.state === "failed") return image;

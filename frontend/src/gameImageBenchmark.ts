@@ -158,14 +158,16 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     try {
       const result = await screenGameImages(project, signal, { source, target, strategy, concurrency: count, model: model || "fast", timingScope: scope }, {
         read, persist: recordScreening,
-        recognize: (blob, stage, index = 0) => model ? vision(blob, "screen") : measureGameAsync(scope, "processingMs", async () => {
-          await (prepare ??= workers[0].prepare());
-          const worker = workers[index];
-          if (strategy === "full") return worker.recognize(blob, stage, { maxSide: 1280, boxThresh: .3 });
-          const rough = await worker.recognize(blob, stage, { maxSide: 768, boxThresh: .5 });
+        recognize: async (blob, stage, index = 0) => {
+          if (model) return vision(blob, "screen");
+          await (prepare ??= measureGameAsync(scope, "processingMs", () => workers[0].prepare()));
+          const recognize = (maxSide: number, boxThresh: number) => measureGameAsync(scope, "ocrMs",
+            () => workers[index].recognize(blob, stage, { maxSide, boxThresh }));
+          if (strategy === "full") return recognize(1280, .3);
+          const rough = await recognize(768, .5);
           signal.throwIfAborted();
-          return classifyImageText(rough, { source, target }).state === "review" ? worker.recognize(blob, stage, { maxSide: 1280, boxThresh: .3 }) : rough;
-        }),
+          return classifyImageText(rough, { source, target }).state === "review" ? recognize(1280, .3) : rough;
+        },
       }, progress);
       return { translated: sample.length - result.failed, failed: result.failed, summary: scoring() };
     } finally { await Promise.all(workers.map(worker => worker.dispose())); }
@@ -195,7 +197,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read, targetLanguage: target,
       includeRegion: labeledInputs ? undefined : text => gameTextMatchesSource(text,source) && (!skipTarget || !gameTextNeedsNoTranslation(text,target)),
       recognize: (blob, stage, index = 0) => {
-        if (!model) return measureGameAsync(scope, "processingMs", () => recognizeLocalGameImage(blob,
+        if (!model) return measureGameAsync(scope, "ocrMs", () => recognizeLocalGameImage(blob,
           input => workers[workers[0].isGpu ? index % Math.min(2, workers.length) : index].recognize(input, stage), signal));
         const worker = workers[index];
         return worker ? worker.recognizeVision(blob, stage, signal,

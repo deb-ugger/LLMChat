@@ -1,5 +1,5 @@
 import { readImageBenchmarkDetails, saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
-import type { MosaicBenchmarkSetup } from "./gameMosaicBenchmark";
+import { mosaicBenchmarkSteps, type MosaicBenchmarkSetup, type MosaicBenchmarkStep } from "./gameMosaicBenchmark";
 import { clearMosaicReviews } from "./gameMosaicRefine";
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -32,7 +32,7 @@ export type BenchmarkResult = {
   round: number; label: string; selected: number; translated: number; failed: number;
   status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
-export type ArchivedBenchmarkRef = { queueId: string; runId: string };
+export type ArchivedBenchmarkRef = { queueId: string; runId: string; step: MosaicBenchmarkStep };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
 export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
@@ -161,7 +161,8 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
   return { failed, translated: rows.length - failed };
 }
 
-export type BenchmarkStepRunner = (config: BenchmarkConfig, settings: Settings, scope: string, record?: RecordImageBenchmarkOutcome, runId?: string) => Promise<{ translated: number; failed: number; summary?: string }>;
+export type BenchmarkStepRunner = (config: BenchmarkConfig, settings: Settings, scope: string, record?: RecordImageBenchmarkOutcome, runId?: string,
+  preceding?: ReadonlyMap<string, ImageBenchmarkOutcome>) => Promise<{ translated: number; failed: number; summary?: string }>;
 
 export function benchmarkResultLines(result: BenchmarkResult) {
   const seconds = (milliseconds: number | undefined) => milliseconds === undefined ? "—" : (milliseconds / 1000).toFixed(2) + " 秒";
@@ -209,6 +210,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
+  const mosaic = Object.hasOwn(mosaicBenchmarkSteps, step);
   const activeRoles = target ? ["text"] as const : benchmarkRoles;
   const local = loadLocalModelProfiles();
   const prepareModels = (settings: Settings) => prepareGameOllamaModels(configs
@@ -268,7 +270,11 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         settings ??= await api.getSettings();
         if (!modelsReady) { await prepareModels(settings); modelsReady = true; }
         signal.throwIfAborted();
-        const result = await (target ? target.run(config, settings, scope, record, runId) : runSample(config, workload, settings, scope, signal, report, progress, onSample));
+        const preceding = former?.imageDetails && mosaic && samples ? new Map(samples.flatMap((sample, index) => {
+          const outcome = results[index];
+          return outcome && outcome.status !== "失败" ? [[sample.id, outcome] as const] : [];
+        })) : undefined;
+        const result = await (target ? target.run(config, settings, scope, record, runId, preceding) : runSample(config, workload, settings, scope, signal, report, progress, onSample));
         Object.assign(metadata, result);
         if (result.failed) status = "失败";
       } catch (error) {
@@ -307,7 +313,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
             metadata.detail = detail = [detail, "逐图记录保存失败：" + String(error)].filter(Boolean).join(" · ");
           }
         }
-        const checkpointed = interrupted && step === "mosaicRefine";
+        const checkpointed = interrupted && mosaic;
         if (checkpointed) archivePausedGameStep(scope, step);
         else completeGameStep(scope, step);
         const performance = stepPerformance(scope,step);

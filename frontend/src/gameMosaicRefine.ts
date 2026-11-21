@@ -5,10 +5,22 @@ import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameMod
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
 type StoredReview = { source: string; scan: MosaicScan };
 type StoredProposal = { source: string; hash: string; scan: MosaicScan };
-type SavedReviewRow = { source: string; refined?: string; refineError?: string; boxes: MosaicBox[];
-  review?: string; manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean };
+export type MosaicStoredResult = { source: string; refined?: string; refineError?: string; boxes: MosaicBox[];
+  checked: boolean; manualChecked?: boolean; scanned?: boolean; detector?: string; reason?: string; review?: string;
+  manualBoxes?: boolean; saved?: boolean; refineQuickExcluded?: boolean; discardedHash?: string };
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
+export const mosaicRowsStorageKey = (root: string) => "llmchat-game-mosaic:" + root;
+
+export function readMosaicRows<T extends MosaicStoredResult = MosaicStoredResult>(root: string): Record<string, T> {
+  return JSON.parse(localStorage.getItem(mosaicRowsStorageKey(root)) || "{}") || {};
+}
+
+export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: string) {
+  if (row?.manualBoxes) return { boxes: row.boxes };
+  if (row?.scanned && row.detector === detector && !row.reason && !row.refineError)
+    return { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes };
+}
 
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
   return JSON.stringify(["visual-review-v5", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
@@ -28,13 +40,12 @@ function readReviewCheckpoint(root: string, key: string): ReviewCheckpoint {
   const checkpoint = saved?.key === key ? saved : {
     key, images: matchesMosaicReviewKey(saved?.key, key) ? saved!.images : {},
   };
-  const former = formerMosaicReviewKey(key);
-  // Older builds could replace the checkpoint while the completed rows remained in the workbench.
-  const workbench = former && !root.startsWith("benchmark:") && localStorage.getItem("llmchat-game-mosaic:" + root);
-  if (workbench) {
-    const rows = JSON.parse(workbench) as Record<string, SavedReviewRow>;
-    for (const [id, row] of Object.entries(rows)) {
-      if (row.refined !== former || row.refineError || row.manualBoxes || row.saved || checkpoint.images[id]?.source === row.source) continue;
+  // A checkpoint can be replaced when the review configuration changes.
+  // Workbench results keep their original configuration and source identity.
+  if (!root.startsWith("benchmark:")) {
+    for (const [id, row] of Object.entries(readMosaicRows(root))) {
+      if (!matchesMosaicReviewKey(row.refined, key) || row.refineError || row.manualBoxes || row.saved ||
+          checkpoint.images[id]?.source === row.source) continue;
       checkpoint.images[id] = { source: row.source, scan: {
         boxes: row.review ? [] : row.boxes, ...(row.review && { review: row.review, reviewBoxes: row.boxes }),
         signature: [], quickExcluded: row.refineQuickExcluded,
@@ -46,8 +57,20 @@ function readReviewCheckpoint(root: string, key: string): ReviewCheckpoint {
 export function readMosaicReviews(root: string, key: string): Record<string, StoredReview> {
   return readReviewCheckpoint(root, key).images;
 }
-export function clearMosaicReviews(root: string) {
-  localStorage.removeItem(checkpointPath(root));
+export function clearMosaicReviews(root: string, ids?: readonly string[]) {
+  const path = checkpointPath(root);
+  if (!ids) { localStorage.removeItem(path); return; }
+  const saved = localStorage.getItem(path);
+  if (!saved) return;
+  const checkpoint = JSON.parse(saved) as ReviewCheckpoint;
+  let changed = false;
+  for (const id of ids) {
+    if (!(id in checkpoint.images) && !checkpoint.proposals?.[id]) continue;
+    delete checkpoint.images[id];
+    delete checkpoint.proposals?.[id];
+    changed = true;
+  }
+  if (changed) localStorage.setItem(path, JSON.stringify(checkpoint));
 }
 
 function intersect(a: MosaicBox, b: MosaicBox) {
