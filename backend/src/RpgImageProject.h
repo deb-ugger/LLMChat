@@ -41,7 +41,7 @@ class RpgImageProject {
     Json imageRow(const Path& game,const std::string& imageId){const auto index=imageIndex(game,imageId);return catalogs_.at(game).at("images").at(index);}
     void publish(const Path& game,const Json& rows){store(game).save(rows);for(const auto& image:rows){const auto index=imageIndex(game,image.at("id").get<std::string>());catalogs_.at(game).at("images").at(index)=image;}}
     static Path folder(const Path& game){return game/"LLMChat-JSON"/"images";}
-    static Path data(const Path& game){if(std::filesystem::is_regular_file(game/"www/data/System.json"))return "www/data";if(std::filesystem::is_regular_file(game/"data/System.json"))return "data";if(std::filesystem::is_regular_file(game/"Data/BasicData/Game.dat")||std::filesystem::is_regular_file(game/"Data/BasicData.wolf")||std::filesystem::is_regular_file(game/"Data.wolf"))return "Data";throw std::runtime_error("请选择支持的 RPG Maker 或 WOLF 游戏");}
+    static Path data(const Path& game){if(std::filesystem::is_regular_file(game/"www/data/System.json"))return "www/data";if(std::filesystem::is_regular_file(game/"data/System.json"))return "data";if(std::filesystem::is_regular_file(game/"Data/BasicData/Game.dat")||std::filesystem::is_regular_file(game/"Data/BasicData.wolf")||std::filesystem::is_regular_file(game/"Data.wolf"))return "Data";if(unreal::identified(game))return {};throw std::runtime_error("请选择支持图片翻译的游戏目录");}
     static std::string stamp(const Path& file){return std::to_string(std::filesystem::file_size(file))+"-"+std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());}
     static uint64_t nameHash(const std::string& value) {
         uint64_t hash = 14695981039346656037ull;
@@ -202,7 +202,13 @@ public:
         const bool wolf = db == Path("Data");
         const auto imageRoot = gameresourcebackup::imageRoot(game, db);
         if (progress) progress(0,0,"查找图片文件");
-        if (std::filesystem::is_directory(imageRoot)) {
+        if (db.empty()) {
+            unreal::visitImages(game, [&](const Path& relative) {
+                checkRead(scanEpoch);
+                files.emplace(relative, Source{game / relative,{},{},{}});
+                if (progress && files.size() % 128 == 0) progress(0,0,"查找 UE 图片 · 已找到 "+std::to_string(files.size())+" 张");
+            });
+        } else if (std::filesystem::is_directory(imageRoot)) {
             size_t visited=0;
             for (const auto& entry : std::filesystem::recursive_directory_iterator(imageRoot)) {
                 checkRead(scanEpoch);
@@ -243,7 +249,7 @@ public:
             for (size_t i=0;i<oldImages.size();++i) byFile.emplace(oldImages[i].at("file").get<std::string>(),i);
         }
         Json images=Json::array();
-        const auto key=db==Path("Data")?std::string():imageKey(game/db/"System.json");
+        const auto key=(db.empty() || wolf)?std::string():imageKey(game/db/"System.json");
         size_t completed=0;if(progress)progress(0,files.size(),"读取图片信息");
         for(const auto& [logical,source]:files){const auto& file=source.file;checkRead(scanEpoch);if(progress&&(completed%16==0))progress(completed,files.size(),"读取图片信息："+utf8path::pathUtf8(file.filename()));++completed;const auto name=gamefiles::key(logical);auto hash=source.archive.empty()?stamp(file):packedStamp(source.revision,source.fileStamp);if(auto found=byFile.find(name);found!=byFile.end()){
             auto& old=previous["images"][found->second];
@@ -264,7 +270,7 @@ public:
             }
         }
             std::ifstream input(file,std::ios::binary);char buffer[40];input.read(buffer,sizeof buffer);std::string bytes(buffer,static_cast<size_t>(input.gcount()));const bool encrypted=gameresourcebackup::imageExtension(file)!=".png";std::string error;uint32_t width=0,height=0;try{if(encrypted)bytes=codec(bytes,key,false);std::tie(width,height)=dimensions(bytes);}catch(const std::exception& e){error=e.what();}
-            images.push_back({{"id",id(name)},{"file",name},{"container",""},{"objectId",""},{"kind",db==Path("Data")?"WOLF PNG":"RPG PNG"},{"name",utf8path::pathUtf8(file.filename())},{"width",width},{"height",height},{"sourceFile",error.empty()?gamefiles::key(file.lexically_relative(game)):""},{"sourceHash",hash},{"renderedFile",""},{"renderedHash",""},{"selected",false},{"ocrCompleted",false},{"completed",false},{"error",error},{"regions",Json::array()},{"encrypted",encrypted}});
+            images.push_back({{"id",id(name)},{"file",name},{"container",""},{"objectId",""},{"kind",db.empty()?"UE PNG":wolf?"WOLF PNG":"RPG PNG"},{"name",utf8path::pathUtf8(file.filename())},{"width",width},{"height",height},{"sourceFile",error.empty()?gamefiles::key(file.lexically_relative(game)):""},{"sourceHash",hash},{"renderedFile",""},{"renderedHash",""},{"selected",false},{"ocrCompleted",false},{"completed",false},{"error",error},{"regions",Json::array()},{"encrypted",encrypted}});
             if (!source.archive.empty()) {
                 images.back()["archive"] = gamefiles::key(source.archive.lexically_relative(game));
                 images.back()["archiveRevision"] = source.revision;
@@ -357,7 +363,7 @@ public:
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
-        const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
+        const auto key=(dataPath.empty() || dataPath==Path("Data"))?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组已确认的去码图");
         if(mosaic)for(const auto& imageId:ids){validId(imageId);imageIndex(game,imageId);}
@@ -395,7 +401,7 @@ public:
                 if(bytes==(layer?*layer:installation.originalFile)){++unchanged;continue;}
                 if(bytes==installation.originalFile)layer.reset();
                 else layer=std::move(bytes);
-                if(automatic&&!mosaic&&snapshot.path.empty()) snapshot=gameresourcebackup::snapshot(game,dataPath,scopes);
+                if(automatic&&!mosaic&&snapshot.path.empty()) snapshot=gameresourcebackup::snapshot(game,dataPath,scopes,{},dataPath.empty());
                 stageInstallation(stage,game,image,name,installation,current,key);
                 ++updated;
                 if(installation.layers.composed())++composed;
@@ -414,7 +420,7 @@ public:
         std::lock_guard lock(mutex_);
         if(!std::filesystem::is_regular_file(folder(game)/"project.json")) throw std::runtime_error("尚未扫描游戏图片");
         const auto dataPath=data(game);
-        const auto key=dataPath==Path("Data")?std::string():imageKey(game/dataPath/"System.json");
+        const auto key=(dataPath.empty() || dataPath==Path("Data"))?std::string():imageKey(game/dataPath/"System.json");
         const auto ids=selectedIds.is_null()?std::set<std::string>{}:selectedIds.get<std::set<std::string>>();
         if(mosaic&&ids.empty())throw std::runtime_error("请选择本组需要恢复的图片");
         size_t updated=0,retained=0;

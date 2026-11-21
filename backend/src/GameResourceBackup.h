@@ -92,7 +92,8 @@ inline Snapshot snapshot(const fs::path& game, const fs::path& data, const Json&
         } else if (scope == "runtime" && !wolf) {
             for (const auto& name : {"js/plugins.js", "js/plugins/LLMChatTranslation.js", "LLMChat-translations.json", "fonts/LLMChat-font.ttf", "fonts/LLMChat-font.otf"}) candidates.push_back(prefix / name);
         } else if (scope == "images") {
-            candidates = imageSources(game, data);
+            if (isUnreal) unreal::visitImages(game, [&](const fs::path& path){ candidates.push_back(path); });
+            else candidates = imageSources(game, data);
         } else throw std::runtime_error("无效备份范围：" + scope);
         result.counts[scope] = std::count_if(candidates.begin(), candidates.end(), [&](const auto& name) {
             return fs::is_regular_file(game / name);

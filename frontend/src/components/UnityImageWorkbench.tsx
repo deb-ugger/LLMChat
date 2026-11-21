@@ -261,10 +261,36 @@ export function imagePageIndex(index: number, page: number, count: number) {
 }
 const redrawStates = ["重绘中", "待重绘", "失败", "已完成"] as const;
 
-function ImageRedrawGroup({ images, runningId, selectedId, onSelect, onMenu }: {
-  images: readonly UnityImage[]; runningId?: string; selectedId?: string;
-  onSelect: (id: string) => void; onMenu: (event: React.MouseEvent, image: UnityImage) => void;
-}) {
+type ImageIndexProps = {
+  images: readonly UnityImage[];
+  selectedId?: string;
+  onSelect: (id: string) => void;
+  onMenu: (event: React.MouseEvent, image: UnityImage) => void;
+};
+
+function RenderedImageGroup({ images, selectedId, onSelect, onMenu }: ImageIndexProps) {
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState(0);
+  const rendered = useMemo(() => images.filter(image => !!image.renderedFile), [images]);
+  const pages = Math.max(1, Math.ceil(rendered.length / imageListPageSize));
+  const current = Math.min(page, pages - 1);
+  const start = current * imageListPageSize;
+  return <details className="unity-image-result-group" data-output-index open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary><span>已生成译图 · {rendered.length}</span></summary>
+    {open && !rendered.length && <small>当前列表中暂无译图。</small>}
+    {open && rendered.slice(start, start + imageListPageSize).map(item => {
+      const source = item.renderedHash && item.renderedHash === item.screening?.redrawResultHash ? "AI 风格重绘"
+        : item.renderedKind === "imported" ? "导入译图" : item.renderedKind === "generated" ? "排版生成" : "已有译图";
+      return <div key={item.id} className={item.id === selectedId ? "unity-image-item is-selected" : "unity-image-item"}
+        onContextMenu={event => onMenu(event, item)}><button type="button" data-tooltip={item.file} onClick={() => onSelect(item.id)}>
+          <strong>{item.name}</strong><small>{source}</small>
+        </button></div>;
+    })}
+    {open && pages > 1 && <GameImageListPagination label="已生成译图分页" page={current} pages={pages} onPage={setPage} />}
+  </details>;
+}
+
+function ImageRedrawGroup({ images, runningId, selectedId, onSelect, onMenu }: ImageIndexProps & { runningId?: string }) {
   const [open,setOpen] = useState(false);
   const [page,setPage] = useState(0);
   const rows = useMemo(() => {
@@ -280,7 +306,7 @@ function ImageRedrawGroup({ images, runningId, selectedId, onSelect, onMenu }: {
   const current = Math.min(page,pages-1);
   const start = current * imageListPageSize;
   let offset = 0;
-  return <details className="unity-image-result-group" data-redraw-index open={open} onToggle={event=>setOpen(event.currentTarget.open)}>
+  return <details className="unity-image-result-group" data-output-index open={open} onToggle={event=>setOpen(event.currentTarget.open)}>
     <summary><span>AI 风格重绘 · {total}</span>{total > 0 && <small>已完成 {rows["已完成"].length}/{total}</small>}</summary>
     {open && !total && <small>可右键图片，将它加入 AI 风格重绘队列。</small>}
     {open && redrawStates.map(state => {
@@ -473,7 +499,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   }, [active, listTarget, images, groups, deferredSearch, imageFilters]);
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const eventTarget = event.target as HTMLElement;
-    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index, [data-redraw-index]")) return;
+    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index, [data-output-index]")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
@@ -615,7 +641,8 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
           <small>{imageListStatus(item)}</small>
         </button>
       </div>)}{!collapsed[group] && <GameImageListPagination label={`${label}列表分页`} page={page} pages={pages} onPage={changePage} />}</details>;
-      })}<ImageRedrawGroup key={project.folder+":redraw"} images={filtered} runningId={redrawingId} selectedId={image?.id}
+      })}<RenderedImageGroup key={project.folder+":rendered"} images={filtered} selectedId={image?.id}
+        onSelect={selectImage} onMenu={(event,item)=>openRowMenu(event,item.id,item.file,true)} /><ImageRedrawGroup key={project.folder+":redraw"} images={filtered} runningId={redrawingId} selectedId={image?.id}
         onSelect={selectImage} onMenu={(event,item)=>openRowMenu(event,item.id,item.file,true)} />{errorIndex.count > 0 && <details key={project.folder} className="unity-image-result-group unity-image-error-index">
         <summary><span>失败条目 <span className="unity-image-error-count">{errorIndex.count}</span></span></summary>
         {errorIndex.sections.map(({ title, rows }) => rows.length > 0 && <ImageErrorGroup key={title} title={title} issues={rows} names={errorIndex.names}

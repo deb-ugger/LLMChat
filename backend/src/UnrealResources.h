@@ -15,7 +15,10 @@ inline bool directory(const fs::path& path) {
     return fs::is_directory(path, error) && !reparsePoint(path);
 }
 inline bool hasContent(const fs::path& path) {
-    return directory(path) && (directory(path / "Paks") || directory(path / "Localization"));
+    if (!directory(path)) return false;
+    const auto project = path.parent_path();
+    return directory(path / "Paks") || directory(path / "Localization") || directory(project / "Binaries" / "Win64")
+        || fs::is_regular_file(project / (project.filename().wstring() + L".uproject"));
 }
 inline std::vector<fs::path> contentFolders(const fs::path& game) {
     std::vector<fs::path> result;
@@ -29,6 +32,19 @@ inline std::vector<fs::path> contentFolders(const fs::path& game) {
             result.push_back(item.path() / "Content");
     }
     return result;
+}
+// The shared image editor reads and writes PNG bytes at these game-relative paths.
+template<class Visit> void visitImages(const fs::path& game, Visit visit) {
+    for (const auto& content : contentFolders(game)) {
+        for (auto it = fs::recursive_directory_iterator(content, fs::directory_options::skip_permission_denied);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (reparsePoint(it->path())) { it.disable_recursion_pending(); continue; }
+            if (!it->is_regular_file()) continue;
+            auto ext = it->path().extension().wstring();
+            for (auto& c : ext) if (c >= L'A' && c <= L'Z') c += L'a' - L'A';
+            if (ext == L".png") visit(it->path().lexically_relative(game));
+        }
+    }
 }
 inline std::vector<fs::path> localizationFiles(const fs::path& game) {
     std::vector<fs::path> files;
