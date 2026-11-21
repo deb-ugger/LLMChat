@@ -2271,7 +2271,7 @@ body.ocr-image-resizing * {
 .game-flow-actions .game-flow-clear:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, var(--danger-soft)); border-color: var(--danger); }
 
 /* ── 去码页按钮分级：主（实心）/ 次（描边）/ 弱（无边框）/ 破坏性（红字） ── */
-.game-mosaic-workbench .unity-btn.is-secondary {
+:is(.game-mosaic-workbench, .game-mosaic-controls) .unity-btn.is-secondary {
   background: var(--bg-panel);
   border-color: var(--border);
   color: var(--text);
@@ -2299,16 +2299,13 @@ body.ocr-image-resizing * {
 }
 
 /* 卡片头的「清理」降级成弱化红字，不再是一整块红底按钮 */
-.game-mosaic-workbench .game-flow-actions .game-flow-clear {
-  min-width: 0;
-  min-height: 30px;
-  padding: 4px var(--space-2);
+.game-mosaic-controls .game-flow-actions .game-flow-clear {
   color: var(--danger);
   background: transparent;
   border-color: transparent;
 }
 
-.game-mosaic-workbench .game-flow-actions .game-flow-clear:hover:not(:disabled) {
+.game-mosaic-controls .game-flow-actions .game-flow-clear:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-color: transparent;
 }

@@ -5,6 +5,7 @@ import { GameStyleRedrawButton } from "./StyleRedraw";
 import { gameImageRedrawScreening, gameImageRedrawSelected, gameImageRedrawStatus } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { GameImageViewer, type GameImageView, type GameImageViews } from "./GameImageViewer";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { importSourceName,type GameImportSource } from "../gameImageImport";
@@ -67,55 +68,23 @@ const ImagePreview = memo(function ImagePreview({ project, image, translated, co
   </GameImagePreviewFrame>;
 });
 
-export function unityImageFit(width: number, height: number, availableWidth: number, availableHeight: number) {
-  return Math.min(1, Math.max(1, availableWidth - 24) / Math.max(1, width), Math.max(1, availableHeight - 52) / Math.max(1, height));
-}
-
-function ImageViewer({ project, image, translated: initiallyTranslated, allowDetails, threshold, onClose, onDetails }: { project: UnityProject; image: UnityImage; translated: boolean; allowDetails: boolean; threshold: number; onClose: () => void; onDetails: () => void }) {
-  const [zoom, setZoom] = useState(1), [panning, setPanning] = useState(false);
-  const [showTranslation, setShowTranslation] = useState(initiallyTranslated);
-  const hasTranslation = !!image.renderedFile;
-  const translated = hasTranslation && showTranslation;
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const body = useRef<HTMLDivElement>(null), pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  useLayoutEffect(() => { if (body.current) setZoom(unityImageFit(image.width, image.height, body.current.clientWidth, body.current.clientHeight)); }, [image.width, image.height]);
-  useEffect(() => {
-    const element = body.current; if (!element) return;
-    const wheel = (event: WheelEvent) => { event.preventDefault(); setZoom(value => Math.max(.01, Math.min(8, value * Math.exp(-event.deltaY * .002)))); };
-    element.addEventListener("wheel", wheel, { passive: false }); return () => element.removeEventListener("wheel", wheel);
-  }, []);
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        !["Escape", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.key === "Escape") {
-        onClose();
-      } else {
-        setMenu(null);
-        setShowTranslation(hasTranslation && event.key === "ArrowRight");
-      }
-    };
-    window.addEventListener("keydown", handleKey, true);
-    return () => window.removeEventListener("keydown", handleKey, true);
-  }, [hasTranslation, onClose]);
-  return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={translated ? "查看译图" : "查看原图"}
-    aria-modal="true" aria-keyshortcuts={hasTranslation ? "Escape ArrowLeft ArrowRight" : "Escape"}
-    onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); if (event.target === event.currentTarget) onClose(); else setMenu(null); }}>
-    <section className="unity-original-viewer-window">
-      <div className="unity-original-viewer-header"><strong data-tooltip={hasTranslation ? "← 原图 · → 译图" : undefined}>{image.name} · {translated ? "译图" : "原图"}</strong><div className="unity-image-button-group"><button className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button><button className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button><button className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button></div></div>
-      <div ref={body} className={`unity-original-viewer-body${panning ? " is-panning" : ""}`} onPointerDown={event => {
-        if (event.button !== 0 || !(event.target as Element).closest("img")) return;
-        event.preventDefault(); event.stopPropagation(); const element = event.currentTarget;
-        pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop }; setPanning(true); element.setPointerCapture(event.pointerId);
-      }} onPointerMove={event => { if (!pan.current) return; event.preventDefault(); event.stopPropagation(); event.currentTarget.scrollLeft = pan.current.left - (event.clientX - pan.current.x); event.currentTarget.scrollTop = pan.current.top - (event.clientY - pan.current.y); }} onPointerUp={() => { pan.current = null; setPanning(false); }} onPointerCancel={() => { pan.current = null; setPanning(false); }} onLostPointerCapture={() => { pan.current = null; setPanning(false); }} onContextMenu={event => {
-        event.preventDefault(); event.stopPropagation();
-        if (allowDetails && (event.target as Element).closest("img")) setMenu({ ...getFixedMenuPoint(event.clientX, event.clientY, 170, 70) });
-      }}><ImagePreview project={project} image={image} translated={translated} full zoom={zoom} threshold={threshold} /></div>
-    </section>
-    {menu && allowDetails && <div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: menu.x, top: menu.y }}><button role="menuitem" onClick={onDetails}>查看详情</button></div>}
-  </div>, document.body);
+function TranslationImageViewer({ project, image, translated, threshold, onClose, onDetails }: {
+  project: UnityProject;
+  image: UnityImage;
+  translated: boolean;
+  threshold: number;
+  onClose: () => void;
+  onDetails?: () => void;
+}) {
+  const preview = (isTranslation: boolean): GameImageView => ({
+    label: isTranslation ? "译图" : "原图",
+    width: image.width,
+    height: image.height,
+    render: zoom => <ImagePreview project={project} image={image} translated={isTranslation} full zoom={zoom} threshold={threshold} />,
+  });
+  const views: GameImageViews = image.renderedFile ? [preview(false), preview(true)] : [preview(false)];
+  return <GameImageViewer title={image.name} views={views} initialIndex={translated && image.renderedFile ? 1 : 0}
+    onClose={onClose} onDetails={onDetails} />;
 }
 
 export function unityGalleryToggle(current: Set<string>, id: string, additive: boolean) {
@@ -740,6 +709,6 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
       {imageMenu.file && <button type="button" role="menuitem" onClick={() => void openImageFolder(imageMenu.file!)}>在文件夹中打开</button>}
     </div>, document.body)}
     {previewMenu && <div className="unity-gallery-menu" role="menu" aria-label="预览图片操作" style={{ left: previewMenu.x, top: previewMenu.y }}><button role="menuitem" onClick={() => openViewer(previewMenu.id, previewMenu.translated, false)}>{previewMenu.translated ? "查看译图" : "查看原图"}</button></div>}
-    {active && project && viewer && viewerImage && <ImageViewer key={viewer.id + String(viewer.translated)} project={project} image={viewerImage} translated={viewer.translated} allowDetails={viewer.allowDetails} threshold={confidenceThreshold} onClose={() => setViewer(null)} onDetails={() => showDetails(viewer.id)} />}
+    {active && project && viewer && viewerImage && <TranslationImageViewer key={viewer.id + String(viewer.translated)} project={project} image={viewerImage} translated={viewer.translated} threshold={confidenceThreshold} onClose={() => setViewer(null)} onDetails={viewer.allowDetails ? () => showDetails(viewer.id) : undefined} />}
   </section>;
 }

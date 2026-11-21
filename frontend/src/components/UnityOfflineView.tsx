@@ -1,3 +1,5 @@
+import { refineMosaicBatch } from "../gameMosaicRefine";
+import { requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
 import { rememberRecentGameFailures } from "../unityLastGame";
@@ -63,7 +65,7 @@ import { translateUnitySession, unityTranslationStats, unityTranslationCharacter
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
 import { UnitySegmentation } from "../unitySegmentation";
 import { UnityDeploymentPanel, deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
-import { redrawMosaic, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
+import { redrawMosaic, gameDetectorFile, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { UnityImageWorkbench } from "./UnityImageWorkbench";
 import { reconcileImageEdit } from "../unityImageEdits";
@@ -2382,14 +2384,20 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const request = { root, path: current.folder, deploymentBatch: batch };
     const scenes = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
     const images = preferences.scope === "scenes" && scenes.length ? scenes : usable;
-    const detector = await openDeploymentDetector(root, preferences, signal);
+    const reviews=preferences.refine!==false ? await refineMosaicBatch(images,{
+      root,settings:preferences,signal,modelFile:gameDetectorFile(root),read:readMosaicSource,prepare:prepareMosaicSources,
+      request:(model,prompt,image,signal)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
+      onProgress:(completed,detail)=>report({completed,total:images.length,detail})
+    }) : undefined;
+    if(reviews?.failed)throw new Error(reviews.failed+" 张图片复筛失败");
+    const detector = reviews ? undefined : await openDeploymentDetector(root, preferences, signal);
     let committed = false;
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();
         report({ completed: index, total: images.length, detail: image.name || image.id });
         const sourceImage = await readUnitySourceImage(current, image, signal);
-        const detected = await detector.scan(sourceImage);
+        const detected = reviews?.results.get(image.id) || await detector!.scan(sourceImage);
         if (detected.review) throw new Error(image.name + " · " + detected.review);
         const { boxes } = detected;
         signal.throwIfAborted();
@@ -2406,7 +2414,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setMosaicStatus({ root, candidates: result.candidates });
       setMosaicCompleted(current.folder);
     } finally {
-      await detector.release();
+      await detector?.release();
       if (!committed) await unityRun("mosaic-finish-deployment", request);
     }
   }
@@ -2868,7 +2876,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {!deploymentPage && <button {...dividerProps} />}
     {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
       {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
-        <GameMosaicWorkbench key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
+        <GameMosaicWorkbench settings={settings} key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={setMosaicBusy} />}
     </div>}
     <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench redrawingId={redrawingId} key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
       const current = latest.current;

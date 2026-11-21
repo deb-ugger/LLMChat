@@ -1,0 +1,138 @@
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { getFixedMenuPoint } from "../viewportLayout";
+import { GameImagePreviewFrame } from "./GameImageBrowserLayout";
+
+export type GameImageView = {
+  label: string;
+  width: number;
+  height: number;
+} & ({ src: string | Blob } | { render: (zoom: number) => ReactNode });
+
+export type GameImageViews = readonly [GameImageView, ...GameImageView[]];
+
+export function useImageBlobUrl(blob?: Blob) {
+  const [preview, setPreview] = useState<{ blob: Blob; url: string }>();
+  useEffect(() => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    setPreview({ blob, url });
+    return () => URL.revokeObjectURL(url);
+  }, [blob]);
+  return preview && preview.blob === blob ? preview.url : "";
+}
+
+export function unityImageFit(width: number, height: number, availableWidth: number, availableHeight: number) {
+  return Math.min(1, Math.max(1, availableWidth - 24) / Math.max(1, width), Math.max(1, availableHeight - 52) / Math.max(1, height));
+}
+
+function BitmapPreview({ view, title, zoom }: { view: GameImageView & { src: string | Blob }; title: string; zoom: number }) {
+  const url = useImageBlobUrl(typeof view.src === "string" ? undefined : view.src);
+  const src = typeof view.src === "string" ? view.src : url;
+  return <GameImagePreviewFrame caption={view.label} fallback={<p className="hint">正在读取图片…</p>}>
+    {src && <div className="unity-image-stage" style={{ width: view.width * zoom }}>
+      <img src={src} alt={title + " " + view.label} draggable={false} />
+    </div>}
+  </GameImagePreviewFrame>;
+}
+
+export function GameImageViewer({ title, views, initialIndex = 0, onClose, onDetails }: {
+  title: string;
+  views: GameImageViews;
+  initialIndex?: number;
+  onClose: () => void;
+  onDetails?: () => void;
+}) {
+  const [index, setIndex] = useState(initialIndex);
+  const [zoom, setZoom] = useState(1);
+  const [panning, setPanning] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const view = views[index] ?? views[0];
+  const { width, height } = view;
+  const hasAlternatives = views.length > 1;
+  const navigationHint = views.length === 2 ? "← " + views[0].label + " · → " + views[1].label
+    : hasAlternatives ? "← 上一张 · → 下一张" : undefined;
+
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (element) setZoom(unityImageFit(width, height, element.clientWidth, element.clientHeight));
+  }, [width, height]);
+
+  useEffect(() => {
+    const element = body.current;
+    if (!element) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      setZoom(value => Math.max(.01, Math.min(8, value * Math.exp(-event.deltaY * .002))));
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    return () => element.removeEventListener("wheel", wheel);
+  }, []);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+          !["Escape", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        onClose();
+      } else if (views.length > 1) {
+        setMenu(null);
+        const step = event.key === "ArrowLeft" ? -1 : 1;
+        setIndex(current => Math.max(0, Math.min(views.length - 1, current + step)));
+      }
+    };
+    window.addEventListener("keydown", handleKey, true);
+    return () => window.removeEventListener("keydown", handleKey, true);
+  }, [onClose, views.length]);
+
+  const endPan = () => { pan.current = null; setPanning(false); };
+  return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={"查看" + view.label}
+    aria-modal="true" aria-keyshortcuts={hasAlternatives ? "Escape ArrowLeft ArrowRight" : "Escape"}
+    onPointerDown={event => event.stopPropagation()} onClick={event => {
+      event.stopPropagation();
+      if (event.target === event.currentTarget) onClose();
+      else setMenu(null);
+    }}>
+    <section className="unity-original-viewer-window">
+      <div className="unity-original-viewer-header">
+        <strong data-tooltip={navigationHint}>{title} · {view.label}</strong>
+        <div className="unity-image-button-group">
+          <button type="button" className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button>
+          <button type="button" className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
+          <button type="button" className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button>
+          <button type="button" className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button>
+        </div>
+      </div>
+      <div ref={body} className={"unity-original-viewer-body" + (panning ? " is-panning" : "")} onPointerDown={event => {
+        if (event.button !== 0 || !(event.target as Element).closest("img")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const element = event.currentTarget;
+        pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+        setPanning(true);
+        element.setPointerCapture(event.pointerId);
+      }} onPointerMove={event => {
+        const start = pan.current;
+        if (!start) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
+        event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
+      }} onPointerUp={endPan} onPointerCancel={endPan} onLostPointerCapture={endPan} onContextMenu={event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (onDetails && (event.target as Element).closest("img"))
+          setMenu(getFixedMenuPoint(event.clientX, event.clientY, 170, 70));
+      }}>
+        {"src" in view ? <BitmapPreview view={view} title={title} zoom={zoom} /> : view.render(zoom)}
+      </div>
+    </section>
+    {menu && onDetails && <div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: menu.x, top: menu.y }}>
+      <button type="button" role="menuitem" onClick={onDetails}>查看详情</button>
+    </div>}
+  </div>, document.body);
+}

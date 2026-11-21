@@ -9,7 +9,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[] };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[] };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -45,10 +45,10 @@ export function createMosaicGridScanner() {
 }
 
 export type MosaicSettings = {
-  concurrency?: number;
+  concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "all", refineConcurrency: 1, scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
@@ -84,13 +84,14 @@ function overlap(a: MosaicBox, b: MosaicBox) {
 export function mosaicVisibleBox(image: ImageData, box: MosaicBox) {
   const [left, top, right, bottom] = box;
   const area = (right - left) * (bottom - top);
-  let visible = 0;
+  let visible = 0, minX = right, minY = bottom, maxX = left, maxY = top;
   const minimum = [255, 255, 255], maximum = [0, 0, 0];
   for (let y = top; y < bottom; y++) {
     for (let x = left; x < right; x++) {
       const offset = (y * image.width + x) * 4;
       if (image.data[offset + 3] < 64) continue;
       visible++;
+      minX = Math.min(minX,x); minY = Math.min(minY,y); maxX = Math.max(maxX,x+1); maxY = Math.max(maxY,y+1);
       for (let channel = 0; channel < 3; channel++) {
         const value = image.data[offset + channel];
         minimum[channel] = Math.min(minimum[channel], value);
@@ -98,8 +99,8 @@ export function mosaicVisibleBox(image: ImageData, box: MosaicBox) {
       }
     }
   }
-  // A candidate dominated by transparent pixels, or uniform visible fill, is background.
-  return visible >= area / 2 && maximum.some((value, channel) => value - minimum[channel] >= 12);
+  // Thin sprites can occupy little of their tight box. Reject boxes that extend far beyond their visible content.
+  return visible > 0 && (maxX-minX)*(maxY-minY) >= area / 2 && maximum.some((value, channel) => value - minimum[channel] >= 12);
 }
 
 export function mosaicBoxes(values: Float32Array, dims: readonly number[], classes: number,
@@ -260,16 +261,13 @@ export async function loadMosaicDetector(model: File | undefined, options: {
         if (score >= threshold) boxes.push(box);
         return true;
       }, 0.05);
-      // Local grid evidence corroborates low-score regions without accepting background-sized predictions.
+      // Grid-only evidence remains unselected until the independent review confirms it.
       const grid = scanMosaicPixels(full.data, full.width, full.height, signature).boxes;
-      for (const box of candidates)
-        if (grid.some(local => overlap(local, box) > 0.2) && !boxes.some(previous => overlap(previous, box) > 0.45))
-          boxes.push(box);
+      const reviewBoxes = [...candidates];
       for (const box of grid)
-        if (!boxes.some(previous => overlap(previous, box) > 0.2)) boxes.push(box);
-      if (boxes.length) return { signature, boxes };
-      const reviewBoxes = candidates;
-      return { signature, boxes, reviewBoxes, review: reviewBoxes.length ? "检测模型分数较低，请检查候选区域" : undefined };
+        if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
+      return { signature, boxes, modelBoxes: candidates, reviewBoxes,
+        review: !boxes.length && reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : undefined };
     } finally {
       feeds.dispose();
       for (const value of Object.values(tensors || {})) value.dispose();

@@ -1,3 +1,7 @@
+import { api, type Settings } from "../api";
+import { requestGameModelJson } from "../gameModelRequest";
+import { gameAvailableModels } from "./GameTranslationTabs";
+import { refineMosaicBatch, mosaicReviewKey, readMosaicReviews, clearMosaicReviews } from "../gameMosaicRefine";
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
@@ -8,16 +12,17 @@ import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
-  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
+  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refined?: string; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
-type MosaicStep = "screen" | "redraw";
+type MosaicStep = "screen" | "refine" | "redraw";
 type StepRun = { state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number; summary?: string; device?: MosaicDevice };
 type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
@@ -37,7 +42,7 @@ type MosaicStorage = {
   select: (images: UnityImage[], include: boolean, signal: AbortSignal) => Promise<void>;
 };
 type Props = {
-  gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
+  settings?: Settings; gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
   prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
   controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
@@ -63,25 +68,14 @@ function resultFor(rows: Results, image: UnityImage) {
   return row?.source === image.sourceHash ? row : defaultResult(image);
 }
 
-function useBlobUrl(blob?: Blob) {
-  const [preview, setPreview] = useState<{ blob: Blob; url: string }>();
-  useEffect(() => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    setPreview({ blob, url });
-    return () => URL.revokeObjectURL(url);
-  }, [blob]);
-  return preview && preview.blob === blob ? preview.url : "";
-}
-
-function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove }: {
+function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
   version: ResultVersion; letter?: string; imageName: string;
-  disabledReason?: string; onApprove: (blob: Blob) => void;
+  disabledReason?: string; onApprove: (blob: Blob) => void; onOpen?: () => void;
 }) {
-  const url = useBlobUrl(version.blob);
+  const url = useImageBlobUrl(version.blob);
   const modelName = mosaicModelLabels[version.id];
   return <div className="game-mosaic-result-version">
-    <GameImagePreviewFrame caption={<>
+    <GameImagePreviewFrame onDoubleClick={url ? onOpen : undefined} caption={<>
       <span>{letter && `${letter} · `}{modelName}</span>
       {version.seconds != null && <small>{version.seconds.toFixed(1)} 秒</small>}
     </>} fallback={<p className="hint">正在读取图片…</p>}>
@@ -108,7 +102,7 @@ function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
     .filter(([left, top, right, bottom]) => left < right && top < bottom);
 }
 
-export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle }: Props) {
+export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle }: Props) {
   const task = useRef<AbortController | null>(null);
   const onCompletionChange = useContext(GameMosaicCompletionContext);
   const savedKey = "llmchat-game-mosaic:" + gamePath;
@@ -163,6 +157,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const previews = useRef<HTMLDivElement>(null);
   const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
   const [drawing, setDrawing] = useState(false);
+  const [viewer, setViewer] = useState<{ title: string; views: GameImageViews; initialIndex: number } | null>(null);
   const [draft, setDraft] = useState<MosaicBox>();
   const anchor = useRef<[number, number] | null>(null);
   const confirmation = useGameActionConfirm(() => {});
@@ -287,8 +282,25 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   const sideBySide = comparing && previewAreaWidth >= 3 * 560 + 62 * document.documentElement.currentCSSZoom;
   const original = source && source.id === active?.id && source.revision === active.sourceHash ? source : undefined;
   const confirmed = approved && approved.id === active?.id && approved.revision === active.sourceHash ? approved : undefined;
-  const originalUrl = useBlobUrl(original?.blob);
-  const savedUrl = useBlobUrl(showSaved ? confirmed?.blob : undefined);
+  const originalUrl = useImageBlobUrl(original?.blob);
+  const savedUrl = useImageBlobUrl(showSaved ? confirmed?.blob : undefined);
+  const openPreview = (id: "original" | "saved" | MosaicModel) => {
+    if (drawing || !active) return;
+    const { name: title, width, height } = active;
+    const originalView = { id: "original", label: "原图", src: original?.blob };
+    const savedView = { id: "saved", label: "去码结果 · 已确认", src: activeSaved ? confirmed?.blob : undefined };
+    const candidateViews = versions.map((version, index) => ({
+      id: version.id,
+      label: (versions.length === 2 ? "候选 " + (index === 0 ? "A" : "B") : "去码结果") + " · " + mosaicModelLabels[version.id],
+      src: version.blob,
+    }));
+    const ordered = showSaved ? [originalView, savedView, ...candidateViews] : [originalView, ...candidateViews, savedView];
+    const available = ordered.flatMap(view => view.src ? [{ ...view, src: view.src, width, height }] : []);
+    const initialIndex = available.findIndex(view => view.id === id);
+    const [first, ...others] = available;
+    if (initialIndex >= 0 && first) setViewer({ title, views: [first, ...others], initialIndex });
+  };
+
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
     if (row.checked) total.checked++;
@@ -307,7 +319,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }, [active]);
 
   useEffect(() => () => { task.current?.abort(); onBusy?.(false); }, [onBusy]);
-  useEffect(() => { if (!paneVisible) filterMenu.current?.hidePopover(); }, [paneVisible]);
+  useEffect(() => {
+    if (!paneVisible) { filterMenu.current?.hidePopover(); setViewer(null); }
+  }, [paneVisible]);
   useEffect(() => {
     if (!paneVisible || !busy || !progressStep) return;
     const timer = window.setInterval(() => refreshElapsed(value => value + 1), 1000);
@@ -373,14 +387,16 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
         }
         const unscreened = scoped.filter(image => !ids.has(image.id) && !(resultFor(rows, image).manualChecked && !resultFor(rows, image).checked));
         if (!unscreened.length) return [...ids];
-        const detector = await openDeploymentDetector(gamePath, preferences, signal);
+        const reviews=preferences.refine!==false ? await performReviews(unscreened,signal,(_completed,detail)=>setProgress(detail)) : undefined;
+        if(reviews?.failed)throw new Error(reviews.failed+" 张图片复筛失败");
+        const detector = reviews ? undefined : await openDeploymentDetector(gamePath, preferences, signal);
         try {
           for (const image of unscreened) {
             signal.throwIfAborted();
             const row = resultFor(rows, image);
             const source = await read(image, signal);
-            const scan = row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
-              ? { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes } : await detector.scan(source);
+            const scan = reviews?.results.get(image.id) || (row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
+              ? { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes } : await detector!.scan(source));
             if (scan.review && !row.manualChecked) {
               update(image, { scanned:true, detector:detectorKey, review:scan.review, boxes:scan.reviewBoxes || [], checked:false });
               throw new Error(image.name + " · " + scan.review);
@@ -393,7 +409,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             update(image, { boxes, scanned: true, detector: detectorKey, saved: true, checked: true, discardedHash: undefined });
           }
           return [...ids];
-        } finally { await detector.release(); }
+        } finally { await detector?.release(); }
       },
       prepare: async (signal, imageIds = selected.map(image => image.id)) => {
         const patchId = crypto.randomUUID().replaceAll("-", "");
@@ -426,7 +442,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }, [active, read, loadPreviews]);
 
   useEffect(() => {
-    if (!loadPreviews || !showSaved || !active) return;
+    if (!loadPreviews || !activeSaved || !active) return;
     const controller = new AbortController();
     void readSaved(active, controller.signal).then(blob => {
       if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, blob });
@@ -434,7 +450,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       if (!controller.signal.aborted) setApproved({ id: active.id, revision: active.sourceHash, error: String(cause) });
     });
     return () => controller.abort();
-  }, [active, showSaved, loadPreviews]);
+  }, [active, activeSaved, loadPreviews]);
 
   function update(image: UnityImage, edit: Partial<Result>) {
     setRows(previous => ({ ...previous, [image.id]: { ...resultFor(previous, image), ...edit } }));
@@ -472,7 +488,60 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["custom-yolo-alpha-v3", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-640-alpha-v3";
+    ? JSON.stringify(["custom-yolo-alpha-v4", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-2d-640-alpha-v4";
+  const reviewKey = mosaicReviewKey(preferences, detectorFile);
+  const reviewModels = settings ? gameAvailableModels(settings) : ["qwen3-vl:8b-instruct"];
+  function applyReview(image: UnityImage, scan: import("../gameMosaic").MosaicScan) {
+    setRows(previous => {
+      const old = resultFor(previous,image);
+      if (old.manualBoxes || old.saved) return previous;
+      return { ...previous, [image.id]: { ...old, boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
+        checked: old.manualChecked ? old.checked : !!scan.boxes.length && !scan.review,
+        refined: reviewKey, scanned:true, detector:detectorKey, reason:undefined, review:scan.review } };
+    });
+  }
+  useEffect(() => {
+    const completed=readMosaicReviews(gamePath,reviewKey);
+    setRows(previous => {
+      const next={...previous};let changed=false;
+      for(const image of usable) {
+        const record=completed[image.id],old=resultFor(previous,image);
+        if(record?.source!==image.sourceHash || old.refined===reviewKey || old.manualBoxes || old.saved)continue;
+        const scan=record.scan;
+        next[image.id]={...old,boxes:scan.review?scan.reviewBoxes||scan.boxes:scan.boxes,
+          checked:old.manualChecked?old.checked:!!scan.boxes.length&&!scan.review,
+          refined:reviewKey,scanned:true,detector:detectorKey,reason:undefined,review:scan.review};
+        changed=true;
+      }
+      return changed?next:previous;
+    });
+  },[gamePath,usable,reviewKey,detectorKey]);
+  const reviewScope = currentScope.filter(image => {
+    const row=resultFor(rows,image);
+    return row.scanned && !row.saved && !row.manualBoxes &&
+      (preferences.refineScope==="selected" ? row.checked : preferences.refineScope==="suspected" ? !!(row.boxes.length||row.review||row.reason) : true);
+  });
+  const pendingReview=reviewScope.filter(image=>resultFor(rows,image).refined!==reviewKey);
+  const reviewedCount=reviewScope.length-pendingReview.length;
+  async function performReviews(targets: readonly UnityImage[], signal: AbortSignal, report?: (completed:number,detail:string)=>void, restart=false) {
+    const configuration=settings || await api.getSettings();
+    return refineMosaicBatch(targets,{root:gamePath,settings:preferences,signal,modelFile:detectorFile,read,prepare:prepareSources,restart,
+      request:(model,prompt,image,signal)=>requestGameModelJson(configuration,model,prompt,signal,image,"game-images",undefined,{role:"mosaic"}),
+      onResult:applyReview,onError:(image,error)=>update(image,{reason:error,refined:undefined,checked:false}),
+      onProgress:report});
+  }
+  function refine(restart=false) {
+    const targets=restart?reviewScope:pendingReview;
+    if(!targets.length)return;
+    const initial=restart?0:reviewedCount;
+    void run("复筛打码图片",async(signal,report)=>{
+      const result=await performReviews(targets,signal,(completed,detail)=>{report(initial+completed);setProgress(detail);},restart);
+      const uncertain=[...result.results.values()].filter(scan=>scan.review).length;
+      setProgress("复筛完成 · "+uncertain+" 张待人工确认");
+      if(result.failed)setError(result.failed+" 张复筛失败，请查看待复核分组");
+      return !result.failed;
+    },{id:"refine",total:reviewScope.length,completed:initial,summary:preferences.refineModel || "qwen3.5:latest"});
+  }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);
@@ -525,8 +594,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
                 const { signature } = scan;
                 const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
                 batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0,
-                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
+                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0 && preferences.refine === false,
+                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, refined:undefined, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
               } catch (cause) {
                 if (signal.aborted) break;
                 failures++;
@@ -591,6 +660,9 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   function generate(targets: UnityImage[], models: MosaicModel[]) {
     const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
     if (!usableTargets.length) return;
+    if(preferences.refine!==false && usableTargets.some(image=>{const row=resultFor(rows,image);return !row.saved&&!row.manualBoxes&&row.refined!==reviewKey;})){
+      setError("请先完成视觉复筛，再重绘所选图片");return;
+    }
     void run("生成去码候选", async (signal, report) => {
       const ref = reference && await readSaved(reference, signal);
       const seed = parseInt((group || "ab").replace(/[^a-f0-9]/gi, "").slice(-8) || "1", 16);
@@ -699,10 +771,14 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     elapsed: sameScreen ? lastScreenRun?.elapsed : undefined,
     device: sameScreen ? lastScreenRun?.device : undefined,
   };
-  const canClear = [screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
+  const refineStatus: StepRun = stepRuns.refine?.state==="running" ? stepRuns.refine : {
+    state:reviewScope.length && !pendingReview.length ? "done" : stepRuns.refine?.state==="error" ? "error" : reviewedCount ? "stopped" : "pending",
+    total:reviewScope.length,completed:reviewedCount,elapsed:stepRuns.refine?.elapsed
+  };
+  const canClear = [refineStatus.state,screenStatus.state, stepRuns.redraw?.state].some(state => state === "stopped" || state === "error" || state === "done");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
-    const status = id === "screen" ? screenStatus : stepRuns.redraw;
+    const status = id === "screen" ? screenStatus : id === "refine" ? refineStatus : stepRuns.redraw;
     const state = status?.state || "pending";
     const running = state === "running";
     const percent = status?.total ? status.completed / status.total * 100 : undefined;
@@ -752,6 +828,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
       next[image.id] = entry.included ? { ...defaultResult(image), saved: true }
         : { ...defaultResult(image), discardedHash: entry.hash };
     }
+    clearMosaicReviews(gamePath);
     setRows(next);
     lastScreen.current = null;
     setStepRuns({});
@@ -780,6 +857,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
     ? "自定义检测 · " + detectorFile.name : detectorLabels[detectorKind];
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
+    {paneVisible && viewer && <GameImageViewer {...viewer} onClose={() => setViewer(null)} />}
     {createPortal(<div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
       <div className="game-flow-list"><ol>
         {stepCard("screen", "筛选打码图片", screenSummary, <>
@@ -803,6 +881,22 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             <input type="file" accept=".onnx" disabled={!!busy} onChange={event => setDetectorFile(gameDetectorFile(gamePath, event.target.files?.[0]))} />
             {detectorFile && <button type="button" className="unity-btn" disabled={!!busy} onClick={()=>{clearGameDetectorFile(gamePath);setDetectorFile(undefined);}}>使用内置模型</button>}
           </label>}
+        </>)}
+        {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest",
+          <button type="button" className="unity-btn game-flow-start" disabled={actionsDisabled || !reviewScope.length}
+            onClick={()=>refine(!pendingReview.length)}>{!pendingReview.length&&reviewScope.length?"重新复筛":reviewedCount?"继续复筛":"开始复筛"}</button>,<>
+          <label>候选区域推理模型<select aria-label="去码复筛视觉模型" value={preferences.refineModel || "qwen3.5:latest"} disabled={!!busy} onChange={e=>changePreferences({refineModel:e.target.value})}>
+            {[...new Set(["qwen3.5:latest",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
+          </select></label>
+          <label>纹理与漏检复核模型<select aria-label="去码纹理复核模型" value={preferences.refineGuardModel || "qwen3-vl:8b-instruct"} disabled={!!busy} onChange={e=>changePreferences({refineGuardModel:e.target.value})}>
+            {[...new Set(["qwen3-vl:8b-instruct",...reviewModels])].map(model=><option key={model} value={model}>{model.split("/").pop()}</option>)}
+          </select></label>
+          <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理。</p>
+          <label>手动复筛范围<select value={preferences.refineScope || "all"} disabled={!!busy} onChange={e=>changePreferences({refineScope:e.target.value as typeof preferences.refineScope})}>
+            <option value="all">全部已筛选图片</option><option value="suspected">疑似及待复核</option><option value="selected">已勾选图片</option>
+          </select></label>
+          <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={!!busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}><option value={1}>1</option><option value={2}>2</option></select></label>
+          <label className="game-mosaic-checkbox"><input type="checkbox" checked={preferences.refine!==false} disabled={!!busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
         </>)}
         {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model],
           <button type="button" className="unity-btn game-flow-start" disabled={!!batchReason} data-tooltip={batchReason}
@@ -940,7 +1034,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               </button>)}
             </div>}
           </div>
-          <GameImagePreviewFrame caption="原图" fallback={original?.error
+          <GameImagePreviewFrame caption="原图" onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined} fallback={original?.error
             ? <p className="game-mosaic-error" role="alert">{original.error}</p> : <p className="hint">正在读取图片…</p>}>
             {originalUrl && <div className="unity-image-stage game-mosaic-stage">
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
@@ -961,7 +1055,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               </svg>
             </div>}
           </GameImagePreviewFrame>
-          {showSaved ? <GameImagePreviewFrame caption="已确认" fallback={confirmed?.error
+          {showSaved ? <GameImagePreviewFrame caption="已确认" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
             ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
             {savedUrl && <div className="unity-image-stage">
               <img src={savedUrl} alt={`${active.name} 已确认去码结果`} draggable={false} />
@@ -969,7 +1063,8 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
           </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
             <MosaicResultVersion key={version.id} version={version}
               letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
-              imageName={active.name} disabledReason={busyReason} onApprove={blob => approve(active, blob)} />
+              imageName={active.name} disabledReason={busyReason} onApprove={blob => approve(active, blob)}
+              onOpen={drawing ? undefined : () => openPreview(version.id)} />
           ) : <GameImagePreviewFrame fallback={<p className="hint">尚未生成去码结果</p>} />}
         </div>
         <div className="unity-image-actions">
