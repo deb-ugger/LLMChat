@@ -9,7 +9,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[] };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[] };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -97,7 +97,7 @@ export function ladaVisibleBox(image: ImageData, box: MosaicBox) {
 }
 
 export function ladaBoxes(values: Float32Array, dims: readonly number[], classes: number,
-  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox) => boolean = () => true) {
+  geometry: { left: number; top: number; scaleX: number; scaleY: number; width: number; height: number }, validBox: (box: MosaicBox) => boolean = () => true, minimumScore = threshold) {
   if (dims.length !== 3 || dims[0] !== 1 || dims[1] !== 4 + classes + 32 || dims[2] <= 0)
     throw new Error("Lada ONNX 需使用原始 YOLO11 分割输出（关闭 NMS 导出）");
   const { left, top, scaleX, scaleY, width, height } = geometry;
@@ -106,7 +106,7 @@ export function ladaBoxes(values: Float32Array, dims: readonly number[], classes
   for (let index = 0; index < count; index++) {
     let score = 0;
     for (let c = 0; c < classes; c++) score = Math.max(score, values[(4 + c) * count + index]);
-    if (score < threshold) continue;
+    if (score < minimumScore) continue;
     const x = values[index], y = values[count + index], w = values[count * 2 + index], h = values[count * 3 + index];
     const box: MosaicBox = [
       Math.max(0, Math.floor((x - w / 2 - left) / scaleX)), Math.max(0, Math.floor((y - h / 2 - top) / scaleY)),
@@ -237,8 +237,20 @@ export async function loadLadaDetector(model: File | undefined, options: {
         const result = tensors[outputName];
         const data = result.data;
         if (!(data instanceof Float32Array)) throw new Error("请选择 FP32 的 Lada ONNX");
-        return { signature, boxes: ladaBoxes(data, result.dims, channels - 36,
-          { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height }, box => ladaVisibleBox(full, box)) };
+        const geometry = { left, top, scaleX: width / full.width, scaleY: height / full.height, width: full.width, height: full.height };
+        const validate = (box: MosaicBox) => ladaVisibleBox(full, box);
+        const boxes = ladaBoxes(data, result.dims, channels - 36, geometry, validate);
+        // Local grid evidence corroborates low-score regions without accepting background-sized predictions.
+        const grid = scanMosaicPixels(full.data, full.width, full.height).boxes;
+        const candidates = ladaBoxes(data, result.dims, channels - 36, geometry, validate, 0.05);
+        for (const box of candidates)
+          if (grid.some(local => overlap(local, box) > 0.2) && !boxes.some(previous => overlap(previous, box) > 0.45))
+            boxes.push(box);
+        for (const box of grid)
+          if (!boxes.some(previous => overlap(previous, box) > 0.2)) boxes.push(box);
+        if (boxes.length) return { signature, boxes };
+        const reviewBoxes = candidates;
+        return { signature, boxes, reviewBoxes, review: reviewBoxes.length ? "检测模型分数较低，请检查候选区域" : undefined };
       } finally {
         feeds.dispose();
         for (const value of Object.values(tensors || {})) value.dispose();

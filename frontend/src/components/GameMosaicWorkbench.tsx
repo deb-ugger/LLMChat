@@ -13,7 +13,7 @@ import { SearchHighlight } from "./SearchHighlight";
 import "../gameMosaic.css";
 
 type Result = { source: string; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
-  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
+  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
 type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
@@ -53,7 +53,7 @@ const mosaicStatusLabels = {
 type MosaicStatus = keyof typeof mosaicStatusLabels;
 function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   if (row.saved) return included ? "included" : "confirmed";
-  if (row.reason) return "review";
+  if (row.reason || row.review) return "review";
   if (row.boxes.length) return "candidate";
   return row.scanned ? "clear" : "pending";
 }
@@ -367,8 +367,13 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
             signal.throwIfAborted();
             const row = resultFor(rows, image);
             const source = await read(image, signal);
-            const boxes = row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
-              ? row.boxes : (await detector.scan(source)).boxes;
+            const scan = row.manualBoxes || row.scanned && row.detector === detectorKey && !row.reason
+              ? { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes } : await detector.scan(source);
+            if (scan.review && !row.manualChecked) {
+              update(image, { scanned:true, detector:detectorKey, review:scan.review, boxes:scan.reviewBoxes || [], checked:false });
+              throw new Error(image.name + " · " + scan.review);
+            }
+            const boxes = scan.boxes;
             if (!boxes.length) { update(image, { boxes, scanned:true, detector:detectorKey, reason:undefined }); continue; }
             const rendered = await redrawMosaic({ source, boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, progress: setProgress });
             await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: rendered, signal }));
@@ -455,7 +460,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
   }
 
   const detectorKey = detectorKind === "grid" ? "grid-v2" : detectorFile
-    ? JSON.stringify(["lada-alpha-v2", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640-alpha-v2";
+    ? JSON.stringify(["lada-alpha-v3", detectorFile.name, detectorFile.size, detectorFile.lastModified]) : detectorKind + "-v4-640-alpha-v3";
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const remaining = useMemo(() => currentScope.filter(image => {
     const row = resultFor(rows, image);
@@ -504,10 +509,12 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
                 if (prepareError) throw new Error(prepareError);
                 const input = await read(image, signal);
                 if (signal.aborted) break;
-                const { boxes, signature } = await scanner.scan(input);
+                const scan = await scanner.scan(input);
+                const { signature } = scan;
+                const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
                 batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0,
-                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined };
+                  checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : scan.boxes.length > 0,
+                  signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
               } catch (cause) {
                 if (signal.aborted) break;
                 failures++;
@@ -830,7 +837,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
                 const status = mosaicStatusLabels[state] + (state === "candidate" ? ` · ${row.boxes.length} 区域` : "");
                 const detail = `${image.width} × ${image.height} · ${status}`;
                 return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}`}>
-                  <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true })} />
+                  <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={!!busy} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: undefined })} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail} disabled={!!busy}
                     onClick={() => { setActiveId(image.id); setError(""); }}>
                     <strong><SearchHighlight text={image.name} query={needle} /></strong>
@@ -874,6 +881,7 @@ export function GameMosaicWorkbench({ gamePath, images, backupMode, storage, rea
               editMask(image, mapMosaicBoxes(activeResult.boxes, active, image));
           }}>复制蒙版到组内空白图</button>
         </div>
+        {activeResult.review && <p className="hint">{activeResult.review}</p>}
         {activeResult.reason && <p className="game-mosaic-error">{activeResult.reason}</p>}
         <div ref={previews} className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
           style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>

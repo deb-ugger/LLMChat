@@ -2389,7 +2389,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         signal.throwIfAborted();
         report({ completed: index, total: images.length, detail: image.name || image.id });
         const sourceImage = await readUnitySourceImage(current, image, signal);
-        const { boxes } = await detector.scan(sourceImage);
+        const detected = await detector.scan(sourceImage);
+        if (detected.review) throw new Error(image.name + " · " + detected.review);
+        const { boxes } = detected;
         signal.throwIfAborted();
         if (!boxes.length) continue;
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
