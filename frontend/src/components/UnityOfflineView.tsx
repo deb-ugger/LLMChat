@@ -1607,6 +1607,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
                     job.signal.throwIfAborted();
                     if (phase === "redraw" && !(latest.current || current).images?.some(gameImageRedrawSelected)) continue;
                     run.imageTask = phase; imageTask.current = phase;
+                    remember(run);
                     if (await imageConfigurationCommit.current?.(phase) === false) throw new Error(unityImagePhaseNames[phase] + "配置保存失败");
                     job.signal.throwIfAborted();
                     const latestConfig = execution.current;
