@@ -3001,3 +3001,9 @@ body.ocr-image-resizing * {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.game-step-running-metrics { min-width: 0; font-size: var(--fs-caption); text-align: start; }
+.game-step-running-metrics .game-benchmark-running-params { margin-top: 2px; }
+.game-step-metrics-label { display: block; margin: 0; font-size: var(--fs-caption); }
+.game-step-metric-model { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-step-metrics-config > summary { cursor: pointer; width: fit-content; }

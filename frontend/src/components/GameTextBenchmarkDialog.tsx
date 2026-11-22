@@ -18,6 +18,7 @@ import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup 
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
+import { StepRunningMetrics } from "./GameFlowSequence";
 import { showAppNotice } from "./AppNotice";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
@@ -276,18 +277,18 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
           {job.detail && job.detail !== job.label && <div className="hint" title={job.detail}>{job.detail}</div>}
         </div>
       </div>)}
-      {queue.map(job => {
+      {queue.map((job, index) => {
         const progress = job.progress;
-        const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
+        const statusLabel = job.status;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
         return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
-          <div className="game-benchmark-queue-copy" role={job.status === "运行中" ? "status" : undefined}>
+          <div className="game-benchmark-queue-copy">
             <div className="game-benchmark-queue-title">
               <span role="img" aria-label={statusLabel} title={statusLabel} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
                 background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
                   job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
-              <strong title={progress?.label}>{job.label}</strong>
+              <strong role={job.status === "运行中" ? "status" : undefined} title={progress?.label}>{job.label}</strong>
               <span className="game-flow-metric" style={{ marginInlineStart: "auto" }}>
                 {progress?.percent == null ? "—" : progress.percent + "%"}
               </span>
@@ -303,6 +304,10 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               </div>
               {job.status === "已暂停" && <div className="hint">{progress?.detail ||
                 (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
+              {progress && (job.status === "运行中" || job.status === "已暂停") &&
+                <StepRunningMetrics measured={progress.performance} benchmark={progress} compact={false}
+                  itemUnit={job.step === "screen" || job.step === "translate" ? "条" : "张"}
+                  queue={{ position: index + 1, ahead: job.status === "运行中" ? 0 : undefined, startedTime: job.startedTime }} />}
             </div>
           </div>
           {job.status === "运行中" &&

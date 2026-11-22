@@ -1,4 +1,4 @@
-import { measureGameAsync, measureGameWork, startGameTiming } from "./gameModelPerformance";
+import { measureGameAsync, measureGameWork, recordGameTextRequestAttempt, startGameTiming } from "./gameModelPerformance";
 import { loadLlmRuntime } from "./llmRuntime";
 import type { TranslateOptions, TranslateResponse } from "./api";
 import { decodeTextBatch, estimateTextTokens, TextBatchFormatError } from "./textTranslationBatch";
@@ -80,6 +80,8 @@ export function createLlmTranslationScheduler(raw: Raw) {
         const wait = resource.cooldown - Date.now();
         if (wait > 0) await measureGameAsync(options, "queueMs", () => delay(wait, controller.signal));
         try {
+          controller.signal.throwIfAborted();
+          recordGameTextRequestAttempt(options, attempt > 0);
           response = await raw(text, { ...first.init, signal: controller.signal }, requestOptions);
           if (!response.ok) throw Object.assign(new Error(response.error || response.code || "大模型翻译失败"), { code: response.code, response });
           recordUsage(live, response);

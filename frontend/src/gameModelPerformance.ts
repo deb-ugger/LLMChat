@@ -5,13 +5,16 @@ import { logRuntimeError } from "./runtimeLog";
 type Execution = { llmConcurrency?: number; performanceConcurrency?: number; performanceScope: string; performanceStep: string };
 export type ModelServiceTiming = { totalMs: number; loadMs: number; promptMs: number; generationMs: number };
 type ServiceTimingTotals = ModelServiceTiming & { requests: number; outsideMs: number };
-type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number; serviceTiming?: ServiceTimingTotals };
+type TokenUsage = Partial<Record<"promptTokens" | "completionTokens" | "totalTokens" | "cacheReadTokens" | "cacheWriteTokens", number>>;
+type RequestOutcome = "succeeded" | "failed" | "cancelled";
+type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number; outcomes?: Record<RequestOutcome, number>; usage?: TokenUsage; service?: "local" | "online"; serviceTiming?: ServiceTimingTotals };
 export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs" | "detectorMs" | "ocrMs" | "workflowMs";
 export type StepPerformance = {
   elapsedMs: number;
   itemsDone?: number;
   failures?: number;
   cacheHits?: number;
+  textRequestRetries?: number;
   started?: number;
   requestTimingComplete?: boolean;
   busyMs?: number;
@@ -314,6 +317,11 @@ function activeStepMeter(scope: string | undefined) {
   return scope ? Object.values(records(scope)).find(step => step.started !== undefined) : undefined;
 }
 
+export function recordGameTextRequestAttempt(execution: Partial<Execution>, retry: boolean) {
+  const meter = requestMeter(execution);
+  if (meter?.started !== undefined) meter.textRequestRetries = (meter.textRequestRetries ?? 0) + Number(retry);
+}
+
 export function recordGameCacheHit(scope: string | undefined) {
   const meter = activeStepMeter(scope);
   if (meter) meter.cacheHits = (meter.cacheHits ?? 0) + 1;
@@ -340,14 +348,16 @@ function modelStats(meter: StepPerformance, key: string, model: string, concurre
   return meter.models[key] ??= { model, concurrency, tokens: 0, requestMs: 0, generationTokens: 0, generationMs: 0, requests: 0 };
 }
 
-export function trackGameModel(execution: Partial<Execution>, model: string) {
+export function trackGameModel(execution: Partial<Execution>, model: string, service?: Meter["service"]) {
   const meter = requestMeter(execution);
   if (meter?.started === undefined || meter.endedAt) return;
   const models = inFlight.get(meter) || new Map<string, number>();
   inFlight.set(meter, models);
   const concurrency = execution.performanceConcurrency ?? execution.llmConcurrency ?? 1;
   const key = JSON.stringify([model, concurrency]);
-  modelStats(meter, key, model, concurrency).requests++;
+  const stats = modelStats(meter, key, model, concurrency);
+  stats.requests++;
+  if (service) stats.service = service;
   const previous = models.get(key) || 0;
   models.set(key, previous + 1);
 
@@ -357,7 +367,11 @@ export function trackGameModel(execution: Partial<Execution>, model: string) {
   timings.set(model, interval);
   interval.count++;
   if (!previous) window.dispatchEvent(new Event("llmchat-game-performance"));
-  return () => {
+  return (outcome?: RequestOutcome) => {
+    if (outcome) {
+      stats.outcomes ??= { succeeded: 0, failed: 0, cancelled: 0 };
+      stats.outcomes[outcome]++;
+    }
     if (--interval.count === 0 && modelTimingWindows.get(meter) === timings) {
       timings.delete(model);
       // Older interrupted runs lack an exact per-model denominator for their saved requests.
@@ -392,7 +406,7 @@ export function sumModelServiceTiming(first?: ServiceTimingTotals, second?: Serv
   };
 }
 
-export function recordGameRequest(execution: Partial<Execution>, model: string, tokens: number, requestMs: number, generationRate?: number, serviceTiming?: ModelServiceTiming) {
+export function recordGameRequest(execution: Partial<Execution>, model: string, tokens: number, requestMs: number, generationRate?: number, serviceTiming?: ModelServiceTiming, usage?: TokenUsage) {
   const scope = execution.performanceScope;
   if (!scope) return;
   const meter = requestMeter(execution);
@@ -402,6 +416,14 @@ export function recordGameRequest(execution: Partial<Execution>, model: string, 
   const stats = modelStats(meter, key, model, concurrency);
   stats.tokens += Math.max(0, tokens); stats.requestMs += requestMs;
   if (!inFlight.get(meter)?.has(key)) stats.requests++;
+  if (usage) {
+    for (const key of ["promptTokens", "completionTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens"] as const) {
+      const value = usage[key];
+      if (value === undefined || !Number.isFinite(value) || value < 0) continue;
+      stats.usage ??= {};
+      stats.usage[key] = (stats.usage[key] ?? 0) + value;
+    }
+  }
   if (generationRate && generationRate > 0 && tokens > 0) { stats.generationTokens += tokens; stats.generationMs += tokens / generationRate * 1000; }
   if (serviceTiming) stats.serviceTiming = sumModelServiceTiming(stats.serviceTiming, {
     ...serviceTiming, requests: 1, outsideMs: Math.max(0, requestMs - serviceTiming.totalMs),

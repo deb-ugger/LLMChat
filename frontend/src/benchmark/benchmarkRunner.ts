@@ -11,6 +11,9 @@ import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameT
 import type { GameDialoguePage } from "../gameTranslationContext";
 import type { UnityEntry, UnityImage, UnityProgress } from "../unityOffline";
 
+import { formatBenchmarkParameters, type BenchmarkParameter } from "./benchmarkParameters";
+import type { StepPerformance } from "../gameModelPerformance";
+
 export type BenchmarkTarget = "translate" | "screen" | ImageBenchmarkStep | MosaicBenchmarkStep;
 export type BenchmarkImageSource = {
   setup: ImageBenchmarkSetup;
@@ -40,6 +43,14 @@ type BenchmarkProgress = {
   failed: number;
   detail?: string;
   configId?: string;
+  configIndex?: number;
+  configCount?: number;
+  round?: number;
+  rounds?: number;
+  sampleCurrent?: number;
+  sampleTotal?: number;
+  performance?: StepPerformance;
+  parameters?: BenchmarkParameter[];
 };
 export type BenchmarkState = BenchmarkProgress & {
   type: "benchmark-state";
@@ -53,7 +64,8 @@ type BenchmarkJob = {
   requestScope: string;
   step: BenchmarkTarget;
   label: string;
-  progress?: BenchmarkProgress;
+  progress?: BenchmarkState;
+  startedTime?: string;
   status: "待开始" | "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
 };
@@ -84,7 +96,7 @@ export function benchmarkTargetLabel(step: BenchmarkTarget) {
 
 type ProgressPatch = Partial<Omit<BenchmarkProgress, "elapsedMs" | "percent">>;
 type JobContext = { id: string; signal: AbortSignal; elapsedMs: () => number; report: (patch: ProgressPatch) => void };
-type Prepared = { count: number; scope: string; restored?: number; run: (context: JobContext) => Promise<number>;
+type Prepared = { count: number; scope: string; runScope: string; restored?: number; run: (context: JobContext) => Promise<number>;
   cleanup: (jobId: string) => void; restart: (jobId: string) => void };
 type QueuedJob = BenchmarkJob & { prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
 
@@ -132,6 +144,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const mosaic = isMosaicBenchmarkStep(step);
   const imageStep = !mosaic && step !== "screen" && step !== "translate" ? step : undefined;
   const imageSource = input.images;
+  let imageSetup: ImageBenchmarkSetup | undefined;
   const historyScope = imageStep && imageSource ? imageSource.setup.scope : input.scope;
   const displayScope = mosaic ? input.mosaicRoot : historyScope;
   if (!displayScope) throw new Error("当前工程没有去码测试设置");
@@ -179,6 +192,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     const currentImages = imageSource.getWorkload();
     const snapshot = annotated ? { project: annotated.project, selected: [], embedded: currentImages.embedded } : structuredClone(currentImages);
     const setup = structuredClone(imageSource.setup);
+    imageSetup = setup;
     const sample = selectSamples(annotated ? annotatedTextSamples(annotated,imageStep,[...new Set(configs.map(config => config.target))])
       : imageBenchmarkRows(imageStep, imageStep === "refine" ? initialImageRows(snapshot) : snapshot.selected));
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该步骤及目标语言的已标注图片" : "所勾选的图片没有符合当前步骤的样本");
@@ -214,7 +228,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   let failedSamples = archive?.completed.reduce((total, result) => total + result.failed, 0) ?? 0;
   let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
   let unfinishedSamples = recoveredResults?.size ?? 0;
-  const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope,
+  const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope, runScope,
     restored: finishedSamples + unfinishedSamples, cleanup: jobId => {
     const meter = stepPerformance(runScope, step);
     if (meter.benchmark?.queueId === jobId) {
@@ -238,7 +252,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       if (step !== "translate" || value.textStage !== "names") {
         runSamples = Math.max(runSamples, Math.min(count, value.completed));
       }
-      context.report({ current: finishedSamples + runSamples, detail: value.detail,
+      context.report({ current: finishedSamples + runSamples, sampleCurrent: runSamples, detail: value.detail,
         failed: failedSamples + (value.translation?.failedEntries ?? value.redrawFailed ?? 0) });
     };
     const target = createStepRunner ? { step, selected: count, imageSamples, run: createStepRunner({
@@ -256,19 +270,23 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
         (round, config) => {
           runSamples = unfinishedSamples;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
-            configId: config.id, sample: "", detail: undefined,
+            configId: config.id, configIndex: configs.findIndex(item => item.id === config.id) + 1, configCount: configs.length,
+            round, rounds, sampleCurrent: runSamples, sampleTotal: count, sample: "", detail: undefined, performance: undefined,
+            parameters: formatBenchmarkParameters(step, config, { rounds, sampleLimit: archive ? null : limit,
+              annotated: !!annotated, mosaicSelection: step === "mosaicRefine" ? "checked" : configs[0].mosaic?.selection, imageSetup }),
             current: finishedSamples + runSamples,
             failed: failedSamples });
         },
         progress,
         result => {
           const done = Math.max(runSamples, Math.min(count, result.translated + result.failed));
+          const measurement = { performance: performanceForDisplay(result.performance), sampleCurrent: done };
           if (result.status === "已暂停") {
             if (mosaic) {
               unfinishedSamples = result.translated;
               if (result.performance.benchmark?.imageDetails) pausedRunId = result.performance.taskId;
             }
-            context.report({ current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail });
+            context.report({ ...measurement, current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail });
             return;
           }
           runs++;
@@ -277,14 +295,14 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           if (result.status === "失败") failures++;
           failedSamples += result.failed;
           finishedSamples += done;
-          context.report({ current: finishedSamples, failed: failedSamples, detail: result.detail });
+          context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail });
         }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath);
       return failures;
     } finally {
       finishGameStep(totalScope);
       const detail = "已执行 " + runs + "/" + (configs.length * rounds) + " 项" +
         (failures ? " · 失败 " + failures + " 项" : "") + " · " + gameDuration(context.elapsedMs());
-      context.report({ phase: "finish", configId: undefined });
+      if (!context.signal.aborted) context.report({ phase: "finish" });
       input.onMessage(title + "测试 · " + detail, failures ? "error" : "info");
     }
   } };
@@ -336,9 +354,19 @@ export function useFormalWorkflowActivity(active: boolean, game: string, label: 
   }, []);
 }
 
+function performanceForDisplay(meter: StepPerformance): StepPerformance {
+  const { benchmark, started, ...measurement } = meter;
+  return structuredClone(measurement);
+}
+
 function publish() {
+  const activeJob = jobs.find(job => job.status === "运行中");
+  const meter = activeJob?.prepared && progress?.configId && stepPerformance(activeJob.prepared.runScope, activeJob.step);
+  const matches = meter && meter.benchmark?.queueId === activeJob?.id &&
+    (meter.benchmark.config as BenchmarkConfig | undefined)?.id === progress?.configId;
   const visibleProgress = progress?.state === "running"
-    ? { ...progress, elapsedMs: performance.now() - startedAt }
+    ? { ...progress, elapsedMs: performance.now() - startedAt,
+      performance: progress.performance ?? (matches ? performanceForDisplay(meter) : undefined) }
     : progress;
   snapshot = {
     version: snapshot.version + 1,
@@ -373,9 +401,10 @@ async function runJobs() {
     const abort = new AbortController();
     controller = abort;
     job.status = "运行中";
+    job.startedTime ??= new Date().toISOString();
     const previous = job.progress;
     startedAt = performance.now() - (previous?.elapsedMs ?? 0);
-    progress = { type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
+    progress = { ...previous, type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
       phase: "prepare", label: job.label, current: previous?.current ?? job.prepared?.restored ?? 0, total: job.prepared?.count ?? 0,
       sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ??
         (job.prepared?.restored ? Math.floor(100 * job.prepared.restored / job.prepared.count) : 0), failed: previous?.failed ?? 0 };
@@ -505,6 +534,7 @@ export const benchmarkRunner = {
     job.prepared?.restart(job.id);
     job.id = crypto.randomUUID();
     job.progress = undefined;
+    job.startedTime = undefined;
     scheduleJob(job);
   },
   async remove(id: string) {
@@ -527,6 +557,17 @@ export function useBenchmarkProgress(scope: string) {
   return useSyncExternalStore(benchmarkRunner.subscribe, () => {
     const state = benchmarkRunner.snapshot().progress;
     return state?.scope === scope && state.state === "running" ? state : undefined;
+  });
+}
+
+export function usePausedBenchmarkProgress(scope: string, steps: readonly BenchmarkTarget[]) {
+  return useSyncExternalStore(benchmarkRunner.subscribe, () => {
+    const jobs = benchmarkRunner.snapshot().jobs;
+    for (let index = jobs.length - 1; index >= 0; index--) {
+      const job = jobs[index];
+      if (job.scope === scope && job.status === "已暂停" && steps.includes(job.step)) return job.progress;
+    }
+    return undefined;
   });
 }
 

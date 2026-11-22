@@ -10,7 +10,7 @@ import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetr
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "./gameOllama";
-import { archivePausedGameStep, beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameWork, modelServiceTimingLines, pendingGameBenchmarkArchives, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+import { archivePausedGameStep, beginGameStep, clearGamePerformance, completeGameStep, flushGamePerformanceArchive, measureGameAsync, measureGameWork, modelServiceTimingLines, pendingGameBenchmarkArchives, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
@@ -311,7 +311,6 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         for (const id of new Set((target || config.models.text.id ? activeRoles : []).map(role => config.models[role].id))) {
           if (id && !recorded.has(id)) unobservedModels.push(id);
         }
-        finishGameStep(scope, false);
         if (samples) {
           if (interrupted) {
             const outcomes = Object.values(results);
@@ -319,7 +318,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
             metadata.translated = outcomes.length - metadata.failed;
           }
           try {
-            await saveImageBenchmarkDetails(queueId, runId, savedSamples ? undefined : samples, results);
+            await measureGameAsync(scope, "saveMs", () => saveImageBenchmarkDetails(queueId, runId, savedSamples ? undefined : samples, results));
             savedSamples = true;
             metadata.imageDetails = true;
           } catch (error) {

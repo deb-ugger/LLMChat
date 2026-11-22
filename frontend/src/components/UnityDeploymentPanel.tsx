@@ -2,8 +2,9 @@ import { benchmarkBlockingReason, useBenchmarkRunning } from "../benchmark/bench
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
-import type { DeploymentMetrics } from "../unityWorkflow";
+import { deploymentMetrics, type DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
+import { StepRunningMetrics } from "./GameFlowSequence";
 import { modelServiceTimingLines } from "../gameModelPerformance";
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
@@ -252,6 +253,13 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
   const pointer = useRef<CanvasDrag>(undefined);
   const history = useRef<{ undo: FlowGraph[]; redo: FlowGraph[] }>({ undo: [], redo: [] });
   const { plan, run, locked } = model;
+  const [, refreshMetrics] = useState(0);
+  useEffect(() => {
+    if (!run) return;
+    const timer = window.setInterval(() => refreshMetrics(value => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [!!run]);
+  const liveMetrics = run ? deploymentMetrics(model.root) : undefined;
   const nodes: CanvasNode[] = steps.filter(id => !isPhase(id) || !model.supportedPhases || model.supportedPhases.includes(id)).map(id => ({
     id, state: run?.steps.includes(id) ? "active" : id !== model.stoppedStep && model.completed.includes(id) ? "done" : "todo",
     detail: id === model.stoppedStep ? "未生成" : id === "scan" ? model.completed.includes(id) ? "已就绪" : "未扫描"
@@ -449,7 +457,7 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
     ? portPoint(nodePoint(candidate.id), wire.drag.side === "out" ? "in" : "out") : wire?.at;
   const wireStart = wire ? portPoint(nodePoint(wire.drag.step), wire.drag.side) : undefined;
 
-  return <div className="dpl-canvas" ref={viewport} tabIndex={0} aria-label="生成与应用流程画布"
+  return <><div className="dpl-canvas" ref={viewport} tabIndex={0} aria-label="生成与应用流程画布"
     onKeyDown={canvasKeys} onPointerDown={begin} onPointerMove={move} onPointerUp={finish} onPointerCancel={event => finish(event, true)} onLostPointerCapture={event => finish(event, true)}>
     <div className="dpl-canvas-tools">
       <span className="dpl-mode">{quick ? `一键执行中 · ${run.completed} / ${run.total}`
@@ -550,7 +558,21 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
         </button>}
       </>}
     </div>}
-  </div>;
+  </div>
+  {run?.steps.map(step => {
+    const candidates: (keyof DeploymentMetrics)[] = step === "scan" ? ["scan", "scanImages"]
+      : step === "text" ? ["generate"] : step === "image" ? ["generateImages"]
+      : step === "mosaic" ? ["mosaic", "generateMosaic"] : ["apply", "applyImages", "applyMosaic"];
+    const measured = candidates.map(stage => liveMetrics?.[stage]).find(meter => meter?.started !== undefined);
+    return <section key={step} className="dpl-panel" aria-label={deploymentStepLabels[step] + "运行指标"}>
+      <h4 className="game-step-metrics-label">{deploymentStepLabels[step]} · 进行中</h4>
+      <StepRunningMetrics measured={measured} parameters={[
+        { label: "部署阶段", value: deploymentStepLabels[step] }, { label: "项目", value: model.root },
+        { label: "执行方式", value: run.mode === "automatic" ? "一键执行" : "单步执行" },
+      ]} />
+    </section>;
+  })}
+  </>;
 }
 
 
