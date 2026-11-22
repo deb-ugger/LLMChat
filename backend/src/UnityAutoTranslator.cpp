@@ -2099,37 +2099,58 @@ bool downloadFile(const std::string& url, const fs::path& dest, std::string& err
         return false;
     }
 
-    std::ofstream out(dest, std::ios::binary);
-    if (!out)
-    {
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        error = "无法写入临时文件";
-        return false;
-    }
+    // Each installer writes a sibling file, leaving an existing cache entry intact.
+    auto receive = [&]() -> bool {
+        DWORD expected = 0, size = sizeof(expected);
+        if (status != 200 || !WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &expected, &size, WINHTTP_NO_HEADER_INDEX) || !expected) {
+            error = "下载响应缺少可校验的完整文件长度";
+            return false;
+        }
+        GUID guid;
+        wchar_t suffix[40]{};
+        if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, suffix, 40)) {
+            error = "无法生成临时下载文件名";
+            return false;
+        }
+        const fs::path temporary = dest.wstring() + L"." + suffix + L".part";
+        struct Cleanup {
+            const fs::path& path;
+            ~Cleanup() { std::error_code ec; fs::remove(path, ec); }
+        } cleanup{temporary};
+        std::ofstream out(temporary, std::ios::binary);
+        if (!out) { error = "无法创建临时下载文件"; return false; }
 
-    for (;;)
-    {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available))
-            break;
-        if (available == 0)
-            break;
-        std::string buffer(available, '\0');
-        DWORD read = 0;
-        if (!WinHttpReadData(request, buffer.data(), available, &read) || read == 0)
-            break;
-        out.write(buffer.data(), static_cast<std::streamsize>(read));
-    }
-
+        char buffer[64 * 1024];
+        uint64_t received = 0;
+        for (;;) {
+            DWORD count = 0;
+            if (!WinHttpReadData(request, buffer, sizeof(buffer), &count)) {
+                error = "读取下载响应失败，Windows 错误 " + std::to_string(GetLastError());
+                return false;
+            }
+            if (!count) break;
+            received += count;
+            if (received > expected) break;
+            if (!out.write(buffer, count)) { error = "写入下载文件失败"; return false; }
+        }
+        if (received != expected) {
+            error = "下载长度不符，预期 " + std::to_string(expected) + " 字节，收到 " + std::to_string(received);
+            return false;
+        }
+        out.close();
+        if (!out) { error = "保存下载文件失败"; return false; }
+        if (!MoveFileExW(temporary.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            error = "发布下载文件失败，Windows 错误 " + std::to_string(GetLastError());
+            return false;
+        }
+        return true;
+    };
+    const bool ok = receive();
     WinHttpCloseHandle(request);
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
-    out.close();
-
-    std::error_code ec;
-    return fs::exists(dest, ec) && fs::file_size(dest, ec) > 0;
+    return ok;
 }
 
 bool looksLikeZip(const fs::path& zipPath, std::string& error)
