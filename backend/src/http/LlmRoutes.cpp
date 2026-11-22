@@ -1,5 +1,9 @@
 #include "LlmRoutes.h"
 #include "HttpRouter.h"
+#include "ScopedUsageLog.h"
+#include "SystemRoutes.h"
+#include "AtomicFile.h"
+#include "Config.h"
 #include "LlmClient.h"
 #include "OllamaDirectories.h"
 #include "RequestCancellation.h"
@@ -11,6 +15,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 
 namespace http_router
@@ -18,8 +23,110 @@ namespace http_router
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
-void registerLlmCatalogRoutes(httplib::Server& svr, ReadVendorModels loadVendorModelsFile)
+void registerLlmCatalogRoutes(httplib::Server& svr, const ConfigStore& config_, UsageStore& usage_)
 {
+    const auto vendorModelsPath = [&config_]() -> fs::path {
+        return dataDirectory(config_) / "vendor-models.json";
+    };
+
+    const auto loadVendorModelsFile = [vendorModelsPath]() -> json {
+        const fs::path path = vendorModelsPath();
+        if (!fs::exists(path))
+            return json::object();
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return json::object();
+        try
+        {
+            json root;
+            in >> root;
+            if (!root.is_object())
+                return json::object();
+            return root;
+        }
+        catch (...)
+        {
+            return json::object();
+        }
+    };
+
+    const auto saveVendorModelsFile = [vendorModelsPath](const json& root) -> bool {
+        return atomicfile::writeText(vendorModelsPath(), root.dump(2));
+    };
+
+    const auto decodeVendorSegment = [](std::string s) -> std::string {
+        // cpp-httplib usually already decodes; still handle leftover %XX
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            if (s[i] == '%' && i + 2 < s.size())
+            {
+                auto hex = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                    return -1;
+                };
+                const int hi = hex(s[i + 1]);
+                const int lo = hex(s[i + 2]);
+                if (hi >= 0 && lo >= 0)
+                {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            else if (s[i] == '+')
+            {
+                out.push_back(' ');
+                continue;
+            }
+            out.push_back(s[i]);
+        }
+        return out;
+    };
+
+    const auto normalizeModelsArray = [](const json& modelsIn) -> json {
+        json arr = json::array();
+        if (!modelsIn.is_array())
+            return arr;
+        for (const auto& item : modelsIn)
+        {
+            if (item.is_string())
+            {
+                const std::string id = item.get<std::string>();
+                if (id.empty())
+                    continue;
+                arr.push_back({
+                    {"model", id},
+                    {"label", id},
+                    {"source", "manual"},
+                });
+                continue;
+            }
+            if (!item.is_object())
+                continue;
+            std::string id = item.value("model", "");
+            if (id.empty())
+                id = item.value("id", "");
+            if (id.empty())
+                continue;
+            std::string label = item.value("label", "");
+            if (label.empty())
+                label = id;
+            std::string source = item.value("source", "");
+            if (source != "api" && source != "manual")
+                source = "manual";
+            arr.push_back({
+                {"model", id},
+                {"label", label},
+                {"source", source},
+            });
+        }
+        return arr;
+    };
+
     svr.Get("/api/llm/ollama/directories", withCors([](const httplib::Request& req, httplib::Response& res) {
         const auto directory = req.get_param_value("directory");
         json result = {{"directories", json::array()}};
@@ -113,6 +220,181 @@ void registerLlmCatalogRoutes(httplib::Server& svr, ReadVendorModels loadVendorM
             res.set_content(errorJson(ex.what()).dump(), "application/json");
         }
     }));
+
+    svr.Put(
+        R"(/api/llm/vendor-models/([^/]+))",
+        withCors([decodeVendorSegment, normalizeModelsArray, loadVendorModelsFile, saveVendorModelsFile](const httplib::Request& req, httplib::Response& res) {
+            try
+            {
+                const std::string vendor = decodeVendorSegment(req.matches[1].str());
+                if (vendor.empty())
+                {
+                    res.status = 400;
+                    res.set_content(errorJson("vendor required").dump(), "application/json");
+                    return;
+                }
+                const json body = json::parse(req.body.empty() ? "{}" : req.body);
+                const json models = normalizeModelsArray(
+                    body.contains("models") ? body["models"] : json::array());
+                json root = loadVendorModelsFile();
+                root[vendor] = models;
+                if (!saveVendorModelsFile(root))
+                {
+                    res.status = 500;
+                    res.set_content(
+                        errorJson("failed to write vendor-models.json").dump(),
+                        "application/json");
+                    return;
+                }
+                res.set_content(
+                    json{
+                        {"ok", true},
+                        {"vendor", vendor},
+                        {"models", models},
+                        {"count", models.size()},
+                    }
+                        .dump(),
+                    "application/json; charset=utf-8");
+            }
+            catch (const std::exception& ex)
+            {
+                res.status = 400;
+                res.set_content(errorJson(ex.what()).dump(), "application/json");
+            }
+        }));
+
+    svr.Post(
+        R"(/api/llm/vendor-models/([^/]+)/refresh)",
+        withCors([&config_, &usage_, decodeVendorSegment, loadVendorModelsFile, saveVendorModelsFile](const httplib::Request& req, httplib::Response& res) {
+            try
+            {
+                const std::string vendor = decodeVendorSegment(req.matches[1].str());
+                if (vendor.empty())
+                {
+                    res.status = 400;
+                    res.set_content(errorJson("vendor required").dump(), "application/json");
+                    return;
+                }
+                const json body = json::parse(req.body.empty() ? "{}" : req.body);
+                const AppConfig cfg = config_.snapshot();
+                LlmListModelsRequest lm;
+                lm.apiUrl = body.value("apiUrl", cfg.apiUrl);
+                lm.apiKey = body.value("apiKey", cfg.apiKey);
+                lm.proxyMode = body.value("proxyMode", cfg.proxyMode);
+                lm.httpProxy = body.value("httpProxy", cfg.httpProxy);
+                if (lm.apiUrl.empty())
+                {
+                    res.status = 400;
+                    res.set_content(
+                        errorJson("请先填写 API URL").dump(),
+                        "application/json");
+                    return;
+                }
+                if (lm.apiKey.empty())
+                {
+                    res.status = 400;
+                    res.set_content(
+                        errorJson("请先填写 API Key").dump(),
+                        "application/json");
+                    return;
+                }
+
+                UsageEvent usageEv = UsageStore::makeEventSkeleton();
+                usageEv.feature = "vendor_models";
+                usageEv.channel = "llm";
+                usageEv.apiHost = UsageStore::hostFromApiUrl(lm.apiUrl);
+                usageEv.vendor = UsageStore::vendorFromHostOrModel(
+                    usageEv.apiHost, "", vendor);
+                usageEv.endpoint = "list_models";
+
+                ScopedUsageLog usageLog(usage_, usageEv);
+                const LlmListModelsResponse listed = LlmClient::listModels(lm);
+                usageLog.ev().ok = listed.ok;
+                usageLog.ev().errorCode = listed.ok ? "" : "LIST_MODELS_ERROR";
+                usageLog.ev().errorMessage = listed.ok ? "" : listed.error;
+                if (!listed.ok)
+                {
+                    res.status = listed.statusCode >= 400 ? listed.statusCode : 502;
+                    res.set_content(
+                        json{
+                            {"ok", false},
+                            {"error", listed.error},
+                            {"hint", "官方拉取失败时可在设置里手动添加模型"},
+                        }
+                            .dump(),
+                        "application/json; charset=utf-8");
+                    return;
+                }
+
+                json apiModels = json::array();
+                for (const auto& id : listed.modelIds)
+                {
+                    apiModels.push_back({
+                        {"model", id},
+                        {"label", id},
+                        {"source", "api"},
+                    });
+                }
+
+                json root = loadVendorModelsFile();
+                json merged = json::array();
+                std::set<std::string> seen;
+                for (const auto& item : apiModels)
+                {
+                    const std::string id = item.value("model", "");
+                    if (id.empty() || seen.count(id))
+                        continue;
+                    seen.insert(id);
+                    merged.push_back(item);
+                }
+                // Keep previously manual-added models that are not in the API list
+                if (root.contains(vendor) && root[vendor].is_array())
+                {
+                    for (const auto& item : root[vendor])
+                    {
+                        if (!item.is_object())
+                            continue;
+                        const std::string id = item.value("model", "");
+                        if (id.empty() || seen.count(id))
+                            continue;
+                        const std::string source = item.value("source", "");
+                        if (source != "manual")
+                            continue;
+                        seen.insert(id);
+                        json keep = item;
+                        keep["source"] = "manual";
+                        if (!keep.contains("label") || keep["label"].get<std::string>().empty())
+                            keep["label"] = id;
+                        merged.push_back(keep);
+                    }
+                }
+                root[vendor] = merged;
+                if (!saveVendorModelsFile(root))
+                {
+                    res.status = 500;
+                    res.set_content(
+                        errorJson("failed to write vendor-models.json").dump(),
+                        "application/json");
+                    return;
+                }
+
+                res.set_content(
+                    json{
+                        {"ok", true},
+                        {"vendor", vendor},
+                        {"models", merged},
+                        {"count", merged.size()},
+                        {"modelsUrl", LlmClient::modelsUrlFromChatUrl(lm.apiUrl)},
+                    }
+                        .dump(),
+                    "application/json; charset=utf-8");
+            }
+            catch (const std::exception& ex)
+            {
+                res.status = 400;
+                res.set_content(errorJson(ex.what()).dump(), "application/json");
+            }
+        }));
 }
 
 void registerOllamaTestRoute(httplib::Server& svr, request_cancel::Registry& translationTasks, WithOllamaUsageLog withUsageLog)
