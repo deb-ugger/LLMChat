@@ -25,6 +25,7 @@ add_executable(llmchat-backend
     src/HttpServer.cpp
     src/http/HttpRouter.cpp
     src/http/UnityRoutes.cpp
+    src/http/TextRoutes.cpp
 )
 
 target_include_directories(llmchat-backend PRIVATE
