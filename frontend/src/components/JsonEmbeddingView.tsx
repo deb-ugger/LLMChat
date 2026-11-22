@@ -681,7 +681,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
       {running && <p className="unity-task-detail">{pending ? "正在准备…" : status.detail}</p>}
       {(running || stopped && measurement?.taskId) && <StepRunningMetrics measured={measurement} stopped={stopped}
-        parameters={[{ label: "操作", value: title }, { label: "引擎", value: game.engine }, { label: "项目", value: game.path }]} />}
+        parameters={[{ scope: "task", label: "操作", value: title }, { scope: "task", label: "引擎", value: game.engine }, { scope: "task", label: "项目", value: game.path }]} />}
     </GameStepProgress>;
   };
   const output = (label:string,path?:string) => path&&<div className="json-embedding-output"><button type="button" className="embed-path-link" data-tooltip={path} aria-label={`打开${label}`} onClick={()=>void api.revealPath(path).catch(e=>setError(String(e)))}><span>{label}</span><code>{path}</code></button></div>;
@@ -781,7 +781,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     </section>
     {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running">
       <StepRunningMetrics measured={stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages")}
-        parameters={[{ label: "引擎", value: game.engine }, { label: "项目", value: game.path }]} />
+        parameters={[{ scope: "task", label: "引擎", value: game.engine }, { scope: "task", label: "项目", value: game.path }]} />
     </GameStepProgress>}
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
     {runtimeDictionary && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>

@@ -891,11 +891,11 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const operationContent=<>
 
     <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
-      { label: "原文语言", value: UNITY_LANGUAGES.find(language => language.value === source)?.label ?? "自动检测" },
-      { label: "目标语言", value: UNITY_LANGUAGES.find(language => language.value === target)?.label ?? target },
-      { label: "仅翻译原语言", value: onlySourceLanguage ? "开启" : "关闭" },
-      { label: "跳过目标语言", value: skipTargetLanguage ? "开启" : "关闭" },
-      { label: "本地并发", value: String(concurrency) },
+      { scope: "config", label: "原文语言", value: UNITY_LANGUAGES.find(language => language.value === source)?.label ?? "自动检测" },
+      { scope: "config", label: "目标语言", value: UNITY_LANGUAGES.find(language => language.value === target)?.label ?? target },
+      { scope: "config", label: "仅翻译原语言", value: onlySourceLanguage ? "开启" : "关闭" },
+      { scope: "config", label: "跳过目标语言", value: skipTargetLanguage ? "开启" : "关闭" },
+      { scope: "config", label: "本地并发", value: String(concurrency) },
     ]} configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || flowBusy} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", label: redrawSummary?.label, progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
       {configured === "translate" && <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => { setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm"); }}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
         {translationKind !== "engine" && <>

@@ -142,6 +142,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
   if (!configs.length || !Number.isInteger(rounds) || rounds < 1 || rounds > 100) throw new Error("测试配置或轮次无效");
   const mosaic = isMosaicBenchmarkStep(step);
+  const mosaicSelection = step !== "mosaicRefine" && configs[0].mosaic?.selection === "all" ? "all" : "checked";
   const imageStep = !mosaic && step !== "screen" && step !== "translate" ? step : undefined;
   const imageSource = input.images;
   let imageSetup: ImageBenchmarkSetup | undefined;
@@ -165,8 +166,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
         ? [[image.id,image.annotation.mosaic.boxes]] : [])),
     } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
-    const options = configs[0].mosaic!;
-    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, step === "mosaicRefine" ? "checked" : options.selection);
+    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, mosaicSelection);
     const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
     const sample = recovered?.images ?? selectSamples(eligible);
     recoveredResults = archive?.reuse ? recovered?.recovered : undefined;
@@ -273,7 +273,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
             configId: config.id, configIndex: configs.findIndex(item => item.id === config.id) + 1, configCount: configs.length,
             round, rounds, sampleCurrent: runSamples, sampleTotal: count, sample: "", detail: undefined, performance: undefined,
             parameters: formatBenchmarkParameters(step, config, { rounds, sampleLimit: archive ? null : limit,
-              annotated: !!annotated, mosaicSelection: step === "mosaicRefine" ? "checked" : configs[0].mosaic?.selection, imageSetup }),
+              annotated: !!annotated, mosaicSelection, imageSetup }),
             current: finishedSamples + runSamples,
             failed: failedSamples });
         },

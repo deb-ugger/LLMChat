@@ -567,8 +567,8 @@ export function DeploymentCanvas({ model, actions, percent, running, onFocusStep
     return <section key={step} className="dpl-panel" aria-label={deploymentStepLabels[step] + "运行指标"}>
       <h4 className="game-step-metrics-label">{deploymentStepLabels[step]} · 进行中</h4>
       <StepRunningMetrics measured={measured} parameters={[
-        { label: "部署阶段", value: deploymentStepLabels[step] }, { label: "项目", value: model.root },
-        { label: "执行方式", value: run.mode === "automatic" ? "一键执行" : "单步执行" },
+        { scope: "task", label: "部署阶段", value: deploymentStepLabels[step] }, { scope: "task", label: "项目", value: model.root },
+        { scope: "task", label: "执行方式", value: run.mode === "automatic" ? "一键执行" : "单步执行" },
       ]} />
     </section>;
   })}
