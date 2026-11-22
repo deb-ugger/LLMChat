@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Settings } from "../../api";
 import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
   MosaicBox, MosaicDevice, MosaicModel, MosaicSettings } from "../../gameMosaic";
@@ -6,6 +7,7 @@ import type { MosaicInitialScreeningSnapshot, MosaicStatus } from "../../gameMos
 import type { gameStepSelections, measureGameAsync, recordGameCacheHit, reportGameStepItems, StepPerformance } from "../../gameModelPerformance";
 import type { UnityImage } from "../../unityOffline";
 import type { GameProgressState } from "../GameStepProgress";
+import type { useMosaicMasks } from "./useMosaicMasks";
 
 export type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefore: boolean; checkedAfter: boolean };
 export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
@@ -209,4 +211,48 @@ export type MosaicAutomaticPorts = {
   clearReviews: (ids: string[]) => void;
   readExisting: (signal: AbortSignal) => Promise<Record<string, string>>;
   writeCandidate: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<unknown>;
+};
+
+export type MosaicMaskCommit = {
+  rows?: Results;
+  candidates: readonly Pick<MaskUndoItem, "id" | "candidate">[];
+};
+
+export type MosaicMaskOptions = {
+  gamePath: string;
+  active?: UnityImage;
+  activeResult?: Result;
+  members: readonly UnityImage[];
+  usable: readonly UnityImage[];
+  rows: Results;
+  getRows: () => Results;
+  candidates: Record<string, MosaicCandidate>;
+  hasStorage: boolean;
+  blocked: () => boolean;
+  actionsDisabled: boolean;
+  commit: (edits: MosaicMaskCommit) => boolean;
+};
+
+export type MosaicPreviewProps = {
+  active?: UnityImage;
+  activeResult?: Result;
+  visibleCount: number;
+  paneVisible: boolean;
+  activeSaved: boolean;
+  candidate?: MosaicCandidate;
+  source?: ImagePreview;
+  approved?: ImagePreview;
+  preferredResult?: "saved" | MosaicModel;
+  setPreferredResult: (version: "saved" | MosaicModel) => void;
+  masks: ReturnType<typeof useMosaicMasks>;
+  actionsDisabled: boolean;
+  busyReason?: string;
+  redrawReason?: string;
+  testTitle?: string;
+  model: MosaicModel;
+  onRedraw: (models: MosaicModel[]) => void;
+  onApprove: (blob: Blob) => void;
+  header: ReactNode;
+  notice: ReactNode;
+  footer: ReactNode;
 };

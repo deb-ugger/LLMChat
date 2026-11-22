@@ -4,19 +4,18 @@ import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, mosaicRowsStorageKey, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
-import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, mapMosaicBoxes, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicBox, type MosaicModel } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { usePersistedModelFilter } from "./ModelFilterSelect";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { GameImageListPagination, GameImagePreviewFrame } from "./GameImageBrowserLayout";
-import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
+import { GameImageListPagination } from "./GameImageBrowserLayout";
 import { type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
@@ -26,8 +25,10 @@ import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, perf
   restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
-import type { ImagePreview, MaskEdit, MaskUndoItem, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
-  MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, ResultVersion, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
+import { MosaicPreview } from "./game-mosaic/MosaicPreview";
+import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
+import type { ImagePreview, MosaicMaskCommit, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
+  MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
 import "../gameMosaic.css";
 
 function groupMosaicModels(snapshot: StepPerformance): StepPerformance {
@@ -112,82 +113,6 @@ function dissolveIndependentGroup(rows: Results, key: string): Results {
     next[id] = { ...row, group: undefined, manualGroup: undefined, reference: undefined };
   }
   return next;
-}
-
-function MosaicOriginalCanvas({ width, drawing, children }: { width: number; drawing: boolean; children: ReactNode }) {
-  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
-  const surface = useRef<HTMLDivElement>(null);
-  const stage = useRef<HTMLDivElement>(null);
-  const pan = useRef<{ pointer: number; x: number; y: number } | null>(null);
-
-  const containPan = useCallback((zoom: number, x: number, y: number) => {
-    const area = surface.current;
-    const image = stage.current;
-    if (!area || !image) return { zoom, x: 0, y: 0 };
-    const maxX = Math.max(0, (image.offsetWidth * zoom - area.clientWidth) / 2);
-    const maxY = Math.max(0, (image.offsetHeight * zoom - area.clientHeight) / 2);
-    return { zoom, x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
-  }, []);
-
-  useEffect(() => {
-    const area = surface.current;
-    if (!area) return;
-    const onWheel = (event: WheelEvent) => {
-      if (!event.deltaY) return;
-      event.preventDefault();
-      setView(current => {
-        const next = Math.max(1, Math.min(8, current.zoom * Math.exp(-event.deltaY * .002)));
-        return next === current.zoom ? current : containPan(next, current.x, current.y);
-      });
-    };
-    const observer = new ResizeObserver(() => {
-      setView(current => current.x || current.y ? containPan(current.zoom, current.x, current.y) : current);
-    });
-    observer.observe(area);
-    area.addEventListener("wheel", onWheel, { passive: false });
-    return () => { observer.disconnect(); area.removeEventListener("wheel", onWheel); };
-  }, [containPan]);
-
-  return <div ref={surface} className="game-mosaic-image-area" style={{ "--mosaic-original-width": width + "px" } as CSSProperties}>
-    <div ref={stage} className={"unity-image-stage game-mosaic-stage" + (!drawing && view.zoom > 1 ? " is-pannable" : "")}
-      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom }}
-      onPointerDown={event => {
-        if (drawing || view.zoom <= 1 || event.button !== 0 || !event.isPrimary) return;
-        const scale = event.currentTarget.currentCSSZoom;
-        pan.current = { pointer: event.pointerId, x: event.clientX / scale - view.x, y: event.clientY / scale - view.y };
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }}
-      onPointerMove={event => {
-        const start = pan.current;
-        if (start?.pointer !== event.pointerId) return;
-        const scale = event.currentTarget.currentCSSZoom;
-        setView(containPan(view.zoom, event.clientX / scale - start.x, event.clientY / scale - start.y));
-      }}
-      onLostPointerCapture={event => { if (pan.current?.pointer === event.pointerId) pan.current = null; }}>
-      {children}
-    </div>
-  </div>;
-}
-
-function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
-  version: ResultVersion; letter?: string; imageName: string;
-  disabledReason?: string; onApprove: (blob: Blob) => void; onOpen?: () => void;
-}) {
-  const url = useImageBlobUrl(version.blob);
-  const modelName = mosaicModelLabels[version.id];
-  return <div className="game-mosaic-result-version">
-    <GameImagePreviewFrame onDoubleClick={url ? onOpen : undefined} caption={<>
-      <span>{letter && `${letter} · `}{modelName}</span>
-      {version.seconds != null && <small>{version.seconds.toFixed(1)} 秒</small>}
-    </>} fallback={<p className="hint">正在读取图片…</p>}>
-      {url && <div className="unity-image-stage">
-        <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
-      </div>}
-    </GameImagePreviewFrame>
-    <button type="button" className="unity-btn" aria-label={`采用 ${modelName} 候选`}
-      disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
-      onClick={() => onApprove(version.blob)}>采用此版</button>
-  </div>;
 }
 
 async function mosaicResponse(response: Response) {
@@ -400,14 +325,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [source, setSource] = useState<ImagePreview>();
   const [approved, setApproved] = useState<ImagePreview>();
   const [candidates, setCandidates] = useState<Record<string, MosaicCandidate>>({});
-  const [maskUndo, setMaskUndo] = useState<MaskUndoItem[][]>([]);
   const [preferredResult, setPreferredResult] = useState<"saved" | MosaicModel>();
-  const previews = useRef<HTMLDivElement>(null);
-  const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
-  const [drawing, setDrawing] = useState(false);
-  const [viewer, setViewer] = useState<{ title: string; views: GameImageViews; initialIndex: number } | null>(null);
-  const [draft, setDraft] = useState<MosaicBox>();
-  const anchor = useRef<[number, number] | null>(null);
   const confirmation = useGameActionConfirm(() => {});
   const usable = useMemo(() => images.filter(image => image.sourceFile && image.width > 0 && image.height > 0)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })), [images]);
@@ -481,10 +399,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   previewedImage.current = active;
   const isPreviewing = (image: UnityImage) => previewedImage.current?.id === image.id && previewedImage.current.sourceHash === image.sourceHash;
   const activeResult = active && resultFor(rows, active);
-  useLayoutEffect(() => { setMaskUndo([]); }, [gamePath, active?.id, active?.sourceHash]);
   const group = active && (activeResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
   const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
+  const actionsDisabled = !!busy || disabled;
+  const masks = useMosaicMasks({ gamePath, active, activeResult, members, usable, rows, candidates,
+    getRows: () => latestRows.current, hasStorage: !!storage, blocked: () => !!task.current || disabled,
+    actionsDisabled, commit: commitMaskEdits });
 
   function selectPreview(id: string) {
     setActiveId(id);
@@ -494,38 +415,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const selected = members.filter(image => resultFor(rows, image).checked);
   const saved = selected.filter(image => resultFor(rows, image).saved);
   const included = saved.filter(image => storage?.index[image.id]?.included);
-  const result = active && candidates[active.id]?.revision === active.sourceHash ? candidates[active.id] : undefined;
   const activeSaved = !!activeResult?.saved;
-  const versions: ResultVersion[] = (["turbo", "2511"] as const).flatMap(id => {
-    const blob = result?.values[id];
-    return blob ? [{ id, blob, seconds: result?.seconds[id] }] : [];
-  });
-  const preferredVersion = versions.find(version => version.id === preferredResult) ?? versions[0];
-  const showSaved = activeSaved && (preferredResult === "saved" || !preferredVersion);
-  const comparing = versions.length === 2 && !showSaved;
-  // Leave room for three 560px images, their frames and the two gaps between them.
-  const sideBySide = comparing && previewAreaWidth >= 3 * 560 + 62 * document.documentElement.currentCSSZoom;
-  const original = source && source.id === active?.id && source.revision === active.sourceHash ? source : undefined;
-  const confirmed = approved && approved.id === active?.id && approved.revision === active.sourceHash ? approved : undefined;
-  const originalUrl = useImageBlobUrl(original?.blob);
-  const savedUrl = useImageBlobUrl(showSaved ? confirmed?.blob : undefined);
-  const openPreview = (id: "original" | "saved" | MosaicModel) => {
-    if (drawing || !active) return;
-    const { name: title, width, height } = active;
-    const originalView = { id: "original", label: "原图", src: original?.blob };
-    const savedView = { id: "saved", label: "已采用去码图", src: activeSaved ? confirmed?.blob : undefined };
-    const candidateViews = versions.map((version, index) => ({
-      id: version.id,
-      label: (versions.length === 2 ? "候选 " + (index === 0 ? "A" : "B") : "去码结果") + " · " + mosaicModelLabels[version.id],
-      src: version.blob,
-    }));
-    const ordered = showSaved ? [originalView, savedView, ...candidateViews] : [originalView, ...candidateViews, savedView];
-    const available = ordered.flatMap(view => view.src ? [{ ...view, src: view.src, width, height }] : []);
-    const initialIndex = available.findIndex(view => view.id === id);
-    const [first, ...others] = available;
-    if (initialIndex >= 0 && first) setViewer({ title, views: [first, ...others], initialIndex });
-  };
-
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
     if (row.checked) total.checked++;
@@ -533,24 +423,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return total;
   }, { checked: 0, saved: 0 }), [visible, rows, storage?.index]);
 
-  useLayoutEffect(() => {
-    const element = previews.current;
-    if (!element) return;
-    const updateWidth = () => setPreviewAreaWidth(element.getBoundingClientRect().width);
-    updateWidth();
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [active]);
-
   useEffect(() => () => { task.current?.abort(); onBusy?.(false); }, [onBusy]);
   useEffect(() => {
     if (!disabled) return;
-    anchor.current = null;
-    setDrawing(false); setDraft(undefined);
-  }, [disabled]);
+    masks.resetDrawing();
+  }, [disabled, masks.resetDrawing]);
   useEffect(() => {
-    if (!paneVisible) { filterMenu.current?.hidePopover(); setViewer(null); }
+    if (!paneVisible) filterMenu.current?.hidePopover();
   }, [paneVisible]);
   useEffect(() => {
     if (!paneVisible) return;
@@ -670,14 +549,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const image = active;
     if (!loadPreviews || !image) return;
     const controller = new AbortController();
-    setPreferredResult(undefined); setDrawing(false); setDraft(undefined); anchor.current = null;
+    setPreferredResult(undefined); masks.resetDrawing();
     void read(image, controller.signal).then(blob => {
       if (!controller.signal.aborted) setSource({ id: image.id, revision: image.sourceHash, blob });
     }).catch(cause => {
       if (!controller.signal.aborted) setSource({ id: image.id, revision: image.sourceHash, error: String(cause) });
     });
     return () => controller.abort();
-  }, [active, read, loadPreviews]);
+  }, [active, read, loadPreviews, masks.resetDrawing]);
 
   useEffect(() => {
     if (!loadPreviews || !activeSaved || !active) return;
@@ -710,14 +589,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       blocked: () => !!task.current || disabled || isBenchmarkRunning(),
       start: (controller, id) => {
         task.current = controller;
-        if (id === "screen" || id === "refine") setMaskUndo([]);
+        if (id === "screen" || id === "refine") masks.clearUndo();
         onBusy?.(true);
       },
       resumableElapsed: step => resumableMosaicMetrics(gamePath, step.id, !!step.resume)?.elapsedMs ?? 0,
       setProgressStep, setStepRuns,
       setRunning: label => {
-        anchor.current = null;
-        setDrawing(false); setDraft(undefined);
+        masks.resetDrawing();
         setBusy(label); setProgress(label); setError("");
       },
       beginUsage: (id, resume, refresh) => beginMosaicStepUsage(gamePath, id, resume, refresh),
@@ -824,73 +702,24 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onDevice: device => setStepRuns(previous => previous.screen ? { ...previous, screen: { ...previous.screen, device } } : previous),
     }), { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind], resume: !restart });
   }
-  function saveMasks(next: Results) {
-    try {
-      replaceRows(next);
-      latestRows.current = next;
-      return true;
-    } catch {
-      showAppNotice("无法保存图片去码筛选记录", "error");
-      return false;
-    }
-  }
-
-  function editMasks(edits: readonly MaskEdit[]) {
-    if (task.current || disabled || !edits.length) return;
-    const current = latestRows.current;
-    const next = { ...current };
-    const undo = edits.map(({ image, boxes }): MaskUndoItem => {
-      const row = resultFor(current, image);
-      next[image.id] = { ...row, boxes, manualBoxes: true, review: undefined, redrawError: undefined,
-        saved: storage ? row.saved : false, reference: false, checked: boxes.length > 0 };
-      const previousCandidate = candidates[image.id];
-      return { id: image.id, source: image.sourceHash,
-        mask: { boxes: row.boxes, manualBoxes: row.manualBoxes, review: row.review, redrawError: row.redrawError,
-          saved: row.saved, reference: row.reference, checked: row.checked },
-        candidate: previousCandidate?.revision === image.sourceHash ? previousCandidate : undefined };
-    });
-    if (!saveMasks(next)) return;
-    setMaskUndo(previous => [...previous, undo]);
-    setCandidates(previous => {
-      const retained = { ...previous };
-      for (const { id } of undo) delete retained[id];
-      return retained;
-    });
-  }
-
-  function editMask(image: UnityImage, boxes: MosaicBox[]) {
-    editMasks([{ image, boxes }]);
-  }
-
-  function undoMaskEdit() {
-    const edits = maskUndo.at(-1);
-    if (task.current || disabled || !edits) return;
-    const current = latestRows.current;
-    const next = { ...current };
-    const liveSources = new Map(usable.map(image => [image.id, image.sourceHash]));
-    const matching = edits.filter(edit => liveSources.get(edit.id) === edit.source && current[edit.id]?.source === edit.source);
-    for (const { id, mask } of matching) next[id] = { ...current[id], ...mask };
-    if (matching.length && !saveMasks(next)) return;
-    anchor.current = null;
-    setDraft(undefined);
-    setMaskUndo(previous => previous.slice(0, -1));
-    setCandidates(previous => {
-      const restored = { ...previous };
-      for (const { id, candidate } of matching) {
-        if (candidate) restored[id] = candidate; else delete restored[id];
+  function commitMaskEdits(edits: MosaicMaskCommit) {
+    if (edits.rows) {
+      try {
+        replaceRows(edits.rows);
+        latestRows.current = edits.rows;
+      } catch {
+        showAppNotice("无法保存图片去码筛选记录", "error");
+        return false;
       }
-      return restored;
+    }
+    setCandidates(previous => {
+      const next = { ...previous };
+      for (const { id, candidate } of edits.candidates) {
+        if (candidate) next[id] = candidate; else delete next[id];
+      }
+      return next;
     });
-  }
-
-  function position(event: PointerEvent<SVGSVGElement>, image: UnityImage): [number, number] {
-    const box = event.currentTarget.getBoundingClientRect();
-    return [Math.max(0, Math.min(image.width, Math.round((event.clientX - box.left) * image.width / box.width))),
-      Math.max(0, Math.min(image.height, Math.round((event.clientY - box.top) * image.height / box.height)))];
-  }
-
-  function bounds(a: [number, number], b: [number, number]): MosaicBox {
-    return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+    return true;
   }
 
   function startRedraw(plan: RedrawPlan, resume = false) {
@@ -935,7 +764,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     void run("保存已采用去码图", async signal => {
       if (storage) await storage.save(image, blob, signal);
       else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
-      setMaskUndo([]);
+      masks.clearUndo();
       update(image, { saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
       if (isPreviewing(image)) {
         setApproved({ id: image.id, revision: image.sourceHash, blob });
@@ -969,7 +798,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     });
   }
 
-  const activeBoxes = [...(activeResult?.boxes || []), ...(draft ? [draft] : [])];
   const previousScreen = lastScreen.current;
   const sameScreen = previousScreen?.detector === detectorKey && previousScreen.scope.length === currentScope.length &&
     (previousScreen.scope === currentScope || previousScreen.scope.every((image, i) =>
@@ -1024,7 +852,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const benchmarkProgress = useBenchmarkProgress(gamePath);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
-  const actionsDisabled = !!busy || disabled;
   useEffect(() => {
     if (actionsDisabled || !paneVisible) setGroupMenu(null);
   }, [actionsDisabled, paneVisible]);
@@ -1058,7 +885,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
-    setMaskUndo([]);
+    masks.clearUndo();
     clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     if (step === "refine") clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
     if (resetRedraw) clearGamePerformance(mosaicMetricScope(gamePath,"redraw"),["redraw"]);
@@ -1140,7 +967,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     lastScreen.current = null;
     lastReview.current = null;
     pendingRedraw.current = null;
-    setMaskUndo([]);
+    masks.clearUndo();
     for (const step of ["screen","refine","redraw"] as const)
       clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
@@ -1155,9 +982,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setApproved(undefined);
     setCandidates({});
     setPreferredResult(undefined);
-    setDrawing(false);
-    setDraft(undefined);
-    anchor.current = null;
+    masks.resetDrawing();
     showAppNotice("已清理图片去码任务");
   }
 
@@ -1183,45 +1008,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
-  const maskCopyTargets = active ? members.filter(image => image.id !== active.id &&
-    !resultFor(rows, image).boxes.length && Math.abs(image.width / image.height / (active.width / active.height) - 1) <= 0.04) : [];
-  const imageTools = active && activeResult ? [
-    { id: "redraw", label: "重绘当前图", key: "r", shortcut: "R", disabled: !!redrawReason, reason: redrawReason,
-      icon: "m7 4 13 8-13 8V4Z", run: () => generate([active], [model]) },
-    { id: "draw", label: "框选蒙版", key: "b", shortcut: "B", disabled: actionsDisabled || !originalUrl, pressed: drawing,
-      icon: "M9 4H4v5m11-5h5v5m0 6v5h-5m-6 0H4v-5m5-3h6m-3-3v6", run: () => setDrawing(value => !value) },
-    { id: "remove", label: "删除最后一框", key: "d", shortcut: "D", disabled: actionsDisabled || !activeResult.boxes.length,
-      icon: "M5 5h14v14H5zM9 12h6", run: () => editMask(active, activeResult.boxes.slice(0, -1)) },
-    { id: "clear", label: "清空蒙版", key: "delete", modifier: "shift", shortcut: "Shift+Delete", disabled: actionsDisabled || !activeResult.boxes.length,
-      icon: "M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6", run: () => editMask(active, []) },
-    { id: "copy", label: "复制蒙版到组内空白图", key: "c", shortcut: "C", disabled: actionsDisabled || !activeResult.boxes.length || !maskCopyTargets.length,
-      icon: "M8 8h12v12H8zM16 4H4v12", run: () => editMasks(maskCopyTargets.map(image => ({ image, boxes: mapMosaicBoxes(activeResult.boxes, active, image) }))) },
-    { id: "undo", label: "撤销蒙版编辑", key: "z", modifier: "command", shortcut: "Ctrl+Z",
-      disabled: actionsDisabled || !maskUndo.length, icon: "m8 5-4 4 4 4M4 9h10a5 5 0 0 1 0 10h-3", run: undoMaskEdit },
-  ] : [];
-
-  function onImageToolKey(event: ReactKeyboardEvent<HTMLElement>) {
-    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.repeat ||
-        (event.target as Element).closest("input, textarea, select, [contenteditable]")) return;
-    const modifier = event.ctrlKey || event.metaKey ? "command" : event.shiftKey ? "shift" : undefined;
-    if (modifier === "command" && event.shiftKey) return;
-    const tool = imageTools.find(item => item.key === event.key.toLowerCase() && item.modifier === modifier);
-    if (!tool || tool.disabled) return;
-    event.preventDefault();
-    event.stopPropagation();
-    tool.run();
-  }
-
-  const imageToolbar = imageTools.length > 0 && <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
-    onDoubleClick={event => event.stopPropagation()}>
-    {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
-      aria-label={tool.label} aria-pressed={tool.pressed}
-      aria-keyshortcuts={tool.modifier === "command" ? "Control+Z Meta+Z" : tool.shortcut}
-      data-tooltip={[tool.label + " · " + tool.shortcut, tool.reason].filter(Boolean).join("\n")} disabled={tool.disabled} onClick={tool.run}>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
-        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>
-    </button>)}
-  </div>;
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
@@ -1232,7 +1018,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
-    {paneVisible && viewer && <GameImageViewer {...viewer} onClose={() => setViewer(null)} />}
     {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle} configured={configured} onConfigure={setConfigured}
       busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled} onStop={id => stopMosaicBatch(task.current, id, setProgress)} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
       testing={testing} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
@@ -1272,107 +1057,49 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       actionsDisabled={actionsDisabled} getRow={image => resultFor(rows, image)} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
       isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked} updateRow={update}
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
-      {!active && <div className="unity-offline-empty">{visible.length ? "从左侧列表选择图片预览" : "没有符合筛选条件的图片。"}</div>}
-      {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
-        <div className="unity-image-actions">
-          <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
-          <div className="unity-image-button-group">
-            <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
-              onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
-            <div className="game-mosaic-group-picker" onContextMenu={event => openGroupMenu(event, group)}>
-              <UnityDescriptionSelect label="移动到分组…" value="" menuWidth={248} disabled={actionsDisabled}
-                choices={[{ value: "new", label: "新建独立组" },
-                  ...[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => ({
-                    value: key, label: list[0].name + " · " + list.length + " 张" + (isIndependentGroup(key) ? " · 独立组" : ""),
-                  }))]}
-                onChange={next => update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false })}
-                onOptionContextMenu={(key, event) => openGroupMenu(event, key)} />
+      <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}
+        source={source} approved={approved} activeSaved={activeSaved} candidate={active && candidates[active.id]}
+        preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks}
+        actionsDisabled={actionsDisabled} busyReason={busyReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
+        onRedraw={models => { if (active) generate([active], models); }}
+        onApprove={blob => { if (active) approve(active, blob); }}
+        header={active &&
+          <div className="unity-image-actions">
+            <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
+            <div className="unity-image-button-group">
+              <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
+                onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
+              <div className="game-mosaic-group-picker" onContextMenu={event => openGroupMenu(event, group)}>
+                <UnityDescriptionSelect label="移动到分组…" value="" menuWidth={248} disabled={actionsDisabled}
+                  choices={[{ value: "new", label: "新建独立组" },
+                    ...[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => ({
+                      value: key, label: list[0].name + " · " + list.length + " 张" + (isIndependentGroup(key) ? " · 独立组" : ""),
+                    }))]}
+                  onChange={next => update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false })}
+                  onOptionContextMenu={(key, event) => openGroupMenu(event, key)} />
+              </div>
+              <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
+                const next = { ...previous };
+                for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
+                return next;
+              })}>{reference?.id === active.id ? "本组参考图" : "用作本组画风参考"}</button>
+              {reference && <span>参考图 {reference.name}</span>}
             </div>
-            <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
-              const next = { ...previous };
-              for (const image of members) next[image.id] = { ...resultFor(previous, image), reference: image.id === active.id, group, manualGroup: true };
-              return next;
-            })}>{reference?.id === active.id ? "本组参考图" : "用作本组画风参考"}</button>
-            {reference && <span>参考图 {reference.name}</span>}
           </div>
-        </div>
-        {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
+        }
+        notice={activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
           {activeRetry && "重试中 · 上次"}{activeFailure}
-        </p> :
-          activeResult.review && <p className="hint">{activeResult.review}</p>}
-        <div ref={previews} className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
-          style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
-          <div className="unity-image-actions game-mosaic-results-bar">
-            <strong>去码结果</strong>
-            {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
-              setPreferredResult(showSaved ? preferredVersion.id : "saved");
-            }}>{showSaved ? "查看候选" : "查看已采用去码图"}</button>}
-            <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} title={testTitle} data-tooltip={redrawReason}
-              onClick={() => generate([active], ["turbo", "2511"])}>两种模型各生成一版</button>
-            {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
-              onKeyDown={event => {
-                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-                event.preventDefault();
-                const index = event.key === "ArrowLeft" ? 0 : 1;
-                setPreferredResult(versions[index].id);
-                event.currentTarget.querySelectorAll("button")[index].focus();
-              }}>
-              {versions.map((version, index) => <button key={version.id} type="button" className="unity-btn"
-                aria-label={`${index === 0 ? "A" : "B"} · ${mosaicModelLabels[version.id]}`}
-                aria-pressed={version.id === preferredVersion.id} onClick={() => setPreferredResult(version.id)}>
-                {index === 0 ? "A" : "B"}
-              </button>)}
-            </div>}
+        </p> : activeResult?.review && <p className="hint">{activeResult.review}</p>}
+        footer={
+          <div className="unity-image-actions">
+            <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
+              {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}
+            </button>
+            <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
+              {storage ? "从生成清单移除" : "撤销本组所选"}
+            </button>
           </div>
-          <GameImagePreviewFrame caption="原图" className="game-mosaic-original-frame" tabIndex={0} aria-label="原图编辑区"
-            onKeyDown={onImageToolKey} onPointerDown={event => {
-              if (!(event.target as Element).closest("button, input, textarea, select")) event.currentTarget.focus({ preventScroll: true });
-            }} onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined}>
-            <div className="game-mosaic-original-viewport">
-              {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} drawing={drawing}>
-                <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
-                <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
-                  aria-label="去码蒙版" onPointerDown={event => {
-                    if (!drawing || actionsDisabled || event.button !== 0) return;
-                    anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
-                  }} onPointerMove={event => {
-                    if (anchor.current) setDraft(bounds(anchor.current, position(event, active)));
-                  }} onPointerUp={event => {
-                    if (!anchor.current) return;
-                    const box = bounds(anchor.current, position(event, active));
-                    anchor.current = null; setDraft(undefined);
-                    if (!actionsDisabled && box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
-                  }} onPointerCancel={() => { anchor.current = null; setDraft(undefined); }}>
-                  {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
-                    fill="color-mix(in srgb, var(--danger) 25%, transparent)" stroke="var(--danger)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
-                </svg>
-              </MosaicOriginalCanvas> : original?.error
-                ? <p className="game-mosaic-error" role="alert">{original.error}</p>
-                : <p className="hint">正在读取图片…</p>}
-              {imageToolbar}
-            </div>
-          </GameImagePreviewFrame>
-          {showSaved ? <GameImagePreviewFrame caption="已采用去码图" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
-            ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
-            {savedUrl && <div className="unity-image-stage">
-              <img src={savedUrl} alt={`${active.name} 已采用去码图`} draggable={false} />
-            </div>}
-          </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
-            <MosaicResultVersion key={version.id} version={version}
-              letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
-              imageName={active.name} disabledReason={busyReason} onApprove={blob => approve(active, blob)}
-              onOpen={drawing ? undefined : () => openPreview(version.id)} />
-          ) : <GameImagePreviewFrame fallback={<p className="hint">尚未生成去码结果</p>} />}
-        </div>
-        <div className="unity-image-actions">
-          <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
-            {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}
-          </button>
-          <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
-            {storage ? "从生成清单移除" : "撤销本组所选"}
-          </button>
-        </div>
-      </section>}
+        } />
     </MosaicGroupTree>
   </section>;
 }
