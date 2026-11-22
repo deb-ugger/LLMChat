@@ -243,3 +243,46 @@
 .game-mosaic-status-group.has-error > details > summary > span:first-child,
 .game-mosaic-failed-filter { color: var(--danger); }
 .game-mosaic-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
+
+/* 原图上的蒙版工具条：贴图片右边缘竖排悬浮，不占据布局宽度 */
+.game-mosaic-original-frame { position: relative; }
+.game-mosaic-image-tools {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 8px;
+  translate: 0 -50%;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 84%, #000);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .34);
+  backdrop-filter: blur(6px);
+}
+.game-mosaic-image-tool {
+  display: grid;
+  place-items: center;
+  inline-size: 30px;
+  block-size: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.game-mosaic-image-tool:hover { background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--text); }
+.game-mosaic-image-tool:active { background: color-mix(in srgb, var(--text) 18%, transparent); }
+.game-mosaic-image-tool[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+.game-mosaic-image-tool:disabled { opacity: .38; cursor: not-allowed; }
+.game-mosaic-image-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) {
+  .game-mosaic-image-tool { transition: none; }
+}
