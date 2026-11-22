@@ -22,12 +22,14 @@ add_executable(llmchat-backend
     src/UsageStore.cpp
     src/PricingStore.cpp
     src/OcrModelStore.cpp
+    src/http/OcrRoutes.cpp
     src/GameImageExportPackage.cpp
     src/GameImageExportTransaction.cpp
     src/HttpServer.cpp
     src/http/HttpRouter.cpp
     src/http/UnityRoutes.cpp
     src/http/TextRoutes.cpp
+    src/http/ImageRoutes.cpp
 )
 
 target_include_directories(llmchat-backend PRIVATE
