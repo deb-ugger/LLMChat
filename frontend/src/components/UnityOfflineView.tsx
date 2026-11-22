@@ -127,6 +127,20 @@ type Props = {
   onInstallationChange?: (root: string, installed: boolean) => void;
   toolbarTarget: HTMLElement | null;
 };
+function WorkflowElapsed({ elapsed, origin }: { elapsed: number; origin?: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (origin === undefined) return;
+    const timer = window.setInterval(() => tick(value => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [origin]);
+  const ms = origin === undefined ? elapsed : performance.now() - origin;
+  return <>{[3600000, 60000, 1000].map((unit, index) => {
+    const count = Math.floor(ms / unit);
+    return String(index ? count % 60 : count).padStart(2, "0");
+  }).join(":")}</>;
+}
+
 export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function UnityOfflineView({ active, game, settings, onBusyChange, onInstallationChange, toolbarTarget }, ref) {
   const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const root = game?.gameDir || "";
@@ -282,22 +296,42 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const tableRef = useRef<HTMLTableElement>(null);
   const columnDrag = useRef<{ x: number; ratio: number; width: number; latest: number } | null>(null);
   const taskWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const waitingWrite = useRef<{ stage: string; job: RunCheckpoint } | null>(null);
   const queuedSignature = useRef("");
   const checkpointKey = "llmchat-unity-run:" + root.toLowerCase();
   const textConfigurationCommit = useRef<GameStepConfigurationCommit | null>(null);
   const imageConfigurationCommit = useRef<GameStepConfigurationCommit | null>(null);
+  const elapsedOrigins = useRef<Partial<Record<"scan" | UnityTranslationPart, number>>>({});
   const remember = (value: RunCheckpoint) => {
     const checkpoint = abort.current && value.step >= 2 ? { ...value, ...execution.current.parameters } : value;
     checkpointRef.current = checkpoint; setCheckpoint(checkpoint); setGeneration(checkpoint.progress);
-    const { progress, translationRuns, ...fields } = checkpoint;
+    const { progress, translationRuns, scanElapsedMs: _elapsed, ...fields } = checkpoint;
     const parts = translationRuns && Object.fromEntries(Object.entries(translationRuns).map(([part, value]) => [part, { state: value.state, total: value.total, failure: value.failure,
-      completed: value.redrawFailed === undefined ? undefined : value.completed, redrawFailed: value.redrawFailed,
+      completed: value.completed, redrawFailed: value.redrawFailed,
       engineStats: value.engineStats?.map(({ id, characters }) => ({ id, characters })) }]));
     const signature = JSON.stringify({ root, ...fields, translationRuns: parts, progress: { step: progress.step, state: progress.state, folder: progress.folder, total: progress.total, failure: progress.failure } });
     if (signature !== queuedSignature.current) {
       queuedSignature.current = signature;
       const job = structuredClone(checkpoint);
-      taskWrites.current = taskWrites.current.catch(() => {}).then(() => unityRun("save-task", { root, task: job }));
+      const now = performance.now(), clocks = elapsedOrigins.current;
+      if (clocks.scan !== undefined) job.scanElapsedMs = now - clocks.scan;
+      for (const part of ["text", "images"] as const) {
+        const origin = clocks[part];
+        if (job.translationRuns && origin !== undefined) job.translationRuns[part].elapsedMs = now - origin;
+      }
+      const stage = JSON.stringify([root, job.step, job.progress.state, job.finished, job.imageTask,
+        job.translationRuns?.text.state, job.translationRuns?.images.state, job.scanFolder, job.patchFolder]);
+      const waiting = waitingWrite.current;
+      if (job.progress.state === "running" && waiting?.stage === stage) {
+        waiting.job = job;
+        return;
+      }
+      const write = { stage, job };
+      waitingWrite.current = write;
+      taskWrites.current = taskWrites.current.catch(() => {}).then(() => {
+        if (waitingWrite.current === write) waitingWrite.current = null;
+        return unityRun("save-task", { root, task: write.job });
+      });
       void taskWrites.current.catch(e => { queuedSignature.current = ""; setError(`任务检查点保存失败：${String(e)}`); });
     }
   };
@@ -1499,10 +1533,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           if (reuse) p = reuse;
           else {
             const started = performance.now(), elapsed = run.scanElapsedMs || 0;
-            const tick = () => { run = { ...run, scanElapsedMs: elapsed + performance.now() - started }; remember(run); };
-            const timer = setInterval(tick, 1000);
+            elapsedOrigins.current.scan = started - elapsed;
+            remember(run);
             try { p = await scan(onProgress, controller.signal, run); }
-            finally { clearInterval(timer); tick(); }
+            finally {
+              delete elapsedOrigins.current.scan;
+              run = { ...run, scanElapsedMs: elapsed + performance.now() - started };
+              remember(run);
+            }
           }
           const previousFolder = run.previousProjectFolder;
           run.projectFolder = p.folder; run.scanFolder = "";
@@ -1557,8 +1595,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             },
             run: async (part, job) => {
               const started = performance.now(), previousElapsed = run.translationRuns![part].elapsedMs || 0;
-              const tick = () => { run = { ...run, translationRuns: { ...run.translationRuns!, [part]: { ...run.translationRuns![part], elapsedMs: previousElapsed + performance.now() - started } } }; remember(run); };
-              const timer = setInterval(tick, 1000);
+              elapsedOrigins.current[part] = started - previousElapsed;
+              remember(run);
               try {
               const current = latest.current || p!;
               if (part === "images") {
@@ -1607,7 +1645,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               const final = latest.current || current;
               const failed = final.entries.filter(entry => (retryIds ? retryIds.has(entry.id) : entry.selected && selectedIds.has(entry.id)) && (!run.layoutOnly || !!entry.layoutDraft) && (entry.error || unityTranslationError(entry.source, entry.translation)));
               if (failed.length) throw new Error(`${failed.length} 条文本翻译或排版未完成，已有译文和草稿已保存`);
-              } finally { finishGameStep(promptState.scope + ":" + part); clearInterval(timer); tick(); }
+              } finally {
+                finishGameStep(promptState.scope + ":" + part);
+                delete elapsedOrigins.current[part];
+                run = { ...run, translationRuns: { ...run.translationRuns!, [part]: {
+                  ...run.translationRuns![part], elapsedMs: previousElapsed + performance.now() - started,
+                } } };
+                remember(run);
+              }
             },
           });
           translationJobs.current = jobs; remember(run);
@@ -2317,10 +2362,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const deploymentElapsed = deploymentPhase ? progressMeasurement?.elapsedMs : undefined;
   const elapsed = (activeStep === 1 ? checkpoint?.scanElapsedMs || scanTiming?.totalMs
     : activeStep === 3 ? deploymentElapsed : visibleGeneration?.elapsedMs) ?? 0;
-  const elapsedLabel = [3600000, 60000, 1000].map((unit, index) => {
-    const count = Math.floor(elapsed / unit);
-    return String(index ? count % 60 : count).padStart(2, "0");
-  }).join(":");
+  const elapsedOrigin = activeStep === 1 ? elapsedOrigins.current.scan :
+    activeStep === 2 ? elapsedOrigins.current[currentPart] : undefined;
   const taskDetail = progressState === "running" || progressState === "stopped" ? visibleGeneration?.detail : undefined;
   const scanResource = activeStep === 1
     ? taskDetail?.match(/^读取资源对象：(.+) · 对象 (\d+) \/ (\d+) · 已提取 (\d+) 条文本$/)
@@ -2343,7 +2386,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (activeStep === 2 && imagePart && tab.id !== "2.2" && imageLeaveGuard.current) imageLeaveGuard.current(change);
     else change();
   };
-  const progressContent = <GameStepProgress title={progressTitle} state={progressState} elapsed={elapsedLabel}
+  const progressContent = <GameStepProgress title={progressTitle} state={progressState} elapsed={<WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} />}
     label={redrawSummary?.label}
     percent={redrawSummary?.percent ?? (visibleGeneration && showProgressCount ? progressPercent : undefined)}
     count={redrawSummary?.count ?? (showProgressCount && visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined)}

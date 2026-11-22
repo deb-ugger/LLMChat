@@ -18,7 +18,7 @@ export function GameStepProgress({ title, state, label, percent, elapsed, count,
   state: GameProgressState;
   label?: string;
   percent?: number | null;
-  elapsed?: string;
+  elapsed?: ReactNode;
   count?: string;
   actions?: ReactNode;
   children?: ReactNode;
