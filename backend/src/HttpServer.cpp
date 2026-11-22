@@ -1,4 +1,5 @@
 #include "HttpServer.h"
+#include "http/HttpRouter.h"
 #include "AtomicFile.h"
 #include "LlmClient.h"
 #include "SpeechOnline.h"
@@ -47,6 +48,7 @@
 #endif
 
 using json = nlohmann::json;
+using http_router::errorJson;
 namespace fs = std::filesystem;
 
 std::mutex& configUpdateMutex();
@@ -119,41 +121,6 @@ fs::path findProjectFile(const fs::path& folder)
         return legacy;
     }
     return {};
-}
-
-bool isAllowedBrowserOrigin(const httplib::Request& req)
-{
-    const std::string origin = req.get_header_value("Origin");
-    if (origin.empty())
-    {
-        const std::string fetchSite = req.get_header_value("Sec-Fetch-Site");
-        return fetchSite.empty() || fetchSite == "same-origin" || fetchSite == "same-site";
-    }
-    static const std::set<std::string> allowed{
-        "http://localhost:1420",
-        "http://127.0.0.1:1420",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-        "tauri://localhost",
-    };
-    return allowed.contains(origin);
-}
-
-void setCors(const httplib::Request& req, httplib::Response& res)
-{
-    const std::string origin = req.get_header_value("Origin");
-    if (!origin.empty())
-    {
-        res.set_header("Access-Control-Allow-Origin", origin);
-        res.set_header("Vary", "Origin");
-    }
-    res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-}
-
-json errorJson(const std::string& message)
-{
-    return json{{"ok", false}, {"error", message}};
 }
 
 void appendServiceTiming(json& result, const std::optional<LlmServiceTiming>& timing)
@@ -370,35 +337,8 @@ int HttpServer::run()
     httplib::Server svr;
     svr.new_task_queue = [] { return new httplib::ThreadPool(16, 64); };
 
-    svr.Options(R"(.*)", [](const httplib::Request& req, httplib::Response& res) {
-        if (!isAllowedBrowserOrigin(req))
-        {
-            res.status = 403;
-            res.set_content(errorJson("不允许的请求来源").dump(), "application/json");
-            return;
-        }
-        setCors(req, res);
-        res.status = 204;
-    });
-
-    auto withCors = [](auto handler) {
-        return [handler](const httplib::Request& req, httplib::Response& res) {
-            if (!isAllowedBrowserOrigin(req))
-            {
-                res.status = 403;
-                res.set_content(errorJson("不允许的请求来源").dump(), "application/json");
-                return;
-            }
-            setCors(req, res);
-            handler(req, res);
-            if (!res.get_header_value("Content-Type").empty()
-                && res.get_header_value("Content-Type").find("charset=") == std::string::npos
-                && res.get_header_value("Content-Type").find("application/json") != std::string::npos)
-            {
-                res.set_header("Content-Type", "application/json; charset=utf-8");
-            }
-        };
-    };
+    svr.Options(R"(.*)", http_router::corsPreflight);
+    using http_router::withCors;
 
     svr.Get("/api/storage", withCors([](const httplib::Request& req, httplib::Response& res) {
         try { res.set_content(storage::status(req.get_param_value("sizes") != "0").dump(), "application/json"); }
