@@ -22,6 +22,7 @@ add_executable(llmchat-backend
     src/OcrModelStore.cpp
     src/HttpServer.cpp
     src/http/HttpRouter.cpp
+    src/http/UnityRoutes.cpp
 )
 
 target_include_directories(llmchat-backend PRIVATE
