@@ -2774,25 +2774,42 @@ body.ocr-image-resizing * {
   margin: 0;
   font-size: var(--fs-section);
 }
-/* 测试运行时的呼吸：队列区块与正在跑的配置卡 */
+/* 测试运行时的呼吸：队列区块与正在跑的配置卡。
+   色调用工作流「进行中」的那支蓝，和队列圆点一致；朱砂留给失败/进度。 */
 .game-benchmark-section.is-active {
-  border-color: color-mix(in srgb, #a855f7 55%, var(--border, #2a2721));
-  background: color-mix(in srgb, #a855f7 7%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 42%, var(--border, #2a2721));
+  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 6%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.8s ease-in-out infinite;
 }
+/* 正在跑的那一条任务：整块（标题行 + 展开后的全部字段）一起呼吸。 */
 .game-benchmark-item.is-running {
-  border-color: color-mix(in srgb, #a855f7 60%, var(--border, #2a2721));
-  background: color-mix(in srgb, #a855f7 7%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 62%, var(--border, #2a2721));
+  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 8%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.6s ease-in-out infinite;
 }
+.game-benchmark-item.is-running::before { background: var(--workflow-tone-current, #3265b6); }
+.game-benchmark-item.is-running > summary { color: var(--text); }
+/* 展开后的控件与分隔线跟着染色，否则整块只有外框是蓝的、里面还是原底色。 */
+.game-benchmark-item.is-running .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
+  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 7%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 26%, var(--border, #2a2721));
+}
+.game-benchmark-item.is-running .game-benchmark-item-fields > .game-benchmark-toolbar { border-top-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 22%, var(--border, #2a2721)); }
 @keyframes game-benchmark-breathe {
-  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, #a855f7 22%, transparent), 0 0 8px color-mix(in srgb, #a855f7 14%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, #a855f7 42%, transparent), 0 0 20px color-mix(in srgb, #a855f7 34%, transparent); }
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 24%, transparent), 0 0 8px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 14%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 40%, transparent), 0 0 20px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 32%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .game-benchmark-section.is-active,
   .game-benchmark-item.is-running { animation: none; }
 }
+/* 运行中任务的参数摘要：队列里一条、步骤卡里一条，共用同一套标记。 */
+.game-benchmark-running-params { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:6px; }
+.game-benchmark-running-params > .kv { display:inline-flex; align-items:baseline; gap:5px; min-width:0; }
+.game-benchmark-running-params > .kv > span { color:var(--text-muted); font-size:var(--fs-caption); white-space:nowrap; }
+.game-benchmark-running-params > .kv > b { color:var(--text); font-size:var(--fs-caption); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:min(28ch,32vw); }
+.game-benchmark-running-params.is-stacked { flex-direction:column; gap:3px; margin-top:4px; }
+.game-benchmark-running-params.is-stacked > .kv > b { max-width:none; }
 .game-benchmark-page {
   box-sizing: border-box; width: 100%; height: 100dvh; min-width: 0;
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
