@@ -14,7 +14,6 @@ import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow"
 import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
-import { BenchmarkRunningParameters } from "./BenchmarkRunningParameters";
 import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { GameMetricHint, GameModelUsage, GameStepTimingDetails } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
@@ -1302,9 +1301,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={toggle}
       status={<>{screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}{elapsed != null && !screeningMethodChanged && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
-      summary={id === "refine" && benchmark?.configId && benchmark.configParameters
-        ? <div className="game-flow-model-list"><BenchmarkRunningParameters parameters={benchmark.configParameters} stacked /></div>
-        : (!benchmark || running) && <div className="game-mosaic-step-summary">
+      summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
         {(showModelTitle || status?.device) && <span data-tooltip={status?.device?.reason}>
           {showModelTitle && modelTitle}
           {status?.device && <>{showModelTitle && " · "}{status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"}</>}

@@ -2255,18 +2255,18 @@ body.ocr-image-resizing * {
   background: var(--flow-background);
   animation: game-flow-pulse 2.2s ease-in-out infinite;
 }
-/* 测试队列跑到这一步时的呼吸：与队列里那条任务同一支蓝，不再用紫色。 */
+/* 测试运行的紫：正式运行是蓝/绿，测试必须一眼区分开。 */
 .game-flow-item.is-benchmark-running {
-  --flow-color: var(--workflow-tone-current, #3265b6);
+  --flow-color: #a855f7;
   --flow-background: color-mix(in srgb, var(--flow-color) 9%, var(--panel, #15130f));
   background: var(--flow-background);
-  border-color: color-mix(in srgb, var(--flow-color) 55%, var(--border, #2a2721));
+  border-color: color-mix(in srgb, #a855f7 55%, var(--border, #2a2721));
   animation: game-flow-pulse 1.6s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .game-flow-item.is-running,
   .game-flow-item.is-benchmark-running { animation: none; }
-  .game-flow-item.is-benchmark-running { box-shadow: 0 0 0 1px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 40%, transparent); }
+  .game-flow-item.is-benchmark-running { box-shadow: 0 0 0 1px color-mix(in srgb, #a855f7 40%, transparent); }
 }
 .game-flow-step { padding: 10px var(--space-3); border-radius: inherit; background: var(--flow-background); }
 .game-flow-item.is-configured > .game-flow-step { border-radius: var(--radius-md) var(--radius-md) 0 0; background: transparent; }
@@ -2778,29 +2778,29 @@ body.ocr-image-resizing * {
 /* 测试运行时的呼吸：队列区块与正在跑的配置卡。
    色调用工作流「进行中」的那支蓝，和队列圆点一致；朱砂留给失败/进度。
    这支蓝平时只定义在工作流卡片/步骤轨上，测站页继承不到，这里补一份同值。 */
-.game-benchmark-page { --workflow-tone-current: #3265b6; }
+.game-benchmark-page { --benchmark-run-tone: #a855f7; }
 .game-benchmark-section.is-active {
-  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 42%, var(--border, #2a2721));
-  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 6%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 42%, var(--border, #2a2721));
+  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 6%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.8s ease-in-out infinite;
 }
 /* 正在跑的那一条任务：整块（标题行 + 展开后的全部字段）一起呼吸。 */
 .game-benchmark-item.is-running {
-  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 62%, var(--border, #2a2721));
-  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 8%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 62%, var(--border, #2a2721));
+  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 8%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.6s ease-in-out infinite;
 }
-.game-benchmark-item.is-running::before { background: var(--workflow-tone-current, #3265b6); }
+.game-benchmark-item.is-running::before { background: var(--benchmark-run-tone, #a855f7); }
 .game-benchmark-item.is-running > summary { color: var(--text); }
 /* 展开后的控件与分隔线跟着染色，否则整块只有外框是蓝的、里面还是原底色。 */
 .game-benchmark-item.is-running .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
-  background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 7%, var(--panel, #15130f));
-  border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 26%, var(--border, #2a2721));
+  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 7%, var(--panel, #15130f));
+  border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 26%, var(--border, #2a2721));
 }
-.game-benchmark-item.is-running .game-benchmark-item-fields > .game-benchmark-toolbar { border-top-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 22%, var(--border, #2a2721)); }
+.game-benchmark-item.is-running .game-benchmark-item-fields > .game-benchmark-toolbar { border-top-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 22%, var(--border, #2a2721)); }
 @keyframes game-benchmark-breathe {
-  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 24%, transparent), 0 0 8px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 14%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 40%, transparent), 0 0 20px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 32%, transparent); }
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 24%, transparent), 0 0 8px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 14%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 40%, transparent), 0 0 20px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 32%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .game-benchmark-section.is-active,
