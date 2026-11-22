@@ -11,11 +11,11 @@ import { GameMosaicCompletionContext, GameMosaicWorkbench, type MosaicCandidateI
 import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
-import { createGameTranslationContext, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
+import { GAME_CONTEXT_HINT } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { sameTextEdit } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork, recordGameCacheHit, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
-import { wrapGameTextToSource, validateGameNaturalLines, type GameWrapMode } from "../gameTextLayout";
+import { type GameWrapMode } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
 import { gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "../gameImageModel";
@@ -38,10 +38,9 @@ import type { ImageArchiveReplacement } from "../gameImageArchive";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { GAME_IMAGE_SCREENING_LANES, LOCAL_REFINE_MODELS, gameImageRegionLanguageFilter, gameImageTranslationReadiness, localGameImageScreeningLanes } from "../gameImageScreening";
 import { defaultUnityImageScreening, needsUnityImageScreening, recognizeUnityReviewCrops, refineUnityImages, refineUnityImagesLocally, screenUnityImages, unityImageRefinementPending, type UnityImageScreeningOptions } from "../unityImageFiltering";
-import { gameTextHasSpeaker, gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
+import { gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText } from "../gameDisplayText";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
@@ -56,14 +55,12 @@ import { GameTextFileMenu, GAME_TEXT_IMPORT_CHOICES } from "./GameTextFileMenu";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo, type OcrMode } from "../api";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "../modelPresets";
 import { engineReady, parseEngineKeys } from "../translateEngines";
-import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, prepareUnityTranslationText, restoreUnityTranslationLines, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
-import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../unityTextStructure";
+import { gameLocalModelConnection, type GameTranslationKind, buildUnityTranslateOptions, sameUnityGamePath, UNITY_LANGUAGES } from "../unityTranslation";
 import { legacyUnityOutputDirectory, mergeUnityProject, UnityPaused, unityRun, unityTranslationError, type UnityEntry, type UnityPatch, type UnityProgress, type UnityProject, type UnityWorkspace, type UnityInspection, type UnityFontPlan, type UnityImage } from "../unityOffline";
 import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedback";
 import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges, deploymentMetrics, deploymentMetricScope, isGameDeploymentComplete, measureDeploymentStage } from "../unityWorkflow";
-import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation, type UnityTranslationQueue } from "../unityTranslationSession";
-import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../unityLineLayout";
-import { UnitySegmentation } from "../unitySegmentation";
+import { unityTranslationStats, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation } from "../unityTranslationSession";
+import { type UnityLineMode } from "../unityLineLayout";
 import { UnityDeploymentPanel, deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, gameDetectorFile, mosaicDetectorKey, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
@@ -82,11 +79,11 @@ import { generateOfflinePatch, offlineExportMessage, type DeploymentPatch } from
 import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/useOfflineDeploy";
 import { useProjectMount } from "./unity-offline/projectMount";
 import { useProjectSwitch, type UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
+import { runTextBranch, runTextRetry, runTextScreening, runTextTranslation, useTextOrchestration, type UnityTranslationOptions } from "./unity-offline/useTextOrchestration";
 import "../unityOffline.css";
 
 export type { UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 const GENERATION_STEPS = UNITY_STEPS;
-type UnityTranslationOptions = ReturnType<typeof buildUnityTranslateOptions> & { wrapMode?: GameWrapMode; dialogueOptions?: ReturnType<typeof buildUnityTranslateOptions>; nameOptions?: ReturnType<typeof buildUnityTranslateOptions>; imageReviewOptions?: ReturnType<typeof buildUnityTranslateOptions>; engineIds?: TranslateProvider[]; includeContext?: boolean; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
 type GenerationProgress = UnityProgress & { step: number; elapsedMs?: number; state: "pending" | "running" | "done" | "stopped" | "error" | "skipped"; failure?: string };
 type TranslationFileStatus = { action: "download" | "import"; state: "working" | "preview" | "done" | "cancelled" | "error"; detail: string; path?: string; folder?: string; issues?: UnityTranslationImportIssue[]; needsValidation?: boolean };
 type ImportPreview = { path: string; entries: UnityEntry[]; issues?: UnityTranslationImportIssue[]; remapped?: number; view: { search: string; reviewFilter: "all" | "unfinished" | "quality" | "target"; page: number; imagePart: boolean; activeStep: number } };
@@ -171,9 +168,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [imageConfidenceThreshold, setImageConfidenceThreshold] = useState(50);
   const [imageScreeningOptions, setImageScreeningOptions] = useState(defaultUnityImageScreening);
   const [textScreenModel, setTextScreenModel] = useState<string | undefined>();
-  const [textScreened, setTextScreened] = useState(false);
-  const [textScreening, setTextScreening] = useState(false);
-  const [textScreenStarted, setTextScreenStarted] = useState(false), [textScreenPaused, setTextScreenPaused] = useState(false);
+  const { textScreened, setTextScreened, textScreening, setTextScreening, textScreenStarted, setTextScreenStarted,
+    textScreenPaused, setTextScreenPaused, translationQueue, retryFailureIds } = useTextOrchestration();
   const [textFilters, setTextFilters] = useState({ ...defaultGameTextFilters });
   const confirmation = useGameActionConfirm(text => logAction(text)); const confirm = confirmation.confirm;
   const [target, setTarget] = useState("zh-CN");
@@ -337,8 +333,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   };
   const abort = useRef<AbortController | null>(null);
   const running = useRef<Promise<void> | null>(null);
-  const translationQueue = useRef<UnityTranslationQueue | null>(null);
-  const retryFailureIds = useRef<Set<string> | undefined>(undefined);
   const latest = useRef(project); latest.current = project;
   const publish = (value: UnityProject) => { latest.current = value; setProject(value); };
   const scanUpdate = unityScanUpdate(project, checkpoint, { includeCode, textMode, typeDirectory, codeAssemblies });
@@ -837,172 +831,21 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     setMessage(p.entries.length ? `扫描完成：${p.entries.length} 条文本，${p.fonts.length} 个字体` : "未找到可处理的文本，请查看扫描提示中的跳过原因。");
     return p;
   }
-  async function translateProject(p: UnityProject, controller: AbortController, options: Awaited<ReturnType<typeof translationOptions>>, onProgress?: (value: UnityProgress) => void, languageSource = source, mergeLines = joinLines, breakMode: UnityLineMode = "local", helperModel = "", layoutOnly = false, onlyIds?: Set<string>) {
-    await yieldUnityPreparation(controller.signal);
-    const next = structuredClone(p);
-    const cache = new Map<string, string>();
-    const contextForEntry = createGameTranslationContext(next.entries, options.provider === "llm" && !!options.includeContext);
-    const glossary: { src: string; dst: string; info?: string }[] = typeof options.glossary === "string" ? JSON.parse(options.glossary || "[]") : options.glossary || [];
-    const ids = unityLanguageScope(next.entries, languageSource, options.onlySourceLanguage !== false).ids;
-    const selectedEntries = next.entries.filter(e => (onlyIds ? onlyIds.has(e.id) : e.selected && ids.has(e.id)) && (!layoutOnly || !!e.layoutDraft));
-    if (!layoutOnly) {
-      onProgress?.({ completed: 0, total: selectedEntries.length, detail: "正在筛查目标语言", textStage: "screening" });
-      await yieldUnityPreparation(controller.signal);
-      const preserved = options.skipTargetLanguage ? measureGameWork(promptState.scope + ":text", "processingMs", () => preserveTargetGameText(selectedEntries, options.target || "zh-CN")) : 0;
-      for (const entry of selectedEntries)
-        if (entry.translation === entry.source) entry.translationTarget = options.target;
-      if (preserved) await saveTranslation(next, "text");
-    }
-    const localProfilesForRetry = loadLocalModelProfiles();
-    const helperCache = new Map<string, string>();
-    const segmenter = new UnitySegmentation();
-    const sentenceCache = new Map<string, number[]>();
-    const helperOptions = options.wrapMode!=="natural" && mergeLines && breakMode === "model" && selectedEntries.some(e => /[\r\n]/.test(e.source) && (layoutOnly || e.error || !e.translation || unityTranslationError(e.source, e.translation)))
-      ? { ...(options.localModel
-          ? options
-          : buildUnityTranslateOptions(await api.getSettings(), "llm", "auto", options.target || "zh-CN", helperModel)),
-          ...gameModelExecution(promptState.selection, "line", helperModel),
-          prompt: gameTaskPrompt("line",promptState.selection)+"\n"+UNITY_LINE_MODEL_PROMPT, autoChunk: false } : null;
-    setDirty(true);
-    const formatUnbounded = async (original: string, translated: string) => {
-      if(gameTextHasSpeaker(original))return translated;
-      if (!/[\r\n]/.test(original)) return translated;
-      if (breakMode === "ratio") return formatUnityStructure(original, translated, restoreUnityTranslationLines);
-      if (breakMode === "wtp") {
-        const texts = new Set<string>();
-        planUnityStructuredLines(original, translated, (s, t) => { const plan = planUnityLines(s, t); if (plan.slots.length > 1) texts.add(flattenUnityLines(t)); return plan; });
-        for (const text of texts) if (!sentenceCache.has(text)) sentenceCache.set(text, await segmenter.sentenceEnds(text, controller.signal));
-        return applyUnityLineBreaks(planUnityStructuredLines(original, translated, (s, t) => planUnityLines(s, t, undefined, sentenceCache.get(flattenUnityLines(t)))));
-      }
-      if (breakMode !== "model") return formatUnityStructure(original, translated, smartUnityLines);
-      const plan = planUnityStructuredLines(original, translated, planUnityLines);
-      if (!plan.breaks.length) return smartUnityLines(original, translated);
-      const key = JSON.stringify([original.replace(/\r\n?/g, "\n"), plan.units]);
-      let response = helperCache.get(key);
-      if (!response) {
-        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]);
-        try {
-          const result = await translateGameWithOllama(unityLineModelInput(original, plan), { signal }, {...helperOptions!,llmBatch:false}, textLog);
-          if (!result.ok) throw new Error(result.code || "断行辅助请求失败");
-          response = result.translation;
-        } catch (error) {
-          if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error("断行辅助模型超过 120 秒未响应，译文草稿已保存");
-          throw error;
-        }
-      }
-      const formatted = parseUnityLineModel(plan, response); helperCache.set(key, response); return formatted;
-    };
-    const format=async(original:string,translated:string)=>options.wrapMode==="natural"?validateGameNaturalLines(original,translated):wrapGameTextToSource(original,await formatUnbounded(original,translated));
-    let formatQueue = Promise.resolve();
-    const queuedFormat = (original: string, translated: string) => {
-      const work = formatQueue.then(() => { controller.signal.throwIfAborted(); return format(original, translated); });
-      formatQueue = work.then(() => {}, () => {});
-      return work;
-    };
-    let terminology: ReadonlyMap<string, string> = new Map();
-    let termIssues: ReadonlyMap<string, string> = new Map();
-    const requestTranslation = async (text: string, provider = options.provider, entry?: UnityEntry, nameContext?: string) => {
-      const { engineIds: _engines, includeContext: withContext, skipTargetLanguage: _skipTargetLanguage, dialogueOptions, nameOptions, ...mainOptions } = options;
-      const preserveDialogue = provider === "llm" && isGameDialogue(text, entry);
-      const primaryOptions = provider === "llm" ? (nameContext ? nameOptions : preserveDialogue ? dialogueOptions : undefined) || mainOptions : mainOptions;
-      const context = provider === "llm" ? contextForEntry(entry, nameContext) : undefined;
-      const relevantText = text + (context || []).map(item => item.source).join("\n");
-      const terms = glossary.filter(term => term.src?.trim() && term.dst?.trim() && relevantText.includes(term.src));
-      const request = async (block: string, originalContext?: string, retryReason?: string) => {
-        const reviewer = retryReason && provider === "llm" && primaryOptions.localModel
-          ? Object.keys(localProfilesForRetry).find(id => /^qwen3\.5(?::|$)/i.test(id)) : undefined;
-        const requestOptions = reviewer && reviewer !== primaryOptions.model
-          ? { ...primaryOptions, ...buildUnityTranslateOptions(settings, "llm", options.source || "auto", options.target || "zh-CN", reviewer, mergeLines, true) }
-          : primaryOptions;
-        const seconds = provider === "llm" ? 120 : 30;
-        const signal = provider === "llm" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
-        const background = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
-        try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, textLog); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code });
-          return preserveDialogue && !/[\r\n]/.test(block) && /[\r\n]/.test(response.translation)
-            ? prepareUnityTranslationText(response.translation) : response.translation; }
-        catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
-      };
-      return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology,
-        !!options.skipTargetLanguage, preserveDialogue);
-    };
-    const measure = (text: string) => [...prepareUnityTranslationRequest(text, mergeLines)].length;
-    const engineTargetCharacters = !layoutOnly && options.provider !== "llm" ? unityTranslationCharacters(selectedEntries, next.entries, unityTranslationError, text => prepareUnityTranslationRequest(text, mergeLines), mergeLines ? canReuseUnityStructuredDraft : undefined, unityTranslationContextKey).pendingCharacters : 0;
-    let engineStats: NonNullable<UnityProgress["engineStats"]> = checkpointRef.current?.translationRuns?.text.engineStats || (!checkpointRef.current?.imageOnly && checkpointRef.current?.progress.step === 2 ? checkpointRef.current.progress.engineStats : undefined) || [];
-    const initialStats = engineStats;
-    let translationProgress: UnityProgress | undefined;
-    const reportTranslation = (progress: UnityProgress) => {
-      translationProgress = progress;
-      onProgress?.(engineStats.length ? { ...progress, engineStats, engineTargetCharacters } : progress);
-    };
-    const persistTextChanges = async (entries: UnityEntry[]) => {
-      if (!entries.length) return;
-      publishTranslation({ ...next, entries: [...next.entries] }, "text");
-      const rows = entries.map(entry => ({ ...entry }));
-      await queueProjectWrite(() => measureGameAsync(promptState.scope + ":text", "saveMs", () =>
-        unityRun("save-text-states", { project: { root: next.root, folder: next.folder, entries: rows } })));
-    };
-    const pool = !layoutOnly && options.provider !== "llm" ? createUnityEnginePool((options.engineIds || [options.provider as TranslateProvider]).map(id => ({ id, enabled: true })), controller.signal, async (id, text) => {
-      const translated = await requestTranslation(text, id);
-      const problem = unityTranslationError(text, translated); if (problem) throw new Error(problem);
-      return translated;
-    }, { timingScope: promptState.scope + ":text", initialStats, measure, onStats: value => { engineStats = value; if (translationProgress) onProgress?.({ ...translationProgress, engineStats, engineTargetCharacters }); } }) : null;
-    try {
-      if (!layoutOnly) {
-        if (options.provider === "llm") {
-          const connections = [options, options.dialogueOptions, options.nameOptions];
-          await prepareGameOllamaModels(connections.flatMap(connection => connection?.llmConcurrency && connection.llmConcurrency > 1
-            ? [{ connection, lanes: connection.llmConcurrency }] : []), controller.signal, textLog);
-        }
-        const prepared = await prepareGameTerms(selectedEntries.filter(entry => !entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || unityTranslationError(entry.source, entry.translation)), next.entries, options.target || "zh-CN", glossary,
-        (name, context) => pool ? pool.translate(name) : requestTranslation(name, options.provider, undefined, context), controller.signal,
-        (detail, completed, total) => onProgress?.({ detail, completed, total, textStage: "names", model: options.nameOptions?.model || options.model }));
-        terminology = prepared.terms;
-        termIssues = prepared.issues;
-      }
-      if (layoutOnly) {
-        const total = next.entries.filter(e => e.selected && ids.has(e.id) && /[\r\n]/.test(e.source) && (e.layoutDraft || e.translation && !unityTranslationError(e.source, e.translation))).length;
-        let completed = total - selectedEntries.length, failures = 0;
-        onProgress?.({ detail: "仅重新断行，未请求重新翻译", textStage: "layout", completed, total });
-        for (const entry of selectedEntries) {
-          if (controller.signal.aborted) break;
-          try {
-            const body = await format(entry.source.trim(), entry.layoutDraft!.trim());
-            if (controller.signal.aborted) break;
-            const value = (entry.source.match(/^[\t \u3000]*/)?.[0] || "") + body;
-            const problem = unityTranslationError(entry.source, value); if (problem) throw new Error(problem);
-            entry.translation = value; entry.error = ""; delete entry.layoutDraft; completed++;
-          } catch (error) {
-            if (controller.signal.aborted) throw error;
-            entry.error = `译文排版失败：${error instanceof Error ? error.message : String(error)}`;
-            failures++;
-          }
-          await persistTextChanges([entry]);
-          onProgress?.({ textStage: "layout", detail: `仅重新断行，未请求重新翻译${failures ? ` · ${failures} 条失败已记录，继续处理` : ""}`, completed: completed + failures, total });
-        }
-        return next;
-      }
-      await translateUnitySession(selectedEntries, cache, {
-        references: next.entries,
-        key: unityTranslationContextKey, targetLanguage: options.target, entryProblem: entry => gameTermProblem(entry.source, termIssues),
-        requestGroup: localTextRequestGroup(options, options.dialogueOptions),
-        signal: controller.signal, validate: (s, t) => unityTranslationError(s, t) || gameDisplayTextProblem(s, t), progress: reportTranslation,
-        onQueue: queue => { translationQueue.current = queue; },
-        // Prepare enough rows for batching; the scheduler serializes requests to each local service.
-        concurrency: (options.localModel || options.dialogueOptions?.localModel || options.nameOptions?.localModel) ? 8 : options.provider==="llm"?16:pool?.concurrency||1,
-        timingScope: promptState.scope + ":text", modelFormats: breakMode === "model" && options.wrapMode !== "natural",
-        canReuseDraft: mergeLines ? canReuseUnityStructuredDraft : undefined,
-        preserveLayout: options.provider === "llm" || !mergeLines ? gameTextHasSpeaker : undefined, format: mergeLines ? queuedFormat : undefined, retainDraft: mergeLines, persistDraftBeforeFormat: breakMode === "model" || breakMode === "wtp",
-        translate: pool ? (text, entry) => pool.translate(text, entry?.id) : (text, entry) => requestTranslation(text, options.provider, entry),
-        persist: persistTextChanges,
-      });
-    } finally {
-      pool?.dispose();
-      segmenter.dispose();
-      const final = { ...next, entries: [...next.entries] };
-      await saveTranslation(final, "text");
-      setMessage(controller.signal.aborted ? "已停止，已保存译文和排版草稿" : layoutOnly ? "断行处理已保存，未重新翻译；检查排版后可生成补丁" : "本轮翻译已结束，可检查译文后生成补丁");
-    }
-    return next;
+  function translateProject(p: UnityProject, controller: AbortController, options: UnityTranslationOptions, onProgress?: (value: UnityProgress) => void,
+    languageSource = source, mergeLines = joinLines, breakMode: UnityLineMode = "local", helperModel = "", layoutOnly = false, onlyIds?: Set<string>) {
+    return runTextTranslation(p, controller, options, onProgress, languageSource, mergeLines, breakMode, helperModel, layoutOnly, onlyIds, {
+      settings, promptState, textLog, getSettings: () => api.getSettings(), loadLocalModelProfiles, measureGameWork,
+      translateGameWithOllama, prepareGameOllamaModels, canDisableOllamaNameThinking, gameModelExecution,
+      readEngineStats: () => checkpointRef.current?.translationRuns?.text.engineStats || (!checkpointRef.current?.imageOnly && checkpointRef.current?.progress.step === 2 ? checkpointRef.current.progress.engineStats : undefined),
+      saveTranslation: project => saveTranslation(project, "text"),
+      persist: async (next, entries) => {
+        publishTranslation({ ...next, entries: [...next.entries] }, "text");
+        const rows = entries.map(entry => ({ ...entry }));
+        await queueProjectWrite(() => measureGameAsync(promptState.scope + ":text", "saveMs", () =>
+          unityRun("save-text-states", { project: { root: next.root, folder: next.folder, entries: rows } })));
+      },
+      setQueue: queue => { translationQueue.current = queue; }, setDirty, setMessage,
+    });
   }
   const imageBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
     const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("图片读取失败")); reader.readAsDataURL(blob);
@@ -1489,35 +1332,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
                 } else await execution.current.translateImages(current, job, { ...run, ...execution.current.parameters, imageConfidenceThreshold: imageThreshold.current, imageOcrMode: imageMode.current }, value => reportPart(part, value));
                 return;
               }
-              const selectedIds = unityLanguageScope(current.entries, run.source, run.onlySourceLanguage !== false).ids;
-              if (current.entries.length && !current.entries.some(entry => entry.selected && selectedIds.has(entry.id))) throw new Error("当前原文语言范围内没有所选文本，请调整语言或选取文本");
-              let textProject = current;
-              if ((run.automatic || deployment) && !run.layoutOnly && !textScreened) {
-                if (await textConfigurationCommit.current?.("screen") === false) throw new Error("文本筛选配置保存失败");
-                const latestConfig = execution.current;
-                textProject = { ...current, entries: current.entries.map(entry => ({ ...entry })) };
-                const rows = textProject.entries.filter(entry => entry.selected && selectedIds.has(entry.id));
-                await screenGameText(rows, {
-                  settings, model: latestConfig.parameters.textScreenModel, prompts: latestConfig.prompts, source: run.onlySourceLanguage === false ? "auto" : run.source,
-                  target: run.target, skipTarget: run.skipTargetLanguage !== false, signal: job.signal, onOllamaStatus: logAction,
-                  onProgress: (completed, total) => reportPart(part, { completed, total, detail: run.textScreenModel === undefined ? "正在按语言规则筛选文本" : "正在用大模型筛选文本", textStage: "screening", model: run.textScreenModel }),
-                });
-                job.signal.throwIfAborted();
-                await saveTranslation(textProject, "text");
-                setTextScreened(true);
-              }
-              const retryIds = retryFailureIds.current; retryFailureIds.current = undefined;
-              if (textProject.entries.length) {
-                if (run.automatic && await textConfigurationCommit.current?.("translate") === false) throw new Error("正文翻译配置保存失败");
-                const latestConfig = execution.current;
-                const options = run.automatic || deployment ? { ...run, ...latestConfig.parameters } : run;
-                await latestConfig.translateProject(textProject, job, options.layoutOnly && options.translationKind !== "local"
-                  ? { provider: "llm", source: options.source, target: options.target } : await latestConfig.translationOptions(options),
-                  value => reportPart(part, value), options.source, options.joinLines ?? true, options.lineMode || "local", options.lineModel || "", !!options.layoutOnly, retryIds);
-              }
-              const final = latest.current || current;
-              const failed = final.entries.filter(entry => (retryIds ? retryIds.has(entry.id) : entry.selected && selectedIds.has(entry.id)) && (!run.layoutOnly || !!entry.layoutDraft) && (entry.error || unityTranslationError(entry.source, entry.translation)));
-              if (failed.length) throw new Error(`${failed.length} 条文本翻译或排版未完成，已有译文和草稿已保存`);
+              await runTextBranch(current, job, value => reportPart(part, value), {
+                getRun: () => run, deployment: !!deployment, textScreened,
+                commitConfiguration: stage => textConfigurationCommit.current?.(stage), getExecution: () => execution.current,
+                settings, logAction, saveTranslation: project => saveTranslation(project, "text"), setTextScreened,
+                getCurrent: () => latest.current, screenGameText,
+                takeRetryIds: () => { const ids = retryFailureIds.current; retryFailureIds.current = undefined; return ids; },
+              });
               } finally {
                 finishGameStep(promptState.scope + ":" + part);
                 delete elapsedOrigins.current[part];
@@ -1636,29 +1457,18 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const streamWarnings = warningDetails.filter(w => w.category === "stream");
   const scanReady = !preparingRescan && !!project && !needsScan && (checkpoint?.step !== 1 || checkpoint.progress.state === "done");
   useEffect(() => { setTextScreened(false); setTextScreenStarted(false); setTextScreenPaused(false);  }, [project?.folder, source, target, skipTargetLanguage, onlySourceLanguage]);
-  const screenCurrentText = () => operation("筛选文本", async () => {
-    if (!latest.current) return;
-    const controller = new AbortController(); abort.current = controller; setTextScreening(true); setTextScreenStarted(true); setTextScreenPaused(false);
-    beginGameStep(promptState.scope + ":text", "screen");
-    try {
-      await yieldUnityPreparation(controller.signal);
-      const next = { ...latest.current, entries: latest.current.entries.map(entry => ({ ...entry })) };
-      const ids = unityLanguageScope(next.entries, source, onlySourceLanguage).ids;
-      const rows = next.entries.filter(entry => entry.selected && ids.has(entry.id));
-      const kept = await screenGameText(rows, {
-        settings, model: textScreenModel, prompts: promptState.selection, source: onlySourceLanguage ? source : "auto",
-        target, skipTarget: skipTargetLanguage, signal: controller.signal, onOllamaStatus: logAction,
-        onProgress: (completed, total) => {
-          reportGameStepItems(promptState.scope + ":text", "screen", completed);
-          showLocalActivity("正在用大模型筛选文本", "running", false, completed, total);
-        },
-      });
-      controller.signal.throwIfAborted(); await saveTranslation(next, "text"); controller.signal.throwIfAborted(); setTextScreened(true);
-      finishGameStep(promptState.scope + ":text", true);
-      setMessage(`筛选完成，${kept} 条目标语言文本原样保留，可开始翻译`);
-    } catch (error) { if (!controller.signal.aborted) throw error; setTextScreenPaused(true); setMessage("文本筛选已中止"); }
-    finally { finishGameStep(promptState.scope + ":text"); abort.current = null; setTextScreening(false); }
-  });
+  const screenCurrentText = () => operation("筛选文本", () => runTextScreening({
+    latestProject: () => latest.current,
+    startScreening: controller => { abort.current = controller; setTextScreening(true); setTextScreenStarted(true); setTextScreenPaused(false); },
+    endScreening: () => { abort.current = null; setTextScreening(false); },
+    settings, textScreenModel, promptState, source, onlySourceLanguage, target, skipTargetLanguage, logAction,
+    reportScreening: (completed, total) => {
+      reportGameStepItems(promptState.scope + ":text", "screen", completed);
+      showLocalActivity("正在用大模型筛选文本", "running", false, completed, total);
+    },
+    saveTranslation: project => saveTranslation(project, "text"),
+    setTextScreened, setTextScreenPaused, setMessage, beginGameStep, finishGameStep, screenGameText,
+  }));
   const clearTextScreening = async () => {
     if(!project || !await confirmation.ask("清理筛选及后续结果","清除筛选状态、文本译文和后续补丁，原文与图片结果保留。"))return;
     await operation("清理文本筛选及后续结果",async()=>{
@@ -1681,31 +1491,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const p = latest.current, item = p?.entries.find(entry => entry.id === id);
     if (!p || !item || !item.error && item.translation && !unityTranslationError(item.source, item.translation)) return;
     await operation(`重试条目 #${id}`, async () => {
-      const controller = new AbortController(); abort.current = controller;
-      const previous = checkpointRef.current;
-      const task = { ...(previous || projectCheckpoint(p)), step: 2, endStep: 2, automatic: false, finished: false, layoutOnly: false, imageOnly: false, patch: null, patchFolder: "" };
-      const rememberTextRetry = (value: RunCheckpoint) => remember({ ...value, translationRuns: value.translationRuns ? { ...value.translationRuns, text: value.progress } : undefined });
-      let lastProgress: UnityProgress = { detail: `正在重试条目 #${id}`, completed: 0, total: null };
-      const report = (progress: UnityProgress) => {
-        const current = latest.current || p;
-        const stats = unityTranslationStats(current.entries.filter(entry => entry.selected && scope.ids.has(entry.id)), unityTranslationError, unityTranslationContextKey);
-        lastProgress = { ...progress, ...stats, completed: Math.min(stats.total, Math.max(stats.completed, previous?.step === 2 ? previous.progress.completed : 0)), translation: progress.translation && { ...progress.translation, successful: stats.completed } };
-        rememberTextRetry({ ...task, progress: { ...lastProgress, step: 2, state: "running" } });
-      };
-      try {
-        const next = await translateProject(p, controller, await translationOptions(), report, source, joinLines, lineMode, lineModel, false, new Set([id]));
-          controller.signal.throwIfAborted();
-        const retried = next.entries.find(entry => entry.id === id)!;
-        const problem = retried.error || unityTranslationError(retried.source, retried.translation);
-        const remaining = next.entries.filter(entry => entry.selected && scope.ids.has(entry.id) && (entry.error || unityTranslationError(entry.source, entry.translation))).length;
-        const detail = problem ? `条目 #${id} 重试失败：${problem}` : `条目 #${id} 重试成功${remaining ? `，另有 ${remaining} 条未完成` : ""}`;
-        rememberTextRetry({ ...task, finished: !problem && !remaining, progress: { ...lastProgress, step: 2, state: problem ? "error" : remaining ? "stopped" : "done", failure: problem || undefined, detail } });
-        if (problem) setError(detail); else { setRowIssue(null); setMessage(detail); }
-      } catch (error) {
-        if (!controller.signal.aborted) throw error;
-        const detail = `已中止条目 #${id} 的重试，已有译文和草稿保留`;
-        rememberTextRetry({ ...task, progress: { ...lastProgress, step: 2, state: "stopped", detail } }); setMessage(detail);
-      } finally { abort.current = null; }
+      await runTextRetry(p, id, {
+        setController: controller => { abort.current = controller; },
+        getCheckpoint: () => checkpointRef.current, projectCheckpoint, remember, getCurrent: () => latest.current,
+        selectedIds: scope.ids, translateProject, translationOptions: () => translationOptions(),
+        source, joinLines, lineMode, lineModel, setError, clearRowIssue: () => setRowIssue(null), setMessage,
+      });
     }, true, setActionError);
   };
   const scanStarted = !!project || !!(checkpoint?.projectFolder || checkpoint?.scanFolder) || checkpoint?.step === 1 && !checkpoint.finished;
