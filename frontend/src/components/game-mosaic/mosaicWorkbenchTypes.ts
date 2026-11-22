@@ -1,7 +1,9 @@
 import type { Settings } from "../../api";
-import type { MosaicBox, MosaicDevice, MosaicModel } from "../../gameMosaic";
+import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
+  MosaicBox, MosaicDevice, MosaicModel, MosaicSettings } from "../../gameMosaic";
+import type { readMosaicReviews, refineMosaicBatch, savedMosaicScan } from "../../gameMosaicRefine";
 import type { MosaicInitialScreeningSnapshot, MosaicStatus } from "../../gameMosaicStatus";
-import type { StepPerformance } from "../../gameModelPerformance";
+import type { gameStepSelections, measureGameAsync, recordGameCacheHit, reportGameStepItems, StepPerformance } from "../../gameModelPerformance";
 import type { UnityImage } from "../../unityOffline";
 import type { GameProgressState } from "../GameStepProgress";
 
@@ -60,4 +62,151 @@ export type MosaicWorkbenchProps = {
   prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
   controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
   deploymentHandle?: { current: GameMosaicDeploymentHandle | null };
+};
+
+export type MosaicStepUsage = {
+  scope: string;
+  snapshot: () => StepPerformance;
+  recordItems: (itemsDone: number, failures?: number) => void;
+  measure: <T>(model: string, concurrency: number, work: () => Promise<T>) => Promise<T>;
+  refresh: () => void;
+  finish: (completed: boolean) => void;
+};
+
+export type MosaicBatchStep = { id: MosaicStep; total: number; completed?: number; summary: string; resume?: boolean };
+export type MosaicBatchWork = (signal: AbortSignal, report: (progress: StepReport) => void, usage?: MosaicStepUsage) => Promise<void | boolean>;
+
+export type MosaicBatchPorts = {
+  blocked: () => boolean;
+  start: (controller: AbortController, id?: MosaicStep) => void;
+  resumableElapsed: (step: MosaicBatchStep) => number;
+  setProgressStep: (id?: MosaicStep) => void;
+  setStepRuns: (change: (previous: Partial<Record<MosaicStep, StepRun>>) => Partial<Record<MosaicStep, StepRun>>) => void;
+  setRunning: (label: string) => void;
+  beginUsage: (id: MosaicStep, resume: boolean, refresh: () => void) => MosaicStepUsage;
+  setProgress: (message: string) => void;
+  setError: (message: string) => void;
+  finish: () => void;
+};
+
+type MosaicRead = MosaicWorkbenchProps["read"];
+type MosaicPrepare = MosaicWorkbenchProps["prepareSources"];
+type MosaicWriteRows = (change: (previous: Results) => Results) => void;
+type MosaicUpdateRow = (image: UnityImage, edit: Partial<Result>) => void;
+type MosaicResetPorts = {
+  replaceRows: (rows: Results) => void;
+  clearReviews: (ids: string[]) => void;
+  resetRedraw: (ids: ReadonlySet<string>) => void;
+};
+
+export type MosaicScreenPlan = {
+  targets: readonly UnityImage[];
+  usable: readonly UnityImage[];
+  rows: Results;
+  initial: number;
+  detectorKind: MosaicSettings["detector"];
+  detectorKey: string;
+  detectorFile?: File;
+  modelName: string;
+  concurrency?: number;
+};
+
+export type MosaicScreenPorts = MosaicResetPorts & {
+  setRows: MosaicWriteRows;
+  read: MosaicRead;
+  prepareSources?: MosaicPrepare;
+  loadMosaicDetector: typeof loadMosaicDetector;
+  createMosaicGridScanner: typeof createMosaicGridScanner;
+  setProgress: (message: string) => void;
+  onDevice: (device: MosaicDevice) => void;
+};
+
+export type MosaicReviewMetrics = { onPreparation: (prepared: number) => void; onFailure: () => void; usage?: MosaicStepUsage };
+export type MosaicReviewSession = { key: string; images: Map<string, string> };
+
+export type MosaicReviewPlan = {
+  targets: readonly UnityImage[];
+  rows: Results;
+  gamePath: string;
+  preferences: MosaicSettings;
+  reviewKey: string;
+  detectorFile?: File;
+  restart: boolean;
+  automatic: boolean;
+  metrics?: MosaicReviewMetrics;
+  deploymentScope?: string;
+};
+
+export type MosaicReviewPorts = {
+  read: MosaicRead;
+  prepareSources?: MosaicPrepare;
+  refineBatch: typeof refineMosaicBatch;
+  readMosaicReviews: typeof readMosaicReviews;
+  setRows: MosaicWriteRows;
+  setRefineRetries: (change: ReadonlyMap<string, string> | ((previous: ReadonlyMap<string, string>) => ReadonlyMap<string, string>)) => void;
+  beginUsage: (resume: boolean) => MosaicStepUsage;
+  gameStepSelections: typeof gameStepSelections;
+  request: (model: string, prompt: string, image: string, signal: AbortSignal, selection?: object) => Promise<unknown>;
+};
+
+type PerformMosaicReviews = (targets: readonly UnityImage[], signal: AbortSignal, report?: (completed: number, detail: string) => void,
+  restart?: boolean, automatic?: boolean, metrics?: MosaicReviewMetrics, deploymentScope?: string) => ReturnType<typeof refineMosaicBatch>;
+
+export type MosaicRefinePlan = {
+  targets: readonly UnityImage[];
+  rows: Results;
+  restart: boolean;
+  initial: number;
+  previousReview?: MosaicReviewSession;
+  checkedReviewScope: readonly UnityImage[];
+  reviewSessionKey: string;
+};
+
+export type MosaicRefinePorts = MosaicResetPorts & {
+  performReviews: PerformMosaicReviews;
+  setProgress: (message: string) => void;
+  setError: (message: string) => void;
+  trackReview: (session: MosaicReviewSession) => void;
+};
+
+export type MosaicRedrawPorts = {
+  read: MosaicRead;
+  readSaved: MosaicRead;
+  mosaicInputKey: typeof mosaicInputKey;
+  redrawMosaic: typeof redrawMosaic;
+  recordGameCacheHit: typeof recordGameCacheHit;
+  update: MosaicUpdateRow;
+  setProgress: (message: string) => void;
+  setError: (message: string) => void;
+  setPending: (plan: RedrawPlan | null) => void;
+  onCandidate: (image: UnityImage, model: MosaicModel, blob: Blob, seconds: number) => void;
+};
+
+export type MosaicAutomaticPlan = {
+  selected: readonly UnityImage[];
+  scoped: readonly UnityImage[];
+  usable: readonly UnityImage[];
+  rows: Results;
+  detectorKey: string;
+  protect: boolean;
+  refine?: boolean;
+  model: MosaicModel;
+  steps: number;
+  timingScope: string;
+};
+
+export type MosaicAutomaticPorts = {
+  read: MosaicRead;
+  performReviews: PerformMosaicReviews;
+  openDetector: (signal: AbortSignal, timingScope: string) => ReturnType<typeof openDeploymentDetector>;
+  savedMosaicScan: typeof savedMosaicScan;
+  redrawMosaic: typeof redrawMosaic;
+  reportGameStepItems: typeof reportGameStepItems;
+  recordGameCacheHit: typeof recordGameCacheHit;
+  measureGameAsync: typeof measureGameAsync;
+  update: MosaicUpdateRow;
+  setProgress: (message: string) => void;
+  clearReviews: (ids: string[]) => void;
+  readExisting: (signal: AbortSignal) => Promise<Record<string, string>>;
+  writeCandidate: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<unknown>;
 };
