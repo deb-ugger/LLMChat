@@ -1,4 +1,5 @@
 #include "GameImageExportPackage.h"
+#include "GameImageExportSelection.h"
 #include "GameImageExportTransaction.h"
 #include "GameMosaicPatch.h"
 #include "RpgImageProject.h"
@@ -774,6 +775,160 @@ int interruptChild(const char* package, const char* game) {
     return 3;
 }
 
+namespace selection = gameimageexport::selection;
+
+constexpr std::string_view confirmedAt = "2026-11-23T09:45:02Z";
+
+std::vector<selection::Entry> confirmedEntries(const Fixture& f) {
+    std::vector<selection::Entry> result;
+    for (const auto& image : f.request.images) {
+        selection::Entry entry{image.imageId, image.sourceHash, {}};
+        if (image.translation) {
+            const auto file = f.project / "rendered" / (image.imageId + ".png");
+            const auto version = image.translation->version;
+            entry.layers.push_back({selection::LayerKind::Translation, {1, 0, 3, 1}, version, sha(file)});
+            entry.layers.push_back({selection::LayerKind::Translation, {0, 0, 1, 1}, version, sha(file)});
+        }
+        if (image.mosaic) {
+            const auto version = image.mosaic->version;
+            entry.layers.push_back({selection::LayerKind::Mosaic, {0, 0, 3, 1}, version, version});
+        }
+        result.push_back(std::move(entry));
+    }
+    return result;
+}
+
+void selectionSuccesses(const fs::path& scratch) {
+    for (const std::string engine : {"rpg-maker-mv", "rpg-maker-mz", "wolf"}) {
+        Fixture f(scratch / ("selection-" + engine), engine);
+        f.add(true, true);
+        f.add(false, true);
+        f.save();
+        RpgImageProject project;
+        const auto catalog = project.load(f.game);
+        const auto original = fileTree(f.root);
+        auto entries = confirmedEntries(f);
+        const auto serialized = selection::createSnapshot(f.game, catalog, entries, confirmedAt);
+        const auto parsed = Json::parse(serialized);
+        check(parsed.at("snapshotVersion") == 1 && parsed.at("engine") == engine &&
+            parsed.at("createdAt") == std::string(confirmedAt), "snapshot metadata");
+        check(parsed.at("entries").size() == entries.size(), "snapshot entry count");
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const auto& entry = parsed.at("entries").at(i);
+            const auto& row = catalog.at("images").at(i);
+            const auto name = entry.at("relativePath").get<std::string>();
+            const auto gameFile = f.game / utf8path::pathFromUtf8(name);
+            check(fs::is_regular_file(gameFile), "snapshot file exists");
+            check(entry.at("id") == row.at("id") && entry.at("relativePath") == row.at("file") &&
+                entry.at("sourceHash") == stamp(gameFile), "snapshot paths and source version");
+            auto originalPng = gamefiles::read(gameFile);
+            if (f.encrypted) originalPng = rpgBytes(std::move(originalPng), true);
+            const auto pixels = rpgimagecompose::PngCodec{}.read(originalPng);
+            check(entry.at("width") == pixels.width && entry.at("height") == pixels.height, "snapshot source dimensions");
+            for (const auto& layer : entry.at("layers")) {
+                const auto input = std::find_if(entries[i].layers.begin(), entries[i].layers.end(), [&](const auto& candidate) {
+                    return layer.at("rect") == Json(candidate.rect) &&
+                        layer.at("layer") == (candidate.kind == selection::LayerKind::Translation ? "translation" : "mosaic");
+                });
+                check(input != entries[i].layers.end() && layer.at("versionId") == input->versionId &&
+                    layer.at("sha256") == input->sha256, "snapshot layer bounds and confirmed version");
+            }
+        }
+        selection::validateSnapshot(f.game, catalog, serialized);
+        for (int i = 0; i < 2; ++i)
+            check(selection::createSnapshot(f.game, catalog, entries, confirmedAt) == serialized, "three repeated byte streams");
+        std::reverse(entries.begin(), entries.end());
+        for (auto& entry : entries) std::reverse(entry.layers.begin(), entry.layers.end());
+        check(selection::createSnapshot(f.game, catalog, entries, confirmedAt) == serialized, "shuffled selection byte stream");
+        check(fileTree(f.root) == original && fs::is_empty(f.output), "selection validation is read-only");
+
+        const auto result = generate(project, f.request);
+        const auto manifest = Json::parse(gamefiles::read(result.packagePath / "manifest.json"));
+        check(parsed.at("gameRootFingerprint") == manifest.at("gameRootFingerprint"), "snapshot baseline matches exporter");
+        std::cout << "PASS T076 A/B " << engine << " snapshot fields, fingerprint, 3 repeats and reordered input\n";
+    }
+}
+
+void selectionRejections(const fs::path& scratch) {
+    Fixture f(scratch / "selection-rejections", "rpg-maker-mv");
+    f.add(true, true);
+    f.add(false, true);
+    f.save();
+    const auto catalog = Json::parse(gamefiles::read(f.project / "project.json"));
+    const auto entries = confirmedEntries(f);
+    const auto reject = [&](const char* code, const std::string& label, const Json& rows,
+        const std::vector<selection::Entry>& input) {
+        const auto before = fileTree(f.root);
+        requireError(code, "T076 C " + label, [&] { selection::createSnapshot(f.game, rows, input, confirmedAt); });
+        check(fileTree(f.root) == before && fs::is_empty(f.output), "invalid selection left no output");
+    };
+    auto input = entries;
+    input[0].id = "f0";
+    reject("UNKNOWN_ENTRY", "unknown id", catalog, input);
+    input = entries;
+    input.push_back(input[0]);
+    reject("DUPLICATE_ENTRY", "duplicate id", catalog, input);
+    input = entries;
+    input[0].sourceHash = "0-0";
+    reject("SOURCE_CHANGED", "stale source token", catalog, input);
+
+    auto row = catalog;
+    row["images"][0]["file"] = row["images"][0]["sourceFile"] = "www/data/not-an-image.png";
+    reject("PATH_OUTSIDE_GAME", "outside image root", row, entries);
+    row["images"][0]["file"] = "www/img/../data/image.png";
+    reject("PATH_OUTSIDE_GAME", "parent path", row, entries);
+
+    input = entries;
+    input[0].layers.front().rect[2] = 4;
+    reject("LAYER_OUT_OF_BOUNDS", "right bound", catalog, input);
+    input[0].layers.front().rect = {1, 0, 1, 1};
+    reject("LAYER_OUT_OF_BOUNDS", "empty rectangle", catalog, input);
+    reject("EMPTY_SELECTION", "empty selection", catalog, {});
+    row = catalog;
+    row["images"][0]["file"] = row["images"][0]["sourceFile"] = "www/img/pictures/audio.rpgmvo";
+    reject("UNSUPPORTED_RESOURCE", ".rpgmvo", row, entries);
+    input = entries;
+    input[0].layers.front().sha256 = std::string(64, 'f');
+    reject("CANDIDATE_CHANGED", "altered candidate hash", catalog, input);
+
+    Fixture wolf(scratch / "selection-wolf-archive", "wolf");
+    wolf.add(false, true);
+    wolf.save();
+    auto wolfCatalog = Json::parse(gamefiles::read(wolf.project / "project.json"));
+    const auto wolfEntries = confirmedEntries(wolf);
+    gamefiles::write(wolf.game / "Data/Picture.wolf", "archive placeholder");
+    const auto archived = fileTree(wolf.root);
+    requireError("UNSUPPORTED_RESOURCE", "T076 C WOLF archive overlay", [&] {
+        selection::createSnapshot(wolf.game, wolfCatalog, wolfEntries, confirmedAt);
+    });
+    wolfCatalog["images"][0]["archive"] = "Data/Picture.wolf";
+    requireError("UNSUPPORTED_RESOURCE", "T076 C WOLF archive-backed row", [&] {
+        selection::createSnapshot(wolf.game, wolfCatalog, wolfEntries, confirmedAt);
+    });
+    check(fileTree(wolf.root) == archived && fs::is_empty(wolf.output), "archive rejection left no output");
+}
+
+void selectionChangedSource(const fs::path& scratch) {
+    Fixture f(scratch / "selection-changed", "wolf");
+    const auto image = f.add(true, true);
+    f.save();
+    const auto catalog = Json::parse(gamefiles::read(f.project / "project.json"));
+    const auto serialized = selection::createSnapshot(f.game, catalog, confirmedEntries(f), confirmedAt);
+    const auto source = f.game / utf8path::pathFromUtf8(image);
+    const auto originalStamp = stamp(source);
+    const auto writeTime = fs::last_write_time(source);
+    auto bytes = gamefiles::read(source);
+    bytes.back() ^= 1;
+    gamefiles::write(source, bytes);
+    fs::last_write_time(source, writeTime);
+    check(stamp(source) == originalStamp, "fixture changed a byte without changing sourceHash");
+    const auto afterEdit = fileTree(f.root);
+    requireError("SOURCE_CHANGED", "T076 D same-size same-time source modification", [&] {
+        selection::validateSnapshot(f.game, catalog, serialized);
+    });
+    check(fileTree(f.root) == afterEdit && fs::is_empty(f.output), "source validation left no output");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -794,6 +949,9 @@ int main(int argc, char** argv) {
         warmProject(path);
         confirmation(path);
         transactionCases(path);
+        selectionSuccesses(path);
+        selectionRejections(path);
+        selectionChangedSource(path);
         std::cout << "PASS game image export fixtures\n";
         return 0;
     } catch (const std::exception& error) {
