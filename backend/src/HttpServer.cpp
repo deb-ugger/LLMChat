@@ -23,6 +23,7 @@
 #include "GameTextProject.h"
 #include "RpgImageProject.h"
 #include "http/LlmRoutes.h"
+#include "http/ConversationRoutes.h"
 
 #include <httplib.h>
 #include <algorithm>
@@ -935,19 +936,7 @@ int HttpServer::run()
         }
     }));
 
-    svr.Get("/api/conversations", withCors([this](const httplib::Request&, httplib::Response& res) {
-        json arr = conversations_.summaries();
-        json body{
-            {"items", arr},
-            {"currentId", conversations_.currentConversationId()},
-        };
-        res.set_content(body.dump(), "application/json");
-    }));
-
-    svr.Post("/api/conversations", withCors([this](const httplib::Request&, httplib::Response& res) {
-        const auto conv = conversations_.createConversation();
-        res.set_content(conversations_.toJson(conv, true).dump(), "application/json");
-    }));
+    http_router::registerConversationRoutes(svr, conversations_);
 
     svr.Get(R"(/api/conversations/([^/]+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
         const std::string id = req.matches[1];
