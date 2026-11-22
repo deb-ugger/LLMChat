@@ -5,12 +5,20 @@ import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const [baseExe, nextExe, output, manifest = new URL("./routes-baseline.json", import.meta.url)] = process.argv.slice(2);
-assert.ok(baseExe && nextExe && output, "Usage: node compare-http.mjs BASELINE_EXE CANDIDATE_EXE UNUSED_OUTPUT_DIRECTORY [MANIFEST]");
-const baseline = JSON.parse(fs.readFileSync(manifest, "utf8"));
-const cases = [];
+const defaultManifest = new URL("./routes-baseline.json", import.meta.url);
+export const defaultPorts = { base: 17801, next: 17802 };
+
+function testPort(value, name) {
+    const port = Number(value);
+    if (!/^\d+$/.test(String(value)) || port < 1 || port > 65535 || port === 17800) {
+        throw new Error(name + " must be a TCP port from 1 to 65535 other than 17800.");
+    }
+    return port;
+}
 const allowed = ["http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"];
 const hostile = "https://foreign.invalid";
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfWQAAAAASUVORK5CYII=", "base64");
@@ -39,13 +47,16 @@ function copyFixtures(root) {
     fs.writeFileSync(path.join(root, "unity", "H1.exe"), pe);
 }
 
-async function freePort() {
-    const socket = net.createServer();
-    socket.listen(0, "127.0.0.1");
-    await once(socket, "listening");
-    const port = socket.address().port;
-    await new Promise((resolve, reject) => socket.close(error => error ? reject(error) : resolve()));
-    return port;
+async function ensureUnusedPort(port, signal) {
+    const socket = net.createConnection({ host: "127.0.0.1", port,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(1000)]),
+    });
+    try {
+        await once(socket, "connect");
+        throw new Error("Test port " + port + " is already listening.");
+    } catch (error) {
+        if (error.code !== "ECONNREFUSED") throw error;
+    } finally { socket.destroy(); }
 }
 
 function makeInstance(exe, dir, port, fixture) {
@@ -66,20 +77,34 @@ function makeInstance(exe, dir, port, fixture) {
     return instance;
 }
 
-function start(instance) {
-    const worker = spawn(instance.exe, [instance.dir], { cwd: instance.dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+function launch(command, args, options, onUnexpectedExit) {
+    const worker = spawn(command, args, { windowsHide: true, ...options });
     const log = { stdout: "", stderr: "" };
+    let stopping = false;
     worker.stdout.on("data", data => { log.stdout += data.toString("utf8"); });
     worker.stderr.on("data", data => { log.stderr += data.toString("utf8"); });
-    const exited = new Promise((resolve, reject) => {
-        worker.once("error", reject);
-        worker.once("close", (exitCode, signal) => resolve({ exitCode, signal, ...log }));
+    worker.once("error", error => { log.error = error; });
+    const exited = new Promise(resolve => {
+        worker.once("close", (exitCode, signal) => {
+            const result = { exitCode, signal, ...log };
+            if (!stopping) onUnexpectedExit?.(result);
+            resolve(result);
+        });
     });
-    // The caller owns this exact child, including error-driven cleanup.
-    return { worker, log, exited, async stop() { if (worker.exitCode === null && worker.signalCode === null) worker.kill(); await exited; } };
+    return { worker, log, exited, async stop() {
+        stopping = true;
+        if (worker.exitCode === null && worker.signalCode === null) worker.kill();
+        await exited;
+    } };
 }
 
-function request(instance, method, url, { origin = allowed[0], fetchSite, body } = {}) {
+function start(instance, onUnexpectedExit) {
+    return launch(instance.exe, [instance.dir], {
+        cwd: instance.dir, stdio: ["ignore", "pipe", "pipe"],
+    }, onUnexpectedExit);
+}
+
+function request(instance, method, url, { origin = allowed[0], fetchSite, body, signal } = {}) {
     const data = body === undefined ? undefined : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
     const headers = { Connection: "close" };
     if (origin !== null) headers.Origin = origin;
@@ -89,7 +114,7 @@ function request(instance, method, url, { origin = allowed[0], fetchSite, body }
         headers["Content-Length"] = data.length;
     }
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: "127.0.0.1", port: instance.port, method, path: url, headers, agent: false, timeout: 5000 }, res => {
+        const req = http.request({ host: "127.0.0.1", port: instance.port, method, path: url, headers, agent: false, timeout: 5000, signal }, res => {
             const chunks = [];
             res.on("data", chunk => chunks.push(chunk));
             res.on("end", () => resolve({ status: res.statusCode, rawHeaders: res.rawHeaders, body: Buffer.concat(chunks) }));
@@ -100,16 +125,16 @@ function request(instance, method, url, { origin = allowed[0], fetchSite, body }
         req.end(data);
     });
 }
-async function ready(instance, process) {
+async function ready(instance, child, signal) {
     for (let trial = 0; trial < 60; trial++) {
-        if (process.worker.exitCode !== null) throw new Error("Exited on startup: " + (await process.exited).stderr);
+        signal.throwIfAborted();
         try {
-            const health = await request(instance, "GET", "/api/health", { origin: null });
-            if (health.status === 200 && process.log.stdout.includes("127.0.0.1:" + instance.port)) return;
+            const health = await request(instance, "GET", "/api/health", { origin: null, signal });
+            if (health.status === 200 && child.log.stdout.includes("127.0.0.1:" + instance.port)) return;
         } catch {}
-        await new Promise(resolve => setTimeout(resolve, 125));
+        await delay(125, undefined, { signal });
     }
-    throw new Error("Backend did not become healthy: " + process.log.stderr);
+    throw new Error("Backend on port " + instance.port + " did not become healthy: " + child.log.stderr);
 }
 
 function normalizer(instance) {
@@ -223,16 +248,20 @@ function specimen(route, instance) {
     return data;
 }
 
-async function attempt(name, action) {
-    try { cases.push({ name, passed: true, ...await action() }); }
-    catch (error) { cases.push({ name, passed: false, error: error.stack }); console.error(name, error.message); }
+async function check(name, signal, action) {
+    signal.throwIfAborted();
+    try { return { name, passed: true, ...await action() }; }
+    catch (error) {
+        signal.throwIfAborted();
+        return { name, passed: false, error: error.stack };
+    }
 }
 
-async function paired(base, next, name, method, buildInput, verify) {
-    return attempt(name, async () => {
+async function paired(base, next, name, method, buildInput, verify, signal) {
+    return check(name, signal, async () => {
         const aInput = buildInput(base), bInput = buildInput(next);
         const priorA = files(base), priorB = files(next);
-        const [aRaw,bRaw] = await Promise.all([request(base,method,aInput.url,aInput), request(next,method,bInput.url,bInput)]);
+        const [aRaw,bRaw] = await Promise.all([request(base,method,aInput.url,{...aInput,signal}), request(next,method,bInput.url,{...bInput,signal})]);
         const a = snapshot(base,aRaw,method), b = snapshot(next,bRaw,method);
         const left = changes(priorA,files(base)), right = changes(priorB,files(next));
         assert.deepEqual(a,b,name+" response");
@@ -245,52 +274,38 @@ async function paired(base, next, name, method, buildInput, verify) {
     });
 }
 
-async function occupiedPort(exe, root, fixture) {
-    const command = "$listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0); " +
-        "$listener.ExclusiveAddressUse=$true; $listener.Start(); [Console]::WriteLine($listener.LocalEndpoint.Port); " +
+async function occupiedPort(instance, signal) {
+    const command = "$ErrorActionPreference='Stop'; $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback," + instance.port + "); " +
+        "$listener.ExclusiveAddressUse=$true; $listener.Start(); [Console]::WriteLine('ready'); " +
         "try { [Console]::ReadLine() | Out-Null } finally { $listener.Stop() }";
-    const holder = spawn("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide:true, stdio:["pipe","pipe","pipe"] });
-    const listenerExited = once(holder,"close");
-    let tested;
+    const holder = launch("powershell.exe", ["-NoProfile", "-Command", command], { stdio: ["pipe", "pipe", "pipe"] });
     try {
-        const port = await new Promise((resolve,reject) => {
-            let line = "";
-            const timer = setTimeout(() => reject(new Error("TcpListener did not start")),5000);
-            holder.once("error", reject);
-            holder.stdout.on("data", data => {
-                line += data.toString();
-                if (line.includes("\n")) { clearTimeout(timer); resolve(Number(line.trim())); }
-            });
-        });
-        assert.ok(port > 0);
-        tested = makeInstance(exe,root,port,fixture);
-        const process = start(tested);
-        const timeout = setTimeout(() => process.worker.kill(),5000);
+        const readySignal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+        await Promise.race([
+            once(holder.worker.stdout, "data", { signal: readySignal }).then(([data]) => {
+                assert.equal(data.toString().trim(), "ready");
+            }),
+            holder.exited.then(result => {
+                throw new Error("Could not hold candidate port " + instance.port + ": " + (result.error?.message || result.stderr));
+            }),
+        ]);
+        signal.throwIfAborted();
+        const probe = start(instance);
         try {
-            const failed = await process.exited;
-            assert.equal(failed.exitCode,1);
-            assert.ok(failed.stderr.includes("Failed to bind 127.0.0.1:" + port));
-        } finally { clearTimeout(timeout); await process.stop(); }
-    } finally { holder.stdin.end("\n"); await listenerExited; }
-    const restarted = start(tested);
-    try { await ready(tested,restarted); }
-    finally { await restarted.stop(); }
-    return { exitCode:1, stderr:"Failed to bind 127.0.0.1:<port>", recovered:true };
+            const closeSignal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+            await once(probe.worker, "close", { signal: closeSignal });
+            const failed = await probe.exited;
+            assert.equal(failed.exitCode, 1);
+            assert.ok(failed.stderr.includes("Failed to bind 127.0.0.1:" + instance.port));
+        } finally { await probe.stop(); }
+    } finally { await holder.stop(); }
+    return { exitCode: 1, stderr: "Failed to bind 127.0.0.1:<port>" };
 }
 
-const root = path.resolve(output);
-fs.mkdirSync(root);
-const fixture = path.join(root,"template");
-copyFixtures(fixture);
-const base = makeInstance(baseExe,path.join(root,"base"),await freePort(),fixture);
-const next = makeInstance(nextExe,path.join(root,"next"),await freePort(),fixture);
-assert.notEqual(base.port,next.port);
-const baseProcess = start(base), nextProcess = start(next);
-try {
-    await Promise.all([ready(base,baseProcess), ready(next,nextProcess)]);
+async function compareRoutes(base, next, baseline, compare) {
     const missing = "/api/__h1_unregistered";
     for (const route of baseline.routes.filter(item => item.method !== "OPTIONS")) {
-        await paired(base,next,route.method+" "+route.pattern,route.method, instance => {
+        await compare(route.method+" "+route.pattern,route.method, instance => {
             const input = specimen(route,instance);
             const actual = new URL(input.url, "http://127.0.0.1").pathname;
             const matched = baseline.routes.find(item => item.method === route.method && new RegExp("^(?:"+item.pattern+")$").test(actual));
@@ -328,7 +343,7 @@ try {
 
     for (const [method, url, status] of [["GET","/api/health",200],["GET","/api/settings",200],["HEAD","/api/health",200],["DELETE","/api/health",404],
         ["GET",missing,404],["POST",missing,404],["PUT",missing,404],["DELETE",missing,404]]) {
-        await paired(base,next,"dispatch "+method+" "+url,method,()=>({url}), (response,_,value) => {
+        await compare("dispatch "+method+" "+url,method,()=>({url}), (response,_,value) => {
             assert.equal(response.status,status);
             if (method === "HEAD") assert.equal(response.body.length,0);
             if (status === 404) assert.ok(!value.headers.some(([key]) => key.toLowerCase() === "access-control-allow-origin"));
@@ -339,7 +354,7 @@ try {
         });
     }
     for (const method of ["POST","DELETE"]) {
-        await paired(base,next,"unregistered hostile "+method,method,()=>({url:missing,origin:hostile}), (response,_,value) => {
+        await compare("unregistered hostile "+method,method,()=>({url:missing,origin:hostile}), (response,_,value) => {
             assert.equal(response.status,404);
             assert.ok(!value.headers.some(([key]) => key.toLowerCase() === "access-control-allow-origin"));
         });
@@ -349,7 +364,7 @@ try {
     for (const info of origins) {
         for (const method of ["OPTIONS","GET"]) {
             const url = method === "OPTIONS" ? missing : "/api/health";
-            await paired(base,next,"cors "+method+" "+(info.origin ?? "no Origin / "+(info.fetchSite ?? "absent")),method,()=>({url,...info}),
+            await compare("cors "+method+" "+(info.origin ?? "no Origin / "+(info.fetchSite ?? "absent")),method,()=>({url,...info}),
                 (response,_,value) => {
                     assert.equal(response.status,info.accepted ? method==="OPTIONS"?204:200 : 403);
                     const values = key => value.headers.filter(([name])=>name.toLowerCase()===key).map(([,item])=>item);
@@ -362,19 +377,88 @@ try {
         }
     }
 
-    await paired(base,next,"successful NDJSON scan","POST",instance=>({
+    await compare("successful NDJSON scan","POST",instance=>({
         url:"/api/unity/detect-stream",body:{path:path.join(instance.dir,"fixtures","unity")},
     }),(_,__,value)=>{
         assert.equal(value.status,200);
         assert.deepEqual(value.body.trimEnd().split("\n").map(line => JSON.parse(line).type),["start","game","done"]);
     });
-    await attempt("occupied port and restart",()=>occupiedPort(nextExe,path.join(root,"collision"),fixture));
-} finally {
-    await Promise.all([baseProcess.stop(),nextProcess.stop()]);
-    writeJson(path.join(root,"results.json"),{baseline:{exe:base.exe,port:base.port,dir:base.dir},
-        candidate:{exe:next.exe,port:next.port,dir:next.dir},cases});
 }
 
-const failed = cases.filter(entry=>!entry.passed);
-console.log(cases.length+" checks, "+failed.length+" mismatches. "+path.join(root,"results.json"));
-process.exitCode = failed.length ? 1 : 0;
+export async function compareHttp({ baseExe, nextExe, output, manifest = defaultManifest,
+    basePort = defaultPorts.base, nextPort = defaultPorts.next, signal: shutdown }) {
+    basePort = testPort(basePort, "Baseline port");
+    nextPort = testPort(nextPort, "Candidate port");
+    assert.notEqual(basePort, nextPort, "Baseline and candidate must use different ports.");
+    for (const exe of [baseExe, nextExe]) assert.ok(fs.statSync(exe).isFile(), "Backend executable required: " + exe);
+    const baseline = JSON.parse(fs.readFileSync(manifest, "utf8"));
+    const root = path.resolve(output);
+    fs.mkdirSync(root);
+    const fixture = path.join(root, "template");
+    copyFixtures(fixture);
+    const base = makeInstance(baseExe, path.join(root, "base"), basePort, fixture);
+    const next = makeInstance(nextExe, path.join(root, "next"), nextPort, fixture);
+    const collision = makeInstance(nextExe, path.join(root, "collision"), nextPort, fixture);
+    const cases = [];
+    const children = [];
+    const lifecycle = new AbortController();
+    const signal = shutdown ? AbortSignal.any([shutdown, lifecycle.signal]) : lifecycle.signal;
+    const report = path.join(root, "results.json");
+    let failure;
+    try {
+        await Promise.all([basePort, nextPort].map(port => ensureUnusedPort(port, signal)));
+        const bindCheck = await check("occupied port and restart", signal, () => occupiedPort(collision, signal));
+        signal.throwIfAborted();
+        for (const [label, instance] of [["baseline", base], ["candidate", next]]) {
+            children.push(start(instance, result => {
+                if (result.error) {
+                    lifecycle.abort(new Error(label + " backend could not start: " + result.error.message));
+                } else {
+                    const detail = result.stderr.trim();
+                    lifecycle.abort(new Error(label + " backend on port " + instance.port + " exited unexpectedly (" +
+                        (result.signal ?? result.exitCode) + ")" + (detail ? ": " + detail : "")));
+                }
+            }));
+        }
+        await Promise.all([ready(base, children[0], signal), ready(next, children[1], signal)]);
+        await compareRoutes(base, next, baseline, async (name, method, buildInput, verify) => {
+            cases.push(await paired(base, next, name, method, buildInput, verify, signal));
+        });
+        signal.throwIfAborted();
+        cases.push(bindCheck.passed ? { ...bindCheck, recovered: true } : bindCheck);
+    } catch (error) {
+        failure = signal.aborted ? signal.reason : error;
+        throw failure;
+    } finally {
+        await Promise.all(children.map(child => child.stop()));
+        writeJson(report, { baseline: base, candidate: next, cases, error: failure?.message });
+    }
+    return { report, cases, failed: cases.filter(entry => !entry.passed) };
+}
+
+export async function withShutdown(run) {
+    const shutdown = new AbortController();
+    const interrupt = () => shutdown.abort(Object.assign(new Error("Interrupted (Ctrl+C)"), { exitCode: 130 }));
+    const terminate = () => shutdown.abort(Object.assign(new Error("Terminated (SIGTERM)"), { exitCode: 143 }));
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", terminate);
+    try { return await run(shutdown.signal); }
+    finally {
+        process.off("SIGINT", interrupt);
+        process.off("SIGTERM", terminate);
+    }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    const [baseExe, nextExe, output, manifest] = process.argv.slice(2);
+    try {
+        assert.ok(baseExe && nextExe && output, "Usage: node compare-http.mjs BASELINE_EXE CANDIDATE_EXE UNUSED_OUTPUT_DIRECTORY [MANIFEST]");
+        const result = await withShutdown(signal => compareHttp({ baseExe, nextExe, output, manifest, signal }));
+        for (const entry of result.failed) console.error(entry.name + "\n" + entry.error);
+        console.log(result.cases.length + " checks, " + result.failed.length + " mismatches. " + result.report);
+        process.exitCode = result.failed.length ? 1 : 0;
+    } catch (error) {
+        console.error(error.message);
+        process.exitCode = error.exitCode ?? 1;
+    }
+}
