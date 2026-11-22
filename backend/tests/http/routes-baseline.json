@@ -1,5 +1,7 @@
 {
   "routes": [
+    {"method":"POST","pattern":"/api/game-image-exports/confirm","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/confirmation-status","handlerKind":"cors-lambda","matcher":"regex"},
     {"method":"POST","pattern":"/api/game-image-exports/generate","handlerKind":"cors-lambda","matcher":"regex"},
     {"method":"GET","pattern":"/api/game-image-exports/operations/([^/]+)","handlerKind":"cors-lambda","matcher":"regex"},
     {"method":"POST","pattern":"/api/game-image-exports/operations/([^/]+)/cancel","handlerKind":"cors-lambda","matcher":"regex"},

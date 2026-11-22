@@ -26,6 +26,7 @@ import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, perf
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
+import { confirmationBoxes, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
 import type { ImagePreview, MosaicMaskCommit, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
   MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
@@ -416,6 +417,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const saved = selected.filter(image => resultFor(rows, image).saved);
   const included = saved.filter(image => storage?.index[image.id]?.included);
   const activeSaved = !!activeResult?.saved;
+  const confirmationNotice = useImageConfirmationNotice(gamePath, active, "mosaic", activeSaved && !storage && !busy);
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
     if (row.checked) total.checked++;
@@ -473,6 +475,26 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
   const candidatePath = (image: UnityImage) => API_BASE + "/api/game-images/mosaic?" +
     new URLSearchParams({ gamePath, id: image.id, sourceHash: image.sourceHash });
+  const renderedMosaics = useRef(new WeakMap<Blob, Pick<Parameters<typeof redrawMosaic>[0], "boxes" | "keep" | "model">>());
+  const redrawWithConfirmation = async (input: Parameters<typeof redrawMosaic>[0]) => {
+    const clone = (rect: typeof input.boxes[number]): typeof input.boxes[number] => [...rect];
+    const evidence = { boxes: input.boxes.map(clone), keep: input.keep.map(clone), model: input.model };
+    const blob = await redrawMosaic({ ...input, ...evidence });
+    renderedMosaics.current.set(blob, evidence);
+    return blob;
+  };
+
+  const saveCandidate = async (image: UnityImage, blob: Blob, signal: AbortSignal) => {
+    const metadata = renderedMosaics.current.get(blob);
+    if (!metadata && supportsGameImageConfirmation(image)) throw new Error("候选缺少重绘框，请重新生成后采用");
+    await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
+    if (metadata) {
+      await saveGameImageConfirmation(gamePath, image, blob, {
+        layer: "mosaic", groupId: resultFor(rows, image).group ?? null, modelId: metadata.model, maskMode: "boxes",
+        boxes: [...confirmationBoxes(image, "repair", metadata.boxes), ...confirmationBoxes(image, "protect", metadata.keep)],
+      }, undefined, signal);
+    }
+  };
   const writeMosaicPatch = async (ids: string[], undo = false, signal?: AbortSignal, patchId?: string) => {
     const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/" + (undo ? "mosaic-uninstall" : "mosaic-apply"), {
       method: "POST", signal, headers: { "Content-Type": "application/json" },
@@ -517,7 +539,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         selected, scoped, usable, rows, detectorKey, protect, refine: preferences.refine, model, steps, timingScope: deploymentMetricScope(gamePath, "mosaic"),
       }, signal, {
         read, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
-        savedMosaicScan, redrawMosaic, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
+        savedMosaicScan, redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
         readExisting: async signal => {
           const status = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-status", {
             method: "POST", signal, headers: { "Content-Type":"application/json" }, body: JSON.stringify({ gamePath })
@@ -525,8 +547,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           const { candidates } = await status.json() as { candidates: Record<string, string> };
           return candidates;
         },
-        writeCandidate: async (image, rendered, signal) =>
-          mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: rendered, signal })),
+        writeCandidate: saveCandidate,
       })),
       prepare: async (signal, imageIds = selected.map(image => image.id)) => {
         const patchId = crypto.randomUUID().replaceAll("-", "");
@@ -733,7 +754,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const total = plan.targets.length;
     const initial = plan.targets.filter(target => !target.pending.size).length;
     void run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
-      read, readSaved, mosaicInputKey, redrawMosaic, recordGameCacheHit, update, setProgress, setError,
+      read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress, setError,
       setPending: next => { pendingRedraw.current = next; },
       onCandidate: (image, engine, blob, seconds) => {
         setCandidates(previous => {
@@ -763,7 +784,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   function approve(image: UnityImage, blob: Blob) {
     void run("保存已采用去码图", async signal => {
       if (storage) await storage.save(image, blob, signal);
-      else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
+      else await saveCandidate(image, blob, signal);
       masks.clearUndo();
       update(image, { saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
       if (isPreviewing(image)) {
@@ -1087,9 +1108,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             </div>
           </div>
         }
-        notice={activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
-          {activeRetry && "重试中 · 上次"}{activeFailure}
-        </p> : activeResult?.review && <p className="hint">{activeResult.review}</p>}
+        notice={<>{confirmationNotice && <p className="hint" role="status">{confirmationNotice}</p>}
+          {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
+            {activeRetry && "重试中 · 上次"}{activeFailure}
+          </p> : activeResult?.review && <p className="hint">{activeResult.review}</p>}</>}
         footer={
           <div className="unity-image-actions">
             <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
