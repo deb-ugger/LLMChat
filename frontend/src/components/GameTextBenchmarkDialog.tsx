@@ -593,7 +593,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
             : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
           {activeProgress ? <span className="game-benchmark-item-score is-live">
-            正在跑 · {activeProgress.current}/{activeProgress.total} · 用时 {gameDuration(activeProgress.elapsedMs)}
+            正在跑 · {activeProgress.sampleCurrent ?? activeProgress.current}/{activeProgress.sampleTotal ?? activeProgress.total} · 用时 {gameDuration(activeProgress.configElapsedMs ?? activeProgress.elapsedMs)}
             {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}
           </span> : lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
         </summary>
