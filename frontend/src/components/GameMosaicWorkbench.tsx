@@ -1,6 +1,6 @@
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
 import { mosaicInitialScreening, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusLabels, type MosaicInitialScreeningSnapshot, type MosaicStatus } from "../gameMosaicStatus";
-import { api, type Settings } from "../api";
+import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, mosaicRowsStorageKey, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
@@ -8,7 +8,7 @@ import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffe
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, gameDuration, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicDevice, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
+import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, groupMosaicScenes, loadMosaicDetector, mapMosaicBoxes, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicBox, type MosaicModel, type MosaicScan } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
@@ -18,43 +18,16 @@ import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect"
 import { formatMosaicParameters } from "../benchmark/benchmarkParameters";
 import { GameMetricHint, GameModelUsage, GameStepTimingDetails, StepRunningMetrics } from "./GameFlowSequence";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { GameImageListPagination, GameImagePreviewFrame } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
+import { MosaicGroupTree } from "./game-mosaic/MosaicGroupTree";
+import type { ImagePreview, MaskEdit, MaskUndoItem, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
+  RefineMovement, Result, Results, ResultVersion, StepReport, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
 import "../gameMosaic.css";
-
-type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefore: boolean; checkedAfter: boolean };
-type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
-  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
-type Results = Record<string, Result>;
-type Candidates = Partial<Record<MosaicModel, Blob>>;
-type MosaicCandidate = { revision: string; values: Candidates; seconds: Partial<Record<MosaicModel, number>> };
-type MaskEdit = { image: UnityImage; boxes: MosaicBox[] };
-type MaskUndoItem = {
-  id: string;
-  source: string;
-  mask: Pick<Result, "boxes" | "manualBoxes" | "review" | "redrawError" | "saved" | "reference" | "checked">;
-  candidate?: MosaicCandidate;
-};
-type RedrawPlan = {
-  targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel> }[];
-  models: MosaicModel[];
-  steps: number;
-  seed: number;
-  reference?: UnityImage;
-  referenceBlob?: Blob;
-};
-type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
-type MosaicStep = "screen" | "refine" | "redraw";
-type StepRun = {
-  state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number;
-  summary?: string; device?: MosaicDevice; prepared?: number; models?: StepPerformance["models"];
-  batchStarted?: number; batchElapsed?: number; processed?: number; failed?: number;
-} & Partial<StepPerformance>;
-type StepReport = number | Partial<Pick<StepRun, "completed" | "prepared" | "processed" | "failed">>;
 
 function groupMosaicModels(snapshot: StepPerformance): StepPerformance {
   const models = new Map<string, StepPerformance["models"][string]>();
@@ -123,32 +96,9 @@ function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolea
   };
 }
 type MosaicStepUsage = ReturnType<typeof beginMosaicStepUsage>;
-type ImagePreview = { id: string; revision: string; blob?: Blob; error?: string };
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
 
-export type GameMosaicDeploymentHandle = {
-  prepare: (signal: AbortSignal, ids?: string[]) => Promise<{ ids: string[]; patchId: string; path: string }>;
-  automatic: (signal: AbortSignal) => Promise<string[]>;
-  selectedIds: () => string[];
-  apply: (ids: string[], undo?: boolean, patchId?: string) => Promise<number>;
-};
-
-export type MosaicCandidateIndex = Record<string, { source: string; hash: string; included: boolean }>;
-type MosaicStorage = {
-  index: MosaicCandidateIndex;
-  savedDrafts?: ReadonlySet<string>;
-  consumeSavedDrafts?: () => void;
-  read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  save: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<void>;
-  select: (images: UnityImage[], include: boolean, signal: AbortSignal) => Promise<void>;
-};
-type Props = {
-  settings?: Settings; gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
-  read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
-  controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
-  deploymentHandle?: { current: GameMosaicDeploymentHandle | null };
-};
+export type { GameMosaicDeploymentHandle, MosaicCandidateIndex } from "./game-mosaic/mosaicWorkbenchTypes";
 
 function sameReview(row: Result, scan: MosaicScan, key: string) {
   const boxes = scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes;
@@ -157,7 +107,6 @@ function sameReview(row: Result, scan: MosaicScan, key: string) {
 }
 
 const defaultResult = (image: UnityImage): Result => ({ source: image.sourceHash, boxes: [], checked: true });
-const mosaicPageSize = 40;
 function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   const state = mosaicScreeningStatus(row);
   return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
@@ -505,12 +454,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [collapsed, setCollapsed] = useState<Partial<Record<MosaicStatus, boolean>>>(() =>
     Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, id !== "failed"])));
   const listId = useId();
-  const listRef = useRef<HTMLUListElement>(null);
-  const [keyboardTarget, setKeyboardTarget] = useState<string>();
   const filterMenu = useRef<HTMLDivElement>(null);
   const [configured, setConfigured] = useState<MosaicStep | null>(null);
-  const [groupMenu, setGroupMenu] = useState<{ group: string; x: number; y: number } | null>(null);
-  const groupMenuRef = useRef<HTMLDivElement>(null);
+  const [groupMenu, setGroupMenu] = useState<MosaicGroupMenu | null>(null);
+  const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
   const [preferences, setPreferences] = useState(() => readMosaicSettings(gamePath));
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const changePreferences = (patch: Partial<typeof preferences>) => saveMosaicSettings(gamePath, { ...preferences, ...patch });
@@ -621,63 +568,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const group = active && (activeResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
   const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
-  useLayoutEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = 0;
-  }, [needle, scope, sceneFilter, statusFilter]);
-  useLayoutEffect(() => {
-    if (!keyboardTarget) return;
-    const button = listRef.current?.querySelector<HTMLButtonElement>(
-      `button[data-mosaic-row="${CSS.escape(keyboardTarget)}"]`);
-    button?.focus({ preventScroll: true });
-    button?.scrollIntoView({ block: "nearest" });
-    setKeyboardTarget(undefined);
-  }, [keyboardTarget, groupPages, collapsed]);
 
   function selectPreview(id: string) {
     setActiveId(id);
     if (!busy && !disabled) setError("");
-  }
-
-  function navigateList(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    const element = event.target as HTMLElement;
-    if (element.matches("input:not([type=checkbox]), select, textarea")) return;
-    const summary = element.closest<HTMLElement>("summary[data-mosaic-status]");
-    if (summary) {
-      const status = summary.dataset.mosaicStatus as MosaicStatus;
-      event.preventDefault();
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight")
-        setCollapsed(previous => ({ ...previous, [status]: event.key === "ArrowLeft" }));
-      else {
-        const headings = [...listRef.current!.querySelectorAll<HTMLElement>("summary[data-mosaic-status]")];
-        headings[Math.max(0, Math.min(headings.length - 1, headings.indexOf(summary) + (event.key === "ArrowUp" ? -1 : 1)))]?.focus();
-      }
-      return;
-    }
-    if (!ordered.length) return;
-    event.preventDefault();
-    const focused = element.closest<HTMLElement>("[data-mosaic-item]")?.dataset.mosaicItem;
-    const index = ordered.findIndex(item => item.image.id === (focused || active?.id));
-    let next = Math.max(0, index);
-    if (index >= 0 && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      next = Math.max(0, Math.min(ordered.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
-    } else if (index >= 0) {
-      const status = ordered[index].id;
-      const images = groups.get(status)!;
-      const local = images.findIndex(image => image.id === ordered[index].image.id);
-      const page = Math.min(groupPages[status] || 0, Math.ceil(images.length / mosaicPageSize) - 1);
-      const destination = page + (event.key === "ArrowLeft" ? -1 : 1);
-      if (destination < 0 || destination * mosaicPageSize >= images.length) return;
-      const image = images[Math.min(images.length - 1, destination * mosaicPageSize + local % mosaicPageSize)];
-      next = ordered.findIndex(item => item.image.id === image.id);
-    }
-    const { id: status, image } = ordered[next];
-    const id = image.id;
-    const local = groups.get(status)!.findIndex(item => item.id === id);
-    setGroupPages(previous => ({ ...previous, [status]: Math.floor(local / mosaicPageSize) }));
-    selectPreview(id);
-    setKeyboardTarget(id);
   }
 
   const selected = members.filter(image => resultFor(rows, image).checked);
@@ -1610,30 +1504,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   useEffect(() => {
     if (actionsDisabled || !paneVisible) setGroupMenu(null);
   }, [actionsDisabled, paneVisible]);
-  useEffect(() => {
-    if (!groupMenu) return;
-    const focused = document.activeElement;
-    groupMenuRef.current?.querySelector("button")?.focus({ preventScroll: true });
-    const close = () => setGroupMenu(null);
-    const outside = (event: Event) => {
-      if (!groupMenuRef.current?.contains(event.target as Node)) close();
-    };
-    const key = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      close();
-      if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
-    };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", key);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", key);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
-    };
-  }, [groupMenu]);
 
   function openGroupMenu(event: ReactMouseEvent<HTMLElement>, key: string | undefined) {
     if (actionsDisabled || !key || !isIndependentGroup(key) || !imageGroup.has(key)) return;
@@ -1911,78 +1781,23 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         {error && <p className="game-mosaic-error" role="alert">{error}</p>}
       </div>}
     </div>, controls)}
-    <div className="unity-offline-toolbar unity-image-toolbar">
-      <GameImageFilter menuRef={filterMenu}>
-        <label className="game-mosaic-filter-status">状态<select aria-label="筛选状态" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setGroupPages({}); }}>
-          <option value="all">全部状态</option>{Object.entries(mosaicStatusLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-        </select></label>
-        <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => {
-          if (event.target.checked && active) setActiveId(active.id);
-          setSceneFilter(event.target.checked);
-          setGroupPages({});
-        }} />仅本组</label>
-      </GameImageFilter>
-      <span className="unity-image-statistics">{visible.length} 张图片 · 已选 {counts.checked} 张 · 已采用去码图 {counts.saved} 张</span>
-      {(failureCount > 0 || statusFilter === "failed") && <button type="button" className="unity-btn game-mosaic-failed-filter"
-        aria-pressed={statusFilter === "failed"} onClick={toggleFailureFilter}>处理失败 · {failureCount} 张</button>}
-    <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query}
-        onChange={event => { setQuery(event.target.value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }} />
-    </div>
-    <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={browseOriginals ? undefined : navigateList}
-      list={<>
-        <div className="game-mosaic-list-views" role="group" aria-label="左侧图片列表视图">
-          <button type="button" className="unity-btn" aria-pressed={!browseOriginals} onClick={() => setBrowseOriginals(false)}>分组</button>
-          <button type="button" className="unity-btn" aria-pressed={browseOriginals} onClick={() => setBrowseOriginals(true)}
-            data-tooltip="浏览原图缩略图；Ctrl 或 Command 点击多选">浏览</button>
-        </div>
-        {browseOriginals ? <MosaicOriginalGallery groups={groups} images={visible} activeId={active?.id}
+    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, sceneFilter, statusFilter }}
+      onStatusFilterChange={status => { setStatusFilter(status); setGroupPages({}); }}
+      onSceneFilterChange={checked => {
+        if (checked && active) setActiveId(active.id);
+        setSceneFilter(checked);
+        setGroupPages({});
+      }}
+      onQueryChange={value => { setQuery(value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }}
+      onToggleFailureFilter={toggleFailureFilter} counts={{ ...counts, visible: visible.length, failed: failureCount }}
+      active={active} groups={groups} ordered={ordered} refineChanges={refineChanges} groupPages={groupPages} setGroupPages={setGroupPages}
+      collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={setBrowseOriginals}
+      originalGallery={<MosaicOriginalGallery groups={groups} images={visible} activeId={active?.id}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(rows, image).checked}
-          disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} /> : <ul ref={listRef}>{[...groups].map(([id, items]) => {
-          if (id === "failed" && !items.length && statusFilter !== id) return null;
-          const label = mosaicStatusLabels[id];
-          const pages = Math.max(1, Math.ceil(items.length / mosaicPageSize));
-          const page = Math.min(groupPages[id] || 0, pages - 1);
-          const checked = items.filter(image => resultFor(rows, image).checked).length;
-          const delta = refineChanges.get(id);
-          return <li key={id} className={`game-mosaic-status-group${id === "failed" ? " has-error" : ""}`}>
-            <details className="unity-image-result-group" open={!collapsed[id]} onToggle={event => {
-              const closed = !event.currentTarget.open;
-              setCollapsed(previous => previous[id] === closed ? previous : { ...previous, [id]: closed });
-            }}>
-              <summary tabIndex={0} data-mosaic-status={id}><span>{label} · {items.length}</span>
-                {delta && <span className="unity-image-change-counts">
-                  {delta.added > 0 && <span className="is-added" title="复筛移入">+{delta.added}</span>}
-                  {delta.removed > 0 && <span className="is-removed" title="复筛移出">−{delta.removed}</span>}
-                </span>}
-                <input type="checkbox" className="unity-image-group-check" aria-label={"全选：" + label}
-                  disabled={actionsDisabled || !items.length} checked={!!items.length && checked === items.length}
-                  ref={node => { if (node) node.indeterminate = checked > 0 && checked < items.length; }}
-                  onClick={event => event.stopPropagation()} onChange={event => setMosaicChecked(items, event.target.checked)} />
-              </summary>
-            <ul>{!collapsed[id] && items.slice(page*mosaicPageSize,(page+1)*mosaicPageSize).map(image => {
-                const row = resultFor(rows, image);
-                const state = imageStatus(image);
-                const status = mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
-                const movement = refineMovementFor(row);
-                const change = movement && movement.from !== movement.to
-                  ? " · 复筛 " + mosaicStatusLabels[movement.from] + " → " + mosaicStatusLabels[movement.to] : "";
-                const failure = mosaicProcessingError(row);
-                const retrying = !!row.refineError && isRefineRetrying(image);
-                const detail = `${image.width} × ${image.height} · ${retrying ? "重试中 · 上次" + failure : failure || status + change}`;
-                return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}`}>
-                  <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={actionsDisabled} onChange={event => update(image, { checked: event.target.checked, manualChecked: true, review: row.boxes.length ? undefined : row.review })} />
-                  <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail}
-                    onClick={() => selectPreview(image.id)}
-                    onContextMenu={event => openGroupMenu(event, row.group)}>
-                    <strong><SearchHighlight text={image.name} query={needle} /></strong>
-                    <small>{detail}</small>
-                  </button>
-                </li>;
-            })}</ul>
-            {!collapsed[id] && <GameImageListPagination label={label+"列表分页"} page={page} pages={pages} onPage={page => setGroupPages(previous => ({...previous,[id]:page}))}/>}
-            </details></li>;
-        })}</ul>}
-      </>}>
+          disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
+      actionsDisabled={actionsDisabled} getRow={image => resultFor(rows, image)} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
+      isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked} updateRow={update}
+      groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       {!active && <div className="unity-offline-empty">{visible.length ? "从左侧列表选择图片预览" : "没有符合筛选条件的图片。"}</div>}
       {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
         <div className="unity-image-actions">
@@ -2084,10 +1899,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           </button>
         </div>
       </section>}
-    </GameImageSplit>
-    {groupMenu && createPortal(<div ref={groupMenuRef} className="unity-gallery-menu" role="menu" aria-label="独立组操作"
-      style={{ left: groupMenu.x, top: groupMenu.y }}>
-      <button type="button" role="menuitem" onClick={() => void deleteGroup(groupMenu.group)}>删除独立组</button>
-    </div>, document.body)}
+    </MosaicGroupTree>
   </section>;
 }
