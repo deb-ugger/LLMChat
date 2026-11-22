@@ -17,7 +17,7 @@ import { GameFlowCard } from "./GameFlowCard";
 import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { formatMosaicParameters } from "../benchmark/benchmarkParameters";
 import { GameMetricHint, GameModelUsage, GameStepTimingDetails, StepRunningMetrics } from "./GameFlowSequence";
-import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity, usePausedBenchmarkProgress } from "../benchmark/benchmarkRunner";
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
@@ -1258,7 +1258,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       formalMosaicRun?.state === "error" ? "失败待重试" : "已中止，等待继续");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const benchmarkProgress = useBenchmarkProgress(gamePath);
-  const pausedBenchmark = usePausedBenchmarkProgress(gamePath, ["mosaicScreen", "mosaicRefine", "mosaicRedraw"]);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
@@ -1285,11 +1284,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const detectionMs = detection?.requests ? detection.requestMs / detection.requests : 0;
     const batchElapsed = status?.batchElapsed ?? (status?.batchStarted === undefined ? 0 : performance.now() - status.batchStarted);
     const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
-    const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
+    const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     const formalPaused = state === "stopped" && !!formalMeasurement.taskId;
-    const displayedTest = running || formalPaused && !benchmark ? undefined
-      : benchmark ?? (pausedBenchmark?.step === benchmarkSteps[id] ? pausedBenchmark : undefined);
-    const liveMetrics = running || formalPaused || !!displayedTest;
+    const liveMetrics = running || formalPaused || !!benchmark;
     const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
       {(multipleModels || foldedModels) && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
       <div className="game-flow-model-values">
@@ -1308,10 +1305,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       status={<>{screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}{elapsed != null && !screeningMethodChanged && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
       summary={liveMetrics ? <div className="game-mosaic-step-summary">
         {running && status?.total ? <GameProgressBar label={title + "进度"} value={percent} /> : null}
-        <StepRunningMetrics measured={displayedTest ? displayedTest.performance : formalMeasurement}
-          benchmark={displayedTest} stopped={formalPaused && !displayedTest} elapsedMs={displayedTest ? undefined : elapsed}
-          device={!displayedTest && status?.device ? status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU" : undefined}
-          parameters={!displayedTest ? formatMosaicParameters(benchmarkSteps[id], preferences) : undefined} />
+        <StepRunningMetrics measured={benchmark ? benchmark.performance : formalMeasurement}
+          benchmark={benchmark} stopped={formalPaused && !benchmark} elapsedMs={benchmark ? undefined : elapsed}
+          device={!benchmark && status?.device ? status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU" : undefined}
+          parameters={!benchmark ? formatMosaicParameters(benchmarkSteps[id], preferences) : undefined} />
       </div> : <div className="game-mosaic-step-summary">
         {(showModelTitle || status?.device) && <span data-tooltip={status?.device?.reason}>
           {showModelTitle && modelTitle}
