@@ -80,6 +80,8 @@ import { createUnityEnginePool, loadUnityEngines, normalizeUnityEngines, default
 import { UnityDescriptionSelect, UNITY_WRAP_CHOICES, UNITY_LINE_CHOICES, UNITY_SEGMENT_CHOICES } from "./UnityDescriptionSelect";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { useGameWorkspaceSplit } from "../hooks/useGameWorkspaceSplit";
+import { generateOfflinePatch, offlineExportMessage, type DeploymentPatch } from "./unity-offline/offlineExport";
+import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/useOfflineDeploy";
 import "../unityOffline.css";
 
 export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean | "discard"> };
@@ -104,8 +106,6 @@ const imageResetDescriptions: Record<UnityImageResetPhase, string> = {
 };
 const deploymentLabel: Record<DeploymentStep, string> = { scan: "扫描资源", text: "文本翻译", image: "图片翻译", mosaic: "图片去码", apply: "生成与应用" };
 const deploymentStageId = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" } as const satisfies Record<DeploymentStep, (typeof UNITY_STAGE_TABS)[number]["id"]>;
-
-type DeploymentPatch = UnityPatch & { deploymentExcluded?: DeploymentPhase[] };
 
 type RunCheckpoint = {
   step: number; endStep: number; automatic: boolean; finished: boolean;
@@ -266,8 +266,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const pendingImageMasks = useRef(new Map<string, boolean>());
   const imageTask = useRef<UnityImagePhase>("filter");
   const [generationState, setGeneration] = useState<GenerationProgress | null>(null);
-  const [applied, setApplied] = useState(false);
-  const [installed, setInstalled] = useState(false);
+  const { applied, setApplied, installed, setInstalled, applyPatch, uninstallPatch: runUninstall, removeLayer } = useOfflineDeploy({
+    root, run: unityRun, measure: measureDeploymentStage, setBusy, setMessage, logAction, onInstallationChange,
+  });
 
   const [checkpoint, setCheckpoint] = useState<RunCheckpoint | null>(null);
   const checkpointRef = useRef<RunCheckpoint | null>(null);
@@ -1416,54 +1417,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function exportPatch(p: UnityProject, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint, excluded: DeploymentPhase[] = loadDeploymentPlan(root).disabled.filter((id): id is DeploymentPhase => id !== "scan" && id !== "apply"), deploymentBatch?: string) {
     setBusy("生成补丁");
-    const ids = unityLanguageScope(p.entries, run?.source || source, run?.onlySourceLanguage ?? onlySourceLanguage).ids;
-    const patchTarget = run?.target ?? target;
-    const partial = run?.partial || p.textSkipped;
-    const selectedIds = p.entries.filter(entry => entry.selected && ids.has(entry.id) && textTranslationMatchesTarget(entry, patchTarget) &&
-      (!partial || !entry.error && entry.translation && !unityTranslationError(entry.source, entry.translation))).map(entry => entry.id);
-    const patchImageIds = (p.images || []).filter(image => image.selected && unityImageReadyForTarget(image, picture.target)).map(image => image.id);
-    const textEnabled = !excluded.includes("text");
-    const fontRequest = { project: p, selectedIds: textEnabled ? selectedIds : [], patchImageIds: excluded.includes("image") ? [] : patchImageIds,
-      excludeMosaic: excluded.includes("mosaic"), fontPath: textEnabled ? run?.fontPath ?? fontPath : "", extraCharacters: textEnabled ? run?.extraCharacters ?? extraCharacters : "" };
-    let result: UnityPatch & { mosaicImages?: number };
-    try {
-      result = await measureDeploymentStage(root, "generate",
-        () => unityRun<UnityPatch & { mosaicImages?: number }>("export", { ...fontRequest, path: run?.patchFolder || "", deploymentBatch }, onProgress, signal),
-        written => written.files);
-    }
-    catch (error) {
-      if (/所选字体缺少/.test(String(error))) {
-        const report = JSON.parse(new TextDecoder().decode(await readFileBytes(p.folder + "/font-plan/font-plan.json"))) as UnityFontPlan;
-        setFontPlan(report);
-      }
-      throw error;
-    }
-    const generated: DeploymentPatch = { ...result, deploymentExcluded: excluded };
+    const generated = await generateOfflinePatch(root, p, { source, target, onlySourceLanguage, imageTarget: picture.target, fontPath, extraCharacters },
+      run, excluded, deploymentBatch, onProgress, signal, {
+        run: unityRun, measure: measureDeploymentStage, readFile: readFileBytes, reportFontPlan: setFontPlan,
+      });
     setPatch(generated); setApplied(false); setDirty(false);
-    setMessage(`已生成 ${result.files} 个补丁文件 · ${result.entries} 条译文 · ${result.images || 0} 张译图 · ${result.mosaicImages || 0} 张去码图 · ${result.fontReplacements} 个替换字体`);
+    setMessage(offlineExportMessage(generated));
     return generated;
-  }
-  async function applyPatch(result: UnityPatch, onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, discardOnStop = false) {
-    setBusy("应用到游戏");
-    const response = await measureDeploymentStage(root, "apply",
-      () => unityRun<{ files?: number; restoredPatches: number }>("apply", { root, path: result.folder, discardOnStop }, progress => {
-        if (progress.detail.includes("旧补丁")) logAction(progress.detail, "info", "补丁恢复");
-        onProgress?.(progress);
-      }, signal),
-      applied => applied.files ?? result.files,
-    ).catch(async cause => {
-      try {
-        const [status] = await unityRun<Array<{ installed: boolean }>>("installation-status", { roots: [root] });
-        setInstalled(status.installed);
-        setApplied(false);
-        onInstallationChange?.(root, status.installed);
-      } catch (statusError) {
-        logAction(`读取补丁恢复状态失败：${String(statusError)}`, "error");
-      }
-      throw cause;
-    });
-    setApplied(true); setInstalled(true); onInstallationChange?.(root, true);
-    setMessage(`${response.restoredPatches > 0 ? `已卸载 ${response.restoredPatches} 个旧补丁并完成替换。` : ""}已将 ${result.files} 个补丁文件应用到游戏。原件保存在补丁目录的 original 文件夹，实际显示请启动游戏检查。`);
   }
   async function startWorkflow(startStep: number, endStep: number, resume = false, automatic = startStep < endStep, updateScan = false, part?: UnityTranslationPart, imageChain = false) {
     if (importPreviewRef.current) { setActionError("请先应用或取消右侧的导入预览"); return; }
@@ -2148,20 +2108,18 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setMessage("已请求启动游戏。");
     }, true, setActionError);
   };
-  const uninstallPatch = async () => {
-    if (!installed || locked || !await confirm("卸载嵌字翻译补丁并恢复游戏原件？工程、译文、补丁及原件备份会保留。请先关闭游戏。", { title: "卸载补丁", kind: "warning", okLabel: "卸载补丁", cancelLabel: "取消" })) return;
-    await operation("卸载补丁", async () => {
-      await taskWrites.current;
-      const workspace = await unityRun<UnityWorkspace<RunCheckpoint>>("uninstall", { root }, progress => { setMessage(progress.detail); showLocalActivity(progress.detail, "running", imagePart, progress.completed, progress.total); });
+  const uninstallPatch = () => runUninstall<RunCheckpoint>({
+    locked, confirm, operation, beforeUninstall: () => taskWrites.current,
+    onProgress: progress => showLocalActivity(progress.detail, "running", imagePart, progress.completed, progress.total),
+    restoreWorkspace: workspace => {
       const p = workspace.saved.project;
       if (p?.images) p.images = p.images.map(normalizeUnityImageSelection);
       latest.current = p; setProject(p);
       checkpointRef.current = workspace.task; setCheckpoint(workspace.task); queuedSignature.current = "";
-      setPatch(null); setInstalled(workspace.installed); setApplied(false); onInstallationChange?.(root, workspace.installed);
-      setGeneration(null); setDirty(false); setActiveStep(3);
-      setMessage("补丁已卸载，游戏原件已恢复；工程、译文和备份已保留。");
-    });
-  };
+      setPatch(null);
+    },
+    finishUninstall: () => { setGeneration(null); setDirty(false); setActiveStep(3); },
+  });
   const textBatchErrors: BatchRow[] = translationFailures.map(entry => ({
     id: entry.id, label: "#" + entry.id, detail: explainUnityFailure(entry.error).reason, kind: "text" as const,
   }));
@@ -2464,7 +2422,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const scopedPatchReady = scanReady && (enabledPhases.includes("text") && textReady && textCount > 0 ||
     enabledPhases.includes("image") && imagesReady && patchImages.length > 0 ||
     enabledPhases.includes("mosaic") && mosaicCount > 0);
-  const deploymentPercent = generation && generation.total ? Math.min(100, Math.round((generation.completed / generation.total) * 100)) : null;
 
   function changeDeploymentPlan(plan: DeploymentPlan) {
     if (!root || locked || deploymentController.current) return false;
@@ -2769,9 +2726,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       entries: project?.entries || [],
       images: { total: project?.images?.length || 0, ready: patchImages.length },
       mosaic: { enabled: !!root, count: mosaicCount },
-      progress: generation && generation.state !== "done" && generation.state !== "skipped"
-        ? { percent: deploymentPercent, state: generation.state === "error" ? "error" : generation.state === "running" ? "active" : "todo", detail: generation.detail, label: deploymentRun ? deploymentRun.steps.map(step => deploymentLabel[step]).join("、") : generation.step === 4 ? "应用到游戏" : "生成补丁" }
-        : null,
+      progress: mapOfflineDeploymentProgress(generation, deploymentRun?.steps.map(step => deploymentLabel[step]).join("、")),
     },
     actions: {
       execute: () => runDeployment("automatic"),
@@ -2787,23 +2742,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       regenerate: () => runDeployment("export"),
       apply: () => { if (activePatch) void startWorkflow(4, 4); },
       uninstall: () => void uninstallPatch(),
-      removeLayer: phase => void (async () => {
-        if (!project || !applied || !installed || !patch || locked) return;
-        const layers = patch as DeploymentPatch & { mosaicImages?: number };
-        const present = deploymentPhases.filter(id => id === "text" ? layers.entries || layers.fontReplacements
-          : id === "image" ? layers.images : layers.mosaicImages);
-        if (!present.includes(phase)) return;
-        if (present.length === 1) { await uninstallPatch(); return; }
-        const label = phase === "text" ? "文本" : phase === "image" ? "译图" : "去码图";
-        if (!await confirmation.ask("卸载" + label, "将根据当前工程重新生成其余已安装的部分并替换游戏补丁。请先关闭游戏。")) return;
-        await operation("卸载" + label, async () => {
-          const excluded = deploymentPhases.filter(id => id === phase || !present.includes(id));
-          const replacement = await exportPatch(project, undefined, undefined, undefined, excluded);
-          await applyPatch(replacement);
-          remember({ ...(checkpointRef.current || projectCheckpoint(project)), step: 4, endStep: 4, finished: true,
-            patch: replacement, patchFolder: replacement.folder });
-        });
-      })(),
+      removeLayer: phase => void removeLayer(phase, {
+        project, patch, locked, ask: confirmation.ask, operation, uninstall: uninstallPatch,
+        exportReplacement: (project, excluded) => exportPatch(project, undefined, undefined, undefined, excluded),
+        rememberReplacement: (project, replacement) => remember({ ...(checkpointRef.current || projectCheckpoint(project)), step: 4, endStep: 4, finished: true,
+          patch: replacement, patchFolder: replacement.folder }),
+      }),
       reapply: () => { if (activePatch) void restartStage(4); },
       launch: () => void launchGame(),
       openReport: () => { if (fontPlan) void openTranslationFile(fontPlan.folder + "/字库检查.txt"); },
