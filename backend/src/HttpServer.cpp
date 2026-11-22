@@ -5,6 +5,7 @@
 #include "TranslateClient.h"
 #include "RuntimeLlmBatcher.h"
 #include "UnityAutoTranslator.h"
+#include "UnityInstallJobs.h"
 #include "PricingStore.h"
 #include "UsageStore.h"
 #include "Utf8Path.h"
@@ -2607,6 +2608,40 @@ int HttpServer::run()
         }
     }));
 
+    UnityInstallJobs unityInstalls;
+    const auto installPath = [](const std::string& path) {
+        if (path.empty()) throw std::invalid_argument("请选择游戏目录或主程序");
+        const auto detected = UnityAutoTranslator::detect(path);
+        if (!detected.ok || detected.gameDir.empty())
+            throw std::invalid_argument(detected.error.empty() ? "请选择具体的 Unity 游戏" : detected.error);
+        return detected.gameDir;
+    };
+    const auto unityWriteConflict = [](httplib::Response& res) {
+        res.status = 409;
+        res.set_content(json{{"ok", false}, {"code", "UNITY_INSTALL_CONFLICT"},
+            {"error", "这个游戏正在进行安装或文件写入，请等当前操作结束"}}.dump(), "application/json");
+    };
+    const auto installationStatus = [&](const httplib::Request& req, httplib::Response& res, bool cancel) {
+        try {
+            const auto taskId = req.get_param_value("taskId");
+            size_t consumed = 0;
+            const auto id = std::stoul(taskId, &consumed);
+            if (consumed != taskId.size() || id > UINT_MAX) throw std::invalid_argument("无效的安装任务编号");
+            const auto state = unityInstalls.status(static_cast<unsigned>(id), cancel);
+            if (!state) {
+                res.status = 404;
+                res.set_content(errorJson("安装任务不存在或记录已过期").dump(), "application/json");
+                return;
+            }
+            res.set_content(state->dump(), "application/json");
+        } catch (const std::exception&) {
+            res.status = 400;
+            res.set_content(errorJson("无效的安装任务编号").dump(), "application/json");
+        }
+    };
+    svr.Get("/api/unity/install-task", withCors([&](const auto& req, auto& res) { installationStatus(req, res, false); }));
+    svr.Delete("/api/unity/install-task", withCors([&](const auto& req, auto& res) { installationStatus(req, res, true); }));
+
     svr.Get("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {
         try
         {
@@ -2645,11 +2680,11 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/config", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/config", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
-            const std::string path = body.value("path", "");
+            const std::string path = installPath(body.value("path", ""));
             std::vector<UnityIniSection> sections;
             if (body.contains("sections") && body["sections"].is_array())
             {
@@ -2673,17 +2708,19 @@ int HttpServer::run()
                         sections.push_back(std::move(sec));
                 }
             }
-            const auto result = UnityAutoTranslator::saveConfig(path, sections);
-            res.set_content(
-                json{
-                    {"ok", result.ok},
-                    {"error", result.error},
-                    {"exists", result.exists},
-                    {"path", result.path},
-                    {"installMethod", result.installMethod},
-                }
-                    .dump(),
-                "application/json");
+            if (!unityInstalls.write(storage::pathKey(utf8path::pathFromUtf8(path)), [&] {
+                const auto result = UnityAutoTranslator::saveConfig(path, sections);
+                res.set_content(
+                    json{
+                        {"ok", result.ok},
+                        {"error", result.error},
+                        {"exists", result.exists},
+                        {"path", result.path},
+                        {"installMethod", result.installMethod},
+                    }
+                        .dump(),
+                    "application/json");
+            })) unityWriteConflict(res);
         }
         catch (const std::exception& ex)
         {
@@ -2957,7 +2994,7 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/install", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/install", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
@@ -2969,17 +3006,12 @@ int HttpServer::run()
             ir.fallbackEndpoint = body.value("fallbackEndpoint", "");
             ir.runSetup = body.value("runSetup", true);
             ir.configIni = body.value("configIni", "");
-            const auto result = UnityAutoTranslator::install(ir);
-            res.set_content(json{
-                {"ok", result.ok},
-                {"error", result.error},
-                {"gameDir", result.gameDir},
-                {"package", result.package},
-                {"version", result.version},
-                {"configPath", result.configPath},
-                {"installMethod", result.installMethod},
-                {"steps", result.steps},
-            }.dump(), "application/json");
+            ir.gamePath = installPath(ir.gamePath);
+            const auto [status, task] = unityInstalls.start(storage::pathKey(utf8path::pathFromUtf8(ir.gamePath)), [ir](const UnityInstallControl& control) {
+                return UnityAutoTranslator::install(ir, control);
+            });
+            res.status = status;
+            res.set_content(task.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -2988,24 +3020,27 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/fix-font", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/fix-font", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             UnityFixFontRequest fr;
             fr.gamePath = body.value("path", "");
             fr.language = body.value("language", "zh-CN");
-            const auto result = UnityAutoTranslator::fixFont(fr);
-            res.set_content(json{
-                {"ok", result.ok},
-                {"error", result.error},
-                {"gameDir", result.gameDir},
-                {"package", result.package},
-                {"version", result.version},
-                {"configPath", result.configPath},
-                {"installMethod", result.installMethod},
-                {"steps", result.steps},
-            }.dump(), "application/json");
+            fr.gamePath = installPath(fr.gamePath);
+            if (!unityInstalls.write(storage::pathKey(utf8path::pathFromUtf8(fr.gamePath)), [&] {
+                const auto result = UnityAutoTranslator::fixFont(fr);
+                res.set_content(json{
+                    {"ok", result.ok},
+                    {"error", result.error},
+                    {"gameDir", result.gameDir},
+                    {"package", result.package},
+                    {"version", result.version},
+                    {"configPath", result.configPath},
+                    {"installMethod", result.installMethod},
+                    {"steps", result.steps},
+                }.dump(), "application/json");
+            })) unityWriteConflict(res);
         }
         catch (const std::exception& ex)
         {
@@ -3014,21 +3049,24 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/uninstall", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/uninstall", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             UnityUninstallRequest ur;
             ur.gamePath = body.value("path", "");
-            const auto result = UnityAutoTranslator::uninstall(ur);
-            res.set_content(json{
-                {"ok", result.ok},
-                {"error", result.error},
-                {"gameDir", result.gameDir},
-                {"installMethod", result.installMethod},
-                {"steps", result.steps},
-                {"removed", result.removed},
-            }.dump(), "application/json");
+            ur.gamePath = installPath(ur.gamePath);
+            if (!unityInstalls.write(storage::pathKey(utf8path::pathFromUtf8(ur.gamePath)), [&] {
+                const auto result = UnityAutoTranslator::uninstall(ur);
+                res.set_content(json{
+                    {"ok", result.ok},
+                    {"error", result.error},
+                    {"gameDir", result.gameDir},
+                    {"installMethod", result.installMethod},
+                    {"steps", result.steps},
+                    {"removed", result.removed},
+                }.dump(), "application/json");
+            })) unityWriteConflict(res);
         }
         catch (const std::exception& ex)
         {
@@ -3037,22 +3075,18 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/install-loader", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/install-loader", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             UnityLoaderRequest lr;
             lr.gamePath = body.value("path", "");
-            const auto result = UnityAutoTranslator::installLoader(lr);
-            res.set_content(json{
-                {"ok", result.ok},
-                {"error", result.error},
-                {"gameDir", result.gameDir},
-                {"package", result.package},
-                {"version", result.version},
-                {"installMethod", result.installMethod},
-                {"steps", result.steps},
-            }.dump(), "application/json");
+            lr.gamePath = installPath(lr.gamePath);
+            const auto [status, task] = unityInstalls.start(storage::pathKey(utf8path::pathFromUtf8(lr.gamePath)), [lr](const UnityInstallControl& control) {
+                return UnityAutoTranslator::installLoader(lr, control);
+            });
+            res.status = status;
+            res.set_content(task.dump(), "application/json");
         }
         catch (const std::exception& ex)
         {
@@ -3061,21 +3095,24 @@ int HttpServer::run()
         }
     }));
 
-    svr.Post("/api/unity/uninstall-loader", withCors([](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/unity/uninstall-loader", withCors([&](const httplib::Request& req, httplib::Response& res) {
         try
         {
             const json body = json::parse(req.body.empty() ? "{}" : req.body);
             UnityLoaderRequest lr;
             lr.gamePath = body.value("path", "");
-            const auto result = UnityAutoTranslator::uninstallLoader(lr);
-            res.set_content(json{
-                {"ok", result.ok},
-                {"error", result.error},
-                {"gameDir", result.gameDir},
-                {"installMethod", result.installMethod},
-                {"steps", result.steps},
-                {"removed", result.removed},
-            }.dump(), "application/json");
+            lr.gamePath = installPath(lr.gamePath);
+            if (!unityInstalls.write(storage::pathKey(utf8path::pathFromUtf8(lr.gamePath)), [&] {
+                const auto result = UnityAutoTranslator::uninstallLoader(lr);
+                res.set_content(json{
+                    {"ok", result.ok},
+                    {"error", result.error},
+                    {"gameDir", result.gameDir},
+                    {"installMethod", result.installMethod},
+                    {"steps", result.steps},
+                    {"removed", result.removed},
+                }.dump(), "application/json");
+            })) unityWriteConflict(res);
         }
         catch (const std::exception& ex)
         {

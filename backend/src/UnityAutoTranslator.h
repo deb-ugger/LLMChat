@@ -1,4 +1,5 @@
 #pragma once
+#include <stop_token>
 
 #include <functional>
 #include <string>
@@ -155,6 +156,11 @@ struct UnityFixFontRequest
     std::string language = "zh-CN";
 };
 
+struct UnityInstallControl {
+    std::stop_token stop;
+    std::function<void(std::string)> progress;
+};
+
 class UnityAutoTranslator
 {
 public:
@@ -168,11 +174,11 @@ public:
      */
     static UnityLaunchResult launchPatchAndRun(const std::string& gamePath);
     static UnitySelfCheckResult selfCheck(const std::string& gamePath);
-    static UnityInstallResult install(const UnityInstallRequest& req);
+    static UnityInstallResult install(const UnityInstallRequest& req, const UnityInstallControl& control);
     /** Detect system CJK font or download Noto Sans SC; write OverrideFont into AutoTranslator config. */
     static UnityInstallResult fixFont(const UnityFixFontRequest& req);
     static UnityUninstallResult uninstall(const UnityUninstallRequest& req);
-    static UnityInstallResult installLoader(const UnityLoaderRequest& req);
+    static UnityInstallResult installLoader(const UnityLoaderRequest& req, const UnityInstallControl& control);
     static UnityUninstallResult uninstallLoader(const UnityLoaderRequest& req);
     static std::vector<UnityEndpointInfo> endpoints();
     static UnityConfigResult getConfig(const std::string& gamePath);

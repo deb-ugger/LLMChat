@@ -360,6 +360,10 @@ async function request<T>(
   return data as T;
 }
 
+type UnityInstallStatus =
+  | { state: "running" | "stopping"; detail: string }
+  | { state: "done"; result: { ok: boolean; error?: string; code?: string; steps: string[]; configPath?: string; installMethod: string; version: string } };
+
 export type OcrMode = "fast" | "precise" | "english" | "manga";
 
 export type OcrModelModeStatus = {
@@ -983,19 +987,14 @@ export const api = {
     runSetup?: boolean;
     configIni?: string;
   }) =>
-    request<{
-      ok: boolean;
-      error?: string;
-      gameDir: string;
-      package: string;
-      version: string;
-      configPath: string;
-      installMethod: string;
-      steps: string[];
-    }>("/api/unity/install", {
+    request<{ taskId: number }>("/api/unity/install", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  unityInstallStatus: (taskId: number) =>
+    request<UnityInstallStatus>("/api/unity/install-task?taskId=" + taskId),
+  unityCancelInstall: (taskId: number) =>
+    request<UnityInstallStatus>("/api/unity/install-task?taskId=" + taskId, { method: "DELETE" }),
   unityGetConfig: (path: string) =>
     request<{
       ok: boolean;
@@ -1067,15 +1066,7 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
   unityInstallLoader: (path: string) =>
-    request<{
-      ok: boolean;
-      error?: string;
-      gameDir: string;
-      package: string;
-      version: string;
-      installMethod: string;
-      steps: string[];
-    }>("/api/unity/install-loader", {
+    request<{ taskId: number }>("/api/unity/install-loader", {
       method: "POST",
       body: JSON.stringify({ path }),
     }),

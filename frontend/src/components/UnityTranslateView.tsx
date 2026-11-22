@@ -240,6 +240,7 @@ export function UnityTranslateView({
 
   const [searchQuery, setSearchQuery] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [installTask, setInstallTask] = useState<{ id: number; detail: string; stopping: boolean } | null>(null);
   const busy = busyAction !== null;
   const actionLabel = (id: string, idle: string) =>
     busyAction === id ? "处理中" : idle;
@@ -915,6 +916,37 @@ export function UnityTranslateView({
     }
   }
 
+  async function followInstallation(start: Promise<{ taskId: number }>) {
+    const { taskId } = await start;
+    setInstallTask({ id: taskId, detail: "准备安装", stopping: false });
+    try {
+      for (;;) {
+        const status = await api.unityInstallStatus(taskId);
+        if (status.state === "done") return status.result;
+        setInstallTask(current => current?.stopping && status.state === "running" ? current :
+          { id: taskId, detail: status.detail, stopping: status.state === "stopping" });
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } finally {
+      setInstallTask(null);
+    }
+  }
+
+  async function cancelInstallation() {
+    const task = installTask;
+    if (!task || task.stopping) return;
+    setInstallTask({ ...task, stopping: true, detail: "正在请求取消安装" });
+    try {
+      const status = await api.unityCancelInstall(task.id);
+      if (status.state === "stopping") {
+        setInstallTask(current => current?.id === task.id ? { ...current, detail: status.detail } : current);
+      }
+    } catch (error) {
+      setInstallTask(current => current?.id === task.id ? task : current);
+      reportError(toFriendlyError(error, "取消安装失败"));
+    }
+  }
+
   const onInstall = async () => {
     const gameDir = selected?.gameDir;
     if (!gameDir) {
@@ -954,7 +986,7 @@ export function UnityTranslateView({
     sections = setIniValue(sections, "General", "FromLanguage", fromLang);
     setConfigSections(sections);
     await changePluginInstallation(gameDir, "install-plugin",
-      () => api.unityInstall({
+      () => followInstallation(api.unityInstall({
         path: gameDir,
         language: targetLang,
         fromLanguage: fromLang,
@@ -962,7 +994,7 @@ export function UnityTranslateView({
         fallbackEndpoint,
         runSetup: true,
         configIni: serializeIniSections(sections),
-      }),
+      })),
       result => `安装完成（${result.installMethod} / v${result.version}）。配置已写入：${result.configPath}`,
     );
   };
@@ -1014,7 +1046,7 @@ export function UnityTranslateView({
     ) {
       return;
     }
-    await changePluginInstallation(gameDir, "install-framework", () => api.unityInstallLoader(gameDir),
+    await changePluginInstallation(gameDir, "install-framework", () => followInstallation(api.unityInstallLoader(gameDir)),
       result => selected.isIl2Cpp
         ? `插件框架安装完成（BepInEx ${result.version}）。建议先启动一次游戏完成初始化，再安装翻译插件。`
         : "插件框架安装完成（ReiPatcher）。请再点「安装翻译插件」。",
@@ -2742,6 +2774,11 @@ export function UnityTranslateView({
                 {actionLabel("uninstall-plugin", "卸载翻译插件")}
               </button>
             </div>
+            {installTask && <div className="unity-status-actions">
+              <span role="status">{installTask.detail}</span>
+              <button type="button" className="unity-btn" disabled={installTask.stopping}
+                onClick={() => void cancelInstallation()}>取消安装</button>
+            </div>}
           </section>
             </aside>
           </>

@@ -1034,6 +1034,81 @@ std::vector<fs::path> listBepInExLoaderTargets(const fs::path& gameDir)
 }
 
 #ifdef _WIN32
+thread_local const UnityInstallControl* installControl = nullptr;
+
+struct InstallControlScope {
+    explicit InstallControlScope(const UnityInstallControl& control) { installControl = &control; }
+    ~InstallControlScope() { installControl = nullptr; }
+};
+
+bool installCancelled()
+{
+    return installControl && installControl->stop.stop_requested();
+}
+
+void installStage(const std::string& detail)
+{
+    if (installCancelled()) throw std::runtime_error("安装已取消，已写入的文件可能保留");
+    if (installControl) installControl->progress(detail);
+}
+
+bool runInstallerProcess(std::wstring command, const wchar_t* directory, DWORD flags, DWORD timeoutMs, DWORD& code, std::string& error)
+{
+    error.clear();
+    if (installCancelled()) { error = "安装已取消"; return false; }
+    struct Handle {
+        HANDLE value;
+        ~Handle() { if (value) CloseHandle(value); }
+    };
+    const Handle job{CreateJobObjectW(nullptr, nullptr)};
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        error = "无法管理安装进程，Windows 错误 " + std::to_string(GetLastError());
+        return false;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+            flags | CREATE_SUSPENDED, nullptr, directory, &si, &pi)) {
+        error = "无法启动安装进程，Windows 错误 " + std::to_string(GetLastError());
+        return false;
+    }
+    const Handle process{pi.hProcess}, thread{pi.hThread};
+    if (!AssignProcessToJobObject(job.value, process.value)) {
+        error = "无法接管安装进程，Windows 错误 " + std::to_string(GetLastError());
+        TerminateProcess(process.value, 1);
+        WaitForSingleObject(process.value, INFINITE);
+        return false;
+    }
+
+    if (ResumeThread(thread.value) == static_cast<DWORD>(-1)) {
+        error = "无法运行安装进程，Windows 错误 " + std::to_string(GetLastError());
+        TerminateJobObject(job.value, 1);
+    }
+    const ULONGLONG started = GetTickCount64();
+    for (;;) {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+        const bool known = QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation,
+            &accounting, sizeof(accounting), nullptr);
+        if (known && accounting.ActiveProcesses == 0) break;
+        if (error.empty() && (!known || installCancelled() || GetTickCount64() - started >= timeoutMs)) {
+            error = !known ? "无法查询安装进程状态" : installCancelled() ? "安装已取消" : "安装进程超时";
+            TerminateJobObject(job.value, 1);
+        }
+        Sleep(100);
+    }
+
+    if (!error.empty()) return false;
+    if (!GetExitCodeProcess(process.value, &code)) {
+        error = "无法读取安装进程退出码";
+        return false;
+    }
+    return true;
+}
+
 bool downloadFile(const std::string& url, const fs::path& dest, std::string& error);
 bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& error);
 struct CjkFontSettings
@@ -1229,31 +1304,9 @@ bool downloadNotoFontToCache(std::vector<std::string>& steps, std::string& error
 
 bool runToolProcess(const fs::path& exe, const std::wstring& args, std::string& error)
 {
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring cmd = L"\"" + exe.wstring() + L"\" " + args;
-    std::wstring mutableCmd = cmd;
-    if (!CreateProcessW(
-            nullptr,
-            mutableCmd.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            CREATE_NO_WINDOW,
-            nullptr,
-            nullptr,
-            &si,
-            &pi))
-    {
-        error = "无法启动工具: " + pathUtf8(exe.filename());
-        return false;
-    }
-    WaitForSingleObject(pi.hProcess, 600000);
     DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    if (!runInstallerProcess(L"\"" + exe.wstring() + L"\" " + args, nullptr, CREATE_NO_WINDOW, 600000, code, error))
+        return false;
     if (code != 0)
     {
         error = pathUtf8(exe.filename()) + " 退出码 " + std::to_string(code);
@@ -2008,6 +2061,7 @@ void scanUnityGamesRecursive(
 #ifdef _WIN32
 bool downloadFile(const std::string& url, const fs::path& dest, std::string& error)
 {
+    installStage("正在下载安装资源");
     const std::wstring wurl = toWide(url);
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
@@ -2124,6 +2178,7 @@ bool downloadFile(const std::string& url, const fs::path& dest, std::string& err
         char buffer[64 * 1024];
         uint64_t received = 0;
         for (;;) {
+            if (installCancelled()) { error = "下载已取消"; return false; }
             DWORD count = 0;
             if (!WinHttpReadData(request, buffer, sizeof(buffer), &count)) {
                 error = "读取下载响应失败，Windows 错误 " + std::to_string(GetLastError());
@@ -2140,6 +2195,7 @@ bool downloadFile(const std::string& url, const fs::path& dest, std::string& err
         }
         out.close();
         if (!out) { error = "保存下载文件失败"; return false; }
+        if (installCancelled()) { error = "下载已取消"; return false; }
         if (!MoveFileExW(temporary.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             error = "发布下载文件失败，Windows 错误 " + std::to_string(GetLastError());
             return false;
@@ -2181,40 +2237,8 @@ bool looksLikeZip(const fs::path& zipPath, std::string& error)
 
 bool runHiddenProcess(std::wstring cmdLine, DWORD timeoutMs, DWORD& outCode, std::string& error)
 {
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(
-            nullptr,
-            cmdLine.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            CREATE_NO_WINDOW,
-            nullptr,
-            nullptr,
-            &si,
-            &pi))
-    {
-        error = "无法启动解压进程（错误 " + std::to_string(GetLastError()) + "）";
-        outCode = 1;
-        return false;
-    }
-    const DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (wait == WAIT_TIMEOUT)
-    {
-        TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        error = "解压超时";
-        outCode = 1;
-        return false;
-    }
-    outCode = 1;
-    GetExitCodeProcess(pi.hProcess, &outCode);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return outCode == 0;
+    return runInstallerProcess(std::move(cmdLine), nullptr, CREATE_NO_WINDOW, timeoutMs, outCode, error)
+        && outCode == 0;
 }
 
 bool copyExtractedContents(const fs::path& from, const fs::path& to, std::string& error)
@@ -2231,6 +2255,7 @@ bool copyExtractedContents(const fs::path& from, const fs::path& to, std::string
     {
         if (ec)
             break;
+        if (installCancelled()) { error = "复制已取消，已写入的文件可能保留"; return false; }
         const fs::path dest = to / entry.path().filename();
         std::error_code copyEc;
         fs::copy(
@@ -2270,6 +2295,7 @@ std::size_t countFilesRecursive(const fs::path& dir)
 
 bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& error)
 {
+    installStage("正在解压安装包");
     if (!looksLikeZip(zipPath, error))
         return false;
 
@@ -2337,6 +2363,7 @@ bool extractZip(const fs::path& zipPath, const fs::path& destDir, std::string& e
         }
     }
 
+    installStage("正在复制文件到游戏目录");
     if (!copyExtractedContents(stagingRoot, destDir, error))
         return false;
     return true;
@@ -2357,31 +2384,10 @@ bool unpackTranslatorPackage(const std::string& method, const fs::path& gameDir,
 
 bool runProcess(const fs::path& exe, const fs::path& workDir, std::string& error)
 {
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring cmd = L"\"" + exe.wstring() + L"\"";
     const std::wstring dir = workDir.wstring();
-    if (!CreateProcessW(
-            nullptr,
-            cmd.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            0,
-            nullptr,
-            dir.c_str(),
-            &si,
-            &pi))
-    {
-        error = "无法运行安装程序: " + pathUtf8(exe.filename());
-        return false;
-    }
-    WaitForSingleObject(pi.hProcess, 180000);
     DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    if (!runInstallerProcess(L"\"" + exe.wstring() + L"\"", dir.c_str(), 0, 180000, code, error))
+        throw std::runtime_error(error);
     if (code != 0)
     {
         if (code == 0xE0434352u)
@@ -3672,7 +3678,7 @@ UnitySelfCheckResult UnityAutoTranslator::selfCheck(const std::string& gamePath)
     }
 }
 
-UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
+UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req, const UnityInstallControl& control)
 {
     UnityInstallResult result;
 #ifndef _WIN32
@@ -3681,7 +3687,9 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
 #else
     try
     {
-        const auto detected = detect(req.gamePath);
+        const InstallControlScope scope(control);
+        installStage("正在检测游戏");
+        const auto detected = detect(req.gamePath, false);
         result.steps.push_back("检测游戏目录");
         std::string targetDir;
         UnityGameItem item;
@@ -3725,6 +3733,7 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
             {
                 result.steps.push_back("运行 SetupReiPatcherAndAutoTranslator.exe");
                 std::string setupErr;
+                installStage("正在运行 ReiPatcher 安装程序");
                 const bool setupOk = runProcess(setup, gameDirPath, setupErr);
                 if (!setupOk)
                 {
@@ -3767,7 +3776,9 @@ UnityInstallResult UnityAutoTranslator::install(const UnityInstallRequest& req)
 
         CjkFontSettings fonts;
         std::string fontWarning;
+        installStage("正在准备字体");
         ensureCjkFontForGame(gameDirPath, cfg.language, result.steps, fonts, fontWarning);
+        installStage("正在保存翻译插件配置");
 
         const fs::path configPath = writeConfig(gameDirPath, item.installMethod, cfg, fonts);
         result.configPath = pathUtf8(configPath);
@@ -4023,7 +4034,7 @@ UnityUninstallResult UnityAutoTranslator::uninstall(const UnityUninstallRequest&
     }
 }
 
-UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& req)
+UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& req, const UnityInstallControl& control)
 {
     UnityInstallResult result;
 #ifndef _WIN32
@@ -4032,7 +4043,9 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
 #else
     try
     {
-        const auto detected = detect(req.gamePath);
+        const InstallControlScope scope(control);
+        installStage("正在检测游戏");
+        const auto detected = detect(req.gamePath, false);
         result.steps.push_back("检测游戏目录");
         std::string targetDir;
         UnityGameItem item;
@@ -4070,6 +4083,7 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             {
                 result.steps.push_back("运行 Setup（注入 ReiPatcher 框架）");
                 std::string setupErr;
+                installStage("正在运行 ReiPatcher 安装程序");
                 const bool setupOk = runProcess(setup, targetPath, setupErr);
                 if (!setupOk)
                 {
@@ -4091,6 +4105,7 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
                 result.steps.push_back("未找到 Setup 程序，已跳过自动注入");
             }
 
+            installStage("正在完成 ReiPatcher 框架安装");
             // Official Setup always installs AutoTranslator too — strip plugin, keep framework.
             if (detectAutoTranslator(targetPath)
                 || fs::exists(targetPath / "AutoTranslator", ec)
@@ -4164,8 +4179,6 @@ UnityInstallResult UnityAutoTranslator::installLoader(const UnityLoaderRequest& 
             if (!downloadFile(url, zipPath, err))
             {
                 result.error = err;
-                std::error_code ec;
-                fs::remove(zipPath, ec);
                 return result;
             }
         }
