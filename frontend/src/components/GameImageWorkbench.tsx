@@ -29,7 +29,7 @@ import {useGameImageTask,imageTaskDuration,type GameImageTask} from "../hooks/us
 import { LocalPaddleOcr } from "../ocr/paddleOcr";
 import { classifyImageText, screenGameImages, ScreeningModelError, needsGameImageScreening, needsGameImageRefinement, restoreReviewSelection, clearGameImageRefinement, refineGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, imagePresenceThresholds, imageRefinementKeyMatches, gameImageAlreadyTarget, gameImageMatchesSource, skipGameImageOutsideSource, restoreGameImageSourceSkip, restoreGameImageRecognition, gameImageTranslationReadiness, GAME_IMAGE_SCREENING_LANES, localGameImageScreeningLanes } from "../gameImageScreening";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { importedConfirmation, renderedConfirmation, saveGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
+import { importedConfirmation, renderedConfirmation, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { open } from "@tauri-apps/plugin-dialog";
 import { API_BASE, type OcrMode, type Settings } from "../api";
 import { engineReady, parseEngineKeys } from "../translateEngines";
@@ -43,12 +43,14 @@ import type { UnityImage, UnityImageRegion, UnityProgress, UnityProject } from "
 import { unityImageReadyForTarget, unityImageWorkDone, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, measureDeploymentStage } from "../unityWorkflow";
 import { ImagePreviewReaderContext, UnityImageWorkbench } from "./UnityImageWorkbench";
 import { reconcileImageEdit } from "../unityImageEdits";
+import type { ImageExportCandidate } from "../hooks/useGameImageExportPackage";
 import "../unityOffline.css";
 
 type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;error:string}};
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 type ImageScanTiming = { parsed:number; reused:number; loadMs:number; listMs:number; parseMs:number };
 export type GameImageInfo = {scanTiming?:ImageScanTiming;state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number;
+  exportCandidates?: ImageExportCandidate[];
   operation?: { label: string; detail?: string; completed?: number; total?: number }};
 const imageOperationLabels = {
   filter: "筛选图片", refine: "复筛图片", recognize: "识字与定位", translate: "翻译图片文字",
@@ -561,6 +563,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const redrawCount = images.filter(gameImageRedrawSelected).length;
   const complete=useMemo(()=>({restore:false,filter:images.length>0&&!images.some(needsGameImageScreening),refine:!refineNeedsResume&&!images.some(needsRefinement),recognize:selected.every(image=>image.ocrCompleted),translate:selected.every(image=>unityImageWorkDone(image,target))}),[images,selected,refineKey,refineNeedsResume,target]);
   const manualReviewPending = images.some(image => unityImageResultGroup(image) === "manual-review");
+  const exportCandidates = useMemo(() => images.filter(supportsGameImageConfirmation).map(image => ({
+    imageId: image.id, sourceHash: image.sourceHash,
+    renderedHash: image.selected && unityImageReadyForTarget(image, target) ? image.renderedHash || "" : undefined,
+  })), [images, target]);
   useEffect(() => {
     onTaskStateChange?.({
       scanTiming: (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming,
@@ -569,7 +575,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       complete: !!project && (images.length === 0 || complete.filter && complete.refine && !manualReviewPending &&
         !redrawCount && selected.every(image => unityImageWorkDone(image, target))),
       count: project ? images.length : null, folder: project?.folder || "", exists: existing, loaded: !!project,
-      selected: selected.length, valid: selected.filter(image => unityImageReadyForTarget(image, target)).length,
+      selected: selected.length, valid: selected.filter(image => unityImageReadyForTarget(image, target)).length, exportCandidates,
       operation: {
         label: busy || imageOperationLabels[operationStep.current],
         detail: progress?.detail,
@@ -579,7 +585,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     });
   }, [busy, task.task, progress?.state, progress?.detail, progress?.completed, progress?.total, step, project?.folder,
     images.length, existing, selected, complete.filter, complete.refine, complete.translate, manualReviewPending,
-    redrawCount, onTaskStateChange, target, (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming]);
+    redrawCount, onTaskStateChange, target, exportCandidates, (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming]);
   const resetImages = async (phase: keyof typeof resetLabels) => {
     const label = resetLabels[phase];
     const descriptions = {

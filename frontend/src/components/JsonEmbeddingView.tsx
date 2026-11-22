@@ -25,7 +25,7 @@ import { gameDropTarget } from "../hooks/useGameFileDrop";
 import { GameTextWorkspace, type GameTextHandle, type GameTextInfo } from "./GameTextWorkspace";
 import { UnityGameWorkspace } from "./UnityGameWorkspace";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { DeploymentCanvas, DeploymentThroughput, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
+import { DeploymentCanvas, DeploymentThroughput, ImageExportPackagePanel, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
   type DeploymentStep as CanvasStep, type DeploymentPhase as CanvasPhase, type DeploymentModel } from "./UnityDeploymentPanel";
 import { GameImageWorkbench, type GameImageInfo, type GameImageHandle } from "./GameImageWorkbench";
 import { createPortal } from "react-dom";
@@ -34,6 +34,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { API_BASE, api, type Settings } from "../api";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useGameImageExportPackage } from "../hooks/useGameImageExportPackage";
 const paths: Record<string, string> = { back: "m14 5-7 7 7 7M7 12h14", extract: "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5", json: "M7 3H4v18h3m10-18h3v18h-3M10 8l-2 4 2 4m4-8 2 4-2 4", backup: "M4 4h16v6H4zM6 10v11h12V10m-9 4h6", refresh: "M20 8a8 8 0 1 0 0 8m0-13v5h-5", rollback: "M9 4 3 10l6 6M3 10h11a6 6 0 0 1 0 12", inspect: "M4 4h11v16H4zM8 9h3m-3 5h3m6-2 3 3 4-6", generate: "M5 3h10l4 4v14H5zM9 12h6m-3-3v6", apply: "m4 12 5 5 11-12", stop: "M5 5h14v14H5z", open: "M10 4H3v17h17v-7M14 3h7v7m0-7L10 14", help: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20m-3 7a3 3 0 1 1 5 2c-2 1-2 2-2 3m0 3v1" };
 function IconAction({ name, label, caption, hint, disabled, onClick }: { name: string; label: string; caption?: string; hint?: string; disabled?: boolean; onClick?: () => void }) {
   return <span className="embed-action" data-tooltip={hint || label} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? label : undefined}><button type="button" className={`embed-icon${name==="help"?" is-help":""}${caption?" has-caption":""}`} aria-label={label} disabled={disabled} onClick={onClick}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>{caption&&<span>{caption}</span>}</button></span>;
@@ -46,6 +47,7 @@ function embeddingCapabilities(game: EmbeddingGame) {
   return {
     textSource: unreal ? "locres" : rpgMaker || wolf ? "engine-data" : null,
     imageProject: rpgMaker || wolf || unreal,
+    imageExport: rpgMaker || wolf,
     selfMosaic: rpgMaker || wolf || unreal,
     thirdPartyMosaic: unreal,
     runtimeDictionary: rpgMaker,
@@ -113,7 +115,7 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
-  const { textSource, imageProject, selfMosaic, thirdPartyMosaic, runtimeDictionary, backupScopes: availableBackupScopes } = embeddingCapabilities(game);
+  const { textSource, imageProject, imageExport, selfMosaic, thirdPartyMosaic, runtimeDictionary, backupScopes: availableBackupScopes } = embeddingCapabilities(game);
   const [hasLooseLocres, setHasLooseLocres] = useState(game.textSupported === true);
   const [checkingTextSource, setCheckingTextSource] = useState(false);
   const needsLooseLocres = textSource === "locres" && !hasLooseLocres;
@@ -217,7 +219,9 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [applyingTestConfiguration, setApplyingTestConfiguration] = useState(false);
   const touched = useRef(false);
   const textBusy = textInfo.running || textInfo.state === "screening";
-  const workflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textBusy || status.state === "running" || launching;
+  const [exportBusy, setExportBusy] = useState(false);
+  const otherWorkflowBusy = applyingTestConfiguration || checkingTextSource || deploymentRunning || pending || detecting || imageBusy || textBusy || status.state === "running" || launching;
+  const workflowBusy = otherWorkflowBusy || exportBusy;
   const busy = workflowBusy || mosaicBusy;
   const textUnfinished = !workflow.textSkipped && !!textInfo.sourcePath && !textInfo.loadResult?.error &&
     (textInfo.state === "screen-stopped" || textInfo.selected > textInfo.done && ["stopped", "error"].includes(textInfo.state));
@@ -736,12 +740,19 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     : deployment?.state === "stopped" ? `已中止 · ${phaseLabel} · 已完成产物保留`
       : deployment?.state === "error" ? `失败 · ${phaseLabel} · ${deployment.detail}` : "";
   const canApplyText = !!artifacts.text?.path && !artifacts.text.applied;
+  const exportLocked = otherWorkflowBusy || mosaicBusy || testing;
+  const exportPackage = useGameImageExportPackage({
+    gamePath: game.path, active: active && imageExport && part === "text" && textStep === 3,
+    locked: exportLocked, candidates: imageWorkflow.exportCandidates ?? [], mosaicIds: mosaicHandle.current?.selectedIds() ?? [],
+    onBusyChange: setExportBusy, confirm, launch: () => void launchGame(),
+  });
   const deploymentPanel = <div className="embed-deployment">
     <section className="embed-deploy-main" aria-label="生成与应用">
       <div className="dpl dpl-grid embed-product-grid">
         {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div></section>}
         {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div></section>}
         {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>生成去码图</button></div></section>}
+        {imageExport && <ImageExportPackagePanel model={{ locked: exportLocked || exportBusy, exportPackage: exportPackage.model }} actions={exportPackage.actions} />}
         <section className="dpl-panel" aria-label="应用到游戏"><div className="dpl-panel-head"><h3>应用到游戏</h3></div>
       <div className="embed-deploy-status" role="status">
         {stagedProducts && <strong>已生成，未应用 · {stagedProducts}</strong>}

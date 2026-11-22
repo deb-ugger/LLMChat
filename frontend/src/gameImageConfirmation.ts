@@ -22,7 +22,7 @@ export function confirmationBoxes(image: UnityImage, role: Role, rectangles: rea
     if (rect.every(Number.isFinite) && rect[0] < rect[2] && rect[1] < rect[3]) unique.set(rect.join(","), rect);
   }
   return [...unique.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3])
-    .map((rect, index): GameImageConfirmationBox => ({ id: role[0] + (index + 1), role, rect }));
+    .map((rect, index): GameImageConfirmationBox => ({ id: (role === "repair" ? "m" : role[0]) + (index + 1), role, rect }));
 }
 
 export function renderedConfirmation(image: UnityImage, regions: readonly UnityImageRegion[], targetLanguage: string, round = false): CandidateMetadata {
