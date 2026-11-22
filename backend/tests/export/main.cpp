@@ -1,4 +1,5 @@
 #include "GameImageExportPackage.h"
+#include "GameImageExportTransaction.h"
 #include "GameMosaicPatch.h"
 #include "RpgImageProject.h"
 
@@ -6,6 +7,7 @@
 #include <map>
 #include <system_error>
 #include <winioctl.h>
+#include <aclapi.h>
 
 namespace {
 namespace fs = std::filesystem;
@@ -428,9 +430,357 @@ void confirmation(const fs::path& scratch) {
     reject(f, "CONFIRMATION_REQUIRED", "missing mosaic confirmation");
 }
 
+namespace tx = gameimageexport::transaction;
+
+using FileTree = std::map<std::string, std::string>;
+
+FileTree fileTree(const fs::path& root) {
+    FileTree files;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        const auto name = gamefiles::key(entry.path().lexically_relative(root));
+        files[name] = entry.is_directory() ? "directory" : sha(entry.path());
+    }
+    return files;
+}
+
+struct Exported {
+    Fixture fixture;
+    fs::path dir;
+    FileTree original;
+    FileTree installed;
+
+    Exported(const fs::path& path, const std::string& engine) : fixture(path, engine) {
+        fixture.add(true, true);
+        fixture.add(false, true);
+        fixture.save();
+        original = fileTree(game());
+        RpgImageProject project;
+        dir = generate(project, fixture.request).packagePath;
+        installed = original;
+        for (const auto& file : manifest().at("files").get<std::vector<Json>>()) {
+            const auto name = file.at("relativePath").get<std::string>();
+            const auto payload = dir / "payload" / utf8path::pathFromUtf8(name);
+            check(file.at("sha256") == sha(payload), "exported payload SHA-256");
+            installed[name] = sha(payload);
+        }
+    }
+
+    const fs::path& game() const { return fixture.game; }
+    Json manifest() const { return Json::parse(gamefiles::read(dir / "manifest.json")); }
+    void manifest(const Json& value) const { gamefiles::write(dir / "manifest.json", value.dump()); }
+
+    fs::path backup() const { return dir / "receipts/backup"; }
+    void noPartials() const {
+        for (const auto& root : {game(), dir})
+            for (const auto& entry : fs::recursive_directory_iterator(root))
+                check(entry.path().extension() != ".partial", "unexpected partial: " + entry.path().string());
+    }
+};
+
+template<class Operation>
+void requireError(std::string_view code, std::string label, Operation operation) {
+    try {
+        operation();
+        throw std::runtime_error(label + ": unexpectedly succeeded");
+    } catch (const Error& e) {
+        check(e.code == code, label + ": expected " + std::string(code) + ", got " + e.code + ": " + e.what());
+        check(std::strlen(e.what()) > 0, label + ": empty error");
+        std::cout << "PASS " << label << ": " << e.code << '\n';
+    }
+}
+
+void normalTransactions(const fs::path& scratch) {
+    for (const std::string engine : {"rpg-maker-mv", "rpg-maker-mz", "wolf"}) {
+        Exported data(scratch / ("txn-" + engine), engine);
+        tx::apply(data.dir, data.game());
+        check(fileTree(data.game()) == data.installed, "A installed tree: " + engine);
+        check(tx::recover(data.dir, data.game()) == tx::Recovery::Applied, "applied receipt checkpoint");
+        data.noPartials();
+        std::cout << "PASS T072 A " << engine << " target payload hashes and non-target tree\n";
+        requireError("ALREADY_APPLIED", "T072 B repeat apply", [&] { tx::apply(data.dir, data.game()); });
+        check(fileTree(data.game()) == data.installed, "B repeated apply unchanged");
+        requireError("PACKAGE_IN_USE", "T072 remove active package", [&] { tx::remove(data.dir); });
+
+        const auto first = data.manifest().at("files").at(0).at("relativePath").get<std::string>();
+        const auto backup = data.backup() / utf8path::pathFromUtf8(first);
+        const auto original = gamefiles::read(backup);
+        check(sha(backup) == data.original.at(first), "backup hash");
+        fs::remove(backup);
+        requireError("BACKUP_MISSING", "T072 E missing backup", [&] { tx::restore(data.dir, data.game()); });
+        check(fileTree(data.game()) == data.installed, "missing backup left game unchanged");
+        gamefiles::write(backup, original);
+        tx::restore(data.dir, data.game());
+        check(fileTree(data.game()) == data.original, "E restored game tree");
+        tx::restore(data.dir, data.game());
+        check(fileTree(data.game()) == data.original, "E repeated restore unchanged");
+        check(tx::recover(data.dir, data.game()) == tx::Recovery::Restored, "restored receipt checkpoint");
+        data.noPartials();
+        std::cout << "PASS T072 E restored and repeated restore " << engine << '\n';
+        const auto sibling = data.dir.parent_path() / "keep";
+        gamefiles::write(sibling, "sentinel");
+        tx::remove(data.dir);
+        check(!fs::exists(data.dir) && gamefiles::read(sibling) == "sentinel" && fileTree(data.game()) == data.original,
+            "safe package deletion");
+    }
+}
+
+void transactionManifestErrors(const fs::path& scratch) {
+    Exported data(scratch / "txn-manifest", "wolf");
+    const auto original = data.manifest();
+    using Mutation = std::function<void(Json&)>;
+    const std::vector<std::tuple<std::string, std::string, Mutation>> cases{
+        {"schema", "UNSUPPORTED_SCHEMA", [](Json& j) { j["schemaVersion"] = 2; }},
+        {"compose version", "UNSUPPORTED_COMPOSE_RULE", [](Json& j) { j["composeRuleVersion"] = 2; }},
+        {"baseline sha", "BASELINE_MISMATCH", [](Json& j) { j["baseline"]["marker"]["sha256"] = std::string(64, 'a'); }},
+        {"payload sha", "PAYLOAD_HASH_MISMATCH", [](Json& j) { j["files"][1]["sha256"] = std::string(64, 'b'); }},
+        {"delete item", "PAYLOAD_LIST_MISMATCH", [](Json& j) { j["files"].erase(1); }},
+        {"add item", "PAYLOAD_LIST_MISMATCH", [](Json& j) {
+            auto item = j["files"][1];
+            item["relativePath"] = item["sourceImage"]["relativePath"] = "Data/Picture/image3.png";
+            j["files"].push_back(std::move(item));
+        }}
+    };
+    for (const auto& [label, error, modify] : cases) {
+        auto j = original;
+        modify(j);
+        data.manifest(j);
+        requireError(error, "T072 C " + label, [&] { tx::apply(data.dir, data.game()); });
+        check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "manifest failure made no changes");
+    }
+    data.manifest(original);
+    const auto first = original.at("files").at(0).at("relativePath").get<std::string>();
+    const auto target = data.game() / utf8path::pathFromUtf8(first);
+    gamefiles::write(target, "external edit");
+    const auto before = fileTree(data.game());
+    requireError("TARGET_CHANGED", "T072 changed target", [&] { tx::apply(data.dir, data.game()); });
+    check(fileTree(data.game()) == before && fs::is_empty(data.dir / "receipts"), "changed target untouched");
+}
+
+class DenyAddFile {
+    fs::path path_;
+    PSECURITY_DESCRIPTOR descriptor_ = nullptr;
+    PACL acl_ = nullptr;
+public:
+    explicit DenyAddFile(const fs::path& path) : path_(path) {
+        try {
+            auto status = GetNamedSecurityInfoW(path_.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                nullptr, nullptr, &acl_, nullptr, &descriptor_);
+            check(status == ERROR_SUCCESS, "read fixture directory ACL");
+            HANDLE token = nullptr;
+            check(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) != 0, "open fixture identity");
+            DWORD size = 0;
+            GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+            std::vector<std::byte> information(size);
+            const auto read = GetTokenInformation(token, TokenUser, information.data(), size, &size);
+            CloseHandle(token);
+            check(read != 0, "read fixture identity");
+
+            EXPLICIT_ACCESSW rule{};
+            rule.grfAccessPermissions = FILE_ADD_FILE;
+            rule.grfAccessMode = DENY_ACCESS;
+            rule.grfInheritance = NO_INHERITANCE;
+            BuildTrusteeWithSidW(&rule.Trustee, reinterpret_cast<TOKEN_USER*>(information.data())->User.Sid);
+            PACL changed = nullptr;
+            status = SetEntriesInAclW(1, &rule, acl_, &changed);
+            check(status == ERROR_SUCCESS, "create deny-add-file ACL");
+            auto native = path_.native();
+            status = SetNamedSecurityInfoW(native.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                nullptr, nullptr, changed, nullptr);
+            LocalFree(changed);
+            check(status == ERROR_SUCCESS, "apply fixture ACL");
+        } catch (...) {
+            if (descriptor_) LocalFree(descriptor_);
+            throw;
+        }
+    }
+    ~DenyAddFile() {
+        auto native = path_.native();
+        SetNamedSecurityInfoW(native.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, acl_, nullptr);
+        LocalFree(descriptor_);
+    }
+    DenyAddFile(const DenyAddFile&) = delete;
+    DenyAddFile& operator=(const DenyAddFile&) = delete;
+};
+
+void transactionFaults(const fs::path& scratch) {
+    Exported data(scratch / "txn-faults", "wolf");
+    requireError("WRITE_FAILED", "T072 D second replacement", [&] {
+        tx::apply(data.dir, data.game(), {{[&](tx::ApplyPhase phase, size_t index) {
+            if (phase == tx::ApplyPhase::BeforeReplace && index == 1) {
+                check(fileTree(data.game()) != data.original && fileTree(data.game()) != data.installed,
+                    "first target committed before second failure");
+                throw Error("WRITE_FAILED", "fixture failed before second replacement");
+            }
+        }}});
+    });
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::Clean, "second replacement rollback finished");
+    check(fileTree(data.game()) == data.original, "D second replacement hash rollback");
+    data.noPartials();
+
+    requireError("WRITE_FAILED", "T072 D after replace before receipt", [&] {
+        tx::apply(data.dir, data.game(), {{[&](tx::ApplyPhase phase, size_t) {
+            if (phase == tx::ApplyPhase::BeforeReceipt) {
+                check(fileTree(data.game()) == data.installed, "all targets replaced before receipt");
+                throw Error("WRITE_FAILED", "fixture interrupted after replacements");
+            }
+        }}});
+    });
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::Clean, "after-replace rollback finished");
+    check(fileTree(data.game()) == data.original, "D after write hash rollback");
+    data.noPartials();
+
+    std::optional<DenyAddFile> denyReceipt;
+    requireError("RECEIPT_WRITE_FAILED", "T072 D receipt write denied", [&] {
+        tx::apply(data.dir, data.game(), {{[&](tx::ApplyPhase phase, size_t) {
+            if (phase == tx::ApplyPhase::BeforeReceipt) denyReceipt.emplace(data.dir / "receipts");
+        }}});
+    });
+    denyReceipt.reset();
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::Clean, "receipt rollback finished");
+    check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "D receipt hash rollback");
+    data.noPartials();
+}
+
+void interrupted(const fs::path& scratch) {
+    Exported data(scratch / "txn-crash", "wolf");
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    check(length != 0 && length < executable.size(), "find test binary");
+    executable.resize(length);
+    std::wstring command = L"\"" + executable + L"\" --interrupt \"" + data.dir.native() + L"\" \"" +
+        data.game().native() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    check(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup,
+        &process) != 0, "start interrupted child");
+    CloseHandle(process.hThread);
+    const auto wait = WaitForSingleObject(process.hProcess, 30000);
+    DWORD code = 0;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hProcess);
+    check(wait == WAIT_OBJECT_0 && code == 73, "child exited without destructors, code " + std::to_string(code));
+    check(fs::exists(data.dir / "receipts/.receipt.partial") && !fs::exists(data.dir / "receipts/receipt.json"),
+        "crash left staged but no committed receipt");
+    const auto plan = Json::parse(gamefiles::read(data.backup() / "plan.json"));
+    const auto partialName = ".llmchat-export-" + plan.at("transactionId").get<std::string>() + "-1.partial";
+    const auto partial = data.game() / "Data/Picture" / partialName;
+    check(fs::exists(partial), "interrupted transaction left a game temporary");
+    auto beforeRecovery = fileTree(data.game());
+    beforeRecovery.erase("Data/Picture/" + partialName);
+    check(beforeRecovery == data.installed, "all files replaced before observed crash");
+    requireError("RECOVERY_REQUIRED", "T072 remove interrupted package", [&] { tx::remove(data.dir); });
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::RolledBack, "recover uncommitted application");
+    check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "crash rolled back all hashes");
+    data.noPartials();
+    std::cout << "PASS T072 D process exit after receipt staging, recover removed partial and restored hashes\n";
+}
+
+void interruptedRestore(const fs::path& scratch) {
+    Exported data(scratch / "txn-restore-crash", "wolf");
+    tx::apply(data.dir, data.game());
+    auto intent = Json::parse(gamefiles::read(data.dir / "receipts/receipt.json"));
+    intent.erase("state");
+    intent.erase("files");
+    gamefiles::write(data.dir / "receipts/restore-intent.json", intent.dump());
+    const auto descriptor = data.manifest().at("files").at(0).at("relativePath").get<std::string>();
+    const auto file = utf8path::pathFromUtf8(descriptor);
+    fs::copy_file(data.backup() / file, data.game() / file, fs::copy_options::overwrite_existing);
+    check(fileTree(data.game()) != data.original && fileTree(data.game()) != data.installed,
+        "interrupted restore is between versions");
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::Restored, "recover interrupted restore");
+    check(fileTree(data.game()) == data.original && !fs::exists(data.dir / "receipts/restore-intent.json"),
+        "recover restored all originals and cleared the intent");
+    tx::restore(data.dir, data.game());
+    data.noPartials();
+    std::cout << "PASS T072 recover resumes an interrupted restore\n";
+}
+
+void transactionPaths(const fs::path& scratch) {
+    Exported data(scratch / "txn-paths", "wolf");
+    const auto original = data.manifest();
+    for (const auto& [label, path] : std::map<std::string, std::string>{
+        {"parent", "Data/../image1.png"}, {"absolute", "/Data/image1.png"}, {"drive", "C:/Data/image1.png"},
+        {"drive relative", "C:Data/image1.png"}, {"ADS", "Data/Picture/a.png:stream"},
+        {"CON", "Data/Picture/CON.png"}, {"NUL", "Data/Picture/NUL.png"}}) {
+        auto j = original;
+        j["files"][0]["relativePath"] = j["files"][0]["sourceImage"]["relativePath"] = path;
+        data.manifest(j);
+        requireError("INVALID_PATH", "T072 F " + label, [&] { tx::apply(data.dir, data.game()); });
+        check(fileTree(data.game()) == data.original, "bad relative path made no game changes");
+    }
+    auto j = original;
+    auto name = j.at("files").at(0).at("relativePath").get<std::string>();
+    name[0] = 'd';
+    j["files"][1]["relativePath"] = j["files"][1]["sourceImage"]["relativePath"] = name;
+    data.manifest(j);
+    requireError("INVALID_PATH", "T072 F Windows case alias", [&] { tx::apply(data.dir, data.game()); });
+    check(fileTree(data.game()) == data.original, "alias made no game changes");
+    data.manifest(original);
+
+    const auto path = original.at("files").at(0).at("relativePath").get<std::string>();
+    const auto linked = data.fixture.root / "link.png";
+    check(CreateHardLinkW(linked.c_str(), (data.game() / utf8path::pathFromUtf8(path)).c_str(), nullptr) != 0,
+        "create hard-link fixture");
+    requireError("INVALID_PATH", "T072 F game hard link", [&] { tx::apply(data.dir, data.game()); });
+    check(fileTree(data.game()) == data.original, "hard-link case made no game changes");
+    fs::remove(linked);
+
+    const auto linkedPayload = data.dir / "payload/Data/Picture";
+    const auto staged = data.fixture.root / "foreign";
+    fs::rename(linkedPayload, staged);
+    junction(linkedPayload, staged);
+    requireError("INVALID_PATH", "T072 F payload junction", [&] { tx::apply(data.dir, data.game()); });
+    requireError("INVALID_PATH", "T072 remove rejects junction", [&] { tx::remove(data.dir); });
+    check(fileTree(data.game()) == data.original && fs::is_directory(staged) && !fs::is_empty(staged),
+        "junction target and game untouched");
+    check(RemoveDirectoryW(linkedPayload.c_str()) != 0, "remove fixture junction");
+    fs::rename(staged, linkedPayload);
+
+    gamefiles::write(data.game() / "Data/Picture.wolf", "opaque archive");
+    const auto archived = fileTree(data.game());
+    requireError("WOLF_ARCHIVE_ENTRY_UNSUPPORTED", "T072 WOLF archive", [&] { tx::apply(data.dir, data.game()); });
+    check(fileTree(data.game()) == archived, "WOLF archives unchanged");
+    fs::remove(data.game() / "Data/Picture.wolf");
+
+    const DenyAddFile readonly(data.game() / "Data/Picture");
+    requireError("PERMISSION_DENIED", "T072 G read-only game target directory", [&] {
+        tx::apply(data.dir, data.game());
+    });
+    check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "read-only directory remained unchanged");
+}
+
+void transactionCases(const fs::path& scratch) {
+    normalTransactions(scratch);
+    transactionManifestErrors(scratch);
+    transactionFaults(scratch);
+    interrupted(scratch);
+    interruptedRestore(scratch);
+    transactionPaths(scratch);
+    std::cout << "PASS T072 transaction fixtures\n";
+}
+
+int interruptChild(const char* package, const char* game) {
+    const auto packageDir = utf8path::pathFromUtf8(package);
+    const auto gameDir = utf8path::pathFromUtf8(game);
+    tx::apply(packageDir, gameDir, {{[&](tx::ApplyPhase phase, size_t) {
+        if (phase != tx::ApplyPhase::BeforeReceiptPublish) return;
+        const auto plan = Json::parse(gamefiles::read(packageDir / "receipts/backup/plan.json"));
+        const auto partial = ".llmchat-export-" + plan.at("transactionId").get<std::string>() + "-1.partial";
+        gamefiles::write(gameDir / "Data/Picture" / partial, "leftover transaction temporary");
+        ExitProcess(73);
+    }}});
+    return 3;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 4 && std::string_view(argv[1]) == "--interrupt") {
+        try { return interruptChild(argv[2], argv[3]); }
+        catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 4; }
+    }
     if (argc != 2) {
         std::cerr << "Usage: game-image-export-tests <new absolute fixture directory>\n";
         return 2;
@@ -443,6 +793,7 @@ int main(int argc, char** argv) {
         paths(path);
         warmProject(path);
         confirmation(path);
+        transactionCases(path);
         std::cout << "PASS game image export fixtures\n";
         return 0;
     } catch (const std::exception& error) {
