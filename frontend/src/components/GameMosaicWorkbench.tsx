@@ -31,6 +31,14 @@ type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; r
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
+type MosaicCandidate = { revision: string; values: Candidates; seconds: Partial<Record<MosaicModel, number>> };
+type MaskEdit = { image: UnityImage; boxes: MosaicBox[] };
+type MaskUndoItem = {
+  id: string;
+  source: string;
+  mask: Pick<Result, "boxes" | "manualBoxes" | "review" | "redrawError" | "saved" | "reference" | "checked">;
+  candidate?: MosaicCandidate;
+};
 type RedrawPlan = {
   targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel> }[];
   models: MosaicModel[];
@@ -472,7 +480,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [error, setError] = useState("");
   const [source, setSource] = useState<ImagePreview>();
   const [approved, setApproved] = useState<ImagePreview>();
-  const [candidates, setCandidates] = useState<Record<string, { revision: string; values: Candidates; seconds: Partial<Record<MosaicModel, number>> }>>({});
+  const [candidates, setCandidates] = useState<Record<string, MosaicCandidate>>({});
+  const [maskUndo, setMaskUndo] = useState<MaskUndoItem[][]>([]);
   const [preferredResult, setPreferredResult] = useState<"saved" | MosaicModel>();
   const previews = useRef<HTMLDivElement>(null);
   const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
@@ -553,6 +562,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   previewedImage.current = active;
   const isPreviewing = (image: UnityImage) => previewedImage.current?.id === image.id && previewedImage.current.sourceHash === image.sourceHash;
   const activeResult = active && resultFor(rows, active);
+  useLayoutEffect(() => { setMaskUndo([]); }, [gamePath, active?.id, active?.sourceHash]);
   const group = active && (activeResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
   const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
@@ -891,6 +901,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (task.current || disabled || isBenchmarkRunning()) return;
     const controller = new AbortController();
     task.current = controller;
+    if (step?.id === "screen" || step?.id === "refine") setMaskUndo([]);
     onBusy?.(true);
     const batchStarted = performance.now();
     const elapsedBefore = step ? resumableMosaicMetrics(gamePath,step.id,!!step.resume)?.elapsedMs ?? 0 : 0;
@@ -1185,13 +1196,62 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }, { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind], resume: !restart });
   }
 
-  function editMask(image: UnityImage, boxes: MosaicBox[]) {
-    if (task.current || disabled) return;
-    update(image, { boxes, manualBoxes: true, review:undefined, redrawError: undefined, saved: storage ? resultFor(rows, image).saved : false, reference: false, checked: boxes.length > 0 });
+  function saveMasks(next: Results) {
+    try {
+      replaceRows(next);
+      latestRows.current = next;
+      return true;
+    } catch {
+      showAppNotice("无法保存图片去码筛选记录", "error");
+      return false;
+    }
+  }
+
+  function editMasks(edits: readonly MaskEdit[]) {
+    if (task.current || disabled || !edits.length) return;
+    const current = latestRows.current;
+    const next = { ...current };
+    const undo = edits.map(({ image, boxes }): MaskUndoItem => {
+      const row = resultFor(current, image);
+      next[image.id] = { ...row, boxes, manualBoxes: true, review: undefined, redrawError: undefined,
+        saved: storage ? row.saved : false, reference: false, checked: boxes.length > 0 };
+      const previousCandidate = candidates[image.id];
+      return { id: image.id, source: image.sourceHash,
+        mask: { boxes: row.boxes, manualBoxes: row.manualBoxes, review: row.review, redrawError: row.redrawError,
+          saved: row.saved, reference: row.reference, checked: row.checked },
+        candidate: previousCandidate?.revision === image.sourceHash ? previousCandidate : undefined };
+    });
+    if (!saveMasks(next)) return;
+    setMaskUndo(previous => [...previous, undo]);
     setCandidates(previous => {
-      const next = { ...previous };
-      delete next[image.id];
-      return next;
+      const retained = { ...previous };
+      for (const { id } of undo) delete retained[id];
+      return retained;
+    });
+  }
+
+  function editMask(image: UnityImage, boxes: MosaicBox[]) {
+    editMasks([{ image, boxes }]);
+  }
+
+  function undoMaskEdit() {
+    const edits = maskUndo.at(-1);
+    if (task.current || disabled || !edits) return;
+    const current = latestRows.current;
+    const next = { ...current };
+    const liveSources = new Map(usable.map(image => [image.id, image.sourceHash]));
+    const matching = edits.filter(edit => liveSources.get(edit.id) === edit.source && current[edit.id]?.source === edit.source);
+    for (const { id, mask } of matching) next[id] = { ...current[id], ...mask };
+    if (matching.length && !saveMasks(next)) return;
+    anchor.current = null;
+    setDraft(undefined);
+    setMaskUndo(previous => previous.slice(0, -1));
+    setCandidates(previous => {
+      const restored = { ...previous };
+      for (const { id, candidate } of matching) {
+        if (candidate) restored[id] = candidate; else delete restored[id];
+      }
+      return restored;
     });
   }
 
@@ -1311,6 +1371,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     void run("保存已采用去码图", async signal => {
       if (storage) await storage.save(image, blob, signal);
       else await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
+      setMaskUndo([]);
       update(image, { saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
       if (isPreviewing(image)) {
         setApproved({ id: image.id, revision: image.sourceHash, blob });
@@ -1548,6 +1609,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function clearStepProgress(step: "refine" | "redraw", resetRedraw = false) {
+    setMaskUndo([]);
     clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     if (step === "refine") clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
     if (resetRedraw) clearGamePerformance(mosaicMetricScope(gamePath,"redraw"),["redraw"]);
@@ -1629,6 +1691,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     lastScreen.current = null;
     lastReview.current = null;
     pendingRedraw.current = null;
+    setMaskUndo([]);
     for (const step of ["screen","refine","redraw"] as const)
       clearGamePerformance(mosaicMetricScope(gamePath,step),[step]);
     clearGamePerformance(deploymentMetricScope(gamePath, "mosaic"), ["mosaic"]);
@@ -1671,6 +1734,45 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
+  const maskCopyTargets = active ? members.filter(image => image.id !== active.id &&
+    !resultFor(rows, image).boxes.length && Math.abs(image.width / image.height / (active.width / active.height) - 1) <= 0.04) : [];
+  const imageTools = active && activeResult ? [
+    { id: "redraw", label: "重绘当前图", key: "r", shortcut: "R", disabled: !!redrawReason, reason: redrawReason,
+      icon: "m7 4 13 8-13 8V4Z", run: () => generate([active], [model]) },
+    { id: "draw", label: "框选蒙版", key: "b", shortcut: "B", disabled: actionsDisabled || !originalUrl, pressed: drawing,
+      icon: "M9 4H4v5m11-5h5v5m0 6v5h-5m-6 0H4v-5m5-3h6m-3-3v6", run: () => setDrawing(value => !value) },
+    { id: "remove", label: "删除最后一框", key: "d", shortcut: "D", disabled: actionsDisabled || !activeResult.boxes.length,
+      icon: "M5 5h14v14H5zM9 12h6", run: () => editMask(active, activeResult.boxes.slice(0, -1)) },
+    { id: "clear", label: "清空蒙版", key: "delete", modifier: "shift", shortcut: "Shift+Delete", disabled: actionsDisabled || !activeResult.boxes.length,
+      icon: "M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6", run: () => editMask(active, []) },
+    { id: "copy", label: "复制蒙版到组内空白图", key: "c", shortcut: "C", disabled: actionsDisabled || !activeResult.boxes.length || !maskCopyTargets.length,
+      icon: "M8 8h12v12H8zM16 4H4v12", run: () => editMasks(maskCopyTargets.map(image => ({ image, boxes: mapMosaicBoxes(activeResult.boxes, active, image) }))) },
+    { id: "undo", label: "撤销蒙版编辑", key: "z", modifier: "command", shortcut: "Ctrl+Z",
+      disabled: actionsDisabled || !maskUndo.length, icon: "m8 5-4 4 4 4M4 9h10a5 5 0 0 1 0 10h-3", run: undoMaskEdit },
+  ] : [];
+
+  function onImageToolKey(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.repeat ||
+        (event.target as Element).closest("input, textarea, select, [contenteditable]")) return;
+    const modifier = event.ctrlKey || event.metaKey ? "command" : event.shiftKey ? "shift" : undefined;
+    if (modifier === "command" && event.shiftKey) return;
+    const tool = imageTools.find(item => item.key === event.key.toLowerCase() && item.modifier === modifier);
+    if (!tool || tool.disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    tool.run();
+  }
+
+  const imageToolbar = imageTools.length > 0 && <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
+    onDoubleClick={event => event.stopPropagation()}>
+    {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
+      aria-label={tool.label} aria-pressed={tool.pressed}
+      aria-keyshortcuts={tool.modifier === "command" ? "Control+Z Meta+Z" : tool.shortcut}
+      data-tooltip={[tool.label + " · " + tool.shortcut, tool.reason].filter(Boolean).join("\n")} disabled={tool.disabled} onClick={tool.run}>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>
+    </button>)}
+  </div>;
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
@@ -1850,18 +1952,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {reference && <span>参考图 {reference.name}</span>}
           </div>
         </div>
-        <div className="unity-image-actions">
-          <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason} title={testTitle}
-            data-tooltip={redrawReason} onClick={() => generate([active], [model])}>重绘当前图</button>
-          <button className="unity-btn" aria-pressed={drawing} disabled={actionsDisabled || !originalUrl}
-            onClick={() => setDrawing(value => !value)}>框选蒙版</button>
-          <button className="unity-btn is-ghost" disabled={actionsDisabled || !activeResult.boxes.length} onClick={() => editMask(active, activeResult.boxes.slice(0, -1))}>删除最后一框</button>
-          <button className="unity-btn is-ghost is-danger" disabled={actionsDisabled || !activeResult.boxes.length} onClick={() => editMask(active, [])}>清空蒙版</button>
-          <button className="unity-btn is-ghost" disabled={actionsDisabled || !activeResult.boxes.length || members.length < 2} onClick={() => {
-            for (const image of members) if (!resultFor(rows, image).boxes.length && Math.abs(image.width / image.height / (active.width / active.height) - 1) <= 0.04)
-              editMask(image, mapMosaicBoxes(activeResult.boxes, active, image));
-          }}>复制蒙版到组内空白图</button>
-        </div>
         {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
           {activeRetry && "重试中 · 上次"}{activeFailure}
         </p> :
@@ -1890,8 +1980,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               </button>)}
             </div>}
           </div>
-          <GameImagePreviewFrame caption="原图" onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined} fallback={original?.error
-            ? <p className="game-mosaic-error" role="alert">{original.error}</p> : <p className="hint">正在读取图片…</p>}>
+          <GameImagePreviewFrame caption="原图" className="game-mosaic-original-frame" tabIndex={0} aria-label="原图编辑区"
+            onKeyDown={onImageToolKey} onPointerDown={event => {
+              if (!(event.target as Element).closest("button, input, textarea, select")) event.currentTarget.focus({ preventScroll: true });
+            }} onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined} fallback={<>
+              {original?.error ? <p className="game-mosaic-error" role="alert">{original.error}</p> : <p className="hint">正在读取图片…</p>}
+              {imageToolbar}
+            </>}>
             {originalUrl && <div className="unity-image-stage game-mosaic-stage">
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
               <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
@@ -1909,6 +2004,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                 {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
                   fill="color-mix(in srgb, var(--danger) 25%, transparent)" stroke="var(--danger)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
               </svg>
+              {imageToolbar}
             </div>}
           </GameImagePreviewFrame>
           {showSaved ? <GameImagePreviewFrame caption="已采用去码图" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
