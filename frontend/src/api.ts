@@ -1187,3 +1187,5 @@ export async function lookupDictionary(
     throw new Error(toFriendlyError(e, "词典服务暂时不可用"));
   }
 }
+
+export { request as requestApiJson };
