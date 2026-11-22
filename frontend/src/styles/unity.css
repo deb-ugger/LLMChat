@@ -2775,7 +2775,9 @@ body.ocr-image-resizing * {
   font-size: var(--fs-section);
 }
 /* 测试运行时的呼吸：队列区块与正在跑的配置卡。
-   色调用工作流「进行中」的那支蓝，和队列圆点一致；朱砂留给失败/进度。 */
+   色调用工作流「进行中」的那支蓝，和队列圆点一致；朱砂留给失败/进度。
+   这支蓝平时只定义在工作流卡片/步骤轨上，测站页继承不到，这里补一份同值。 */
+.game-benchmark-page { --workflow-tone-current: #3265b6; }
 .game-benchmark-section.is-active {
   border-color: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 42%, var(--border, #2a2721));
   background: color-mix(in srgb, var(--workflow-tone-current, #3265b6) 6%, var(--panel, #15130f));
