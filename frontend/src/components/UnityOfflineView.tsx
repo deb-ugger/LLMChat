@@ -22,7 +22,7 @@ import { gameImageTranslationProblem, recognizeGameImage, renderGameImage } from
 import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { collectGameImageNames, translateNamedImageText } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
-import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
+import { GameFlowSequence, StepRunningMetrics, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { GameProgressBar, GameStepProgress } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
@@ -2311,8 +2311,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       formatFlowThroughput(scanTiming && { itemsDone: scanTiming.parsed + scanTiming.reused, elapsedMs: scanTiming.totalMs }, "个")
     : undefined;
   const deploymentPhase = activeStep === 3 ? (visibleGeneration?.step === 4 || !visibleGeneration && applied ? "apply" : "generate") : undefined;
-  const deploymentElapsed = deploymentPhase
-    ? stepPerformance(deploymentMetricScope(root,deploymentPhase),deploymentPhase).elapsedMs : undefined;
+  const progressMetricStage = activeStep === 1 ? "scan" : deploymentPhase;
+  const progressMeasurement = progressMetricStage
+    ? stepPerformance(deploymentMetricScope(root, progressMetricStage), progressMetricStage) : undefined;
+  const deploymentElapsed = deploymentPhase ? progressMeasurement?.elapsedMs : undefined;
   const elapsed = (activeStep === 1 ? checkpoint?.scanElapsedMs || scanTiming?.totalMs
     : activeStep === 3 ? deploymentElapsed : visibleGeneration?.elapsedMs) ?? 0;
   const elapsedLabel = [3600000, 60000, 1000].map((unit, index) => {
@@ -2374,6 +2376,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     {activeStep === 2 && !imagePart && !progressIsImage && generation?.step === 2 &&
       <UnityTranslationProgress progress={generation} running={progressRunning} failure={generation.state === "error" ? generation.failure || generation.detail : undefined}
         onLocate={locateTranslationFailure} />}
+    {progressMetricStage && (progressState === "running" || progressState === "stopped" && progressMeasurement?.taskId) &&
+      <StepRunningMetrics measured={progressMeasurement} stopped={progressState === "stopped"} elapsedMs={elapsed} parameters={[{ label: "操作", value: progressTitle }, { label: "项目", value: root }]} />}
   </GameStepProgress>;
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
@@ -2843,7 +2847,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           </details>
           {scanResources}
         </div>}
-        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig} onRun={imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined}
+        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
+          { label: "原文语言", value: source === "auto" ? "自动检测" : unityLanguageLabel(source) },
+          { label: "目标语言", value: unityLanguageLabel(target) },
+          { label: "跳过目标语言", value: skipTargetLanguage ? "开启" : "关闭" },
+          ...(!imagePart ? [{ label: "附带上下文", value: includeContext ? "开启" : "关闭" }] : []),
+        ]} configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig} onRun={imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined}
           steps={imagePart ? [
             { id: "filter", title: "筛选图片", models: [{role:"screen",id:imageScreeningOptions.filterModel}],
               summary: imageScreeningOptions.filterModel !== undefined ? "大模型筛选" : imageScreeningOptions.strategy === "full" ? "完整范围筛选" : "分级快速筛选",

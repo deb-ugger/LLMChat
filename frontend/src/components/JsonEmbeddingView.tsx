@@ -2,6 +2,7 @@ import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFo
 import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
+import { StepRunningMetrics } from "./GameFlowSequence";
 import { GameStepProgress } from "./GameStepProgress";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { showAppNotice } from "./AppNotice";
@@ -679,6 +680,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       actions={running && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}>
       {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
       {running && <p className="unity-task-detail">{pending ? "正在准备…" : status.detail}</p>}
+      {(running || stopped && measurement?.taskId) && <StepRunningMetrics measured={measurement} stopped={stopped}
+        parameters={[{ label: "操作", value: title }, { label: "引擎", value: game.engine }, { label: "项目", value: game.path }]} />}
     </GameStepProgress>;
   };
   const output = (label:string,path?:string) => path&&<div className="json-embedding-output"><button type="button" className="embed-path-link" data-tooltip={path} aria-label={`打开${label}`} onClick={()=>void api.revealPath(path).catch(e=>setError(String(e)))}><span>{label}</span><code>{path}</code></button></div>;
@@ -776,7 +779,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       </div>
         </section></div>
     </section>
-    {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running" />}
+    {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running">
+      <StepRunningMetrics measured={stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages")}
+        parameters={[{ label: "引擎", value: game.engine }, { label: "项目", value: game.path }]} />
+    </GameStepProgress>}
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
     {runtimeDictionary && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>
       <summary>运行时加载译文</summary>

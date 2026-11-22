@@ -15,8 +15,9 @@ import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { GameFlowCard } from "./GameFlowCard";
 import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
-import { GameMetricHint, GameModelUsage, GameStepTimingDetails } from "./GameFlowSequence";
-import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
+import { formatMosaicParameters } from "../benchmark/benchmarkParameters";
+import { GameMetricHint, GameModelUsage, GameStepTimingDetails, StepRunningMetrics } from "./GameFlowSequence";
+import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity, usePausedBenchmarkProgress } from "../benchmark/benchmarkRunner";
 import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "./GameImageViewer";
 import { GameProgressBar, gameProgressLabels, type GameProgressState } from "./GameStepProgress";
@@ -1257,6 +1258,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       formalMosaicRun?.state === "error" ? "失败待重试" : "已中止，等待继续");
   const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
   const benchmarkProgress = useBenchmarkProgress(gamePath);
+  const pausedBenchmark = usePausedBenchmarkProgress(gamePath, ["mosaicScreen", "mosaicRefine", "mosaicRedraw"]);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
@@ -1268,7 +1270,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const failed = status?.failed ?? 0;
     const processed = status && Math.min(status.total, status.completed + (id === "refine" ? failed : 0));
     const percent = status?.total && processed !== undefined ? processed / status.total * 100 : undefined;
-    const measured = groupMosaicModels(mosaicCardMetrics(gamePath, id));
+    const formalMeasurement = mosaicCardMetrics(gamePath, id);
+    const measured = groupMosaicModels(formalMeasurement);
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : performance.now() - status.started);
     const expanded = configured === id;
@@ -1283,6 +1286,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const batchElapsed = status?.batchElapsed ?? (status?.batchStarted === undefined ? 0 : performance.now() - status.batchStarted);
     const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
     const benchmark = benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
+    const formalPaused = state === "stopped" && !!formalMeasurement.taskId;
+    const displayedTest = running || formalPaused && !benchmark ? undefined
+      : benchmark ?? (pausedBenchmark?.step === benchmarkSteps[id] ? pausedBenchmark : undefined);
+    const liveMetrics = running || formalPaused || !!displayedTest;
     const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
       {(multipleModels || foldedModels) && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
       <div className="game-flow-model-values">
@@ -1292,16 +1299,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {model.requests} 次 · 均 {formatMosaicRequestTime(model.requestMs / model.requests)}
           </small>}
         </>
-          : running && id === "refine" && !model.tokens && !model.serviceTiming && model.requests > 0
-            ? <small role="status">已发送 {model.requests} 次请求 · 速率在模型返回后更新</small>
-            : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
+          : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
               perImage={id !== "refine"} onToggle={toggle} />}
       </div>
     </div>);
     return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
       toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={toggle}
       status={<>{screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}{elapsed != null && !screeningMethodChanged && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
-      summary={(!benchmark || running) && <div className="game-mosaic-step-summary">
+      summary={liveMetrics ? <div className="game-mosaic-step-summary">
+        {running && status?.total ? <GameProgressBar label={title + "进度"} value={percent} /> : null}
+        <StepRunningMetrics measured={displayedTest ? displayedTest.performance : formalMeasurement}
+          benchmark={displayedTest} stopped={formalPaused && !displayedTest} elapsedMs={displayedTest ? undefined : elapsed}
+          device={!displayedTest && status?.device ? status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU" : undefined}
+          parameters={!displayedTest ? formatMosaicParameters(benchmarkSteps[id], preferences) : undefined} />
+      </div> : <div className="game-mosaic-step-summary">
         {(showModelTitle || status?.device) && <span data-tooltip={status?.device?.reason}>
           {showModelTitle && modelTitle}
           {status?.device && <>{showModelTitle && " · "}{status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"}</>}
@@ -1334,9 +1345,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             {id !== "refine" && failed > 0 && <span>失败 <span className="game-flow-metric">{failed} 张</span></span>}
           </small>}
         {expanded && <GameStepTimingDetails measured={measured} onToggle={toggle} />}
-        {expanded && running && id === "refine" && !models.length && <small className="game-flow-model-rates" role="status">
-          {(status?.prepared ?? 0) < (status?.total ?? 0) ? "正在准备候选区域" : "等待模型请求开始"} · 模型速率 —
-        </small>}
         {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
       </div>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={task.current?.signal.aborted} onClick={() => {
