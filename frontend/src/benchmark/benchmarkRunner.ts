@@ -55,6 +55,7 @@ type BenchmarkProgress = {
 };
 export type BenchmarkState = BenchmarkProgress & {
   type: "benchmark-state";
+  jobId: string;
   scope: string;
   step: BenchmarkTarget;
   state: "idle" | "running" | "paused";
@@ -410,6 +411,18 @@ async function cleanupJob(job?: QueuedJob) {
   await flushGamePerformanceArchive();
 }
 
+function requestQueuePause(reason: string) {
+  running = false;
+  controller?.abort(reason);
+  publish();
+}
+
+async function pauseQueue(reason: string) {
+  requestQueuePause(reason);
+  await executing;
+  await cleanupJob();
+}
+
 function nextJob() {
   return jobs.find(item => item.status === "等待");
 }
@@ -424,7 +437,7 @@ async function runJobs() {
     job.startedTime ??= new Date().toISOString();
     const previous = job.progress;
     startedAt = performance.now() - (previous?.elapsedMs ?? 0);
-    progress = { ...previous, type: "benchmark-state", scope: job.scope, step: job.step, state: "running",
+    progress = { ...previous, type: "benchmark-state", jobId: job.id, scope: job.scope, step: job.step, state: "running",
       phase: "prepare", label: job.label, current: previous?.current ?? job.prepared?.restored ?? 0, total: job.prepared?.count ?? 0,
       sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ??
         (job.prepared?.restored ? Math.floor(100 * job.prepared.restored / job.prepared.count) : 0), failed: previous?.failed ?? 0 };
@@ -476,6 +489,9 @@ async function runJobs() {
         job.status = paused ? "已暂停" : waitForFormal ? running ? "等待" : "待开始" : failed ? "失败" : "完成";
         progress = { ...progress, state: job.status === "已暂停" ? "paused" : "idle", elapsedMs: performance.now() - startedAt };
         job.progress = progress;
+        const index = jobs.indexOf(job);
+        if (paused && index > 0) jobs.unshift(...jobs.splice(index, 1));
+        else if (!paused && !waitForFormal && (!failed || progress.total > 0)) jobs.splice(index, 1);
         publish();
       }
     }
@@ -495,14 +511,23 @@ function pumpQueue() {
 }
 
 function scheduleJob(job: QueuedJob) {
-  const index = jobs.indexOf(job);
-  jobs.splice(index, 1);
-  const firstWaiting = jobs.findIndex(item => item.status === "等待" || item.status === "待开始");
-  jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
+  const head = jobs[0];
+  if (controller?.signal.aborted || (head?.status === "已暂停" && job !== head)) return false;
+  if (head?.status !== "已暂停") {
+    jobs.splice(jobs.indexOf(job), 1);
+    const firstWaiting = jobs.findIndex(item => item.status === "等待" || item.status === "待开始");
+    jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
+  }
   job.status = "等待";
   running = true;
   publish();
   pumpQueue();
+  return true;
+}
+
+export function resumeBenchmarkJob(jobId: string): boolean {
+  const job = jobs[0];
+  return job?.id === jobId && job.status === "已暂停" && scheduleJob(job);
 }
 
 export const benchmarkRunner = {
@@ -520,8 +545,7 @@ export const benchmarkRunner = {
       label, status: running ? "等待" : "待开始", prepared, prepare, onMessage: input.onMessage,
       resumeSamples: isMosaicBenchmarkStep(request.step) };
     jobs.push(job);
-    if (request.priority) scheduleJob(job);
-    else { publish(); pumpQueue(); }
+    if (!request.priority || !scheduleJob(job)) { publish(); pumpQueue(); }
     return job.id;
   },
   async continueArchivedBatch(input: BenchmarkInput, { queueId, step }: ArchivedBenchmarkRef) {
@@ -559,8 +583,7 @@ export const benchmarkRunner = {
   },
   stop(id: string) {
     if (!jobs.some(job => job.id === id && job.status === "运行中")) return;
-    controller?.abort("已中止此任务");
-    publish();
+    requestQueuePause("已中止此任务");
   },
   restart(id: string) {
     const job = jobs.find(item => item.id === id && item.status === "已暂停");
@@ -579,7 +602,7 @@ export const benchmarkRunner = {
     await cleanupJob(job.status === "已暂停" ? job : undefined);
     pumpQueue();
   },
-  cleanup: () => cleanupJob(),
+  cleanup: () => pauseQueue("关闭测试窗口时中止此任务"),
   snapshot: () => snapshot,
   subscribe(listener: () => void) {
     listeners.add(listener);
@@ -596,23 +619,15 @@ export function useBenchmarkProgress(scope: string) {
 
 export function usePausedBenchmarkProgress(scope: string, steps: readonly BenchmarkTarget[]) {
   return useSyncExternalStore(benchmarkRunner.subscribe, () => {
-    const jobs = benchmarkRunner.snapshot().jobs;
-    for (let index = jobs.length - 1; index >= 0; index--) {
-      const job = jobs[index];
-      if (job.scope === scope && job.status === "已暂停" && steps.includes(job.step)) return job.progress;
-    }
-    return undefined;
+    return benchmarkRunner.snapshot().jobs.find(job =>
+      job.scope === scope && job.status === "已暂停" && steps.includes(job.step))?.progress;
   });
 }
 
 export function attachBenchmarkRunner() {
   let disposed = false, unregister: (() => void) | undefined;
   void registerAppCloseGuard(async () => {
-    running = false;
-    controller?.abort("退出应用时中止此任务");
-    publish();
-    await executing;
-    await cleanupJob();
+    await pauseQueue("退出应用时中止此任务");
     return true;
   }).then(remove => { if (disposed) remove(); else unregister = remove; }).catch(console.error);
   return () => { disposed = true; unregister?.(); };

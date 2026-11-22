@@ -1,13 +1,21 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { BenchmarkRequest } from "./benchmark/benchmarkRunner";
-import type { ArchivedBenchmarkRef } from "./gameTextBenchmark";
+import type { BenchmarkRequest, BenchmarkSnapshot } from "./benchmark/benchmarkRunner";
+import type { ArchivedBenchmarkRef, BenchmarkResult } from "./gameTextBenchmark";
 
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
 export const benchmarkChannelName = "llmchat-game-benchmark-window";
 
 export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart";
 export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef;
+
+export function benchmarkHistoryForRecords(history: readonly BenchmarkResult[], jobs: BenchmarkSnapshot["jobs"]): BenchmarkResult[] {
+  const unfinished = new Set(jobs.filter(job => job.status !== "完成" && job.status !== "失败").map(job => job.id));
+  return history.filter(result => {
+    const queueId = result.performance.benchmark?.queueId;
+    return typeof queueId !== "string" || !unfinished.has(queueId);
+  });
+}
 
 export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkQueueArgument): Promise<T> {
   return new Promise((resolve, reject) => {
