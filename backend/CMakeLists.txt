@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(llmchat-backend
     src/main.cpp
     src/Config.cpp
+    src/http/SystemRoutes.cpp
+    src/http/FileRoutes.cpp
     src/ConversationManager.cpp
     src/http/ConversationRoutes.cpp
     src/LlmClient.cpp
@@ -30,6 +32,7 @@ add_executable(llmchat-backend
     src/http/UnityRoutes.cpp
     src/http/TextRoutes.cpp
     src/http/ImageRoutes.cpp
+    src/http/JsonEmbeddingRoutes.cpp
 )
 
 target_include_directories(llmchat-backend PRIVATE
