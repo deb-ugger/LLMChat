@@ -1,4 +1,5 @@
 #include "HttpServer.h"
+#include "http/OcrRoutes.h"
 #include "http/HttpRouter.h"
 #include "http/UnityRoutes.h"
 #include "http/TextRoutes.h"
@@ -445,34 +446,7 @@ int HttpServer::run()
         res.set_content(json{{"ok", true}, {"service", "llmchat-backend"}}.dump(), "application/json; charset=utf-8");
     }));
 
-    svr.Get("/api/ocr/models", withCors([this](const httplib::Request&, httplib::Response& res) {
-        res.set_content(ocrModels_.status().dump(), "application/json");
-    }));
-
-    svr.Post(R"(/api/ocr/models/(fast|precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        try
-        {
-            const std::string mode = req.matches[1].str();
-            res.set_content(ocrModels_.ensureMode(mode, config_.snapshot()).dump(), "application/json");
-        }
-        catch (const std::exception& ex)
-        {
-            res.status = 502;
-            res.set_content(errorJson(ex.what()).dump(), "application/json");
-        }
-    }));
-
-    svr.Delete(R"(/api/ocr/models/(precise|english|manga))", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        try
-        {
-            res.set_content(ocrModels_.removeMode(req.matches[1].str()).dump(), "application/json");
-        }
-        catch (const std::exception& ex)
-        {
-            res.status = 409;
-            res.set_content(errorJson(ex.what()).dump(), "application/json");
-        }
-    }));
+    http_router::registerOcrModelRoutes(svr, ocrModels_, config_);
 
     svr.Get(R"(/api/runtime-assets/(.+))", withCors([](const httplib::Request& req, httplib::Response& res) {
         const auto file = runtime_assets::resolve(storage::base / "resources" / "web-assets", req.matches[1].str());
@@ -486,24 +460,7 @@ int HttpServer::run()
         res.set_file_content(utf8path::pathUtf8(file), runtime_assets::contentType(file));
     }));
 
-    svr.Get(R"(/api/ocr/model-files/(.+))", withCors([this](const httplib::Request& req, httplib::Response& res) {
-        const std::string fileName = req.matches[1].str();
-        if (!ocrModels_.isAllowedModelFile(fileName))
-        {
-            res.status = 404;
-            res.set_content(errorJson("OCR 模型文件尚未下载").dump(), "application/json");
-            return;
-        }
-        res.set_header("Cache-Control", "private, max-age=31536000, immutable");
-        const std::string contentType = fileName.ends_with(".onnx")
-            ? "application/octet-stream"
-            : fileName.ends_with(".json")
-                ? "application/json; charset=utf-8"
-                : fileName.ends_with(".txt")
-                    ? "text/plain; charset=utf-8"
-                    : "application/x-tar";
-        res.set_file_content(ocrModels_.modelFile(fileName).string(), contentType);
-    }));
+    http_router::registerOcrModelFileRoute(svr, ocrModels_);
 
     svr.Get("/api/settings", withCors([this](const httplib::Request&, httplib::Response& res) {
         const AppConfig c = config_.snapshot();
