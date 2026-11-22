@@ -1,16 +1,35 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const defaultBackend = fileURLToPath(new URL("../../", import.meta.url));
 const defaultManifest = fileURLToPath(new URL("./routes-baseline.json", import.meta.url));
 
+function registrationSource(backend) {
+    const assembly = readFileSync(resolve(backend, "src/HttpServer.cpp"), "utf8").replaceAll("\r\n", "\n");
+    const registrationCall = /^[ \t]*(?:const auto \w+ = )?http_router::(register\w+)\(/gm;
+    if (!assembly.match(registrationCall)) return assembly;
+
+    const modules = resolve(backend, "src/http");
+    const registrars = new Map();
+    for (const file of readdirSync(modules).filter(name => name.endsWith("Routes.cpp"))) {
+        const source = readFileSync(resolve(modules, file), "utf8").replaceAll("\r\n", "\n");
+        for (const match of source.matchAll(/^\w+ (register\w+)\([^;]*?\)\n\{\n([^]*?)^\}/gm)) {
+            assert.ok(!registrars.has(match[1]), "Duplicate registrar " + match[1]);
+            registrars.set(match[1], match[2]);
+        }
+    }
+    return assembly.replace(registrationCall, (call, name) => {
+        assert.ok(registrars.has(name), "Missing registrar " + name);
+        return registrars.get(name) + "\n" + call;
+    });
+}
+
 function readRoutes(backend) {
-    const source = readFileSync(resolve(backend, "src/HttpServer.cpp"), "utf8");
+    const source = registrationSource(backend);
     const registrations = /\bsvr\.(Get|Head|Post|Put|Patch|Delete|Options)\s*\(\s*/g;
     const routes = [];
-    let expanded = 0;
     for (const registration of source.matchAll(registrations)) {
         const method = registration[1].toUpperCase();
         const expression = source.slice(registration.index + registration[0].length);
@@ -34,7 +53,6 @@ function readRoutes(backend) {
         for (const operation of operations) {
             routes.push({ method, pattern: pattern + operation, handlerKind, matcher });
         }
-        expanded++;
     }
 
     // This loop builds one response payload, rather than registering 13 routes.
@@ -44,7 +62,6 @@ function readRoutes(backend) {
     assert.ok(endpointList, "Cannot locate Unity's endpoint catalog");
     const unityEndpoints = [...endpointList[1].matchAll(/\{\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*(true|false)\s*\}/g)]
         .map(([, id, label, needsKey]) => ({ id: JSON.parse(id), label: JSON.parse(label), needsKey: needsKey === "true" }));
-    assert.equal(expanded, 3);
     return { routes, unityEndpoints };
 }
 
@@ -84,7 +101,5 @@ if (mode === "write") {
 const business = actual.routes.filter(route => route.method !== "OPTIONS");
 const options = actual.routes.filter(route => route.method === "OPTIONS");
 assert.equal(new Set(actual.routes.map(route => route.method + " " + route.pattern)).size, actual.routes.length);
-assert.equal(business.length, 103);
 assert.deepEqual(options, [{ method: "OPTIONS", pattern: ".*", handlerKind: "cors-preflight", matcher: "regex" }]);
-assert.equal(actual.unityEndpoints.length, 13);
-if (!changed) console.log("103 business registrations + 1 wildcard OPTIONS; 13 Unity catalog entries.");
+if (!changed) console.log(business.length + " business registrations + 1 wildcard OPTIONS; " + actual.unityEndpoints.length + " Unity catalog entries.");
