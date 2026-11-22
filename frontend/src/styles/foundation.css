@@ -39,7 +39,8 @@
   --shadow-card: none;
   --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
   --font: "Microsoft YaHei UI", "Noto Sans SC", "PingFang SC", sans-serif;
-  --content-max: clamp(1200px, 88vw, 2040px);
+  /* 铺满可用宽度：主区不再留左右大边距，页面各自用 --page-inset 控制内边距 */
+  --content-max: 100%;
   --page-inset: clamp(16px, 1.2vw, 32px);
   --empty-state-height: clamp(160px, 22vh, 260px);
   --empty-state-max-height: 320px;
@@ -503,10 +504,6 @@
 .settings-output-directory { margin: 14px 0; }
 .text-run-languages { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border: 0; padding: 0; margin: 0; min-width: 0; }
 
-@media (min-width: 3000px) {
-  .app-main { --content-max: max(2040px, 84vw); }
-}
-
 * {
   box-sizing: border-box;
 }
@@ -863,7 +860,7 @@ select:not([hidden], [multiple], [size]):focus-visible {
 
 .chat-layout {
   --chat-header-height: 52px;
-  --chat-column: clamp(752px, 48vw, 1120px);
+  --chat-column: clamp(752px, 72vw, 1720px);
   --chat-gutter: clamp(12px, 3.2vw, 36px);
   flex: 1;
   display: flex;
