@@ -306,6 +306,11 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           failedSamples += result.failed;
           finishedSamples += done;
           context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail }, "stop");
+          // The result is already in the writer's outbox. Wait for that window's flush before notifying readers.
+          void Promise.resolve(flushGamePerformanceArchive()).then(() => {
+            historyRevision++;
+            publish();
+          });
         }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath);
       return failures;
     } finally {
