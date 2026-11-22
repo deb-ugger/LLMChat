@@ -327,11 +327,14 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
           {job.status === "运行中" &&
             <button type="button" className="unity-btn" disabled={stopping} onClick={() => control("benchmark-stop", job.id)}>中止任务</button>}
           {(job.status === "待开始" || job.status === "已暂停") &&
-            <button type="button" className="unity-btn" onClick={() => control("benchmark-start", job.id)}>
+            <button type="button" className="unity-btn" data-tooltip={job.status === "已暂停" ? "从已保存的进度继续" : undefined}
+              onClick={() => control("benchmark-start", job.id)}>
               {job.status === "已暂停" ? "继续任务" : "开始任务"}</button>}
           {job.status === "已暂停" &&
-            <button type="button" className="unity-btn" onClick={() => control("benchmark-restart", job.id)}>从头运行</button>}
-          {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
+            <button type="button" className="unity-btn" data-tooltip="新建任务，从零重跑"
+              onClick={() => control("benchmark-restart", job.id)}>从头运行</button>}
+          {job.status !== "运行中" && <button type="button" className="unity-btn" data-tooltip="移出队列，保留测试记录"
+            onClick={() => control("benchmark-remove", job.id)}>移除</button>}
         </div>;
       })}
     </div>}
