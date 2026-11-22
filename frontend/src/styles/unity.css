@@ -2255,17 +2255,18 @@ body.ocr-image-resizing * {
   background: var(--flow-background);
   animation: game-flow-pulse 2.2s ease-in-out infinite;
 }
+/* 测试队列跑到这一步时的呼吸：与队列里那条任务同一支蓝，不再用紫色。 */
 .game-flow-item.is-benchmark-running {
-  --flow-color: #a855f7;
+  --flow-color: var(--workflow-tone-current, #3265b6);
   --flow-background: color-mix(in srgb, var(--flow-color) 9%, var(--panel, #15130f));
   background: var(--flow-background);
-  border-color: color-mix(in srgb, #a855f7 55%, var(--border, #2a2721));
+  border-color: color-mix(in srgb, var(--flow-color) 55%, var(--border, #2a2721));
   animation: game-flow-pulse 1.6s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .game-flow-item.is-running,
   .game-flow-item.is-benchmark-running { animation: none; }
-  .game-flow-item.is-benchmark-running { box-shadow: 0 0 0 1px color-mix(in srgb, #a855f7 40%, transparent); }
+  .game-flow-item.is-benchmark-running { box-shadow: 0 0 0 1px color-mix(in srgb, var(--workflow-tone-current, #3265b6) 40%, transparent); }
 }
 .game-flow-step { padding: 10px var(--space-3); border-radius: inherit; background: var(--flow-background); }
 .game-flow-item.is-configured > .game-flow-step { border-radius: var(--radius-md) var(--radius-md) 0 0; background: transparent; }
