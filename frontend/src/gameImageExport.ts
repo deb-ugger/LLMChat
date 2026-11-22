@@ -86,13 +86,9 @@ export type GameImageExportGenerateRequest = {
 export type GameImageExportApplyRequest = {
   gamePath: string;
   packagePath: string;
-  mirrorReceipt: boolean;
 };
 
-export type GameImageExportReceiptLookup = { gamePath: string } & (
-  | { receiptId: string; packagePath?: never }
-  | { receiptId?: never; packagePath: string }
-);
+export type GameImageExportReceiptLookup = GameImageExportApplyRequest;
 
 export type GameImageExportGenerateResult = {
   packageId: string;
@@ -102,65 +98,36 @@ export type GameImageExportGenerateResult = {
   skipped: number;
 };
 
-export type GameImageExportApplyResult = {
-  receiptId: string;
-  packageId: string;
-  state: "applied";
-  unchanged: boolean;
-  mirrored: boolean;
-  warnings: string[];
-};
-
-export type GameImageExportRestoreResult = {
-  receiptId: string;
-  packageId: string;
-  state: "restored";
-  unchanged: boolean;
-};
-
-export type GameImageExportConflict = {
-  relativePath: string;
-  expectedSha256?: string;
-  actualSha256?: string | null;
-};
-
 export type GameImageExportReceipt = {
   schemaVersion: 1;
-  receiptId: string;
   packageId: string;
-  manifestSha256: string;
-  rootKey: string;
-  gameRootFingerprint: string;
-  engine: GameImageExportEngine;
-  outcome: "applied" | "restored" | "rolledBack" | "recoveryRequired";
-  appliedAt: string | null;
-  restoredAt: string | null;
+  transactionId: string;
+  gameRootId: string;
+  planSha256: string;
+  state: "applied" | "restored";
   files: {
     relativePath: string;
-    before: GameImageExportDigest & { backupPath: string };
+    backupPath: string;
+    before: GameImageExportDigest;
     after: GameImageExportDigest;
   }[];
-  conflicts: GameImageExportConflict[];
 };
+
+// The HTTP adapter is pending. Successful results use the persisted receipt shape in the client contract.
+export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied" };
+export type GameImageExportRestoreResult = GameImageExportReceipt & { state: "restored" };
 
 export type GameImageExportFailure = {
   code: string;
   message: string;
-  details?: {
-    imageId?: string;
-    relativePath?: string;
-    conflicts?: GameImageExportConflict[];
-    [key: string]: unknown;
-  };
+  detail?: string;
 };
 
 export type GameImageExportProgress = {
-  phase: "snapshot" | "compose" | "publish" | "validate" | "baseline" | "verifyPayload"
-    | "backup" | "commit" | "rollback" | "verifyRestore" | "restore";
+  phase: "snapshot" | "compose" | "publish";
   completed: number;
-  total: number | null;
-  unit: "bytes" | "files";
-  relativePath?: string;
+  total: number;
+  relativePath: string;
 };
 
 export type GameImageExportQueued = { operationId: string; state: "queued" };
@@ -173,7 +140,6 @@ type StatusBase = {
   operationId: string;
   lastSeq: number;
   progress: GameImageExportProgress | null;
-  canCancel?: boolean;
 };
 
 export type GameImageExportTerminalStatus<Result = GameImageExportResult> = StatusBase & (
@@ -199,7 +165,7 @@ async function request<Result>(path: string, init?: RequestInit): Promise<Result
     throw Object.assign(new Error(toFriendlyError(failure.message), { cause: error }), {
       status: transportError.status,
       code: failure.code,
-      details: failure.details,
+      detail: failure.detail,
       response: transportError.response,
     });
   }
@@ -227,7 +193,7 @@ export const gameImageExportApi = {
   cancel: (operationId: string, signal?: AbortSignal) =>
     post<GameImageExportCancelResult>(operationPath(operationId) + "/cancel", {}, signal),
   remove: async (packagePath: string, signal?: AbortSignal): Promise<void> => {
-    // Provisional until the package deletion route is specified.
+    // The client expects an empty success response from the pending removal route.
     await post<unknown>("/remove", { packagePath }, signal);
   },
 };

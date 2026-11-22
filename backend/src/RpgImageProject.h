@@ -14,10 +14,12 @@
 #include <unordered_map>
 
 namespace gameimageexport { class PackageGenerator; }
+namespace gameimageexport::selection { class SnapshotBuilder; }
 
 // MV/MZ and WOLF image adapter. OCR, translation, rendering and preview UI stay in the existing image workbench.
 class RpgImageProject {
     friend class gameimageexport::PackageGenerator;
+    friend class gameimageexport::selection::SnapshotBuilder;
     using Path=std::filesystem::path;using Json=nlohmann::json;
     Path wolfTools_;
     std::recursive_mutex mutex_;

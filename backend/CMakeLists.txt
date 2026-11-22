@@ -26,6 +26,7 @@ add_executable(llmchat-backend
     src/OcrModelStore.cpp
     src/http/OcrRoutes.cpp
     src/GameImageExportPackage.cpp
+    src/GameImageExportSelection.cpp
     src/GameImageExportTransaction.cpp
     src/HttpServer.cpp
     src/http/HttpRouter.cpp
