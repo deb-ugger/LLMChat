@@ -441,14 +441,14 @@
 .speech-search span { color: var(--text-muted); white-space: nowrap; }
 .speech-search button { padding: 0 2px; border: 0; font-size: var(--fs-section); }
 .speech-cue mark, .speech-preview mark { background: color-mix(in srgb, var(--warning) 14%, var(--bg-panel)); color: inherit; border-radius: var(--radius-sm); }
-.speech-preview { flex: 1; min-height: 150px; overflow: auto; padding: 18px 2px; white-space: pre-wrap; overflow-wrap: anywhere; font: var(--fs-section)/1.9 var(--font); }
+.speech-preview { flex: 1; inline-size: 100%; max-inline-size: 80ch; align-self: flex-start; min-height: 150px; overflow: auto; padding: 18px 2px; white-space: pre-wrap; overflow-wrap: anywhere; font: var(--fs-section)/1.9 var(--font); }
 .speech-empty { flex: none; min-height: var(--empty-state-height); max-height: var(--empty-state-max-height); overflow: auto; padding: var(--space-4) var(--space-5); color: var(--text-muted); font-size: var(--fs-body); line-height: 1.6; }
 .speech-cues { flex: 1; min-height: 0; overflow: auto; margin-top: 10px; }
 .speech-cue { display: flex; align-items: flex-start; gap: 15px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .speech-cue > span { display: flex; gap: var(--space-2); flex-shrink: 0; color: var(--text-muted); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
 .speech-cue b { display: inline-grid; place-items: center; height: 22px; min-width: 22px; border-radius: var(--radius-md); color: var(--text-muted); background: var(--bg-muted); }
 .speech-cue textarea { flex: 1; min-width: 0; border: 1px solid transparent; background: var(--bg-panel); border-radius: var(--radius-md); resize: vertical; font: var(--fs-body)/1.6 var(--font); padding: 5px var(--space-2); color: var(--text); }
-.speech-cue p { margin: 0; flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.speech-cue p { margin: 0; flex: 1; min-width: 0; max-inline-size: 80ch; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .speech-pagination { display: flex; flex-shrink: 0; justify-content: center; align-items: center; gap: 15px; padding-top: var(--space-2); }
 @media (min-width: 1600px) {
   .speech-workspace:has(.speech-file-picker) {
@@ -860,7 +860,7 @@ select:not([hidden], [multiple], [size]):focus-visible {
 
 .chat-layout {
   --chat-header-height: 52px;
-  --chat-column: clamp(752px, 72vw, 1720px);
+  --chat-column: clamp(752px, 58vw, 1280px);
   --chat-gutter: clamp(12px, 3.2vw, 36px);
   flex: 1;
   display: flex;
@@ -1151,6 +1151,7 @@ select:not([hidden], [multiple], [size]):focus-visible {
   background: color-mix(in srgb, var(--accent-soft) 72%, var(--bg-panel));
 }
 .chat-message.is-user .bubble-md p { white-space: pre-wrap; }
+.chat-message .bubble-md > :where(p, ul, ol, blockquote) { max-inline-size: min(88ch, 54ic); }
 
 .chat-copy {
   display: flex;

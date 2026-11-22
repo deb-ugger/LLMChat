@@ -83,6 +83,7 @@
 .style-redraw-workflow-parameters dd { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .style-redraw-connection { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
 .style-redraw-workflow-config fieldset { grid-template-columns: repeat(auto-fit, minmax(min(100%, 185px), 1fr)); }
+.style-redraw :is(.style-redraw-run .style-redraw-tools, .style-redraw-workflow-config fieldset) { max-inline-size: 1280px; }
 .style-redraw-field { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .style-redraw-field-prompt { grid-column: 1 / -1; }
 .style-redraw-field > input[type=text], .style-redraw-field > textarea { min-width: 0; width: 100%; }

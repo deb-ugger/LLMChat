@@ -1,4 +1,5 @@
 .settings-page {
+  --settings-form-max: 1400px;
   position: relative;
   flex: 1;
   width: 100%;
@@ -83,6 +84,15 @@
 .settings-save-bar,
 .settings-pricing-scrollbar-slot {
   width: 100%;
+}
+
+.settings-tab-body :where(.settings-card-head, .settings-card > label, .settings-row, .settings-row-half,
+  .settings-row-controls, .feature-model-select-row, .settings-prompt) {
+  max-inline-size: var(--settings-form-max);
+}
+
+.settings-tab-body :where(p.hint, .settings-priority-banner > span) {
+  max-inline-size: 76ch;
 }
 
 .settings-prompt {

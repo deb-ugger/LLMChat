@@ -802,6 +802,19 @@
 .stats-table th:nth-child(9) { width: 8%; }
 .stats-table th:nth-child(10) { width: 7%; }
 
+@media (min-width: 1800px) {
+  .stats-table th:nth-child(1) { width: 192px; }
+  .stats-table th:nth-child(2) { width: 128px; }
+  .stats-table th:nth-child(3) { width: 112px; }
+  .stats-table th:nth-child(4) { width: auto; }
+  .stats-table th:nth-child(5) { width: 104px; }
+  .stats-table th:nth-child(6) { width: 136px; }
+  .stats-table th:nth-child(7) { width: 152px; }
+  .stats-table th:nth-child(8) { width: 136px; }
+  .stats-table th:nth-child(9) { width: 128px; }
+  .stats-table th:nth-child(10) { width: 26%; }
+}
+
 .stats-table th,
 .stats-table td {
   text-align: left;
