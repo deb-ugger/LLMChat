@@ -305,7 +305,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               {job.status === "已暂停" && <div className="hint">{progress?.detail ||
                 (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
               {progress && (job.status === "运行中" || job.status === "已暂停") &&
-                <StepRunningMetrics measured={progress.performance} benchmark={progress} compact={false}
+                <StepRunningMetrics measured={progress.performance} benchmark={progress}
                   itemUnit={job.step === "screen" || job.step === "translate" ? "条" : "张"}
                   queue={{ position: index + 1, ahead: job.status === "运行中" ? 0 : undefined, startedTime: job.startedTime }} />}
             </div>
@@ -399,7 +399,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     JSON.stringify({ configs: items, rounds: totalRounds, sampleLimit, sampleSetPath: sampleSetMode ? sampleSetPath || undefined : undefined });
   const serialized = serializeConfigs(configs);
   const running = snapshot.running || snapshot.stopping;
-  const currentJob = snapshot.jobs.find(job => job.status === "运行中" && job.requestScope === textScope && job.step === step);
+  const currentProgress = snapshot.jobs.find(job => job.status === "运行中" && job.requestScope === textScope && job.step === step)?.progress;
   const configIssue = (config: BenchmarkConfig) => {
     if (!validRounds) return "循环轮次必须为 1 至 100";
     if (sampleSetMode && !sampleSetPath) return "请先选择已标注样本集";
@@ -580,10 +580,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </div>
       {configs.map((config, index) => {
         const lastRun = latestRunByConfig.get(config.id)?.run;
-        const configRunning = currentJob?.progress?.configId === config.id;
-        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "") + (configRunning ? " is-running" : "")} open={expanded.has(config.id)}
+        const activeProgress = currentProgress?.configId === config.id ? currentProgress : undefined;
+        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "") + (activeProgress ? " is-running" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
         <summary>
+          {activeProgress && <span className="game-benchmark-item-live-dot" aria-hidden="true" />}
           <span className="game-benchmark-item-badge">Q{index + 1}</span>
           <strong>{config.label || "配置 " + (index + 1)}</strong>
           <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
@@ -591,7 +592,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
             : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
             : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
-          {lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
+          {activeProgress ? <span className="game-benchmark-item-score is-live">
+            正在跑 · {activeProgress.current}/{activeProgress.total} · 用时 {gameDuration(activeProgress.elapsedMs)}
+            {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}
+          </span> : lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
         </summary>
         <fieldset disabled={adding} className="game-benchmark-item-fields">
         <div className="game-benchmark-toolbar">
