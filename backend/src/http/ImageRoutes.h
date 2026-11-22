@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ExportRoutes.h"
+
 class ConfigStore;
 class RpgImageProject;
 class UsageStore;

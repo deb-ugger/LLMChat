@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameImageExportPackage.h"
+#include <nlohmann/json.hpp>
 
 namespace gameimageexport::transaction {
 
@@ -18,6 +19,19 @@ void apply(const std::filesystem::path& packageDir, const std::filesystem::path&
     const ApplyControl& control = {});
 void restore(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
 Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
+
+struct PackageStatus {
+    nlohmann::json receipt = nullptr;
+    // Recovery returns this verified plan-derived result if apply never committed a receipt.
+    nlohmann::json rollbackReceipt = nullptr;
+    bool applied = false;
+    bool canRestore = false;
+    bool needsRecovery = false;
+    std::optional<Error> restoreError;
+};
+
+void checkApply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
+PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
 
 // Active and interrupted packages must be restored/recovered first.
 void remove(const std::filesystem::path& packageDir);

@@ -126,6 +126,7 @@ int HttpServer::run()
     http_router::registerGameTextProjectRoutes(svr);
     http_router::registerJsonEmbeddingStartRoute(svr, jsonEmbedding);
     http_router::registerGameImageProjectRoutes(svr, gameImages);
+    http_router::registerExportRoutes(svr, gameImages);
     http_router::registerJsonEmbeddingPatchDetectionRoute(svr, jsonEmbedding);
 
     http_router::registerGameMosaicRoutes(svr);

@@ -655,6 +655,60 @@ Recovery recover(const std::filesystem::path& packageDir, const std::filesystem:
     return guard([&] { return recoverLocked(Transaction(packageDir, gameRoot)); });
 }
 
+
+void checkApply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot) {
+    guard([&] {
+        const Transaction tx(packageDir, gameRoot);
+        if (fileExists(tx.package.path, receiptName))
+            throw Error("ALREADY_APPLIED", "这个成品包已使用过，请勿重复应用");
+        if (directoryExists(tx.package.path / backupDir) || directoryExists(tx.package.path / backupStage) ||
+            fileExists(tx.package.path, receiptStage) || fileExists(tx.package.path, restoreIntent) ||
+            fileExists(tx.package.path, restoreStage))
+            throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
+        const auto manifest = parseManifest(readJson(tx.package.path, manifestName, "INVALID_MANIFEST"), true);
+        payloadMembership(tx.package.path, manifest);
+        tx.targets(manifest, Receipt::None, false, false);
+        for (const auto& file : manifest.files) writable(tx.game.path, file);
+    });
+}
+
+PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot) {
+    return guard([&] {
+        const Transaction tx(packageDir, gameRoot);
+        parseManifest(readJson(tx.package.path, manifestName, "INVALID_MANIFEST"), true);
+        PackageStatus result;
+        const auto hasReceipt = fileExists(tx.package.path, receiptName);
+        const auto hasPlan = directoryExists(tx.package.path / backupDir);
+        result.needsRecovery = (!hasReceipt && hasPlan) || directoryExists(tx.package.path / backupStage) ||
+            fileExists(tx.package.path, restoreIntent) || fileExists(tx.package.path, receiptStage) ||
+            fileExists(tx.package.path, restoreStage);
+        if (!hasReceipt && !hasPlan) return result;
+        if (hasReceipt) {
+            result.receipt = readJson(tx.package.path, receiptName, "INVALID_RECEIPT", maxPlanBytes);
+            result.applied = result.receipt.value("state", "") == "applied";
+        }
+        try {
+            const auto plan = tx.readPlan();
+            const auto receipt = tx.receipt(plan);
+            const auto restoring = tx.hasRestoreIntent(plan);
+            if (restoring && !hasReceipt)
+                throw Error("INVALID_RECEIPT", "恢复标记存在，但应用收据缺失");
+            tx.verifyBackups(plan);
+            tx.targets(plan.manifest, hasReceipt ? receipt : Receipt::Applied, restoring || !hasReceipt,
+                receipt != Receipt::Restored);
+            result.canRestore = receipt == Receipt::Applied || !hasReceipt || restoring;
+            if (!hasReceipt) {
+                result.rollbackReceipt = planHeader(plan, tx.game);
+                result.rollbackReceipt["files"] = fileRecords(plan.manifest);
+                result.rollbackReceipt["state"] = "restored";
+            }
+        } catch (const Error& error) {
+            result.restoreError.emplace(error.code, error.what(), error.detail);
+        }
+        return result;
+    });
+}
+
 void remove(const std::filesystem::path& packageDir) {
     guard([&] {
         Root package(packageDir);
@@ -699,6 +753,8 @@ namespace {
 void apply(const std::filesystem::path&, const std::filesystem::path&, const ApplyControl&) { unsupported(); }
 void restore(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
 Recovery recover(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
+void checkApply(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
+PackageStatus inspect(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
 void remove(const std::filesystem::path&) { unsupported(); }
 
 } // namespace gameimageexport::transaction

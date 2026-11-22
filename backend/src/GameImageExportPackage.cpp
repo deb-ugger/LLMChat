@@ -1,4 +1,5 @@
 #include "GameImageExportPackage.h"
+#include "GameImageExportConfirmation.h"
 
 #include <utility>
 
@@ -177,36 +178,6 @@ void publish(const Handle& source, const Path& target) {
     }
 }
 
-void verifyBoxes(const Json& layer, uint32_t width, uint32_t height, bool translation) {
-    const auto mode = layer.at("maskMode").get<std::string>();
-    const auto& boxes = layer.at("boxes");
-    if (!boxes.is_array() || (mode != "boxes" && mode != "whole-image") ||
-        (mode == "whole-image" && (!boxes.empty() || !translation)) || (mode == "boxes" && boxes.empty()))
-        throw Error("INPUT_STALE", "确认记录的蒙版范围无效");
-    const auto& group = layer.at("groupId");
-    if (!group.is_null() && !group.is_string()) throw Error("INPUT_STALE", "确认记录的分组无效");
-    std::set<std::pair<std::string, std::array<int64_t, 4>>> seen;
-    unsigned translated = 0, repaired = 0, protectedCount = 0;
-    for (const auto& box : boxes) {
-        const auto role = box.at("role").get<std::string>();
-        const auto& rect = box.at("rect");
-        if (!rect.is_array() || rect.size() != 4 ||
-            !std::all_of(rect.begin(), rect.end(), [](const auto& coordinate) { return coordinate.is_number_integer(); }))
-            throw Error("INPUT_STALE", "确认记录的蒙版坐标无效");
-        const auto coordinates = rect.get<std::array<int64_t, 4>>();
-        const auto [left, top, right, bottom] = coordinates;
-        if (left < 0 || top < 0 || right <= left || bottom <= top ||
-            right > width || bottom > height || !seen.emplace(role, coordinates).second)
-            throw Error("INPUT_STALE", "确认记录的蒙版坐标无效或重复");
-        std::string id;
-        if (translation && role == "translate") id = "t" + std::to_string(++translated);
-        else if (!translation && role == "repair") id = "m" + std::to_string(++repaired);
-        else if (!translation && role == "protect") id = "p" + std::to_string(++protectedCount);
-        if (id.empty() || box.at("id") != id) throw Error("INPUT_STALE", "确认记录的蒙版编号无效");
-    }
-    if (!translation && !repaired) throw Error("INPUT_STALE", "去码确认记录缺少重绘框");
-}
-
 struct Layer {
     Json record;
     std::string pixels;
@@ -269,31 +240,18 @@ class PackageGenerator {
         return selected;
     }
 
-    Layer layer(const Selection& selected, bool translation, uint32_t width, uint32_t height, uint64_t byteBudget) const {
+    Layer layer(const Selection& selected, bool translation, uint32_t width, uint32_t height,
+        std::string_view sourceSha256, uint64_t byteBudget) const {
         const auto& row = *selected.row;
         const auto& image = *selected.expected;
         const auto& chosen = translation ? *image.translation : *image.mosaic;
-        const auto layerName = translation ? "translation" : "mosaic";
-        const auto metadata = projectDir_ / "export-inputs" / image.imageId / (std::string(layerName) + ".json");
-        const auto file = openSource(game_, metadata, true);
+        auto record = confirmation::readVerified(game_, {image.imageId, image.sourceHash, sourceSha256, width, height},
+            translation ? "translation" : "mosaic", chosen);
         const auto input = translation ? projectDir_ / "rendered" / (image.imageId + ".png") :
             RpgImageProject::mosaicImage(game_, row).lexically_relative(game_);
-        if (!file)
-            throw Error("CONFIRMATION_REQUIRED", "缺少已确认的图片版本，请重新保存：" + selected.name, selected.name);
         if (translation && (!row.value("selected", false) || !row.value("completed", false) ||
             row.value("noTranslationNeeded", false) || row.value("renderedFile", "") != "rendered/" + image.imageId + ".png"))
             throw Error("INPUT_STALE", "译图已取消选择或失效：" + selected.name, selected.name);
-
-        auto record = parse(file, game_ / metadata);
-        if (!uuid(chosen.confirmationId) || record.at("confirmationId") != chosen.confirmationId ||
-            record.at("imageId") != image.imageId || record.at("sourceHash") != image.sourceHash ||
-            record.at("candidateVersion") != chosen.version ||
-            (record.contains("layer") && record.at("layer") != layerName))
-            throw Error("INPUT_STALE", "确认记录已改变，请重新确认：" + selected.name, selected.name);
-        verifyBoxes(record, width, height, translation);
-        Json result = {{"layer", layerName}};
-        for (const auto field : {"confirmationId", "groupId", "candidateVersion", "pngSha256", "maskMode", "boxes"})
-            result[field] = record.at(field);
 
         const auto parents = pinParents(game_, input);
         const auto png = openSource(game_, input);
@@ -310,22 +268,15 @@ class PackageGenerator {
         if (RpgImageProject::dimensions(pixels) != std::pair{width, height})
             throw Error("INPUT_STALE", "候选图片与原图尺寸不同：" + selected.name, selected.name);
         if (translation) {
-            const auto imported = record.at("maskMode") == "whole-image";
-            const auto origin = row.value("renderedKind", imported ? "imported" : "generated");
-            if (origin != (imported ? "imported" : "generated"))
-                throw Error("INPUT_STALE", "译图来源与确认记录不一致：" + selected.name, selected.name);
-            result["renderedKind"] = origin;
-            result["targetLanguage"] = row.value("renderedTarget", "");
-        } else {
-            const auto model = record.value("modelId", Json(nullptr));
-            if (!model.is_null() && !model.is_string())
-                throw Error("INPUT_STALE", "重绘模型记录无效：" + selected.name, selected.name);
-            result["modelId"] = model;
+            const auto origin = record.at("renderedKind").get<std::string>();
+            if (row.value("renderedKind", origin) != origin || record.at("targetLanguage") != row.value("renderedTarget", ""))
+                throw Error("INPUT_STALE", "译图来源或语言已改变，请重新确认：" + selected.name, selected.name);
         }
-        return {std::move(result), std::move(pixels)};
+        return {confirmation::manifestLayer(record), std::move(pixels)};
     }
 
-    std::optional<Json> compose(const Selection& selected, const std::string& key, std::set<std::string>& sourceIds) const {
+    std::optional<Json> compose(const Selection& selected, const std::string& key, std::set<std::string>& sourceIds,
+        Sha256& confirmedFingerprint) const {
         const auto& row = *selected.row;
         const auto& image = *selected.expected;
         const auto parents = pinParents(game_, selected.relative);
@@ -333,6 +284,7 @@ class PackageGenerator {
         if (!sourceIds.insert(identity(original, game_ / selected.relative)).second)
             throw Error("INVALID_PATH", "多个目标指向同一个游戏文件：" + selected.name, selected.name);
         const auto current = read(original, game_ / selected.relative, maxImageBytes);
+        const auto sourceSha256 = hash(current);
         for (const auto dir : {"installed", "mosaic-installed", "composed-installed"}) {
             const auto marker = projectDir_ / dir / (image.imageId + ".bin");
             const auto installed = openSource(game_, marker, true);
@@ -358,12 +310,16 @@ class PackageGenerator {
         const auto originalBytes = current.size() + decoded.size();
         if (originalBytes >= encodedBudget)
             throw Error("IMAGE_TOO_LARGE", "图片处理预计内存超出允许上限：" + selected.name, selected.name);
+        confirmedFingerprint.field("file");
+        confirmedFingerprint.field(selected.name);
+        confirmedFingerprint.field(std::to_string(current.size()));
+        confirmedFingerprint.field(sourceSha256);
         auto remaining = encodedBudget - originalBytes;
         auto translation = image.translation ?
-            std::optional(layer(selected, true, width, height, remaining)) : std::nullopt;
+            std::optional(layer(selected, true, width, height, sourceSha256, remaining)) : std::nullopt;
         if (translation) remaining -= translation->pixels.size();
         auto mosaic = image.mosaic ?
-            std::optional(layer(selected, false, width, height, remaining)) : std::nullopt;
+            std::optional(layer(selected, false, width, height, sourceSha256, remaining)) : std::nullopt;
 
         Json layers = Json::array();
         Json boxes = Json::array();
@@ -391,7 +347,7 @@ class PackageGenerator {
             throw Error("IMAGE_TOO_LARGE", "成品图片超出允许大小：" + selected.name, selected.name);
         const auto digest = write(stage_, Path("payload") / selected.relative, final);
         return Json{{"relativePath", selected.name}, {"kind", kind}, {"bytes", final.size()}, {"sha256", digest},
-            {"original", {{"bytes", current.size()}, {"sha256", hash(current)}}},
+            {"original", {{"bytes", current.size()}, {"sha256", sourceSha256}}},
             {"sourceImage", {{"id", image.imageId}, {"relativePath", selected.name}, {"sourceHash", image.sourceHash},
                 {"width", width}, {"height", height}, {"layers", std::move(layers)}}}, {"boxIds", std::move(boxes)}};
     }
@@ -420,15 +376,20 @@ class PackageGenerator {
         const auto key = markerJson.empty() ? std::string() : Json::parse(markerJson).value("encryptionKey", "");
 
         Sha256 fingerprint;
-        for (const auto field : {"llmchat-game-image-baseline-v1", engine_.name.c_str(), "marker",
-            markerPath.c_str()}) fingerprint.field(field);
-        fingerprint.field(std::to_string(markerLength));
-        fingerprint.field(markerDigest);
+        Sha256 confirmedFingerprint;
+        for (auto* digest : {&fingerprint, &confirmedFingerprint}) {
+            digest->field("llmchat-game-image-baseline-v1");
+            digest->field(engine_.name);
+            digest->field("marker");
+            digest->field(markerPath);
+            digest->field(std::to_string(markerLength));
+            digest->field(markerDigest);
+        }
         Json outputs = Json::array();
         std::set<std::string> sourceIds;
         for (size_t i = 0; i < inputs.size(); ++i) {
             report(control_, "compose", i, inputs.size(), inputs[i].name);
-            auto item = compose(inputs[i], key, sourceIds);
+            auto item = compose(inputs[i], key, sourceIds, confirmedFingerprint);
             if (!item) continue;
             fingerprint.field("file");
             fingerprint.field(inputs[i].name);
@@ -439,7 +400,8 @@ class PackageGenerator {
         if (outputs.empty()) throw Error("NO_OUTPUT", "选择的图片没有需要导出的改动");
         const auto count = outputs.size();
         auto data = Json{{"schemaVersion", 1}, {"packageId", id}, {"engine", engine_.name},
-            {"gameRootFingerprint", fingerprint.finish()}, {"composeRuleVersion", 1},
+            {"gameRootFingerprint", fingerprint.finish()}, {"confirmationGameRootFingerprint", confirmedFingerprint.finish()},
+            {"composeRuleVersion", 1},
             {"generatedAt", formattedTime(utc, "%Y-%m-%dT%H:%M:%SZ")}, {"toolVersion", request_.toolVersion},
             {"baseline", {{"algorithm", "sha256-anchors-and-targets-v1"}, {"marker",
                 {{"relativePath", markerPath}, {"bytes", markerLength}, {"sha256", markerDigest}}}}},
@@ -454,7 +416,8 @@ class PackageGenerator {
 
 public:
     static Result run(RpgImageProject& project, const Request& request, const Control& control) {
-        if (request.images.empty() || request.images.size() > 20000 || request.toolVersion.empty())
+        if (request.images.empty() || request.images.size() > 20000 ||
+            !confirmation::portableIdentifier(request.toolVersion))
             throw Error("INVALID_REQUEST", "请指定待导出的图片和工具版本");
         cancel(control);
         const Root game(request.gamePath);

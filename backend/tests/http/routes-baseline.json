@@ -1,5 +1,12 @@
 {
   "routes": [
+    {"method":"POST","pattern":"/api/game-image-exports/generate","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"GET","pattern":"/api/game-image-exports/operations/([^/]+)","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/operations/([^/]+)/cancel","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/apply","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/restore","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/receipts/query","handlerKind":"cors-lambda","matcher":"regex"},
+    {"method":"POST","pattern":"/api/game-image-exports/remove","handlerKind":"cors-lambda","matcher":"regex"},
     {"method":"OPTIONS","pattern":".*","handlerKind":"cors-preflight","matcher":"regex"},
     {"method":"GET","pattern":"/api/storage","handlerKind":"cors-lambda","matcher":"regex"},
     {"method":"PUT","pattern":"/api/storage/paths","handlerKind":"cors-lambda","matcher":"regex"},
