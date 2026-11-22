@@ -1,6 +1,7 @@
 #include "ExportRoutes.h"
 #include "HttpRouter.h"
 #include "GameImageExportPackage.h"
+#include "GameImageExportConfirmation.h"
 #include "GameImageExportTransaction.h"
 
 #ifdef _WIN32
@@ -163,6 +164,9 @@ void checkConfirmation(const Path& game, const export_game::ImageSelection& imag
     if (!openSource(game, metadata, true))
         throw Error("CONFIRMATION_REQUIRED", "缺少确认快照，请重新确认图片版本", image.imageId);
     const auto record = readJson(game, metadata, "INPUT_STALE");
+    if (!record.contains("recordVersion") || !record.at("recordVersion").is_number_integer() ||
+        record.at("recordVersion") != 1 || !record.contains("sourceSha256"))
+        throw Error("CONFIRMATION_REQUIRED", "旧确认记录需要重新确认", image.imageId);
     try {
         const auto digest = record.at("pngSha256").get<std::string>();
         const auto& group = record.at("groupId");
@@ -381,6 +385,18 @@ Json persistedReceipt(const Path& package) {
 
 void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
     const auto jobs = std::make_shared<Jobs>();
+
+    svr.Post("/api/game-image-exports/confirm", withCors(exportHandler([&gameImages](const auto& req, auto& res) {
+        const auto body = Json::parse(req.body);
+        const auto game = locate(body, "gamePath");
+        send(res, 200, export_game::confirmation::save(gameImages, game.path, body));
+    })));
+
+    svr.Post("/api/game-image-exports/confirmation-status", withCors(exportHandler([&gameImages](const auto& req, auto& res) {
+        const auto body = Json::parse(req.body);
+        const auto game = locate(body, "gamePath");
+        send(res, 200, export_game::confirmation::status(gameImages, game.path, body));
+    })));
 
     svr.Post("/api/game-image-exports/generate", withCors(exportHandler([jobs, &gameImages](const auto& req, auto& res) {
         const auto body = Json::parse(req.body);

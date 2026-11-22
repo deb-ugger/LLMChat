@@ -1,6 +1,42 @@
 import { requestApiJson } from "./api";
 import { toFriendlyError } from "./friendlyError";
 
+export type GameImageConfirmationBox = {
+  id: string;
+  role: "translate" | "repair" | "protect";
+  rect: [number, number, number, number];
+};
+
+export type GameImageConfirmationLookup = {
+  gamePath: string;
+  imageId: string;
+  layer: "translation" | "mosaic";
+};
+
+export type GameImageConfirmationInput = GameImageConfirmationLookup & {
+  sourceHash: string;
+  candidateVersion: string;
+  pngSha256: string;
+  groupId?: string | null;
+  modelId?: string | null;
+  targetLanguage?: string;
+  renderedKind?: "generated" | "imported";
+  maskMode: "boxes" | "whole-image";
+  boxes: GameImageConfirmationBox[];
+};
+
+export type GameImageConfirmed = {
+  state: "confirmed";
+  confirmationId: string;
+  candidateVersion: string;
+  pngSha256: string;
+  confirmationGameRootFingerprint?: string;
+  gameRootFingerprint?: string;
+};
+
+export type GameImageConfirmationStatus = GameImageConfirmed |
+  { state: "needsConfirmation"; reason: string; message: string };
+
 export type GameImageExportEngine = "rpg-maker-mv" | "rpg-maker-mz" | "wolf";
 
 export type GameImageExportDigest = {
@@ -56,6 +92,7 @@ export type GameImageExportManifest = {
   packageId: string;
   engine: GameImageExportEngine;
   gameRootFingerprint: string;
+  confirmationGameRootFingerprint?: string;
   composeRuleVersion: 1;
   generatedAt: string;
   toolVersion: string;
@@ -180,6 +217,10 @@ function operationPath(operationId: string) {
 }
 
 export const gameImageExportApi = {
+  confirm: (body: GameImageConfirmationInput, signal?: AbortSignal) =>
+    post<GameImageConfirmed>("/confirm", body, signal),
+  confirmationStatus: (body: GameImageConfirmationLookup, signal?: AbortSignal) =>
+    post<GameImageConfirmationStatus>("/confirmation-status", body, signal),
   generate: (body: GameImageExportGenerateRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/generate", body, signal),
   status: <Result = GameImageExportResult>(operationId: string, signal?: AbortSignal) =>

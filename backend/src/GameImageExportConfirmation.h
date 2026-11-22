@@ -27,4 +27,7 @@ nlohmann::json readVerified(const std::filesystem::path& game, const Source& sou
 
 nlohmann::json manifestLayer(const nlohmann::json& verified);
 
+nlohmann::json save(RpgImageProject& project, const std::filesystem::path& game, const nlohmann::json& request);
+nlohmann::json status(RpgImageProject& project, const std::filesystem::path& game, const nlohmann::json& request);
+
 } // namespace gameimageexport::confirmation

@@ -14,7 +14,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
 import { ImageArchiveError, sortGameImages, validateGameImageArchive, type ImageArchiveReplacement } from "../gameImageArchive";
 import { downloadGameImages, type GameImageDownloadRange } from "../gameImageDownloads";
-import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createContext, useContext, useId, useDeferredValue, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { readUnitySourceImage, acquireUnityImagePreview, peekUnityImagePreview, unityImagePreviewKey, type ImagePreviewReader } from "../unityImagePreview";
 import { api, type OcrMode } from "../api";
@@ -310,9 +310,10 @@ function ImageErrorGroup({ title, issues, names, selected, onSelect, onMenu }: {
     {open && <GameImageListPagination label={title + "分页"} page={current} pages={pages} onPage={setPage} />}
   </details>;
 }
-export function UnityImageWorkbench({ project, redrawingId, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
+export function UnityImageWorkbench({ project, redrawingId, initialScreeningComplete, disabled, patchIssues, active = true, dirty = false, saving = false, saveNotice = "", ocrMode = "fast", reuseRecognition = false, onRecognize, onTranslate, confidenceThreshold = 50, onChange, onChangeMany, onRender, onImport, confirmationNotice, onSave, onDiscard, onRedrawFailure, leaveGuard,onImportArchive,onArchiveMessage }: {
   project: UnityProject | null; disabled: boolean; active?: boolean; dirty?: boolean; saving?: boolean; saveNotice?: string; ocrMode?: OcrMode; reuseRecognition?: boolean; onRecognize?: (image: UnityImage, mode: OcrMode) => void; onTranslate?:(image:UnityImage)=>void; confidenceThreshold?: number;
   patchIssues?: readonly ImageIndexIssue[];
+  confirmationNotice?: (image: UnityImage) => ReactNode;
   initialScreeningComplete: boolean; redrawingId?: string;
   onChange: (image: UnityImage) => void; onChangeMany?: (images: UnityImage[]) => void; onRender: (image: UnityImage) => void;
   onRedrawFailure: (image: UnityImage, reason: string) => Promise<void>;
@@ -660,6 +661,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
           disabled={disabled || !!archiveBusy} onClick={() => onChange({ ...image, selected: !image.selected, selectionManual: true })}>
           {image.selected ? "排除这张译图" : "写入这张译图"}
         </button>}
+        {confirmationNotice?.(image)}
         {(failureDetail || failuresByImage.has(image.id)) && <p className="unity-offline-error" role="alert">
           {failureDetail || failuresByImage.get(image.id)}
         </p>}

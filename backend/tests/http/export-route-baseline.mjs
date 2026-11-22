@@ -50,6 +50,6 @@ assert.deepEqual(sorted(assemble(oldFiles, oldSource)), sorted(old.routes), "mai
 assert.deepEqual(updated.routes.filter(route => !isExport(route)), old.routes, "old manifest entries and order");
 assert.deepEqual(updated.unityEndpoints, old.unityEndpoints, "Unity endpoint catalog");
 assert.deepEqual(sorted(assemble(newFiles, read)), sorted(updated.routes), "registered routes including exports");
-assert.equal(updated.routes.filter(isExport).length, 7);
+assert.equal(updated.routes.filter(isExport).length, 9);
 assert.equal(new Set(updated.routes.map(route => route.method + " " + route.pattern)).size, updated.routes.length);
 console.log("PASS", old.routes.length, "baseline registrations unchanged,", updated.routes.filter(isExport).length, "export routes added");

@@ -73,7 +73,7 @@ async function completed(submit, operation, expectedError = null) {
         if (response.state === "failed" && expectedError) {
             assert.equal(response.result, null);
             assert.equal(response.error.code, expectedError);
-            return;
+            return response.error;
         }
         if (response.state === "succeeded") {
             assert.equal(expectedError, null);
@@ -116,7 +116,7 @@ function tree(directory) {
     return values;
 }
 
-async function fixture(name) {
+async function fixture(name, layer = "mosaic") {
     const gamePath = path.join(root, name + "-game");
     const outputDir = path.join(root, name + "-output");
     fs.mkdirSync(path.join(gamePath, "Data", "Picture"), { recursive: true });
@@ -132,23 +132,62 @@ async function fixture(name) {
     assert.equal(scan.status, 200, JSON.stringify(scan.value));
     const row = scan.value.images.find(image => image.file === relativePath);
     assert.ok(row, "fixture picture found by the existing scanner");
-    const saved = await request("POST", "/api/game-images/mosaic?" + new URLSearchParams({
-        gamePath, id: row.id, sourceHash: row.sourceHash,
-    }), candidate, true);
-    assert.equal(saved.status, 200, JSON.stringify(saved.value));
-    const confirmationId = randomUUID();
     const pngSha256 = sum(candidate);
-    const snapshotDir = path.join(gamePath, "LLMChat-JSON/images/export-inputs", row.id);
-    fs.mkdirSync(snapshotDir, { recursive: true });
-    const snapshotPath = path.join(snapshotDir, "mosaic.json");
-    const snapshot = {
-        layer: "mosaic", confirmationId, imageId: row.id, sourceHash: row.sourceHash, pngSha256,
-        candidateVersion: pngSha256, groupId: null, maskMode: "boxes",
-        boxes: [{ id: "m1", role: "repair", rect: [0, 0, 1, 1] }],
+    let candidateVersion = pngSha256;
+    if (layer === "mosaic") {
+        const saved = await request("POST", "/api/game-images/mosaic?" + new URLSearchParams({
+            gamePath, id: row.id, sourceHash: row.sourceHash,
+        }), candidate, true);
+        assert.equal(saved.status, 200, JSON.stringify(saved.value));
+    } else {
+        const saved = await request("POST", "/api/game-images/render?" + new URLSearchParams({ gamePath, id: row.id }), candidate, true);
+        assert.equal(saved.status, 200, JSON.stringify(saved.value));
+        candidateVersion = saved.value.hash;
+    }
+
+    const lookup = { gamePath, imageId: row.id, layer };
+    assert.equal((await post("/confirmation-status", lookup)).value.state, "needsConfirmation");
+    const proposal = {
+        ...lookup, sourceHash: row.sourceHash, pngSha256, candidateVersion, groupId: null, maskMode: "boxes",
+        boxes: [{ id: layer === "mosaic" ? "m1" : "t1", role: layer === "mosaic" ? "repair" : "translate",
+            rect: [0, 0, 1, 1], debugPath: "C:/unrelated/private.png" }],
+        ...(layer === "translation" ? { renderedKind: "generated", targetLanguage: "zh-CN" } : { modelId: "2511" }),
     };
-    writeJson(snapshotPath, snapshot);
-    const input = { gamePath, outputDir, images: [{ imageId: row.id, sourceHash: row.sourceHash, mosaic: { confirmationId, pngSha256 } }] };
-    return { gamePath, outputDir, snapshotPath, snapshot, relativePath, target, original, input, originalTree: tree(gamePath) };
+    const snapshotPath = path.join(gamePath, "LLMChat-JSON/images/export-inputs", row.id, layer + ".json");
+    const confirmed = await post("/confirm", proposal);
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.value));
+    assert.equal(confirmed.value.state, "confirmed");
+    if (layer === "translation") {
+        // Match the workbench: the candidate is written and confirmed before the edited project row is finalized.
+        const save = await request("POST", "/api/game-images/save", {
+            gamePath, image: { ...row, selected: true, completed: true, renderedKind: "generated", renderedTarget: "zh-CN" },
+        });
+        assert.equal(save.status, 200, JSON.stringify(save.value));
+    }
+
+    const snapshotBytes = fs.readFileSync(snapshotPath);
+    const snapshot = JSON.parse(snapshotBytes);
+    assert.equal(snapshot.recordVersion, 1);
+    assert.equal(snapshot.sourceSha256, sum(original));
+    assert.equal(snapshot.pngSha256, sum(candidate));
+    assert.equal(snapshot.candidateVersion, candidateVersion);
+    assert.match(snapshot.confirmationId, /^[0-9a-f-]{36}$/);
+    assert.match(snapshot.confirmationGameRootFingerprint, /^[a-f0-9]{64}$/);
+    assert.match(snapshot.gameRootFingerprint, /^[a-f0-9]{64}$/);
+    assert.deepEqual(Object.keys(snapshot.boxes[0]).sort(), ["id", "rect", "role"]);
+    for (let i = 0; i < 2; i++) {
+        const repeat = await post("/confirm", proposal);
+        assert.deepEqual(repeat, confirmed);
+        assert.deepEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+    }
+    const status = await post("/confirmation-status", lookup);
+    assert.deepEqual(status, confirmed);
+    const { confirmationId } = confirmed.value;
+    const selected = layer === "mosaic" ? { mosaic: { confirmationId, pngSha256 } } :
+        { translation: { confirmationId, renderedHash: candidateVersion } };
+    const input = { gamePath, outputDir, images: [{ imageId: row.id, sourceHash: row.sourceHash, ...selected }] };
+    return { gamePath, outputDir, snapshotPath, snapshot, snapshotBytes, lookup, relativePath, target, original, input,
+        originalTree: tree(gamePath) };
 }
 
 async function waitReady() {
@@ -167,6 +206,8 @@ function transactionInput(fixture, result) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath));
     assert.equal(manifest.files.length, 1);
     assert.equal(result.files, 1);
+    assert.equal(manifest.confirmationGameRootFingerprint, fixture.snapshot.confirmationGameRootFingerprint);
+    assert.equal(manifest.gameRootFingerprint, fixture.snapshot.gameRootFingerprint);
     const payload = path.join(result.packagePath, "payload", fixture.relativePath);
     assert.equal(sha(payload), manifest.files[0].sha256);
     return { body: { gamePath: fixture.gamePath, packagePath: result.packagePath }, payload, manifestPath, manifest,
@@ -177,13 +218,22 @@ try {
     await waitReady();
     console.log("Temporary backend port:", port);
     const first = await fixture("one");
-    const second = await fixture("two");
+    const second = await fixture("two", "translation");
+    console.log("PASS T081 A three byte-identical confirmations for translation and mosaic");
     expectError(await post("/generate", { ...first.input, images: [] }), 400, "INVALID_REQUEST");
+    const { recordVersion, sourceSha256, ...legacy } = first.snapshot;
+    writeJson(first.snapshotPath, legacy);
+    const old = await post("/confirmation-status", first.lookup);
+    assert.equal(old.status, 200);
+    assert.equal(old.value.state, "needsConfirmation");
+    assert.match(old.value.message, /重新确认/);
+    expectError(await post("/generate", first.input), 400, "CONFIRMATION_REQUIRED");
+    console.log("PASS T081 B legacy confirmation requires reconfirmation and cannot generate");
     fs.unlinkSync(first.snapshotPath);
     expectError(await post("/generate", first.input), 400, "CONFIRMATION_REQUIRED");
     writeJson(first.snapshotPath, { ...first.snapshot, candidateVersion: "changed" });
     expectError(await post("/generate", first.input), 400, "INPUT_STALE");
-    writeJson(first.snapshotPath, first.snapshot);
+    fs.writeFileSync(first.snapshotPath, first.snapshotBytes);
     assert.deepEqual(tree(first.gamePath), first.originalTree);
     assert.equal(fs.readdirSync(first.outputDir).length, 0);
 
@@ -286,7 +336,19 @@ try {
     assert.deepEqual(tree(first.gamePath), first.originalTree);
     assert.deepEqual(tree(second.gamePath), second.originalTree);
     console.log("PASS B remove: two deletions, two not-found responses, applied package guarded");
-    console.log("PASS T077 HTTP fixtures");
+    const editedSource = await fixture("edited-source");
+    const altered = Buffer.from(editedSource.original);
+    altered[altered.length - 1] ^= 1;
+    fs.writeFileSync(editedSource.target, altered);
+    const afterEdit = tree(editedSource.gamePath);
+    const stale = await post("/confirmation-status", editedSource.lookup);
+    assert.equal(stale.value.state, "needsConfirmation");
+    const failure = await completed(await post("/generate", editedSource.input), "generate", "INPUT_STALE");
+    assert.match(failure.message, /原图已改变|源文件内容与确认时不同/);
+    assert.deepEqual(tree(editedSource.gamePath), afterEdit);
+    assert.equal(fs.readdirSync(editedSource.outputDir).length, 0);
+    console.log("PASS T081 C confirm/generate/apply/restore restored all hashes; edited source rejected");
+    console.log("PASS T077/T081 HTTP fixtures");
 } catch (error) {
     console.error(log);
     throw error;
