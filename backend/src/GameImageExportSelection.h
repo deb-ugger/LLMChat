@@ -21,6 +21,9 @@ struct Layer {
     // The stored renderedHash for translation, the saved candidate SHA-256 for mosaic.
     std::string versionId;
     std::string sha256;
+    std::string confirmationId;
+    std::string boxId;
+    std::string role;
 };
 
 struct Entry {
@@ -30,11 +33,11 @@ struct Entry {
 };
 
 // project is the server's loaded picture catalog with current persisted row state.
-// createdAt is supplied by the confirmer so the same input yields the same UTF-8 JSON.
+// The server stamps each capture in UTC. The remaining JSON is canonical for the confirmed inputs.
 // These functions read the game directory and never write a snapshot or any other file.
 // Input errors are reported as gameimageexport::Error.
 std::string createSnapshot(const std::filesystem::path& gameRoot, const nlohmann::json& project,
-    std::span<const Entry> entries, std::string_view createdAt);
+    std::span<const Entry> entries);
 
 void validateSnapshot(const std::filesystem::path& gameRoot, const nlohmann::json& project,
     std::string_view serialized);
