@@ -259,7 +259,10 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
   const outcomes = actualModels.flatMap(model => model.outcomes ? [model.outcomes] : []);
   const requestCounts = (key: "succeeded" | "failed" | "cancelled") => outcomes.length
     ? outcomes.reduce((total, value) => total + value[key], 0) : "—";
-  const configContents = config.length ? <MetricsValues values={config} /> :
+  const taskParameters = config.filter(item => "scope" in item && item.scope === "task");
+  const configParameters = config.filter(item => !("scope" in item) || item.scope !== "task");
+  const taskContents = taskParameters.length ? <MetricsValues values={taskParameters} /> : null;
+  const configContents = configParameters.length ? <MetricsValues values={configParameters} /> :
     <small data-tooltip="当前步骤未提供可展示的配置，或测试尚未进入配置执行阶段。">—</small>;
   const paused = stopped || benchmark?.state === "paused";
   const summaryElapsed = elapsed ?? benchmark?.elapsedMs;
@@ -270,6 +273,8 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
   return <details className="game-step-running-metrics">
     <summary title={summary}><span>{summary}</span><span className="game-step-metrics-arrow" aria-hidden="true" /></summary>
     <div className="game-flow-model-list">
+      <section className="game-step-metrics-group is-performance">
+      <strong className="game-step-metrics-label">性能</strong>
       {modelGroups.map(model => {
         const records = actualModels.filter(record => record.model === model.model);
         const generationMs = records.reduce((total, record) => total + record.generationMs, 0);
@@ -322,6 +327,9 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
         { label: "文本请求重试", value: measured.textRequestRetries ?? "—", detail: "统计文本调度器实际重新发出的限流或超时请求。其他执行器未上报该项。" },
         { label: "最长单样本", value: "—", detail: "执行器尚未记录各样本独立耗时。" },
       ]} />
+      </section>
+      <section className="game-step-metrics-group is-task">
+      <strong className="game-step-metrics-label">任务</strong>
       {benchmark ? <MetricsValues values={[
         { label: "阶段", value: paused ? "已暂停" : { prepare: "准备", execute: "执行", finish: "收尾" }[benchmark.phase] },
         { label: "轮次", value: benchmark.round === undefined ? "—" : benchmark.round + " / " + benchmark.rounds },
@@ -346,7 +354,12 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
         { label: "墙钟平均每样本", value: formatTiming(measured.itemsDone && elapsed ? elapsed / measured.itemsDone : undefined),
           detail: "步骤经过时间除以已处理样本数。" },
       ]} />}
-      <div><strong className="game-step-metrics-label">配置参数</strong>{configContents}</div>
+      {taskContents}
+      </section>
+      <section className="game-step-metrics-group is-config">
+      <strong className="game-step-metrics-label">当前配置</strong>
+      {configContents}
+      </section>
     </div>
   </details>;
 }
