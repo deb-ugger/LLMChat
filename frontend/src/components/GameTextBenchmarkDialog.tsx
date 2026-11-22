@@ -69,20 +69,34 @@ function LocalGameBenchmark({ input, onClose }: { input: BenchmarkInput; onClose
 export function GameTextBenchmarkHost() {
   const [local, setLocal] = useState<BenchmarkInput>();
   useEffect(() => {
+    let active: BenchmarkInput | undefined;
+    const restore = (input: BenchmarkInput) => {
+      const isCurrent = () => active === input;
+      void benchmarkRunner.restoreLatestArchivedBatch(input, isCurrent).catch(error => {
+        if (isCurrent()) showAppNotice("恢复中止的测试失败：" + String(error), "error");
+      });
+    };
     if (!isTauri()) {
-      const open = (event: Event) => setLocal((event as CustomEvent<BenchmarkInput>).detail);
+      const open = (event: Event) => {
+        const input = (event as CustomEvent<BenchmarkInput>).detail;
+        active = input;
+        setLocal(input);
+        restore(input);
+      };
       window.addEventListener(openEvent, open);
-      return () => window.removeEventListener(openEvent, open);
+      return () => { active = undefined; window.removeEventListener(openEvent, open); };
     }
     const channel = new BroadcastChannel(benchmarkChannelName);
-    let active: BenchmarkInput | undefined;
     let opening: Promise<void> | undefined;
     const open = (event: Event) => {
       if (opening) return;
       const previous = active;
-      active = (event as CustomEvent<BenchmarkInput>).detail;
+      const input = (event as CustomEvent<BenchmarkInput>).detail;
+      active = input;
       opening = invoke<boolean>("open_game_benchmark_window").then(created => {
-        if (!created && active) channel.postMessage({ type: "refresh-setup", setup: setupFor(active) });
+        if (active !== input) return;
+        if (!created) channel.postMessage({ type: "refresh-setup", setup: setupFor(input) });
+        restore(input);
       }).catch(error => {
         active = previous;
         showAppNotice("打开测试队列失败：" + String(error), "error");
@@ -116,7 +130,7 @@ export function GameTextBenchmarkHost() {
       channel.postMessage({ type: "benchmark-queue", ...state });
     });
     window.addEventListener(openEvent, open);
-    return () => { unsubscribe(); window.removeEventListener(openEvent, open); channel.close(); };
+    return () => { active = undefined; unsubscribe(); window.removeEventListener(openEvent, open); channel.close(); };
   }, []);
   return local ? <LocalGameBenchmark key={local.scope} input={local} onClose={() => setLocal(undefined)} /> : null;
 }
@@ -279,7 +293,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       </div>)}
       {queue.map((job, index) => {
         const progress = job.progress;
-        const statusLabel = job.status;
+        const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
         return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>

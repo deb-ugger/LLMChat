@@ -530,6 +530,31 @@ export function resumeBenchmarkJob(jobId: string): boolean {
   return job?.id === jobId && job.status === "已暂停" && scheduleJob(job);
 }
 
+type ArchivedTask = ReturnType<typeof groupBenchmarkTasks>[number];
+
+async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkStep, task: ArchivedTask, history: BenchmarkResult[]): Promise<QueuedJob> {
+  const { id, firstTime, continuation } = task;
+  if (!continuation) throw new Error("这条记录没有可继续的完整测试批次");
+  const { plan, completed, sampleSource, reuse } = continuation;
+  const runs = history.filter(run => run.performance.benchmark?.queueId === id);
+  const configElapsedMs = runs.reduce((total, run) => run.status === "已暂停" &&
+    run.performance.benchmark?.batchIndex === completed.length ? total + run.performance.elapsedMs : total, 0);
+  const details = await readImageBenchmarkDetails(id, sampleSource.performance.taskId!);
+  if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
+  const prepared = await prepareJob(input, {
+    scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath,
+  }, false, { details, reuse, completed, configElapsedMs });
+  const label = benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮";
+  const current = prepared.restored ?? 0;
+  return { id, scope: prepared.scope, requestScope: input.scope, step, label, startedTime: firstTime || undefined,
+    status: "已暂停", prepared, onMessage: input.onMessage, resumeSamples: true,
+    progress: { type: "benchmark-state", jobId: id, scope: prepared.scope, step, state: "paused", phase: "finish",
+      label, sample: "", current, total: prepared.count, percent: prepared.count ? Math.floor(current * 100 / prepared.count) : null,
+      elapsedMs: runs.reduce((total, run) => total + run.performance.elapsedMs, 0),
+      configElapsedMs, failed: completed.reduce((total, run) => total + run.failed, 0),
+      performance: reuse ? performanceForDisplay(sampleSource.performance) : undefined } };
+}
+
 export const benchmarkRunner = {
   async enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
     if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
@@ -548,6 +573,32 @@ export const benchmarkRunner = {
     if (!request.priority || !scheduleJob(job)) { publish(); pumpQueue(); }
     return job.id;
   },
+  async restoreLatestArchivedBatch(input: BenchmarkInput, isCurrent: () => boolean) {
+    const canRestore = () => isCurrent() && !running && !executing &&
+      !jobs.some(job => job.status === "已暂停" || job.status === "运行中");
+    if (!input.mosaicRoot || !input.images || !canRestore()) return;
+    const candidates = (await Promise.all((Object.keys(mosaicBenchmarkSteps) as MosaicBenchmarkStep[]).map(async step => {
+      const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", step);
+      return groupBenchmarkTasks(history).filter(task => task.continuation).map(task => ({
+        step, task, history, lastActivity: task.runs.reduce((latest, run) =>
+          Math.max(latest, Date.parse(run.performance.endedAt || run.performance.beginTime || "") || 0), 0),
+      }));
+    }))).flat().sort((left, right) => right.lastActivity - left.lastActivity);
+    let firstError: unknown;
+    for (const { step, task, history } of candidates) {
+      if (!canRestore()) return;
+      if (jobs.some(job => job.id === task.id)) continue;
+      try {
+        const restored = await prepareArchivedJob(input, step, task, history);
+        if (!canRestore()) return;
+        if (jobs.some(job => job.id === restored.id)) continue;
+        jobs.unshift(restored);
+        publish();
+        return;
+      } catch (error) { firstError ??= error; }
+    }
+    if (firstError && canRestore()) throw firstError;
+  },
   async continueArchivedBatch(input: BenchmarkInput, { queueId, step }: ArchivedBenchmarkRef) {
     if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持归档续跑");
     const findJob = () => jobs.find(job => job.id === queueId);
@@ -557,24 +608,13 @@ export const benchmarkRunner = {
       return;
     }
     const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", step);
-    const continuation = groupBenchmarkTasks(history).find(task => task.id === queueId)?.continuation;
-    if (!continuation) throw new Error("这条记录没有可继续的完整测试批次");
-    const { plan, completed, sampleSource, reuse } = continuation;
-    // History already keeps one cumulative measurement per run ID.
-    const configElapsedMs = history.reduce((total, run) => run.status === "已暂停" &&
-      run.performance.benchmark?.queueId === queueId && run.performance.benchmark.batchIndex === completed.length
-      ? total + run.performance.elapsedMs : total, 0);
-    const details = await readImageBenchmarkDetails(queueId, sampleSource.performance.taskId!);
-    if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
-    const prepared = await prepareJob(input, {
-      scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath,
-    }, false, { details, reuse, completed, configElapsedMs });
+    const task = groupBenchmarkTasks(history).find(task => task.id === queueId);
+    if (!task) throw new Error("这条记录没有可继续的完整测试批次");
+    const job = await prepareArchivedJob(input, step, task, history);
     if (!findJob()) {
-      const job: QueuedJob = { id: queueId, scope: prepared.scope, requestScope: input.scope, step,
-        label: benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮",
-        status: "待开始", prepared, onMessage: input.onMessage, resumeSamples: true };
+      job.status = "待开始";
       jobs.push(job);
-      scheduleJob(job);
+      if (!scheduleJob(job)) publish();
     }
   },
   start(id: string) {
