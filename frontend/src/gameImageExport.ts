@@ -150,7 +150,13 @@ export type GameImageExportReceipt = {
   }[];
 };
 
-// The HTTP adapter is pending. Successful results use the persisted receipt shape in the client contract.
+export type GameImageExportReceiptStatus = {
+  receipt: GameImageExportReceipt;
+  applied: boolean;
+  canRestore: boolean;
+  needsRecovery: boolean;
+};
+
 export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied" };
 export type GameImageExportRestoreResult = GameImageExportReceipt & { state: "restored" };
 
@@ -230,11 +236,10 @@ export const gameImageExportApi = {
   restore: (body: GameImageExportReceiptLookup, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/restore", body, signal),
   queryReceipt: (body: GameImageExportReceiptLookup, signal?: AbortSignal) =>
-    post<{ receipt: GameImageExportReceipt }>("/receipts/query", body, signal),
+    post<GameImageExportReceiptStatus>("/receipts/query", body, signal),
   cancel: (operationId: string, signal?: AbortSignal) =>
     post<GameImageExportCancelResult>(operationPath(operationId) + "/cancel", {}, signal),
   remove: async (packagePath: string, signal?: AbortSignal): Promise<void> => {
-    // The client expects an empty success response from the pending removal route.
     await post<unknown>("/remove", { packagePath }, signal);
   },
 };
