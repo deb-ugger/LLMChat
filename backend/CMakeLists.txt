@@ -14,6 +14,8 @@ add_executable(llmchat-backend
     src/unity_runtime/UnityGameDetection.cpp
     src/unity_runtime/UnityRuntimeDownload.cpp
     src/unity_runtime/UnityRuntimeFont.cpp
+    src/unity_runtime/UnityRuntimePlan.cpp
+    src/unity_runtime/UnityRuntimeInstall.cpp
     src/SqliteUsageDb.cpp
     src/UsageStore.cpp
     src/PricingStore.cpp
