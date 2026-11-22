@@ -8,7 +8,7 @@ import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { openGameAuxWindow } from "../gameAuxWindows";
 import { GameFlowCard } from "./GameFlowCard";
 import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
-import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, usePausedBenchmarkProgress, type BenchmarkState, type BenchmarkTarget } from "../benchmark/benchmarkRunner";
+import { benchmarkBlockingReason, isBenchmarkRunning, resumeBenchmarkJob, useBenchmarkProgress, useBenchmarkRunning, usePausedBenchmarkProgress, type BenchmarkState, type BenchmarkTarget } from "../benchmark/benchmarkRunner";
 
 export type GameFlowStep = {
   id: string;
@@ -541,6 +541,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const matchesActivity = activity?.step === step.id;
         const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
         const pausedStep = pausedBenchmark?.step === "imageTranslate" ? "translate" : pausedBenchmark?.step;
+        const pausedResume = pausedBenchmark?.jobId && pausedStep === step.id ? pausedBenchmark.jobId : undefined;
         const formalMeasurement = stepPerformance(performanceScope, step.id);
         const formalPaused = state === "stopped" && !!formalMeasurement.taskId;
         const displayedTest = state === "running" || formalPaused && !showingBenchmark ? undefined
@@ -600,8 +601,9 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           </>}
           actions={<>
               {(step.run || step.stop) && <button type="button" className="unity-btn unity-btn-primary game-flow-start"
-                aria-label={`${actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : testing || step.runDisabled || savingConfiguration}
-                title={step.stop ? undefined : testTitle} onClick={step.stop || (() => runConfigured(step.run, step.id))}>{actionLabel}</button>}
+                aria-label={`${pausedResume ? "继续" : actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : testing || step.runDisabled || savingConfiguration}
+                title={step.stop ? undefined : pausedResume ? "从中止处继续这次测试" : testTitle}
+                onClick={step.stop || (pausedResume ? () => { resumeBenchmarkJob(pausedResume); } : () => runConfigured(step.run, step.id))}>{pausedResume ? "继续" : actionLabel}</button>}
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
           </>}
           configurationRef={panel}

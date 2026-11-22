@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { benchmarkChannelName, requestBenchmarkWindow, type BenchmarkQueueArgument, type BenchmarkQueueCommand } from "../gameBenchmarkWindow";
+import { benchmarkChannelName, benchmarkHistoryForRecords, requestBenchmarkWindow, type BenchmarkQueueArgument, type BenchmarkQueueCommand } from "../gameBenchmarkWindow";
 import { benchmarkRunner, benchmarkSampleCounts, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, type BenchmarkInput, type BenchmarkRequest, type BenchmarkSnapshot } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
 import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
@@ -501,7 +501,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     } finally { setAdding(false); }
   };
 
-  const tasks = useMemo(() => groupBenchmarkTasks(history), [history]);
+  const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
   const [restoringRun, setRestoringRun] = useState<string>();
   const continueBatch = async (reference: ArchivedBenchmarkRef) => {
     setRestoringRun(reference.queueId);
