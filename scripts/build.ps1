@@ -3,7 +3,8 @@ param(
     [string]$Owner = "manual-build-$PID",
     [string]$Proxy = '',
     [switch]$NoLaunch,
-    [switch]$ForceClose
+    [switch]$ForceClose,
+    [string]$FrontendPreviewDirectory
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -16,11 +17,27 @@ $buildResult = 0
 $buildClock = [Diagnostics.Stopwatch]::StartNew()
 $stageClock = [Diagnostics.Stopwatch]::StartNew()
 $stageTimes = [ordered]@{}
+$logDirectory = Join-Path $script:BuildCacheRoot 'logs'
+$logPath = Join-Path $logDirectory ('build-{0:yyyyMMdd-HHmmss-fff}-{1}.log' -f (Get-Date), $PID)
+function Write-BuildLog([string]$Message) {
+    Write-Host $Message
+    [IO.File]::AppendAllText($logPath, $Message + [Environment]::NewLine)
+}
+function Write-ToolOutput {
+    process {
+        $line = [string]$_
+        if ($line -match '^(Frontend |.*unchanged; reusing |prepare-[^:]+\.ps1: |.*Timing report saved to )') {
+            Write-BuildLog $line
+        } else {
+            Write-Output $_
+        }
+    }
+}
 function Complete-BuildStage([string]$Name) { $stageTimes[$Name] = [Math]::Round($stageClock.Elapsed.TotalSeconds,1); $stageClock.Restart() }
 
 
 function Invoke-BuildScript([string]$Name, [string[]]$ScriptArguments = @()) {
-    & $shell -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $Name) @ScriptArguments
+    & $shell -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $Name) @ScriptArguments | Write-ToolOutput
     if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit $LASTEXITCODE)." }
 }
 function Invoke-BuildLock([string[]]$LockArguments) {
@@ -35,7 +52,10 @@ function Invoke-BuildLock([string[]]$LockArguments) {
 }
 
 try {
-    foreach ($tool in @('node', 'cmake', 'cargo', 'dotnet')) {
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    Write-BuildLog ('Build started {0:O}' -f (Get-Date))
+    $requiredTools = if ($FrontendPreviewDirectory) { @('node', 'npm.cmd') } else { @('node', 'cmake', 'cargo', 'dotnet') }
+    foreach ($tool in $requiredTools) {
         if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Missing $tool. Install the build dependencies first." }
     }
     Write-Output '[1/6] Acquiring the repository build lock...'
@@ -51,6 +71,26 @@ try {
     } while ($true)
 
     Complete-BuildStage 'Lock wait'
+    if ($FrontendPreviewDirectory) {
+        $previewRoot = [IO.Path]::GetFullPath($FrontendPreviewDirectory)
+        Invoke-BuildScript 'build-frontend.ps1'
+        Complete-BuildStage 'Frontend build'
+        $version = [guid]::NewGuid().ToString('N')
+        $versionDir = Join-Path $previewRoot ("versions\" + $version)
+        $dist = Join-Path $projectRoot 'frontend\dist'
+        if (!(Test-Path -LiteralPath (Join-Path $dist 'index.html') -PathType Leaf)) { throw 'Missing compiled frontend entry.' }
+        New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+        Copy-BuildTree $dist $versionDir
+        $pointer = Join-Path $previewRoot 'active-version'
+        $pending = Join-Path $previewRoot ("active-" + $version + ".tmp")
+        [IO.File]::WriteAllText($pending, $version)
+        if ([IO.File]::Exists($pointer)) {
+            [IO.File]::Replace($pending, $pointer, (Join-Path $previewRoot 'previous-version'))
+        } else { [IO.File]::Move($pending, $pointer) }
+        Complete-BuildStage 'Publish frontend preview'
+        Write-BuildLog "Frontend preview ready: $previewRoot ($version)"
+        return
+    }
     Write-Output '[2/6] Closing running build outputs...'
     . (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
     $targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $projectRoot 'frontend\src-tauri\target' }
@@ -95,7 +135,7 @@ try {
         $remaining = @($workers)
         while ($remaining.Count) {
             $finished = Wait-Job -Job $remaining -Any
-            Receive-Job -Job $finished -ErrorAction Stop
+            Receive-Job -Job $finished -ErrorAction Stop | Write-ToolOutput
             if ($finished.State -ne 'Completed') { throw "Preparation worker failed: $($finished.JobStateInfo.Reason)" }
             $remaining = @($remaining | Where-Object Id -ne $finished.Id)
         }
@@ -126,7 +166,7 @@ try {
         $hookConfig = Join-Path $script:BuildCacheRoot 'prepared-tauri.json'
         $override = @{ build = @{ beforeBuildCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-frontend.ps1' } } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($hookConfig,$override,[Text.UTF8Encoding]::new($false))
-        & node $cli build --no-bundle --config $hookConfig
+        & node $cli build --no-bundle --config $hookConfig -- --timings | Write-ToolOutput
         if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed; portable files were not replaced.' }
     } finally {
         [Environment]::SetEnvironmentVariable('RUST_MIN_STACK', $previousRustStack, 'Process')
@@ -134,7 +174,13 @@ try {
         Pop-Location
     }
 
-    Complete-BuildStage 'Desktop build'
+    Complete-BuildStage 'Desktop build (includes frontend)'
+    $cargoTiming = Join-Path $targetRoot 'cargo-timings\cargo-timing.html'
+    if (Test-Path -LiteralPath $cargoTiming) {
+        $savedTiming = [IO.Path]::ChangeExtension($logPath, '.cargo.html')
+        Copy-Item -LiteralPath $cargoTiming -Destination $savedTiming
+        Write-BuildLog "Cargo compile timings: $savedTiming"
+    }
     Write-Output '[6/6] Updating and verifying the portable application...'
     if ($ForceClose) {
         $portableExecutables = @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe') |
@@ -159,11 +205,15 @@ try {
     [Console]::Error.WriteLine("Build failed: $($_.Exception.Message)")
     $buildResult = 1
 } finally {
-    foreach ($name in $stageTimes.Keys) { Write-Output ('{0}: {1:N1}s' -f $name,$stageTimes[$name]) }
-    Write-Output ('Total build time: {0:N1}s' -f $buildClock.Elapsed.TotalSeconds)
     if ($locked) {
         $release = Invoke-BuildLock @('release', '-Global', '-Owner', $Owner)
         if ($release.Code -ne 0) { [Console]::Error.WriteLine($release.Output); $buildResult = 1 }
+    }
+    if (Test-Path -LiteralPath $logPath) {
+        foreach ($name in $stageTimes.Keys) { Write-BuildLog ('{0}: {1:N1}s' -f $name,$stageTimes[$name]) }
+        Write-BuildLog ('Total build time: {0:N1}s' -f $buildClock.Elapsed.TotalSeconds)
+        Write-BuildLog "Build result: $buildResult"
+        Write-Output "Build log: $logPath"
     }
 }
 if ($buildResult -eq 0 -and !$NoLaunch) {

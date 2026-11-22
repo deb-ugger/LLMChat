@@ -706,11 +706,18 @@ fn file_stat(path: String) -> Result<(u64, u64), String> {
     Ok((size, mtime_ms))
 }
 
+mod frontend_preview;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| { let _ = runtime_log("rust-panic", &info.to_string()); previous_hook(info); }));
     let mut context = tauri::generate_context!();
+    if let Some(root) = std::env::var_os("LLMCHAT_FRONTEND_PREVIEW") {
+        let assets = frontend_preview::PreviewAssets::open(std::path::Path::new(&root))
+            .expect("failed to open the frontend preview");
+        context.set_assets(Box::new(assets));
+    }
     let window_config = context.config().app.windows[0].clone();
     // Construct the WebView only after its profile is migrated/cleaned.
     context.config_mut().app.windows[0].create = false;
