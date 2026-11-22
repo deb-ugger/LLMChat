@@ -1,4 +1,3 @@
-import { formatBenchmarkParameters, type BenchmarkParameter } from "./benchmarkParameters";
 import { benchmarkImageInput, readImageBenchmarkDetails, type ImageBenchmarkDetails, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
 import { clearMosaicReviews } from "../gameMosaicRefine";
 import { clearGameImageRefinement } from "../gameImageScreening";
@@ -41,7 +40,6 @@ type BenchmarkProgress = {
   failed: number;
   detail?: string;
   configId?: string;
-  configParameters?: readonly BenchmarkParameter[];
 };
 export type BenchmarkState = BenchmarkProgress & {
   type: "benchmark-state";
@@ -141,7 +139,6 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   if (request.sampleSetPath && !mosaic && !imageStep) throw new Error("当前测试步骤不接受图片样本集");
   const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
-  let benchmarkImageSetup: ImageBenchmarkSetup | undefined;
   let count: number;
   let recoveredResults: ReturnType<typeof archivedMosaicSamples>["recovered"] | undefined;
   let readMosaicCheckpoint: ((jobId: string, runId: string) => Promise<void>) | undefined;
@@ -182,7 +179,6 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     const currentImages = imageSource.getWorkload();
     const snapshot = annotated ? { project: annotated.project, selected: [], embedded: currentImages.embedded } : structuredClone(currentImages);
     const setup = structuredClone(imageSource.setup);
-    benchmarkImageSetup = setup;
     const sample = selectSamples(annotated ? annotatedTextSamples(annotated,imageStep,[...new Set(configs.map(config => config.target))])
       : imageBenchmarkRows(imageStep, imageStep === "refine" ? initialImageRows(snapshot) : snapshot.selected));
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该步骤及目标语言的已标注图片" : "所勾选的图片没有符合当前步骤的样本");
@@ -260,10 +256,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
         (round, config) => {
           runSamples = unfinishedSamples;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
-            configId: config.id, configParameters: formatBenchmarkParameters(step, config, {
-              rounds, sampleLimit: archive ? null : limit, annotated: !!annotated,
-              mosaicSelection: step === "mosaicRefine" ? "checked" : configs[0].mosaic?.selection, imageSetup: benchmarkImageSetup,
-            }), sample: "", detail: undefined,
+            configId: config.id, sample: "", detail: undefined,
             current: finishedSamples + runSamples,
             failed: failedSamples });
         },
@@ -291,7 +284,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       finishGameStep(totalScope);
       const detail = "已执行 " + runs + "/" + (configs.length * rounds) + " 项" +
         (failures ? " · 失败 " + failures + " 项" : "") + " · " + gameDuration(context.elapsedMs());
-      context.report({ phase: "finish", configId: undefined, configParameters: undefined });
+      context.report({ phase: "finish", configId: undefined });
       input.onMessage(title + "测试 · " + detail, failures ? "error" : "info");
     }
   } };

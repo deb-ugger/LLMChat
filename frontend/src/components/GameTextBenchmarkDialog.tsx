@@ -1,6 +1,5 @@
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
-import { BenchmarkRunningParameters } from "./BenchmarkRunningParameters";
 import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
@@ -280,8 +279,6 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       {queue.map(job => {
         const progress = job.progress;
         const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
-        const parameters = (job.status === "运行中" || job.status === "已暂停") && progress?.configId
-          ? progress.configParameters : undefined;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
         return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
@@ -297,8 +294,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
             </div>
             <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
               {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
-              {(parameters?.length || job.status === "运行中" && progress?.phase === "execute") && progress && <div className="hint">{progress.label}</div>}
-              {parameters && <BenchmarkRunningParameters parameters={parameters} />}
+              {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
               <div className="hint" title={progress?.detail}>
                 {job.status === "待开始" ? statusLabel : job.status === "等待" ? (formalBusy ? formalBlockingReason : "等待前一任务") :
                   job.status === "失败" ? progress?.detail : progress &&
