@@ -8,6 +8,7 @@ add_executable(llmchat-backend
     src/main.cpp
     src/Config.cpp
     src/ConversationManager.cpp
+    src/http/ConversationRoutes.cpp
     src/LlmClient.cpp
     src/http/LlmRoutes.cpp
     src/TranslateClient.cpp
@@ -25,6 +26,7 @@ add_executable(llmchat-backend
     src/HttpServer.cpp
     src/http/HttpRouter.cpp
     src/http/UnityRoutes.cpp
+    src/http/TextRoutes.cpp
 )
 
 target_include_directories(llmchat-backend PRIVATE
