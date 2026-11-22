@@ -45,8 +45,8 @@ export function openGameTextBenchmark(input: BenchmarkInput) {
 }
 
 function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument, input?: BenchmarkInput) {
-  if ((kind === "benchmark-continue-archive" || kind === "benchmark-restart-archive") && data && typeof data !== "string" && input)
-    return benchmarkRunner.runArchivedMosaic(input, data, kind === "benchmark-continue-archive");
+  if (kind === "benchmark-continue-batch" && data && typeof data !== "string" && input)
+    return benchmarkRunner.continueArchivedBatch(input, data);
   if (kind === "benchmark-restart" && typeof data === "string") return benchmarkRunner.restart(data);
   if (kind === "benchmark-start") benchmarkRunner.start();
   if (kind === "benchmark-stop") benchmarkRunner.stop();
@@ -98,7 +98,7 @@ export function GameTextBenchmarkHost() {
           await controlQueue(message.kind, message.data);
         else {
           if (!active) throw new Error("测试队列没有关联的游戏工程");
-          if (message.kind === "benchmark-continue-archive" || message.kind === "benchmark-restart-archive") value = await controlQueue(message.kind, message.data, active);
+          if (message.kind === "benchmark-continue-batch") value = await controlQueue(message.kind, message.data, active);
           else if (message.kind === "setup") value = setupFor(active);
           else if (message.kind === "selection") value = active.getWorkload().selected;
           else if (message.kind === "benchmark-enqueue") value = await benchmarkRunner.enqueue(active, message.data);
@@ -299,18 +299,18 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
             </div>
             <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
               {stopping && job.status === "运行中" && <div>正在暂停并保存…</div>}
+              {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
               <div className="hint" title={progress?.detail}>
                 {job.status === "等待" ? (formalBusy ? formalBlockingReason : running ? "等待前一项" : "等待运行") : job.status === "失败" ? progress?.detail : progress &&
                   <>{progress.sample || (job.status === "运行中" ? phase : job.status)} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
               </div>
-              {job.status === "已暂停" && <div className="hint">{job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时"}</div>}
+              {job.status === "已暂停" && <div className="hint">{progress?.detail ||
+                (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
             </div>
           </div>
-          {job.status === "已暂停" && !running && <>
-            <button type="button" className="unity-btn" onClick={() => control("benchmark-start")}>继续测试</button>
-            <button type="button" className="unity-btn" onClick={() => control("benchmark-restart", job.id)}>重新开始</button>
-          </>}
+          {job.status === "已暂停" && !running &&
+            <button type="button" className="unity-btn" onClick={() => control("benchmark-restart", job.id)}>从头运行此批次</button>}
           {job.status !== "运行中" && <button type="button" className="unity-btn" onClick={() => control("benchmark-remove", job.id)}>移除</button>}
         </div>;
       })}
@@ -497,24 +497,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
 
   const tasks = useMemo(() => groupBenchmarkTasks(history), [history]);
   const [restoringRun, setRestoringRun] = useState<string>();
-  const archiveRef = (result: BenchmarkResult): ArchivedBenchmarkRef | undefined => {
-    const { taskId: runId, benchmark } = result.performance;
-    const queueId = benchmark?.queueId;
-    if (!mosaicStep || !runId || typeof queueId !== "string" || !benchmark?.imageDetails ||
-        snapshot.jobs.some(job => (job.id === queueId || job.continuedFrom === runId) &&
-          (job.status === "等待" || job.status === "运行中" || job.status === "已暂停"))) return undefined;
-    return { queueId, runId, step: mosaicStep };
-  };
-  const resumeRef = (result: BenchmarkResult) => {
-    if (!mosaicStep || result.status === "完成" || result.translated >= result.selected) return undefined;
-    const reference = archiveRef(result);
-    if (reference && !history.some(next => next.performance.benchmark?.continuedFrom === reference.runId &&
-        (next.status === "完成" || next.performance.benchmark?.imageDetails && next.translated > result.translated))) return reference;
-  };
-  const latestResume = history.find(result => resumeRef(result));
-  const runArchive = async (reference: ArchivedBenchmarkRef, reuse: boolean) => {
-    setRestoringRun(reference.runId);
-    try { await control(reuse ? "benchmark-continue-archive" : "benchmark-restart-archive", reference); }
+  const continueBatch = async (reference: ArchivedBenchmarkRef) => {
+    setRestoringRun(reference.queueId);
+    try { await control("benchmark-continue-batch", reference); }
     catch (error) { showAppNotice(String(error), "error"); }
     finally { setRestoringRun(undefined); }
   };
@@ -718,12 +703,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </BenchmarkSection>
       <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")} action={queueControls}>
         {queueContents}
-        {latestResume && <div className="game-benchmark-toolbar">
-          <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
-            onClick={() => { const reference = resumeRef(latestResume); if (reference) void runArchive(reference, true); }}>继续上次测试</button>
-          <span className="hint">{latestResume.label} · 已完成 {latestResume.translated} / {latestResume.selected} 张
-            {snapshot.formalBusy && " · 正式任务结束后执行"}</span>
-        </div>}
       </BenchmarkSection>
       <BenchmarkSection title="测试记录" className="game-benchmark-results" action={
         <button type="button" className="unity-btn" disabled={historyLoading} onClick={() => setReload(value => value + 1)}>刷新</button>}>
@@ -732,20 +711,22 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         {!historyLoading && !historyError && !tasks.length && <p className="hint">当前步骤暂无测试记录。</p>}
         {tasks.map(task => <details key={task.id} className="game-benchmark-record-task">
           <summary><span className="game-benchmark-record-date">{task.firstTime && new Date(task.firstTime).toLocaleString("zh-CN", { hour12: false })}</span>
-            {task.rounds} 轮 · {task.configs} 个配置 · {task.runs.length} 项{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项暂停或中止`}
+            {task.planned ? task.rounds + " 轮 · " + task.configs + " 个配置 · 已完成 " + task.completed + "/" + task.rounds * task.configs + " 项" :
+              "已归档 " + task.runs.length + " 项"}{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项暂停或中止`}
           </summary>
           <div className="game-benchmark-record-runs">
+          {mosaicStep && task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
+            <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
+              onClick={() => void continueBatch({ queueId: task.id, step: mosaicStep })}>继续此批次</button>}
+          {mosaicStep && task.stopped > 0 && !task.planned &&
+            <p className="hint">此记录缺少原批次配置，无法从记录续跑。</p>}
           {task.runs.map((result, index) => <details key={result.performance.taskId || index}>
           <summary>第 {result.round} 轮 · {result.label} · {result.status} · {gameDuration(result.performance.elapsedMs)} · 完成 {result.translated}/{result.selected}</summary>
           {result.detail && <p>{result.detail}</p>}
           {result.summary && <p>{result.summary}</p>}
           {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
-          {resumeRef(result) && <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
-            onClick={() => { const reference = resumeRef(result); if (reference) void runArchive(reference, true); }}>继续此配置</button>}
           {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
             <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
-          {archiveRef(result) && <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
-            onClick={() => { const reference = archiveRef(result); if (reference) void runArchive(reference, false); }}>重新测试</button>}
           {!!result.unobservedModels.length && <p>未记录模型请求：{result.unobservedModels.map(id => id.split("/").at(-1)).join("、")}</p>}
           {result.performance.wallTiming?.detectorMs !== undefined && <div>检测推理 {(result.performance.wallTiming.detectorMs / 1000).toFixed(2)} 秒</div>}
           {result.performance.wallTiming?.ocrMs !== undefined && <div>本地 OCR {(result.performance.wallTiming.ocrMs / 1000).toFixed(2)} 秒</div>}

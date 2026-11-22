@@ -7,7 +7,7 @@ import { registerAppCloseGuard } from "../appClose";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
 import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, gameDuration, stepPerformance } from "../gameModelPerformance";
 import { archivedMosaicSamples, captureMosaicBenchmark, mosaicBenchmarkSteps, readEmbeddedBenchmarkImage, runMosaicBenchmark, type MosaicBenchmarkStep, type MosaicBenchmarkWorkload } from "../gameMosaicBenchmark";
-import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameTextScreenSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkStepRunner } from "../gameTextBenchmark";
+import { benchmarkRoles, inspectBenchmarkSample, runGameTextBenchmarks, runGameTextScreenSample, readGameBenchmarkHistory, groupBenchmarkTasks, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkStepRunner } from "../gameTextBenchmark";
 import type { GameDialoguePage } from "../gameTranslationContext";
 import type { UnityEntry, UnityImage, UnityProgress } from "../unityOffline";
 
@@ -56,7 +56,6 @@ type BenchmarkJob = {
   progress?: BenchmarkProgress;
   status: "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
-  continuedFrom?: string;
 };
 type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number; detail?: string };
 export type BenchmarkSnapshot = {
@@ -122,7 +121,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
 }
 
 async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false,
-  archive?: { runId: string; details: ImageBenchmarkDetails; reuse: boolean }): Promise<Prepared> {
+  archive?: { details: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[] }): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
@@ -163,11 +162,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     const checked = new Set(snapshot.checked);
     imageSamples = archive?.details.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
       annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
-    createStepRunner = (context, report) => runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
-      context.report({ sample: image.name });
-      if (annotated) return annotated.read(image,signal);
-      return snapshot.embedded ? readEmbeddedBenchmarkImage(snapshot.project!.root, image, signal) : imageSource.readImage!(snapshot.project!, image);
-    }, report, annotated, restored === undefined ? undefined : recovered?.recovered);
+    createStepRunner = (context, report) => (config, settings, scope, record, runId, preceding) =>
+      runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
+        context.report({ sample: image.name });
+        if (annotated) return annotated.read(image,signal);
+        return snapshot.embedded ? readEmbeddedBenchmarkImage(snapshot.project!.root, image, signal) : imageSource.readImage!(snapshot.project!, image);
+      }, report, annotated, restored !== undefined && runs === archive?.completed.length ? recovered?.recovered : undefined)(
+        config, settings, scope, record, runId, preceding);
   } else if (imageStep) {
     if (!imageSource || !Object.hasOwn(imageSource.setup.steps, imageStep)) throw new Error("当前工程没有该图片测试步骤");
     const currentImages = imageSource.getWorkload();
@@ -203,8 +204,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const title = benchmarkTargetLabel(step);
   const runScope = historyScope + ":benchmark:" + (mosaic ? "mosaic" : imageStep ? "images" : "text");
   const totalScope = historyScope + ":benchmark-total";
-  let failures = 0, failedSamples = 0, runs = 0, finishedSamples = 0;
-  const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope, restored, cleanup: () => {
+  let runs = archive?.completed.length ?? 0;
+  let failures = archive?.completed.filter(result => result.status === "失败").length ?? 0;
+  let failedSamples = archive?.completed.reduce((total, result) => total + result.failed, 0) ?? 0;
+  let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
+  let unfinishedSamples = restored ?? 0;
+  const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope,
+    restored: finishedSamples + unfinishedSamples, cleanup: () => {
     const runId = stepPerformance(runScope, step).taskId;
     if (step === "mosaicRefine" && runId) clearMosaicReviews("benchmark:" + runId);
     clearGamePerformance(runScope, [step], false);
@@ -212,7 +218,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   }, restart: () => {
     prepared.cleanup();
     prepared.restored = restored = undefined;
-    failures = failedSamples = runs = finishedSamples = 0;
+    failures = failedSamples = runs = finishedSamples = unfinishedSamples = 0;
   }, run: async context => {
     const sampleLabel = (sample: string) => sample.replace(/\s+/g, " ").trim().slice(0, 140);
     let runSamples = 0;
@@ -234,25 +240,27 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     try {
       await runGameTextBenchmarks(configs, rounds, workload, runScope, context.id, context.signal, input.onMessage,
         (round, config) => {
-          runSamples = 0;
+          runSamples = unfinishedSamples;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
             configId: config.id, sample: "", detail: undefined,
-            ...(mosaic ? {} : { current: finishedSamples }), failed: failedSamples });
+            current: finishedSamples + runSamples,
+            failed: failedSamples });
         },
         progress,
         result => {
           const done = Math.max(runSamples, Math.min(count, result.translated + result.failed));
           if (result.status === "已暂停") {
+            if (mosaic) unfinishedSamples = result.translated;
             context.report({ current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail });
             return;
           }
           runs++;
+          unfinishedSamples = 0;
           if (result.status === "失败") failures++;
           failedSamples += result.failed;
           finishedSamples += done;
           context.report({ current: finishedSamples, failed: failedSamples, detail: result.detail });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt,
-        { continuedFrom: restored === undefined ? undefined : archive?.runId, sampleSetPath: request.sampleSetPath });
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath);
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -374,7 +382,7 @@ async function runJobs() {
       finished = true;
     } catch (cause) {
       failed = true;
-      const detail = abort.signal.aborted ? "测试已暂停，继续队列可恢复" : cause instanceof Error ? cause.message : String(cause);
+      const detail = abort.signal.aborted ? String(abort.signal.reason) + "，继续队列可恢复" : cause instanceof Error ? cause.message : String(cause);
       progress = { ...progress, phase: "finish", detail };
       job.onMessage?.(job.label + " · " + detail, abort.signal.aborted ? "info" : "error");
     } finally {
@@ -394,9 +402,9 @@ async function runJobs() {
   }
 }
 
-function stopQueue() {
+function stopQueue(reason: "收到暂停测试队列指令" | "退出应用时暂停测试队列") {
   running = false;
-  controller?.abort();
+  controller?.abort(reason);
   publish();
   if (!executing) void cleanupJob().catch(console.error);
 }
@@ -431,7 +439,7 @@ export const benchmarkRunner = {
     if (request.priority && controller?.signal.aborted) throw new Error("正在暂停当前测试，请稍候");
     const configs = request.configs.filter(config => config.enabled !== false);
     const title = benchmarkTargetLabel(request.step);
-    const label = configs.length === 1 ? title + " · " + configs[0].label : title + " · " + configs.length + " 个配置";
+    const label = title + " · " + configs.length + " 个配置 × " + request.rounds + " 轮";
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
       label, status: "等待", prepared, prepare, onMessage: input.onMessage, resumeSamples: isMosaicBenchmarkStep(request.step) };
     const firstWaiting = request.priority ? jobs.findIndex(item => item.status === "等待") : -1;
@@ -441,37 +449,29 @@ export const benchmarkRunner = {
     else if (running) pumpQueue();
     return job.id;
   },
-  async runArchivedMosaic(input: BenchmarkInput, { queueId, runId, step }: ArchivedBenchmarkRef, reuse: boolean) {
-    if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持此操作");
-    const findJob = () => reuse && jobs.find(job => job.requestScope === input.scope && job.step === step &&
-      (job.id === queueId || job.continuedFrom === runId) && ["等待", "运行中", "已暂停"].includes(job.status));
+  async continueArchivedBatch(input: BenchmarkInput, { queueId, step }: ArchivedBenchmarkRef) {
+    if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持归档续跑");
+    const findJob = () => jobs.find(job => job.id === queueId);
     if (findJob()) { startQueue(); return; }
     const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", step);
-    const record = history.find(item => item.performance.taskId === runId && item.performance.benchmark?.queueId === queueId);
-    const metadata = record?.performance.benchmark;
-    const config = metadata?.config as BenchmarkConfig | undefined;
-    if (!record || !config?.mosaic || !metadata?.imageDetails ||
-        reuse && (record.status === "完成" || record.translated >= record.selected))
-      throw new Error("该记录没有可用的测试样本");
-    if (reuse && history.some(item => item.performance.benchmark?.continuedFrom === runId &&
-        (item.status === "完成" || item.performance.benchmark?.imageDetails && item.translated > record.translated)))
-      throw new Error("该记录已有续跑结果，请打开最新的续跑记录");
-    const details = await readImageBenchmarkDetails(queueId, runId);
-    if (details.samples.length !== record.selected) throw new Error("原测试样本清单不完整");
+    const continuation = groupBenchmarkTasks(history).find(task => task.id === queueId)?.continuation;
+    if (!continuation) throw new Error("这条记录没有可继续的完整测试批次");
+    const { plan, completed, sampleSource, reuse } = continuation;
+    const details = await readImageBenchmarkDetails(queueId, sampleSource.performance.taskId!);
+    if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
     const prepared = await prepareJob(input, {
-      scope: input.scope, step, configs: [{ ...config, enabled: true }], rounds: 1,
-      sampleSetPath: typeof metadata.sampleSetPath === "string" ? metadata.sampleSetPath : undefined,
-    }, false, { runId, details, reuse });
+      scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath,
+    }, false, { details, reuse, completed });
     if (!findJob()) {
-      jobs.push({ id: crypto.randomUUID(), scope: prepared.scope, requestScope: input.scope, step,
-        label: (reuse ? "继续测试 · " : "重新测试 · ") + config.label, status: "等待", prepared, onMessage: input.onMessage,
-        resumeSamples: true, continuedFrom: reuse ? runId : undefined });
+      jobs.push({ id: queueId, scope: prepared.scope, requestScope: input.scope, step,
+        label: benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮",
+        status: "等待", prepared, onMessage: input.onMessage, resumeSamples: true });
       publish();
     }
     startQueue();
   },
   start: startQueue,
-  stop: stopQueue,
+  stop: () => stopQueue("收到暂停测试队列指令"),
   restart(id: string) {
     const job = jobs.find(item => item.id === id && item.status === "已暂停");
     if (!job) return;
@@ -479,7 +479,6 @@ export const benchmarkRunner = {
     job.id = crypto.randomUUID();
     job.status = "等待";
     job.progress = undefined;
-    job.continuedFrom = undefined;
     publish();
     startQueue();
   },
@@ -509,7 +508,7 @@ export function useBenchmarkProgress(scope: string) {
 export function attachBenchmarkRunner() {
   let disposed = false, unregister: (() => void) | undefined;
   void registerAppCloseGuard(async () => {
-    stopQueue();
+    stopQueue("退出应用时暂停测试队列");
     await executing;
     await cleanupJob();
     return true;

@@ -32,7 +32,8 @@ export type BenchmarkResult = {
   round: number; label: string; selected: number; translated: number; failed: number;
   status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
-export type ArchivedBenchmarkRef = { queueId: string; runId: string; step: MosaicBenchmarkStep };
+export type ArchivedBenchmarkRef = { queueId: string; step: MosaicBenchmarkStep };
+type BenchmarkBatchPlan = { rounds: number; configs: BenchmarkConfig[]; sampleSetPath?: string };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
 export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
@@ -49,9 +50,18 @@ export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
       (left.performance.beginTime || "").localeCompare(right.performance.beginTime || ""));
     const firstTime = runs[0].performance.beginTime || runs[0].performance.endedAt || "";
     const configs = new Set(runs.map(run => (run.performance.benchmark?.config as { id?: string } | undefined)?.id || run.label));
-    return { id, runs, firstTime, rounds: new Set(runs.map(run => run.round)).size, configs: configs.size,
-      failed: runs.filter(run => run.status === "失败").length,
-      stopped: runs.filter(run => run.status === "已中止" || run.status === "已暂停").length };
+    const plan = runs.find(run => run.performance.benchmark?.batchPlan)?.performance.benchmark?.batchPlan as BenchmarkBatchPlan | undefined;
+    const latestRuns = plan ? [...new Map(runs.map(run => [run.performance.benchmark?.batchIndex, run])).values()] : runs;
+    const completed = latestRuns.filter(run => run.status === "完成" || run.status === "失败");
+    const sampleRecord = latestRuns.find(run => run.performance.benchmark?.batchIndex === completed.length &&
+      run.status === "已暂停" && run.performance.benchmark?.imageDetails);
+    const sampleSource = sampleRecord ?? runs.find(run => run.performance.benchmark?.imageDetails);
+    const continuation = plan && completed.length < plan.rounds * plan.configs.length && sampleSource?.performance.taskId
+      ? { plan, completed, sampleSource, reuse: !!sampleRecord } : undefined;
+    return { id, runs: latestRuns, firstTime, completed: completed.length, planned: !!plan, continuation,
+      rounds: plan?.rounds ?? new Set(runs.map(run => run.round)).size, configs: plan?.configs.length ?? configs.size,
+      failed: latestRuns.filter(run => run.status === "失败").length,
+      stopped: latestRuns.filter(run => run.status === "已中止" || run.status === "已暂停").length };
   }).sort((left, right) => right.firstTime.localeCompare(left.firstTime));
 }
 
@@ -206,7 +216,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
   target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
-  resumeAt = 0, source?: { continuedFrom?: string; sampleSetPath?: string }) {
+  resumeAt = 0, sampleSetPath?: string) {
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
@@ -226,7 +236,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
     const firstConfig = Math.max(0, resumeAt - (round - 1) * configs.length);
     let finishedConfigs = firstConfig, failedConfigs = 0;
     report(`开始第 ${round} / ${rounds} 轮测试 · ${configs.length} 个配置`, "info");
-    for (const config of configs.slice(firstConfig)) {
+    for (const [offset, config] of configs.slice(firstConfig).entries()) {
       signal.throwIfAborted();
       const selected = target?.selected ?? workload.selectedIds.size;
       const unobservedModels: string[] = [];
@@ -237,7 +247,11 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         if (step === "mosaicRefine") clearMosaicReviews("benchmark:" + saved.taskId);
         clearGamePerformance(scope, [step], false);
       }
-      const metadata = { queueId, round, unobservedModels, ...source, label: config.label, selected, config, translated: 0, failed: 0, status: "运行中", detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
+      const batchIndex = (round - 1) * configs.length + firstConfig + offset;
+      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === 0 ? { configs, rounds, sampleSetPath } : undefined;
+      const metadata = { queueId, round, unobservedModels, sampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
+        label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
+        detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);
       const runId = stepPerformance(scope,step).taskId!;
       onStart(round, config);
@@ -279,12 +293,13 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         if (result.failed) status = "失败";
       } catch (error) {
         status = signal.aborted ? "已暂停" : "失败";
-        detail = signal.aborted ? "测试已暂停" : error instanceof Error ? error.message : String(error);
+        detail = signal.aborted ? String(signal.reason || "测试已暂停") : error instanceof Error ? error.message : String(error);
       } finally {
         const complete = metadata.translated + metadata.failed >= selected;
         const interrupted = signal.aborted && !complete;
         if (interrupted) {
           status = "已暂停";
+          detail ??= String(signal.reason || "测试已暂停");
           if (!samples) {
             metadata.translated = Math.min(selected, partialTranslated);
             metadata.failed = Math.min(selected - metadata.translated, partialFailed);
