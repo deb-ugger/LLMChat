@@ -7,8 +7,7 @@ import { rememberRecentGameFailures } from "../unityLastGame";
 import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
-import { GameMosaicCompletionContext, GameMosaicWorkbench, type MosaicCandidateIndex } from "./GameMosaicWorkbench";
-import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
+import type { MosaicCandidateIndex } from "./GameMosaicWorkbench";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
 import { GAME_CONTEXT_HINT } from "../gameTranslationContext";
@@ -16,42 +15,36 @@ import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { sameTextEdit } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, completeGameStep, stepPerformance, measureGameAsync, measureGameWork, recordGameCacheHit, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
 import { type GameWrapMode } from "../gameTextLayout";
-import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
+import { useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GamePageNumber } from "./GamePageNumber";
 import { gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "../gameImageModel";
 import { savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { collectGameImageNames, translateNamedImageText } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
-import { GameFlowSequence, StepRunningMetrics, type GameStepConfigurationCommit } from "./GameFlowSequence";
+import type { GameStepConfigurationCommit } from "./GameFlowSequence";
 import { formatFlowThroughput } from "../gameFlowMetrics";
-import { GameProgressBar, GameStepProgress } from "./GameStepProgress";
+import { GameProgressBar } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
-import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { prepareUnityImageSources, readUnitySourceImage } from "../unityImagePreview";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
-import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
+import { defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
 import { GameWorkDirectory } from "./GameWorkDirectory";
-import { SearchHighlight } from "./SearchHighlight";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { imageImportPng,type GameImportSource } from "../gameImageImport";
 import type { ImageArchiveReplacement } from "../gameImageArchive";
-import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GAME_IMAGE_SCREENING_LANES, LOCAL_REFINE_MODELS, gameImageRegionLanguageFilter, gameImageTranslationReadiness, localGameImageScreeningLanes } from "../gameImageScreening";
 import { defaultUnityImageScreening, needsUnityImageScreening, recognizeUnityReviewCrops, refineUnityImages, refineUnityImagesLocally, screenUnityImages, unityImageRefinementPending, type UnityImageScreeningOptions } from "../unityImageFiltering";
-import { gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText } from "../gameDisplayText";
+import { gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText } from "../gameDisplayText";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
 import { exportUnityTranslations, readUnityTranslationRows, applyUnityTranslationRows, unityTranslationFileName, UnityTranslationImportError, type UnityTranslationImportMode, type UnityTranslationImportIssue } from "../unityTranslationFiles";
-import { UnityActionIcon } from "./UnityActionIcon";
-import { UnityIconButton } from "./UnityIconButton";
 import { ClosingProgress } from "./ClosingProgress";
 import { unityTranslationQuality } from "../unityTranslationQuality";
 import { unityTranslationReadiness, unityCurrentPartProgress } from "../unityTranslationReadiness";
 import { UnityExitDialog } from "./UnityExitDialog";
-import { GameTextFileMenu, GAME_TEXT_IMPORT_CHOICES } from "./GameTextFileMenu";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo, type OcrMode } from "../api";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "../modelPresets";
 import { engineReady, parseEngineKeys } from "../translateEngines";
@@ -61,16 +54,15 @@ import { explainUnityFailure, explainUnityWarning } from "../unityOfflineFeedbac
 import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLegacyImageTargets, tagEditedImageTranslations, rememberLegacyGameTarget, UNITY_STEPS, unityLanguageScope, unityStageState, unityEntryLanguage, unityLanguageLabel, unityScanUpdate, unityScanOptionChanges, deploymentMetrics, deploymentMetricScope, isGameDeploymentComplete, measureDeploymentStage } from "../unityWorkflow";
 import { unityTranslationStats, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets, yieldUnityPreparation } from "../unityTranslationSession";
 import { type UnityLineMode } from "../unityLineLayout";
-import { UnityDeploymentPanel, deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
+import { deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
 import { redrawMosaic, gameDetectorFile, mosaicDetectorKey, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
-import { UnityImageWorkbench } from "./UnityImageWorkbench";
 import { reconcileImageEdit } from "../unityImageEdits";
 import { createUnityTranslationJobs, mergeUnityTranslationProject, UnityTranslationStopped, type UnityTranslationPart } from "../unityTranslationJobs";
 import { normalizeUnityImageSelection, createUnityImageOcr, translateCurrentUnityImage, processUnityImages, maskUnityImageRegions, unityImageUsesRegionMask, unityImageTranslationRegions } from "../unityImages";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UnityEngineList } from "./UnityEngineList";
-import { gameTextStageLabels, UnityTranslationProgress } from "./UnityTranslationProgress";
+import { gameTextStageLabels } from "./UnityTranslationProgress";
 import { createUnityEnginePool, loadUnityEngines, normalizeUnityEngines, defaultUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "../unityEnginePool";
 import { UnityDescriptionSelect, UNITY_WRAP_CHOICES, UNITY_LINE_CHOICES, UNITY_SEGMENT_CHOICES } from "./UnityDescriptionSelect";
 import { runImagePasses, runImageRegionTranslation, runImageTranslation, unityImagePhaseNames, unityImagePhases,
@@ -82,6 +74,8 @@ import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/
 import { useProjectMount } from "./unity-offline/projectMount";
 import { useProjectSwitch, type UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 import { runTextBranch, runTextRetry, runTextScreening, runTextTranslation, useTextOrchestration, type UnityTranslationOptions } from "./unity-offline/useTextOrchestration";
+import { StepCards, StepProgressContent, type TranslationCardFlow, type WorkflowTrack } from "./unity-offline/StepCards";
+import { DeploySlot, WorkspaceSlots } from "./unity-offline/WorkspaceSlots";
 import "../unityOffline.css";
 
 export type { UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
@@ -1862,7 +1856,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (activeStep === 2 && imagePart && tab.id !== "2.2" && imageLeaveGuard.current) imageLeaveGuard.current(change);
     else change();
   };
-  const progressContent = <GameStepProgress title={progressTitle} state={progressState} elapsed={<WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} />}
+  const progressContent = <StepProgressContent title={progressTitle} state={progressState} elapsed={<WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} />}
     label={redrawSummary?.label}
     percent={redrawSummary?.percent ?? (visibleGeneration && showProgressCount ? progressPercent : undefined)}
     count={redrawSummary?.count ?? (showProgressCount && visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined)}
@@ -1875,29 +1869,17 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {activeStep === 1 && project && !busy && !restoring && !saving && <button type="button" className="unity-btn unity-btn-warning" onClick={() => void clearResourceScan()}>清理扫描</button>}
       {imageEditorBusy && <button className="unity-btn" onClick={() => imageEditorAbort.current?.abort()}>停止处理</button>}
       {generation && !viewingProgress && <button className="unity-btn" onClick={() => { setActiveStep(generation.step); setImagePart(!!checkpoint?.imageOnly); }}>查看进度</button>}
-    </>}>
-    {activeStep === 2 && imagePart && readiness.manualReviewImages > 0 && !readiness.imagesSkipped &&
-      <p className="unity-task-detail">待人工确认 {readiness.manualReviewImages} 张。请在右侧分组处理，或跳过剩余内容。</p>}
-    {scanResource ? <div className="unity-scan-current-resource">
-      <span className="unity-scan-resource-path" data-tooltip={scanResource[1]}>{scanResource[1]}</span>
-      <div className="unity-scan-resource-metrics"><span>对象 <b>{scanResource[2]}</b> / {scanResource[3]}</span><span>已提取 <b>{scanResource[4]}</b> 条文本</span></div>
-      <GameProgressBar label="当前文件的对象进度" value={Math.min(100, Math.floor(Number(scanResource[2]) / Math.max(1, Number(scanResource[3])) * 100))} />
-    </div> : taskDetail && (activeStep !== 2 || imagePart) && <p className="unity-task-detail">{taskDetail}</p>}
-    {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
-    {scanTiming && <details className="unity-task-detail">
-      <summary>扫描计时 · 重新解析 {scanTiming.parsed} 个 · 复用 {scanTiming.reused} 个</summary>
-      <p>{([
-        ["准备与列目录", scanTiming.prepareMs], ["校验文件与依赖", scanTiming.checkMs], ["打开资源与读取索引", scanTiming.openMs],
-        ["解析字段和文本", scanTiming.parseMs], ["图片解码与编码", scanTiming.decodeMs], ["复用索引和原图", scanTiming.reuseMs],
-        ["恢复译文和图片结果", scanTiming.restoreMs], ["保存工程", scanTiming.saveMs], ["其他扫描操作", scanTiming.otherMs],
-      ] as const).map(([label, ms]) => `${label} ${(ms / 1000).toFixed(2)} 秒`).join(" · ")}</p>
-    </details>}
-    {activeStep === 2 && !imagePart && !progressIsImage && generation?.step === 2 &&
-      <UnityTranslationProgress progress={generation} running={progressRunning} failure={generation.state === "error" ? generation.failure || generation.detail : undefined}
-        onLocate={locateTranslationFailure} />}
-    {progressMetricStage && (progressState === "running" || progressState === "stopped" && progressMeasurement?.taskId) &&
-      <StepRunningMetrics measured={progressMeasurement} stopped={progressState === "stopped"} elapsedMs={elapsed} parameters={[{ scope: "task", label: "操作", value: progressTitle }, { scope: "task", label: "项目", value: root }]} />}
-  </GameStepProgress>;
+    </>}
+    manualReviewCount={activeStep === 2 && imagePart && !readiness.imagesSkipped ? readiness.manualReviewImages : undefined}
+    scanResource={scanResource} taskDetail={(activeStep !== 2 || imagePart) && taskDetail} scanThroughput={scanThroughput} scanTiming={scanTiming}
+    translation={activeStep === 2 && !imagePart && !progressIsImage && generation?.step === 2 ? {
+      progress: generation, running: progressRunning, failure: generation.state === "error" ? generation.failure || generation.detail : undefined,
+      onLocate: locateTranslationFailure,
+    } : undefined}
+    metrics={progressMetricStage && (progressState === "running" || progressState === "stopped" && progressMeasurement?.taskId) ? {
+      measured: progressMeasurement, stopped: progressState === "stopped", elapsedMs: elapsed,
+      parameters: [{ scope: "task", label: "操作", value: progressTitle }, { scope: "task", label: "项目", value: root }],
+    } : undefined} />;
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
   const deploymentValidation = useMemo(() => validateDeploymentPlan(deploymentPlan), [deploymentPlan]);
@@ -2276,20 +2258,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const trackEdges = deploymentPage ? deploymentValidation.effectiveEdges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
   const trackEnabled = deploymentPage ? deploymentValidation.enabledSteps.map(id => deploymentStageId[id]) : undefined;
   const trackSkipped = deploymentPage ? deploymentPlan.disabled.map(id => deploymentStageId[id]) : undefined;
-  return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`}
-    style={workspaceStyle} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
-    {active && saveFeedback && createPortal(saveFeedback, document.body)}
-    {closingPhase && <ClosingProgress phase={closingPhase} />}
-    {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
-    {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
-    {toolbarTarget && createPortal(<>
-      <UnityIconButton aria-label="测试队列" title="测试队列" disabled={!game} onClick={openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
-      <UnityIconButton aria-label="保存工程" title={importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改"} disabled={!project || !dirty || saving || !!busy || restoring || !!importPreview} onClick={() => void saveUserChanges()}><UnityActionIcon kind="save" /></UnityIconButton>
-    </>, toolbarTarget)}
-    <aside ref={panelRef} className="unity-offline-config" style={deploymentPage ? undefined : panelStyle}>
-    <div className="unity-offline-upper unity-workflow-layout">
-      <GameWorkflowSteps idPrefix="unity-step" panelId="unity-step-panel" edges={trackEdges} enabled={trackEnabled} skipped={trackSkipped}
-        disconnected={deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined} steps={UNITY_STAGE_TABS.map(tab=>{
+  const trackSteps: WorkflowTrack["steps"] = UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
         const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);
         if (id === "2.3") {
@@ -2313,21 +2282,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const selectedTab = !mosaicPage && activeStep === step && (step !== 2 || imagePart === tab.imageOnly);
         const title = state === "outdated" || state === "optional-update" ? `${label} · ${scanUpdate.label}` : undefined;
         return {id,label,title,state,selected:selectedTab,running:runningHere || id === "2.1" && textScreening,paused:step===2?!subReady&&partProgress?.state==="stopped":state!=="complete"&&generation?.step===step&&generation.state==="stopped",onSelect:()=>selectWorkflowStage(tab)};
-      })}/>
-    <section ref={workflowRef} className={`unity-generation unity-workflow ${generation?.state || "idle"}`} aria-label="分步设置与当前任务">
-      <div id="unity-step-panel" role="tabpanel" aria-labelledby={`unity-step-${mosaicPage ? "2.3" : activeStep === 2 ? imagePart ? "2.2" : "2.1" : activeStep}`} className="unity-step-panel" >
-        {mosaicMounted && <div hidden={!mosaicPage}>
-          <div ref={setMosaicControls} />
-          {!scanReady && <p className="hint">扫描资源后即可筛选、框选并重绘打码区域。</p>}
-          {scanReady && !project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) && <p className="hint">当前工程没有可处理的图片。</p>}
-          {scanReady && mosaicStatus?.root === root && mosaicStatus.error && <p className="unity-offline-error">{mosaicStatus.error}</p>}
-          {hasMosaic && <p className="hint">选中的去码图将在步骤 3 写入补丁。与译图同源时会合成。</p>}
-        </div>}
-        {!mosaicPage && <>
-        {activeStep === 1 && <div className="unity-scan-layout">
-          <div className="unity-scan-progress-card">{progressContent}</div>
-          <details className="unity-scan-configuration" open={!scanBusy}>
-          <summary>扫描设置</summary>
+  });
+  const scanConfiguration = !mosaicPage && activeStep === 1 ? (
           <div className="unity-scan-settings-body">
           <div className="unity-offline-fields unity-scan-fields">
             <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={onlySourceLanguage} disabled={!!busy || restoring} onChange={event => { setOnlySourceLanguage(event.target.checked); setPage(0); }} />仅翻译原语言</label></div><select value={source} aria-label="原文语言" disabled={scanParametersLocked} onChange={e => { setSource(e.target.value); setPage(0); }}><option value="auto">自动（主语言）</option>{sourceLanguages.map(language => <option key={language} value={language}>{unityLanguageLabel(language)}</option>)}<option value="all">全部语言</option></select></div>
@@ -2349,16 +2305,21 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
           {pausedScan && !preparingRescan && scanOptionsChanged && <p className="hint">扫描参数已变化，继续时需从头重新扫描；确认后保留可匹配复用的旧结果。</p>}
           </div>
-          </details>
-          {scanResources}
-        </div>}
-        {activeStep === 2 && <GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
+  ) : undefined;
+  const translationFlow: TranslationCardFlow | undefined = !mosaicPage && activeStep === 2 ? {
+    runningParameters: [
           { scope: "config", label: "原文语言", value: source === "auto" ? "自动检测" : unityLanguageLabel(source) },
           { scope: "config", label: "目标语言", value: unityLanguageLabel(target) },
           { scope: "config", label: "跳过目标语言", value: skipTargetLanguage ? "开启" : "关闭" },
           ...(!imagePart ? [{ scope: "config" as const, label: "附带上下文", value: includeContext ? "开启" : "关闭" }] : []),
-        ]} configurationCommit={imagePart ? imageConfigurationCommit : textConfigurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled} onSaveConfiguration={saveConfiguration} configurationScope={project && !restoring ? root : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={!!busy || restoring || saving || !scanReady} onClick={() => void skipTranslationPart(imagePart)}>跳过剩余内容</button>} activity={{step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label, progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined}} key={imagePart ? "images" : "text"} configured={flowConfig} onConfigure={setFlowConfig} onRun={imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined}
-          steps={imagePart ? [
+        ],
+    configurationCommit: imagePart ? imageConfigurationCommit : textConfigurationCommit, configurationRevision, testConfigurations, testConfigurationDisabled,
+    onSaveConfiguration: saveConfiguration, configurationScope: project && !restoring ? root : null, configuration, restoreConfiguration,
+    activity: { step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label,
+      progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined },
+    configured: flowConfig, onConfigure: setFlowConfig,
+    onRun: imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined,
+    steps: imagePart ? [
             { id: "filter", title: "筛选图片", models: [{role:"screen",id:imageScreeningOptions.filterModel}],
               summary: imageScreeningOptions.filterModel !== undefined ? "大模型筛选" : imageScreeningOptions.strategy === "full" ? "完整范围筛选" : "分级快速筛选",
               state: imagesNeedScreen ? "current" : "done",
@@ -2420,7 +2381,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               stop: partRunning ? () => stopPart("text") : undefined,
               stopDisabled: partStopping,
               runLabel: textPartPaused ? "继续" : "开始", runDisabled: partActionDisabled, clear: !busy && textCleanupAvailable ? () => void restartStage(2, true) : undefined },
-          ]}><div className="unity-translation-settings">
+          ],
+  } : undefined;
+  const translationConfiguration = !mosaicPage && activeStep === 2 ? (
+    <div className="unity-translation-settings">
           {!imagePart && flowConfig === "screen" && <GameProcessingTabs label="筛选方式" localLabel="本地筛选" value={textScreenModel === undefined ? "local" : "llm"}
             disabled={flowConfigLocked} onChange={method => setTextScreenModel(method === "llm" ? "" : undefined)}>
             <div className="unity-control-group"><div className="unity-group-fields unity-translation-fields">
@@ -2506,27 +2470,43 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           </div>
 
         </>}
-        </div></GameFlowSequence></GamePromptContext.Provider>}
-        {activeStep === 2 && !imagePart && (textBatch || textTransfer) && <div className="unity-step-batch">{textBatch}{textTransfer}</div>}
-        {deploymentPage && <div className="unity-deployment-page">
-          <UnityDeploymentPanel model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep}
-            mosaic={<GameMosaicPatchButton gamePath={root} label="安装或卸载" disabled={!root || !!busy || mosaicBusy || restoring || saving} />} />
-        </div>}
-        </>}
-      </div>
-    {activeStep === 3 && progressContent}
-    {errorPanel && (generation?.state !== "error" || Math.min(generation.step, 3) === activeStep) && <div className="unity-step-batch">{errorPanel}</div>}
-    </section>
-    </div>
-    </aside>
-    {!deploymentPage && <button {...dividerProps} />}
-    {mosaicMounted && <div className="unity-image-result-pane" hidden={!mosaicPage}>
-      {active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0) &&
-        <GameMosaicCompletionContext.Provider value={reportMosaicCompletion}>
-          <GameMosaicWorkbench settings={settings} key={root} gamePath={root} images={project.images} read={readMosaicSource} prepareSources={prepareMosaicSources} controls={mosaicControls} storage={mosaicStorage} visible={mosaicPage} disabled={mosaicDisabled} onBusy={reportMosaicBusy} />
-        </GameMosaicCompletionContext.Provider>}
-    </div>}
-    <div hidden={!(activeStep===2&&imagePart) || mosaicPage} className="unity-image-result-pane"><UnityImageWorkbench redrawingId={redrawingId} key={imageResetRevision} initialScreeningComplete={!imagesNeedScreen} onRedrawFailure={async (image, reason) => {
+        </div>
+  ) : undefined;
+  return <div ref={workspaceRef} className={`unity-offline${deploymentPage ? " is-deployment" : mosaicPage ? " is-mosaic" : ""}`}
+    style={workspaceStyle} onClickCapture={event => logGameButton(event, logAction)}>{confirmation.dialog}{textDrop.overlay}
+    {active && saveFeedback && createPortal(saveFeedback, document.body)}
+    {closingPhase && <ClosingProgress phase={closingPhase} />}
+    {exitPrompt && <UnityExitDialog {...exitPrompt} onChoice={resolveExitChoice} />}
+    {active && root && restoring && <UnityProjectLoading project={root.split(/[\\/]/).filter(Boolean).at(-1) || "Unity 项目"} path={root} detail={loadingDetail} />}
+    <StepCards panelRef={panelRef} workflowRef={workflowRef} panelStyle={deploymentPage ? undefined : panelStyle} generationState={generation?.state}
+      activeStep={activeStep} imagePart={imagePart} mosaicPage={mosaicPage}
+      track={{ steps: trackSteps, edges: trackEdges, enabled: trackEnabled, skipped: trackSkipped,
+        disconnected: deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined }}
+      toolbar={toolbarTarget ? { target: toolbarTarget, benchmarkDisabled: !game,
+        saveTitle: importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改",
+        saveDisabled: !project || !dirty || saving || !!busy || restoring || !!importPreview, openBenchmark, save: () => void saveUserChanges(),
+      } : undefined}
+      mosaic={mosaicMounted ? { controlsRef: setMosaicControls, scanReady,
+        hasImages: !!project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0),
+        error: mosaicStatus?.root === root ? mosaicStatus.error : undefined, hasMosaic } : undefined}
+      scan={activeStep === 1 ? { busy: scanBusy, progress: progressContent, configuration: scanConfiguration, resources: scanResources } : undefined}
+      translation={translationFlow ? { prompts: promptState, flow: translationFlow, configuration: translationConfiguration,
+        skipDisabled: !!busy || restoring || saving || !scanReady, skipRemaining: () => void skipTranslationPart(imagePart) } : undefined}
+      batch={activeStep === 2 && !imagePart && (textBatch || textTransfer) ? <>{textBatch}{textTransfer}</> : undefined}
+      deployment={deploymentPage && <DeploySlot model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep}
+        mosaicDisabled={!root || !!busy || mosaicBusy || restoring || saving} />}
+      deploymentProgress={activeStep === 3 && progressContent}
+      errorPanel={errorPanel && (generation?.state !== "error" || Math.min(generation.step, 3) === activeStep) && errorPanel} />
+    <WorkspaceSlots divider={!deploymentPage ? dividerProps : undefined}
+      mosaic={mosaicMounted ? { visible: mosaicPage, onCompletion: reportMosaicCompletion,
+        workbench: active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0)
+          ? { settings, gamePath: root, images: project.images, read: readMosaicSource, prepareSources: prepareMosaicSources,
+            controls: mosaicControls, storage: mosaicStorage, visible: mosaicPage, disabled: mosaicDisabled, onBusy: reportMosaicBusy }
+          : undefined,
+      } : undefined}
+      image={{ visible: activeStep === 2 && imagePart && !mosaicPage, revision: imageResetRevision, workbench: {
+        redrawingId, initialScreeningComplete: !imagesNeedScreen,
+        onRedrawFailure: async (image, reason) => {
       const current = latest.current;
       const row = current?.images?.find(item => item.id === image.id);
       if (current?.images && row) {
@@ -2535,47 +2515,46 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         pendingEdits.current.add("图片重绘：" + row.name);
         setDirty(true);
       }
-      logAction(reason, "error");
-    }} onImportArchive={importImageArchive} onArchiveMessage={(text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");}} leaveGuard={imageLeaveGuard} project={project} active={active&&activeStep===2&&imagePart&&!mosaicPage} dirty={imageDraftOriginals.current.size > 0} saving={saving} saveNotice={saveNotice} ocrMode={imageOcrMode} onTranslate={image=>void translateCurrentImage(image)} onRecognize={(image, mode) => void recognizeImage(image, mode)} confidenceThreshold={imageConfidenceThreshold} disabled={!!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running"))} onChange={editImage} onChangeMany={editImages} onRender={image => void updateImagePreview(image)} onImport={(image,source,modelCandidate)=>updateImagePreview(image,true,source,modelCandidate)} onDiscard={discardImageChanges} onSave={()=>saveUserChanges("images")} /></div>{!deploymentPage&&!mosaicPage&&!(activeStep===2&&imagePart)&&<section ref={textDropRoot} data-game-drop-zone="text" {...textDrop.handlers} className={`unity-offline-workbench${importPreview ? " is-import-choice" : ""}`}>
-      <div className="unity-offline-toolbar">
-      <div className="unity-result-filters">
-        <strong>{importPreview ? `导入预览 · ${importPreview.entries.length} 条` : "文本与译文"}</strong><GameTextFileMenu kind="download" active={active} disabled={!!busy || restoring || !scanReady || !!importPreview} options={[
-          {value:"all",label:"下载全部",title:`下载工程全部 ${project?.entries.length||0} 条，包含未勾选条目`,disabled:!project?.entries.length},
-          {value:"filtered",label:"下载筛选内容",title:`下载当前筛选匹配的全部 ${filtered.length} 条，包含其他分页`,disabled:!filtered.length},
-        ]} onSelect={range=>void downloadTranslations(range)}/>
-        <GameTextFileMenu kind="import" active={active} disabled={!!busy || restoring || !scanReady || !!importPreview} options={GAME_TEXT_IMPORT_CHOICES} onSelect={mode=>{setImportMode(mode);void uploadTranslations(undefined,mode);}}/>
-
-        <GameTextFilterMenu active={active} disabled={!scanReady} value={textFilters} matched={matched.length} shown={filtered.length}
-          onLimitChange={limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); }}
-          onChange={value => { setTextFilters(value); setLocateAcrossLanguages(false); setReviewFilter("all"); setPage(0); }} />
-        {errorsOnly && !importPreview && <button className="unity-btn" title={testTitle} disabled={testing || !!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation))} onClick={() => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text")}>重试未完成项</button>}
-      </div>
-      <div className="unity-result-tools">
-        <input type="search" aria-label="搜索来源、原文和译文" data-tooltip="搜索来源、原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => { setSearch(e.target.value); setPage(0); }} />
-        <button className="unity-btn unity-text-discard" data-tooltip={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} aria-label={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} disabled={!project||saving||!!busy||restoring||!importPreview&&(!dirty||![...pendingEdits.current].some(key=>key.startsWith("文本与译文：")||key.startsWith("文本勾选：")))} onClick={()=>importPreview?cancelImportPreview():void discardTextChanges()}>{importPreview?"取消导入":"取消修改"}</button><button className="unity-btn unity-result-save" data-tooltip={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} aria-label={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} disabled={!project || !hasTextDraft&&!importPreview || saving || !!busy || restoring} onClick={() => void (importPreview?applyImportPreview(importMode):saveUserChanges("text"))}>{saving ? "保存中…" : importPreview?"保存导入":"保存"}</button>
-      </div>
-      </div>
-      {scanReady && project ? <>
-        <div className="unity-offline-table-scroll"><table ref={tableRef} className="unity-offline-table" style={{ minWidth: Math.max(560, (sourceWidth.width + 212) / (1 - originalRatio / 100)), "--unity-original-width": `${originalRatio}%` } as CSSProperties}><colgroup><col style={{ width: 32 }} /><col style={{ width: sourceWidth.width }} /><col style={{ width: "var(--unity-original-width)" }} /><col /></colgroup><thead><tr>
-          <th><input type="checkbox" aria-label="勾选当前筛选结果"
-            data-tooltip="仅勾选或取消当前筛选结果，包含其他分页。" disabled={entriesLocked || !!importPreview || !filtered.length}
-            checked={filtered.length > 0 && checkedCount === filtered.length}
-            ref={input => { if (input) input.indeterminate = hasMixedSelection; }} onChange={e => { textSearchSnapshot.current = null; editTextEntries(new Set(filtered.map(row => row.id)), { selected: e.target.checked }); }} /></th>
-          <th className="unity-resizable-column">来源<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整来源列宽" aria-valuenow={Math.round(sourceWidth.width)} onMouseDown={e => sourceWidth.beginResize(e, "grow-right")} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sourceWidth.setWidth(sourceWidth.width + (e.key === "ArrowRight" ? 8 : -8)); } }} /></th>
-          <th className="unity-resizable-column">原文<button className="unity-column-divider" role="separator" aria-orientation="vertical" aria-label="调整原文和译文列宽" aria-valuenow={Math.round(originalRatio)} onPointerDown={e => { e.preventDefault(); columnDrag.current = { x: e.clientX, ratio: originalRatio, latest: originalRatio, width: tableRef.current!.getBoundingClientRect().width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { const drag = columnDrag.current; if (!drag) return; drag.latest = Math.max(20, Math.min(70, drag.ratio + (e.clientX - drag.x) / drag.width * 100)); tableRef.current?.style.setProperty("--unity-original-width", `${drag.latest}%`); }} onPointerUp={finishColumnDrag} onPointerCancel={finishColumnDrag} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const ratio = Math.max(20, Math.min(70, originalRatio + (e.key === "ArrowRight" ? 2 : -2))); setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio)); } }} /></th><th>译文</th>
-        </tr></thead><tbody>{rows.map(entry => <tr key={rowJump?.id === entry.id ? `${entry.id}:${rowJump.sequence}` : entry.id} data-entry-id={entry.id} tabIndex={-1} className={`${entryProblem(entry) ? "has-error" : ""}${rowJump?.id === entry.id ? ` unity-entry-target${rowJump.error ? " is-error-target" : ""}` : ""}`}>
-          <td><input type="checkbox" aria-label={`选择第 ${entry.id} 条`} disabled={entriesLocked || !!importPreview} checked={entry.selected} onChange={e => update(entry.id, { selected: e.target.checked })} /></td>
-          <td data-tooltip={`${entry.file}\n${entry.container}\n${entry.locator}${entry.locale ? `\n语言字段：${entry.locale}` : ""}`}><span><SearchHighlight query={search} text={`#${entry.id} · ${entry.kind}${entry.locale ? ` · ${unityLanguageLabel(unityEntryLanguage(entry))}` : ""}`} /></span><small><SearchHighlight query={search} text={`${entry.file.split(/[\\/]/).pop()} · 对象 #${entry.objectId === "0" ? entry.id : entry.objectId}`} /></small>{search && [entry.file, entry.container, entry.locator].filter(value => value?.toLowerCase().includes(search.toLowerCase())).map((value, index) => <small className="search-matched-field" key={index}><SearchHighlight text={value} query={search} /></small>)}</td>
-          <td className="unity-offline-source"><div className="unity-source-text" data-tooltip={entry.source}><GameTextScreenedSource completed={!!entry.translation && !entry.error && !unityTranslationError(entry.source, entry.translation) && !gameDisplayTextProblem(entry.source, entry.translation)} source={entry.source} target={target} sourceLanguage={source} locale={entry.locale} skipTarget={skipTargetLanguage} screened={entry.selected && !importPreview && (textScreened || entry.screeningDraft !== undefined || entry.translation === entry.source)} query={search} /></div></td>
-          <td><div className="unity-entry-editor"><GameTextScreenedEditor screening={{ source: entry.source, target, sourceLanguage: source, locale: entry.locale, skipTarget: skipTargetLanguage, screened: entry.selected && !importPreview && (textScreened || entry.screeningDraft !== undefined || entry.translation === entry.source) }} screeningDraft={importPreview ? undefined : entry.screeningDraft} query={search} aria-label={`第 ${entry.id} 条译文`} value={entry.translation || entry.layoutDraft || ""} readOnly={entriesLocked} rows={1} onChange={e => update(entry.id, { translation: e.target.value, layoutDraft: undefined, screeningDraft: undefined })} />{entryProblem(entry) && <button className="unity-row-error" data-tooltip={entry.error ? explainUnityFailure(entry.error).reason : entryProblem(entry)} aria-label={`第 ${entry.id} 条错误详情`} onClick={() => { setQualityIssueId(null); setRowIssue({ ...entry, error: entryProblem(entry) }); }}>!</button>}{qualityIssues.has(entry.id) && <button className="unity-row-error" style={{ color: "#9a6700", borderColor: "#d6b56a", background: "#fff8e6" }} data-tooltip={qualityIssues.get(entry.id)!.join("；")} aria-label={`第 ${entry.id} 条疑似问题`} onClick={() => { setRowIssue(null); setQualityIssueId(entry.id); }}>?</button>}</div></td>
-        </tr>)}</tbody></table>{!filtered.length && <div className="game-text-no-matches" role="status"><strong>没有匹配的文本</strong><span>请修改搜索词或筛选条件后重试。</span></div>}</div>
-        <div className="unity-results-footer">
-        {scanReady && <span aria-label="文本范围与选择统计">{locateAcrossLanguages ? "查看全部语言" : scope.label} · {selected.length ? <>可回写 {done} / {selected.length} 条{selected.length !== scope.count && <> · 范围共 {scope.count} 条</>}</> : <>未选择 · 范围共 {scope.count} 条</>}</span>}
-        <div className="unity-offline-pagination" aria-label="文本结果分页"><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(Math.max(0, visiblePage - 10))}>-10 页</button><button className="unity-btn" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>上一页</button><GamePageNumber page={visiblePage} pages={pageCount} onPage={setPage} /><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(visiblePage + 1)}>下一页</button><button className="unity-btn" disabled={visiblePage + 1 >= pageCount} onClick={() => setPage(Math.min(pageCount - 1, visiblePage + 10))}>+10 页</button></div>
-        </div>
-      {rowIssue && rowFailure && <div className="unity-row-error-panel" role="dialog" aria-label={`第 ${rowIssue.id} 条错误详情`}><div className="unity-row-error-actions">{importPreview ? <button className="unity-btn" disabled={!!busy || restoring} onClick={() => checkImportPreview()}>校验当前预览</button> : <button className="unity-btn" aria-label={`重试第 ${rowIssue.id} 条`} title={testTitle} disabled={testing || rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed"} data-tooltip={applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿"} onClick={() => void retryTranslationEntry(rowIssue.id)}>{rowRetryQueued ? "已在队列" : "重试此条"}</button>}<button className="unity-btn" onClick={() => setRowIssue(null)}>关闭</button></div><strong>第 {rowIssue.id} 条处理失败</strong><p>{rowFailure.reason}</p><p>{importPreview ? "请修改右侧预览译文，再校验或应用此次导入。" : rowFailure.action}</p>{rowFailure.technical && <details><summary>技术详情</summary><pre>{rowFailure.technical}</pre></details>}</div>}
-      {qualityIssue && <div className="unity-row-error-panel" style={{ borderColor: "#d6b56a", background: "#fffaf0" }} role="dialog" aria-label={`第 ${qualityIssueId} 条疑似问题详情`}><div className="unity-row-error-actions"><button className="unity-btn" onClick={() => locateTranslationFailure(qualityIssueId!)}>定位此条</button><button className="unity-btn" onClick={() => setQualityIssueId(null)}>关闭</button></div><strong>第 {qualityIssueId} 条疑似问题</strong>{qualityIssue.map(issue => <p key={issue}>{issue}</p>)}<p>请结合原文和上下文复核；这些提示不会阻止生成补丁。</p></div>}
-      </> : <div className="unity-offline-empty">扫描完成后显示文本与译文。</div>}
-    </section>}
+      logAction(reason, "error");},
+        onImportArchive: importImageArchive, onArchiveMessage: (text,error)=>{if(error)setActionError(text);else setMessage(text);logAction(text,error?"error":"info");},
+        leaveGuard: imageLeaveGuard, project, active: active && activeStep === 2 && imagePart && !mosaicPage,
+        dirty: imageDraftOriginals.current.size > 0, saving, saveNotice, ocrMode: imageOcrMode,
+        onTranslate: image => void translateCurrentImage(image), onRecognize: (image, mode) => void recognizeImage(image, mode),
+        confidenceThreshold: imageConfidenceThreshold, disabled: !!imageEditorBusy || restoring || saving || !!importPreview || (!!busy && (!translationJobs.current || translationJobs.current.state("images")==="running")),
+        onChange: editImage, onChangeMany: editImages, onRender: image => void updateImagePreview(image),
+        onImport: (image,source,modelCandidate) => updateImagePreview(image,true,source,modelCandidate), onDiscard: discardImageChanges, onSave: () => saveUserChanges("images"),
+      } }}
+      text={!deploymentPage && !mosaicPage && !(activeStep === 2 && imagePart) ? {
+        textDropRoot, dropHandlers: textDrop.handlers, active, busy, restoring, saving, testTitle, scanReady, project, importPreview, importMode,
+        textFilters, matchedCount: matched.length, filteredCount: filtered.length, errorsOnly, search,
+        retryUnfinishedDisabled: testing || !!busy || restoring || !scanReady || !connectionReady || applied || !selected.some(entry => entry.error || unityTranslationError(entry.source, entry.translation)),
+        discardDisabled: !project||saving||!!busy||restoring||!importPreview&&(!dirty||![...pendingEdits.current].some(key=>key.startsWith("文本与译文：")||key.startsWith("文本勾选："))),
+        saveDisabled: !project || !hasTextDraft&&!importPreview || saving || !!busy || restoring,
+        tableRef, sourceWidth: sourceWidth.width, originalRatio,
+        sourceDivider: { onMouseDown: e => sourceWidth.beginResize(e, "grow-right"), onKeyDown: e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sourceWidth.setWidth(sourceWidth.width + (e.key === "ArrowRight" ? 8 : -8)); } } },
+        originalDivider: {
+          onPointerDown: e => { e.preventDefault(); columnDrag.current = { x: e.clientX, ratio: originalRatio, latest: originalRatio, width: tableRef.current!.getBoundingClientRect().width }; e.currentTarget.setPointerCapture(e.pointerId); },
+          onPointerMove: e => { const drag = columnDrag.current; if (!drag) return; drag.latest = Math.max(20, Math.min(70, drag.ratio + (e.clientX - drag.x) / drag.width * 100)); tableRef.current?.style.setProperty("--unity-original-width", String(drag.latest) + "%"); },
+          onPointerUp: finishColumnDrag, onPointerCancel: finishColumnDrag,
+          onKeyDown: e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const ratio = Math.max(20, Math.min(70, originalRatio + (e.key === "ArrowRight" ? 2 : -2))); setOriginalRatio(ratio); localStorage.setItem("unity-offline-original-ratio", String(ratio)); } },
+        },
+        entriesLocked, checkedCount, hasMixedSelection, rows, rowJump, target, source, skipTargetLanguage, textScreened, qualityIssues,
+        locateAcrossLanguages, scope, selectedCount: selected.length, done, visiblePage, pageCount, rowIssue, rowFailure, rowRetryQueued, qualityIssue, qualityIssueId,
+        retryIssueTitle: applied || patch ? "请先清理现有补丁再重试" : rowRetryQueued ? "该条目已在翻译队列中" : busy && rowQueueStatus !== "failed" ? "请在当前任务结束后单独重试此条目" : "重新加入翻译队列，保留已有译文和草稿",
+        retryIssueDisabled: testing || rowRetryQueued || restoring || !scanReady || !connectionReady || applied || !!patch || !!busy && rowQueueStatus !== "failed",
+        onDownload: range => void downloadTranslations(range), onImport: mode => { setImportMode(mode); void uploadTranslations(undefined,mode); },
+        onLimitChange: limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); },
+        onFilterChange: value => { setTextFilters(value); setLocateAcrossLanguages(false); setReviewFilter("all"); setPage(0); },
+        onRetryUnfinished: () => void startWorkflow(2, 2, !!checkpoint?.layoutOnly, false, false, "text"),
+        onSearch: value => { setSearch(value); setPage(0); },
+        onDiscard: () => importPreview ? cancelImportPreview() : void discardTextChanges(),
+        onSave: () => void (importPreview ? applyImportPreview(importMode) : saveUserChanges("text")),
+        onCheckFiltered: checked => { textSearchSnapshot.current = null; editTextEntries(new Set(filtered.map(row => row.id)), { selected: checked }); },
+        entryProblem, onUpdateEntry: update,
+        onOpenRowIssue: entry => { setQualityIssueId(null); setRowIssue({ ...entry, error: entryProblem(entry) }); },
+        onOpenQualityIssue: id => { setRowIssue(null); setQualityIssueId(id); }, onPage: setPage,
+        onCheckImport: () => checkImportPreview(), onRetryIssue: id => void retryTranslationEntry(id), onCloseRowIssue: () => setRowIssue(null),
+        onLocateQualityIssue: () => locateTranslationFailure(qualityIssueId!), onCloseQualityIssue: () => setQualityIssueId(null),
+      } : undefined} />
   </div>;
 });
