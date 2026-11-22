@@ -240,6 +240,61 @@ function clearReviewResult(row: Result): Result {
     review: row.manualChecked ? row.review : beforeRefine.review });
 }
 
+function MosaicOriginalCanvas({ width, drawing, children }: { width: number; drawing: boolean; children: ReactNode }) {
+  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const surface = useRef<HTMLDivElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
+  const pan = useRef<{ pointer: number; x: number; y: number } | null>(null);
+
+  const containPan = useCallback((zoom: number, x: number, y: number) => {
+    const area = surface.current;
+    const image = stage.current;
+    if (!area || !image) return { zoom, x: 0, y: 0 };
+    const maxX = Math.max(0, (image.offsetWidth * zoom - area.clientWidth) / 2);
+    const maxY = Math.max(0, (image.offsetHeight * zoom - area.clientHeight) / 2);
+    return { zoom, x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
+  }, []);
+
+  useEffect(() => {
+    const area = surface.current;
+    if (!area) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.deltaY) return;
+      event.preventDefault();
+      setView(current => {
+        const next = Math.max(1, Math.min(8, current.zoom * Math.exp(-event.deltaY * .002)));
+        return next === current.zoom ? current : containPan(next, current.x, current.y);
+      });
+    };
+    const observer = new ResizeObserver(() => {
+      setView(current => current.x || current.y ? containPan(current.zoom, current.x, current.y) : current);
+    });
+    observer.observe(area);
+    area.addEventListener("wheel", onWheel, { passive: false });
+    return () => { observer.disconnect(); area.removeEventListener("wheel", onWheel); };
+  }, [containPan]);
+
+  return <div ref={surface} className="game-mosaic-image-area" style={{ "--mosaic-original-width": width + "px" } as CSSProperties}>
+    <div ref={stage} className={"unity-image-stage game-mosaic-stage" + (!drawing && view.zoom > 1 ? " is-pannable" : "")}
+      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom }}
+      onPointerDown={event => {
+        if (drawing || view.zoom <= 1 || event.button !== 0 || !event.isPrimary) return;
+        const scale = event.currentTarget.currentCSSZoom;
+        pan.current = { pointer: event.pointerId, x: event.clientX / scale - view.x, y: event.clientY / scale - view.y };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={event => {
+        const start = pan.current;
+        if (start?.pointer !== event.pointerId) return;
+        const scale = event.currentTarget.currentCSSZoom;
+        setView(containPan(view.zoom, event.clientX / scale - start.x, event.clientY / scale - start.y));
+      }}
+      onLostPointerCapture={event => { if (pan.current?.pointer === event.pointerId) pan.current = null; }}>
+      {children}
+    </div>
+  </div>;
+}
+
 function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
   version: ResultVersion; letter?: string; imageName: string;
   disabledReason?: string; onApprove: (blob: Blob) => void; onOpen?: () => void;
@@ -1983,29 +2038,30 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           <GameImagePreviewFrame caption="原图" className="game-mosaic-original-frame" tabIndex={0} aria-label="原图编辑区"
             onKeyDown={onImageToolKey} onPointerDown={event => {
               if (!(event.target as Element).closest("button, input, textarea, select")) event.currentTarget.focus({ preventScroll: true });
-            }} onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined} fallback={<>
-              {original?.error ? <p className="game-mosaic-error" role="alert">{original.error}</p> : <p className="hint">正在读取图片…</p>}
+            }} onDoubleClick={!drawing && originalUrl ? () => openPreview("original") : undefined}>
+            <div className="game-mosaic-original-viewport">
+              {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} drawing={drawing}>
+                <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
+                <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
+                  aria-label="去码蒙版" onPointerDown={event => {
+                    if (!drawing || actionsDisabled || event.button !== 0) return;
+                    anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
+                  }} onPointerMove={event => {
+                    if (anchor.current) setDraft(bounds(anchor.current, position(event, active)));
+                  }} onPointerUp={event => {
+                    if (!anchor.current) return;
+                    const box = bounds(anchor.current, position(event, active));
+                    anchor.current = null; setDraft(undefined);
+                    if (!actionsDisabled && box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
+                  }} onPointerCancel={() => { anchor.current = null; setDraft(undefined); }}>
+                  {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
+                    fill="color-mix(in srgb, var(--danger) 25%, transparent)" stroke="var(--danger)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
+                </svg>
+              </MosaicOriginalCanvas> : original?.error
+                ? <p className="game-mosaic-error" role="alert">{original.error}</p>
+                : <p className="hint">正在读取图片…</p>}
               {imageToolbar}
-            </>}>
-            {originalUrl && <div className="unity-image-stage game-mosaic-stage">
-              <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
-              <svg viewBox={`0 0 ${active.width} ${active.height}`} className={drawing ? "is-drawing" : undefined}
-                aria-label="去码蒙版" onPointerDown={event => {
-                  if (!drawing || actionsDisabled || event.button !== 0) return;
-                  anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
-                }} onPointerMove={event => {
-                  if (anchor.current) setDraft(bounds(anchor.current, position(event, active)));
-                }} onPointerUp={event => {
-                  if (!anchor.current) return;
-                  const box = bounds(anchor.current, position(event, active));
-                  anchor.current = null; setDraft(undefined);
-                  if (!actionsDisabled && box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
-                }} onPointerCancel={() => { anchor.current = null; setDraft(undefined); }}>
-                {activeBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
-                  fill="color-mix(in srgb, var(--danger) 25%, transparent)" stroke="var(--danger)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
-              </svg>
-              {imageToolbar}
-            </div>}
+            </div>
           </GameImagePreviewFrame>
           {showSaved ? <GameImagePreviewFrame caption="已采用去码图" onDoubleClick={!drawing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
             ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>

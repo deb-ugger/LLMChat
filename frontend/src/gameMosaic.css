@@ -244,21 +244,34 @@
 .game-mosaic-failed-filter { color: var(--danger); }
 .game-mosaic-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
 
-/* 工具贴在图像右侧的留边，蒙版和原图共用完整的图像区域。 */
-.game-mosaic-original-frame {
+.game-mosaic-original-frame > .unity-image-preview-surface { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.game-mosaic-original-viewport {
   position: relative;
+  display: grid;
+  place-items: center;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: clip;
+  container: mosaic-original / size;
   --mosaic-tool-size: 34px;
-  --mosaic-tool-gap: 2px;
   --mosaic-tool-padding: var(--space-1);
   --mosaic-tool-offset: var(--space-2);
-  --mosaic-tool-gutter: calc(2 * var(--mosaic-tool-size) + var(--mosaic-tool-gap) + 2 * var(--mosaic-tool-padding) + 2px + var(--mosaic-tool-offset));
 }
-.game-mosaic-original-frame .unity-image-preview-surface { grid-template-columns: minmax(0, 1fr); }
-.game-mosaic-original-frame .game-mosaic-stage {
-  inline-size: min(max(0px, calc(100cqw - var(--mosaic-tool-gutter))), calc(100cqh * var(--mosaic-image-aspect)));
-  block-size: min(100cqh, calc(max(0px, 100cqw - var(--mosaic-tool-gutter)) / var(--mosaic-image-aspect)));
-  margin-inline-end: var(--mosaic-tool-gutter);
-  container: mosaic-original / size;
+.game-mosaic-image-area {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+  --mosaic-image-inset: calc(var(--mosaic-tool-size) + 2 * (var(--mosaic-tool-padding) + var(--mosaic-tool-offset) + 1px));
+}
+.game-mosaic-original-viewport .game-mosaic-stage {
+  inline-size: min(var(--mosaic-original-width), calc(100cqw - 2 * var(--mosaic-image-inset)), calc(100cqh * var(--mosaic-image-aspect)));
+}
+.game-mosaic-stage.is-pannable { cursor: grab; touch-action: none; }
+.game-mosaic-stage.is-pannable:active { cursor: grabbing; }
+@container mosaic-original (width < 400px) {
+  .game-mosaic-image-area { --mosaic-image-inset: 0px; }
 }
 .game-mosaic-image-tools {
   position: absolute;
@@ -268,21 +281,15 @@
   z-index: 6;
   display: grid;
   grid-template-columns: max-content;
-  gap: var(--mosaic-tool-gap);
+  grid-auto-rows: max-content;
+  gap: 2px;
+  max-block-size: 100%;
+  overflow-y: auto;
   padding: var(--mosaic-tool-padding);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-strong);
   background: var(--bg-panel);
   box-shadow: var(--shadow-md);
-}
-.game-mosaic-stage > .game-mosaic-image-tools {
-  inset-inline-start: calc(100% + var(--mosaic-tool-offset));
-  inset-inline-end: auto;
-  max-block-size: max(var(--mosaic-tool-size), 100%);
-  overflow-y: auto;
-}
-@container mosaic-original (height < 224px) {
-  .game-mosaic-image-tools { grid-template-columns: repeat(2, max-content); }
 }
 .game-mosaic-image-tool {
   display: grid;
