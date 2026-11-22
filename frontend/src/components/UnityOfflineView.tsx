@@ -28,7 +28,6 @@ import { GameProgressBar, GameStepProgress } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { prepareUnityImageSources, readUnitySourceImage } from "../unityImagePreview";
-import { registerAppCloseGuard } from "../appClose";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { GameTextFilterMenu, defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
 import { GameWorkDirectory } from "./GameWorkDirectory";
@@ -37,23 +36,22 @@ import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import { imageImportPng,type GameImportSource } from "../gameImageImport";
 import type { ImageArchiveReplacement } from "../gameImageArchive";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { GAME_IMAGE_SCREENING_LANES, LOCAL_REFINE_MODELS, gameImageRegionLanguageFilter, gameImageTranslationReadiness, localGameImageScreeningLanes } from "../gameImageScreening";
 import { defaultUnityImageScreening, needsUnityImageScreening, recognizeUnityReviewCrops, refineUnityImages, refineUnityImagesLocally, screenUnityImages, unityImageRefinementPending, type UnityImageScreeningOptions } from "../unityImageFiltering";
 import { gameTextHasSpeaker, gameDisplayTextProblem, gameImageJapaneseTextIssue, gameTextNeedsNoTranslation, preserveTargetGameText, translateGameDisplayText } from "../gameDisplayText";
-import { isTauri } from "@tauri-apps/api/core";
 import { dirname, join, resourceDir } from "@tauri-apps/api/path";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readFileBytes } from "../localDocFile";
 import { exportUnityTranslations, readUnityTranslationRows, applyUnityTranslationRows, unityTranslationFileName, UnityTranslationImportError, type UnityTranslationImportMode, type UnityTranslationImportIssue } from "../unityTranslationFiles";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { UnityIconButton } from "./UnityIconButton";
-import { ClosingProgress, useClosingProgress } from "./ClosingProgress";
+import { ClosingProgress } from "./ClosingProgress";
 import { unityTranslationQuality } from "../unityTranslationQuality";
 import { unityTranslationReadiness, unityCurrentPartProgress } from "../unityTranslationReadiness";
-import { UnityExitDialog, type UnityExitChoice } from "./UnityExitDialog";
+import { UnityExitDialog } from "./UnityExitDialog";
 import { GameTextFileMenu, GAME_TEXT_IMPORT_CHOICES } from "./GameTextFileMenu";
 import { api, type Settings, type TranslateProvider, type UnityGameInfo, type OcrMode } from "../api";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "../modelPresets";
@@ -82,9 +80,11 @@ import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { useGameWorkspaceSplit } from "../hooks/useGameWorkspaceSplit";
 import { generateOfflinePatch, offlineExportMessage, type DeploymentPatch } from "./unity-offline/offlineExport";
 import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/useOfflineDeploy";
+import { useProjectMount } from "./unity-offline/projectMount";
+import { useProjectSwitch, type UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 import "../unityOffline.css";
 
-export type UnityOfflineHandle = { prepareToLeave: () => Promise<boolean | "discard"> };
+export type { UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 const GENERATION_STEPS = UNITY_STEPS;
 type UnityTranslationOptions = ReturnType<typeof buildUnityTranslateOptions> & { wrapMode?: GameWrapMode; dialogueOptions?: ReturnType<typeof buildUnityTranslateOptions>; nameOptions?: ReturnType<typeof buildUnityTranslateOptions>; imageReviewOptions?: ReturnType<typeof buildUnityTranslateOptions>; engineIds?: TranslateProvider[]; includeContext?: boolean; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
 type GenerationProgress = UnityProgress & { step: number; elapsedMs?: number; state: "pending" | "running" | "done" | "stopped" | "error" | "skipped"; failure?: string };
@@ -142,7 +142,6 @@ function WorkflowElapsed({ elapsed, origin }: { elapsed: number; origin?: number
 }
 
 export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function UnityOfflineView({ active, game, settings, onBusyChange, onInstallationChange, toolbarTarget }, ref) {
-  const { phase: closingPhase, show: showClosing, clear: clearClosing } = useClosingProgress();
   const root = game?.gameDir || "";
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
@@ -340,125 +339,79 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const running = useRef<Promise<void> | null>(null);
   const translationQueue = useRef<UnityTranslationQueue | null>(null);
   const retryFailureIds = useRef<Set<string> | undefined>(undefined);
-  const closing = useRef(false);
-  const [exitPrompt, setExitPrompt] = useState<{ running: boolean; projectOnly: boolean; changes: string[] } | null>(null);
-  const exitDecision = useRef<((choice: UnityExitChoice) => void) | null>(null);
-  const requestExitChoice = (projectOnly: boolean): Promise<UnityExitChoice> => new Promise(resolve => {
-    if (exitDecision.current) { resolve("cancel"); return; }
-    exitDecision.current = resolve;
-    const changes = [...pendingEdits.current];
-    if (importPreviewRef.current) changes.unshift(`待应用的导入预览：${importPreviewRef.current.entries.length} 条译文，含右侧编辑`);
-    if (status.current.dirty && !changes.length) changes.push("工程参数或文本、图片编辑");
-    if (status.current.busy) changes.push(`正在处理：${status.current.busy}`);
-    setExitPrompt({ running: !!status.current.busy, projectOnly, changes });
-  });
-  const resolveExitChoice = (choice: UnityExitChoice) => {
-    const resolve = exitDecision.current; exitDecision.current = null;
-    setExitPrompt(null); resolve?.(choice);
-  };
-  const status = useRef({ busy, dirty }); status.current = { busy:busy||imageEditorBusy, dirty: dirty || !!importPreview };
   const latest = useRef(project); latest.current = project;
   const publish = (value: UnityProject) => { latest.current = value; setProject(value); };
   const scanUpdate = unityScanUpdate(project, checkpoint, { includeCode, textMode, typeDirectory, codeAssemblies });
   const needsScan = scanUpdate.level === "required";
   useEffect(() => { workflowRef.current?.scrollTo({ top: 0 }); }, [activeStep, imagePart, mosaicPage]);
-  useEffect(() => {
-    let cancelled = false; setInspection(null); setInspectionError("");
-    if (root) void unityRun<UnityInspection>("inspect", { root }).then(result => { if (!cancelled) setInspection(result); }).catch(error => { if (!cancelled) setInspectionError(String(error)); });
-    return () => { cancelled = true; };
-  }, [root]);
+  useProjectMount<RunCheckpoint>(root, {
+    run: unityRun, outputDirectory: legacyUnityOutputDirectory,
+    readLegacyTask: () => localStorage.getItem(checkpointKey),
+    removeLegacyTask: () => localStorage.removeItem(checkpointKey),
+    resetView: () => {
+      setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setSearch(""); setFileStatus(null); setRowJump(null);
+      setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill");
+      setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(recommendedGameModels().text || ""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
+      setLineMode("local"); setLineModel("");
+      setImageConfidenceThreshold(50);
+      setGeneration(null); setApplied(false); setInstalled(false);
+      setTextMode("smart"); setCodeAssemblies(null); setTypeDirectory(""); setExtraCharacters(""); setFontPlan(null);
+      setPreparingRescan(false);
+      setActiveStep(1); setImagePart(false); followProgress.current = true;
 
-  useEffect(() => {
-    setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setSearch(""); setFileStatus(null); setRowJump(null);
-    setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill");
-    setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(recommendedGameModels().text || ""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
-    setLineMode("local"); setLineModel("");
-    setImageConfidenceThreshold(50);
-    setGeneration(null); setApplied(false); setInstalled(false);
-    setTextMode("smart"); setCodeAssemblies(null); setTypeDirectory(""); setExtraCharacters(""); setFontPlan(null);
-    setPreparingRescan(false);
-    setActiveStep(1); setImagePart(false); followProgress.current = true;
-
-    setWorkRoot(""); setOutput(""); setRowIssue(null); queuedSignature.current = "";
-    setCheckpoint(null); checkpointRef.current = null;
-    let cancelled = false;
-    const saved = localStorage.getItem(checkpointKey);
-    if (!root) { setRestoring(false); return; }
-    setLoadingDetail("正在读取工作目录与任务检查点…");
-    setImageScreeningOptions(defaultUnityImageScreening);
-    setRestoring(true);
-    void (async () => {
-      try {
-        const workspace = await unityRun<UnityWorkspace<RunCheckpoint>>("workspace", { root, outputRoot: await legacyUnityOutputDirectory(), task: saved ? JSON.parse(saved) : null }, progress => { if (!cancelled) setLoadingDetail(progress.detail); });
-        if (cancelled) return;
-        setWorkRoot(workspace.workRoot); setOutput(workspace.projectsRoot); reportRestore(workspace.saved.notices);
-        let value = workspace.task;
-        const folder = value?.projectFolder || value?.scanFolder;
-        let p: UnityProject | null;
-        if (folder) p = await loadProject(folder, value?.previousProjectFolder, detail => { if (!cancelled) setLoadingDetail(detail); });
-        else {
-          const found = workspace.saved;
-          if (cancelled) return;
-          reportRestore(found.notices); p = found.project;
-          if (p) {
-            const incomplete = found.scanTotal !== null;
-            if (!value) value = projectCheckpoint(p, incomplete, found.scanCompleted, found.scanTotal);
-            else { value.projectFolder = p.folder; if (incomplete) value.scanFolder = p.folder; }
-            if (found.includeCode !== null) value.includeCode = found.includeCode;
-          }
+      setWorkRoot(""); setOutput(""); setRowIssue(null); queuedSignature.current = "";
+      setCheckpoint(null); checkpointRef.current = null;
+    },
+    resetScreening: () => setImageScreeningOptions(defaultUnityImageScreening),
+    setLoadingDetail, setRestoring, setInspection, setInspectionError, reportError: setError, reportRestore,
+    setWorkspaceFolders: workspace => { setWorkRoot(workspace.workRoot); setOutput(workspace.projectsRoot); },
+    loadProject, projectCheckpoint,
+    restoreView: (workspace, p, value) => {
+      if (p) {
+        const legacyTarget = rememberLegacyGameTarget(root, "unity", value?.target || "zh-CN");
+        tagLegacyTextTargets(p.entries, legacyTarget);
+        tagLegacyImageTargets(p.images || [], legacyTarget);
+        if (p.images) p.images = p.images.map(normalizeUnityImageSelection);
+      }
+      setProject(p);
+      setInstalled(workspace.installed);
+      setApplied(workspace.installed && !!value?.patch && value.step === 4 && value.progress.state === "done"); onInstallationChange?.(root, workspace.installed);
+      if (value) {
+        if ((value.lineMode as string) === "hanlp") value.lineMode = "wtp";
+        if (value.scopeVersion !== 1) value = { ...value, source: value.finished && !value.patch && value.endStep < 3 ? value.source : "all", scopeVersion: 1 };
+        setPatch(value.patch); setTextScreenModel(value.textScreenModel); setIncludeContext(value.includeContext ?? false); setSkipTargetLanguage(value.skipTargetLanguage ?? true); setOnlySourceLanguage(value.onlySourceLanguage ?? true);
+        setTranslationKind(value.translationKind); setLlmModel(value.llmModel || recommendedGameModels().text || ""); setDialogueModel(value.dialogueModel || ""); setNameModel(value.nameModel || ""); setImageModel(value.imageModel || ""); setImageReviewModel(value.imageReviewModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setJoinLines(value.joinLines ?? true); setWrapMode(value.wrapMode||(value.joinLines===false?"keep":"join")); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
+        setEngineChoices(value.engines ? normalizeUnityEngines(value.engines) : defaultUnityEngines());
+        setLineMode(value.lineMode || "local"); setLineModel(value.lineModel || "");
+        setTextMode(value.textMode || p?.textMode || "paragraphs"); setCodeAssemblies(value.codeAssemblies ?? null); setTypeDirectory(value.typeDirectory || ""); setExtraCharacters(value.extraCharacters || "");
+        if (!value.finished && value.step === 2 && !value.imageOnly && p) {
+          const ids = unityLanguageScope(p.entries, value.source, value.onlySourceLanguage !== false).ids;
+          const rows = p.entries.filter(e => e.selected && ids.has(e.id));
+          value.progress = { ...value.progress, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined, detail: "已恢复有效译文；主进度按语境内去重后的原文计算，未完成项可继续" };
         }
-        if (cancelled) return;
-        setLoadingDetail(p ? `正在恢复 ${p.entries.length.toLocaleString("zh-CN")} 条原文、译文及处理进度…` : "正在准备项目操作界面…");
-        if (p && !sameUnityGamePath(p.root, root)) throw new Error("检查点不属于当前游戏");
-        if (p) {
-          const legacyTarget = rememberLegacyGameTarget(root, "unity", value?.target || "zh-CN");
-          tagLegacyTextTargets(p.entries, legacyTarget);
-          tagLegacyImageTargets(p.images || [], legacyTarget);
-          if (p.images) p.images = p.images.map(normalizeUnityImageSelection);
+        if (value.translationRuns && p) {
+          const ids = unityLanguageScope(p.entries, value.source, value.onlySourceLanguage !== false).ids;
+          const rows = p.entries.filter(entry => entry.selected && ids.has(entry.id));
+          value.translationRuns.text = { ...value.translationRuns.text, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined };
+          const images = (p.images || []).filter(image => image.selected);
+          value.translationRuns.images = { ...value.translationRuns.images, completed: images.filter(image => image.completed).length, total: images.length };
+          if (!value.finished) for (const progress of Object.values(value.translationRuns)) if (progress.state === "running") progress.state = "stopped";
         }
-        setProject(p);
-        setInstalled(workspace.installed);
-        setApplied(workspace.installed && !!value?.patch && value.step === 4 && value.progress.state === "done"); onInstallationChange?.(root, workspace.installed);
-        if (value) {
-          if ((value.lineMode as string) === "hanlp") value.lineMode = "wtp";
-          if (value.scopeVersion !== 1) value = { ...value, source: value.finished && !value.patch && value.endStep < 3 ? value.source : "all", scopeVersion: 1 };
-          setPatch(value.patch); setTextScreenModel(value.textScreenModel); setIncludeContext(value.includeContext ?? false); setSkipTargetLanguage(value.skipTargetLanguage ?? true); setOnlySourceLanguage(value.onlySourceLanguage ?? true);
-          setTranslationKind(value.translationKind); setLlmModel(value.llmModel || recommendedGameModels().text || ""); setDialogueModel(value.dialogueModel || ""); setNameModel(value.nameModel || ""); setImageModel(value.imageModel || ""); setImageReviewModel(value.imageReviewModel || ""); setEngine(value.engine); setSource(value.source); setTarget(value.target); setJoinLines(value.joinLines ?? true); setWrapMode(value.wrapMode||(value.joinLines===false?"keep":"join")); setIncludeCode(value.includeCode); setFontPath(value.fontPath);
-          setEngineChoices(value.engines ? normalizeUnityEngines(value.engines) : defaultUnityEngines());
-          setLineMode(value.lineMode || "local"); setLineModel(value.lineModel || "");
-          setTextMode(value.textMode || p?.textMode || "paragraphs"); setCodeAssemblies(value.codeAssemblies ?? null); setTypeDirectory(value.typeDirectory || ""); setExtraCharacters(value.extraCharacters || "");
-          if (!value.finished && value.step === 2 && !value.imageOnly && p) {
-            const ids = unityLanguageScope(p.entries, value.source, value.onlySourceLanguage !== false).ids;
-            const rows = p.entries.filter(e => e.selected && ids.has(e.id));
-            value.progress = { ...value.progress, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined, detail: "已恢复有效译文；主进度按语境内去重后的原文计算，未完成项可继续" };
-          }
-          if (value.translationRuns && p) {
-            const ids = unityLanguageScope(p.entries, value.source, value.onlySourceLanguage !== false).ids;
-            const rows = p.entries.filter(entry => entry.selected && ids.has(entry.id));
-            value.translationRuns.text = { ...value.translationRuns.text, ...unityTranslationStats(rows, unityTranslationError, unityTranslationContextKey), translation: undefined };
-            const images = (p.images || []).filter(image => image.selected);
-            value.translationRuns.images = { ...value.translationRuns.images, completed: images.filter(image => image.completed).length, total: images.length };
-            if (!value.finished) for (const progress of Object.values(value.translationRuns)) if (progress.state === "running") progress.state = "stopped";
-          }
-          const prepared = value.step === 1 && value.progress.state === "pending" && !!value.previousProjectFolder && !value.scanFolder;
-          setPreparingRescan(prepared);
-          if (!value.finished && value.progress.state !== "error" && !prepared) value.progress.state = "stopped";
-          remember(value);
-          setActiveStep(value.step); setImagePart(!!value.imageOnly); setImageVisionModel(value.imageVisionModel); setImageLayoutModel(value.imageLayoutModel); setImageRedrawProfile(value.imageRedrawProfile ?? "turbo"); setImageOcrMode(value.imageOcrMode || "fast"); imageTask.current = value.imageTask || "filter";
-          setImageConcurrency(value.imageConcurrency??2);setImageConfidenceThreshold(value.imageConfidenceThreshold ?? 50);
-          setImageScreeningOptions(value.imageScreeningOptions ?? defaultUnityImageScreening);
-          if (value.finished && value.endStep !== 4) setGeneration(null);
-          if (value.progress.state === "error") setError(value.progress.failure || "上次任务未能完成，可以重试。已有工程和译文仍保留。");
-          else if (!value.finished) setMessage("已从游戏工作目录加载未完成任务，点击恢复可继续。");
-          else if (p) setMessage("已自动加载上次保存的工程。");
-        }
-        await taskWrites.current;
-        if (!cancelled) localStorage.removeItem(checkpointKey);
-      } catch (e) { if (!cancelled) setError(`恢复检查点失败：${e instanceof Error ? e.message : String(e)}`); }
-      finally { if (!cancelled) setRestoring(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [root]);
+        const prepared = value.step === 1 && value.progress.state === "pending" && !!value.previousProjectFolder && !value.scanFolder;
+        setPreparingRescan(prepared);
+        if (!value.finished && value.progress.state !== "error" && !prepared) value.progress.state = "stopped";
+        remember(value);
+        setActiveStep(value.step); setImagePart(!!value.imageOnly); setImageVisionModel(value.imageVisionModel); setImageLayoutModel(value.imageLayoutModel); setImageRedrawProfile(value.imageRedrawProfile ?? "turbo"); setImageOcrMode(value.imageOcrMode || "fast"); imageTask.current = value.imageTask || "filter";
+        setImageConcurrency(value.imageConcurrency??2);setImageConfidenceThreshold(value.imageConfidenceThreshold ?? 50);
+        setImageScreeningOptions(value.imageScreeningOptions ?? defaultUnityImageScreening);
+        if (value.finished && value.endStep !== 4) setGeneration(null);
+        if (value.progress.state === "error") setError(value.progress.failure || "上次任务未能完成，可以重试。已有工程和译文仍保留。");
+        else if (!value.finished) setMessage("已从游戏工作目录加载未完成任务，点击恢复可继续。");
+        else if (p) setMessage("已自动加载上次保存的工程。");
+      }
+    },
+    waitForTaskWrites: () => taskWrites.current,
+  });
   const formalUnfinished = !preparingRescan && !!checkpoint && !checkpoint.finished &&
     ["stopped", "error"].includes(checkpoint.progress.state);
   const formalProgress = localActivity?.value.state === "running" ? localActivity.value :
@@ -510,61 +463,20 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     return () => { window.clearTimeout(timer); if (parameterWrite.current === commit) parameterWrite.current = null; };
   }, [parameterSignature, restoring, project?.folder]);
 
-  useImperativeHandle(ref, () => ({ prepareToLeave: async () => {
-    if (busy || imageEditorWork.current || running.current || restoring) { setError("请先中止任务或等待当前工作目录处理完成后切换"); return false; }
-    try {
-      parameterWrite.current?.();
-      if (dirty || importPreviewRef.current) {
-        const choice = await requestExitChoice(true);
-        if (choice === "cancel") return false;
-        if (choice === "discard") { await Promise.allSettled([projectWrites.current, taskWrites.current]); return "discard"; }
-        if (importPreviewRef.current && !await applyImportRef.current()) return false;
-        await save();
-      }
-      await taskWrites.current; return true;
-    } catch (e) { setError(String(e)); return false; }
-  } }));
-  useEffect(() => () => { deploymentController.current?.abort(); abort.current?.abort();imageEditorAbort.current?.abort(); exitDecision.current?.("cancel"); exitDecision.current = null; }, []);
-  useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (!closing.current && (dirty || busy || imageEditorBusy || importPreview)) event.preventDefault(); };
-    window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, busy, imageEditorBusy, importPreview]);
-  const needsCloseHandler = project !== null || !!busy || !!imageEditorBusy;
-  const closeRelevant = active || dirty || !!busy || !!imageEditorBusy;
-  useEffect(() => {
-    if (!closeRelevant || !needsCloseHandler || !isTauri()) return;
-    let dispose: (() => void) | undefined; let cancelled = false;
-    void registerAppCloseGuard(async () => {
-      if (closing.current) return false;
-      closing.current = true;
-      try {
-        parameterWrite.current?.();
-        const choice = status.current.busy || status.current.dirty ? await requestExitChoice(false) : "save";
-        if (choice === "cancel") return false;
-        if (status.current.busy) {
-          await showClosing("正在中止 Unity 任务，等待当前资源处理结束…");
-          deploymentController.current?.abort(); abort.current?.abort();imageEditorAbort.current?.abort();
-          await running.current?.catch(() => {});await imageEditorWork.current?.catch(()=>{}); // The task's operation handler reports its outcome.
-        }
-        if (choice === "save") {
-          if (importPreviewRef.current) {
-            await showClosing("正在校验并保存待应用的导入预览…");
-            if (!await applyImportRef.current()) return false;
-          }
-          if (latest.current) { await showClosing("正在保存 Unity 工程和编辑内容…"); await save(); }
-          await showClosing("正在等待工程文件写入完成…"); await projectWrites.current;
-          await showClosing("正在保存任务进度与恢复信息…"); await taskWrites.current;
-        } else {
-          await showClosing("正在等待已开始的文件写入完成…");
-          await Promise.allSettled([projectWrites.current, taskWrites.current]);
-        }
-        await showClosing("正在关闭窗口和后台服务…");
-        return true;
-      } catch (e) { setError(`退出失败，窗口已保留：${String(e)}`); return false; }
-      finally { clearClosing(); closing.current = false; }
-    }).then(fn => { if (cancelled) fn(); else dispose = fn; }).catch(e => setError(String(e)));
-    return () => { cancelled = true; dispose?.(); };
-  }, [closeRelevant, needsCloseHandler]);
+  const { closing, closingPhase, showClosing, exitPrompt, resolveExitChoice } = useProjectSwitch({
+    ref, active, hasProject: project !== null, restoring, busy, imageEditorBusy, dirty, importPreview,
+    pendingChanges: () => [...pendingEdits.current],
+    importPreviewCount: () => importPreviewRef.current?.entries.length,
+    hasRunningWork: () => !!(imageEditorWork.current || running.current),
+    flushParameters: () => parameterWrite.current?.(),
+    waitForProjectWrites: () => projectWrites.current, waitForTaskWrites: () => taskWrites.current,
+    abortWork: () => { deploymentController.current?.abort(); abort.current?.abort(); imageEditorAbort.current?.abort(); },
+    waitForRunningWork: async () => { await running.current?.catch(() => {}); await imageEditorWork.current?.catch(() => {}); },
+    hasCurrentProject: () => !!latest.current,
+    applyImportPreview: () => applyImportRef.current(),
+    saveProject: () => save(),
+    reportError: setError,
+  });
 
   const scope = useMemo(() => unityLanguageScope(project?.entries || [], source, onlySourceLanguage), [project, source, onlySourceLanguage]);
   const sourceLanguages = useMemo(() => [...new Set(["ja", "en", "ko", "zh", "ru", ...(project?.entries.map(unityEntryLanguage) || [])])].filter(language => !["und", "cjk", "all"].includes(language)), [project]);
