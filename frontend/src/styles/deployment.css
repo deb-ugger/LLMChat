@@ -416,6 +416,16 @@
   .dpl-panel-export { grid-column: span 2; }
 }
 
+/* 导航与步骤栏占用空间后，1600px 窗口下仍能容纳五张卡。 */
+@container (min-width: 1440px) {
+  .dpl-grid:has(> .dpl-panel-export) {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    max-width: 2000px;
+    margin-inline: auto;
+  }
+  .dpl-grid > .dpl-panel-export { grid-column: auto; }
+}
+
 @container (max-width: 920px) {
   .dpl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
