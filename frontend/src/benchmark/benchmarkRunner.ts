@@ -39,6 +39,7 @@ type BenchmarkProgress = {
   total: number;
   sample: string;
   elapsedMs: number;
+  configElapsedMs?: number;
   percent: number | null;
   failed: number;
   detail?: string;
@@ -95,7 +96,12 @@ export function benchmarkTargetLabel(step: BenchmarkTarget) {
 }
 
 type ProgressPatch = Partial<Omit<BenchmarkProgress, "elapsedMs" | "percent">>;
-type JobContext = { id: string; signal: AbortSignal; elapsedMs: () => number; report: (patch: ProgressPatch) => void };
+type JobContext = {
+  id: string;
+  signal: AbortSignal;
+  elapsedMs: () => number;
+  report: (patch: ProgressPatch, configTiming?: "start" | "stop") => void;
+};
 type Prepared = { count: number; scope: string; runScope: string; restored?: number; run: (context: JobContext) => Promise<number>;
   cleanup: (jobId: string) => void; restart: (jobId: string) => void };
 type QueuedJob = BenchmarkJob & { prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
@@ -133,7 +139,7 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
 }
 
 async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false,
-  archive?: { details: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[] }): Promise<Prepared> {
+  archive?: { details: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[]; configElapsedMs: number }): Promise<Prepared> {
   const { step, rounds } = request;
   const configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
@@ -224,6 +230,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   const runScope = historyScope + ":benchmark:" + (mosaic ? "mosaic" : imageStep ? "images" : "text");
   const totalScope = historyScope + ":benchmark-total";
   let runs = archive?.completed.length ?? 0;
+  let archivedConfigElapsedMs = archive?.configElapsedMs ?? 0;
   let failures = archive?.completed.filter(result => result.status === "失败").length ?? 0;
   let failedSamples = archive?.completed.reduce((total, result) => total + result.failed, 0) ?? 0;
   let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
@@ -241,6 +248,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     prepared.cleanup(jobId);
     prepared.restored = recoveredResults = pausedRunId = undefined;
     failures = failedSamples = runs = finishedSamples = unfinishedSamples = 0;
+    archivedConfigElapsedMs = 0;
   }, run: async context => {
     if (pausedRunId) await readMosaicCheckpoint?.(context.id, pausedRunId);
     context.signal.throwIfAborted();
@@ -271,11 +279,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           runSamples = unfinishedSamples;
           context.report({ phase: "execute", label: title + " · 第 " + round + "/" + rounds + " 轮 · " + config.label,
             configId: config.id, configIndex: configs.findIndex(item => item.id === config.id) + 1, configCount: configs.length,
-            round, rounds, sampleCurrent: runSamples, sampleTotal: count, sample: "", detail: undefined, performance: undefined,
+            round, rounds, configElapsedMs: archivedConfigElapsedMs, sampleCurrent: runSamples, sampleTotal: count,
+            sample: "", detail: undefined, performance: undefined,
             parameters: formatBenchmarkParameters(step, config, { rounds, sampleLimit: archive ? null : limit,
               annotated: !!annotated, mosaicSelection, imageSetup }),
             current: finishedSamples + runSamples,
-            failed: failedSamples });
+            failed: failedSamples }, "start");
+          archivedConfigElapsedMs = 0;
         },
         progress,
         result => {
@@ -286,7 +296,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
               unfinishedSamples = result.translated;
               if (result.performance.benchmark?.imageDetails) pausedRunId = result.performance.taskId;
             }
-            context.report({ ...measurement, current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail });
+            context.report({ ...measurement, current: finishedSamples + done, failed: failedSamples + result.failed, detail: result.detail }, "stop");
             return;
           }
           runs++;
@@ -295,7 +305,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           if (result.status === "失败") failures++;
           failedSamples += result.failed;
           finishedSamples += done;
-          context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail });
+          context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail }, "stop");
         }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath);
       return failures;
     } finally {
@@ -314,6 +324,7 @@ const listeners = new Set<() => void>();
 let snapshot = emptyBenchmarkSnapshot;
 let progress: BenchmarkState | null = null;
 let startedAt = 0;
+let configStartedAt: number | undefined;
 let running = false;
 let controller: AbortController | undefined;
 let executing: Promise<void> | undefined;
@@ -359,13 +370,17 @@ function performanceForDisplay(meter: StepPerformance): StepPerformance {
   return structuredClone(measurement);
 }
 
+function currentConfigElapsedMs(value: BenchmarkProgress) {
+  return configStartedAt === undefined ? value.configElapsedMs : Math.max(0, Date.now() - configStartedAt);
+}
+
 function publish() {
   const activeJob = jobs.find(job => job.status === "运行中");
   const meter = activeJob?.prepared && progress?.configId && stepPerformance(activeJob.prepared.runScope, activeJob.step);
   const matches = meter && meter.benchmark?.queueId === activeJob?.id &&
     (meter.benchmark.config as BenchmarkConfig | undefined)?.id === progress?.configId;
   const visibleProgress = progress?.state === "running"
-    ? { ...progress, elapsedMs: performance.now() - startedAt,
+    ? { ...progress, elapsedMs: performance.now() - startedAt, configElapsedMs: currentConfigElapsedMs(progress),
       performance: progress.performance ?? (matches ? performanceForDisplay(meter) : undefined) }
     : progress;
   snapshot = {
@@ -421,9 +436,17 @@ async function runJobs() {
       publish();
       failed = !!await job.prepared.run({
         id: job.id, signal: abort.signal, elapsedMs: () => performance.now() - startedAt,
-        report: patch => {
+        report: (patch, configTiming) => {
           if (controller !== abort || !progress) return;
           const next = { ...progress, ...patch };
+          if (configTiming === "start") {
+            const sameConfig = progress.configId === next.configId && progress.round === next.round;
+            next.configElapsedMs = (sameConfig ? progress.configElapsedMs : undefined) ?? patch.configElapsedMs ?? 0;
+            configStartedAt = Date.now() - next.configElapsedMs;
+          } else {
+            next.configElapsedMs = currentConfigElapsedMs(progress);
+            if (configTiming === "stop") configStartedAt = undefined;
+          }
           next.percent = next.total > 0 ? Math.floor(100 * next.current / next.total) : null;
           progress = next;
           publish();
@@ -437,6 +460,8 @@ async function runJobs() {
       job.onMessage?.(job.label + " · " + detail, abort.signal.aborted ? "info" : "error");
     } finally {
       const paused = !finished && abort.signal.aborted;
+      progress = { ...progress, configElapsedMs: currentConfigElapsedMs(progress) };
+      configStartedAt = undefined;
       try {
         await cleanupJob(paused || waitForFormal ? undefined : job);
         historyRevision++;
@@ -506,11 +531,15 @@ export const benchmarkRunner = {
     const continuation = groupBenchmarkTasks(history).find(task => task.id === queueId)?.continuation;
     if (!continuation) throw new Error("这条记录没有可继续的完整测试批次");
     const { plan, completed, sampleSource, reuse } = continuation;
+    // History already keeps one cumulative measurement per run ID.
+    const configElapsedMs = history.reduce((total, run) => run.status === "已暂停" &&
+      run.performance.benchmark?.queueId === queueId && run.performance.benchmark.batchIndex === completed.length
+      ? total + run.performance.elapsedMs : total, 0);
     const details = await readImageBenchmarkDetails(queueId, sampleSource.performance.taskId!);
     if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
     const prepared = await prepareJob(input, {
       scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath,
-    }, false, { details, reuse, completed });
+    }, false, { details, reuse, completed, configElapsedMs });
     if (!findJob()) {
       const job: QueuedJob = { id: queueId, scope: prepared.scope, requestScope: input.scope, step,
         label: benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮",
