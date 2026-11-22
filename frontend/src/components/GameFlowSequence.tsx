@@ -235,7 +235,7 @@ function MetricsValues({ values }: { values: readonly { label: string; value: Re
 type RunningQueueMetrics = { position: number; ahead?: number; startedTime?: string };
 
 export function StepRunningMetrics({ measured = emptyPerformance, models = [], parameters = [], benchmark, queue,
-  device, elapsedMs, stopped = false, itemUnit = "张", compact = true }: {
+  device, elapsedMs, stopped = false, itemUnit = "张" }: {
   measured?: StepPerformance;
   models?: ConfiguredModel[];
   parameters?: readonly BenchmarkParameter[];
@@ -245,7 +245,6 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
   elapsedMs?: number;
   stopped?: boolean;
   itemUnit?: "张" | "条";
-  compact?: boolean;
 }) {
   const elapsed = measured.taskId || measured.started !== undefined ? measured.elapsedMs : elapsedMs;
   const { throughput, timings } = stepMetrics(measured);
@@ -253,6 +252,7 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
   const modelGroups = groupModels(measured, models);
   const average = benchmark && benchmark.current > 0 && benchmark.elapsedMs > 0
     ? benchmark.elapsedMs / benchmark.current : undefined;
+  const remaining = benchmark && average !== undefined ? average * Math.max(0, benchmark.total - benchmark.current) : undefined;
   const config = benchmark?.parameters ?? (benchmark ? [] : [...parameters, ...models.flatMap(({ model, concurrency }, index) =>
     [{ label: "模型 " + (index + 1), value: model + " · 并发 " + concurrency }])]);
   const actualModels = Object.values(measured.models);
@@ -262,87 +262,93 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
   const configContents = config.length ? <MetricsValues values={config} /> :
     <small data-tooltip="当前步骤未提供可展示的配置，或测试尚未进入配置执行阶段。">—</small>;
   const paused = stopped || benchmark?.state === "paused";
-  return <div className="game-flow-model-list game-step-running-metrics" aria-label="运行指标">
-    <strong className="game-step-metrics-label">性能参数{paused ? " · 已暂停" : ""}</strong>
-    {modelGroups.map(model => {
-      const records = actualModels.filter(record => record.model === model.model);
-      const generationMs = records.reduce((total, record) => total + record.generationMs, 0);
-      const rates = tokenMetrics({ ...model, generationMs });
-      const services = [...new Set(records.flatMap(record => record.service ? [record.service === "local" ? "本地" : "在线"] : []))];
-      const usages = [
-        ["promptTokens", "输入"], ["completionTokens", "输出"], ["totalTokens", "合计"],
-        ["cacheReadTokens", "缓存读取"], ["cacheWriteTokens", "缓存写入"],
-      ] as const;
-      return <div key={model.model} data-model-row={model.model}>
-        <strong className="game-step-metric-model" title={model.model}>{model.model.split("/").at(-1)}</strong>
-        <MetricsValues values={[
-          { label: "并发", value: model.concurrency || "—", detail: "模型配置的并发数。" },
-          { label: "请求", value: model.requests + " 次" },
-          ...(["generationRate", "requestRate"] as const).map((key, index) => {
-            const rate = rates.find(item => item.key === key);
-            return { label: index === 0 ? "纯生成" : "请求平均",
-              value: rate ? rate.value + " tok/s" : "—",
-              detail: rate ? key === "generationRate" ? "输出 token 除以各请求报告的生成耗时合计。" : metricDetails[key]
-                : "等待模型返回 token 和相应计时。服务未报告这些数据时无读数。" };
-          }),
-          { label: "模型服务", value: services.join("、") || "—", detail: "请求层报告的服务类型。" },
-        ]} />
-        {records.some(record => record.usage) && <MetricsValues values={usages.map(([key, label]) => {
-          const values = records.flatMap(record => {
-            const count = record.usage?.[key];
-            return count === undefined ? [] : [count];
-          });
-          return { label: label + " token", value: values.length ? values.reduce((sum, value) => sum + value, 0) : "—",
-            detail: "仅累计服务实际报告的 token 数。未报告的数据记为 —。" };
-        })} />}
-        {!records.some(record => record.usage) && <small data-tooltip="模型服务尚未返回可统计的输入、输出或缓存 token。">Token 用量 —</small>}
-        {model.serviceTiming && <GameModelServiceTiming timing={model.serviceTiming} requests={model.requests} />}
-      </div>;
-    })}
-    {!modelGroups.length && <small data-tooltip="此步骤不使用模型，或模型请求尚未发出。">模型 —</small>}
-    <MetricsValues values={[
-      ...liveTimings.map(([key, label]) => {
-        const metric = timingMetrics.find(item => item.key === key);
-        return { label, value: key === "elapsedMs" ? formatTiming(elapsed) : metric?.value ?? "—",
-          detail: metric?.tooltip ?? metricDetails[key] ?? "当前步骤尚未提供计时。" };
-      }),
-      ...timings.filter(metric => !liveTimings.some(([key]) => key === metric.key) && !["failures", "cacheHits"].includes(metric.key)).map(metric =>
-        ({ label: metric.label, value: metric.value + (metric.unit ? " " + metric.unit : ""), detail: metricDetails[metric.key] })),
-      { label: "设备", value: device ?? "—", detail: "当前执行器未报告计算设备时没有读数。" },
-      { label: "请求成功", value: requestCounts("succeeded"), detail: "仅统计请求层已返回的结果。" },
-      { label: "请求失败", value: requestCounts("failed"), detail: "仅统计请求层已返回的结果。" },
-      { label: "请求取消", value: requestCounts("cancelled"), detail: "仅统计请求层已返回的结果。" },
-      { label: "结果复用", value: measured.cacheHits ?? "—", detail: "仅支持主动记录结果复用的步骤。" },
-      { label: "文本请求重试", value: measured.textRequestRetries ?? "—", detail: "统计文本调度器实际重新发出的限流或超时请求。其他执行器未上报该项。" },
-      { label: "最长单样本", value: "—", detail: "执行器尚未记录各样本独立耗时。" },
-    ]} />
-    {benchmark ? <MetricsValues values={[
-      { label: "阶段", value: paused ? "已暂停" : { prepare: "准备", execute: "执行", finish: "收尾" }[benchmark.phase] },
-      { label: "轮次", value: benchmark.round === undefined ? "—" : benchmark.round + " / " + benchmark.rounds },
-      { label: "配置", value: benchmark.configIndex === undefined ? "—" : benchmark.configIndex + " / " + benchmark.configCount },
-      { label: "本配置样本", value: benchmark.sampleTotal === undefined ? "—" : benchmark.sampleCurrent + " / " + benchmark.sampleTotal },
-      { label: "整批样本", value: benchmark.total ? benchmark.current + " / " + benchmark.total : "—" },
-      { label: "当前样本", value: benchmark.sample || "—", detail: benchmark.sample || "尚未报告当前样本。" },
-      { label: "样本失败", value: benchmark.failed + " " + itemUnit },
-      { label: "墙钟平均每样本", value: formatTiming(average), detail: "整批已运行时间除以已处理样本数。" },
-      { label: "预计剩余", value: formatTiming(average === undefined ? undefined : average * Math.max(0, benchmark.total - benchmark.current)),
-        detail: "按当前整批样本处理速度估算，不含暂停。" },
-      ...(queue ? [
-        { label: "队列位置", value: queue.position },
-        { label: "前方任务", value: queue.ahead ?? "—", detail: "运行任务前方为 0，暂停期间顺序将在继续时确定。" },
-        { label: "开始时间", value: queue.startedTime ? new Date(queue.startedTime).toLocaleString() : "—" },
-        { label: "整批已运行", value: formatTiming(benchmark.elapsedMs) },
-        { label: "整批预计用时", value: formatTiming(average === undefined ? undefined : average * benchmark.total) },
-      ] : []),
-    ]} /> : <MetricsValues values={[
-      { label: "已处理", value: measured.itemsDone == null ? "—" : measured.itemsDone + " " + itemUnit },
-      { label: "样本失败", value: measured.failures == null ? "—" : measured.failures + " " + itemUnit },
-      { label: "墙钟平均每样本", value: formatTiming(measured.itemsDone && elapsed ? elapsed / measured.itemsDone : undefined),
-        detail: "步骤经过时间除以已处理样本数。" },
-    ]} />}
-    {compact ? <details className="game-step-metrics-config"><summary>配置参数</summary>{configContents}</details>
-      : <div><strong className="game-step-metrics-label">配置参数</strong>{configContents}</div>}
-  </div>;
+  const summaryElapsed = elapsed ?? benchmark?.elapsedMs;
+  const requests = actualModels.reduce((total, model) => total + model.requests, 0);
+  const eta = remaining === undefined ? "—" : gameDuration(remaining).replace(/^00:/, "");
+  const summary = [paused ? "已暂停" : undefined, "用时 " + (summaryElapsed === undefined ? "—" : gameDuration(summaryElapsed)),
+    "请求 " + requests, "预计剩余 " + eta].filter(Boolean).join(" ｜ ");
+  return <details className="game-step-running-metrics">
+    <summary title={summary}><span>{summary}</span><span className="game-step-metrics-arrow" aria-hidden="true" /></summary>
+    <div className="game-flow-model-list">
+      {modelGroups.map(model => {
+        const records = actualModels.filter(record => record.model === model.model);
+        const generationMs = records.reduce((total, record) => total + record.generationMs, 0);
+        const rates = tokenMetrics({ ...model, generationMs });
+        const services = [...new Set(records.flatMap(record => record.service ? [record.service === "local" ? "本地" : "在线"] : []))];
+        const usages = [
+          ["promptTokens", "输入"], ["completionTokens", "输出"], ["totalTokens", "合计"],
+          ["cacheReadTokens", "缓存读取"], ["cacheWriteTokens", "缓存写入"],
+        ] as const;
+        return <div key={model.model} data-model-row={model.model}>
+          <strong className="game-step-metric-model" title={model.model}>{model.model.split("/").at(-1)}</strong>
+          <MetricsValues values={[
+            { label: "并发", value: model.concurrency || "—", detail: "模型配置的并发数。" },
+            { label: "请求", value: model.requests + " 次" },
+            ...(["generationRate", "requestRate"] as const).map((key, index) => {
+              const rate = rates.find(item => item.key === key);
+              return { label: index === 0 ? "纯生成" : "请求平均",
+                value: rate ? rate.value + " tok/s" : "—",
+                detail: rate ? key === "generationRate" ? "输出 token 除以各请求报告的生成耗时合计。" : metricDetails[key]
+                  : "等待模型返回 token 和相应计时。服务未报告这些数据时无读数。" };
+            }),
+            { label: "模型服务", value: services.join("、") || "—", detail: "请求层报告的服务类型。" },
+          ]} />
+          {records.some(record => record.usage) && <MetricsValues values={usages.map(([key, label]) => {
+            const values = records.flatMap(record => {
+              const count = record.usage?.[key];
+              return count === undefined ? [] : [count];
+            });
+            return { label: label + " token", value: values.length ? values.reduce((sum, value) => sum + value, 0) : "—",
+              detail: "仅累计服务实际报告的 token 数。未报告的数据记为 —。" };
+          })} />}
+          {!records.some(record => record.usage) && <small data-tooltip="模型服务尚未返回可统计的输入、输出或缓存 token。">Token 用量 —</small>}
+          {model.serviceTiming && <GameModelServiceTiming timing={model.serviceTiming} requests={model.requests} />}
+        </div>;
+      })}
+      {!modelGroups.length && <small data-tooltip="此步骤不使用模型，或模型请求尚未发出。">模型 —</small>}
+      <MetricsValues values={[
+        ...liveTimings.map(([key, label]) => {
+          const metric = timingMetrics.find(item => item.key === key);
+          return { label, value: key === "elapsedMs" ? formatTiming(elapsed) : metric?.value ?? "—",
+            detail: metric?.tooltip ?? metricDetails[key] ?? "当前步骤尚未提供计时。" };
+        }),
+        ...timings.filter(metric => !liveTimings.some(([key]) => key === metric.key) && !["failures", "cacheHits"].includes(metric.key)).map(metric =>
+          ({ label: metric.label, value: metric.value + (metric.unit ? " " + metric.unit : ""), detail: metricDetails[metric.key] })),
+        { label: "设备", value: device ?? "—", detail: "当前执行器未报告计算设备时没有读数。" },
+        { label: "请求成功", value: requestCounts("succeeded"), detail: "仅统计请求层已返回的结果。" },
+        { label: "请求失败", value: requestCounts("failed"), detail: "仅统计请求层已返回的结果。" },
+        { label: "请求取消", value: requestCounts("cancelled"), detail: "仅统计请求层已返回的结果。" },
+        { label: "结果复用", value: measured.cacheHits ?? "—", detail: "仅支持主动记录结果复用的步骤。" },
+        { label: "文本请求重试", value: measured.textRequestRetries ?? "—", detail: "统计文本调度器实际重新发出的限流或超时请求。其他执行器未上报该项。" },
+        { label: "最长单样本", value: "—", detail: "执行器尚未记录各样本独立耗时。" },
+      ]} />
+      {benchmark ? <MetricsValues values={[
+        { label: "阶段", value: paused ? "已暂停" : { prepare: "准备", execute: "执行", finish: "收尾" }[benchmark.phase] },
+        { label: "轮次", value: benchmark.round === undefined ? "—" : benchmark.round + " / " + benchmark.rounds },
+        { label: "配置", value: benchmark.configIndex === undefined ? "—" : benchmark.configIndex + " / " + benchmark.configCount },
+        { label: "本配置样本", value: benchmark.sampleTotal === undefined ? "—" : benchmark.sampleCurrent + " / " + benchmark.sampleTotal },
+        { label: "整批样本", value: benchmark.total ? benchmark.current + " / " + benchmark.total : "—" },
+        { label: "当前样本", value: benchmark.sample || "—", detail: benchmark.sample || "尚未报告当前样本。" },
+        { label: "样本失败", value: benchmark.failed + " " + itemUnit },
+        { label: "墙钟平均每样本", value: formatTiming(average), detail: "整批已运行时间除以已处理样本数。" },
+        { label: "预计剩余", value: formatTiming(remaining),
+          detail: "按当前整批样本处理速度估算，不含暂停。" },
+        ...(queue ? [
+          { label: "队列位置", value: queue.position },
+          { label: "前方任务", value: queue.ahead ?? "—", detail: "运行任务前方为 0，暂停期间顺序将在继续时确定。" },
+          { label: "开始时间", value: queue.startedTime ? new Date(queue.startedTime).toLocaleString() : "—" },
+          { label: "整批已运行", value: formatTiming(benchmark.elapsedMs) },
+          { label: "整批预计用时", value: formatTiming(average === undefined ? undefined : average * benchmark.total) },
+        ] : []),
+      ]} /> : <MetricsValues values={[
+        { label: "已处理", value: measured.itemsDone == null ? "—" : measured.itemsDone + " " + itemUnit },
+        { label: "样本失败", value: measured.failures == null ? "—" : measured.failures + " " + itemUnit },
+        { label: "墙钟平均每样本", value: formatTiming(measured.itemsDone && elapsed ? elapsed / measured.itemsDone : undefined),
+          detail: "步骤经过时间除以已处理样本数。" },
+      ]} />}
+      <div><strong className="game-step-metrics-label">配置参数</strong>{configContents}</div>
+    </div>
+  </details>;
 }
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;

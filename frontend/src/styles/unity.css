@@ -2787,10 +2787,9 @@ body.ocr-image-resizing * {
 /* 正在跑的那一条任务：整块（标题行 + 展开后的全部字段）一起呼吸。 */
 .game-benchmark-item.is-running {
   border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 62%, var(--border, #2a2721));
-  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 8%, var(--panel, #15130f));
+  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 16%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.6s ease-in-out infinite;
 }
-.game-benchmark-item.is-running::before { background: var(--benchmark-run-tone, #a855f7); }
 .game-benchmark-item.is-running > summary { color: var(--text); }
 /* 展开后的控件与分隔线跟着染色，否则整块只有外框是蓝的、里面还是原底色。 */
 .game-benchmark-item.is-running .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
@@ -2840,10 +2839,27 @@ body.ocr-image-resizing * {
 .game-benchmark-item { position: relative; padding-inline-start: 12px; }
 .game-benchmark-item::before { content: ""; position: absolute; inset-block: 9px; inset-inline-start: 0; inline-size: 2px; border-radius: 2px; background: var(--line, rgba(255,255,255,.14)); }
 .game-benchmark-item.has-run::before { background: var(--success, #57b574); }
+.game-benchmark-item.is-running::before { inline-size: 3px; background: var(--benchmark-run-tone, #a855f7); }
 .game-benchmark-item > summary { display: flex; align-items: center; gap: 8px; }
 .game-benchmark-item > summary > .game-benchmark-item-badge { flex: none; margin-inline-start: 0; display: inline-grid; place-items: center; min-inline-size: 22px; block-size: 20px; border-radius: 6px; background: rgba(255,255,255,.07); color: var(--text-muted, #a09c8f); font-size: 11px; letter-spacing: .02em; }
 .game-benchmark-item-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game-benchmark-item > summary > .game-benchmark-item-score { margin-inline-start: auto; font-size: 12px; color: var(--text-muted, #a09c8f); white-space: nowrap; }
+.game-benchmark-item > summary > .game-benchmark-item-live-dot {
+  flex: 0 0 7px;
+  block-size: 7px;
+  margin-inline-start: 0;
+  border-radius: 50%;
+  background: var(--benchmark-run-tone, #a855f7);
+  animation: game-benchmark-pulse 1.6s ease-in-out infinite;
+}
+@keyframes game-benchmark-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) {
+  .game-benchmark-item > summary > .game-benchmark-item-live-dot { animation: none; }
+}
+.game-benchmark-item > summary > .game-benchmark-item-score.is-live {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .game-benchmark-item > summary { cursor: pointer; padding: 10px var(--space-3); overflow-wrap: anywhere; }
 .game-benchmark-item[open] > summary { border-bottom: 1px solid var(--border, #dcd6c6); }
 .game-benchmark-item > summary > span { margin-inline-start: 12px; color: var(--text-muted, #6a675c); }
@@ -3006,4 +3022,25 @@ body.ocr-image-resizing * {
 .game-step-running-metrics .game-benchmark-running-params { margin-top: 2px; }
 .game-step-metrics-label { display: block; margin: 0; font-size: var(--fs-caption); }
 .game-step-metric-model { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.game-step-metrics-config > summary { cursor: pointer; width: fit-content; }
+.game-step-running-metrics > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-block: 2px;
+  list-style: none;
+  cursor: pointer;
+  pointer-events: auto;
+  font-variant-numeric: tabular-nums;
+}
+.game-step-running-metrics > summary::-webkit-details-marker { display: none; }
+.game-step-running-metrics > summary > span:first-child {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-step-metrics-arrow { flex: none; margin-inline-start: auto; }
+.game-step-metrics-arrow::before { content: "▾"; }
+.game-step-running-metrics[open] .game-step-metrics-arrow::before { content: "▴"; }
+.game-step-running-metrics[open] > .game-flow-model-list { padding-block-start: var(--space-2); }
