@@ -297,15 +297,18 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
               }),
               { label: "模型服务", value: services.join("、") || "—", detail: "请求层报告的服务类型。" },
             ]} />
-            {records.some(record => record.usage) && <MetricsValues values={usages.map(([key, label]) => {
-              const values = records.flatMap(record => {
-                const count = record.usage?.[key];
-                return count === undefined ? [] : [count];
+            {(() => {
+              const rows = usages.flatMap(([key, label]) => {
+                const values = records.flatMap(record => {
+                  const count = record.usage?.[key];
+                  return count === undefined ? [] : [count];
+                });
+                return values.length ? [{ label: label + " token", value: values.reduce((sum, value) => sum + value, 0),
+                  detail: "仅累计服务实际报告的 token 数。" }] : [];
               });
-              return { label: label + " token", value: values.length ? values.reduce((sum, value) => sum + value, 0) : "—",
-                detail: "仅累计服务实际报告的 token 数。未报告的数据记为 —。" };
-            })} />}
-            {!records.some(record => record.usage) && <small data-tooltip="模型服务尚未返回可统计的输入、输出或缓存 token。">Token 用量 —</small>}
+              return rows.length ? <MetricsValues values={rows} /> :
+                <small data-tooltip="模型服务尚未返回可统计的输入、输出或缓存 token。">Token 用量 —</small>;
+            })()}
             {model.serviceTiming && <GameModelServiceTiming timing={model.serviceTiming} requests={model.requests} />}
           </div>;
         })}
