@@ -126,7 +126,6 @@ export function GameTextBenchmarkHost() {
     };
     const unsubscribe = benchmarkRunner.subscribe(() => {
       const state = benchmarkRunner.snapshot();
-      if (state.progress) channel.postMessage(state.progress);
       channel.postMessage({ type: "benchmark-queue", ...state });
     });
     window.addEventListener(openEvent, open);

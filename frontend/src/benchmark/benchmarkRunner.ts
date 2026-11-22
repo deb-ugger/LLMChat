@@ -54,7 +54,6 @@ type BenchmarkProgress = {
   parameters?: BenchmarkParameter[];
 };
 export type BenchmarkState = BenchmarkProgress & {
-  type: "benchmark-state";
   jobId: string;
   scope: string;
   step: BenchmarkTarget;
@@ -75,7 +74,6 @@ type FormalActivity = { id: string; game: string; label: string; state: "running
 export type BenchmarkSnapshot = {
   version: number;
   jobs: readonly BenchmarkJob[];
-  progress: BenchmarkState | null;
   running: boolean;
   stopping: boolean;
   formalBusy: boolean;
@@ -84,7 +82,7 @@ export type BenchmarkSnapshot = {
 };
 
 export const emptyBenchmarkSnapshot: BenchmarkSnapshot = {
-  version: 0, jobs: [], progress: null, running: false, stopping: false, formalBusy: false, formalJobs: [], historyRevision: 0,
+  version: 0, jobs: [], running: false, stopping: false, formalBusy: false, formalJobs: [], historyRevision: 0,
 };
 
 export function isMosaicBenchmarkStep(step: BenchmarkTarget): step is MosaicBenchmarkStep {
@@ -394,7 +392,6 @@ function publish() {
     jobs: jobs.map(({ prepared, prepare, onMessage, ...job }) => ({
       ...job, progress: job.status === "运行中" ? visibleProgress ?? undefined : job.progress,
     })),
-    progress: visibleProgress,
     running, stopping: !!controller?.signal.aborted, formalBusy: formalWorkflows.size > 0, formalJobs: [...formalWorkflows.values()], historyRevision,
   };
   for (const listener of listeners) listener();
@@ -437,7 +434,7 @@ async function runJobs() {
     job.startedTime ??= new Date().toISOString();
     const previous = job.progress;
     startedAt = performance.now() - (previous?.elapsedMs ?? 0);
-    progress = { ...previous, type: "benchmark-state", jobId: job.id, scope: job.scope, step: job.step, state: "running",
+    progress = { ...previous, jobId: job.id, scope: job.scope, step: job.step, state: "running",
       phase: "prepare", label: job.label, current: previous?.current ?? job.prepared?.restored ?? 0, total: job.prepared?.count ?? 0,
       sample: "", elapsedMs: previous?.elapsedMs ?? 0, percent: previous?.percent ??
         (job.prepared?.restored ? Math.floor(100 * job.prepared.restored / job.prepared.count) : 0), failed: previous?.failed ?? 0 };
@@ -548,7 +545,7 @@ async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkSt
   const current = prepared.restored ?? 0;
   return { id, scope: prepared.scope, requestScope: input.scope, step, label, startedTime: firstTime || undefined,
     status: "已暂停", prepared, onMessage: input.onMessage, resumeSamples: true,
-    progress: { type: "benchmark-state", jobId: id, scope: prepared.scope, step, state: "paused", phase: "finish",
+    progress: { jobId: id, scope: prepared.scope, step, state: "paused", phase: "finish",
       label, sample: "", current, total: prepared.count, percent: prepared.count ? Math.floor(current * 100 / prepared.count) : null,
       elapsedMs: runs.reduce((total, run) => total + run.performance.elapsedMs, 0),
       configElapsedMs, failed: completed.reduce((total, run) => total + run.failed, 0),
@@ -652,7 +649,7 @@ export const benchmarkRunner = {
 
 export function useBenchmarkProgress(scope: string) {
   return useSyncExternalStore(benchmarkRunner.subscribe, () => {
-    const state = benchmarkRunner.snapshot().progress;
+    const state = benchmarkRunner.snapshot().jobs.find(job => job.status === "运行中")?.progress;
     return state?.scope === scope && state.state === "running" ? state : undefined;
   });
 }
