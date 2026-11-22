@@ -9,6 +9,7 @@ add_executable(llmchat-backend
     src/Config.cpp
     src/ConversationManager.cpp
     src/LlmClient.cpp
+    src/http/LlmRoutes.cpp
     src/TranslateClient.cpp
     src/UnityAutoTranslator.cpp
     src/unity_runtime/UnityGameDetection.cpp
