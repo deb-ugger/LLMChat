@@ -2,6 +2,8 @@
 
 #include "UnityAutoTranslator.h"
 
+#include <functional>
+#include <string>
 #include <filesystem>
 
 namespace unity_runtime
