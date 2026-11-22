@@ -1,18 +1,27 @@
+/* 提示条对齐 Codex：无边框、深色浮层、小圆角、小字号、短淡入 */
 body .app-tooltip,
 body [role="tooltip"]:not(.app-tooltip) {
   box-sizing: border-box;
-  padding: var(--space-2) 11px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--bg-panel);
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-panel) 88%, #000);
   color: var(--text);
   font-family: inherit;
-  font-size: var(--fs-body);
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.55;
+  line-height: 1.45;
   text-align: start;
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .38);
   overflow-wrap: anywhere;
+  animation: app-tooltip-in 110ms ease-out;
+}
+@keyframes app-tooltip-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body .app-tooltip, body [role="tooltip"]:not(.app-tooltip) { animation: none; }
 }
 body .app-tooltip {
   position: fixed;
@@ -20,7 +29,7 @@ body .app-tooltip {
   z-index: 30000;
   margin: 0;
   width: max-content;
-  max-width: min(360px, calc(100vw - 16px));
+  max-width: min(320px, calc(100vw - 16px));
   max-height: calc(100dvh - 16px);
   overflow: hidden;
   white-space: pre-line;
