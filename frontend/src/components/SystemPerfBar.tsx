@@ -21,7 +21,6 @@ const TEMP_MID = 65;
 const TEMP_HIGH = 80;
 
 const TIMELINE_MS = 30 * 60 * 1000;
-const HISTORY_POINTS = 150;
 const POLL_MS = 3000;
 const STORAGE_KEY = "llmchat-sysbar-expanded";
 
@@ -140,7 +139,7 @@ export function SystemPerfBar() {
             if (!point) return timeline;
             const last = timeline[timeline.length - 1];
             if (last && atMs(last) >= atMs(point)) return timeline;
-            return [...timeline.filter(sample => atMs(sample) >= atMs(point) - TIMELINE_MS), point].slice(-HISTORY_POINTS);
+            return [...timeline.filter(sample => atMs(sample) >= atMs(point) - TIMELINE_MS), point];
           });
         }
       } catch {
@@ -222,8 +221,7 @@ export function SystemPerfBar() {
   }, [latest, points]);
 
   const panelSeries = useMemo(() => {
-    const window = range === "3m" ? 3 * 60 * 1000 : range === "30m" ? TIMELINE_MS : TIMELINE_MS;
-    const from = Date.now() - window;
+    const from = range === "run" ? performance.timeOrigin : Date.now() - (range === "3m" ? 3 * 60 * 1000 : TIMELINE_MS);
     return points.filter(point => atMs(point) >= from);
   }, [points, range]);
 
@@ -296,14 +294,14 @@ export function SystemPerfBar() {
             </span>
           </div>
           <div className="sysbar-cards">
-            <PanelCard label="CPU" value={formatPercent(latest?.cpu ?? null)} peak={peakOf(points, "cpu", formatPercent)} level={levelOfPercent(latest?.cpu ?? null)} series={panelSeries.map(point => point.cpu)} max={100} />
-            <PanelCard label="内存" value={formatPercent(latest?.memory ?? null)} peak={peakOf(points, "memory", formatPercent)} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
-            <PanelCard label="磁盘" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(points, "diskPercent", formatPercent)} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
-            <PanelCard label="网络" value={formatRateShort(latest?.network ?? null)} peak={peakOf(points, "network", formatRateShort)} level={null} series={panelSeries.map(point => point.network)} max={null} />
-            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={peakOf(points, "gpu", formatPercent)} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
-            <PanelCard label="CPU 温度" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(points, "cpuTempC", formatTemp)} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
-            <PanelCard label="GPU 温度" value={formatTemp(latest?.gpuTempC ?? null)} peak={peakOf(points, "gpuTempC", formatTemp)} level={levelOfTemp(latest?.gpuTempC ?? null)} series={panelSeries.map(point => point.gpuTempC ?? null)} max={100} />
-            <PanelCard label="模型服务" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(points, "tokensPerSecond", formatTokShort)} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
+            <PanelCard label="CPU" value={formatPercent(latest?.cpu ?? null)} peak={peakOf(panelSeries, "cpu", formatPercent)} level={levelOfPercent(latest?.cpu ?? null)} series={panelSeries.map(point => point.cpu)} max={100} />
+            <PanelCard label="内存" value={formatPercent(latest?.memory ?? null)} peak={peakOf(panelSeries, "memory", formatPercent)} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
+            <PanelCard label="磁盘" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(panelSeries, "diskPercent", formatPercent)} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
+            <PanelCard label="网络" value={formatRateShort(latest?.network ?? null)} peak={peakOf(panelSeries, "network", formatRateShort)} level={null} series={panelSeries.map(point => point.network)} max={null} />
+            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={peakOf(panelSeries, "gpu", formatPercent)} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
+            <PanelCard label="CPU 温度" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(panelSeries, "cpuTempC", formatTemp)} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
+            <PanelCard label="GPU 温度" value={formatTemp(latest?.gpuTempC ?? null)} peak={peakOf(panelSeries, "gpuTempC", formatTemp)} level={levelOfTemp(latest?.gpuTempC ?? null)} series={panelSeries.map(point => point.gpuTempC ?? null)} max={100} />
+            <PanelCard label="模型服务" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(panelSeries, "tokensPerSecond", formatTokShort)} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
           </div>
           <span className="sysbar-panel-foot">采样时刻 {at ? new Date(at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}</span>
         </div>
