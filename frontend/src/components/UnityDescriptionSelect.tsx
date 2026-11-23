@@ -2,7 +2,7 @@ import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useCallback, useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import "../unityOffline.css";
 
-type Choice = { value: string; label: string; description?: string; warning?: string };
+type Choice = { value: string; label: string; description?: string; warning?: string; disabled?: boolean };
 export const UNITY_SEGMENT_CHOICES: readonly Choice[] = [
   { value: "smart", label: "智能分段", description: "使用本地 WtP BERT Mini 小模型判断日文、中文等 85 种语言的原文换行：连续语句的排版折行归为同一条，句子边界、空行和列表保留分组。只在原字段内部处理，不跨字段合并。模型已内置，无需 API。", warning: "改变分段方式需要重新扫描；已有译文只复用完全匹配的条目。" },
   { value: "paragraphs", label: "按段落", description: "普通文本以空行分段，将连续非空行提取为一条；结构化资源仍按原字段提取，不使用模型。" },
@@ -42,8 +42,8 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
   const show = () => {
     if (disabled) return;
     position(); menu.current!.showPopover();
-    const selectedOption = menu.current!.querySelector<HTMLButtonElement>('[aria-selected="true"]');
-    (selectedOption ?? menu.current!.querySelector<HTMLButtonElement>('[role="option"]'))?.focus();
+    const selectedOption = menu.current!.querySelector<HTMLButtonElement>('[aria-selected="true"]:not(:disabled)');
+    (selectedOption ?? menu.current!.querySelector<HTMLButtonElement>('[role="option"]:not(:disabled)'))?.focus();
   };
   useEffect(() => {
     if (!open) return;
@@ -70,12 +70,14 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
         else if (event.key === "Tab") close();
         else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
           event.preventDefault(); event.stopPropagation();
-          const options = [...menu.current!.querySelectorAll<HTMLButtonElement>('[role="option"]')], index = options.indexOf(document.activeElement as HTMLButtonElement);
+          const options = [...menu.current!.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)')];
+          if (!options.length) return;
+          const index = options.indexOf(document.activeElement as HTMLButtonElement);
           const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
           options[next]?.focus();
         }
       }}>
-      {choices.map(choice => <button type="button" key={choice.value} role="option" aria-selected={choice.value === value} tabIndex={-1} className="unity-description-option"
+      {choices.map(choice => <button type="button" key={choice.value} role="option" aria-selected={choice.value === value} disabled={choice.disabled} tabIndex={-1} className="unity-description-option"
         onContextMenu={onOptionContextMenu ? event => {
           event.stopPropagation();
           onOptionContextMenu(choice.value, event);

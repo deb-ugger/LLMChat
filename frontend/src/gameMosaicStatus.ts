@@ -2,17 +2,26 @@ import type { MosaicBox } from "./gameMosaic";
 
 export const mosaicStatusLabels = {
   failed: "处理失败",
-  pending: "待筛选",
+  included: "已纳入补丁",
+  confirmed: "已采用去码图",
+  refinedCandidate: "复筛确认有码",
   review: "待复核",
   candidate: "疑似有码",
-  refinedCandidate: "复筛确认有码",
-  confirmed: "已采用去码图",
-  included: "已纳入补丁",
   clear: "未发现",
+  pending: "待筛选",
 } as const;
 
 export type MosaicStatus = keyof typeof mosaicStatusLabels;
-export const mosaicManualStatuses = ["pending", "review", "candidate", "refinedCandidate", "clear"] as const;
+export const mosaicStatusOrder = Object.keys(mosaicStatusLabels) as readonly MosaicStatus[];
+export const mosaicManualStatuses = mosaicStatusOrder.filter(status => status !== "confirmed" && status !== "included");
+
+export function mosaicStatusChoices() {
+  return mosaicStatusOrder.map(status => {
+    const description = status === "confirmed" ? "采用去码图后自动归入此组" :
+      status === "included" ? "纳入补丁后自动归入此组" : undefined;
+    return { value: status, label: mosaicStatusLabels[status], disabled: !!description, description };
+  });
+}
 export type MosaicManualStatus = typeof mosaicManualStatuses[number];
 
 export function removeContainedMosaicBoxes(boxes: MosaicBox[]): MosaicBox[] {

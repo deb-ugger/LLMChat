@@ -1,5 +1,5 @@
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
-import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusLabels, type MosaicStatus } from "../gameMosaicStatus";
+import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
@@ -104,6 +104,9 @@ function mosaicStatus(row: Result, included: boolean): MosaicStatus {
   const state = mosaicScreeningStatus(row);
   return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
 }
+const mosaicFilterPhase = (row: Result) => row.manualStatus === "failed" || mosaicProcessingError(row)
+  ? "failed" : row.saved ? "done" : "pending";
+
 const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类＋定位）" };
 function editedCandidates(candidates: Record<string, MosaicCandidate>, rows: Results, drafts: MosaicDraftSaved["drafts"]) {
   if (!drafts.size) return candidates;
@@ -186,7 +189,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [query, setQuery] = useState("");
   const [groupPages, setGroupPages] = useState<Partial<Record<MosaicStatus, number>>>({});
   const [collapsed, setCollapsed] = useState<Partial<Record<MosaicStatus, boolean>>>(() =>
-    Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, id !== "failed"])));
+    Object.fromEntries(mosaicStatusOrder.map(id => [id, id !== "failed"])));
   const listId = useId();
   const filterMenu = useRef<HTMLDivElement>(null);
   const [groupMenu, setGroupMenu] = useState<MosaicGroupMenu | null>(null);
@@ -255,8 +258,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const isRefineRetrying = (image: UnityImage) => refineRetries.get(image.id) === image.sourceHash;
   const visible = useMemo(() => Object.values(imageFilters).every(Boolean) ? currentScope : currentScope.filter(image => {
     const row = resultFor(rows, image);
-    const phase = mosaicProcessingError(row) ? "failed" : row.saved ? "done" : "pending";
-    return gameImageFilterMatch(imageFilters, row.checked, phase);
+    return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row));
   }), [currentScope, imageFilters, rows]);
   const { ordered, groups } = useMemo(() => {
     const grouped = new Map<MosaicStatus, UnityImage[]>();
@@ -267,7 +269,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       else grouped.set(status, [image]);
     }
     const groups = new Map<MosaicStatus, UnityImage[]>();
-    for (const status of Object.keys(mosaicStatusLabels) as MosaicStatus[]) {
+    for (const status of mosaicStatusOrder) {
       const images = grouped.get(status);
       if (images?.length) groups.set(status, images);
     }
@@ -307,8 +309,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           setCollapsed(previous => ({ ...previous, [after]: false }));
           const index = currentScope.filter(image => {
             const row = resultFor(nextRows, image);
-            const phase = mosaicProcessingError(row) ? "failed" : row.saved ? "done" : "pending";
-            return gameImageFilterMatch(imageFilters, row.checked, phase) &&
+            return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row)) &&
               mosaicStatus(row, !!storage?.index[image.id]?.included) === after;
           }).findIndex(image => image.id === nextActive.id);
           if (index >= 0) setGroupPages(previous => ({ ...previous, [after]: Math.floor(index / mosaicStatusPageSize) }));
@@ -1002,7 +1003,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     let failureCount = 0, unresolvedRefineFailures = 0, retryCount = 0;
     for (const image of scoped) {
       const row = resultFor(rows, image);
-      if (mosaicProcessingError(row)) failureCount++;
+      if (mosaicFilterPhase(row) === "failed") failureCount++;
       if (row.refineError) {
         unresolvedRefineFailures++;
         if (refineRetries.get(image.id) === image.sourceHash) retryCount++;
@@ -1086,8 +1087,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               <div className="game-mosaic-group-picker">
                 <UnityDescriptionSelect label="移动到处理分组…" value={activeResult?.manualStatus ?? ""} menuWidth={188} disabled={actionsDisabled || activeSaved}
                   choices={[
-                    ...mosaicManualStatuses.filter(status => status !== imageStatus(active) || status === activeResult?.manualStatus)
-                      .map(status => ({ value: status, label: mosaicStatusLabels[status] })),
+                    ...mosaicStatusChoices(),
                     ...(activeResult?.manualStatus ? [{ value: "auto", label: "恢复自动分组" }] : []),
                   ]}
                   onChange={moveToStatus} />

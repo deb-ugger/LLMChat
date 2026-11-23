@@ -717,6 +717,7 @@
 .unity-description-menu .unity-description-option > b { color:var(--text,#1b1a16); font-size:var(--fs-body); font-weight:700; }
 .unity-description-menu .unity-description-option:hover,.unity-description-menu .unity-description-option:focus-visible { background:var(--bg-hover); }
 .unity-description-menu .unity-description-option[aria-selected=true] { background:var(--accent-soft); }
+.unity-description-menu .unity-description-option:disabled { opacity:.55; cursor:not-allowed; background:transparent; }
 
 .unity-image-result-pane { display:flex; flex:1; min-width:0; min-height:0; }
 .unity-image-result-pane[hidden],.unity-offline-workbench[hidden] { display:none!important; }
