@@ -1,10 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { MosaicBox } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
+import type { MosaicTruth } from "./mosaicScoreInputs";
 
 export type ImageBenchmarkInput = {
   id: string; file: string; width: number; height: number; sourceHash: string;
   category: string; checked: boolean; boxes?: MosaicBox[];
+  mosaicTruth?: MosaicTruth | null;
 };
 export type ImageBenchmarkOutcome = {
   category: string; boxes?: MosaicBox[]; checked?: boolean; reason?: string;

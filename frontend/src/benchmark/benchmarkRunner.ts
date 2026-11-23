@@ -3,6 +3,7 @@ import { benchmarkImageInput, readImageBenchmarkDetails, type ImageBenchmarkDeta
 import { clearMosaicReviews } from "../gameMosaicRefine";
 import { clearGameImageRefinement } from "../gameImageScreening";
 import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } from "./imageSampleSet";
+import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { registerAppCloseGuard } from "../appClose";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
@@ -180,21 +181,22 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   if (request.sampleSetPath && !mosaic && !imageStep) throw new Error("当前测试步骤不接受图片样本集");
   const useAllAnnotated = step === "mosaicScreen" && mosaicSelection === "all";
   const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath,
-    { preserveDuplicates: useAllAnnotated }) : undefined;
+    { preserveDuplicates: useAllAnnotated, includeUnannotated: useAllAnnotated, verifyContent: mosaic }) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
   let recoveredResults: ReturnType<typeof archivedMosaicSamples>["recovered"] | undefined;
   let readMosaicCheckpoint: ((jobId: string, runId: string) => Promise<void>) | undefined;
   let pausedRunId: string | undefined;
   let imageSamples: ImageBenchmarkInput[] | undefined;
+  let scoreFreeze: MosaicScoreFreeze | undefined;
   let updateAnnotatedImageSamples: ((configs: BenchmarkConfig[]) => void) | undefined;
   let createStepRunner: ((context: JobContext, report: (value: UnityProgress) => void) => BenchmarkStepRunner) | undefined;
   if (mosaic) {
     if (!imageSource || configs.some(config => !config.mosaic)) throw new Error("当前工程没有去码测试样本或配置");
     const snapshot: MosaicBenchmarkWorkload = annotated ? {
       project: annotated.project, selected: [], embedded: false, checked: [],
-      boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
-        ? [[image.id,image.annotation.mosaic.boxes]] : [])),
+      boxes: step === "mosaicRedraw" ? Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
+        ? [[image.id,image.annotation.mosaic.boxes]] : [])) : {},
     } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
     const eligible = annotated ? useAllAnnotated ? annotated.images : annotatedMosaicSamples(annotated, step) : mosaicBenchmarkRows(step, snapshot, mosaicSelection);
     const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
@@ -203,13 +205,26 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     readMosaicCheckpoint = async (jobId, runId) => {
       recoveredResults = archivedMosaicSamples(sample, await readImageBenchmarkDetails(jobId, runId)).recovered;
     };
-    if (archive) snapshot.boxes = Object.fromEntries(archive.details.samples.flatMap(item =>
-      item.boxes?.length ? [[item.id, item.boxes] as const] : []));
+    if (archive) {
+      snapshot.boxes = Object.fromEntries(archive.details.samples.flatMap(item =>
+        item.boxes?.length ? [[item.id, item.boxes] as const] : []));
+      snapshot.categories = Object.fromEntries(archive.details.samples.map(item => [item.id, item.category]));
+      snapshot.checked = archive.details.samples.filter(item => item.checked).map(item => item.id);
+    }
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
     const checked = new Set(snapshot.checked);
     imageSamples = archive?.details.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
       annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
+    if (step !== "mosaicRedraw") {
+      if (!archive) {
+        const reference = request.referenceSampleSetPath && request.referenceSampleSetPath !== request.sampleSetPath
+          ? await loadAnnotatedSampleSet(request.referenceSampleSetPath) : annotated;
+        const truth = mosaicTruthLookup(reference);
+        imageSamples = imageSamples.map(item => ({ ...item, mosaicTruth: truth(item) }));
+      }
+      if (imageSamples.every(item => item.mosaicTruth !== undefined)) scoreFreeze = await freezeMosaicInputs(imageSamples);
+    }
     createStepRunner = (context, report) => (config, settings, scope, record, runId, preceding) =>
       runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
         context.report({ sample: image.name });
@@ -303,7 +318,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       context.report({ current: finishedSamples + runSamples, sampleCurrent: runSamples, detail: value.detail,
         failed: failedSamples + (value.translation?.failedEntries ?? value.redrawFailed ?? 0) });
     };
-    const target = createStepRunner ? { step, selected: count, imageSamples, run: createStepRunner({
+    const target = createStepRunner ? { step, selected: count, imageSamples, scoreFreeze, reusedImages: () => recoveredResults?.size ?? 0, run: createStepRunner({
       ...context,
       report: patch => context.report(patch.sample ? { ...patch, sample: sampleLabel(patch.sample) } : patch),
     }, progress) } : undefined;
