@@ -5,7 +5,9 @@ param(
     [switch]$NoLaunch,
     [switch]$ForceClose,
     [string]$FrontendPreviewDirectory,
-    [switch]$Full
+    [switch]$Full,
+    [switch]$IntegrationPreview,
+    [ValidateRange(1024,65535)][int]$PreviewPort = 17801
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -97,6 +99,53 @@ function Assert-BuildTools([string[]]$Tools) {
     }
 }
 
+function Initialize-FrontendDependencies {
+    $frontend = Join-Path $projectRoot 'frontend'
+    if (!(Test-Path -LiteralPath (Join-Path $frontend 'node_modules/@tauri-apps/cli/tauri.js'))) {
+        & npm.cmd --prefix $frontend ci
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
+    }
+}
+
+function Invoke-ParallelPreparation([string[]]$Groups, [string]$PreviewOutput, [string]$PreviewApi) {
+    $workers = @()
+    try {
+        foreach ($group in $Groups) {
+            $workers += Start-Job -ArgumentList $shell,$PSScriptRoot,$group,$Proxy,$PreviewOutput,$PreviewApi -ScriptBlock {
+                param($executor,$scripts,$names,$proxy,$previewOutput,$previewApi)
+                $ErrorActionPreference = 'Stop'
+                $PSNativeCommandUseErrorActionPreference = $false
+                . (Join-Path $scripts 'build-incremental.ps1')
+                foreach ($name in $names.Split('|')) {
+                    $clock = [Diagnostics.Stopwatch]::StartNew()
+                    $arguments = if ($name -eq 'build-frontend.ps1' -and $previewOutput) {
+                        @('-OutputRoot',$previewOutput,'-ApiBase',$previewApi)
+                    } elseif ($name -eq 'prepare-speech-tools.ps1' -and $proxy) { @('-Proxy',$proxy) }
+                    else { @() }
+                    # Native tools can report progress and warnings on stderr.
+                    $global:LASTEXITCODE = -1
+                    try {
+                        $ErrorActionPreference = 'Continue'
+                        & $executor -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts $name) @arguments 2>&1 | ForEach-Object { [string]$_ }
+                    } finally { $ErrorActionPreference = 'Stop' }
+                    if ($LASTEXITCODE -ne 0) { throw "$name failed (exit $LASTEXITCODE)." }
+                    Write-Output ('{0}: {1:N1}s' -f $name,$clock.Elapsed.TotalSeconds)
+                }
+            }
+        }
+        $remaining = @($workers)
+        while ($remaining.Count) {
+            $finished = Wait-Job -Job $remaining -Any
+            Receive-Job -Job $finished -ErrorAction Stop | Write-ToolOutput
+            if ($finished.State -ne 'Completed') { throw "Preparation worker failed: $($finished.JobStateInfo.Reason)" }
+            $remaining = @($remaining | Where-Object Id -ne $finished.Id)
+        }
+    } finally {
+        # Keep the repository lock until native compiler children have finished.
+        if ($workers.Count) { $workers | Wait-Job | Out-Null; $workers | Remove-Job -Force }
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
     Write-BuildLog ('Build started {0:O}' -f (Get-Date))
@@ -113,6 +162,27 @@ try {
     } while ($true)
 
     Complete-BuildStage 'Lock wait'
+    if ($IntegrationPreview) {
+        if ($FrontendPreviewDirectory -or $Full -or $PreviewPort -eq 17800) {
+            throw 'Use -IntegrationPreview by itself and select a port other than the standard 17800.'
+        }
+        Assert-BuildTools @('node','cmake')
+        . (Join-Path $PSScriptRoot 'build-integration-preview.ps1')
+        $previewRoot = Join-Path $projectRoot "backend/build/integration-preview/$PreviewPort"
+        $previewApp = Join-Path $previewRoot 'app'
+        $previewShell = Join-Path $projectRoot 'dist-portable/llmchat.exe'
+        Assert-IntegrationPreviewShell $previewShell
+        Stop-IntegrationPreview $previewApp
+        Complete-BuildStage 'Prepare integration preview'
+        Initialize-FrontendDependencies
+        Invoke-ParallelPreparation @('prepare-sidecar.ps1','build-frontend.ps1') (Join-Path $previewRoot 'versions') "http://127.0.0.1:$PreviewPort"
+        Complete-BuildStage 'Parallel frontend and backend'
+        Publish-IntegrationPreview $previewRoot $previewApp $previewShell $PreviewPort
+        Complete-BuildStage 'Publish integration preview'
+        if (!$NoLaunch) { Start-IntegrationPreview $previewRoot $previewApp $PreviewPort }
+        Write-BuildLog "Integration preview ready: $previewApp (http://127.0.0.1:$PreviewPort)"
+        return
+    }
     if ($FrontendPreviewDirectory) {
         Assert-BuildTools @('node','npm.cmd')
         $previewRoot = [IO.Path]::GetFullPath($FrontendPreviewDirectory)
@@ -170,47 +240,15 @@ try {
         Complete-BuildStage 'Backend build'
     } else {
         Write-Output '[3-4/6] Preparing backend and tools in parallel...'
-        $workers = @()
-        try {
-            foreach ($group in @(@('prepare-sidecar.ps1'), @('prepare-unity-tools.ps1','prepare-speech-tools.ps1','prepare-wolf-tools.ps1'))) {
-                $workers += Start-Job -ArgumentList $shell,$PSScriptRoot,($group -join '|'),$Proxy -ScriptBlock {
-                    param($executor,$scripts,$names,$proxy)
-                    $ErrorActionPreference = 'Stop'
-                    $PSNativeCommandUseErrorActionPreference = $false
-                    . (Join-Path $scripts 'build-incremental.ps1')
-                    foreach ($name in $names.Split('|')) {
-                        $clock = [Diagnostics.Stopwatch]::StartNew()
-                        $arguments = if ($name -eq 'prepare-speech-tools.ps1' -and $proxy) { @('-Proxy',$proxy) } else { @() }
-                        # Native tools can report progress and warnings on stderr.
-                        $global:LASTEXITCODE = -1
-                        try {
-                            $ErrorActionPreference = 'Continue'
-                            & $executor -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts $name) @arguments 2>&1 | ForEach-Object { [string]$_ }
-                        } finally { $ErrorActionPreference = 'Stop' }
-                        if ($LASTEXITCODE -ne 0) { throw "$name failed (exit $LASTEXITCODE)." }
-                        Write-Output ('{0}: {1:N1}s' -f $name,$clock.Elapsed.TotalSeconds)
-                    }
-                }
-            }
-            $remaining = @($workers)
-            while ($remaining.Count) {
-                $finished = Wait-Job -Job $remaining -Any
-                Receive-Job -Job $finished -ErrorAction Stop | Write-ToolOutput
-                if ($finished.State -ne 'Completed') { throw "Preparation worker failed: $($finished.JobStateInfo.Reason)" }
-                $remaining = @($remaining | Where-Object Id -ne $finished.Id)
-            }
-        } finally {
-            # Keep the repository lock until native compiler children have finished.
-            if ($workers.Count) { $workers | Wait-Job | Out-Null; $workers | Remove-Job -Force }
-        }
-        Complete-BuildStage 'Parallel backend and tools'
+        Initialize-FrontendDependencies
+        Invoke-ParallelPreparation @(
+            'prepare-sidecar.ps1',
+            'prepare-unity-tools.ps1|build-frontend.ps1|prepare-speech-tools.ps1|prepare-wolf-tools.ps1'
+        )
+        Complete-BuildStage 'Parallel frontend, backend and tools'
         Write-Output '[5/6] Building the desktop application...'
         $frontend = Join-Path $projectRoot 'frontend'
         $cli = Join-Path $frontend 'node_modules\@tauri-apps\cli\tauri.js'
-        if (!(Test-Path -LiteralPath $cli)) {
-            & npm.cmd --prefix $frontend ci
-            if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
-        }
         Push-Location $frontend
         $previousRustStack = [Environment]::GetEnvironmentVariable('RUST_MIN_STACK', 'Process')
         $previousCargoJobs = [Environment]::GetEnvironmentVariable('CARGO_BUILD_JOBS', 'Process')
@@ -220,11 +258,11 @@ try {
             if ([string]::IsNullOrWhiteSpace($previousRustStack)) { $env:RUST_MIN_STACK = '33554432' }
             if ([string]::IsNullOrWhiteSpace($previousCargoJobs)) { $env:CARGO_BUILD_JOBS = [string](Get-BuildJobs) }
             Write-Output "Rust build settings: CARGO_BUILD_JOBS=$env:CARGO_BUILD_JOBS; RUST_MIN_STACK=$env:RUST_MIN_STACK bytes"
-            # Tool preparation already succeeded in the workers. Direct Tauri builds
-            # retain the full hook declared in tauri.conf.json.
+            # The parallel workers already produced frontend/dist and the tools.
+            # The direct Tauri entry point keeps its configured hook.
             New-Item -ItemType Directory -Path $script:BuildCacheRoot -Force | Out-Null
             $hookConfig = Join-Path $script:BuildCacheRoot 'prepared-tauri.json'
-            $override = @{ build = @{ beforeBuildCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-frontend.ps1' } } | ConvertTo-Json -Compress
+            $override = @{ build = @{ beforeBuildCommand = '' } } | ConvertTo-Json -Compress
             [IO.File]::WriteAllText($hookConfig,$override,[Text.UTF8Encoding]::new($false))
             & node $cli build --no-bundle --config $hookConfig -- --timings | Write-ToolOutput
             if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed; portable files were not replaced.' }
@@ -234,7 +272,7 @@ try {
             Pop-Location
         }
 
-        Complete-BuildStage 'Desktop build (includes frontend)'
+        Complete-BuildStage 'Desktop build'
         $cargoTiming = Join-Path $targetRoot 'cargo-timings\cargo-timing.html'
         if (Test-Path -LiteralPath $cargoTiming) {
             $savedTiming = [IO.Path]::ChangeExtension($logPath, '.cargo.html')

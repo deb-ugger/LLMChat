@@ -53,9 +53,8 @@ export function syncDirectory(source, destination, selectedNames) {
 }
 
 /** Keep large inference resources outside Tauri's embedded frontend. */
-export function copyPublicAssets(frontendRoot, outDir) {
+export function copyPublicAssets(frontendRoot, outDir, resourceDir = path.join(frontendRoot, "src-tauri/resources/web-assets")) {
   const publicDir = path.join(frontendRoot, "public");
-  const resourceDir = path.join(frontendRoot, "src-tauri/resources/web-assets");
   for (const name of runtimeAssetDirectories) {
     if (!fs.statSync(path.join(publicDir, name)).isDirectory()) {
       throw new Error(`Missing runtime asset directory: ${name}`);

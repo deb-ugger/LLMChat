@@ -7,6 +7,11 @@ import react from "@vitejs/plugin-react";
 import { copyPublicAssets, syncDirectory } from "./build/runtimeAssets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
+const frontendRoot = path.resolve(".");
+const outputRoot = process.env.LLMCHAT_FRONTEND_OUTPUT_ROOT;
+const stagingDirectory = outputRoot ? path.join(outputRoot, "dist-staging") : "dist-staging";
+const distDirectory = outputRoot ? path.join(outputRoot, "dist") : path.join(frontendRoot, "dist");
+const runtimeDirectory = outputRoot ? path.join(outputRoot, "resources/web-assets") : undefined;
 const require = createRequire(import.meta.url);
 const pdfjsDistPath = path.dirname(require.resolve("pdfjs-dist/package.json"));
 
@@ -53,18 +58,18 @@ function servePdfjsAssets(): Plugin {
 
 export default defineConfig(async () => ({
   worker: { format: "es", plugins:()=>[paddleBatchingPlugin()] },
-  build: { copyPublicDir: false, outDir: "dist-staging" },
+  build: { copyPublicDir: false, outDir: stagingDirectory, emptyOutDir: true },
   plugins: [paddleBatchingPlugin(), react(), servePdfjsAssets(), {
     name: "external-runtime-assets",
     apply: "build",
     writeBundle(options) {
-      const staging = path.resolve(options.dir ?? "dist-staging");
-      copyPublicAssets(path.resolve("."), staging);
+      const staging = path.resolve(options.dir ?? stagingDirectory);
+      copyPublicAssets(frontendRoot, staging, runtimeDirectory);
       for (const name of ["cmaps", "standard_fonts"]) {
         syncDirectory(path.join(pdfjsDistPath, name), path.join(staging, name));
       }
       // Tauri watches dist. Do not invalidate Rust for identical frontend output.
-      syncDirectory(staging, path.resolve("dist"));
+      syncDirectory(staging, distDirectory);
     },
   }],
   clearScreen: false,
