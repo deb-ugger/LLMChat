@@ -57,6 +57,13 @@ function Assert-FrontendProbe([string]$Name) {
     }
 }
 
+function Get-ProgramHash([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { [BitConverter]::ToString($hash.ComputeHash($stream)) }
+    finally { $stream.Dispose(); $hash.Dispose() }
+}
+
 function Measure-Publish([string]$Name) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     Measure-PipelineStep 'make-portable.ps1' "$Name-package" | Out-Null
@@ -66,7 +73,7 @@ function Measure-Publish([string]$Name) {
         @{ source=$sidecar; file='llmchat-backend.exe' }
     )) {
         $destination = Join-Path $portable $item.file
-        if ($updated -contains $destination -and (Get-FileHash -LiteralPath $item.source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
+        if ($updated -contains $destination -and (Get-ProgramHash $item.source) -ne (Get-ProgramHash $destination)) {
             throw "构建产物校验失败：$($item.file)"
         }
     }
@@ -109,7 +116,7 @@ if ('backend-only' -in $selected) {
     Copy-BuildFile $sidecar $fastOutput
     $primary = Join-Path $fastOutput 'llmchat-backend.exe'
     Copy-BuildFile $sidecar $primary
-    if ((Get-FileHash -LiteralPath $sidecar).Hash -ne (Get-FileHash -LiteralPath $primary).Hash) { throw '仅后端更新校验失败。' }
+    if ((Get-ProgramHash $sidecar) -ne (Get-ProgramHash $primary)) { throw '仅后端更新校验失败。' }
     $publish = [Math]::Round($clock.Elapsed.TotalSeconds, 3)
     $records.Add([pscustomobject]@{ test='backend-only'; scenario='sidecar'; seconds=$backendTime + $publish; backend=$backendTime; package=$publish })
 
