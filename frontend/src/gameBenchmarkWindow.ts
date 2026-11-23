@@ -1,7 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { BenchmarkRequest, BenchmarkSnapshot } from "./benchmark/benchmarkRunner";
-import type { ArchivedBenchmarkRef, BenchmarkResult } from "./gameTextBenchmark";
+import type { BenchmarkRequest, BenchmarkSnapshot, BenchmarkTaskDecision } from "./benchmark/benchmarkRunner";
+import type { ArchivedBenchmarkRef, BenchmarkConfig, BenchmarkResult } from "./gameTextBenchmark";
 import { useLayoutEffect, useRef } from "react";
 
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
@@ -23,8 +23,11 @@ export function openProjectBenchmark() {
   return [...projectBenchmarks].some(open => open());
 }
 
-export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart";
-export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef;
+export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart"
+  | "benchmark-show-task" | "benchmark-hide-task" | "benchmark-release-task" | "benchmark-save-task" | "benchmark-decide-task";
+export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef
+  | { taskId: string; configs: BenchmarkConfig[] }
+  | { taskId: string; decision: BenchmarkTaskDecision; configs?: BenchmarkConfig[] };
 
 export function benchmarkHistoryForRecords(history: readonly BenchmarkResult[], jobs: BenchmarkSnapshot["jobs"]): BenchmarkResult[] {
   const unfinished = new Set(jobs.filter(job => job.status !== "完成" && job.status !== "失败").map(job => job.id));
