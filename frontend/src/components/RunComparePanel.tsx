@@ -1,8 +1,9 @@
 import * as echarts from "echarts/core";
 import { BarChart, HeatmapChart, ScatterChart } from "echarts/charts";
-import { GridComponent, LegendComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
+import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { useEffect, useMemo, useRef, type RefObject } from "react";
+import { memo, useEffect, useId, useMemo, useRef, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useChartColors, type ChartColors } from "./chartTheme";
 import {
   buildConcurrencyHeatmap,
@@ -18,6 +19,7 @@ echarts.use([
   BarChart,
   GridComponent,
   LegendComponent,
+  LegendScrollComponent,
   TooltipComponent,
   VisualMapComponent,
   CanvasRenderer,
@@ -59,13 +61,26 @@ function tooltipStyle(colors: ChartColors) {
   };
 }
 
-export function RunComparePanel({
-  runs,
-  onClose,
+export const RunComparePanel = memo(function RunComparePanel({
+  runs, loading, qualityError, itemUnit, onClose,
 }: {
   runs: readonly BenchmarkCompareRun[];
+  loading?: boolean;
+  qualityError?: string;
+  itemUnit: "条" | "张";
   onClose: () => void;
 }) {
+  const titleId = useId();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current!;
+    const previous = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
   const colors = useChartColors();
   const scatterRef = useRef<HTMLDivElement | null>(null);
   const heatRef = useRef<HTMLDivElement | null>(null);
@@ -76,14 +91,24 @@ export function RunComparePanel({
   const stages = useMemo(() => buildStageBars(runs), [runs]);
   const summaries = useMemo(() => runs.map(summarizeRun), [runs]);
 
-  const labeled = points.filter((point) => point.y != null);
+  const labeled = points.filter(point => point.y != null);
+  const seriesNames = [...new Set(labeled.map(point => point.series))];
   const scatterOption = {
-    grid: { top: 14, right: 16, bottom: 32, left: 46 },
+    grid: { top: seriesNames.length > 1 ? 34 : 14, right: 24, bottom: 32, left: 46 },
+    legend: {
+      type: "scroll",
+      show: seriesNames.length > 1,
+      top: 0,
+      left: 46,
+      right: 24,
+      textStyle: { color: colors.mutedText, fontSize: colors.captionSize },
+    },
     tooltip: {
       ...tooltipStyle(colors),
-      formatter: (params: { data: [number, number, string, number] }) => {
+      renderMode: "richText",
+      formatter: (params: { data: [number, number, string, number]; seriesName: string }) => {
         const [x, y, label, size] = params.data;
-        return `${label}<br/>用时 ${x.toFixed(1)} 秒<br/>F1 ${(y * 100).toFixed(1)}%<br/>标注 ${size}`;
+        return [params.seriesName, label, `用时 ${x.toFixed(1)} 秒`, `F1 ${(y * 100).toFixed(1)}%`, `标注 ${size}`].join("\n");
       },
     },
     xAxis: {
@@ -106,25 +131,29 @@ export function RunComparePanel({
       },
       splitLine: { lineStyle: { color: colors.border } },
     },
-    series: [{
+    series: seriesNames.map((model, index) => ({
+      name: model ?? "未记录模型",
       type: "scatter",
       symbolSize: (value: [number, number, string, number]) =>
         Math.min(26, Math.max(8, 6 + Math.sqrt(value[3] || 1) * 2)),
-      itemStyle: { color: colors.text, opacity: 0.85 },
-      data: labeled.map((point) => [point.x, point.y ?? 0, point.label, point.size]),
-    }],
+      itemStyle: { color: [colors.text, colors.warning, colors.success, colors.mutedText][index % 4], opacity: 0.85 },
+      data: labeled.filter(point => point.series === model).map(point => [point.x, point.y, point.label, point.size]),
+    })),
   };
 
   const models = [...new Set(cells.map((cell) => cell.y))];
   const concurrencies = [...new Set(cells.map((cell) => cell.x))].sort((a, b) => a - b);
+  const displayedModel = (id: string) => id.length > 23 ? id.slice(0, 8) + "…" + id.slice(-14) : id;
+  const modelLabelWidth = Math.max(90, ...models.map(id => Math.ceil(displayedModel(id).length * colors.captionSize * 0.66)));
   const heatData = cells.map((cell) => [concurrencies.indexOf(cell.x), models.indexOf(cell.y), cell.value]);
   const heatOption = {
-    grid: { top: 10, right: 16, bottom: 42, left: 96 },
+    grid: { top: 10, right: 24, bottom: 42, left: modelLabelWidth + 12 },
     tooltip: {
       ...tooltipStyle(colors),
-      formatter: (params: { data: [number, number, number, number] }) => {
+      renderMode: "richText",
+      formatter: (params: { data: [number, number, number] }) => {
         const [x, y, value] = params.data;
-        return `${models[y]}<br/>并发 ${concurrencies[x]}<br/>${value.toFixed(1)} 张/秒`;
+        return [models[y], `并发 ${concurrencies[x]}`, `${value.toFixed(1)} ${itemUnit}/秒`].join("\n");
       },
     },
     xAxis: {
@@ -138,23 +167,24 @@ export function RunComparePanel({
     yAxis: {
       type: "category",
       data: models,
-      axisLabel: { color: colors.mutedText, fontSize: colors.captionSize, width: 84, overflow: "truncate" },
+      axisLabel: { color: colors.mutedText, fontSize: colors.captionSize, width: modelLabelWidth, formatter: displayedModel },
       splitLine: { show: false },
     },
     visualMap: {
       show: false,
-      min: heatData.length ? Math.min(...heatData.map((row) => row[2])) : 0,
-      max: heatData.length ? Math.max(...heatData.map((row) => row[2])) : 1,
-      inRange: { color: [colors.mutedPanel, colors.text] },
+      min: 0,
+      max: Math.max(1, ...heatData.map(row => row[2])),
+      inRange: { color: [colors.border, colors.text] },
     },
     series: [{ type: "heatmap", data: heatData, itemStyle: { borderWidth: 1, borderColor: colors.panel } }],
   };
 
   const stageNames = [...new Set(stages.map((bar) => bar.stack))];
-  const stageLabels = [...new Set(stages.map((bar) => bar.label))];
+  const multipleRounds = new Set(runs.map(run => run.round)).size > 1;
+  const stageLabels = runs.map(run => multipleRounds ? `第 ${run.round} 轮 · ${run.label}` : run.label);
   const barsOption = {
     grid: { top: 28, right: 16, bottom: 32, left: 52 },
-    tooltip: { ...tooltipStyle(colors), trigger: "axis" },
+    tooltip: { ...tooltipStyle(colors), trigger: "axis", renderMode: "richText" },
     legend: {
       top: 0,
       textStyle: { color: colors.mutedText, fontSize: colors.captionSize },
@@ -177,66 +207,57 @@ export function RunComparePanel({
     series: stageNames.map((stack, index) => ({
       name: STAGE_LABEL[stack] ?? stack,
       type: "bar",
-      stack: undefined,
       barMaxWidth: 14,
       itemStyle: {
         color: [colors.text, colors.warning, colors.mutedText, colors.borderStrong][index % 4],
         borderRadius: [2, 2, 0, 0],
       },
-      data: stageLabels.map((label) => {
-        const found = stages.find((bar) => bar.label === label && bar.stack === stack);
-        return found?.seconds ?? null;
-      }),
+      data: stages.filter(bar => bar.stack === stack).map(bar => bar.seconds),
     })),
   };
 
-  useChart(scatterRef, scatterOption);
-  useChart(heatRef, heatOption);
-  useChart(barsRef, barsOption);
-
-  const empty = labeled.length === 0 && cells.length === 0;
+  const hasStages = stages.some(bar => bar.seconds != null);
+  useChart(scatterRef, labeled.length ? scatterOption : null);
+  useChart(heatRef, cells.length ? heatOption : null);
+  useChart(barsRef, hasStages ? barsOption : null);
   const best = summaries
     .filter((summary) => summary.f1 != null)
     .sort((a, b) => (b.f1 ?? 0) - (a.f1 ?? 0))[0];
 
-  return (
-    <section className="game-benchmark-compare" aria-label="模型比较">
-      <div className="game-benchmark-compare-head">
-        <strong>模型比较</strong>
+  return createPortal(
+    <dialog ref={dialogRef} className="game-benchmark-compare" aria-labelledby={titleId}
+      onCancel={event => { event.preventDefault(); onClose(); }}>
+      <header className="game-benchmark-compare-head">
+        <h2 id={titleId}>模型比较</h2>
         <span className="hint">
-          {empty
-            ? "这次记录没有可比较的质量数据（需要有标注的样本集）"
-            : best
-              ? `共 ${runs.length} 次运行 · 当前最好 F1 ${(best.f1 ?? 0) * 100 > 0 ? ((best.f1 ?? 0) * 100).toFixed(1) + "%" : "—"}（${best.model ?? "混合配置"}）`
-              : `共 ${runs.length} 次运行 · 未参与质量比较`}
+          共 {runs.length} 次运行
+          {best?.f1 != null && ` · 最高 F1 ${(best.f1 * 100).toFixed(1)}%${best.model ? `（${best.model}）` : ""}`}
         </span>
-        <button type="button" className="unity-btn is-ghost" onClick={onClose}>关闭比较</button>
+        <button type="button" className="unity-btn" autoFocus onClick={onClose}>关闭比较</button>
+      </header>
+      <div className="game-benchmark-compare-grid">
+        <section className="game-benchmark-compare-card is-wide" aria-label="质量与用时">
+          <header>
+            <strong>质量与用时</strong>
+            {labeled.length > 0 && <span>点大小表示有效标注样本数</span>}
+          </header>
+          {labeled.length > 0 ? <div ref={scatterRef} className="game-benchmark-compare-chart" />
+            : loading ? <p className="hint" role="status">正在读取样本标注…</p>
+            : qualityError ? <p className="unity-offline-error" role="alert">读取样本标注失败：{qualityError}</p>
+            : <p className="hint">没有可比较的质量数据。此图需要已标注样本的逐图结果。</p>}
+        </section>
+        <section className="game-benchmark-compare-card" aria-label="并发与吞吐">
+          <header><strong>并发与吞吐</strong><span>成功样本 / 秒</span></header>
+          {cells.length > 0 ? <div ref={heatRef} className="game-benchmark-compare-chart" />
+            : <p className="hint">没有可比较的并发吞吐数据。</p>}
+        </section>
+        <section className="game-benchmark-compare-card" aria-label="阶段耗时">
+          <header><strong>阶段耗时</strong><span>各阶段统计区间可能重叠</span></header>
+          {hasStages ? <div ref={barsRef} className="game-benchmark-compare-chart" />
+            : <p className="hint">此记录没有分阶段耗时。</p>}
+        </section>
       </div>
-      {!empty ? (
-        <div className="game-benchmark-compare-grid">
-          <div className="game-benchmark-compare-card is-wide">
-            <header>
-              <strong>质量与用时</strong>
-              <span>越靠左越快，越靠上越准；点大小表示标注样本数</span>
-            </header>
-            <div ref={scatterRef} className="game-benchmark-compare-chart" />
-          </div>
-          <div className="game-benchmark-compare-card">
-            <header>
-              <strong>并发与吞吐</strong>
-              <span>同一模型在不同并发下的张/秒</span>
-            </header>
-            <div ref={heatRef} className="game-benchmark-compare-chart" />
-          </div>
-          <div className="game-benchmark-compare-card">
-            <header>
-              <strong>阶段耗时</strong>
-              <span>各步骤墙钟用时，区间可能重叠</span>
-            </header>
-            <div ref={barsRef} className="game-benchmark-compare-chart" />
-          </div>
-        </div>
-      ) : null}
-    </section>
+    </dialog>,
+    document.body,
   );
-}
+});

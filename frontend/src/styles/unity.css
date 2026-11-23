@@ -2814,7 +2814,7 @@ body.ocr-image-resizing * {
 .game-benchmark-running-params.is-stacked > .kv > b { max-width:none; }
 .game-benchmark-page {
   box-sizing: border-box; width: 100%; height: 100dvh; min-width: 0;
-  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
   background: var(--bg, #fbf9f4); color: var(--text, #1b1a16);
 }
 .game-benchmark-page-header, .game-benchmark-footer {
@@ -3009,14 +3009,19 @@ body.ocr-image-resizing * {
 .game-benchmark-queue-item > button { flex: none; white-space: nowrap; }
 .game-benchmark-queue-item > button:nth-child(2) { margin-inline-start: auto; }
 .game-benchmark-queue-title { display: flex; align-items: center; gap: var(--space-2); }
-.game-benchmark-queue-title > strong { min-width: 0; }
+.game-benchmark-queue-title > strong { min-width: 0; text-wrap: pretty; }
 .game-benchmark-queue-title > .game-flow-metric { flex: none; }
 .game-benchmark-record-task { min-width: 0; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
-@media (width < 1400px) {
-  .game-benchmark-columns {
-    grid-template-columns: minmax(0, 1fr);
+@media (900px <= width < 1400px) {
+  .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
   }
+  .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns > :first-child { grid-row: 1 / 3; }
+}
+@media (width < 900px) {
+  .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
 }
 
 .game-step-running-metrics { min-width: 0; font-size: var(--fs-caption); text-align: start; }
@@ -3091,7 +3096,8 @@ body.ocr-image-resizing * {
 /* 运行记录页顶部的模块切换：与蒙版标签同一套分段控件。 */
 .game-benchmark-tabs {
   display: inline-flex;
-  margin-inline-start: var(--space-3);
+  flex: none;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 6px);
   background: var(--bg-panel);
@@ -3112,51 +3118,30 @@ body.ocr-image-resizing * {
 .game-benchmark-tabs > button:hover { background: var(--bg-hover); color: var(--text); }
 .game-benchmark-tabs > button[aria-selected="true"] { background: var(--text); color: var(--bg-panel); }
 
-/* 页面底部系统性能条：扁平一行，不占纵向空间。 */
-.game-benchmark-sysbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  min-block-size: 28px;
-  padding: 0 var(--space-4);
-  border-top: 1px solid var(--border);
-  background: var(--bg-app);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-  overflow: hidden;
-}
-.game-benchmark-sys-item { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.game-benchmark-sys-item > span { color: var(--text-dim); }
-.game-benchmark-sys-item > strong {
-  color: var(--text);
-  font-family: var(--mono, ui-monospace, monospace);
-  font-size: var(--fs-caption);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.game-benchmark-sysbar > .hint { margin-inline-start: auto; }
-.game-benchmark-syschart { flex: none; block-size: 160px; border-top: 1px solid var(--border); background: var(--bg-panel); }
-
 /* 立即开始任务：推到测试配置卡头右侧，和运行条的主按钮区分开。 */
-.game-benchmark-start-here { margin-inline-start: auto; }
+.game-benchmark-start-here { margin-inline-start: auto; white-space: nowrap; }
 
-/* 模型比较面板：三张图，等宽两列，散点占整行。 */
+/* 散点图占整行，比较对话框独立于运行记录的滚动区。 */
 .game-benchmark-compare {
-  display: grid;
-  gap: var(--space-3);
+  box-sizing: border-box;
+  inline-size: min(1400px, calc(100% - 2 * var(--page-inset)));
+  max-block-size: calc(100dvh - 2 * var(--page-inset));
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--radius-lg);
   background: var(--bg-panel);
+  color: var(--text);
+  overflow: auto;
 }
+.game-benchmark-compare[open] { display: grid; gap: var(--space-3); }
+.game-benchmark-compare::backdrop { background: rgb(0 0 0 / 42%); }
 .game-benchmark-compare-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
 }
-.game-benchmark-compare-head > strong { font-size: var(--fs-section); font-weight: 600; }
+.game-benchmark-compare-head > h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .game-benchmark-compare-head > .hint { margin: 0; }
 .game-benchmark-compare-head > button:last-child { margin-inline-start: auto; }
 .game-benchmark-compare-grid {
@@ -3166,7 +3151,8 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-compare-card {
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
+  align-content: start;
   min-inline-size: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
@@ -3181,13 +3167,13 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-compare-card > header > strong { font-size: var(--fs-body); font-weight: 600; }
 .game-benchmark-compare-card > header > span { color: var(--text-dim); font-size: var(--fs-caption); }
-.game-benchmark-compare-chart { block-size: 220px; min-inline-size: 0; }
-.game-benchmark-compare-card.is-wide .game-benchmark-compare-chart { block-size: 260px; }
-@media (max-width: 900px) {
+.game-benchmark-compare-card > p { margin: 0; }
+.game-benchmark-compare-chart { block-size: clamp(180px, 28dvh, 320px); min-inline-size: 0; }
+@media (max-width: 720px) {
   .game-benchmark-compare-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* 系统性能条：贴着页面底部的扁平一行，不占垂直空间。 */
+/* 页脚保持在滚动内容外，指标按当前值和峰值成组。 */
 .game-benchmark-sysbar {
   display: flex;
   align-items: center;
@@ -3201,10 +3187,20 @@ body.ocr-image-resizing * {
   overflow: hidden;
 }
 .game-benchmark-sys-title { flex: none; color: var(--text-muted); font-weight: 600; }
-.game-benchmark-sys-item { display: flex; align-items: baseline; gap: 4px; flex: none; white-space: nowrap; }
+.game-benchmark-sys-item { display: flex; align-items: baseline; gap: var(--space-1); flex: none; white-space: nowrap; }
 .game-benchmark-sys-item > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.game-benchmark-sys-item > small { color: var(--text-dim); }
-.game-benchmark-syschart { flex: 1 1 120px; min-inline-size: 60px; block-size: 22px; display: block; }
+.game-benchmark-sys-item > small { color: var(--text-muted); font-size: inherit; }
+.game-benchmark-syschart {
+  flex: 1 1 120px;
+  min-inline-size: 60px;
+  max-inline-size: 300px;
+  block-size: 22px;
+  margin-inline-start: auto;
+}
+@media (width < 900px) {
+  .game-benchmark-sysbar { gap: var(--space-2); }
+  .game-benchmark-sys-item > small { display: none; }
+}
 .game-benchmark-syschart-canvas { display: block; inline-size: 100%; block-size: 100%; }
 .game-benchmark-syschart-empty { display: block; color: var(--text-dim); line-height: 22px; }
 
@@ -3212,6 +3208,9 @@ body.ocr-image-resizing * {
 .game-benchmark-modes {
   display: inline-flex;
   align-items: stretch;
+  flex: none;
+  margin-inline-start: auto;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 6px);
   overflow: hidden;
@@ -3221,8 +3220,8 @@ body.ocr-image-resizing * {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  min-block-size: 26px;
-  padding: 2px 12px;
+  min-block-size: 28px;
+  padding: var(--space-1) var(--space-3);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -3233,13 +3232,32 @@ body.ocr-image-resizing * {
 .game-benchmark-modes > button:hover { background: var(--bg-hover); color: var(--text); }
 .game-benchmark-modes > button.is-active { background: var(--text); color: var(--bg-panel); }
 .game-benchmark-modes > button > small { opacity: 0.7; font-size: var(--fs-caption); }
+@media (max-width: 620px) {
+  .game-benchmark-modes { margin-inline-start: 0; }
+}
 
 /* 正式运行列表：一行一条，时间在前、指标在后。 */
+.game-benchmark-formal-target > .game-benchmark-target { margin: 0; }
 .game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
-.game-benchmark-formal-item { display: grid; gap: 2px; padding: 8px var(--space-3); border-top: 1px solid var(--border); }
+.game-benchmark-formal-item { display: grid; gap: var(--space-1); padding: var(--space-2) 0; border-top: 1px solid var(--border); }
 .game-benchmark-formal-item:first-child { border-top: 0; }
-.game-benchmark-formal-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.game-benchmark-formal-row {
+  display: grid;
+  grid-template-columns: 20ch minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+}
 .game-benchmark-formal-row > time { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; font-size: var(--fs-caption); }
 .game-benchmark-formal-models { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.game-benchmark-formal-metrics { display: flex; gap: var(--space-3); margin-inline-start: auto; color: var(--text-dim); font-size: var(--fs-caption); }
+.game-benchmark-formal-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(9ch, auto));
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+@media (max-width: 640px) {
+  .game-benchmark-formal-row { grid-template-columns: 20ch minmax(0, 1fr); }
+  .game-benchmark-formal-metrics { grid-column: 1 / -1; justify-self: start; }
+}
 .game-benchmark-formal-metrics > span > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }

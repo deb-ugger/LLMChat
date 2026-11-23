@@ -92,12 +92,12 @@ export async function readGameBenchmarkHistory(scope: string, step: string): Pro
 }
 
 /** 正式运行记录：只取正式（非测试队列）归档，用于「运行记录 → 正式运行」。 */
-export async function readGameFormalHistory(scope: string, step: string): Promise<BenchmarkResult[]> {
+export async function readGameFormalHistory(scope: string, step: string): Promise<StepPerformance[]> {
   await flushGamePerformanceArchive();
   const records = isTauri()
     ? await invoke<StepPerformance[]>("read_game_performance", { scope, step, kind: "formal" })
     : [];
-  return benchmarkHistoryResults(records);
+  return records.sort((left, right) => (right.endedAt || right.beginTime || "").localeCompare(left.endedAt || left.beginTime || ""));
 }
 export function inspectBenchmarkSample(entries: UnityEntry[], configs: BenchmarkConfig[]): Record<string, BenchmarkSample> {
   const byLanguage = new Map<string, BenchmarkSample>();

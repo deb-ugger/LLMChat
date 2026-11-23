@@ -38,13 +38,7 @@ function bytesPerSecondOfNetwork(network: RawNetwork): number | null {
   return (receive ?? 0) + (send ?? 0);
 }
 
-/**
- * 磁盘这一行在界面里按「读写合计速率」展示，而不是占用率：
- * 后端只给速率，没有卷容量，硬算百分比会是假数。
- */
-function toPoint(raw: RawSample | null | undefined): SystemPerformancePoint | null {
-  if (!raw) return null;
-  const at = raw.sampledAt ?? null;
+function toPoint(raw: RawSample, at: number | null | undefined): SystemPerformancePoint | null {
   if (at == null) return null;
   return {
     at,
@@ -68,7 +62,7 @@ export async function fetchSystemPerformanceNow(): Promise<SystemPerformancePoin
   const body = await readJson<RawSample & { ok?: boolean }>(
     `${API_BASE}/api/system-performance/now`,
   );
-  return toPoint(body);
+  return toPoint(body, body.sampledAt);
 }
 
 export async function fetchSystemPerformanceHistory(options?: {
@@ -79,10 +73,10 @@ export async function fetchSystemPerformanceHistory(options?: {
   if (options?.from != null) params.set("from", String(options.from));
   if (options?.to != null) params.set("to", String(options.to));
   const query = params.toString();
-  const body = await readJson<{ points?: RawSample[] }>(
+  const body = await readJson<{ points?: (Omit<RawSample, "sampledAt"> & { t: number })[] }>(
     `${API_BASE}/api/system-performance/history${query ? `?${query}` : ""}`,
   );
   return (body.points ?? [])
-    .map((item) => toPoint(item))
+    .map(item => toPoint(item, item.t))
     .filter((point): point is SystemPerformancePoint => point != null);
 }

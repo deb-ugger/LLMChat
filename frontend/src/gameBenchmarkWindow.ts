@@ -23,7 +23,7 @@ export function openProjectBenchmark() {
   return [...projectBenchmarks].some(open => open());
 }
 
-export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart"
+export type BenchmarkQueueCommand = "benchmark-start-queue" | "benchmark-pause-queue" | "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart"
   | "benchmark-show-task" | "benchmark-hide-task" | "benchmark-release-task" | "benchmark-save-task" | "benchmark-decide-task";
 export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef
   | { taskId: string; configs: BenchmarkConfig[] }

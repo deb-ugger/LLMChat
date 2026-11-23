@@ -2,7 +2,7 @@ import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { useEffect, useMemo, useRef, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { useChartColors } from "./chartTheme";
 import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
 
@@ -20,7 +20,7 @@ const METRICS: { key: MetricKey; label: string }[] = [
 
 function formatValue(key: MetricKey, value: number | null): string {
   if (value == null || Number.isNaN(value)) return "—";
-  if (key === "network") {
+  if (key === "network" || key === "disk") {
     if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB/s`;
     if (value >= 1024) return `${(value / 1024).toFixed(0)} KB/s`;
     return `${value.toFixed(0)} B/s`;
@@ -40,6 +40,10 @@ function useTimeline(
     const times = points.map((point) =>
       typeof point.at === "number" ? point.at : Date.parse(point.at),
     );
+    const lineData = (metric: "cpu" | "memory" | "gpu") => points.flatMap((point, i) => {
+      const current = [times[i], point[metric]];
+      return i > 0 && times[i] - times[i - 1] > 12000 ? [[times[i] - 1, null], current] : [current];
+    });
     chart.setOption({
       animation: false,
       grid: { top: 4, right: 4, bottom: 4, left: 4, containLabel: false },
@@ -59,7 +63,14 @@ function useTimeline(
           showSymbol: false,
           smooth: true,
           lineStyle: { width: 1.4, color: colors.text },
-          data: points.map((point, i) => [times[i], point.cpu]),
+          data: lineData("cpu"),
+        },
+        {
+          name: "内存",
+          type: "line",
+          showSymbol: false,
+          lineStyle: { width: 1, color: colors.mutedText },
+          data: lineData("memory"),
         },
         {
           name: "GPU",
@@ -67,7 +78,7 @@ function useTimeline(
           showSymbol: false,
           smooth: true,
           lineStyle: { width: 1.4, color: colors.warning },
-          data: points.map((point, i) => [times[i], point.gpu]),
+          data: lineData("gpu"),
         },
       ],
     });
@@ -89,8 +100,7 @@ export function SystemPerfBar({
 }) {
   const colors = useChartColors();
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const series = useMemo(() => points.slice(-120), [points]);
-  useTimeline(chartRef, series, colors);
+  useTimeline(chartRef, points, colors);
   const hasData = METRICS.some(({ key }) => latest?.[key] != null);
 
   return (
@@ -98,7 +108,7 @@ export function SystemPerfBar({
       <span className="game-benchmark-sys-title">性能</span>
       {METRICS.map(({ key, label }) => {
         const value = latest?.[key] ?? null;
-        const peak = series.reduce<number | null>((max, point) => {
+        const peak = points.reduce<number | null>((max, point) => {
           const current = point[key];
           if (current == null) return max;
           return max == null || current > max ? current : max;
@@ -111,13 +121,13 @@ export function SystemPerfBar({
           </span>
         );
       })}
-      <span className="game-benchmark-syschart">
-        {hasData ? (
-          <span ref={chartRef} className="game-benchmark-syschart-canvas" aria-hidden="true" />
+      <div className="game-benchmark-syschart">
+        {hasData && points.length > 0 ? (
+          <div ref={chartRef} className="game-benchmark-syschart-canvas" role="img" aria-label="最近 30 分钟 CPU、内存和 GPU 趋势" />
         ) : (
           <span className="game-benchmark-syschart-empty">等待采样</span>
         )}
-      </span>
+      </div>
     </div>
   );
 }

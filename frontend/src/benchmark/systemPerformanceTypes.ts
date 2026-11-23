@@ -5,7 +5,7 @@ export type SystemPerformancePoint = {
   cpu: number | null;
   /** 物理内存占用率，0–100 */
   memory: number | null;
-  /** 磁盘占用率，0–100（取活动最高的那卷） */
+  /** 磁盘读写速率合计，字节/秒 */
   disk: number | null;
   /** 以太网收发速率合计，字节/秒 */
   network: number | null;
