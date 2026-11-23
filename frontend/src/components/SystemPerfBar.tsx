@@ -7,7 +7,7 @@ import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../sys
  *
  * 收起态（38px）：性能⌄ │ CPU 56°C 12% ▁▂▃ │ 内存 72% ▁▂▃ │ 磁盘 9.4MB/s 62% ▁▂▃ │
  *               网络 477KB/s ▁▂▃ │ GPU 84°C 88% ▁▂▃ │ 模型服务 2模型 53.0tok/s ▁▂▃
- * 展开态：向上抬起 340px 面板，8 张卡片（含 CPU / GPU 温度、模型服务）。
+ * 展开态：向上抬起 340px 面板，7 张卡片（CPU / 内存 / 磁盘 / 网络 / GPU / CPU 温度 / 模型服务）。
  *
  * 取不到的字段（温度、磁盘占用率、tok/s、模型数量）显示「—」，不参与取档，
  * 避免把「没采到」误画成绿色正常。
@@ -298,9 +298,8 @@ export function SystemPerfBar() {
             <PanelCard label="内存" value={formatPercent(latest?.memory ?? null)} peak={peakOf(panelSeries, "memory", formatPercent)} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
             <PanelCard label="磁盘" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(panelSeries, "diskPercent", formatPercent)} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
             <PanelCard label="网络" value={formatRateShort(latest?.network ?? null)} peak={peakOf(panelSeries, "network", formatRateShort)} level={null} series={panelSeries.map(point => point.network)} max={null} />
-            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={peakOf(panelSeries, "gpu", formatPercent)} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
+            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={[peakOf(panelSeries, "gpu", formatPercent), formatTemp(latest?.gpuTempC ?? null)].filter(part => part && part !== "—").join(" · ")} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
             <PanelCard label="CPU 温度" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(panelSeries, "cpuTempC", formatTemp)} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
-            <PanelCard label="GPU 温度" value={formatTemp(latest?.gpuTempC ?? null)} peak={peakOf(panelSeries, "gpuTempC", formatTemp)} level={levelOfTemp(latest?.gpuTempC ?? null)} series={panelSeries.map(point => point.gpuTempC ?? null)} max={100} />
             <PanelCard label="模型服务" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(panelSeries, "tokensPerSecond", formatTokShort)} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
           </div>
           <span className="sysbar-panel-foot">采样时刻 {at ? new Date(at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}</span>
@@ -338,7 +337,7 @@ const atMs = (point: SystemPerformancePoint) =>
 
 type NumericKey =
   | "cpu" | "memory" | "disk" | "network" | "gpu"
-  | "diskPercent" | "cpuTempC" | "gpuTempC" | "tokensPerSecond" | "modelCount";
+  | "diskPercent" | "cpuTempC" | "tokensPerSecond" | "modelCount";
 
 function peakOf(
   points: readonly SystemPerformancePoint[],
