@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { mapMosaicBoxes, type MosaicBox } from "../../gameMosaic";
+import { removeContainedMosaicBoxes } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
 import { resultFor } from "./mosaicBatchRunner";
 import type { MaskEdit, MaskUndoItem, MosaicMaskOptions } from "./mosaicWorkbenchTypes";
@@ -35,16 +36,20 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
     if (blocked() || !edits.length) return;
     const current = getRows();
     const next = { ...current };
-    const undo = edits.map(({ image, boxes }): MaskUndoItem => {
+    const undo: MaskUndoItem[] = [];
+    for (const { image, boxes: draftBoxes } of edits) {
       const row = resultFor(current, image);
+      const boxes = removeContainedMosaicBoxes(draftBoxes);
+      if (boxes.length === row.boxes.length && boxes.every((box, index) => box.every((value, edge) => value === row.boxes[index][edge]))) continue;
       next[image.id] = { ...row, boxes, manualBoxes: true, review: undefined, redrawError: undefined,
         saved: hasStorage ? row.saved : false, reference: false, checked: boxes.length > 0 };
       const previousCandidate = candidates[image.id];
-      return { id: image.id, source: image.sourceHash,
+      undo.push({ id: image.id, source: image.sourceHash,
         mask: { boxes: row.boxes, manualBoxes: row.manualBoxes, review: row.review, redrawError: row.redrawError,
           saved: row.saved, reference: row.reference, checked: row.checked },
-        candidate: previousCandidate?.revision === image.sourceHash ? previousCandidate : undefined };
-    });
+        candidate: previousCandidate?.revision === image.sourceHash ? previousCandidate : undefined });
+    }
+    if (!undo.length) return;
     if (!commit({ rows: next, candidates: undo.map(({ id }) => ({ id })) })) return;
     setMaskUndo(previous => [...previous, undo]);
   }

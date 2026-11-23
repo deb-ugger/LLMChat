@@ -1,5 +1,5 @@
 import { groupMosaicScenes, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
-import { mosaicScreeningStatus, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
+import { mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
 import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
 import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicBatchPorts, MosaicBatchStep, MosaicBatchWork,
@@ -7,7 +7,7 @@ import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicBatchPorts, Mosai
   MosaicScreenPorts, MosaicStep, MosaicStepUsage, RedrawPlan, RefineMovement, Result, Results, StepReport, StepRun } from "./mosaicWorkbenchTypes";
 
 export function sameReview(row: Result, scan: MosaicScan, key: string) {
-  const boxes = scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes;
+  const boxes = removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes);
   return matchesMosaicReviewKey(row.refined, key) && !row.refineError && row.review === scan.review &&
     !!row.refineQuickExcluded === !!scan.quickExcluded && JSON.stringify(row.boxes) === JSON.stringify(boxes);
 }
@@ -19,6 +19,10 @@ export function resultFor(rows: Results, image: UnityImage) {
 }
 
 export function restoreDefaultSelection(row: Result): Result {
+  const boxes = removeContainedMosaicBoxes(row.boxes);
+  if (boxes !== row.boxes) row = { ...row, boxes };
+  if (!row.review && row.manualChecked && !row.manualBoxes && !row.saved && row.refineMovement?.to === "review")
+    row = { ...row, review: "候选区域待复核" };
   if (row.checked || row.manualChecked || row.manualBoxes || row.saved || row.discardedHash || row.refined || row.refineError)
     return row;
   const checked = !row.scanned || (!row.reason && (row.boxes.length > 0 || !!row.review));
@@ -53,9 +57,9 @@ export function refineMovementFor(row: Result): RefineMovement | undefined {
 
 export function reviewedResult(row: Result, scan: MosaicScan, reviewKey: string): Result {
   return attachRefineMovement(row, { ...row,
-    boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
+    boxes: removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes),
     checked: row.manualChecked ? row.checked : !!scan.boxes.length && !scan.review,
-    refined: reviewKey, refineMovement: undefined, refineQuickExcluded: scan.quickExcluded,
+    refined: reviewKey, refineMovement: undefined, refineQuickExcluded: scan.quickExcluded, manualStatus: undefined,
     reason: undefined, refineError: undefined, redrawError: undefined, review: scan.review });
 }
 
@@ -72,7 +76,7 @@ export function clearReviewResult(row: Result): Result {
   return restoreDefaultSelection({ ...rest, ...beforeRefine,
     scanned: beforeRefine.scanned, detector: beforeRefine.detector, reason: beforeRefine.reason,
     checked: row.manualChecked ? row.checked : beforeRefine.checked,
-    review: row.manualChecked ? row.review : beforeRefine.review });
+    review: beforeRefine.review });
 }
 
 export function keepText(image: UnityImage, protect: boolean): MosaicBox[] {
@@ -184,14 +188,14 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
             if (signal.aborted) break;
             const scan = await usage!.measure(modelName, lanes, () => scanner.scan(input));
             const { signature } = scan;
-            const boxes = scan.boxes.length ? scan.boxes : scan.reviewBoxes || [];
+            const boxes = removeContainedMosaicBoxes(scan.boxes.length ? scan.boxes : scan.reviewBoxes || []);
             batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
               checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0 || !!scan.review,
-              signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, beforeRefine:undefined, refineMovement:undefined, refined:undefined, refineQuickExcluded:undefined, refineError:undefined, redrawError:undefined, reason: undefined, review: old.manualChecked || old.manualBoxes || old.saved ? undefined : scan.review };
+              signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, beforeRefine:undefined, refineMovement:undefined, refined:undefined, refineQuickExcluded:undefined, refineError:undefined, redrawError:undefined, reason: undefined, manualStatus: undefined, review: old.manualBoxes || old.saved ? undefined : scan.review };
           } catch (cause) {
             if (signal.aborted) break;
             failures++;
-            batch[image.id] = { ...old, scanned: false, reason: cause instanceof Error ? cause.message : String(cause) };
+            batch[image.id] = { ...old, scanned: false, manualStatus: undefined, reason: cause instanceof Error ? cause.message : String(cause) };
           }
           completed++;
           if ((completed - initial) % 64 === 0) checkpoint();
@@ -444,15 +448,15 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
         }
         rescreened.add(image.id);
         update(image, { scanned: true, detector: detectorKey, review: scan.review,
-          boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
+          boxes: removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes),
           reason: undefined, refineError: undefined, refined: undefined, refineQuickExcluded: undefined,
-          beforeRefine: undefined, refineMovement: undefined });
+          beforeRefine: undefined, refineMovement: undefined, manualStatus: undefined });
       }
       if (scan.review && !row.manualChecked) {
-        update(image, { review: scan.review, boxes: scan.reviewBoxes || [], checked: false });
+        update(image, { review: scan.review, boxes: removeContainedMosaicBoxes(scan.reviewBoxes || []), checked: false });
         throw new Error(image.name + " · " + scan.review);
       }
-      const boxes = scan.boxes;
+      const boxes = removeContainedMosaicBoxes(scan.boxes);
       if (!boxes.length) continue;
       try {
         const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, timingScope, progress: setProgress });

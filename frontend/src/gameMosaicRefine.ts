@@ -1,6 +1,6 @@
 import { loadMosaicDetector, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
-import { mosaicInitialScreening, type MosaicInitialScreeningSnapshot } from "./gameMosaicStatus";
+import { mosaicInitialScreening, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "./gameMosaicStatus";
 import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
@@ -274,9 +274,9 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal
   }
   if (firstFailure) throw firstFailure;
   if (unlocalizedReview || uncertain.some(box => !confirmations.some(confirmed => intersect(box, confirmed) > .45)))
-    return {boxes:confirmations,reviewBoxes:[...confirmations,...uncertain],signature:proposed.signature,
+    return {boxes:removeContainedMosaicBoxes(confirmations),reviewBoxes:removeContainedMosaicBoxes([...confirmations,...uncertain]),signature:proposed.signature,
       review:unlocalizedReview || "复筛结果存在分歧、置信度不足或定位无效，请人工检查候选区域"};
-  return {boxes:confirmations,signature:proposed.signature};
+  return {boxes:removeContainedMosaicBoxes(confirmations),signature:proposed.signature};
 }
 
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {

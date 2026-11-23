@@ -3,14 +3,14 @@ import type { Settings } from "../../api";
 import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
   MosaicBox, MosaicDevice, MosaicModel, MosaicSettings } from "../../gameMosaic";
 import type { readMosaicReviews, refineMosaicBatch, savedMosaicScan } from "../../gameMosaicRefine";
-import type { MosaicInitialScreeningSnapshot, MosaicStatus } from "../../gameMosaicStatus";
+import type { MosaicInitialScreeningSnapshot, MosaicManualStatus, MosaicStatus } from "../../gameMosaicStatus";
 import type { gameStepSelections, measureGameAsync, recordGameCacheHit, reportGameStepItems, StepPerformance } from "../../gameModelPerformance";
 import type { UnityImage } from "../../unityOffline";
 import type { GameProgressState } from "../GameStepProgress";
 import type { useMosaicMasks } from "./useMosaicMasks";
 
 export type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefore: boolean; checkedAfter: boolean };
-export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean;
+export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean; manualStatus?: MosaicManualStatus;
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 export type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;

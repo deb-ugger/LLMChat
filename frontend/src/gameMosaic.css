@@ -131,7 +131,6 @@
 .game-mosaic-list-views > [aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); }
 .game-mosaic-original-browser { display: flex; flex: 1; flex-direction: column; min-block-size: 0; gap: var(--space-2); }
 .game-mosaic-original-browser-controls { display: grid; gap: var(--space-1); flex: none; padding-inline: var(--space-1); }
-.game-mosaic-original-browser-controls select { inline-size: 100%; min-inline-size: 0; }
 .game-mosaic-original-selection { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1); font-size: var(--fs-caption); }
 .game-mosaic-original-selection > span { flex-basis: 100%; color: var(--text-muted); }
 .game-mosaic-original-grid {
@@ -148,7 +147,6 @@
 }
 .game-mosaic-original-tile { display: grid; align-content: start; min-inline-size: 0; inline-size: 100%; text-align: start; padding: var(--space-1); gap: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
 .game-mosaic-original-tile[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
-.game-mosaic-original-tile[aria-current="true"] { box-shadow: inset 0 0 0 1px var(--signal); }
 .game-mosaic-original-tile > :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
 .game-mosaic-original-tile > small { color: var(--text-muted); }
 .game-mosaic-original-tile > small:last-child { white-space: normal; overflow-wrap: anywhere; }
@@ -156,11 +154,6 @@
 .game-mosaic-original-thumbnail > canvas { inline-size: 100%; block-size: 100%; object-fit: contain; }
 .game-mosaic-status-group > details > ul { list-style: none; margin: 0; padding: 0; }
 .game-mosaic-status-group > details > summary { min-height: 30px; }
-.unity-image-filter-menu .game-mosaic-filter-status { justify-content: space-between; }
-.game-mosaic-filter-status select {
-  min-width: 0; padding: var(--space-1) 6px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-panel); color: inherit; font: inherit;
-}
 .game-mosaic-workbench .unity-image-detail {
   display: flex;
   flex-direction: column;

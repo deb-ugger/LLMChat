@@ -12,6 +12,18 @@ export const mosaicStatusLabels = {
 } as const;
 
 export type MosaicStatus = keyof typeof mosaicStatusLabels;
+export const mosaicManualStatuses = ["pending", "review", "candidate", "refinedCandidate", "clear"] as const;
+export type MosaicManualStatus = typeof mosaicManualStatuses[number];
+
+export function removeContainedMosaicBoxes(boxes: MosaicBox[]): MosaicBox[] {
+  if (boxes.length < 2) return boxes;
+  const unique = boxes.filter((box, index) => !boxes.some((other, otherIndex) =>
+    otherIndex !== index &&
+    other[0] <= box[0] && other[1] <= box[1] && other[2] >= box[2] && other[3] >= box[3] &&
+    (otherIndex < index || other.some((value, edge) => value !== box[edge]))));
+  return unique.length === boxes.length ? boxes : unique;
+}
+
 export type MosaicScreeningSnapshot = {
   boxes: MosaicBox[];
   scanned?: boolean;

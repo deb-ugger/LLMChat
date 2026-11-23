@@ -1,5 +1,5 @@
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
-import { mosaicInitialScreening, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusLabels, type MosaicStatus } from "../gameMosaicStatus";
+import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusLabels, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
@@ -20,7 +20,7 @@ import { type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
-import { MosaicGroupTree } from "./game-mosaic/MosaicGroupTree";
+import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
 import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
@@ -97,6 +97,7 @@ export const GameMosaicCompletionContext = createContext<((completed: boolean) =
 export type { GameMosaicDeploymentHandle, MosaicCandidateIndex } from "./game-mosaic/mosaicWorkbenchTypes";
 
 function mosaicStatus(row: Result, included: boolean): MosaicStatus {
+  if (row.manualStatus && !row.saved) return row.manualStatus;
   const state = mosaicScreeningStatus(row);
   return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
 }
@@ -166,8 +167,7 @@ function MosaicOriginalThumbnail({ image, read }: { image: UnityImage; read: Pro
   </span>;
 }
 
-function MosaicOriginalGallery({ groups, images, activeId, query, read, checked, status, disabled, onPreview, onCheck }: {
-  groups: ReadonlyMap<MosaicStatus, UnityImage[]>;
+function MosaicOriginalGallery({ images, activeId, query, read, checked, status, disabled, onPreview, onCheck }: {
   images: readonly UnityImage[];
   activeId?: string;
   query: string;
@@ -178,15 +178,19 @@ function MosaicOriginalGallery({ groups, images, activeId, query, read, checked,
   onPreview: (id: string) => void;
   onCheck: (images: readonly UnityImage[], checked: boolean) => void;
 }) {
-  const [filter, setFilter] = useState<"all" | MosaicStatus>("all");
   const [selectedIds, setSelectedIds] = useState(() => new Set<string>());
   const [page, setPage] = useState(0);
   const grid = useRef<HTMLUListElement>(null);
-  const filtered = filter === "all" ? images : groups.get(filter) ?? images;
-  const pages = Math.max(1, Math.ceil(filtered.length / 24));
+  const pages = Math.max(1, Math.ceil(images.length / 24));
   const currentPage = Math.min(page, pages - 1);
-  const visible = filtered.slice(currentPage * 24, (currentPage + 1) * 24);
-  const chosen = filtered.filter(image => selectedIds.has(image.id));
+  const visible = images.slice(currentPage * 24, (currentPage + 1) * 24);
+  const chosen = images.filter(image => selectedIds.has(image.id));
+  const selectPage = () => setSelectedIds(new Set(visible.map(image => image.id)));
+
+  function applyCheck(value: boolean) {
+    onCheck(chosen, value);
+    setSelectedIds(new Set());
+  }
 
   function changePage(next: number) {
     setPage(next);
@@ -198,27 +202,17 @@ function MosaicOriginalGallery({ groups, images, activeId, query, read, checked,
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a" ||
           (event.target as HTMLElement).closest("input, select, textarea, [contenteditable]")) return;
       event.preventDefault();
-      setSelectedIds(previous => new Set([...previous, ...visible.map(image => image.id)]));
+      selectPage();
     }}>
     <div className="game-mosaic-original-browser-controls">
-      <select aria-label="按状态浏览原图" value={filter !== "all" && groups.has(filter) ? filter : "all"}
-        onChange={event => {
-          setFilter(event.target.value as "all" | MosaicStatus);
-          setSelectedIds(new Set());
-          changePage(0);
-        }}>
-        <option value="all">全部状态 · {images.length} 张</option>
-        {[...groups].map(([id, items]) =>
-          <option key={id} value={id}>{mosaicStatusLabels[id]} · {items.length} 张</option>)}
-      </select>
       <div className="game-mosaic-original-selection">
-        <span role="status">已选 {chosen.length} 张</span>
+        <span role="status">选中 {chosen.length} 张</span>
         <button type="button" className="unity-btn" disabled={!visible.length}
-          onClick={() => setSelectedIds(previous => new Set([...previous, ...visible.map(image => image.id)]))}>全选本页</button>
+          onClick={selectPage}>全选本页</button>
         <button type="button" className="unity-btn" disabled={disabled || !chosen.some(image => !checked(image))}
-          onClick={() => onCheck(chosen, true)}>批量勾选</button>
+          onClick={() => applyCheck(true)}>批量勾选</button>
         <button type="button" className="unity-btn" disabled={disabled || !chosen.some(checked)}
-          onClick={() => onCheck(chosen, false)}>批量取消勾选</button>
+          onClick={() => applyCheck(false)}>批量取消勾选</button>
       </div>
     </div>
     <ul ref={grid} className="game-mosaic-original-grid">
@@ -311,7 +305,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }, [gamePath]);
   const [detectorFile, setDetectorFile] = useState(() => gameDetectorFile(gamePath));
   const [sceneFilter, setSceneFilter] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<"all" | MosaicStatus>("all");
+  const [failuresOnly, setFailuresOnly] = useState(false);
   const [activeId, setActiveId] = useState<string | null>("");
   const [browseOriginals, setBrowseOriginals] = useState(false);
   const [busy, setBusy] = useState("");
@@ -363,8 +357,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const imageStatus = useCallback((image: UnityImage) => mosaicStatus(resultFor(rows, image),
     !!storage?.index[image.id]?.included), [rows, storage?.index]);
   const isRefineRetrying = (image: UnityImage) => refineRetries.get(image.id) === image.sourceHash;
-  const visible = useMemo(() => statusFilter === "all" ? currentScope : currentScope.filter(image => imageStatus(image) === statusFilter),
-    [currentScope, statusFilter, imageStatus]);
+  const visible = useMemo(() => failuresOnly ? currentScope.filter(image => imageStatus(image) === "failed") : currentScope,
+    [currentScope, failuresOnly, imageStatus]);
   const { ordered, groups } = useMemo(() => {
     const grouped = new Map<MosaicStatus, UnityImage[]>();
     for (const image of visible) {
@@ -376,10 +370,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const groups = new Map<MosaicStatus, UnityImage[]>();
     for (const status of Object.keys(mosaicStatusLabels) as MosaicStatus[]) {
       const images = grouped.get(status);
-      if (statusFilter === "all" || statusFilter === status) groups.set(status, images || []);
+      if (images?.length) groups.set(status, images);
     }
     return { groups, ordered: [...groups].filter(([id]) => !collapsed[id]).flatMap(([id, images]) => images.map(image => ({ id, image }))) };
-  }, [visible, imageStatus, collapsed, statusFilter]);
+  }, [visible, imageStatus, collapsed]);
   const refineChanges = useMemo(() => {
     const changes = new Map<MosaicStatus, { added: number; removed: number }>();
     for (const image of currentScope) {
@@ -601,10 +595,24 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const next = { ...previous };
       for (const image of images) {
         const row = resultFor(previous, image);
-        next[image.id] = { ...row, checked, manualChecked: true, review: row.boxes.length ? undefined : row.review };
+        next[image.id] = { ...row, checked, manualChecked: true };
       }
       return next;
     });
+  }
+
+  function moveToStatus(value: string) {
+    if (!active || !activeResult || activeSaved || actionsDisabled) return;
+    const manualStatus = mosaicManualStatuses.find(status => status === value);
+    if (!manualStatus && value !== "auto") return;
+    const target = mosaicStatus({ ...activeResult, manualStatus }, false);
+    const index = currentScope.filter(image => image.id === active.id || imageStatus(image) === target)
+      .findIndex(image => image.id === active.id);
+    update(active, { manualStatus });
+    setActiveId(active.id);
+    setFailuresOnly(false);
+    setCollapsed(previous => ({ ...previous, [target]: false }));
+    if (index >= 0) setGroupPages(previous => ({ ...previous, [target]: Math.floor(index / mosaicStatusPageSize) }));
   }
 
   function run(label: string, work: MosaicBatchWork, step?: MosaicBatchStep) {
@@ -1014,18 +1022,18 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     let failureCount = 0, unresolvedRefineFailures = 0, retryCount = 0;
     for (const image of scoped) {
       const row = resultFor(rows, image);
-      if (mosaicScreeningStatus(row) === "failed") failureCount++;
+      if (imageStatus(image) === "failed") failureCount++;
       if (row.refineError) {
         unresolvedRefineFailures++;
         if (refineRetries.get(image.id) === image.sourceHash) retryCount++;
       }
     }
     return { failureCount, unresolvedRefineFailures, retryCount };
-  }, [scoped, rows, refineRetries]);
+  }, [scoped, rows, imageStatus, refineRetries]);
   const activeFailure = mosaicProcessingError(activeResult);
   const activeRetry = active && activeResult?.refineError && isRefineRetrying(active);
   const toggleFailureFilter = () => {
-    setStatusFilter(statusFilter === "failed" ? "all" : "failed");
+    setFailuresOnly(previous => !previous);
     setCollapsed(previous => ({ ...previous, failed: false }));
     setQuery(""); setSceneFilter(false); setGroupPages({}); setActiveId("");
   };
@@ -1063,8 +1071,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         canClear: canClearRedraw, batchReason,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(redrawGroup, [model]), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
-    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, sceneFilter, statusFilter }}
-      onStatusFilterChange={status => { setStatusFilter(status); setGroupPages({}); }}
+    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, sceneFilter, failuresOnly }}
       onSceneFilterChange={checked => {
         if (checked && active) setActiveId(active.id);
         setSceneFilter(checked);
@@ -1074,11 +1081,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onToggleFailureFilter={toggleFailureFilter} counts={{ ...counts, visible: visible.length, failed: failureCount }}
       active={active} groups={groups} ordered={ordered} refineChanges={refineChanges} groupPages={groupPages} setGroupPages={setGroupPages}
       collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={setBrowseOriginals}
-      originalGallery={<MosaicOriginalGallery groups={groups} images={visible} activeId={active?.id}
+      originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(rows, image).checked}
           disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
       actionsDisabled={actionsDisabled} getRow={image => resultFor(rows, image)} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
-      isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked} updateRow={update}
+      isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked}
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}
         source={source} approved={approved} activeSaved={activeSaved} candidate={active && candidates[active.id]}
@@ -1092,14 +1099,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             <div className="unity-image-button-group">
               <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
                 onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
-              <div className="game-mosaic-group-picker" onContextMenu={event => openGroupMenu(event, group)}>
-                <UnityDescriptionSelect label="移动到分组…" value="" menuWidth={248} disabled={actionsDisabled}
-                  choices={[{ value: "new", label: "新建独立组" },
-                    ...[...imageGroup].filter(([key]) => key !== group).slice(0, 350).map(([key, list]) => ({
-                      value: key, label: list[0].name + " · " + list.length + " 张" + (isIndependentGroup(key) ? " · 独立组" : ""),
-                    }))]}
-                  onChange={next => update(active, { group: next === "new" ? crypto.randomUUID() : next, manualGroup: true, reference: false })}
-                  onOptionContextMenu={(key, event) => openGroupMenu(event, key)} />
+              <div className="game-mosaic-group-picker">
+                <UnityDescriptionSelect label="移动到处理分组…" value="" menuWidth={188} disabled={actionsDisabled || activeSaved}
+                  choices={[
+                    ...mosaicManualStatuses.filter(status => status !== imageStatus(active))
+                      .map(status => ({ value: status, label: mosaicStatusLabels[status] })),
+                    ...(activeResult?.manualStatus ? [{ value: "auto", label: "恢复自动分组" }] : []),
+                  ]}
+                  onChange={moveToStatus} />
               </div>
               <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || reference?.id === active.id} onClick={() => setRows(previous => {
                 const next = { ...previous };
