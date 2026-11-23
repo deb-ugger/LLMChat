@@ -13,6 +13,13 @@ type RawSample = {
   disk?: RawDisk;
   network?: RawNetwork;
   gpu?: RawPercent;
+  /** 新增字段：后端未提供时保持 undefined，前端显示「—」 */
+  diskPercent?: RawPercent;
+  cpuTempC?: number | null;
+  gpuTempC?: number | null;
+  tempSource?: "lhm" | "acpi" | null;
+  tokensPerSecond?: number | null;
+  modelCount?: number | null;
 };
 
 function percentOfMemory(memory: RawMemory): number | null {
@@ -47,6 +54,12 @@ function toPoint(raw: RawSample, at: number | null | undefined): SystemPerforman
     disk: bytesPerSecondOfDisk(raw.disk ?? null),
     network: bytesPerSecondOfNetwork(raw.network ?? null),
     gpu: raw.gpu ?? null,
+    diskPercent: raw.diskPercent ?? null,
+    cpuTempC: raw.cpuTempC ?? null,
+    gpuTempC: raw.gpuTempC ?? null,
+    tempSource: raw.tempSource ?? null,
+    tokensPerSecond: raw.tokensPerSecond ?? null,
+    modelCount: raw.modelCount ?? null,
   };
 }
 
