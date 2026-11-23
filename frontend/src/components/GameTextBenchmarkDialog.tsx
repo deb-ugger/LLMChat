@@ -33,7 +33,7 @@ import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type BenchmarkSetup = Pick<BenchmarkInput, "scope" | "current" | "models" | "screenModel" | "initialPart"> & {
-  selectedCount: number; imageSetup?: ImageBenchmarkSetup; mosaicSetup?: MosaicSettings;
+  selectedCount: number; imageSetup?: ImageBenchmarkSetup; mosaicSetup?: MosaicSettings; mosaicRoot?: string;
 } & ReturnType<typeof benchmarkSampleCounts>;
 type BenchmarkPageInput = BenchmarkSetup & {
   requestSelection: () => Promise<UnityEntry[]>;
@@ -47,7 +47,7 @@ type QueueDraft = { configs: BenchmarkConfig[]; rounds: string; sampleLimit: num
 const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
   scope: input.scope, current: input.current, models: input.models, screenModel: input.screenModel,
   initialPart: input.initialPart, selectedCount: input.getWorkload().selected.length,
-  mosaicSetup: input.mosaicRoot ? readMosaicSettings(input.mosaicRoot) : undefined,
+  mosaicSetup: input.mosaicRoot ? readMosaicSettings(input.mosaicRoot) : undefined, mosaicRoot: input.mosaicRoot,
   imageSetup: input.images?.setup, ...benchmarkSampleCounts(input),
 });
 const openEvent = "llmchat-open-game-benchmark";
@@ -281,6 +281,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const imageSteps = Object.keys(props.imageSetup?.steps || {}) as ImageBenchmarkStep[];
   const [part, setPart] = useState<"text" | "images" | "mosaic">(
     props.initialPart === "mosaic" && props.mosaicSetup ? "mosaic" : props.initialPart === "images" && imageSteps.length ? "images" : "text");
+  const [recordMode, setRecordMode] = useState<RunRecordMode>("test");
   const [textStep, setTextStep] = useState<"translate" | "screen">("translate");
   const [imageStep, setImageStep] = useState<ImageBenchmarkStep>(imageSteps[0] || "recognize");
   const mosaicStepKey = "llmchat-game-benchmark-mosaic-step:" + props.scope;
@@ -392,7 +393,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   </>;
   return <GameTextBenchmarkDialog key={step} {...props} step={step} draft={drafts.current[step]}
     onDraft={draft => { drafts.current[step] = draft; }} historyRevision={historyRevision}
-    taskView={taskView} taskDialogs={taskDialogs}
+    recordMode={recordMode} onRecordModeChange={setRecordMode} taskView={taskView} taskDialogs={taskDialogs}
     queueContents={<div className="game-benchmark-results">
       {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
       {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
@@ -690,13 +691,18 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
 }
 
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
-  requestSelection, imageSetup, mosaicSetup, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, control, queueContents, historyRevision, taskView, taskDialogs }:
+  requestSelection, imageSetup, mosaicSetup, mosaicRoot, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, control, queueContents, historyRevision, recordMode, onRecordModeChange, taskView, taskDialogs }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
-    targetControls: ReactNode; queueContents: ReactNode; historyRevision: number; taskView: ReactNode; taskDialogs: ReactNode }) {
+    targetControls: ReactNode; queueContents: ReactNode; historyRevision: number; recordMode: RunRecordMode;
+    onRecordModeChange: (mode: RunRecordMode) => void; taskView: ReactNode; taskDialogs: ReactNode }) {
   const mosaicStep = isMosaicStep(step) ? step : undefined;
   const imageStep = !isMosaicStep(step) && step !== "screen" && step !== "translate" ? step : undefined;
   const images = imageStep ? imageSetup : undefined;
   const scope = images?.scope || textScope;
+  const formalStep = mosaicStep ? { mosaicScreen: "screen", mosaicRefine: "refine", mosaicRedraw: "redraw" }[mosaicStep]
+    : step === "imageTranslate" ? "translate" : step;
+  const formalScope = mosaicStep ? mosaicRoot + ":mosaic:" + formalStep
+    : imageStep ? scope + ":images" : textScope + ":text";
   const mainRole = imageStep ? imageBenchmarkSteps[imageStep].role : "textScreen";
   const roles = step === "translate" ? benchmarkRoles : ["text"] as const;
   const requiresModel = step === "review";
@@ -738,7 +744,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const [history, setHistory] = useState<BenchmarkResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
-  const [recordMode, setRecordMode] = useState<RunRecordMode>("test");
   const [compareRuns, setCompareRuns] = useState<readonly BenchmarkCompareRun[] | null>(null);
   const [perfNow, setPerfNow] = useState<SystemPerformancePoint | null>(null);
   const [perfPoints, setPerfPoints] = useState<SystemPerformancePoint[]>([]);
@@ -925,10 +930,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           channel.close();
         }}>构建测速</button>
       </div>
-      <RunRecordTabs mode={recordMode} onChange={setRecordMode} />
+      <RunRecordTabs mode={recordMode} onChange={onRecordModeChange} />
     </header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
-      {!taskView && <div className="game-benchmark-runbar">
+      {recordMode === "test" && !taskView && <div className="game-benchmark-runbar">
         <div className="game-benchmark-scope" role="region" aria-label="测试范围">
         {targetControls}
         <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
@@ -1050,7 +1055,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </details>})}
       </BenchmarkSection>
       </div>
-      </> : <FormalRunRecords scope={scope} step={step} />}
+      </> : <>
+        <div className="game-benchmark-formal-target">{targetControls}</div>
+        <FormalRunRecords scope={formalScope} step={formalStep} />
+      </>}
     </div></div>
     {taskDialogs}
     {compareRuns ? <RunComparePanel runs={compareRuns} onClose={() => setCompareRuns(null)} /> : null}
@@ -1071,7 +1079,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </tr>)}</tbody></table>
     </section>}
     <footer className="game-benchmark-footer">
-    {!taskView && <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>}
+    {recordMode === "test" && !taskView && <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>}
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
     </footer>
   </main>;
