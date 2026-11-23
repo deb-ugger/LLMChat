@@ -5,7 +5,7 @@ import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GameStyleRedrawButton } from "./StyleRedraw";
 import { gameImageRedrawScreening, gameImageRedrawSelected, gameImageRedrawStatus } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
-import { GameImageFilter, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { allGameImageFilters, gameImageFilterMatch, GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, type GameImageView, type GameImageViews } from "./GameImageViewer";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
@@ -346,8 +346,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   const requestView = (change: () => void) => requestChange(() => { change(); setViewRevision(value => value + 1); }, false, true);
   useEffect(()=>{if(!active||!leaveGuard)return;const guard=(change:()=>void)=>requestChange(change,false);leaveGuard.current=guard;return()=>{if(leaveGuard.current===guard)leaveGuard.current=null;};},[active,dirty,leaveGuard]);
   const resolveFilter=async(action:"save"|"discard")=>{if(!pendingFilter||resolvingFilter)return;setResolvingFilter(true);try{if(await(action==="save"?onSave():onDiscard())){pendingFilter();setPendingFilter(null);}}finally{setResolvingFilter(false);}};
-  const allFilters={checked:true,unchecked:true,done:true,pending:true,failed:true};
-  const [imageFilters,setImageFilters]=useState(allFilters);
+  const [imageFilters,setImageFilters]=useState(allGameImageFilters);
   const filterMenu=useRef<HTMLDivElement>(null);
   const downloadMenu = useRef<HTMLDivElement>(null), downloadId = useId();
   useEffect(() => { if (!active) downloadMenu.current?.hidePopover(); }, [active]);
@@ -373,7 +372,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   useEffect(()=>{if(!regionMenu)return;const close=()=>setRegionMenu(null);window.addEventListener("click",close);window.addEventListener("resize",close);window.addEventListener("scroll",close,true);return()=>{window.removeEventListener("click",close);window.removeEventListener("resize",close);window.removeEventListener("scroll",close,true);};},[regionMenu]);
   const workbench = useRef<HTMLElement>(null);
   const [archiveIssues, setArchiveIssues] = useState<{ folder: string; rows: ImageIndexIssue[] }>();
-  useEffect(() => { selectImage(""); setSearch(""); setGalleryScope(null); setListMenu(null); setCollapsed({ empty: true }); setImageFilters(allFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
+  useEffect(() => { selectImage(""); setSearch(""); setGalleryScope(null); setListMenu(null); setCollapsed({ empty: true }); setImageFilters(allGameImageFilters); setGallery(false); setGalleryVisited(false); setReturnToGallery(false); setViewer(null); setPreviewMenu(null);
   }, [project?.folder]);
   const viewBaseline=useRef(new Map<string,{selected:boolean;completed:boolean;group:ReturnType<typeof unityImageResultGroup>}>());
   const baselineFolder=useRef(project?.folder);
@@ -417,10 +416,8 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   const filtered = useMemo(() => images.filter(image => {
     const view = viewBaseline.current.get(image.id);
     const checked = view?.selected ?? imageWorkChecked(image);
-    const selectedFilter = checked ? imageFilters.checked : imageFilters.unchecked;
-    const statusFilter = failuresByImage.has(image.id) ? imageFilters.failed :
-      (view?.completed ?? image.completed) ? imageFilters.done : imageFilters.pending;
-    return selectedFilter && statusFilter && searchMatches.has(image.id);
+    const phase = failuresByImage.has(image.id) ? "failed" : (view?.completed ?? image.completed) ? "done" : "pending";
+    return searchMatches.has(image.id) && gameImageFilterMatch(imageFilters, checked, phase);
   }), [images, searchMatches, imageFilters, failuresByImage]);
   const groups = useMemo(() => {
     const result: Record<string, { items: UnityImage[]; added: Set<string>; removed: number; eligible: number; checked: number }> = Object.fromEntries(
@@ -476,7 +473,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
         return;
       }
       setSearch("");
-      setImageFilters(previous => Object.values(previous).every(Boolean) ? previous : allFilters);
+      setImageFilters(previous => Object.values(previous).every(Boolean) ? previous : allGameImageFilters);
       return;
     }
     setListTarget(undefined);
@@ -589,8 +586,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
           onClick={() => exportArchive(range)}>{label}</button>)}
     </div>, document.body)}
     {focusedDetail ? null : <div className="unity-offline-toolbar unity-image-toolbar"><button className="unity-btn" onClick={toggleGallery} data-tooltip={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"} aria-label={gallery ? "返回文字区域并更新筛选结果" : "批量查看原图并调整勾选状态"}>{gallery ? "返回文字区域" : returnToGallery ? "返回缩略图位置" : "原图批量阅览"}</button><button className="unity-btn unity-text-action" aria-label="下载图片" disabled={disabled||!!archiveBusy||!downloadable.all.length} data-tooltip="下载原图 ZIP，可选择全部、筛选结果或已勾选图片" aria-haspopup="menu" popoverTarget={downloadId} popoverTargetAction="toggle" onClick={event=>{const viewport = getLayoutViewport(); const rect = getLayoutRect(event.currentTarget.getBoundingClientRect(), viewport.scale); Object.assign(downloadMenu.current!.style,{left:`${Math.max(8,Math.min(rect.left,viewport.width-160))}px`,top:`${Math.max(8,Math.min(rect.bottom+6,viewport.height-145))}px`});}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>下载</button><button className="unity-btn unity-text-action" aria-label="导入图片" disabled={disabled||!!archiveBusy} data-tooltip="导入本软件导出的 ZIP，校验定位信息、原资源版本和 PNG 尺寸后替换译图" onClick={()=>requestChange(()=>void importArchive())}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4"/></svg>导入</button><GameImageFilter menuRef={filterMenu}>
-<div className="unity-image-filter-presets"><button type="button" onClick={()=>requestFilter(()=>setImageFilters(allFilters))}>全部选取</button><button type="button" onClick={()=>requestFilter(()=>setImageFilters({checked:false,unchecked:false,done:false,pending:false,failed:false}))}>取消全部选取</button></div>
-{([["checked","已勾选"],["unchecked","未勾选"],["pending","未完成"],["failed","失败"],["done","已完成"]] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={imageFilters[key]} onChange={event=>{const checked=event.currentTarget.checked;requestFilter(()=>setImageFilters(current=>({...current,[key]:checked})));}}/>{label}</label>)}
+<GameImageFilterOptions filters={imageFilters} onChange={next => requestFilter(() => setImageFilters(next))} />
 </GameImageFilter>{archiveBusy&&<span role="status">{archiveBusy}</span>}<span className="unity-image-statistics">{images.length} 张图片 · 已选 {counts.selected} 张 · 已完成 {counts.done} 张{counts.failed ? ` · 失败 ${counts.failed} 张` : ""}</span><input type="search" placeholder="搜索" aria-label="搜索游戏图片" data-tooltip="搜索名称、路径、原文和译文" value={search} onChange={event => {const value=event.currentTarget.value;requestFilter(()=>setSearch(value));}} /><button className="unity-btn unity-image-discard" disabled={disabled||!dirty||saving||!!archiveBusy} data-tooltip="取消当前未保存的图片修改，需要再次确认" aria-label="取消当前未保存的图片修改，需要再次确认" onClick={()=>void discardCurrent()}>取消修改</button><button className="unity-btn" disabled={disabled || !!archiveBusy || !project || !dirty || saving} data-tooltip="保存图片勾选状态、识别区域和图片译文修改" aria-label="保存图片勾选状态、识别区域和图片译文修改" onClick={()=>void saveCurrent()}>{saving ? "保存中…" : "保存"}</button>{saveNotice === "保存失败" && <span className="hint" role="status">{saveNotice}</span>}</div>}
     {!project || (project.scanRevision || 0) < 5 ? <div className="unity-offline-empty">请更新扫描以提取游戏图片；已有文本和译文保留。</div> : !images.length ? <div className="unity-offline-empty">未扫描到可读取的图片资源，可以跳过步骤 2.2。</div> : <>{galleryVisited && project && <ImageGallery query={deferredSearch} project={project} images={galleryScope?groups[galleryScope].items:filtered} allImages={images} filterKey={JSON.stringify([search,imageFilters,galleryScope,filterRevision])} refreshKey={viewRevision} hidden={!gallery || !active} disabled={disabled||!!archiveBusy} onSelect={selectImages} onQueueRedraw={queueRedraw} onView={showDetails} onOpen={id => openViewer(id, false, true)} />}{!gallery && <GameImageSplit listId={imageListId} listRef={listRef} listLabel="游戏图片列表"
       widthKey="unity-image-browser-list-width" onListKeyDown={navigateImageList}

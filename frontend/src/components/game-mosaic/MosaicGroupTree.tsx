@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type Keybo
 import { createPortal } from "react-dom";
 import { mosaicProcessingError, mosaicStatusLabels, type MosaicStatus } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
-import { GameImageFilter, GameImageListPagination, GameImageSplit } from "../GameImageBrowserLayout";
+import { GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImageSplit, type GameImageFilters } from "../GameImageBrowserLayout";
 import { SearchHighlight } from "../SearchHighlight";
 import type { MosaicGroupMenu, RefineMovement, Result } from "./mosaicWorkbenchTypes";
 
@@ -12,8 +12,8 @@ export const mosaicStatusPageSize = 40;
 type Props = {
   listId: string;
   filterMenu: RefObject<HTMLDivElement | null>;
-  filters: { query: string; needle: string; scope: string; sceneFilter: boolean; failuresOnly: boolean };
-  onSceneFilterChange: (checked: boolean) => void;
+  filters: { query: string; needle: string; scope: string; imageFilters: GameImageFilters; failuresOnly: boolean };
+  onImageFiltersChange: (filters: GameImageFilters) => void;
   onQueryChange: (query: string) => void;
   onToggleFailureFilter: () => void;
   counts: { visible: number; checked: number; saved: number; failed: number };
@@ -42,18 +42,18 @@ type Props = {
   children: ReactNode;
 };
 
-export function MosaicGroupTree({ listId, filterMenu, filters, onSceneFilterChange, onQueryChange,
+export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
   browseOriginals, setBrowseOriginals, originalGallery, actionsDisabled, getRow, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
-  const { query, needle, scope, sceneFilter, failuresOnly } = filters;
+  const { query, needle, scope, imageFilters, failuresOnly } = filters;
   const listRef = useRef<HTMLUListElement>(null);
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
   const groupMenuRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [needle, scope, sceneFilter, failuresOnly]);
+  }, [needle, scope, imageFilters]);
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
     const button = listRef.current?.querySelector<HTMLButtonElement>(
@@ -132,7 +132,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onSceneFilterChan
   return <>
     <div className="unity-offline-toolbar unity-image-toolbar">
       <GameImageFilter menuRef={filterMenu}>
-        <label><input type="checkbox" checked={sceneFilter} disabled={!sceneFilter && !active} onChange={event => onSceneFilterChange(event.target.checked)} />仅本组</label>
+        <GameImageFilterOptions filters={imageFilters} onChange={onImageFiltersChange} doneHint="已采用去码图，含已纳入补丁的图片" />
       </GameImageFilter>
       <span className="unity-image-statistics">{counts.visible} 张图片 · 已勾选 {counts.checked} 张 · 已采用去码图 {counts.saved} 张</span>
       {(counts.failed > 0 || failuresOnly) && <button type="button" className="unity-btn game-mosaic-failed-filter"

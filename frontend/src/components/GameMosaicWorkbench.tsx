@@ -15,7 +15,7 @@ import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { usePersistedModelFilter } from "./ModelFilterSelect";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { GameImageListPagination } from "./GameImageBrowserLayout";
+import { allGameImageFilters, gameImageFilterMatch, GameImageListPagination, type GameImageFilters } from "./GameImageBrowserLayout";
 import { type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
@@ -304,8 +304,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return () => window.removeEventListener("game-mosaic-settings", refresh);
   }, [gamePath]);
   const [detectorFile, setDetectorFile] = useState(() => gameDetectorFile(gamePath));
-  const [sceneFilter, setSceneFilter] = useState(false);
-  const [failuresOnly, setFailuresOnly] = useState(false);
+  const [imageFilters, setImageFilters] = useState(allGameImageFilters);
+  const failuresOnly = imageFilters.failed && !imageFilters.pending && !imageFilters.done;
   const [activeId, setActiveId] = useState<string | null>("");
   const [browseOriginals, setBrowseOriginals] = useState(false);
   const [busy, setBusy] = useState("");
@@ -341,7 +341,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }));
   }, [onCompletionChange, rows, scoped, storage?.index]);
   const needle = query.trim().toLowerCase();
-  const matches = useMemo(() => needle ? scoped.filter(image => (image.name + " " + image.file).toLowerCase().includes(needle)) : scoped, [needle, scoped]);
+  const currentScope = useMemo(() => needle ? scoped.filter(image => (image.name + " " + image.file).toLowerCase().includes(needle)) : scoped, [needle, scoped]);
   const imageGroup = useMemo(() => {
     const grouped = new Map<string, UnityImage[]>();
     for (const image of usable) {
@@ -351,14 +351,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }
     return grouped;
   }, [rows, usable]);
-  const groupAnchor = sceneFilter ? usable.find(image => image.id === activeId) ?? matches[0] : undefined;
-  const scopedGroup = groupAnchor && (resultFor(rows, groupAnchor).group || groupAnchor.id);
-  const currentScope = scopedGroup ? imageGroup.get(scopedGroup) ?? [] : matches;
   const imageStatus = useCallback((image: UnityImage) => mosaicStatus(resultFor(rows, image),
     !!storage?.index[image.id]?.included), [rows, storage?.index]);
   const isRefineRetrying = (image: UnityImage) => refineRetries.get(image.id) === image.sourceHash;
-  const visible = useMemo(() => failuresOnly ? currentScope.filter(image => imageStatus(image) === "failed") : currentScope,
-    [currentScope, failuresOnly, imageStatus]);
+  const visible = useMemo(() => Object.values(imageFilters).every(Boolean) ? currentScope : currentScope.filter(image => {
+    const row = resultFor(rows, image);
+    const phase = mosaicProcessingError(row) ? "failed" : row.saved ? "done" : "pending";
+    return gameImageFilterMatch(imageFilters, row.checked, phase);
+  }), [currentScope, imageFilters, rows]);
   const { ordered, groups } = useMemo(() => {
     const grouped = new Map<MosaicStatus, UnityImage[]>();
     for (const image of visible) {
@@ -610,7 +610,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       .findIndex(image => image.id === active.id);
     update(active, { manualStatus });
     setActiveId(active.id);
-    setFailuresOnly(false);
+    if (failuresOnly) setImageFilters(allGameImageFilters);
     setCollapsed(previous => ({ ...previous, [target]: false }));
     if (index >= 0) setGroupPages(previous => ({ ...previous, [target]: Math.floor(index / mosaicStatusPageSize) }));
   }
@@ -661,7 +661,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       return changed?next:previous;
     });
   },[gamePath,usable,reviewKey]);
-  const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, needle, scopedGroup]);
+  const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, needle]);
   const previousReview = lastReview.current?.key === reviewSessionKey ? lastReview.current : undefined;
   const isReviewed = (row: Result) => matchesMosaicReviewKey(row.refined, reviewKey) && !row.refineQuickExcluded && !row.refineError;
   const checkedReviewScope: UnityImage[] = [];
@@ -908,10 +908,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (next === current) return;
     try { replaceRows(next); }
     catch { showAppNotice("无法保存分组修改", "error"); return; }
-    if (scopedGroup === key) {
-      setSceneFilter(false);
-      setGroupPages({});
-    }
     showAppNotice("已删除独立组");
   }
 
@@ -1007,7 +1003,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setProgress("");
     setError("");
     setGroupPages({});
-    setSceneFilter(false);
+    setImageFilters(allGameImageFilters);
     setActiveId(null);
     setSource(undefined);
     setApproved(undefined);
@@ -1022,20 +1018,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     let failureCount = 0, unresolvedRefineFailures = 0, retryCount = 0;
     for (const image of scoped) {
       const row = resultFor(rows, image);
-      if (imageStatus(image) === "failed") failureCount++;
+      if (mosaicProcessingError(row)) failureCount++;
       if (row.refineError) {
         unresolvedRefineFailures++;
         if (refineRetries.get(image.id) === image.sourceHash) retryCount++;
       }
     }
     return { failureCount, unresolvedRefineFailures, retryCount };
-  }, [scoped, rows, imageStatus, refineRetries]);
+  }, [scoped, rows, refineRetries]);
   const activeFailure = mosaicProcessingError(activeResult);
   const activeRetry = active && activeResult?.refineError && isRefineRetrying(active);
   const toggleFailureFilter = () => {
-    setFailuresOnly(previous => !previous);
+    setImageFilters(failuresOnly ? allGameImageFilters : { ...allGameImageFilters, pending: false, done: false });
     setCollapsed(previous => ({ ...previous, failed: false }));
-    setQuery(""); setSceneFilter(false); setGroupPages({}); setActiveId("");
+    setQuery(""); setGroupPages({}); setActiveId("");
   };
   const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已有蒙版的待重绘图片" : undefined);
@@ -1071,13 +1067,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         canClear: canClearRedraw, batchReason,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(redrawGroup, [model]), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
-    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, sceneFilter, failuresOnly }}
-      onSceneFilterChange={checked => {
-        if (checked && active) setActiveId(active.id);
-        setSceneFilter(checked);
+    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, imageFilters, failuresOnly }}
+      onImageFiltersChange={(filters: GameImageFilters) => {
+        setImageFilters(filters);
         setGroupPages({});
       }}
-      onQueryChange={value => { setQuery(value); setActiveId(""); setSceneFilter(false); setGroupPages({}); }}
+      onQueryChange={value => { setQuery(value); setActiveId(""); setGroupPages({}); }}
       onToggleFailureFilter={toggleFailureFilter} counts={{ ...counts, visible: visible.length, failed: failureCount }}
       active={active} groups={groups} ordered={ordered} refineChanges={refineChanges} groupPages={groupPages} setGroupPages={setGroupPages}
       collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={setBrowseOriginals}

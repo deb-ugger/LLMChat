@@ -80,6 +80,33 @@ export function GameImageFilter({ menuRef, children }: { menuRef: RefObject<HTML
   </>;
 }
 
+export type GameImageFilterPhase = "pending" | "failed" | "done";
+export type GameImageFilters = Record<"checked" | "unchecked" | GameImageFilterPhase, boolean>;
+export const allGameImageFilters: GameImageFilters = { checked: true, unchecked: true, pending: true, failed: true, done: true };
+const noGameImageFilters: GameImageFilters = { checked: false, unchecked: false, pending: false, failed: false, done: false };
+const gameImageFilterChoices = [
+  ["checked", "已勾选"], ["unchecked", "未勾选"], ["pending", "未完成"], ["failed", "失败"], ["done", "已完成"],
+] as const;
+
+export function gameImageFilterMatch(filters: GameImageFilters, checked: boolean, phase: GameImageFilterPhase) {
+  return filters[checked ? "checked" : "unchecked"] && filters[phase];
+}
+
+export function GameImageFilterOptions({ filters, onChange, doneHint }: {
+  filters: GameImageFilters; onChange: (filters: GameImageFilters) => void; doneHint?: string;
+}) {
+  return <>
+    <div className="unity-image-filter-presets">
+      <button type="button" data-tooltip="显示全部图片" onClick={() => onChange(allGameImageFilters)}>全部选取</button>
+      <button type="button" data-tooltip="关闭全部筛选选项" onClick={() => onChange(noGameImageFilters)}>取消全部选取</button>
+    </div>
+    {gameImageFilterChoices.map(([key, label]) => <label key={key} data-tooltip={key === "done" ? doneHint : undefined}>
+      <input type="checkbox" checked={filters[key]}
+        onChange={event => onChange({ ...filters, [key]: event.currentTarget.checked })} />{label}
+    </label>)}
+  </>;
+}
+
 export function GameImagePreviewFrame({ caption, fallback, children, ...props }: ComponentPropsWithRef<"figure"> & {
   caption?: ReactNode; fallback?: ReactNode;
 }) {
