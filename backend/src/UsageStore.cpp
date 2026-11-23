@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -23,6 +24,8 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace {
+
+constexpr auto modelWindow = std::chrono::seconds(10);
 
 bool usageTokensKnown(const json& row)
 {
@@ -271,7 +274,41 @@ void UsageStore::markPending(UsageEvent& ev)
 
 void UsageStore::finalize(const UsageEvent& ev)
 {
+    if (ev.channel == "llm" && !ev.model.empty() && ev.requestType.empty())
+    {
+        try
+        {
+            std::lock_guard lock(activityMutex_);
+            const auto now = ActivityClock::now();
+            pruneModelActivity(now);
+            recentCompletions_.push_back({now, ev.model, std::max(0, ev.completionTokens)});
+        }
+        catch (...)
+        {
+            // Real-time counters must not interfere with completion or persistence.
+        }
+    }
     append(ev);
+}
+
+void UsageStore::pruneModelActivity(ActivityClock::time_point now)
+{
+    while (!recentCompletions_.empty() && recentCompletions_.front().at <= now - modelWindow)
+        recentCompletions_.pop_front();
+}
+
+ModelActivity UsageStore::recentModelActivity()
+{
+    std::lock_guard lock(activityMutex_);
+    pruneModelActivity(ActivityClock::now());
+    uint64_t tokens = 0;
+    std::unordered_set<std::string_view> models;
+    for (const auto& completion : recentCompletions_)
+    {
+        tokens += completion.completionTokens;
+        models.insert(completion.model);
+    }
+    return {static_cast<double>(tokens) / modelWindow.count(), models.size()};
 }
 
 void UsageStore::clear()

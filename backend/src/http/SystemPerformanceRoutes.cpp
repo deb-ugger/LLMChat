@@ -46,8 +46,8 @@ bool knownMetric(std::string_view name) {
 
 } // namespace
 
-void registerSystemPerformanceRoutes(httplib::Server& svr, const std::filesystem::path& logs) {
-    auto performance = std::make_shared<SystemPerformance>(logs);
+void registerSystemPerformanceRoutes(httplib::Server& svr, const std::filesystem::path& logs, UsageStore& usage) {
+    auto performance = std::make_shared<SystemPerformance>(logs, usage);
     svr.Get("/api/system-performance/now", withCors([performance](const httplib::Request&, httplib::Response& res) {
         res.set_content(performance->now().dump(), "application/json; charset=utf-8");
     }));

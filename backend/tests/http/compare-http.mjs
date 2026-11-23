@@ -314,18 +314,40 @@ async function checkSystemPerformance(instance, cases, signal) {
         return { status: res.status, value };
     };
     cases.push(await check("system performance now and history contract", signal, async () => {
+        const additional = ["diskPercent", "cpuTempC", "gpuTempC", "tempSource", "tokensPerSecond", "modelCount"];
+        const metrics = ["cpu", "disk", "gpu", "memory", "network"];
+        const validate = (sample, keys) => {
+            assert.deepEqual(Object.keys(sample).sort(), [...keys, ...additional].sort());
+            const finiteOrNull = value => value === null || Number.isFinite(value);
+            assert.ok(finiteOrNull(sample.cpuTempC) && finiteOrNull(sample.gpuTempC));
+            assert.ok([null, "lhm", "acpi"].includes(sample.tempSource));
+            assert.equal(sample.tempSource === null, sample.cpuTempC === null && sample.gpuTempC === null);
+            if (sample.tempSource === "acpi") assert.equal(sample.gpuTempC, null);
+            assert.ok(sample.diskPercent === null || Number.isFinite(sample.diskPercent) &&
+                sample.diskPercent >= 0 && sample.diskPercent <= 100);
+            assert.equal(sample.tokensPerSecond, 0);
+            assert.equal(sample.modelCount, 0);
+        };
         const now = await read("now", "GET", "now");
         assert.equal(now.status, 200);
-        assert.deepEqual(Object.keys(now.value).sort(), ["cpu", "disk", "gpu", "memory", "network", "sampledAt"]);
+        validate(now.value, [...metrics, "sampledAt"]);
         assert.ok(now.value.sampledAt === null || Number.isInteger(now.value.sampledAt));
-        const history = await read("history", "GET", "history?metric=cpu");
-        assert.equal(history.status, 200);
-        assert.ok(history.value.points.length <= 2000);
+        let history;
+        for (let attempt = 0; attempt < 100; attempt++) {
+            history = await read("history", "GET", "history?metric=cpu");
+            assert.equal(history.status, 200);
+            if (history.value.points.length) break;
+            await delay(30, undefined, { signal });
+        }
+        assert.ok(history.value.points.length > 0 && history.value.points.length <= 2000);
         for (const point of history.value.points) {
-            assert.deepEqual(Object.keys(point).sort(), ["cpu", "t"]);
+            validate(point, ["cpu", "t"]);
             assert.ok(Number.isInteger(point.t));
             assert.ok(point.cpu === null || Number.isFinite(point.cpu));
         }
+        const full = await read("all metrics", "GET", "history");
+        assert.ok(full.value.points.length > 0);
+        for (const point of full.value.points) validate(point, [...metrics, "t"]);
         const empty = await read("empty range", "GET", "history?from=0&to=0");
         assert.deepEqual(empty.value, { points: [] });
         return { status: 200 };

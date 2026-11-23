@@ -1,5 +1,6 @@
 #include "SystemPerformance.h"
 #include "AtomicFile.h"
+#include "UsageStore.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,8 @@
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#include <wbemidl.h>
+#include <wrl/client.h>
 #endif
 
 namespace {
@@ -36,11 +39,19 @@ constexpr auto keepRuns = 7 * 24h;
 constexpr size_t maxRuns = 200;
 constexpr size_t maxPoints = 2000;
 
-enum Metric { Cpu, AvailableMemory, UsedMemory, DiskRead, DiskWrite, NetworkReceive, NetworkSend, Gpu, MetricCount };
+enum Metric { Cpu, AvailableMemory, UsedMemory, DiskRead, DiskWrite, NetworkReceive, NetworkSend, Gpu, DiskPercent, MetricCount };
 using Value = std::optional<double>;
+
+struct TemperatureReading {
+    Value cpu, gpu;
+    const char* source = nullptr;
+};
+
 struct Point {
     int64_t time = 0;
     std::array<Value, MetricCount> values{};
+    TemperatureReading temperature;
+    std::optional<ModelActivity> activity;
 };
 
 int64_t epochMilliseconds() {
@@ -72,6 +83,15 @@ Json pointJson(const Point* point, const char* timeKey, std::string_view metric 
     appendMetrics(result, metric, [&](Metric id) -> Json {
         return point && point->values[id] ? Json(*point->values[id]) : Json(nullptr);
     });
+    const auto value = [](const Value& measure) { return measure ? Json(*measure) : Json(nullptr); };
+    const auto temperature = point ? point->temperature : TemperatureReading{};
+    const auto activity = point ? point->activity : std::optional<ModelActivity>{};
+    result["diskPercent"] = point ? value(point->values[DiskPercent]) : Json(nullptr);
+    result["cpuTempC"] = value(temperature.cpu);
+    result["gpuTempC"] = value(temperature.gpu);
+    result["tempSource"] = temperature.source ? Json(temperature.source) : Json(nullptr);
+    result["tokensPerSecond"] = activity ? Json(activity->tokensPerSecond) : Json(nullptr);
+    result["modelCount"] = activity ? Json(activity->modelCount) : Json(nullptr);
     return result;
 }
 
@@ -81,6 +101,126 @@ Value counterValue(const PDH_FMT_COUNTERVALUE& value) {
     return std::isfinite(value.doubleValue) && value.doubleValue >= 0 ? Value(value.doubleValue) : Value{};
 }
 
+struct Variant {
+    VARIANT value{};
+    ~Variant() { VariantClear(&value); }
+};
+
+Value numeric(const VARIANT& value) {
+    switch (value.vt) {
+    case VT_R4: return value.fltVal;
+    case VT_R8: return value.dblVal;
+    case VT_I4: return value.lVal;
+    case VT_UI4: return value.ulVal;
+    default: return {};
+    }
+}
+
+class Temperatures {
+    using Bstr = std::unique_ptr<OLECHAR, decltype(&SysFreeString)>;
+    struct Source {
+        Microsoft::WRL::ComPtr<IWbemServices> services;
+        Steady::time_point retryAt = Steady::time_point::min();
+    };
+
+public:
+    Temperatures() {
+        initialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+        if (initialized_)
+            CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(locator_.GetAddressOf()));
+    }
+
+    ~Temperatures() {
+        lhm_.services.Reset();
+        acpi_.services.Reset();
+        locator_.Reset();
+        if (initialized_) CoUninitialize();
+    }
+
+    TemperatureReading read() {
+        TemperatureReading result;
+        query(lhm_, LR"(ROOT\LibreHardwareMonitor)",
+            L"SELECT Identifier, Name, Value FROM Sensor WHERE SensorType = 'Temperature'", [&](IWbemClassObject& row) {
+                Variant id, name, value;
+                if (FAILED(row.Get(L"Identifier", 0, &id.value, nullptr, nullptr)) || id.value.vt != VT_BSTR ||
+                    !id.value.bstrVal || FAILED(row.Get(L"Value", 0, &value.value, nullptr, nullptr))) return;
+                const auto celsius = numeric(value.value);
+                if (!celsius || !std::isfinite(*celsius)) return;
+                const std::wstring_view identifier(id.value.bstrVal);
+                if (identifier.starts_with(L"/intelcpu/") || identifier.starts_with(L"/amdcpu/")) {
+                    if (SUCCEEDED(row.Get(L"Name", 0, &name.value, nullptr, nullptr)) && name.value.vt == VT_BSTR &&
+                        name.value.bstrVal && std::wstring_view(name.value.bstrVal).find(L"TjMax") != std::wstring_view::npos) return;
+                    hottest(result.cpu, *celsius);
+                } else if (identifier.starts_with(L"/gpu-") || identifier.starts_with(L"/nvidiagpu/") ||
+                    identifier.starts_with(L"/atigpu/") || identifier.starts_with(L"/intelgpu/")) {
+                    hottest(result.gpu, *celsius);
+                }
+            });
+        if (result.cpu || result.gpu) {
+            result.source = "lhm";
+            return result;
+        }
+        query(acpi_, LR"(ROOT\WMI)",
+            L"SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature WHERE Active = TRUE", [&](IWbemClassObject& row) {
+                Variant value;
+                if (FAILED(row.Get(L"CurrentTemperature", 0, &value.value, nullptr, nullptr))) return;
+                // ACPI reports a thermal zone, not a CPU die or GPU sensor. Use the hottest valid zone as the CPU-side fallback.
+                if (const auto kelvin10 = numeric(value.value); kelvin10 && *kelvin10 > 0)
+                    hottest(result.cpu, *kelvin10 / 10.0 - 273.15);
+            });
+        if (result.cpu) result.source = "acpi";
+        return result;
+    }
+
+private:
+    bool initialized_ = false;
+    Microsoft::WRL::ComPtr<IWbemLocator> locator_;
+    Source lhm_, acpi_;
+
+    static Bstr bstr(const wchar_t* value) { return Bstr(SysAllocString(value), SysFreeString); }
+
+    static void hottest(Value& value, double candidate) {
+        if (!value || candidate > *value) value = candidate;
+    }
+
+    template<class ReadRow>
+    void query(Source& source, const wchar_t* nameSpace, const wchar_t* wql, ReadRow readRow) {
+        if (!locator_ || Steady::now() < source.retryAt) return;
+        if (!source.services) {
+            if (FAILED(locator_->ConnectServer(bstr(nameSpace).get(), nullptr, nullptr, nullptr, WBEM_FLAG_CONNECT_USE_MAX_WAIT,
+                nullptr, nullptr, source.services.GetAddressOf())) ||
+                FAILED(CoSetProxyBlanket(source.services.Get(), RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                    RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE))) {
+                source.services.Reset();
+                source.retryAt = Steady::now() + 30s;
+                return;
+            }
+        }
+        Microsoft::WRL::ComPtr<IEnumWbemClassObject> rows;
+        if (FAILED(source.services->ExecQuery(bstr(L"WQL").get(), bstr(wql).get(),
+            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, rows.GetAddressOf()))) {
+            source.services.Reset();
+            source.retryAt = Steady::now() + 30s;
+            return;
+        }
+        const auto deadline = Steady::now() + 150ms;
+        while (Steady::now() < deadline) {
+            Microsoft::WRL::ComPtr<IWbemClassObject> row;
+            ULONG count = 0;
+            const auto wait = std::chrono::ceil<std::chrono::milliseconds>(deadline - Steady::now()).count();
+            if (wait <= 0) return;
+            const auto status = rows->Next(static_cast<LONG>(wait), 1, row.GetAddressOf(), &count);
+            if (FAILED(status)) {
+                source.services.Reset();
+                source.retryAt = Steady::now() + 30s;
+                return;
+            }
+            if (!count) return;
+            readRow(*row.Get());
+        }
+    }
+};
+
 class Sampler {
 public:
     Sampler() {
@@ -89,6 +229,7 @@ public:
         add(AvailableMemory, LR"(\Memory\Available Bytes)");
         add(DiskRead, LR"(\PhysicalDisk(_Total)\Disk Read Bytes/sec)");
         add(DiskWrite, LR"(\PhysicalDisk(_Total)\Disk Write Bytes/sec)");
+        add(DiskPercent, LR"(\PhysicalDisk(_Total)\% Disk Time)");
         add(NetworkReceive, LR"(\Network Interface(*)\Bytes Received/sec)");
         add(NetworkSend, LR"(\Network Interface(*)\Bytes Sent/sec)");
         add(Gpu, LR"(\GPU Engine(*)\Utilization Percentage)");
@@ -98,9 +239,12 @@ public:
 
     Point read() {
         Point point{epochMilliseconds()};
+        point.temperature = temperatures_.read();
         if (!query_ || PdhCollectQueryData(query_) != ERROR_SUCCESS) return point;
         auto& values = point.values;
         for (auto metric : {Cpu, AvailableMemory, DiskRead, DiskWrite}) values[metric] = readCounter(metric);
+        // _Total Disk Time can exceed 100% across physical disks. Present a bounded busy percentage.
+        if (const auto percent = readCounter(DiskPercent)) values[DiskPercent] = std::min(100.0, *percent);
         MEMORYSTATUSEX memory{};
         memory.dwLength = sizeof(memory);
         if (values[AvailableMemory] && GlobalMemoryStatusEx(&memory)) {
@@ -126,6 +270,7 @@ public:
     }
 
 private:
+    Temperatures temperatures_;
     PDH_HQUERY query_ = nullptr;
     std::array<PDH_HCOUNTER, MetricCount> counters_{};
     std::vector<std::max_align_t> buffer_;
@@ -227,7 +372,8 @@ void writeRuns(const std::filesystem::path& file, const std::deque<Json>& incomi
 
 class SystemPerformance::Impl {
 public:
-    explicit Impl(const std::filesystem::path& logs) : file_(logs / "system-performance.jsonl") {}
+    Impl(const std::filesystem::path& logs, UsageStore& usage)
+        : file_(logs / "system-performance.jsonl"), usage_(usage) {}
     ~Impl() {
         {
             std::lock_guard lock(mutex_);
@@ -241,7 +387,13 @@ public:
         std::lock_guard lock(mutex_);
         touch();
         if (samples_.empty() || samples_.back().time < epochMilliseconds() -
-            std::chrono::duration_cast<std::chrono::milliseconds>(stopAfter).count()) return pointJson(nullptr, "sampledAt");
+            std::chrono::duration_cast<std::chrono::milliseconds>(stopAfter).count()) {
+            auto result = pointJson(nullptr, "sampledAt");
+            const auto activity = usage_.recentModelActivity();
+            result["tokensPerSecond"] = activity.tokensPerSecond;
+            result["modelCount"] = activity.modelCount;
+            return result;
+        }
         return pointJson(&samples_.back(), "sampledAt");
     }
 
@@ -271,6 +423,7 @@ public:
 
 private:
     const std::filesystem::path file_;
+    UsageStore& usage_;
     const std::chrono::seconds interval_ = std::thread::hardware_concurrency() <= 2 ? 5s : 2s;
     std::mutex mutex_;
     std::condition_variable wake_;
@@ -329,6 +482,7 @@ private:
             try {
                 if (!sampler) sampler = std::make_unique<Sampler>();
                 point = sampler->read();
+                point.activity = usage_.recentModelActivity();
             } catch (const std::exception& error) { std::cerr << "System performance sample: " << error.what() << '\n'; }
             lock.lock();
             samples_.push_back(point);
@@ -338,7 +492,8 @@ private:
     }
 };
 
-SystemPerformance::SystemPerformance(const std::filesystem::path& logs) : impl_(std::make_unique<Impl>(logs)) {}
+SystemPerformance::SystemPerformance(const std::filesystem::path& logs, UsageStore& usage)
+    : impl_(std::make_unique<Impl>(logs, usage)) {}
 SystemPerformance::~SystemPerformance() = default;
 Json SystemPerformance::now() { return impl_->now(); }
 Json SystemPerformance::history(int64_t from, int64_t to, std::string_view metric) { return impl_->history(from, to, metric); }

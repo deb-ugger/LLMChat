@@ -3,6 +3,9 @@
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <functional>
+#include <chrono>
+#include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -40,6 +43,11 @@ struct UsageEvent {
 /** Sentinel in JSON when usage was interrupted before the API returned token counts. */
 constexpr int kUsageTokensUnknown = -1;
 
+struct ModelActivity {
+    double tokensPerSecond = 0;
+    size_t modelCount = 0;
+};
+
 class SqliteUsageDb;
 
 class UsageStore {
@@ -52,6 +60,7 @@ public:
     void markPending(UsageEvent& ev);
     /** Append completion row; readers keep latest row per id. */
     void finalize(const UsageEvent& ev);
+    ModelActivity recentModelActivity();
     void clear();
 
     std::vector<nlohmann::json> events(
@@ -101,6 +110,16 @@ private:
     std::string path_;
     std::unique_ptr<SqliteUsageDb> sqlite_;
     mutable std::mutex mu_;
+
+    using ActivityClock = std::chrono::steady_clock;
+    struct ModelCompletion {
+        ActivityClock::time_point at;
+        std::string model;
+        int completionTokens;
+    };
+    std::mutex activityMutex_;
+    std::deque<ModelCompletion> recentCompletions_;
+    void pruneModelActivity(ActivityClock::time_point now);
 
     nlohmann::json toJson(const UsageEvent& ev) const;
     static bool dateInRange(

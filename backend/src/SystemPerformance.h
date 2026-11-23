@@ -8,9 +8,11 @@
 
 #include <nlohmann/json.hpp>
 
+class UsageStore;
+
 class SystemPerformance {
 public:
-    explicit SystemPerformance(const std::filesystem::path& logs);
+    SystemPerformance(const std::filesystem::path& logs, UsageStore& usage);
     ~SystemPerformance();
 
     nlohmann::json now();

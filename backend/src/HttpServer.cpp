@@ -84,7 +84,7 @@ int HttpServer::run()
     using http_router::withCors;
 
     http_router::registerSystemRoutes(svr, usage_, pricing_);
-    http_router::registerSystemPerformanceRoutes(svr, dataDirectory(config_) / "logs");
+    http_router::registerSystemPerformanceRoutes(svr, dataDirectory(config_) / "logs", usage_);
 
     http_router::registerOcrModelRoutes(svr, ocrModels_, config_);
 
