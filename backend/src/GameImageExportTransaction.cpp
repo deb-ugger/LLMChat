@@ -1151,15 +1151,93 @@ class LegacyMigration {
     };
 
     static constexpr wchar_t projectDir[] = L"LLMChat-JSON/images";
+    static constexpr wchar_t journalName[] = L"LLMChat-JSON/images/legacy-migration.json";
+    static constexpr wchar_t journalStage[] = L"LLMChat-JSON/images/.legacy-migration.partial";
+    struct PendingMigration {
+        std::string id, suffix, outputId, packageDirectoryId, outputPath, manifestSha;
+        std::map<Path, Digest> markers;
+
+        Path retired(Path path) const {
+            path += ".migrated-" + suffix;
+            return path;
+        }
+        Path stage() const { return "." + id + ".partial"; }
+        Path target() const { return "legacy-" + suffix + "-" + id.substr(0, 8) + ".llmchat-images"; }
+    };
     const Root& game_;
     const Engine engine_;
     Json rows_ = Json::array();
     std::set<std::string> retired_;
+    std::optional<PendingMigration> pending_;
     Handle baseline_;
     std::string key_;
 
     static bool validRevision(std::string_view value) {
         return !value.empty() && value.size() <= 64 && value.find_first_not_of("0123456789-") == std::string_view::npos;
+    }
+
+    PendingMigration readPending() const {
+        const auto record = readJson(game_.path, journalName, "RECOVERY_REQUIRED");
+        PendingMigration pending{record.at("id"), record.at("suffix"), record.at("outputId"),
+            record.at("packageDirectoryId"), record.at("outputPath"), record.at("manifestSha"), {}};
+        const auto& suffix = pending.suffix;
+        if (record.at("schemaVersion") != 1 || !uuid(pending.id) || !isSha(pending.manifestSha) ||
+            suffix.size() != 19 || suffix[8] != 'T' || suffix.back() != 'Z' ||
+            !validRevision(suffix.substr(0, 8)) || !validRevision(suffix.substr(9, 9)))
+            throw Error("RECOVERY_REQUIRED", "旧补丁迁移记录无效", key(journalName));
+        for (const auto& marker : record.at("markers")) {
+            const auto path = relative(marker.at("path").get<std::string>());
+            const auto folder = path.parent_path();
+            const auto id = utf8(path.stem());
+            if ((folder != Path(projectDir) / "installed" && folder != Path(projectDir) / "mosaic-installed" &&
+                 folder != Path(projectDir) / "composed-installed") ||
+                path.extension() != ".bin" || !hexString(id) || id.size() > 16 ||
+                !pending.markers.emplace(path, parseDigest(marker, maxImageBytes, true)).second)
+                throw Error("RECOVERY_REQUIRED", "旧补丁迁移标记记录无效", key(path));
+        }
+        return pending;
+    }
+
+    std::optional<Json> recoverPending(const Root& output, const Control& control) const {
+        if (!pending_) return std::nullopt;
+        const auto& pending = *pending_;
+        if (output.ids.back() != pending.outputId)
+            throw Error("RECOVERY_REQUIRED", "请重新选择上次迁移的成品包目录", pending.outputPath);
+
+        const auto target = output.path / pending.target();
+        if (const auto published = openNode(target, true, true);
+            published && identity(published, target) == pending.packageDirectoryId) {
+            const auto manifest = openSource(target, manifestName);
+            if (digest(manifest, target / manifestName).sha != pending.manifestSha)
+                throw Error("RECOVERY_REQUIRED", "已发布的旧补丁成品清单已变化", key(target));
+            const auto data = parseManifest(readJson(target, manifestName, "INVALID_MANIFEST"), true);
+            const auto bytes = packageBytes(target);
+            progress(control, "publish", data.files.size(), data.files.size());
+            deleteFile(game_.path, journalName);
+            return Json{{"packageId", pending.id}, {"packagePath", key(target)}, {"manifestSha256", pending.manifestSha},
+                {"files", data.files.size()}, {"bytes", bytes.value()}};
+        }
+
+        const auto stage = output.path / pending.stage();
+        bool hasStage = false;
+        if (const auto staged = openNode(stage, true, true)) {
+            if (identity(staged, stage) != pending.packageDirectoryId)
+                throw Error("RECOVERY_REQUIRED", "上次迁移的暂存目录已被替换", key(stage));
+            hasStage = true;
+        }
+        for (const auto& [path, expected] : pending.markers) {
+            const auto parents = pinParents(game_.path, path);
+            if (parents.empty()) sourceChanged(key(path));
+            if (fileExists(game_.path, path)) continue;
+            const auto retired = game_.path / pending.retired(path);
+            const auto source = openNode(retired, false, true, DELETE);
+            if (!source || length(source, retired) != expected.bytes || digest(source, retired) != expected)
+                sourceChanged(key(path));
+            renameHandle(source, game_.path / path, false);
+        }
+        if (hasStage) removeTree(stage);
+        deleteFile(game_.path, journalName);
+        return std::nullopt;
     }
 
     static void cancelled(const Control& control) {
@@ -1217,11 +1295,22 @@ class LegacyMigration {
         };
         const std::array<const char*, 3> kinds{"composed", "translated", "mosaic"};
         for (size_t i = 0; i < markPaths.size(); ++i) {
-            const auto path = markPaths[i].lexically_relative(game_.path);
-            if (const auto mark = openSource(game_.path, path, true)) {
-                const auto size = length(mark, markPaths[i]);
-                entry.markers.push_back({path, kinds[i],
-                    size <= maxImageBytes ? digest(mark, markPaths[i]) : Digest{size, {}}});
+            auto path = markPaths[i].lexically_relative(game_.path);
+            auto mark = openSource(game_.path, path, true);
+            const Digest* expected = nullptr;
+            if (!mark && pending_) {
+                const auto recorded = pending_->markers.find(path);
+                if (recorded != pending_->markers.end()) {
+                    path = pending_->retired(path);
+                    mark = openSource(game_.path, path, true);
+                    expected = &recorded->second;
+                }
+            }
+            if (mark) {
+                const auto size = length(mark, game_.path / path);
+                auto content = size <= maxImageBytes ? digest(mark, game_.path / path) : Digest{size, {}};
+                if (expected && content != *expected) sourceChanged(entry.name);
+                entry.markers.push_back({path, kinds[i], std::move(content)});
             }
         }
         if (entry.markers.empty()) {
@@ -1289,6 +1378,7 @@ public:
         if (!project.contains("images") || !project.at("images").is_array())
             throw Error("INVALID_LEGACY_INDEX", "旧图片索引缺少图片清单");
         rows_ = project.at("images");
+        if (fileExists(game.path, journalName)) pending_ = readPending();
         baseline_ = openSource(game.path, engine_.marker);
         if (engine_.name != "wolf") {
             try {
@@ -1331,6 +1421,10 @@ public:
 
 Json LegacyMigration::migrate(const Root& output, const Json& requested, const Control& control) const {
     progress(control, "snapshot", 0, requested.size());
+    if (pending_) {
+        if (const auto recovered = recoverPending(output, control)) return *recovered;
+        return LegacyMigration(game_).migrate(output, requested, control);
+    }
     const auto [timestamp, suffix] = utcTime();
     std::map<std::string, const Json*> rows;
     for (const auto& row : rows_) {
@@ -1368,7 +1462,10 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
     };
     std::vector<Rename> marks;
     std::vector<Handle> resources;
+    auto journalMarks = Json::array();
     size_t renamed = 0;
+    bool journalWritten = false;
+    Json result;
     if (!CreateDirectoryW(stage.c_str(), nullptr))
         winError("WRITE_FAILED", "无法创建旧补丁迁移暂存目录", stage, GetLastError());
     try {
@@ -1405,6 +1502,9 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
                 auto newName = oldName;
                 newName += ".migrated-" + suffix;
                 marks.push_back({oldName, std::move(newName), std::move(file)});
+                auto record = fields(mark.content);
+                record["path"] = key(mark.path);
+                journalMarks.push_back(std::move(record));
             }
         }
 
@@ -1422,9 +1522,16 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
         const Plan plan{transactionId, parseManifest(data, true), write(stage, Path(backupDir) / planName, planData), std::nullopt};
         writeAtomic(stage, receiptStage, receiptName, makeReceipt(plan, game_, allFiles(plan.manifest), true), false);
         const auto bytes = packageBytes(stage);
-        Json result{{"packageId", id}, {"packagePath", key(target)}, {"manifestSha256", manifestSha},
+        result = Json{{"packageId", id}, {"packagePath", key(target)}, {"manifestSha256", manifestSha},
             {"files", selected.size()}, {"bytes", bytes.value()}};
 
+        deleteFile(game_.path, journalStage);
+        writeAtomic(game_.path, journalStage, journalName, {
+            {"schemaVersion", 1}, {"id", id}, {"suffix", suffix}, {"outputId", output.ids.back()},
+            {"packageDirectoryId", staging.ids.back()}, {"outputPath", key(output.path)},
+            {"manifestSha", manifestSha}, {"markers", std::move(journalMarks)},
+        }, false);
+        journalWritten = true;
         staging.handles.pop_back();
         const auto source = openNode(stage, true, false, DELETE);
         progress(control, "publish", selected.size(), selected.size());
@@ -1433,7 +1540,6 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
             ++renamed;
         }
         renameHandle(source, target, false);
-        return result;
     } catch (...) {
         const auto original = std::current_exception();
         std::string failedRollback;
@@ -1446,7 +1552,11 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
             }
         }
         try {
-            removeTree(stage);
+            if (failedRollback.empty()) {
+                removeTree(stage);
+                if (journalWritten) deleteFile(game_.path, journalName);
+                else deleteFile(game_.path, journalStage);
+            }
         } catch (const std::exception&) {
             if (failedRollback.empty()) failedRollback = utf8(stage);
         }
@@ -1454,6 +1564,8 @@ Json LegacyMigration::migrate(const Root& output, const Json& requested, const C
             throw Error("RECOVERY_REQUIRED", "旧补丁迁移回滚未能完成，请检查路径", failedRollback);
         std::rethrow_exception(original);
     }
+    deleteFile(game_.path, journalName);
+    return result;
 }
 
 void validateLegacyEntries(const Json& entries) {

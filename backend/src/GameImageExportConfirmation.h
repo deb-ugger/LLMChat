@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 
 namespace gameimageexport::confirmation {
 
@@ -26,6 +27,12 @@ nlohmann::json readVerified(const std::filesystem::path& game, const Source& sou
     std::string_view layer, const LayerSelection& selected);
 
 nlohmann::json manifestLayer(const nlohmann::json& verified);
+
+#ifdef _WIN32
+// The cache stores decoded PNG bytes. Compare the digest in the game's on-disk format.
+std::optional<std::string> managedOriginalSha256(const std::filesystem::path& game, const nlohmann::json& image,
+    const std::string* imageKey = nullptr);
+#endif
 
 nlohmann::json save(RpgImageProject& project, const std::filesystem::path& game, const nlohmann::json& request);
 nlohmann::json status(RpgImageProject& project, const std::filesystem::path& game, const nlohmann::json& request);

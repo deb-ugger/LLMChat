@@ -650,14 +650,13 @@ void transactionFaults(const fs::path& scratch) {
     data.noPartials();
 }
 
-void interrupted(const fs::path& scratch) {
-    Exported data(scratch / "txn-crash", "wolf");
+void runInterruptedChild(std::wstring_view action, const fs::path& first, const fs::path& second) {
     std::wstring executable(32768, L'\0');
     const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
     check(length != 0 && length < executable.size(), "find test binary");
     executable.resize(length);
-    std::wstring command = L"\"" + executable + L"\" --interrupt \"" + data.dir.native() + L"\" \"" +
-        data.game().native() + L"\"";
+    std::wstring command = L"\"" + executable + L"\" " + std::wstring(action) + L" \"" + first.native() + L"\" \"" +
+        second.native() + L"\"";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -669,6 +668,11 @@ void interrupted(const fs::path& scratch) {
     GetExitCodeProcess(process.hProcess, &code);
     CloseHandle(process.hProcess);
     check(wait == WAIT_OBJECT_0 && code == 73, "child exited without destructors, code " + std::to_string(code));
+}
+
+void interrupted(const fs::path& scratch) {
+    Exported data(scratch / "txn-crash", "wolf");
+    runInterruptedChild(L"--interrupt", data.dir, data.game());
     check(fs::exists(data.dir / "receipts/.receipt.partial") && !fs::exists(data.dir / "receipts/receipt.json"),
         "crash left staged but no committed receipt");
     const auto plan = Json::parse(gamefiles::read(data.backup() / "plan.json"));
@@ -1273,6 +1277,19 @@ void legacyMigrationCases(const fs::path& scratch) {
 
     RpgImageProject project;
     for (const auto engine : {"rpg-maker-mv", "rpg-maker-mz", "wolf"}) {
+        Fixture restored(scratch / (std::string("legacy-uninstalled-") + engine), engine);
+        const auto restoredSource = restored.game / restored.add(true, false);
+        gamefiles::write(restored.project / backupPath(restored.rows.front()), png(original));
+        gamefiles::write(restored.project / oldMark("translated", "1"), gamefiles::read(restoredSource));
+        fs::last_write_time(restoredSource, fs::last_write_time(restoredSource) - std::chrono::seconds(5));
+        restored.save();
+        check(!legacyPatchInstalled(restored.game), "restored old marker does not report an applied patch");
+        check(tx::scanLegacy(project, restored.game).at("totals").at("migratable") == 0,
+            "restored old marker is not migratable");
+        check(confirmation::status(project, restored.game, {{"imageId", "1"}, {"layer", "translation"}})
+            .at("state") == "confirmed", "restored bytes with a changed timestamp keep the verified confirmation");
+        check(generate(project, restored.request).files == 1, "restored old marker does not block generation");
+
         Fixture f(scratch / (std::string("legacy-") + engine), engine);
         auto entries = Json::array({install(f, "translated"), install(f, "mosaic"), install(f, "composed")});
         f.save();
@@ -1280,6 +1297,7 @@ void legacyMigrationCases(const fs::path& scratch) {
         const auto scanned = tx::scanLegacy(project, f.game);
         check(snapshot(f.game) == beforeScan && fs::is_empty(f.output), "T096 A scan is read-only");
         check(scanned.at("totals") == Json{{"migratable", 3}, {"blocked", 0}}, "T096 A three migratable entries");
+        check(legacyPatchInstalled(f.game), "genuine old patches still report as installed");
         for (size_t i = 0; i < entries.size(); ++i)
             check(scanned.at("entries").at(i).at("state") == "migratable" &&
                 scanned.at("entries").at(i).at("kind") == entries.at(i).at("kind"), "T096 A scan classifies each kind");
@@ -1409,6 +1427,65 @@ void legacyMigrationCases(const fs::path& scratch) {
     fs::remove(conflict);
     check(fs::is_empty(rollback.output) && fileTree(rollback.game) == beforeRollback, "T096 F first rename rolled back");
     std::cout << "PASS T096 F cancellation, receipt write fault and marker rename rollback\n";
+
+    for (const bool published : {false, true}) {
+        Fixture f(scratch / (published ? "legacy-crash-after-publish" : "legacy-crash-before-publish"), "wolf");
+        const auto entries = Json::array({install(f, "translated"), install(f, "mosaic")});
+        f.save();
+        runInterruptedChild(L"--interrupt-migration", f.game, f.output);
+        const auto journal = f.project / "legacy-migration.json";
+        const auto record = Json::parse(gamefiles::read(journal));
+        const auto id = record.at("id").get<std::string>();
+        const auto suffix = record.at("suffix").get<std::string>();
+        const auto stage = partial(f.output);
+        const auto target = f.output / ("legacy-" + suffix + "-" + id.substr(0, 8) + ".llmchat-images");
+        // Materialize the exact disk states on either side of the package directory rename.
+        const auto retire = [&](const fs::path& live) {
+            auto retired = live;
+            retired += ".migrated-" + suffix;
+            fs::rename(live, retired);
+        };
+        retire(f.project / oldMark("translated", "1"));
+        if (published) {
+            retire(f.project / oldMark("mosaic", "2"));
+            fs::rename(stage, target);
+        }
+        const auto beforeRecoveryScan = snapshot(f.game);
+        const auto recoveredScan = tx::scanLegacy(project, f.game);
+        check(recoveredScan.at("totals").at("migratable") == 2,
+            "interrupted migration remains visible: " + recoveredScan.dump());
+        check(snapshot(f.game) == beforeRecoveryScan, "interrupted migration scan stays read-only");
+        check(legacyPatchInstalled(f.game), "interrupted migration keeps the legacy guard active");
+        const auto differentOutput = f.root / "DifferentOutput";
+        fs::create_directory(differentOutput);
+        requireError("RECOVERY_REQUIRED", "recover only in the same output directory", [&] {
+            tx::migrateLegacy(project, f.game, differentOutput, entries);
+        });
+        const auto result = tx::migrateLegacy(project, f.game, f.output, entries);
+        const auto package = utf8path::pathFromUtf8(result.at("packagePath").get<std::string>());
+        check(!fs::exists(journal) && !fs::exists(stage) &&
+            std::distance(fs::directory_iterator(f.output), fs::directory_iterator()) == 1,
+            "retry leaves a single published package and clears the recovery record");
+        check((package == target) == published && tx::inspect(package, f.game).applied,
+            "retry adopts a published package or completes a fresh migration");
+        tx::restoreAndRemove(package, f.game);
+        check(fs::is_empty(f.output) && tx::scanLegacy(project, f.game).at("entries").empty(),
+            "recovered package can restore and remove");
+    }
+    std::cout << "PASS restored legacy markers and migration interruption recovery\n";
+}
+
+int interruptMigration(const char* game, const char* output) {
+    const auto gamePath = utf8path::pathFromUtf8(game);
+    const auto index = Json::parse(gamefiles::read(gamePath / "LLMChat-JSON/images/project.json"));
+    const auto& images = index.at("images");
+    auto entries = Json::array({{{"relativePath", images.at(0).at("file")}, {"kind", "translated"}},
+        {{"relativePath", images.at(1).at("file")}, {"kind", "mosaic"}}});
+    RpgImageProject project;
+    tx::migrateLegacy(project, gamePath, utf8path::pathFromUtf8(output), entries, {{}, [](const Progress& update) {
+        if (update.phase == "publish") ExitProcess(73);
+    }});
+    return 3;
 }
 
 } // namespace
@@ -1416,6 +1493,10 @@ void legacyMigrationCases(const fs::path& scratch) {
 int main(int argc, char** argv) {
     if (argc == 4 && std::string_view(argv[1]) == "--interrupt") {
         try { return interruptChild(argv[2], argv[3]); }
+        catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 4; }
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--interrupt-migration") {
+        try { return interruptMigration(argv[2], argv[3]); }
         catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 4; }
     }
     if (argc != 2) {

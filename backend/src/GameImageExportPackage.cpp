@@ -31,6 +31,7 @@ using namespace io;
 
 constexpr uint64_t maxPixels = 64ull << 20;
 constexpr uint64_t maxWorkingBytes = 1ull << 30;
+constexpr wchar_t legacyMigrationJournal[] = L"LLMChat-JSON/images/legacy-migration.json";
 
 Json parse(const Handle& file, const Path& path) {
     try {
@@ -52,26 +53,6 @@ void copySnapshot(const Handle& source, const Path& path, const Control& control
 void report(const Control& control, std::string_view phase, size_t done, size_t total, std::string_view path = {}) {
     if (control.progress) control.progress({phase, done, total, path});
     cancel(control);
-}
-
-bool legacyPatchMatches(const Path& game, const Path& project, const std::string& id,
-    const Path& target, std::optional<std::string_view> current = {}) {
-    std::string targetBytes;
-    for (const auto dir : {"installed", "mosaic-installed", "composed-installed"}) {
-        const auto marker = project / dir / (id + ".bin");
-        const auto installed = openSource(game, marker, true);
-        if (!installed) continue;
-        if (!current) {
-            const auto file = openSource(game, target, true);
-            if (!file) return false;
-            targetBytes = read(file, game / target, maxImageBytes);
-            current = targetBytes;
-        }
-        if (length(installed, game / marker) == current->size() &&
-            read(installed, game / marker, maxImageBytes) == *current)
-            return true;
-    }
-    return false;
 }
 
 struct Selection {
@@ -305,9 +286,11 @@ class PackageGenerator {
             throw Error("INVALID_PATH", "多个目标指向同一个游戏文件：" + selected.name, selected.name);
         const auto current = read(original, game_ / selected.relative, maxImageBytes);
         const auto sourceSha256 = hash(current);
-        if (legacyPatchMatches(game_, projectDir_, image.imageId, selected.relative, current))
+        const bool stampMatches = RpgImageProject::stamp(game_ / selected.relative) == image.sourceHash;
+        const bool restored = !stampMatches && confirmation::managedOriginalSha256(game_, row, &key) == sourceSha256;
+        if (!restored && legacyPatchMatches(game_, row, selected.relative, current, &key))
             throw Error("LEGACY_PATCH_ACTIVE", "请先卸载已应用的旧图片补丁：" + selected.name, selected.name);
-        if (RpgImageProject::stamp(game_ / selected.relative) != image.sourceHash)
+        if (!stampMatches && !restored)
             throw Error("INPUT_STALE", "原图已改变，请重新扫描：" + selected.name, selected.name);
         const auto encrypted = gameresourcebackup::imageExtension(selected.relative) != ".png";
         if (encrypted != row.value("encrypted", false))
@@ -430,6 +413,28 @@ class PackageGenerator {
     }
 
 public:
+    static bool legacyPatchMatches(const Path& game, const Json& image, const Path& target,
+        std::optional<std::string_view> current = {}, const std::string* imageKey = nullptr) {
+        const auto id = image.at("id").get<std::string>();
+        std::string targetBytes;
+        for (const auto& marker : {RpgImageProject::composedImage(game, id),
+                 RpgImageProject::installedImage(game, id, false), RpgImageProject::installedImage(game, id, true)}) {
+            const auto installed = openSource(game, marker.lexically_relative(game), true);
+            if (!installed) continue;
+            if (!current) {
+                const auto file = openSource(game, target, true);
+                if (!file) return false;
+                targetBytes = read(file, game / target, maxImageBytes);
+                current = targetBytes;
+            }
+            if (length(installed, marker) != current->size() || read(installed, marker, maxImageBytes) != *current)
+                continue;
+
+            return confirmation::managedOriginalSha256(game, image, imageKey) != hash(*current);
+        }
+        return false;
+    }
+
     static Result run(RpgImageProject& project, const Request& request, const Control& control) {
         if (request.images.empty() || request.images.size() > 20000 ||
             !confirmation::portableIdentifier(request.toolVersion))
@@ -444,6 +449,8 @@ public:
             throw Error("INVALID_PATH", "输出目录与游戏目录必须互不包含", utf8(output.path));
         const DirectoryLock gameLock(game.ids.back());
         const DirectoryLock outputLock(output.ids.back());
+        if (hasFile(game.path, legacyMigrationJournal))
+            throw Error("LEGACY_PATCH_ACTIVE", "请先继续未完成的旧图片补丁迁移");
         const std::unique_lock projectLock(project.mutex_, std::try_to_lock);
         if (!projectLock) throw Error("BUSY", "图片项目正在更新，请稍后重试");
 
@@ -494,6 +501,7 @@ public:
 bool legacyPatchInstalled(const std::filesystem::path& gamePath) {
     const Root game(gamePath);
     const DirectoryLock lock(game.ids.back());
+    if (hasFile(game.path, legacyMigrationJournal)) return true;
     const Path project = "LLMChat-JSON/images";
     const auto file = project / "project.json";
     const auto index = openSource(game.path, file, true);
@@ -503,7 +511,7 @@ bool legacyPatchInstalled(const std::filesystem::path& gamePath) {
         if (image.contains("archive")) continue;
         const auto id = image.at("id").get<std::string>();
         if (!hexString(id) || id.size() > 16) continue;
-        if (legacyPatchMatches(game.path, project, id, relative(image.at("file").get<std::string>()))) return true;
+        if (PackageGenerator::legacyPatchMatches(game.path, image, relative(image.at("file").get<std::string>()))) return true;
     }
     return false;
 }

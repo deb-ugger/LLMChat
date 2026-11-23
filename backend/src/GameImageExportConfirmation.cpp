@@ -220,7 +220,7 @@ class ProjectConfirmation {
         auto originalParents = pinParents(game_.path, relativePath);
         auto original = openSource(game_.path, relativePath, true);
         const auto sourceHash = row_.at("sourceHash").get<std::string>();
-        if (!original || RpgImageProject::stamp(game_.path / relativePath) != sourceHash)
+        if (!original)
             throw Error("INPUT_STALE", "源文件已改变，请重新扫描并确认", id_);
         const auto bytes = length(original, game_.path / relativePath);
         if (bytes > maxImageBytes) throw Error("IMAGE_TOO_LARGE", "源文件超出成品导出的大小限制", id_);
@@ -230,6 +230,10 @@ class ProjectConfirmation {
             sourceDigest.add(chunk);
             if (originalHeader.size() < 40) originalHeader.append(chunk.substr(0, 40 - originalHeader.size()));
         });
+        const auto originalSha = sourceDigest.finish();
+        if (RpgImageProject::stamp(game_.path / relativePath) != sourceHash &&
+            managedOriginalSha256(game_.path, row_) != originalSha)
+            throw Error("INPUT_STALE", "源文件已改变，请重新扫描并确认", id_);
 
         const auto folder = RpgImageProject::folder(game_.path);
         const auto path = layer_ == "translation" ? folder / "rendered" / (id_ + ".png") :
@@ -247,7 +251,7 @@ class ProjectConfirmation {
         if (layer_ == "translation" && row_.value("renderedHash", "") != version)
             throw Error("INPUT_STALE", "译图版本已改变，请重新确认", id_);
         return {relativePath, std::move(original), std::move(candidate), std::move(originalParents),
-            std::move(candidateParents), sourceHash, sourceDigest.finish(), version, pngSha, std::move(png),
+            std::move(candidateParents), sourceHash, originalSha, version, pngSha, std::move(png),
             std::move(originalHeader), width, height, bytes};
     }
 
@@ -282,6 +286,22 @@ class ProjectConfirmation {
     }
 
 public:
+    static std::optional<std::string> managedOriginalDigest(const Path& game, const Json& image, const std::string* imageKey) {
+        const auto id = image.at("id").get<std::string>();
+        const auto version = image.at("sourceHash").get<std::string>();
+        if (!hexString(id) || id.size() > 16 || !stamp(version) || version.size() > 64) return std::nullopt;
+        const auto backup = RpgImageProject::originalCache(game, image);
+        const auto original = openSource(game, backup.lexically_relative(game), true);
+        if (!original) return std::nullopt;
+        std::string key;
+        if (!imageKey && image.value("encrypted", false)) {
+            const auto system = detectEngine(game).marker;
+            key = Json::parse(read(openSource(game, system), game / system)).value("encryptionKey", "");
+            imageKey = &key;
+        }
+        return hash(RpgImageProject::imageBytes(image, read(original, backup, maxImageBytes), imageKey ? *imageKey : key, true));
+    }
+
     ProjectConfirmation(RpgImageProject& project, const Path& game, const Json& request)
         : game_(game), lock_(game_.ids.back()), projectLock_(project.mutex_, std::try_to_lock),
           engine_(detectEngine(game_.path)), id_(request.at("imageId").get<std::string>()),
@@ -364,6 +384,10 @@ public:
         }
     }
 };
+
+std::optional<std::string> managedOriginalSha256(const Path& game, const Json& image, const std::string* imageKey) {
+    return ProjectConfirmation::managedOriginalDigest(game, image, imageKey);
+}
 
 nlohmann::json save(RpgImageProject& project, const std::filesystem::path& game, const nlohmann::json& request) {
     return ProjectConfirmation(project, game, request).save(request);
