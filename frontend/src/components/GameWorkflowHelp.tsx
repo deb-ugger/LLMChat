@@ -284,6 +284,16 @@ export function ApplicationHelpPage({ onBack }: { onBack: () => void }) {
             onClick={() => setMode("stuck")}><b>我卡住了</b><span>按症状直接查卡点</span></button>
         </div>
 
+        {mode === "guide" && current.steps.length > 1 && <ol className="help-chain" aria-label="步骤顺序">
+          {current.steps.map((step, index) => <li key={step.title} className="help-chain-node">
+            <span>{step.title}</span>
+            {index < current.steps.length - 1 && <i aria-hidden="true" />}
+          </li>)}
+        </ol>}
+        {mode === "guide" && current.steps.length > 1 && <p className="help-chain-note">
+          横排顺序就是执行顺序；「图片翻译」与「图片去码」都只依赖扫描结果，可以互换先后，其余步骤按箭头依次进行。
+        </p>}
+
         {mode === "guide"
           ? <GuideSections steps={section === "unity" ? current.steps : current.steps} />
           : <div className="help-stuck">
