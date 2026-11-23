@@ -14,6 +14,7 @@ import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../sys
  */
 
 type Level = "lo" | "mid" | "hi";
+type Tone = "cpu" | "memory" | "disk" | "network" | "gpu" | "temp" | "service";
 
 const PERCENT_MID = 50;
 const PERCENT_HIGH = 80;
@@ -73,6 +74,7 @@ function sparkPath(series: readonly (number | null)[], max: number | null): stri
 type MetricSpec = {
   key: string;
   label: string;
+  tone: Tone;
   secondary?: string;
   value: string;
   unit?: string;
@@ -164,6 +166,7 @@ export function SystemPerfBar() {
     return [
       {
         key: "cpu",
+        tone: "cpu",
         label: "CPU",
         secondary: formatTemp(latest?.cpuTempC ?? null),
         secondaryLevel: levelOfTemp(latest?.cpuTempC ?? null),
@@ -174,6 +177,7 @@ export function SystemPerfBar() {
       },
       {
         key: "memory",
+        tone: "memory",
         label: "内存",
         value: formatPercent(latest?.memory ?? null),
         level: levelOfPercent(latest?.memory ?? null),
@@ -182,6 +186,7 @@ export function SystemPerfBar() {
       },
       {
         key: "disk",
+        tone: "disk",
         label: "磁盘",
         secondary: disk.value === "—" ? "—" : `${disk.value} ${disk.unit}`,
         value: formatPercent(latest?.diskPercent ?? null),
@@ -191,6 +196,7 @@ export function SystemPerfBar() {
       },
       {
         key: "network",
+        tone: "network",
         label: "网络",
         value: network.value,
         unit: network.unit,
@@ -200,6 +206,7 @@ export function SystemPerfBar() {
       },
       {
         key: "gpu",
+        tone: "gpu",
         label: "GPU",
         secondary: gpuTemperature === "—" ? undefined : gpuTemperature,
         secondaryLevel: levelOfTemp(latest?.gpuTempC ?? null),
@@ -210,6 +217,7 @@ export function SystemPerfBar() {
       },
       {
         key: "service",
+        tone: "service",
         label: "模型服务",
         secondary: modelCount == null ? "—" : `${modelCount} 模型`,
         value: tok.value,
@@ -252,7 +260,7 @@ export function SystemPerfBar() {
         {metrics.map(metric => {
           const path = sparkPath(metric.series, metric.max);
           return (
-            <span className={`sys-metric${metric.level ? ` is-${metric.level}` : ""}`} key={metric.key}>
+            <span className={`sys-metric tone-${metric.tone}${metric.level ? ` is-${metric.level}` : ""}`} key={metric.key}>
               <span className="sys-metric-text">
                 <span className="sys-metric-key">{metric.label}</span>
                 {metric.secondary ? (
@@ -282,6 +290,9 @@ export function SystemPerfBar() {
             <span className="sysbar-panel-sub">
               {range === "3m" ? "近 3 分钟" : range === "30m" ? "近 30 分钟" : "本次运行"} · 每 {POLL_MS / 1000} 秒采样
             </span>
+            <span className="sysbar-panel-time">
+              采样时刻 {at ? new Date(at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}
+            </span>
             <span className="sysbar-chips" role="group" aria-label="时间区间">
               {([["3m", "3 分钟"], ["30m", "30 分钟"], ["run", "本次运行"]] as const).map(([key, label]) => (
                 <button
@@ -297,15 +308,14 @@ export function SystemPerfBar() {
             </span>
           </div>
           <div className="sysbar-cards">
-            <PanelCard label="CPU" value={formatPercent(latest?.cpu ?? null)} peak={peakOf(panelSeries, "cpu", formatPercent)} level={levelOfPercent(latest?.cpu ?? null)} series={panelSeries.map(point => point.cpu)} max={100} />
-            <PanelCard label="内存" value={formatPercent(latest?.memory ?? null)} peak={peakOf(panelSeries, "memory", formatPercent)} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
-            <PanelCard label="磁盘" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(panelSeries, "diskPercent", formatPercent)} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
-            <PanelCard label="网络" value={formatRateShort(latest?.network ?? null)} peak={peakOf(panelSeries, "network", formatRateShort)} level={null} series={panelSeries.map(point => point.network)} max={null} />
-            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={gpuPanelPeak} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
-            <PanelCard label="CPU 温度" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(panelSeries, "cpuTempC", formatTemp)} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
-            <PanelCard label="模型服务" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(panelSeries, "tokensPerSecond", formatTokShort)} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
+            <PanelCard label="CPU" tone="cpu" value={formatPercent(latest?.cpu ?? null)} peak={peakOf(panelSeries, "cpu", formatPercent)} peakLevel={levelOfPercent(peakValue(panelSeries, "cpu"))} level={levelOfPercent(latest?.cpu ?? null)} series={panelSeries.map(point => point.cpu)} max={100} />
+            <PanelCard label="内存" tone="memory" value={formatPercent(latest?.memory ?? null)} peak={peakOf(panelSeries, "memory", formatPercent)} peakLevel={levelOfPercent(peakValue(panelSeries, "memory"))} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
+            <PanelCard label="磁盘" tone="disk" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(panelSeries, "diskPercent", formatPercent)} peakLevel={levelOfPercent(peakValue(panelSeries, "diskPercent"))} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
+            <PanelCard label="网络" tone="network" value={formatRateShort(latest?.network ?? null)} peak={peakOf(panelSeries, "network", formatRateShort)} peakLevel={null} level={null} series={panelSeries.map(point => point.network)} max={null} />
+            <PanelCard label="GPU" tone="gpu" value={formatPercent(latest?.gpu ?? null)} peak={gpuPanelPeak} peakLevel={levelOfPercent(peakValue(panelSeries, "gpu"))} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
+            <PanelCard label="CPU 温度" tone="temp" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(panelSeries, "cpuTempC", formatTemp)} peakLevel={levelOfTemp(peakValue(panelSeries, "cpuTempC"))} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
+            <PanelCard label="模型服务" tone="service" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(panelSeries, "tokensPerSecond", formatTokShort)} peakLevel={null} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
           </div>
-          <span className="sysbar-panel-foot">采样时刻 {at ? new Date(at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}</span>
         </div>
       ) : null}
     </div>
@@ -316,17 +326,22 @@ function PanelCard(props: {
   label: string;
   value: string;
   peak: string;
+  peakLevel: Level | null;
+  tone: Tone;
   level: Level | null;
   series: (number | null)[];
   max: number | null;
 }) {
   const path = sparkPath(props.series, props.max);
   return (
-    <div className={`sysbar-card${props.level ? ` is-${props.level}` : ""}`}>
+    <div className={`sysbar-card tone-${props.tone}${props.level ? ` is-${props.level}` : ""}`}>
       <div className="sysbar-card-head">
         <span className="sysbar-card-key">{props.label}</span>
         <span className="sysbar-card-value">{props.value}</span>
-        <span className="sysbar-card-peak">峰 {props.peak}</span>
+        <span className={`sysbar-card-peak${props.peakLevel ? ` is-${props.peakLevel}` : ""}`}>
+          <span className="sysbar-card-peak-label">峰</span>
+          <span className="sysbar-card-peak-value">{props.peak}</span>
+        </span>
       </div>
       <svg viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true">
         {path ? <path d={path} fill="none" stroke="currentColor" strokeWidth="1.4" vectorEffect="non-scaling-stroke" /> : null}
@@ -341,6 +356,19 @@ const atMs = (point: SystemPerformancePoint) =>
 type NumericKey =
   | "cpu" | "memory" | "disk" | "network" | "gpu"
   | "diskPercent" | "cpuTempC" | "tokensPerSecond" | "modelCount";
+
+function peakValue(
+  points: readonly SystemPerformancePoint[],
+  key: NumericKey,
+): number | null {
+  let peak: number | null = null;
+  for (const point of points) {
+    const value = point[key];
+    if (value == null || Number.isNaN(value)) continue;
+    if (peak == null || value > peak) peak = value;
+  }
+  return peak;
+}
 
 function peakOf(
   points: readonly SystemPerformancePoint[],
