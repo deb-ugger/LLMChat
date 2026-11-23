@@ -1,9 +1,9 @@
-import { getLayoutRect, getLayoutViewport } from "./viewportLayout";
+import { positionWindowPopover, WindowControls } from "./components/WindowControls";
 import { FeatureIcon } from "./components/FeatureIcon";
 import { SystemPerfBar } from "./components/SystemPerfBar";
 import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
 import { openProjectBenchmark } from "./gameBenchmarkWindow";
-import { ApplicationHelpPage, isHelpModule, type HelpModule } from "./components/GameWorkflowHelp";
+import { ApplicationHelpPage } from "./components/GameWorkflowHelp";
 import { BuildSpeedTest } from "./components/BuildSpeedTest";
 import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
@@ -51,15 +51,15 @@ const pageLabels = {
   downloads: "下载",
   stats: "统计",
   help: "帮助",
-  benchmark: "测试队列",
+  benchmark: "记录与测试",
   appearance: "外观",
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
 type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance" | "benchmark"> | "buildSpeed";
-const navigation: readonly NavigationItem[][] = [
+const navigation: readonly Exclude<NavigationItem, "downloads" | "help" | "appearance">[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
-  ["output", "downloads", "stats", "benchmark", "help", "appearance", "settings"],
+  ["output", "stats", "benchmark", "settings"],
 ];
 const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
 
@@ -69,34 +69,25 @@ function PagePanel({ feature, active, children }: { feature: Page; active: boole
   </div>;
 }
 
-function AppearanceButton({ railHidden }: { railHidden: boolean }) {
+function AppearanceButton() {
   const id = useId();
   const panel = useRef<HTMLDivElement>(null);
   const [theme, setSelectedTheme] = useState(getTheme);
   const [open, setOpen] = useState(false);
 
   useEffect(() => onThemeChange(setSelectedTheme), []);
-  useEffect(() => {
-    if (railHidden && panel.current?.matches(":popover-open")) panel.current.hidePopover();
-  }, [railHidden]);
 
   return <>
-    <button type="button" className={open ? "nav-item active" : "nav-item"} popoverTarget={id}
+    <button type="button" className="window-action" popoverTarget={id}
       aria-haspopup="dialog" aria-controls={id} aria-expanded={open} aria-label={pageLabels.appearance}
-      data-tooltip={pageLabels.appearance} onClick={event => {
-        const { scale, height } = getLayoutViewport();
-        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
-        panel.current?.style.setProperty("--appearance-left", `${bounds.right + 8}px`);
-        panel.current?.style.setProperty("--appearance-bottom", `${height - bounds.bottom}px`);
-      }}>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      data-tooltip={pageLabels.appearance} onClick={event => positionWindowPopover(event.currentTarget, panel.current)}>
+      <span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
         <circle cx="12" cy="12" r="8" />
         <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" />
-      </svg>
-      <span>{pageLabels.appearance}</span>
+      </svg></span>
     </button>
-    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover" role="dialog" aria-label={pageLabels.appearance}
-      onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
+    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover window-action-popover" role="dialog"
+      aria-label={pageLabels.appearance} onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
       {THEMES.map(option => <button key={option.id} type="button" className="nav-appearance-option"
         aria-pressed={theme === option.id} onClick={() => setTheme(option.id)}>
         <span className="nav-appearance-swatch" aria-hidden="true" style={{
@@ -115,8 +106,8 @@ function TestQueueButton({ railHidden, onOpen, selected }: {
   railHidden: boolean; onOpen: () => void; selected: boolean;
 }) {
   return <button type="button" className={selected ? "nav-item active" : "nav-item"}
-    aria-label="运行记录" data-tooltip="运行记录" aria-current={selected ? "page" : undefined}
-    onClick={() => { if (!railHidden) onOpen(); }}><FeatureIcon feature="benchmark" size={20} /><span>运行记录</span></button>;
+    aria-label={pageLabels.benchmark} data-tooltip={pageLabels.benchmark} aria-current={selected ? "page" : undefined}
+    onClick={() => { if (!railHidden) onOpen(); }}><FeatureIcon feature="benchmark" size={20} /><span>{pageLabels.benchmark}</span></button>;
 }
 
 export default function App() {
@@ -129,7 +120,7 @@ export default function App() {
     return () => { channel.removeEventListener("message", receive); channel.close(); };
   }, []);
   const [page, setPage] = useState<Page>("chat");
-  const [helpSection, setHelpSection] = useState<HelpModule>("chat");
+  const helpReturnPage = useRef<Exclude<Page, "help">>("chat");
   const [openGameQueue, setOpenGameQueue] = useState(false);
   useEffect(() => {
     if (!openGameQueue || page !== "unity") return;
@@ -423,7 +414,8 @@ export default function App() {
 
   if (!backendReady) {
     if (backendError) {
-      return (
+      return <>
+        <WindowControls />
         <div className="boot">
           <div className="boot-card">
             <h1>LLMChat</h1>
@@ -438,20 +430,29 @@ export default function App() {
             </button>
           </div>
         </div>
-      );
+      </>;
     }
     // Quiet boot: no gray splash card while connecting.
-    return <div className="boot boot-quiet" aria-busy="true" />;
+    return <><WindowControls /><div className="boot boot-quiet" aria-busy="true" /></>;
   }
 
-  return (
+  return <>
+    <WindowControls actions={<>
+      <AppearanceButton />
+      <button type="button" className="window-action" aria-label={pageLabels.help} data-tooltip={pageLabels.help}
+        aria-current={page === "help" ? "page" : undefined} onClick={() => {
+          startupInteracted.current = true;
+          if (page === "help") return;
+          helpReturnPage.current = page;
+          setPage("help");
+        }}><span><FeatureIcon feature="help" /></span></button>
+      <AppDownloadsButton />
+    </>} />
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
-          {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> :
-            id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} selected={page === "unity"}
-              onOpen={() => { setOpenGameQueue(true); setPage("unity"); }} /> :
-            id === "appearance" ? <AppearanceButton key={id} railHidden={navRailHidden} /> : (
+          {group.map(id => id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} selected={page === "buildSpeed"}
+              onOpen={() => { setOpenGameQueue(true); setPage("unity"); }} /> : (
             <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
               aria-expanded={id === "output" ? outputExpanded : undefined}
@@ -459,7 +460,6 @@ export default function App() {
               onClick={() => {
                 if (id === "output") { setOutputExpanded(expanded => !expanded); return; }
                 if (id === "settings" || id === "chat") setSettingsInitialTab(undefined);
-                if (id === "help" && isHelpModule(page)) setHelpSection(page);
                 setPage(id);
               }}>
               <FeatureIcon feature={id === "redraw" ? "image" : id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
@@ -598,7 +598,7 @@ export default function App() {
             }}
           /></PagePanel>
         <PagePanel feature="stats" active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
-        <PagePanel feature="help" active={page === "help"}><ApplicationHelpPage section={helpSection} onSection={setHelpSection} /></PagePanel>
+        <PagePanel feature="help" active={page === "help"}><ApplicationHelpPage onBack={() => setPage(helpReturnPage.current)} /></PagePanel>
         <PagePanel feature="buildSpeed" active={page === "buildSpeed"}><BuildSpeedTest /></PagePanel>
         <PagePanel feature="settings" active={page === "settings"}><SettingsView
             settings={settings}
@@ -617,5 +617,5 @@ export default function App() {
         <SystemPerfBar />
       </div>
     </div>
-  );
+  </>;
 }

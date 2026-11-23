@@ -1,23 +1,6 @@
-.app-download-count {
-  position: absolute;
-  top: 2px;
-  right: 5px;
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-lg);
-  background: var(--accent, #1b1a16);
-  color: var(--bg-panel);
-  font-size: var(--fs-caption);
-  line-height: 14px;
-  font-variant-numeric: tabular-nums;
-}
 .app-download-panel {
-  position: fixed;
-  --download-offset: clamp(8px, var(--download-bottom, 8px), max(8px, 100dvh - 240px));
-  inset: auto auto var(--download-offset) clamp(8px, var(--download-left, 8px), max(8px, 100vw - 438px));
-  box-sizing: border-box;
-  width: min(430px, calc(100vw - 16px));
-  max-height: min(560px, calc(100dvh - var(--download-offset) - 8px));
-  margin: 0;
+  --window-popover-width: 430px;
+  --window-popover-max-height: 560px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border, #dcd6c6);

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -50,8 +51,6 @@ function DesktopWindowControls() {
   ];
 
   return <>
-    <div className="window-bar" data-tauri-drag-region="" aria-hidden="true" />
-    <div className="window-controls" role="group" aria-label="窗口控制">
     {buttons.map(({ label, path, action, danger }, index) => <button key={index} type="button"
       className={danger ? "is-close" : undefined} aria-label={label} data-tooltip={label}
       onClick={() => void action().catch(error => showAppNotice(label + "失败：" + String(error), "error"))}>
@@ -61,11 +60,25 @@ function DesktopWindowControls() {
         </svg>
       </span>
     </button>)}
-    </div>
   </>;
 }
 
-export function WindowControls() {
-  if (window.self !== window.top || !isTauri() || getCurrentWebview().label !== "main") return null;
-  return <DesktopWindowControls />;
+export function positionWindowPopover(anchor: HTMLElement, panel: HTMLElement | null) {
+  if (!panel) return;
+  const { scale, width } = getLayoutViewport();
+  const bounds = getLayoutRect(anchor.getBoundingClientRect(), scale);
+  panel.style.setProperty("--window-popover-top", (bounds.bottom + 6) + "px");
+  panel.style.setProperty("--window-popover-right", Math.max(8, width - bounds.right) + "px");
+}
+
+export function WindowControls({ actions }: { actions?: ReactNode }) {
+  const desktop = window.self === window.top && isTauri() && getCurrentWebview().label === "main";
+  if (!desktop && !actions) return null;
+  return <>
+    <div className="window-bar" data-tauri-drag-region={desktop ? "" : undefined} aria-hidden="true" />
+    <div className="window-controls" role="group" aria-label="标题栏">
+      {actions && <div className="window-actions" role="group" aria-label="应用快捷操作">{actions}</div>}
+      {desktop && <DesktopWindowControls />}
+    </div>
+  </>;
 }

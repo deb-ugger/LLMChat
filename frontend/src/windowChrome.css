@@ -1,6 +1,7 @@
 /* 标题带与窗口按钮共享高度，页面从标题带下方开始。拖动与双击由 Tauri 处理。 */
 :root:has(.window-controls) {
   --window-control-width: 46px;
+  --window-action-width: 34px;
   --window-bar-height: 32px;
 }
 
@@ -28,7 +29,14 @@
   user-select: none;
 }
 
-.window-controls > button {
+.window-actions {
+  display: flex;
+  align-items: center;
+  margin-inline-end: 8px;
+}
+
+.window-controls > button,
+.window-action {
   display: grid;
   place-items: center;
   box-sizing: border-box;
@@ -43,7 +51,10 @@
   cursor: pointer;
 }
 
-.window-controls > button > span {
+.window-action { inline-size: var(--window-action-width); }
+
+.window-controls > button > span,
+.window-action > span {
   display: grid;
   place-items: center;
   inline-size: 28px;
@@ -51,16 +62,24 @@
   border-radius: var(--radius-sm);
 }
 
-.window-controls svg {
+.window-controls > button svg {
   inline-size: 12px;
   block-size: 12px;
 }
 
-.window-controls > button:hover {
+.window-action svg {
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+.window-controls > button:hover,
+.window-action:hover {
   background: transparent;
 }
 
-.window-controls > button:hover > span {
+.window-controls > button:hover > span,
+.window-action:hover > span,
+.window-action:is([aria-expanded="true"], [aria-current="page"]) > span {
   background: var(--bg-hover);
 }
 
@@ -69,11 +88,23 @@
   background: var(--danger);
 }
 
-.window-controls > button:focus-visible {
+.window-controls > button:focus-visible,
+.window-action:focus-visible {
   outline: none;
 }
 
-.window-controls > button:focus-visible > span {
+.window-controls > button:focus-visible > span,
+.window-action:focus-visible > span {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+.window-action-popover {
+  --popover-top: var(--window-popover-top, 38px);
+  position: fixed;
+  inset: var(--popover-top) min(var(--window-popover-right, 8px), max(8px, calc(100% - var(--window-popover-width) - 8px))) auto auto;
+  box-sizing: border-box;
+  inline-size: min(var(--window-popover-width), calc(100% - 16px));
+  max-block-size: min(var(--window-popover-max-height, 100dvh), calc(100dvh - var(--popover-top) - 8px));
+  margin: 0;
 }

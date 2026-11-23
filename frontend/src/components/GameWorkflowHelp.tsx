@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import type { GameHelpSetup } from "../gameAuxWindows";
 
 const guide = {
@@ -37,17 +37,17 @@ const guide = {
     ["查找运行信息", "从左下角打开全局输出。任务开始、停止、完成和报错会显示对应模块，方便定位失败步骤。"],
   ] },
   downloads: { label: "下载", steps: [
-    ["查看资源下载", "从左下角查看模型和工具下载。资源下载完成后回到原模块选择使用。"],
+    ["查看资源下载", "点击窗口右上角的下载图标，查看模型和工具下载。资源下载完成后回到原模块选择使用。"],
   ] },
   stats: { label: "统计", steps: [
     ["查看用量", "按时间和模型查看请求及 token 使用情况。价格和费用使用设置中的计价配置。"],
   ] },
-  benchmark: { label: "测试队列", steps: [
-    ["游戏翻译", "先打开游戏工程，再从左下角「测试队列」选择「游戏翻译」。选择样本、配置和轮次，结果保存在测试记录。"],
+  benchmark: { label: "记录与测试", steps: [
+    ["游戏翻译", "先打开游戏工程，再打开左侧「记录与测试」中的「游戏翻译」。选择样本、配置和轮次，结果保存在测试记录。"],
     ["构建测速", "按预设或自定义勾选测试项。可测 WASM 全量和增量、Cargo 缓存、前端预览、仅后端更新及前后端并行。选择后手动开始，结果保存在测速页。"],
   ] },
   appearance: { label: "外观", steps: [
-    ["切换主题", "从左下角「外观」选择界面配色。主题立即更新并保存在本机。"],
+    ["切换主题", "点击窗口右上角的外观图标，选择界面配色。主题立即更新并保存在本机。"],
   ] },
   settings: { label: "设置", steps: [
     ["全局连接", "在通用设置配置模型服务、代理和凭证，并用连接测试确认设置可用。"],
@@ -55,8 +55,8 @@ const guide = {
   ] },
 } as const;
 
-export type HelpModule = keyof typeof guide;
-export const isHelpModule = (value: string): value is HelpModule => Object.hasOwn(guide, value);
+type HelpModule = keyof typeof guide;
+const isHelpModule = (value: string): value is HelpModule => Object.hasOwn(guide, value);
 
 const runtimeSteps = [
   ["检测 Unity 游戏", "在游戏详情切换到「运行时翻译」，按检测结果确认运行环境和位数。"],
@@ -71,16 +71,21 @@ function GuideSections({ steps }: { steps: HelpSteps }) {
   </section>)}</>;
 }
 
-export function ApplicationHelpPage({ section, onSection }: { section: HelpModule; onSection: (section: HelpModule) => void }) {
-  return <main className="game-workflow-help app-help-view" aria-label="帮助">
+export function ApplicationHelpPage({ onBack }: { onBack: () => void }) {
+  const [section, setSection] = useState<HelpModule>("chat");
+  const titleId = useId();
+  return <main className="game-workflow-help app-help-view" aria-labelledby={titleId}>
     <header className="game-workflow-help-header">
-      <h1>帮助</h1>
-      <label>模块 <select aria-label="帮助模块" value={section} onChange={event => {
-        const next = event.target.value;
-        if (isHelpModule(next)) onSection(next);
-      }}>
-        {Object.entries(guide).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
-      </select></label>
+      <h1 id={titleId}>帮助</h1>
+      <div className="app-help-actions">
+        <label>模块 <select aria-label="帮助模块" value={section} onChange={event => {
+          const next = event.target.value;
+          if (isHelpModule(next)) setSection(next);
+        }}>
+          {Object.entries(guide).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
+        </select></label>
+        <button type="button" className="unity-btn" onClick={onBack}>返回</button>
+      </div>
     </header>
     <div key={section} className="game-workflow-help-content">
       <GuideSections steps={guide[section].steps} />

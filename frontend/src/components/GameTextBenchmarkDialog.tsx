@@ -1094,9 +1094,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     return latest;
   }, [history, runScope, step]);
   const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
-    <header className="game-benchmark-page-header"><h2>运行记录</h2>
+    <header className="game-benchmark-page-header"><h2>记录与测试</h2>
       <div className="game-benchmark-tabs" role="tablist" aria-label="测试模块">
-        <button type="button" role="tab" aria-selected="true">运行记录</button>
+        <button type="button" role="tab" aria-selected="true">游戏翻译</button>
         <button type="button" role="tab" aria-selected="false" onClick={() => {
           const channel = new BroadcastChannel("llmchat-run-records");
           channel.postMessage({ type: "open-build-speed" });

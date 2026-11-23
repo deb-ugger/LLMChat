@@ -1,5 +1,5 @@
-import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { positionWindowPopover } from "./WindowControls";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { downloadFinished, getDownloadActions, removeDownload, useAppDownloads, type AppDownload, type DownloadStatus } from "../appDownloads";
@@ -63,29 +63,21 @@ function DownloadRow({ task }: { task: AppDownload }) {
   </li>;
 }
 
-export function AppDownloadsButton({ railHidden }: { railHidden: boolean }) {
+export function AppDownloadsButton() {
   const id = useId();
   const panel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const tasks = useAppDownloads();
   const pendingCount = tasks.filter(task => !downloadFinished(task)).length;
-  useEffect(() => {
-    if (railHidden && panel.current?.matches(":popover-open")) panel.current.hidePopover();
-  }, [railHidden]);
+  const label = pendingCount ? `下载，${pendingCount} 项未完成` : "下载";
   return <>
-    <button type="button" className={open ? "nav-item active" : "nav-item"}
-      aria-label={pendingCount ? `下载，${pendingCount} 项未完成` : "下载"} data-tooltip="下载任务"
-      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} popoverTarget={id} onClick={event => {
-        const { scale, height } = getLayoutViewport();
-        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
-        panel.current?.style.setProperty("--download-left", `${bounds.right + 8}px`);
-        panel.current?.style.setProperty("--download-bottom", `${height - bounds.bottom}px`);
-      }}>
-      <FeatureIcon feature="download" size={20} /><span>下载</span>
-      {pendingCount > 0 && <span className="app-download-count" aria-hidden="true">{pendingCount}</span>}
+    <button type="button" className="window-action" aria-label={label} data-tooltip={label}
+      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} popoverTarget={id}
+      onClick={event => positionWindowPopover(event.currentTarget, panel.current)}>
+      <span><FeatureIcon feature="download" /></span>
     </button>
     {createPortal(<div ref={panel} id={id} role="dialog" aria-labelledby={id + "-title"} popover="auto"
-      className="app-download-panel" onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
+      className="app-download-panel window-action-popover" onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
       <header>
         <h2 id={id + "-title"}>下载任务</h2>
         <button type="button" className="app-download-icon" aria-label="关闭下载任务" data-tooltip="关闭"

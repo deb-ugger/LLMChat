@@ -687,11 +687,7 @@ select:not([hidden], [multiple], [size]):focus-visible {
 }
 .nav-utilities { display:flex; flex-direction:column; flex:none; gap:3px; padding:5px var(--space-1) var(--space-2); border-top:1px solid var(--nav-line); max-height:58%; overflow-y:auto; }
 .nav-appearance-popover {
-  position: fixed;
-  inset: auto auto max(8px, var(--appearance-bottom)) var(--appearance-left);
-  width: 180px;
-  max-height: calc(100dvh - max(8px, var(--appearance-bottom)) - 8px);
-  margin: 0;
+  --window-popover-width: 180px;
   padding: var(--space-1);
   overflow: auto;
   border: 1px solid var(--border);
@@ -724,7 +720,8 @@ select:not([hidden], [multiple], [size]):focus-visible {
 
 .nav-test-option { grid-template-columns: 20px 1fr; }
 .app-help-view { flex: 1; min-width: 0; min-height: 0; }
-.app-help-view .game-workflow-help-header label { display: flex; align-items: center; gap: var(--space-2); }
+.app-help-actions, .app-help-actions > label { display: flex; align-items: center; gap: var(--space-2); }
+.app-help-actions { flex-wrap: wrap; justify-content: flex-end; }
 .app-help-view .game-workflow-help-content table { width: min(100%, 680px); border-collapse: collapse; text-align: start; }
 .app-help-view .game-workflow-help-content :is(td, th) { padding: var(--space-2); border-bottom: 1px solid var(--border); text-align: start; }
 
