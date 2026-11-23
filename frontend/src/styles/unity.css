@@ -3121,22 +3121,27 @@ body.ocr-image-resizing * {
 /* 立即开始任务：推到测试配置卡头右侧，和运行条的主按钮区分开。 */
 .game-benchmark-start-here { margin-inline-start: auto; white-space: nowrap; }
 
-/* 模型比较面板：三张图，等宽两列，散点占整行。 */
+/* 散点图占整行，比较对话框独立于运行记录的滚动区。 */
 .game-benchmark-compare {
-  display: grid;
-  gap: var(--space-3);
+  box-sizing: border-box;
+  inline-size: min(1400px, calc(100% - 2 * var(--page-inset)));
+  max-block-size: calc(100dvh - 2 * var(--page-inset));
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--radius-lg);
   background: var(--bg-panel);
+  color: var(--text);
+  overflow: auto;
 }
+.game-benchmark-compare[open] { display: grid; gap: var(--space-3); }
+.game-benchmark-compare::backdrop { background: rgb(0 0 0 / 42%); }
 .game-benchmark-compare-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
 }
-.game-benchmark-compare-head > strong { font-size: var(--fs-section); font-weight: 600; }
+.game-benchmark-compare-head > h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .game-benchmark-compare-head > .hint { margin: 0; }
 .game-benchmark-compare-head > button:last-child { margin-inline-start: auto; }
 .game-benchmark-compare-grid {
@@ -3146,7 +3151,8 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-compare-card {
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
+  align-content: start;
   min-inline-size: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
@@ -3161,9 +3167,9 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-compare-card > header > strong { font-size: var(--fs-body); font-weight: 600; }
 .game-benchmark-compare-card > header > span { color: var(--text-dim); font-size: var(--fs-caption); }
-.game-benchmark-compare-chart { block-size: 220px; min-inline-size: 0; }
-.game-benchmark-compare-card.is-wide .game-benchmark-compare-chart { block-size: 260px; }
-@media (max-width: 900px) {
+.game-benchmark-compare-card > p { margin: 0; }
+.game-benchmark-compare-chart { block-size: clamp(180px, 28dvh, 320px); min-inline-size: 0; }
+@media (max-width: 720px) {
   .game-benchmark-compare-grid { grid-template-columns: minmax(0, 1fr); }
 }
 

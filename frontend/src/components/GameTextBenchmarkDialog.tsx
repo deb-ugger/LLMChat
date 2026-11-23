@@ -744,7 +744,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const [history, setHistory] = useState<BenchmarkResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
-  const [compareRuns, setCompareRuns] = useState<readonly BenchmarkCompareRun[] | null>(null);
+  const [comparison, setComparison] = useState<{ runs: readonly BenchmarkCompareRun[]; loading?: boolean; qualityError?: string }>();
+  const closeComparison = useCallback(() => setComparison(undefined), []);
   const [perfNow, setPerfNow] = useState<SystemPerformancePoint | null>(null);
   const [perfPoints, setPerfPoints] = useState<SystemPerformancePoint[]>([]);
   const anyRunning = snapshot.jobs.some(job => job.status === "运行中") ||
@@ -802,6 +803,21 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     try { setReport(await compareMosaicTaskWithDataset(id, runs, reference)); }
     catch (error) { showAppNotice(String(error), "error"); }
     finally { setReportBusy(false); }
+  }
+  async function compareTask(id: string, runs: readonly BenchmarkResult[], reference: unknown) {
+    const loading = !!mosaicStep && mosaicStep !== "mosaicRedraw" && typeof reference === "string";
+    const opened = { runs, loading };
+    setComparison(opened);
+    if (!loading || typeof reference !== "string") return;
+    try {
+      const report = await compareMosaicTaskWithDataset(id, runs, reference);
+      const byRun = new Map(report.totals.map(row => [row.runId, row]));
+      setComparison(current => current === opened ? { runs: runs.map(run => ({
+        ...run, quality: run.performance.taskId ? byRun.get(run.performance.taskId) : undefined,
+      })) } : current);
+    } catch (error) {
+      setComparison(current => current === opened ? { runs, qualityError: error instanceof Error ? error.message : String(error) } : current);
+    }
   }
   const totalRounds = Number(rounds);
   const validRounds = Number.isInteger(totalRounds) && totalRounds >= 1 && totalRounds <= 100;
@@ -1028,7 +1044,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           </summary>
           <div className="game-benchmark-record-runs">
           {task.runs.length > 1 ? <button type="button" className="unity-btn is-secondary"
-            onClick={() => setCompareRuns(task.runs as unknown as readonly BenchmarkCompareRun[])}>
+            onClick={() => void compareTask(task.id, task.runs, reference)}>
             比较这次记录（{task.runs.length} 项）
           </button> : null}
           {mosaicStep && mosaicStep !== "mosaicRedraw" && typeof reference === "string" &&
@@ -1065,11 +1081,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <div className="game-benchmark-formal-target">{targetControls}</div>
         <FormalRunRecords scope={formalScope} step={formalStep} />
       </>}
-    </div></div>
-    {taskDialogs}
-    {compareRuns ? <RunComparePanel runs={compareRuns} onClose={() => setCompareRuns(null)} /> : null}
-    <SystemPerfBar latest={perfNow} points={perfPoints} />
-    {report && <section className="game-benchmark-section" aria-label="数据集对照总结" style={{ maxHeight: "35vh", overflow: "auto" }}>
+    {report && <section className="game-benchmark-section" aria-label="数据集对照总结">
       <header className="game-benchmark-records-head">
         <h3>{report.title} · 对照总结</h3>
         <button type="button" className="unity-btn" onClick={() => void downloadMosaicTaskReport(report)
@@ -1084,6 +1096,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           <td>{row.foundBoxes} / {row.expectedBoxes}</td><td>{row.extraBoxes}</td><td>{row.unlabelledPositive}</td><td>{gameDuration(row.seconds * 1000)}</td>
         </tr>)}</tbody></table>
     </section>}
+    </div></div>
+    {taskDialogs}
+    {comparison && <RunComparePanel {...comparison} itemUnit={step === "translate" || step === "screen" ? "条" : "张"} onClose={closeComparison} />}
+    <SystemPerfBar latest={perfNow} points={perfPoints} />
     <footer className="game-benchmark-footer">
     {recordMode === "test" && !taskView && <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>}
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
