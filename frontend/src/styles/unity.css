@@ -2235,7 +2235,6 @@ body.ocr-image-resizing * {
 .game-flow-item.is-benchmark .game-flow-model-name { color: var(--flow-color); }
 .game-flow-item.is-benchmark > .game-flow-config { background: color-mix(in srgb, var(--flow-color) 6%, var(--panel, var(--bg-panel))); }
 .game-benchmark-records-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.game-benchmark-record-date { color: var(--text-muted); margin-inline-end: 8px; font-size: var(--fs-caption); }
 .game-flow-item::before {
   content: "";
   position: absolute;
@@ -3013,8 +3012,60 @@ body.ocr-image-resizing * {
 .game-benchmark-queue-title { display: flex; align-items: center; gap: var(--space-2); }
 .game-benchmark-queue-title > strong { min-width: 0; text-wrap: pretty; }
 .game-benchmark-queue-title > .game-flow-metric { flex: none; }
-.game-benchmark-record-task { min-width: 0; }
-.game-benchmark-record-task.has-failure,
+.game-benchmark-record-day { display: grid; gap: var(--space-2); min-inline-size: 0; }
+.game-benchmark-record-day + .game-benchmark-record-day { margin-block-start: var(--space-2); }
+.game-benchmark-record-day h4 { margin: 0; color: var(--text-muted); font-size: var(--fs-caption); font-weight: 500; }
+.game-benchmark-results .game-benchmark-record-task { padding: 0; min-inline-size: 0; }
+.game-benchmark-record-task.is-failure { --record-status-color: var(--danger); }
+.game-benchmark-record-task.is-complete { --record-status-color: var(--success); }
+.game-benchmark-record-task.is-incomplete { --record-status-color: var(--warning); }
+.game-benchmark-record-task > summary {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: inherit;
+  cursor: pointer;
+  list-style: none;
+}
+.game-benchmark-record-task > summary::-webkit-details-marker { display: none; }
+.game-benchmark-record-task > summary::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 3px;
+  border-start-start-radius: var(--radius-md);
+  border-end-start-radius: var(--radius-md);
+  background: var(--record-status-color);
+}
+.game-benchmark-record-task > summary:hover { background: var(--bg-hover); }
+.game-benchmark-record-task > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.game-benchmark-record-main, .game-benchmark-record-result { display: flex; flex-direction: column; gap: var(--space-1); min-inline-size: 0; }
+.game-benchmark-record-main > strong { font-size: var(--fs-body); color: var(--text); }
+.game-benchmark-record-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); color: var(--text-muted); font-size: var(--fs-caption); }
+.game-benchmark-record-tags > span { padding: 1px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.game-benchmark-record-tags > .game-benchmark-record-status { color: var(--record-status-color); }
+.game-benchmark-record-result { text-align: end; }
+.game-benchmark-record-result > strong { font-size: var(--fs-section); color: var(--text); font-variant-numeric: tabular-nums; }
+.game-benchmark-record-meta { color: var(--text-muted); font-size: var(--fs-caption); }
+.game-benchmark-record-meta button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.game-benchmark-record-meta button:hover { color: var(--text); text-decoration: underline; }
+.game-benchmark-record-meta button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.game-benchmark-record-task[open] > summary .game-benchmark-record-compare { display: none; }
+.game-benchmark-record-task > .game-benchmark-record-runs { margin: 0; padding: 0 var(--space-4) var(--space-3); }
+@media (width <= 1100px) {
+  .game-benchmark-record-task > summary { grid-template-columns: minmax(0, 1fr); }
+}
 .game-benchmark-record-runs > details.has-failure { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 .game-benchmark-record-failure { color: var(--danger); font-weight: 600; }
 .game-benchmark-record-parameters {

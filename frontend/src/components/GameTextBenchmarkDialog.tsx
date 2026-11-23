@@ -933,6 +933,21 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   };
 
   const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
+  const taskDays = useMemo(() => {
+    const days = new Map<string, { date: Date | null; records: typeof tasks }>();
+    for (const task of [...tasks].sort((left, right) => (Date.parse(right.firstTime) || 0) - (Date.parse(left.firstTime) || 0))) {
+      const date = new Date(task.firstTime);
+      const day = Number.isNaN(date.getTime()) ? null : date;
+      const key = day ? day.toDateString() : "";
+      let group = days.get(key);
+      if (!group) { group = { date: day, records: [] }; days.set(key, group); }
+      group.records.push(task);
+    }
+    return days;
+  }, [tasks]);
+  const recordToday = new Date();
+  const recordYesterday = new Date(recordToday);
+  recordYesterday.setDate(recordYesterday.getDate() - 1);
   const [restoringRun, setRestoringRun] = useState<string>();
   const continueBatch = async (reference: ArchivedBenchmarkRef) => {
     setRestoringRun(reference.queueId);
@@ -1047,7 +1062,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
         {historyError && <p className="unity-offline-error" role="alert">{historyError}</p>}
         {!historyLoading && !historyError && !tasks.length && <p className="hint">暂无测试记录。</p>}
-        {tasks.map(task => {
+        {[...taskDays].map(([day, { date, records }]) => <section className="game-benchmark-record-day" key={day}>
+          <h4>{date
+            ? `${day === recordToday.toDateString() ? "今天 · " : day === recordYesterday.toDateString() ? "昨天 · " : date.getFullYear() !== recordToday.getFullYear() ? date.getFullYear() + "/" : ""}${date.getMonth() + 1}/${date.getDate()}`
+            : "日期未记录"}</h4>
+        {records.map(task => {
           const first = task.runs[0];
           const { scope: archivedScope, step: archivedStep, benchmark: metadata } = first.performance;
           const taskStep = archivedBenchmarkStep(archivedStep);
@@ -1063,10 +1082,39 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             taskStep === "mosaicRefine" ? "工程初筛快照" :
             mosaicTask && config?.mosaic?.selection === "all" ? "工程全部可用图片" :
             sampleUnit === "条" ? "工程已勾选文本" : "工程已勾选图片";
-          return <details key={task.id} className={"game-benchmark-record-task" + (task.failed ? " has-failure" : "")}>
-          <summary><strong>{taskLabel}</strong>{" · "}<span className="game-benchmark-record-date">{task.firstTime && new Date(task.firstTime).toLocaleString("zh-CN", { hour12: false })}</span>
-            {task.planned ? task.rounds + " 轮 · " + task.configs + " 个配置 · 已完成 " + task.completed + "/" + task.rounds * task.configs + " 项" :
-              "已归档 " + task.runs.length + " 项"}{task.failed > 0 && <strong className="game-benchmark-record-failure"> · {task.failed} 项含失败</strong>}{task.stopped > 0 && ` · ${task.stopped} 项暂停或中止`}
+          const total = task.planned ? task.rounds * task.configs : task.runs.length;
+          const incomplete = task.stopped > 0 || task.completed < total;
+          const tone = task.failed ? "failure" : incomplete ? "incomplete" : "complete";
+          const stoppedLabel = task.runs.some(run => run.status === "已中止") ? "已中止" : "已暂停";
+          const status = task.failed ? `含 ${task.failed} 项失败` : incomplete
+            ? task.stopped ? stoppedLabel : "未完成" : "全部完成";
+          const canCompare = task.runs.length > 1 ||
+            (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && typeof reference === "string";
+          const openComparison = () => {
+            void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
+              scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit })
+              .catch(error => showAppNotice(String(error), "error"));
+          };
+          return <details key={task.id} className={`game-benchmark-record-task is-${tone}`}>
+          <summary>
+            <span className="game-benchmark-record-main">
+              <strong>{taskStep ? benchmarkTargetLabel(taskStep) : "未记录步骤"}</strong>
+              <span className="game-benchmark-record-tags">
+                <span className="game-benchmark-record-status">{status}</span>
+                <span>{task.rounds} 轮</span>
+                <span>{task.configs} 个配置</span>
+                <span>{first.selected} {sampleUnit}</span>
+              </span>
+            </span>
+            <span className="game-benchmark-record-result">
+              <strong>{task.completed}/{total}</strong>
+              <span className="game-benchmark-record-meta">
+                {date && <time dateTime={task.firstTime}>{new Date(task.firstTime).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })}</time>}
+                {canCompare ? <span className="game-benchmark-record-compare">
+                  {date && " · "}<button type="button" onClick={event => { event.preventDefault(); openComparison(); }}>打开对照</button>
+                </span> : <span>{date && " · "}{incomplete ? "已停止" : "查看记录"}</span>}
+              </span>
+            </span>
           </summary>
           <div className="game-benchmark-record-runs">
           <p className="hint" title={projectPath}>{taskStep && <>测试内容 {content} · 步骤 {benchmarkTargetLabel(taskStep)} · </>}
@@ -1074,13 +1122,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             {typeof metadata?.sampleLimit === "number" && (metadata.sampleLimit > 0 ? " · 上限 " + metadata.sampleLimit + " " + sampleUnit : " · 样本不限")}
             {typeof reference === "string" && reference !== inputSet && <> · 对照集 {filename(reference.replace(/[\\/]manifest\.json$/i, ""))}</>}
           </p>
-          {(task.runs.length > 1 ||
-            (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && typeof reference === "string") &&
-            <button type="button" className="unity-btn is-secondary" onClick={() => {
-              void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
-                scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit })
-                .catch(error => showAppNotice(String(error), "error"));
-            }}>测试结果对照（{task.runs.length} 项）</button>}
+          {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>测试结果对照（{task.runs.length} 项）</button>}
           {taskStep && isMosaicStep(taskStep) && archivedScope === textScope + ":benchmark:mosaic" &&
             task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
             <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
@@ -1119,6 +1161,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           </details>})}
           </div>
         </details>})}
+        </section>)}
       </BenchmarkSection>
       </div>
       </> : <>
