@@ -368,13 +368,13 @@ let executing: Promise<void> | undefined;
 let historyRevision = 0;
 let showingTaskId: string | undefined;
 let blockedTaskId: string | undefined;
-let approvedTaskId: string | undefined;
+let shownTaskDirty = false;
 const formalWorkflows = new Map<string, FormalActivity>();
 export const benchmarkBlockingReason = "测试进行中，完成后可操作";
 export const formalBlockingReason = "等待正式任务结束";
 
 export function isBenchmarkRunning() {
-  return !!controller || (running && !formalWorkflows.size);
+  return !!controller || (running && !blockedTaskId && !formalWorkflows.size);
 }
 
 export function useBenchmarkRunning() {
@@ -397,8 +397,11 @@ export function useFormalWorkflowActivity(active: boolean, game: string, label: 
     formalWorkflows.delete(job.id);
     // Leaving an unfinished workspace does not release queued tests automatically.
     if (job.state === "unfinished") {
-      running = false;
-      for (const waiting of jobs) if (waiting.status === "等待") waiting.status = "待开始";
+      for (const waiting of jobs) if (waiting.status === "等待") {
+        waiting.status = waiting.progress?.state === "paused" ? "已暂停" : "待开始";
+      }
+      requestQueuePause("已暂停测试队列");
+      return;
     }
     publish();
     if (!formalWorkflows.size && running) queueMicrotask(pumpQueue);
@@ -446,18 +449,18 @@ async function cleanupJob(job?: QueuedJob) {
 
 function requestQueuePause(reason: string) {
   running = false;
-  approvedTaskId = undefined;
-  if (blockedTaskId) {
-    blockedTaskId = undefined;
-    for (const job of jobs) if (job.status === "等待") job.status = job.progress?.state === "paused" ? "已暂停" : "待开始";
+  for (const job of jobs) if (job.status === "等待") {
+    if (job.progress?.state === "paused") job.status = "已暂停";
+    else if (job.id === blockedTaskId) job.status = "待开始";
   }
+  blockedTaskId = undefined;
   controller?.abort(reason);
   publish();
 }
 
-async function pauseQueue(reason: string) {
+async function pauseQueue(reason: string, closeViewer = false) {
   requestQueuePause(reason);
-  closeShownTask();
+  if (closeViewer) closeShownTask();
   await executing;
   await cleanupJob();
 }
@@ -470,12 +473,11 @@ async function runJobs() {
   while (running && !blockedTaskId && !formalWorkflows.size) {
     const job = nextJob();
     if (!job) break;
-    if (showingTaskId === job.id && approvedTaskId !== job.id) {
+    if (showingTaskId === job.id && shownTaskDirty) {
       blockedTaskId = job.id;
       publish();
       break;
     }
-    if (approvedTaskId === job.id) approvedTaskId = undefined;
     job.request = { ...job.request, configs: job.request.configs.filter(config => config.enabled !== false) };
     const abort = new AbortController();
     controller = abort;
@@ -627,6 +629,7 @@ function closeShownTask(id = showingTaskId) {
   if (!id || showingTaskId !== id) return;
   if (blockedTaskId === id) throw new Error("请先选择如何处理轮到的任务");
   showingTaskId = undefined;
+  shownTaskDirty = false;
   const index = jobs.findIndex(job => job.id === id &&
     (job.status === "完成" || job.status === "失败" && !!job.progress?.total));
   if (index >= 0) { jobs.splice(index, 1); publish(); }
@@ -751,17 +754,31 @@ export const benchmarkRunner = {
     if (showingTaskId === id && blockedTaskId === id) requestQueuePause("已中止队列");
     closeShownTask(id);
   },
+  setTaskDirty(id: string, dirty: boolean) {
+    if (showingTaskId !== id) return;
+    if (dirty && !canEditBenchmarkTask(shownJob(id))) throw new Error("任务已开始，当前修改尚未用于测试");
+    shownTaskDirty = dirty;
+    if (!dirty && blockedTaskId === id) {
+      blockedTaskId = undefined;
+      publish();
+      pumpQueue();
+    }
+  },
   saveTask(id: string, configs: BenchmarkConfig[]) {
     saveTaskConfigs(shownJob(id), configs);
+    shownTaskDirty = false;
+    if (blockedTaskId === id) blockedTaskId = undefined;
     publish();
+    pumpQueue();
   },
   decideTask(id: string, decision: BenchmarkTaskDecision, configs?: BenchmarkConfig[]) {
     const job = shownJob(id);
     if (blockedTaskId !== id) throw new Error("此任务已不在启动确认中");
     if (decision === "stop") { requestQueuePause("已中止队列"); return; }
     if (decision === "run") {
-      if (configs) saveTaskConfigs(job, configs);
-      approvedTaskId = id;
+      if (!configs) throw new Error("请先保存本次修改的任务配置");
+      saveTaskConfigs(job, configs);
+      shownTaskDirty = false;
       jobs.splice(jobs.indexOf(job), 1);
       jobs.unshift(job);
     } else {
@@ -804,7 +821,7 @@ export const benchmarkRunner = {
     await cleanupJob(job.status === "已暂停" ? job : undefined);
     pumpQueue();
   },
-  cleanup: () => pauseQueue("关闭测试窗口时中止此任务"),
+  cleanup: () => pauseQueue("关闭测试窗口时中止此任务", true),
   snapshot: () => snapshot,
   subscribe(listener: () => void) {
     listeners.add(listener);
@@ -829,7 +846,7 @@ export function usePausedBenchmarkProgress(scope: string, steps: readonly Benchm
 export function attachBenchmarkRunner() {
   let disposed = false, unregister: (() => void) | undefined;
   void registerAppCloseGuard(async () => {
-    await pauseQueue("退出应用时中止此任务");
+    await pauseQueue("退出应用时中止此任务", true);
     return true;
   }).then(remove => { if (disposed) remove(); else unregister = remove; }).catch(console.error);
   return () => { disposed = true; unregister?.(); };

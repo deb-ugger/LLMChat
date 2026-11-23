@@ -24,9 +24,10 @@ export function openProjectBenchmark() {
 }
 
 export type BenchmarkQueueCommand = "benchmark-start-queue" | "benchmark-pause-queue" | "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart"
-  | "benchmark-show-task" | "benchmark-hide-task" | "benchmark-release-task" | "benchmark-save-task" | "benchmark-decide-task";
+  | "benchmark-show-task" | "benchmark-hide-task" | "benchmark-release-task" | "benchmark-save-task" | "benchmark-set-task-dirty" | "benchmark-decide-task";
 export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef
   | { taskId: string; configs: BenchmarkConfig[] }
+  | { taskId: string; dirty: boolean }
   | { taskId: string; decision: BenchmarkTaskDecision; configs?: BenchmarkConfig[] };
 
 export function benchmarkHistoryForRecords(history: readonly BenchmarkResult[], jobs: BenchmarkSnapshot["jobs"]): BenchmarkResult[] {

@@ -6,7 +6,7 @@ import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -63,7 +63,8 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
   if (kind === "benchmark-release-task" && typeof data === "string") return benchmarkRunner.releaseTask(data);
   if (data && typeof data !== "string" && "taskId" in data) {
     if (kind === "benchmark-decide-task" && "decision" in data) return benchmarkRunner.decideTask(data.taskId, data.decision, data.configs);
-    if (kind === "benchmark-save-task" && data.configs) return benchmarkRunner.saveTask(data.taskId, data.configs);
+    if (kind === "benchmark-save-task" && "configs" in data && data.configs) return benchmarkRunner.saveTask(data.taskId, data.configs);
+    if (kind === "benchmark-set-task-dirty" && "dirty" in data) return benchmarkRunner.setTaskDirty(data.taskId, data.dirty);
   }
   if (kind === "benchmark-restart" && typeof data === "string") return benchmarkRunner.restart(data);
   if (kind === "benchmark-start" && typeof data === "string") benchmarkRunner.start(data);
@@ -320,7 +321,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   useEffect(() => { localStorage.setItem(mosaicStepKey, mosaicStep); }, [mosaicStepKey, mosaicStep]);
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
-  const { jobs, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
+  const { jobs, running, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
   const archive = useBenchmarkArchive(historyRevision);
   const queue = jobs.filter(job => job.status !== "完成");
   const control = (kind: BenchmarkQueueCommand, id: string) =>
@@ -337,6 +338,12 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     JSON.stringify(taskDraft.configs) !== JSON.stringify(taskDraft.parameters.configs), [taskDraft]);
   const canSave = !!shownJob && canEditBenchmarkTask(shownJob) && dirty;
   const blocking = !!shownJob && props.snapshot.blockedTaskId === shownJob.id;
+  const resuming = shownJob?.progress?.state === "paused";
+  useLayoutEffect(() => {
+    if (!showingTaskId) return;
+    void viewerSession.current.control("benchmark-set-task-dirty", { taskId: showingTaskId, dirty })
+      .catch(error => showAppNotice(error instanceof Error ? error.message : String(error), "error"));
+  }, [showingTaskId, dirty]);
   const canDefer = jobs.some(job => job.id !== showingTaskId && (job.status === "等待" || job.status === "待开始"));
   useEffect(() => {
     const session = viewerSession.current;
@@ -390,6 +397,15 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const acknowledgeSave = (configs: BenchmarkConfig[]) => setTaskDraft(previous => previous && {
     ...previous, parameters: { ...previous.parameters, configs: structuredClone(configs) }, configs,
   });
+  // Each run commits to the enabled configuration list. Keep the clean viewer in sync with it.
+  useEffect(() => {
+    if (shownJob?.status !== "运行中" || dirty) return;
+    setTaskDraft(previous => {
+      if (!previous?.configs.some(config => config.enabled === false)) return previous;
+      const configs = previous.configs.filter(config => config.enabled !== false);
+      return { ...previous, parameters: { ...previous.parameters, configs: structuredClone(configs) }, configs };
+    });
+  }, [shownJob?.status, dirty]);
   const saveTask = () => void actOnTask(async () => {
     if (!taskDraft || !canSave) return;
     await props.control("benchmark-save-task", { taskId: taskDraft.id, configs: taskDraft.configs });
@@ -398,7 +414,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   });
   const decide = (decision: BenchmarkTaskDecision) => void actOnTask(async () => {
     if (!taskDraft) return;
-    const configs = decision === "run" && dirty ? taskDraft.configs : undefined;
+    const configs = decision === "run" ? taskDraft.configs : undefined;
     await props.control("benchmark-decide-task", { taskId: taskDraft.id, decision, configs });
     if (decision === "run") acknowledgeSave(taskDraft.configs.filter(config => config.enabled !== false));
   });
@@ -408,9 +424,10 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     onStop={() => control("benchmark-stop", shownJob.id)} />;
   const taskDialogs = <>
     {discard.dialog}
-    {blocking && <GameDialog title="任务已轮到" description={shownJob.label + "。请选择如何继续队列。"}
+    {blocking && <GameDialog title="任务配置未保存"
+      description={shownJob.label + (resuming ? "。保存修改后可从上次进度继续。" : "。保存修改后可开始测试。")}
       dismissible={false} disabled={taskAction} className="game-benchmark-show-decision">
-      <button type="button" className="game-confirm-primary" autoFocus disabled={taskAction} onClick={() => decide("run")}>保存并运行</button>
+      <button type="button" className="game-confirm-primary" autoFocus disabled={taskAction} onClick={() => decide("run")}>{resuming ? "保存并继续" : "保存并开始"}</button>
       <button type="button" className="game-confirm-accept" disabled={taskAction} onClick={() => decide("stop")}>中止队列</button>
       <button type="button" className="unity-btn" disabled={taskAction || !canDefer}
         title={canDefer ? undefined : "队列中没有其他待开始的任务"} onClick={() => decide("defer")}>当前任务后移</button>
@@ -429,6 +446,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       </div>)}
       {queue.map((job, index) => {
         const progress = job.progress;
+        const heldByPausedTask = jobs[0]?.status === "已暂停" && jobs[0].id !== job.id;
         const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
         const phase = progress?.phase === "prepare" ? "准备样本与模型" :
           progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
@@ -447,7 +465,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
               {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
               <div className="hint" title={progress?.detail}>
-                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (props.snapshot.blockedTaskId === job.id ? "等待启动确认" : formalBusy ? formalBlockingReason : "等待前一任务") :
+                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (props.snapshot.blockedTaskId === job.id ? "等待保存配置" : !running ? "队列已暂停" : formalBusy ? formalBlockingReason : "等待前一任务") :
                   job.status === "失败" ? job.failure || progress?.detail : progress &&
                   <>{job.status === "运行中" ? progress.sample || phase : statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
@@ -465,8 +483,9 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
           {job.status === "运行中" &&
             <button type="button" className="unity-btn" disabled={stopping} onClick={() => control("benchmark-stop", job.id)}>中止任务</button>}
           {(job.status === "待开始" || job.status === "已暂停") &&
-            <button type="button" className="unity-btn" data-tooltip={job.status === "已暂停" ? "从已保存的进度继续" : undefined}
-              onClick={() => control("benchmark-start", job.id)}>
+            <button type="button" className="unity-btn" data-tooltip={heldByPausedTask ? "请先处理队首已中止的任务"
+              : job.status === "已暂停" ? "从已保存的进度继续" : undefined}
+              disabled={stopping || taskAction || heldByPausedTask} onClick={() => control("benchmark-start", job.id)}>
               {job.status === "已暂停" ? "继续任务" : "开始任务"}</button>}
           {job.status === "已暂停" &&
             <button type="button" className="unity-btn" disabled={showingTaskId === job.id} data-tooltip="新建任务，从零重跑"
