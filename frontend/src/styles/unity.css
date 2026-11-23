@@ -3025,7 +3025,7 @@ body.ocr-image-resizing * {
 .game-benchmark-record-parameters dt { color: var(--text-muted); }
 .game-benchmark-record-parameters dd { margin: 0; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
-@media (900px <= width < 1400px) {
+@media (1100px <= width < 1400px) {
   .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
     grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
     grid-template-rows: auto 1fr;
