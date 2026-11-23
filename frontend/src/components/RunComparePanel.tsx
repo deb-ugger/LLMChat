@@ -1,6 +1,6 @@
 import * as echarts from "echarts/core";
 import { BarChart, HeatmapChart, ScatterChart } from "echarts/charts";
-import { GridComponent, LegendComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
+import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { memo, useEffect, useId, useMemo, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -19,6 +19,7 @@ echarts.use([
   BarChart,
   GridComponent,
   LegendComponent,
+  LegendScrollComponent,
   TooltipComponent,
   VisualMapComponent,
   CanvasRenderer,
@@ -93,7 +94,15 @@ export const RunComparePanel = memo(function RunComparePanel({
   const labeled = points.filter(point => point.y != null);
   const seriesNames = [...new Set(labeled.map(point => point.series))];
   const scatterOption = {
-    grid: { top: 14, right: 16, bottom: 32, left: 46 },
+    grid: { top: seriesNames.length > 1 ? 34 : 14, right: 24, bottom: 32, left: 46 },
+    legend: {
+      type: "scroll",
+      show: seriesNames.length > 1,
+      top: 0,
+      left: 46,
+      right: 24,
+      textStyle: { color: colors.mutedText, fontSize: colors.captionSize },
+    },
     tooltip: {
       ...tooltipStyle(colors),
       renderMode: "richText",
@@ -134,9 +143,11 @@ export const RunComparePanel = memo(function RunComparePanel({
 
   const models = [...new Set(cells.map((cell) => cell.y))];
   const concurrencies = [...new Set(cells.map((cell) => cell.x))].sort((a, b) => a - b);
+  const displayedModel = (id: string) => id.length > 23 ? id.slice(0, 8) + "…" + id.slice(-14) : id;
+  const modelLabelWidth = Math.max(90, ...models.map(id => Math.ceil(displayedModel(id).length * colors.captionSize * 0.66)));
   const heatData = cells.map((cell) => [concurrencies.indexOf(cell.x), models.indexOf(cell.y), cell.value]);
   const heatOption = {
-    grid: { top: 10, right: 16, bottom: 42, left: 96 },
+    grid: { top: 10, right: 24, bottom: 42, left: modelLabelWidth + 12 },
     tooltip: {
       ...tooltipStyle(colors),
       renderMode: "richText",
@@ -156,7 +167,7 @@ export const RunComparePanel = memo(function RunComparePanel({
     yAxis: {
       type: "category",
       data: models,
-      axisLabel: { color: colors.mutedText, fontSize: colors.captionSize, width: 84, overflow: "truncate" },
+      axisLabel: { color: colors.mutedText, fontSize: colors.captionSize, width: modelLabelWidth, formatter: displayedModel },
       splitLine: { show: false },
     },
     visualMap: {

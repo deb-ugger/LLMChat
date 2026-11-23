@@ -40,6 +40,10 @@ function useTimeline(
     const times = points.map((point) =>
       typeof point.at === "number" ? point.at : Date.parse(point.at),
     );
+    const lineData = (metric: "cpu" | "memory" | "gpu") => points.flatMap((point, i) => {
+      const current = [times[i], point[metric]];
+      return i > 0 && times[i] - times[i - 1] > 12000 ? [[times[i] - 1, null], current] : [current];
+    });
     chart.setOption({
       animation: false,
       grid: { top: 4, right: 4, bottom: 4, left: 4, containLabel: false },
@@ -59,14 +63,14 @@ function useTimeline(
           showSymbol: false,
           smooth: true,
           lineStyle: { width: 1.4, color: colors.text },
-          data: points.map((point, i) => [times[i], point.cpu]),
+          data: lineData("cpu"),
         },
         {
           name: "内存",
           type: "line",
           showSymbol: false,
           lineStyle: { width: 1, color: colors.mutedText },
-          data: points.map((point, i) => [times[i], point.memory]),
+          data: lineData("memory"),
         },
         {
           name: "GPU",
@@ -74,7 +78,7 @@ function useTimeline(
           showSymbol: false,
           smooth: true,
           lineStyle: { width: 1.4, color: colors.warning },
-          data: points.map((point, i) => [times[i], point.gpu]),
+          data: lineData("gpu"),
         },
       ],
     });
