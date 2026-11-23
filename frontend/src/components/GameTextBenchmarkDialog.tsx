@@ -114,7 +114,7 @@ export function GameTextBenchmarkHost() {
       active = input;
       opening = invoke<boolean>("open_game_benchmark_window").then(created => {
         if (active !== input) return;
-        if (!created) channel.postMessage({ type: "refresh-setup", setup: setupFor(input) });
+        if (!created) channel.postMessage({ type: "refresh-setup", setup: setupFor(input), snapshot: benchmarkRunner.snapshot() });
         restore(input);
       }).catch(error => {
         active = previous;
@@ -179,7 +179,10 @@ export function GameTextBenchmarkWindow() {
       if (active) setSnapshot(previous => state.version >= previous.version ? state : previous);
     };
     const refresh = (event: MessageEvent) => {
-      if (event.data?.type === "refresh-setup") setPage({ setup: event.data.setup, channel });
+      if (event.data?.type === "refresh-setup") {
+        setPage({ setup: event.data.setup, channel });
+        setSnapshot(event.data.snapshot);
+      }
       if (event.data?.type === "benchmark-queue") receiveSnapshot(event.data);
     };
     channel.addEventListener("message", refresh);
