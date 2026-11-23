@@ -1,11 +1,14 @@
-import type { ImageBenchmarkDetails, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
+import type { ImageBenchmarkDetails, ImageBenchmarkInput, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
+import { countMosaicResults } from "./benchmark/mosaicScoreCounts";
+import { orderedMosaicBoxes } from "./benchmark/mosaicScoreInputs";
+import { mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./benchmark/mosaicScore";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
-import { readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
+import { mosaicReviewKey, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
-import { mosaicBoxScore, presenceScore, type AnnotatedSampleSet } from "./benchmark/imageSampleSet";
+import type { AnnotatedSampleSet } from "./benchmark/imageSampleSet";
 import type { ImageBenchmarkWorkload } from "./gameImageBenchmark";
 import type { BenchmarkConfig, BenchmarkStepRunner } from "./gameTextBenchmark";
 import type { UnityImage, UnityProgress } from "./unityOffline";
@@ -101,7 +104,10 @@ export function archivedMosaicSamples(available: readonly UnityImage[], archived
     if (!image || image.sourceHash !== sample.sourceHash || image.width !== sample.width || image.height !== sample.height)
       throw new Error("原测试样本已更换或未加载 · " + sample.file);
     images.push(image);
-    const result = archived.results[index];
+    const result: (ImageBenchmarkOutcome & { sampleId?: string; sourceHash?: string }) | undefined = archived.results[index];
+    if ((result?.sampleId !== undefined && result.sampleId !== sample.id) ||
+        (result?.sourceHash !== undefined && result.sourceHash !== sample.sourceHash))
+      throw new Error("原测试逐图结果身份不一致 · " + sample.file);
     if (result && result.status !== "失败") recovered.set(image.id, result);
   }
   return { images, recovered };
@@ -113,28 +119,61 @@ export async function readEmbeddedBenchmarkImage(root: string, image: UnityImage
   return response.blob();
 }
 
+export function mosaicBenchmarkScoreSummary(stage: MosaicScoreStage, samples: readonly ImageBenchmarkInput[],
+  results: Record<string, ImageBenchmarkOutcome>, run: Pick<Parameters<typeof scoreMosaicRun>[1], "status" | "runFailures" | "elapsedMs" | "freeze" | "timing" | "issues">) {
+  const counts = countMosaicResults(samples, results);
+  const score = scoreMosaicRun(stage, { ...counts, ...run });
+  const title = mosaicScoreTitle(stage);
+  const value = score.displayScore === null ? title + " —" :
+    title + " " + (score.provisional ? "暂定 " : "") + score.displayScore.toFixed(1) + " 分（权重 " + score.effectiveWeight + "/100）";
+  const coverage = score.delivery === null ? "" : " · 交付覆盖 " + counts.foundBoxes + "/" + counts.expectedBoxes;
+  return value + (stage === "mosaicRefine" ? coverage : "") +
+    (score.speed === null ? "" : " · 每百张 " + score.speed.toFixed(1) + " 秒");
+}
+
+function seedRefineProposals(root: string, pending: readonly UnityImage[], workload: MosaicBenchmarkWorkload, options: MosaicSettings) {
+  // The review engine reads per-run proposals from the same checkpoint on resume.
+  const path = "llmchat-game-mosaic-refine:" + root;
+  const key = mosaicReviewKey(options, workload.modelFile);
+  const saved = JSON.parse(localStorage.getItem(path) || "null") as
+    { key: string; images: Record<string, { source: string }>; proposals?: Record<string, { source: string; hash: string; scan: MosaicScan }> } | null;
+  if (saved && saved.key !== key) return;
+  const checkpoint: NonNullable<typeof saved> = saved ?? { key, images: {} };
+  const proposals = checkpoint.proposals ??= {};
+  let changed = false;
+  for (const image of pending) {
+    const category = workload.categories?.[image.id];
+    if (category !== mosaicStatusLabels.candidate && category !== mosaicStatusLabels.review && category !== mosaicStatusLabels.clear) continue;
+    if (checkpoint.images[image.id]?.source === image.sourceHash || proposals[image.id]?.source === image.sourceHash) continue;
+    const boxes = orderedMosaicBoxes(workload.boxes[image.id]);
+    const scan = category === mosaicStatusLabels.review
+      ? { boxes: [], review: mosaicStatusLabels.review, reviewBoxes: boxes, signature: [] }
+      : { boxes, signature: [] };
+    proposals[image.id] = { source: image.sourceHash, hash: image.sourceHash, scan };
+    changed = true;
+  }
+  if (changed) localStorage.setItem(path, JSON.stringify(checkpoint));
+}
+
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
   onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet,
   recovered?: ReadonlyMap<string, ImageBenchmarkOutcome>): BenchmarkStepRunner {
   return async (config, settings, scope, record?: RecordImageBenchmarkOutcome, runId?: string, preceding?: ReadonlyMap<string, ImageBenchmarkOutcome>) => {
-    const recordScan = (image: UnityImage, scan: MosaicScan) => record?.(image.id, {
+    const sources = new Map(images.map(image => [image.id, image.sourceHash]));
+    const saveResult = (id: string, outcome: ImageBenchmarkOutcome) => {
+      const row = { sampleId: id, sourceHash: sources.get(id), ...outcome };
+      record?.(id, row);
+    };
+    const recordScan = (image: UnityImage, scan: MosaicScan) => saveResult(image.id, {
       category: mosaicStatusLabels[mosaicScreeningStatus({
         ...scan, scanned: true, refined: step === "mosaicRefine" ? step : undefined, refineQuickExcluded: scan.quickExcluded,
       })],
       boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes, checked: !!scan.boxes.length && !scan.review, reason: scan.review,
     });
     const options = config.mosaic!;
-    const expected = annotated ? new Map(annotated.images.map(image => [image.id,image.annotation])) : undefined;
-    const measureAccuracy = (results: ReadonlyMap<string,MosaicScan>) => {
-      if (!expected) return "";
-      const pairs = Array.from(results, ([id, result]) => [expected.get(id)!, result] as const);
-      const presence = presenceScore(pairs.map(([label, scan]) => [label, scan.review ? "uncertain" : scan.boxes.length ? "present" : "none"]),"mosaic");
-      const localization = mosaicBoxScore(pairs.filter(([,scan]) => !scan.review).map(([label, scan]) => [label,scan.boxes]));
-      return " · " + presence + (localization ? " · " + localization : "");
-    };
     const restored = new Map([...(recovered ?? []), ...(step === "mosaicRefine" ? [] : preceding ?? [])]);
-    for (const [id, result] of restored) record?.(id, result);
+    for (const [id, result] of restored) saveResult(id, result);
     const prior = restored.size;
     const pending = prior ? images.filter(image => !restored.has(image.id)) : images;
     const readSample = (image: UnityImage, signal: AbortSignal) => measureGameAsync(scope, "processingMs", () => read(image, signal));
@@ -142,32 +181,31 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       if (!runId) throw new Error("缺少复筛测试编号");
       // Use the same isolated review checkpoint when a paused configuration resumes.
       const root = "benchmark:" + runId;
+      if (!annotated) seedRefineProposals(root, pending, workload, options);
       const selection = { ...config.prompts };
       rememberBenchmarkExecution(selection, scope, step, options.refineConcurrency ?? 1);
       const result = await refineMosaicBatch(pending, {
         root, settings: { ...options, refineScope: "all" }, maxConcurrentRequests: 4, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
         request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
         onResult: recordScan,
-        onError: (image, reason) => record?.(image.id,{ category:mosaicStatusLabels.failed,status:"失败",reason }),
+        onError: (image, reason) => saveResult(image.id,{ category:mosaicStatusLabels.failed,status:"失败",reason }),
         onProgress: (completed, detail) => onProgress({ completed: prior + completed, total: images.length, detail }),
       });
       const located = [...result.results.values()].filter(scan => scan.boxes.length > 0 && !scan.review).length;
       const review = [...result.results.values()].filter(scan => !!scan.review).length;
       const summary = mosaicStatusLabels.refinedCandidate + " " + located + " 张 · 待人工复核 " + review + " 张";
       return { translated: prior + result.results.size, failed: result.failed,
-        summary: prior ? "复用 " + prior + " 张归档结果 · 续跑结果 · " + summary : summary + measureAccuracy(result.results) };
+        summary: prior ? "复用 " + prior + " 张归档结果 · 续跑结果 · " + summary : summary };
     }
     let cursor = 0, completed = prior, failed = 0, located = 0, review = 0, regions = 0;
     let firstFailure = "";
-    const results = new Map<string, MosaicScan>();
     if (step === "mosaicScreen" && preceding && !recovered) {
-      for (const [id, result] of preceding) {
+      for (const result of preceding.values()) {
         const uncertain = result.category === mosaicStatusLabels.review;
         const boxes = result.boxes ?? [];
         if (uncertain) review++;
         else if (boxes.length) located++;
         regions += uncertain ? 0 : boxes.length;
-        if (expected) results.set(id, { boxes: uncertain ? [] : boxes, signature: [], review: uncertain ? result.reason || mosaicStatusLabels.review : undefined });
       }
     }
     if (prior) onProgress({ completed, total: images.length, detail: "已恢复 " + prior + " 张样本结果" });
@@ -189,14 +227,13 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
                 .map(region => [region.x0, region.y0, region.x1, region.y1]) : [];
               await redrawMosaic({ source, boxes: workload.boxes[image.id], keep, model: options.model, steps: options.steps,
                 seed: 1, signal, timingScope: scope, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
-              record?.(image.id,{category:"已生成去码候选",boxes:workload.boxes[image.id]});
+              saveResult(image.id,{category:"已生成去码候选",boxes:workload.boxes[image.id]});
             } else {
               const initial = await (detector ?? grid!).scan(source);
               const scan = screenModel && !initial.boxes.length
                 ? await reviewMosaicScreen(source, initial, signal, (prompt, crop) =>
                     requestGameModelJson(settings, screenModel, prompt, signal, crop, "game-images", undefined, { role: "mosaic", selection }))
                 : initial;
-              if (expected) results.set(image.id,scan);
               recordScan(image,scan);
               if (scan.boxes.length) located++;
               if (scan.review) review++;
@@ -205,7 +242,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
           } catch (cause) {
             signal.throwIfAborted();
             failed++;
-            record?.(image.id,{category:mosaicStatusLabels.failed,status:"失败",reason:String(cause)});
+            saveResult(image.id,{category:mosaicStatusLabels.failed,status:"失败",reason:String(cause)});
             firstFailure ||= image.name + " · " + (cause instanceof Error ? cause.message : String(cause));
           }
           onProgress({ completed: ++completed, total: images.length, detail: image.name });
@@ -218,8 +255,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       for (const result of settled) if (result.status === "rejected") throw result.reason;
     } finally { await detector?.release(); }
     const summary = step === "mosaicScreen"
-      ? (recovered ? "续跑阶段 · " : "") + "检出区域 " + regions + " 个 · " + located + " 张有定位 · " + review + " 张待复核" +
-        (recovered ? "" : measureAccuracy(results))
+      ? (recovered ? "续跑阶段 · " : "") + "检出区域 " + regions + " 个 · " + located + " 张有定位 · " + review + " 张待复核"
       : "已生成 " + (completed - failed) + " 张测试结果";
     return { translated: completed - failed, failed, summary: summary + (firstFailure ? " · 首个失败 " + firstFailure : "") };
   };

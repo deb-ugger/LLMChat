@@ -2,7 +2,8 @@ import type { BenchmarkResult } from "../gameTextBenchmark";
 import type { MosaicTaskReport } from "./benchmarkMosaicReport";
 
 export type BenchmarkQualityCounts = Pick<MosaicTaskReport["totals"][number], "tp" | "fp" | "tn" | "fn">;
-export type BenchmarkCompareRun = BenchmarkResult & { quality?: BenchmarkQualityCounts | null };
+type ScoredQuality = Partial<Pick<MosaicTaskReport["totals"][number], "confirmedPositive" | "confirmedNegative" | "score">>;
+export type BenchmarkCompareRun = BenchmarkResult & { quality?: (BenchmarkQualityCounts & ScoredQuality) | null };
 
 export type BenchmarkRunSummary = {
   model: string | null;
@@ -59,7 +60,7 @@ export function summarizeRun(run: BenchmarkCompareRun): BenchmarkRunSummary {
   };
 }
 
-export function buildQualityScatter(runs: readonly BenchmarkCompareRun[]): BenchmarkQualityPoint[] {
+export function buildQualityScatter(runs: readonly BenchmarkCompareRun[], metric: "f1" | "score" = "f1"): BenchmarkQualityPoint[] {
   return runs.map(run => {
     const { wallSeconds, model, f1 } = summarizeRun(run);
     const counts = run.quality;
@@ -67,8 +68,9 @@ export function buildQualityScatter(runs: readonly BenchmarkCompareRun[]): Bench
       runId: run.performance.taskId ?? null,
       label: run.label,
       x: wallSeconds,
-      y: f1,
-      size: counts ? counts.tp + counts.fp + counts.tn + counts.fn : 0,
+      y: metric === "score" ? counts?.score?.displayScore ?? null : f1,
+      size: counts?.confirmedPositive !== undefined && counts.confirmedNegative !== undefined
+        ? counts.confirmedPositive + counts.confirmedNegative : counts ? counts.tp + counts.fp + counts.tn + counts.fn : 0,
       series: model,
     };
   });

@@ -1,7 +1,7 @@
 import { configsForRound, type BenchmarkRoundPlan } from "./benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { mosaicWallClock, type MosaicScoreFreeze } from "./benchmark/mosaicScoreInputs";
-import { mosaicBenchmarkSteps, type MosaicBenchmarkSetup, type MosaicBenchmarkStep } from "./gameMosaicBenchmark";
+import { mosaicBenchmarkScoreSummary, mosaicBenchmarkSteps, type MosaicBenchmarkSetup, type MosaicBenchmarkStep } from "./gameMosaicBenchmark";
 import { clearMosaicReviews } from "./gameMosaicRefine";
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -12,7 +12,7 @@ import { createGameTranslationContext, gameDialogueReuseKey, gameTranslationRetr
 import { prepareGameTerms, gameTermProblem } from "./gameTermMemory";
 import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "./gameOllama";
-import { archivePausedGameStep, beginGameStep, clearGamePerformance, completeGameStep, flushGamePerformanceArchive, measureGameAsync, measureGameWork, modelServiceTimingLines, pendingGameBenchmarkArchives, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
+import { archivePausedGameStep, beginGameStep, clearGamePerformance, completeGameStep, finishGameStep, flushGamePerformanceArchive, measureGameAsync, measureGameWork, modelServiceTimingLines, pendingGameBenchmarkArchives, rememberBenchmarkExecution, stepPerformance, type StepPerformance } from "./gameModelPerformance";
 import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool";
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
@@ -271,6 +271,15 @@ export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], roun
       const scoreTiming = target?.scoreFreeze ? former
         ? former.scoreTiming === mosaicWallClock && saved.elapsedMs > 0 ? mosaicWallClock : "segment-only"
         : reusedImages ? "reused-output" : mosaicWallClock : undefined;
+      // Shared model preparation happens once per batch and is outside each scored wall clock.
+      let preparationFailure: { cause: unknown } | undefined;
+      if (target?.scoreFreeze && !modelsReady) {
+        try {
+          settings ??= await api.getSettings();
+          await prepareModels(settings);
+          modelsReady = true;
+        } catch (cause) { preparationFailure = { cause }; }
+      }
       const metadata = { queueId, round, rounds, configCount: configs.length, sampleLimit, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
         scoreFreeze: target?.scoreFreeze, scoreTiming, reusedImages,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
@@ -299,6 +308,7 @@ export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], roun
         onProgress(value);
       };
       try {
+        if (preparationFailure) throw preparationFailure.cause;
         if (former?.imageDetails) {
           const previous = await readImageBenchmarkDetails(queueId, runId);
           Object.assign(results, previous.results);
@@ -349,6 +359,14 @@ export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], roun
             metadata.status = status;
             metadata.detail = detail = [detail, "逐图记录保存失败：" + String(error)].filter(Boolean).join(" · ");
           }
+        }
+        if (samples && target?.scoreFreeze && (step === "mosaicScreen" || step === "mosaicRefine")) {
+          finishGameStep(scope);
+          const accuracy = mosaicBenchmarkScoreSummary(step, samples, results, {
+            status, runFailures: metadata.failed, elapsedMs: stepPerformance(scope, step).elapsedMs,
+            freeze: target.scoreFreeze, timing: scoreTiming, issues: metadata.imageDetails ? [] : ["逐图记录保存失败"],
+          });
+          metadata.summary = [metadata.summary, accuracy].filter(Boolean).join(" · ");
         }
         const checkpointed = interrupted && mosaic;
         if (checkpointed) archivePausedGameStep(scope, step);

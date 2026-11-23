@@ -3,9 +3,10 @@ import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "./imageBe
 import { loadAnnotatedSampleSet } from "./imageSampleSet";
 import { countMosaicResults } from "./mosaicScoreCounts";
 import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
+import { scoreMosaicRun, type MosaicScoreStage } from "./mosaicScore";
 import type { BenchmarkResult } from "../gameTextBenchmark";
 
-export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path?: string) {
+export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path?: string, stage: MosaicScoreStage = "mosaicRefine") {
   const entries: { run: BenchmarkResult; runId: string; details?: ImageBenchmarkDetails; issue?: string }[] = [];
   for (const run of runs) {
     const runId = run.performance.taskId;
@@ -43,12 +44,13 @@ export async function compareMosaicTaskWithDataset(queueId: string, runs: readon
         return null;
       }
     });
-    totals.push({ ...counts, runId, label: run.label, round: run.round, elapsedMs: run.performance.elapsedMs,
+    const row = { ...counts, runId, label: run.label, round: run.round, elapsedMs: run.performance.elapsedMs,
       seconds: run.performance.elapsedMs / 1000, status: run.status, runFailures: run.failed, freeze, issues,
       timing: typeof metadata?.scoreTiming === "string" ? metadata.scoreTiming : undefined,
-      configId: (metadata?.config as { id?: string } | undefined)?.id || run.label });
+      configId: (metadata?.config as { id?: string } | undefined)?.id || run.label };
+    totals.push({ ...row, score: scoreMosaicRun(stage, row) });
   }
-  return { title: dataset?.title ?? "冻结样本对照", totals };
+  return { title: dataset?.title ?? "样本对照", stage, totals };
 }
 export type MosaicTaskReport = Awaited<ReturnType<typeof compareMosaicTaskWithDataset>>;
 
