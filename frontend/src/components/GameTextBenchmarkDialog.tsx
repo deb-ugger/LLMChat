@@ -755,7 +755,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     let timer: number | undefined;
     let attempts = 0;
     const pull = async () => {
-      let hasHistory = false;
       attempts++;
       try {
         const [now, history] = await Promise.all([
@@ -765,11 +764,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         if (cancelled) return;
         if (now) setPerfNow(now);
         if (history.length) setPerfPoints(history);
-        hasHistory = history.length > 1;
       } catch {
         // Retain the last sample while the sidecar is unavailable.
       } finally {
-        if (!cancelled && (anyRunning || (attempts < 3 && !hasHistory))) timer = window.setTimeout(pull, 3000);
+        if (!cancelled && (anyRunning || attempts < 3)) timer = window.setTimeout(pull, 3000);
       }
     };
     void pull();
