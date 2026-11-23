@@ -31,7 +31,7 @@ export type BenchmarkInput = {
   models: string[];
   onMessage: (text: string, level: "info" | "success" | "error") => void;
 };
-export type BenchmarkRequest = { scope: string; step: BenchmarkTarget; configs: BenchmarkConfig[]; rounds: number; priority?: boolean; sampleSetPath?: string; sampleLimit?: number };
+export type BenchmarkRequest = { scope: string; step: BenchmarkTarget; configs: BenchmarkConfig[]; rounds: number; priority?: boolean; sampleSetPath?: string; sampleLimit?: number; referenceSampleSetPath?: string };
 type BenchmarkProgress = {
   phase: "prepare" | "execute" | "finish";
   label: string;
@@ -156,7 +156,9 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   if (!displayScope) throw new Error("当前工程没有去码测试设置");
 
   if (request.sampleSetPath && !mosaic && !imageStep) throw new Error("当前测试步骤不接受图片样本集");
-  const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath) : undefined;
+  const useAllAnnotated = step === "mosaicScreen" && mosaicSelection === "all";
+  const annotated = request.sampleSetPath ? await loadAnnotatedSampleSet(request.sampleSetPath,
+    { preserveDuplicates: useAllAnnotated }) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
   let recoveredResults: ReturnType<typeof archivedMosaicSamples>["recovered"] | undefined;
@@ -171,7 +173,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       boxes: Object.fromEntries(annotated.images.flatMap(image => image.annotation.mosaic?.boxes?.length
         ? [[image.id,image.annotation.mosaic.boxes]] : [])),
     } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
-    const eligible = annotated ? annotatedMosaicSamples(annotated,step) : mosaicBenchmarkRows(step, snapshot, mosaicSelection);
+    const eligible = annotated ? useAllAnnotated ? annotated.images : annotatedMosaicSamples(annotated, step) : mosaicBenchmarkRows(step, snapshot, mosaicSelection);
     const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
     const sample = recovered?.images ?? selectSamples(eligible);
     recoveredResults = archive?.reuse ? recovered?.recovered : undefined;
@@ -310,7 +312,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
             historyRevision++;
             publish();
           });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath);
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath, request.referenceSampleSetPath);
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -539,7 +541,7 @@ async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkSt
   const details = await readImageBenchmarkDetails(id, sampleSource.performance.taskId!);
   if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
   const prepared = await prepareJob(input, {
-    scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath,
+    scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath, referenceSampleSetPath: plan.referenceSampleSetPath,
   }, false, { details, reuse, completed, configElapsedMs });
   const label = benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮";
   const current = prepared.restored ?? 0;
@@ -552,8 +554,7 @@ async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkSt
       performance: reuse ? performanceForDisplay(sampleSource.performance) : undefined } };
 }
 
-export const benchmarkRunner = {
-  async enqueue(input: BenchmarkInput, request: BenchmarkRequest) {
+async function createQueuedJob(input: BenchmarkInput, request: BenchmarkRequest): Promise<QueuedJob> {
     if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
     const occupied = formalWorkflows.size > 0;
     const frozen = structuredClone(request);
@@ -566,9 +567,26 @@ export const benchmarkRunner = {
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
       label, status: running ? "等待" : "待开始", prepared, prepare, onMessage: input.onMessage,
       resumeSamples: isMosaicBenchmarkStep(request.step) };
-    jobs.push(job);
-    if (!request.priority || !scheduleJob(job)) { publish(); pumpQueue(); }
-    return job.id;
+    return job;
+}
+
+export const benchmarkRunner = {
+  async enqueue(input: BenchmarkInput, request: BenchmarkRequest | BenchmarkRequest[]) {
+    if (!Array.isArray(request)) {
+      const job = await createQueuedJob(input, request);
+      jobs.push(job);
+      if (!request.priority || !scheduleJob(job)) { publish(); pumpQueue(); }
+      return job.id;
+    }
+    if (!request.length) throw new Error("配置单没有测试任务");
+    const imported = await Promise.all(request.map(item => createQueuedJob(input, item)));
+    const runNext = running || request[0].priority && !controller?.signal.aborted && jobs[0]?.status !== "已暂停";
+    imported.forEach(job => { job.status = runNext ? "等待" : "待开始"; });
+    jobs.push(...imported);
+    if (runNext) running = true;
+    publish();
+    pumpQueue();
+    return imported.map(job => job.id);
   },
   async restoreLatestArchivedBatch(input: BenchmarkInput, isCurrent: () => boolean) {
     const canRestore = () => isCurrent() && !running && !executing &&

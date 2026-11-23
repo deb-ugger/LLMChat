@@ -5,7 +5,7 @@ import type { MosaicBox } from "../gameMosaic";
 import type { MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import type { UnityImage, UnityImageRegion, UnityProject } from "../unityOffline";
 
-type SampleImage = { id: string; path: string; sha256: string; width: number; height: number };
+type SampleImage = { id: string; path: string; sha256: string; width: number; height: number; projectImageId?: string; projectSourceHash?: string; sourceHash?: string };
 type Presence = "present" | "none" | "uncertain";
 export type PresenceVerdict = Presence | "skip" | "failed";
 type ExpectedText = { box: MosaicBox; text?: string; language?: string; keep?: boolean;
@@ -17,7 +17,7 @@ type Annotation = {
 };
 type Manifest = { version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string };
 type Annotations = { version: number; samples: Record<string, Annotation> };
-export type AnnotatedImage = UnityImage & { annotation: Annotation };
+export type AnnotatedImage = UnityImage & { annotation: Annotation; projectImageId?: string; projectSourceHash?: string };
 export type AnnotatedSampleSet = {
   title: string;
   images: AnnotatedImage[];
@@ -48,7 +48,7 @@ function validBox(box: MosaicBox, { width, height }: SampleImage) {
     box[0] >= 0 && box[1] >= 0 && box[2] > box[0] && box[3] > box[1] && box[2] <= width && box[3] <= height;
 }
 
-export async function loadAnnotatedSampleSet(path: string, options?: { includeUnannotated?: boolean }): Promise<AnnotatedSampleSet> {
+export async function loadAnnotatedSampleSet(path: string, options?: { includeUnannotated?: boolean; preserveDuplicates?: boolean }): Promise<AnnotatedSampleSet> {
   const absolute = path.replaceAll("\\", "/");
   const directory = absolute.slice(0, absolute.lastIndexOf("/") + 1);
   if (!directory) throw new Error("请选择样本集的 manifest.json");
@@ -66,11 +66,12 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
 
   const unique = new Set<string>();
   const images: AnnotatedImage[] = [];
-  for (const item of manifest.images) {
+  for (const [index, item] of manifest.images.entries()) {
     if (!item || !pngId.test(item.sha256) || typeof item.path !== "string" ||
         !Number.isSafeInteger(item.width) || item.width <= 0 || !Number.isSafeInteger(item.height) || item.height <= 0)
       throw new Error("样本集含无效图片索引");
-    if (unique.has(item.sha256)) continue;
+    if (!options?.preserveDuplicates && unique.has(item.sha256)) continue;
+    const id = unique.has(item.sha256) ? item.sha256 + "-" + index : item.sha256;
     unique.add(item.sha256);
     const saved = annotations.samples[item.sha256];
     if (!saved && !options?.includeUnannotated) continue;
@@ -83,7 +84,7 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
       throw new Error("样本标注状态或坐标无效：" + item.path);
 
     const name = item.path.replaceAll("\\\\", "/").split("/").at(-1) || item.path;
-    images.push({ id: item.sha256, sourceHash: item.sha256, name, file: item.path, width: item.width, height: item.height,
+    images.push({ id, sourceHash: item.sha256, projectImageId: item.projectImageId, projectSourceHash: item.projectSourceHash ?? item.sourceHash, name, file: item.path, width: item.width, height: item.height,
       kind: "PNG", sourceFile: item.sha256, container: "", objectId: "", renderedFile: "", renderedHash: "",
       selected: true, ocrCompleted: false, completed: false, error: "", regions: [], annotation });
   }
@@ -91,8 +92,8 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
   return {
     title: manifest.title, images, project, read: async (image, signal) => {
       signal.throwIfAborted();
-      if (!pngId.test(image.id)) throw new Error("标注样本编号无效");
-      const data = await readFileBytes(directory + "images/" + image.id + ".png");
+      if (!pngId.test(image.sourceHash)) throw new Error("标注样本编号无效");
+      const data = await readFileBytes(directory + "images/" + image.sourceHash + ".png");
       signal.throwIfAborted();
       return new Blob([data], { type: "image/png" });
     },
@@ -151,7 +152,7 @@ export function presenceScore(rows: Iterable<readonly [Annotation, PresenceVerdi
     (skipped ? " · 按规则跳过 " + skipped : "");
 }
 
-function compareBoxes(expected: readonly MosaicBox[], predicted: readonly MosaicBox[]) {
+export function compareBoxes(expected: readonly MosaicBox[], predicted: readonly MosaicBox[]) {
   const available = new Set(predicted.keys());
   const pairs: [number,number][] = [];
   expected.forEach((box, expectedIndex) => {

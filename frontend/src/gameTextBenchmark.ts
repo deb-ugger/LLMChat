@@ -33,7 +33,7 @@ export type BenchmarkResult = {
   status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
 export type ArchivedBenchmarkRef = { queueId: string; step: MosaicBenchmarkStep };
-type BenchmarkBatchPlan = { rounds: number; configs: BenchmarkConfig[]; sampleSetPath?: string };
+type BenchmarkBatchPlan = { rounds: number; configs: BenchmarkConfig[]; sampleSetPath?: string; referenceSampleSetPath?: string };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
 export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
@@ -216,7 +216,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
   target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
-  resumeAt = 0, sampleSetPath?: string) {
+  resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string) {
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
@@ -248,8 +248,8 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         clearGamePerformance(scope, [step], false);
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
-      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === 0 ? { configs, rounds, sampleSetPath } : undefined;
-      const metadata = { queueId, round, unobservedModels, sampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
+      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === 0 ? { configs, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
+      const metadata = { queueId, round, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
         detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);

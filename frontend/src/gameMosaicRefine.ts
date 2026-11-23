@@ -297,11 +297,17 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal
   return {boxes:removeContainedMosaicBoxes(confirmations),signature:proposed.signature};
 }
 
+export async function reviewMosaicScreen(source: Blob, initial: MosaicScan, signal: AbortSignal,
+  request: (prompt: string, image: string) => Promise<unknown>) {
+  const visual = await reviewImage(source, initial, signal, async (prompt, image) => parseRegionReview(await request(prompt, image)));
+  return visual.boxes.length || visual.review ? visual : initial;
+}
+
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {
   root: string; settings: MosaicSettings; signal: AbortSignal; modelFile?: File;
   read: (image:UnityImage,signal:AbortSignal)=>Promise<Blob>;
   prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<Record<string, string>>;
-  request: MosaicReviewRequest; restart?: boolean; timingScope?: string;
+  request: MosaicReviewRequest; restart?: boolean; timingScope?: string; maxConcurrentRequests?: number;
   onResult?: (image:UnityImage,scan:MosaicScan)=>void; onError?: (image:UnityImage,error:string)=>void;
   onProgress?: (completed:number,detail:string)=>void;
   onPreparation?: (prepared: number, total: number) => void;
@@ -466,7 +472,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   };
   for(const [model,batch] of groups) {
     cursor=0;
-    const lanes=Math.min(batch.length,Math.max(1,Math.min(2,settings.refineConcurrency ?? 1)));
+    const lanes=Math.min(batch.length,Math.max(1,Math.min(options.maxConcurrentRequests ?? 2,settings.refineConcurrency ?? 1)));
     const settled=await Promise.allSettled(Array.from({length:lanes},()=>lane(model,batch,lanes)));
     for(const item of settled)if(item.status==="rejected")throw item.reason;
   }

@@ -1,7 +1,7 @@
 import type { ImageBenchmarkDetails, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
-import { readMosaicRows, refineMosaicBatch } from "./gameMosaicRefine";
+import { readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
@@ -16,7 +16,7 @@ export const mosaicBenchmarkSteps = {
   mosaicRedraw: "重绘打码区域",
 } as const;
 export type MosaicBenchmarkStep = keyof typeof mosaicBenchmarkSteps;
-export type MosaicBenchmarkSetup = MosaicSettings & { sampleLimit: number; selection: "checked" | "all" };
+export type MosaicBenchmarkSetup = MosaicSettings & { sampleLimit: number; selection: "checked" | "all"; screenVisionModel?: string };
 type RefinePresetModel = "2b" | "4b" | "8b" | "3.5";
 
 const mosaicRefinePresets: readonly [RefinePresetModel, RefinePresetModel, readonly (1 | 2)[]][] = [
@@ -145,7 +145,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       const selection = { ...config.prompts };
       rememberBenchmarkExecution(selection, scope, step, options.refineConcurrency ?? 1);
       const result = await refineMosaicBatch(pending, {
-        root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
+        root, settings: { ...options, refineScope: "all" }, maxConcurrentRequests: 4, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
         request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
         onResult: recordScan,
         onError: (image, reason) => record?.(image.id,{ category:mosaicStatusLabels.failed,status:"失败",reason }),
@@ -173,6 +173,9 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
     if (prior) onProgress({ completed, total: images.length, detail: "已恢复 " + prior + " 张样本结果" });
     const detector = pending.length && step === "mosaicScreen" && options.detector !== "grid"
       ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope, initialScreening: true }) : undefined;
+    const screenModel = step === "mosaicScreen" ? options.screenVisionModel : undefined;
+    const selection = { ...config.prompts };
+    if (screenModel) rememberBenchmarkExecution(selection, scope, step, Math.max(1, Math.min(4, options.concurrency ?? 2)));
     const lane = async () => {
       const grid = step === "mosaicScreen" && !detector ? createMosaicGridScanner() : undefined;
       try {
@@ -188,7 +191,11 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
                 seed: 1, signal, timingScope: scope, benchmark: true, progress: detail => onProgress({ completed, total: images.length, detail: image.name + " · " + detail }) });
               record?.(image.id,{category:"已生成去码候选",boxes:workload.boxes[image.id]});
             } else {
-              const scan = await (detector ?? grid!).scan(source);
+              const initial = await (detector ?? grid!).scan(source);
+              const scan = screenModel && !initial.boxes.length
+                ? await reviewMosaicScreen(source, initial, signal, (prompt, crop) =>
+                    requestGameModelJson(settings, screenModel, prompt, signal, crop, "game-images", undefined, { role: "mosaic", selection }))
+                : initial;
               if (expected) results.set(image.id,scan);
               recordScan(image,scan);
               if (scan.boxes.length) located++;

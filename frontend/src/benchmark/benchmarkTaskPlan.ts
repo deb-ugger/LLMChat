@@ -1,0 +1,58 @@
+
+import type { BenchmarkInput, BenchmarkRequest } from "./benchmarkRunner";
+import type { MosaicSettings } from "../gameMosaic";
+import type { BenchmarkConfig } from "../gameTextBenchmark";
+
+type Source = "dataset-all" | "project-initial-snapshot";
+type ConfigRow = {
+  name?: string; detector?: "anime" | "grid"; lanes?: number;
+  screenModel?: string; candidateModel?: string; reviewModel?: string;
+};
+
+export function readMosaicTaskPlan(raw: string, scope: string, current: BenchmarkInput["current"],
+  mosaic: MosaicSettings, installedModels: readonly string[]): BenchmarkRequest[] {
+  const file = JSON.parse(raw) as {
+    version?: number; dataset?: string;
+    tasks?: { step?: "mosaicScreen" | "mosaicRefine"; source?: Source; rounds?: number; configs?: ConfigRow[] }[];
+  } | null;
+  if (file?.version !== 1 || !Array.isArray(file.tasks) || file.tasks.length < 1 || file.tasks.length > 24)
+    throw new Error("配置单须为版本 1，并包含 1 至 24 个测试任务");
+  const dataset = typeof file.dataset === "string" ? file.dataset.trim() : "";
+  if (!dataset || !/[\\/]manifest\.json$/i.test(dataset))
+    throw new Error("配置单须提供数据集 manifest.json 的路径");
+  const { modelIds: _modelIds, ...defaults } = current;
+  const verifyModel = (name: string | undefined) => {
+    if (typeof name !== "string" || !installedModels.includes(name))
+      throw new Error("配置单中的模型不可用：" + String(name ?? "未填写"));
+    return name;
+  };
+  return file.tasks.map((task, index) => {
+    if (!task || (task.step !== "mosaicScreen" && task.step !== "mosaicRefine"))
+      throw new Error("第 " + (index + 1) + " 项的测试步骤无效");
+    const step = task.step;
+    const screen = step === "mosaicScreen";
+    if (task.source !== (screen ? "dataset-all" : "project-initial-snapshot"))
+      throw new Error("第 " + (index + 1) + " 项的样本来源无效");
+    const rounds = task.rounds ?? 1;
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 100 ||
+        !Array.isArray(task.configs) || task.configs.length < 1 || task.configs.length > 100)
+      throw new Error("第 " + (index + 1) + " 项的循环轮次或配置数量无效");
+    const configs = task.configs.map((config): BenchmarkConfig => {
+      if (!config || typeof config.name !== "string" || !config.name.trim()) throw new Error("配置名称不能为空");
+      const lanes = config.lanes ?? 2;
+      if (![1, 2, 4].includes(lanes)) throw new Error("并发只接受 1、2 或 4");
+      const detector = config.detector ?? "anime";
+      if (detector !== "anime" && detector !== "grid") throw new Error("初筛检测器无效");
+      const settings = { ...mosaic, detector, selection: screen ? "all" as const : "checked" as const, sampleLimit: 0 };
+      return {
+        ...defaults, id: crypto.randomUUID(), label: config.name.trim(), enabled: true,
+        models: { text: { id: "", lanes }, dialogue: { id: "", lanes: 1 }, names: { id: "", lanes: 1 } },
+        mosaic: screen
+          ? { ...settings, concurrency: lanes, screenVisionModel: config.screenModel === undefined ? undefined : verifyModel(config.screenModel) }
+          : { ...settings, refineConcurrency: lanes, refineModel: verifyModel(config.candidateModel), refineGuardModel: verifyModel(config.reviewModel) },
+      };
+    });
+    return { scope, step, configs, rounds, priority: index === 0, sampleLimit: 0,
+      sampleSetPath: screen ? dataset : undefined, referenceSampleSetPath: dataset };
+  });
+}

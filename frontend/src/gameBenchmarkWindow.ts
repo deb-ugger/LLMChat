@@ -34,7 +34,7 @@ export function benchmarkHistoryForRecords(history: readonly BenchmarkResult[], 
   });
 }
 
-export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkQueueArgument): Promise<T> {
+export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkRequest[] | BenchmarkQueueArgument): Promise<T> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const finish = () => { window.clearTimeout(timer); channel.removeEventListener("message", receive); };
