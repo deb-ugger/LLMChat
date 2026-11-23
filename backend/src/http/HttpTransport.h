@@ -62,6 +62,7 @@ struct Request {
     std::optional<Proxy> requestProxy;
     std::optional<DWORD> redirectPolicy;
     bool retryGet = true;
+    bool readWhenAvailable = true;
 };
 
 enum class Stage { session, connection, request, options, send, receive, read };

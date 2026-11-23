@@ -1,9 +1,9 @@
 #include "HttpTransport.h"
 
 #ifdef _WIN32
+#include "CancellableWinHttp.h"
 #include <algorithm>
 #include <array>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -102,96 +102,6 @@ Pool& pool() {
     return value;
 }
 
-class AsyncRequest {
-    HINTERNET handle_;
-    std::mutex mutex_;
-    std::condition_variable ready_;
-    DWORD status_ = 0;
-    DWORD bytes_ = 0;
-    DWORD error_ = 0;
-    unsigned responses_ = 0;
-    bool redirected_ = false;
-    bool closed_ = false;
-    bool configured_ = false;
-
-    static void CALLBACK callback(HINTERNET, DWORD_PTR context, DWORD status, void* info, DWORD length) {
-        auto* self = reinterpret_cast<AsyncRequest*>(context);
-        if (!self) return;
-        std::lock_guard lock(self->mutex_);
-        switch (status) {
-        case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING: self->closed_ = true; break;
-        case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
-            self->error_ = static_cast<WINHTTP_ASYNC_RESULT*>(info)->dwError;
-            break;
-        case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
-            self->bytes_ = length;
-            self->status_ = status;
-            break;
-        case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
-        case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
-            self->status_ = status;
-            break;
-        case WINHTTP_CALLBACK_STATUS_REDIRECT: self->redirected_ = true; break;
-        case WINHTTP_CALLBACK_STATUS_RESPONSE_RECEIVED: ++self->responses_; break;
-        default: break;
-        }
-        self->ready_.notify_all();
-    }
-
-public:
-    explicit AsyncRequest(HINTERNET handle) : handle_(handle) {}
-    AsyncRequest(const AsyncRequest&) = delete;
-    AsyncRequest& operator=(const AsyncRequest&) = delete;
-    ~AsyncRequest() {
-        WinHttpCloseHandle(handle_);
-        if (configured_) {
-            std::unique_lock lock(mutex_);
-            ready_.wait(lock, [&] { return closed_; });
-        }
-    }
-
-    bool configure() {
-        DWORD_PTR context = reinterpret_cast<DWORD_PTR>(this);
-        configured_ = WinHttpSetOption(handle_, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context)) &&
-            WinHttpSetStatusCallback(handle_, callback, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS |
-                WINHTTP_CALLBACK_FLAG_HANDLES | WINHTTP_CALLBACK_FLAG_REDIRECT |
-                WINHTTP_CALLBACK_STATUS_RESPONSE_RECEIVED, 0) != WINHTTP_INVALID_STATUS_CALLBACK;
-        return configured_;
-    }
-
-    template<class Start>
-    DWORD run(Start start, DWORD expected, const Cancellation& cancellation, DWORD* received = nullptr) {
-        if (cancellation.stopped()) return ERROR_WINHTTP_OPERATION_CANCELLED;
-        {
-            std::lock_guard lock(mutex_);
-            status_ = bytes_ = error_ = 0;
-        }
-        if (!start()) return GetLastError();
-        std::unique_lock lock(mutex_);
-        for (;;) {
-            if (cancellation.stopped()) return ERROR_WINHTTP_OPERATION_CANCELLED;
-            if (status_ == expected || error_) break;
-            ready_.wait_for(lock, 50ms);
-        }
-        if (received) *received = bytes_;
-        return error_;
-    }
-
-    bool canReuse() {
-        // WinHTTP stores automatic cookies per session. An exclusive lease keeps them
-        // available for redirects within this request without carrying them to the next.
-        {
-            std::lock_guard lock(mutex_);
-            if (redirected_ || responses_ > 1) return false;
-        }
-        DWORD size = 0;
-        WinHttpQueryHeaders(handle_, WINHTTP_QUERY_SET_COOKIE, WINHTTP_HEADER_NAME_BY_INDEX,
-            nullptr, &size, WINHTTP_NO_HEADER_INDEX);
-        const auto error = GetLastError();
-        return error == ERROR_WINHTTP_HEADER_NOT_FOUND;
-    }
-};
-
 bool isRetryable(const Failure& failure) {
     if (failure.stage != Stage::connection && failure.stage != Stage::send && failure.stage != Stage::receive)
         return false;
@@ -207,8 +117,8 @@ Result attempt(Session& entry, const Request& input, const Callbacks& callbacks,
     const auto request = WinHttpOpenRequest(entry.connection.value, input.verb.c_str(), input.target.c_str(),
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, input.origin.secure ? WINHTTP_FLAG_SECURE : 0);
     if (!request) { result.failure = Failure{Stage::request, GetLastError()}; return result; }
-    AsyncRequest operation(request);
-    if (!operation.configure()) { result.failure = Failure{Stage::send, ERROR_WINHTTP_OPERATION_CANCELLED}; return result; }
+    CancellableWinHttp operation(request, cancellation);
+    if (!operation.configured()) { result.failure = Failure{Stage::send, ERROR_WINHTTP_OPERATION_CANCELLED}; return result; }
     if (input.requestProxy) {
         const auto& proxy = *input.requestProxy;
         WINHTTP_PROXY_INFO info{proxy.access, proxy.server.empty() ? nullptr : const_cast<LPWSTR>(proxy.server.c_str()), nullptr};
@@ -227,11 +137,11 @@ Result attempt(Session& entry, const Request& input, const Callbacks& callbacks,
         return WinHttpSendRequest(request, input.headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : input.headers.c_str(),
             input.headers.empty() ? 0 : static_cast<DWORD>(-1),
             length ? const_cast<char*>(input.body.data()) : WINHTTP_NO_REQUEST_DATA, length, length, 0);
-    }, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, cancellation)) {
+    }, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE)) {
         result.failure = Failure{Stage::send, error}; return result;
     }
     if (const auto error = operation.run([&] { return WinHttpReceiveResponse(request, nullptr); },
-        WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, cancellation)) {
+        WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE)) {
         result.failure = Failure{Stage::receive, error}; return result;
     }
 
@@ -240,10 +150,20 @@ Result attempt(Session& entry, const Request& input, const Callbacks& callbacks,
     const bool cleanSession = operation.canReuse();
     if (callbacks.headers && !callbacks.headers(result.status, headers)) return result;
     for (;;) {
+        auto capacity = static_cast<DWORD>(buffer.size());
+        if (input.readWhenAvailable) {
+            DWORD available = 0;
+            if (const auto error = operation.run([&] { return WinHttpQueryDataAvailable(request, nullptr); },
+                WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE, &available)) {
+                result.failure = Failure{Stage::read, error}; return result;
+            }
+            if (!available) break;
+            capacity = std::min(capacity, available);
+        }
         DWORD received = 0;
         if (const auto error = operation.run([&] {
-            return WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), nullptr);
-        }, WINHTTP_CALLBACK_STATUS_READ_COMPLETE, cancellation, &received)) {
+            return WinHttpReadData(request, buffer.data(), capacity, nullptr);
+        }, WINHTTP_CALLBACK_STATUS_READ_COMPLETE, &received)) {
             result.failure = Failure{Stage::read, error}; return result;
         }
         if (!received) break;

@@ -89,11 +89,12 @@ bool downloadFile(
         return false;
     }
 
-    const http_transport::Request request{
+    http_transport::Request request{
         {host, uc.nPort, uc.nScheme == INTERNET_SCHEME_HTTPS},
         {L"LLMChat-UnityInstaller/1.0", {WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY}, {15000, 15000, 60000, 120000}},
         L"GET", path, {}, {}, {}, WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS,
     };
+    request.readWhenAvailable = false;
 
     // Each installer writes a sibling file, leaving an existing cache entry intact.
     struct Cleanup {
