@@ -1,3 +1,6 @@
+[CmdletBinding()]
+param([switch]$BackendOnly)
+
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "build-incremental.ps1")
 $root = Split-Path -Parent $PSScriptRoot
@@ -11,6 +14,37 @@ $release = Join-Path $targetRoot "release"
 $out = Join-Path $root "dist-portable"
 $exe = Join-Path $release "llmchat.exe"
 
+$sidecarNamed = Join-Path $root 'frontend/src-tauri/binaries/llmchat-backend-x86_64-pc-windows-msvc.exe'
+$sidecarRelease = Join-Path $release 'llmchat-backend.exe'
+
+function Stop-PortableProcesses {
+    . (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
+    $paths = @('llmchat.exe','llmchat-backend.exe','llmchat-backend-x86_64-pc-windows-msvc.exe') |
+        ForEach-Object { Join-Path $out $_ }
+    Stop-ProjectProcesses -ExecutablePaths $paths -CloseTimeoutSeconds 20
+}
+
+function Publish-PortableBackend([string]$Source) {
+    Copy-BuildFile $Source (Join-Path $out 'llmchat-backend-x86_64-pc-windows-msvc.exe')
+    Copy-BuildFile $Source (Join-Path $out 'llmchat-backend.exe')
+}
+
+function Write-PortableUpdateManifest {
+    New-Item -ItemType Directory -Path $script:BuildCacheRoot -Force | Out-Null
+    ConvertTo-Json -InputObject @($script:BuildCopiedFiles) |
+        Set-Content -LiteralPath (Join-Path $script:BuildCacheRoot 'portable-updated-files.json') -Encoding UTF8
+    Write-Output ('Updated {0} program/resource files.' -f $script:BuildCopiedFiles.Count)
+}
+
+if ($BackendOnly) {
+    if (!(Test-Path -LiteralPath (Join-Path $out 'llmchat.exe') -PathType Leaf)) { throw 'A full portable desktop build is required before updating just the backend.' }
+    if (!(Test-Path -LiteralPath $sidecarNamed -PathType Leaf)) { throw "Missing freshly built backend: $sidecarNamed" }
+    Stop-PortableProcesses
+    Publish-PortableBackend $sidecarNamed
+    Write-PortableUpdateManifest
+    return
+}
+
 if (-not (Test-Path $exe)) {
     Write-Error "Build Tauri first: cd frontend; npm run tauri -- build (missing $exe)"
 }
@@ -23,9 +57,7 @@ foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'mosaic-detector')) {
     }
 }
 
-. (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
-$portableExecutables = @('llmchat.exe', 'llmchat-backend.exe', 'llmchat-backend-x86_64-pc-windows-msvc.exe') | ForEach-Object { Join-Path $out $_ }
-Stop-ProjectProcesses -ExecutablePaths $portableExecutables -CloseTimeoutSeconds 20
+Stop-PortableProcesses
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 Copy-BuildFile (Join-Path $PSScriptRoot 'portable-build.cmd') (Join-Path $out 'build.cmd')
@@ -100,16 +132,10 @@ foreach ($name in @('NotoSansCJKsc-Regular.otf', 'FONT-OFL.txt', 'FONT-SOURCE.tx
     if (Test-Path -LiteralPath $oldFont) { Remove-Item -LiteralPath $oldFont }
 }
 
-$sidecarRelease = Join-Path $release "llmchat-backend.exe"
-$sidecarNamed = Join-Path $root "frontend\src-tauri\binaries\llmchat-backend-x86_64-pc-windows-msvc.exe"
-
-if (Test-Path $sidecarNamed) {
-    Copy-BuildFile $sidecarNamed $out
-    # Prefer the freshly built named sidecar as llmchat-backend.exe too
-    Copy-BuildFile $sidecarNamed (Join-Path $out "llmchat-backend.exe")
-} elseif (Test-Path $sidecarRelease) {
-    Copy-BuildFile $sidecarRelease (Join-Path $out "llmchat-backend.exe")
-    Copy-BuildFile $sidecarRelease (Join-Path $out "llmchat-backend-x86_64-pc-windows-msvc.exe")
+if (Test-Path -LiteralPath $sidecarNamed -PathType Leaf) {
+    Publish-PortableBackend $sidecarNamed
+} elseif (Test-Path -LiteralPath $sidecarRelease -PathType Leaf) {
+    Publish-PortableBackend $sidecarRelease
 }
 
 # Also sync font/tool caches dirs (created on first fix-font download)
@@ -135,6 +161,4 @@ if (-not (Test-Path $configDst)) {
 Write-Output "Portable folder ready: $out"
 Get-ChildItem $out | Format-Table Name, Length
 
-New-Item -ItemType Directory -Path $script:BuildCacheRoot -Force | Out-Null
-ConvertTo-Json -InputObject @($script:BuildCopiedFiles) | Set-Content -LiteralPath (Join-Path $script:BuildCacheRoot 'portable-updated-files.json') -Encoding UTF8
-Write-Output ('Updated {0} program/resource files.' -f $script:BuildCopiedFiles.Count)
+Write-PortableUpdateManifest
