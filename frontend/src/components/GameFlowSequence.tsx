@@ -6,7 +6,7 @@ import { readModelFilter, saveModelFilter, type ModelFilter } from "./ModelFilte
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { openGameAuxWindow } from "../gameAuxWindows";
-import { GameFlowCard, type GameFlowActivity } from "./GameFlowCard";
+import { GameFlowCard, useGameFlowExpansion, type GameFlowActivity } from "./GameFlowCard";
 import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
 import { benchmarkBlockingReason, isBenchmarkRunning, resumeBenchmarkJob, useBenchmarkProgress, useBenchmarkRunning, usePausedBenchmarkProgress, type BenchmarkState, type BenchmarkTarget } from "../benchmark/benchmarkRunner";
 
@@ -519,11 +519,19 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     setConcurrencyDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => id !== step)));
     setConfigurationError("");
   };
+  const expansion = useGameFlowExpansion();
+  const benchmarkStep = benchmark?.step === "imageTranslate" ? "translate" : benchmark?.step;
   const defaultStep = steps.find(step => activity?.state === "running" && step.id === activity.step) ??
-    steps.find(step => step.state === "current") ?? steps[0];
+    steps.find(step => benchmarkRunning && benchmark?.state === "running" && step.id === benchmarkStep) ??
+    steps.find(step => step.state !== "done" && step.stateLabel !== "已跳过" && step.stateLabel !== "已关闭") ??
+    steps.at(-1);
+  const expansionId = (step: GameFlowStep) => imageFlow && step.id === "translate" ? "imageTranslate" : step.id;
+  const isExpanded = (step: GameFlowStep) => expansion.isExpanded(expansionId(step), step === defaultStep);
+  const editorStep = steps.find(step => step.id === configured && isExpanded(step)) ?? steps.find(isExpanded);
+  const editorId = editorStep?.id ?? null;
   useLayoutEffect(() => {
-    if (defaultStep && !steps.some(step => step.id === configured)) onConfigure(defaultStep.id);
-  }, [configured, defaultStep, onConfigure, steps]);
+    if (configured !== editorId) onConfigure(editorId);
+  }, [configured, editorId, onConfigure]);
   return <div className="game-flow">
     <div className="game-flow-list">
       {(onRun || actions || testConfigurations) && <div className="game-flow-run">
@@ -532,7 +540,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         {actions}
       </div>}
       <ol>{steps.map(step => {
-        const benchmarkStep = benchmark?.step === "imageTranslate" ? "translate" : benchmark?.step;
         const showingBenchmark = benchmarkRunning && benchmarkStep === step.id;
         const matchesActivity = activity?.step === step.id;
         const state = matchesActivity && ["running", "error", "stopped"].includes(activity.state) ? activity.state : step.state;
@@ -551,14 +558,19 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const current = state === "running" || showingBenchmark || !benchmarkRunning && activity?.state !== "running" && state === "current";
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
         const actionLabel = step.stop ? (step.stopDisabled ? "正在中止" : "中止") : runLabel;
-        const expanded = configured === step.id;
+        const expanded = isExpanded(step);
+        const openConfiguration = () => {
+          if (!expanded) expansion.setExpanded(expansionId(step), true);
+          onConfigure(step.id);
+        };
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
-        const hasConfiguration = expanded && !!children;
+        const hasConfiguration = expanded && configured === step.id && !!children;
         const liveActivity = matchesActivity && (!benchmarkRunning || activity.state === "running") ? activity : undefined;
         const elapsed = liveActivity?.elapsed ?? (measured.elapsedMs > 0 || measured.started !== undefined
           ? gameDuration(measured.elapsedMs) : undefined);
         return <li key={step.id} style={{ minInlineSize: 0 }}><GameFlowCard title={step.title} state={state} benchmark={displayedTest} current={current}
-          onConfigure={() => { if (!expanded) onConfigure(step.id); }}
+          disclosure={{ expanded, toggle: expanded ? () => expansion.setExpanded(expansionId(step), false) : openConfiguration }}
+          onConfigure={openConfiguration}
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
           elapsed={elapsed}
           progress={liveActivity?.progress}
@@ -579,13 +591,14 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
             saving: savingConfiguration,
             run: () => void withConfiguration(undefined, step.id, true),
           } : undefined}
-          configuration={hasConfiguration && <div className="game-flow-field-wide game-flow-config-content">
+          configuration={hasConfiguration ? <div className="game-flow-field-wide game-flow-config-content">
             <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
             {onSaveConfiguration && <div className="game-flow-config-save">
               <button type="button" className="unity-btn" disabled={savingConfiguration || configurationLocked(step)}
                 onClick={() => cancelConfiguration(step.id)}>取消</button>
             </div>}
-          </div>} /></li>;
+          </div> : expanded && children && <button type="button" className="unity-btn game-flow-field-wide"
+            onClick={openConfiguration}>编辑本步参数</button>} /></li>;
       })}</ol>
     </div>
     {configurationError&&<p className="unity-offline-error" role="alert">配置保存失败：{configurationError}</p>}

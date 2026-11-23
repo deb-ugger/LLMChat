@@ -5,7 +5,7 @@ import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type Uni
 import { deploymentMetrics, type DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { GameFlowPerformance, StepRunningMetrics } from "./GameFlowSequence";
-import { GameFlowCard, type GameFlowActivity } from "./GameFlowCard";
+import { StandaloneGameFlowCard, type GameFlowActivity } from "./GameFlowCard";
 import { GameProgressBar } from "./GameStepProgress";
 import { gameImageExportWarning, subscribeGameImageExportWarnings, type GameImageExportKind } from "../gameImageExport";
 import type { ImageExportActions, ImageExportPackage, LegacyImagePatch } from "../hooks/useGameImageExportPackage";
@@ -765,7 +765,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
     <div className={`dpl${running ? " is-running" : ""}`}>
       <DeploymentCanvas key={model.root} model={model} actions={actions} percent={percent} running={running} onFocusStep={onFocusStep} />
 
-      <div><GameFlowCard title="生成与应用" state={running ? "running" : model.cardActivity?.state ?? (model.applied ? "done" : "pending")}
+      <div><StandaloneGameFlowCard stepId="apply" title="生成与应用" state={running ? "running" : model.cardActivity?.state ?? (model.applied ? "done" : "pending")}
         label={model.progress?.label ?? model.cardActivity?.label ?? (model.applied ? "已应用" : model.patch ? "已生成" : "未生成")}
         elapsed={model.cardActivity?.elapsed} actions={model.cardActivity?.actions}
         progress={{ ...model.cardActivity?.progress,

@@ -4,7 +4,7 @@ import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import { GameFlowPerformance, StepRunningMetrics } from "./GameFlowSequence";
-import { GameFlowCard } from "./GameFlowCard";
+import { StandaloneGameFlowCard } from "./GameFlowCard";
 import { GameStepProgress, gameProgressLabels } from "./GameStepProgress";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { showAppNotice } from "./AppNotice";
@@ -793,7 +793,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       ? deploymentProgress.state : installState === "已应用" ? "done" : "pending";
   const packageProgress = deploymentProgress?.running ? deploymentProgress : undefined;
   const deploymentPanel = <div className="embed-deployment">
-    <div><GameFlowCard title="生成与应用" state={productState}
+    <div><StandaloneGameFlowCard stepId="apply" title="生成与应用" state={productState}
       label={productState === "pending" || productState === "done" ? installState : gameProgressLabels[productState]}
       elapsed={deploymentProgress?.elapsed} progress={{
         current: packageProgress?.completed, total: packageProgress?.total,
@@ -1055,7 +1055,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">
 
-        {textStep === 1 && scanProgress && <><div><GameFlowCard title="扫描资源" state={scanProgress.state}
+        {textStep === 1 && scanProgress && <><div><StandaloneGameFlowCard stepId="scan" title="扫描资源" state={scanProgress.state}
           label={gameProgressLabels[scanProgress.state]} elapsed={scanProgress.elapsed}
           progress={{ current: scanProgress.completed, total: scanProgress.total, percent: scanProgress.percent, sample: scanProgress.detail }}
           details={scanProgress.details} performance={<GameFlowPerformance measured={scanProgress.measurement} />}

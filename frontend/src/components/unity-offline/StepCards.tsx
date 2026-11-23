@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { GamePromptContext } from "../../gamePrompts";
 import type { UnityProject } from "../../unityOffline";
 import { GameFlowSequence, GameFlowPerformance } from "../GameFlowSequence";
-import { GameFlowCard, type GameFlowActivity } from "../GameFlowCard";
+import { StandaloneGameFlowCard, type GameFlowActivity } from "../GameFlowCard";
 import { GameProgressBar } from "../GameStepProgress";
 import type { StepPerformance } from "../../gameModelPerformance";
 import { GameWorkflowSteps } from "../GameWorkflowSteps";
@@ -88,7 +88,7 @@ export function StepCards({ panelRef, workflowRef, panelStyle, generationState, 
             </div>}
             {!mosaicPage && <>
               {scan && <div className="unity-scan-layout">
-                <div><GameFlowCard title="扫描资源" state={scan.state} label={scan.label} elapsed={scan.elapsed}
+                <div><StandaloneGameFlowCard stepId="scan" title="扫描资源" state={scan.state} label={scan.label} elapsed={scan.elapsed}
                   actions={scan.actions} progress={scan.progress} details={scan.details}
                   performance={<GameFlowPerformance measured={scan.measurement} />}
                   configuration={<div className="game-flow-field-wide">{scan.configuration}</div>} /></div>

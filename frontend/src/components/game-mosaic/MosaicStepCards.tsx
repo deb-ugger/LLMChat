@@ -1,8 +1,8 @@
-import { useLayoutEffect, type CSSProperties, type ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
 import { mosaicModelLabels, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
-import { GameFlowCard } from "../GameFlowCard";
+import { GameFlowCard, useGameFlowExpansion } from "../GameFlowCard";
 import { GameFlowPerformance } from "../GameFlowSequence";
 import { gameProgressLabels } from "../GameStepProgress";
 import { ModelFilterSelect, type ModelFilter } from "../ModelFilterSelect";
@@ -11,8 +11,6 @@ import type { MosaicStep, StepRun } from "./mosaicWorkbenchTypes";
 type Props = {
   paneVisible: boolean;
   hiddenStyle?: CSSProperties;
-  configured: MosaicStep | null;
-  onConfigure: (step: MosaicStep | null) => void;
   busy: boolean;
   aborting?: boolean;
   actionsDisabled: boolean;
@@ -72,16 +70,21 @@ type Props = {
   retryCount: number;
 };
 
-export function MosaicStepCards({ paneVisible, hiddenStyle, configured, onConfigure, busy, aborting, actionsDisabled,
+export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, actionsDisabled,
   onStop, preferences, changePreferences, detectorLabels, reviewModels, testing, testTitle, benchmarkProgress,
   measurements, now, progress, error, screen, refine, redraw, unresolvedRefineFailures, retryCount }: Props) {
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
-  useLayoutEffect(() => {
-    if (paneVisible && configured === null) onConfigure("screen");
-  }, [configured, onConfigure, paneVisible]);
+  const expansion = useGameFlowExpansion();
+  const stage = { screen, refine, redraw };
+  const order = ["screen", "refine", "redraw"] as const;
+  const defaultStep = order.find(id => stage[id].status?.state === "running") ??
+    order.find(id => benchmarkProgress?.state === "running" && benchmarkProgress.step === benchmarkSteps[id]) ??
+    order.find(id => stage[id].status?.state !== "done" && stage[id].status?.state !== "skipped" &&
+      (id !== "refine" || preferences.refine !== false && refine.pendingCount > 0)) ??
+    "redraw";
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
-    const status = ({ screen, refine, redraw })[id].status;
+    const status = stage[id].status;
     const state = status?.state || "pending";
     const running = state === "running";
     const screeningMethodChanged = id === "screen" && state === "pending" && screen.otherDetectorCount > 0;
@@ -91,14 +94,14 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, configured, onConfig
     const { measured } = measurements[id];
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : now - status.started);
-    const selected = configured === id;
+    const expanded = expansion.isExpanded(benchmarkSteps[id], id === defaultStep);
     const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
-      onConfigure={() => { if (!selected) onConfigure(id); }}
+      disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
       progress={{ current: processed, total: status?.total || undefined, percent }}
-      performance={(selected || running || state === "stopped" || benchmark) &&
+      performance={expanded &&
         <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
       details={<small className="game-flow-model-rates">
         {id === "screen" && <span data-tooltip={status?.device?.reason}>{summary}{status?.device &&
@@ -114,7 +117,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, configured, onConfig
       </small>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={aborting} onClick={() => onStop(id)}>
         {aborting ? "正在中止" : "中止"}</button> : actions}
-      configuration={selected && <div className="game-mosaic-step-settings game-flow-field-wide">{settings}</div>} /></li>;
+      configuration={expanded && <div className="game-mosaic-step-settings game-flow-field-wide">{settings}</div>} /></li>;
   };
   return <div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
     <div className="game-flow-list"><ol>

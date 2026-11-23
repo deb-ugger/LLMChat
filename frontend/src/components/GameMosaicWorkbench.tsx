@@ -189,7 +189,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     Object.fromEntries(Object.keys(mosaicStatusLabels).map(id => [id, id !== "failed"])));
   const listId = useId();
   const filterMenu = useRef<HTMLDivElement>(null);
-  const [configured, setConfigured] = useState<MosaicStep | null>(null);
   const [groupMenu, setGroupMenu] = useState<MosaicGroupMenu | null>(null);
   const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
   const [preferences, setPreferences] = useState(() => readMosaicSettings(gamePath));
@@ -1030,7 +1029,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
-    {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle} configured={configured} onConfigure={setConfigured}
+    {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle}
       busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason} onStop={id => stopMosaicBatch(task.current, id, setProgress)} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
       testing={testing} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
         screen: cardMeasurement("screen"), refine: cardMeasurement("refine"), redraw: cardMeasurement("redraw"),
