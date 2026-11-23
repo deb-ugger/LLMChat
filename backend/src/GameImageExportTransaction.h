@@ -12,12 +12,15 @@ struct ApplyControl {
     std::function<void(ApplyPhase, size_t)> checkpoint;
 };
 
-enum class Recovery { Clean, Applied, RolledBack, Restored };
+enum class Recovery { Clean, Applied, RolledBack, Restored, PartiallyRestored };
+
+using RestoreKinds = std::optional<std::vector<std::string>>;
 
 // Errors are reported as gameimageexport::Error, with a stable code and detail.
 void apply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
     const ApplyControl& control = {});
-void restore(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
+nlohmann::json restore(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+    const RestoreKinds& kinds = std::nullopt);
 Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
 
 struct PackageStatus {
@@ -27,11 +30,14 @@ struct PackageStatus {
     bool applied = false;
     bool canRestore = false;
     bool needsRecovery = false;
+    bool layerRestoreSupported = false;
+    nlohmann::json layers = nlohmann::json::object();
     std::optional<Error> restoreError;
 };
 
 void checkApply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
-PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
+PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+    const RestoreKinds& kinds = std::nullopt);
 
 // Active and interrupted packages must be restored/recovered first.
 void remove(const std::filesystem::path& packageDir);

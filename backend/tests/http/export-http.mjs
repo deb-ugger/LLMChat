@@ -123,15 +123,32 @@ async function fixture(name, layer = "mosaic") {
     fs.mkdirSync(path.join(gamePath, "Data", "BasicData"), { recursive: true });
     fs.mkdirSync(outputDir);
     fs.writeFileSync(path.join(gamePath, "Data/BasicData/Game.dat"), "WOLF export route fixture");
-    const relativePath = "Data/Picture/test.png";
     const original = png(12);
-    const candidate = png(242);
-    const target = path.join(gamePath, relativePath);
-    fs.writeFileSync(target, original);
+    const layers = Array.isArray(layer) ? layer : [layer];
+    const files = layers.map((kind, i) => {
+        const relativePath = "Data/Picture/test" + (i ? "-" + i : "") + ".png";
+        const target = path.join(gamePath, relativePath);
+        fs.writeFileSync(target, original);
+        return { kind, target, relativePath };
+    });
     const scan = await request("POST", "/api/game-images/scan", { gamePath });
     assert.equal(scan.status, 200, JSON.stringify(scan.value));
-    const row = scan.value.images.find(image => image.file === relativePath);
-    assert.ok(row, "fixture picture found by the existing scanner");
+
+    const images = [];
+    let first;
+    for (const { kind, target, relativePath } of files) {
+        const row = scan.value.images.find(image => image.file === relativePath);
+        assert.ok(row, "fixture picture found by the existing scanner");
+        const confirmations = [];
+        if (kind !== "translation") confirmations.push(await confirmImage(gamePath, row, "mosaic", original, png(242)));
+        if (kind !== "mosaic") confirmations.push(await confirmImage(gamePath, row, "translation", original, png(180)));
+        first ??= { ...confirmations[0], target, relativePath };
+        images.push(Object.assign({ imageId: row.id, sourceHash: row.sourceHash }, ...confirmations.map(item => item.selected)));
+    }
+    return { ...first, gamePath, outputDir, original, input: { gamePath, outputDir, images }, originalTree: tree(gamePath) };
+}
+
+async function confirmImage(gamePath, row, layer, original, candidate) {
     const pngSha256 = sum(candidate);
     let candidateVersion = pngSha256;
     if (layer === "mosaic") {
@@ -185,9 +202,7 @@ async function fixture(name, layer = "mosaic") {
     const { confirmationId } = confirmed.value;
     const selected = layer === "mosaic" ? { mosaic: { confirmationId, pngSha256 } } :
         { translation: { confirmationId, renderedHash: candidateVersion } };
-    const input = { gamePath, outputDir, images: [{ imageId: row.id, sourceHash: row.sourceHash, ...selected }] };
-    return { gamePath, outputDir, snapshotPath, snapshot, snapshotBytes, lookup, relativePath, target, original, input,
-        originalTree: tree(gamePath) };
+    return { snapshotPath, snapshot, snapshotBytes, lookup, selected };
 }
 
 async function waitReady() {
@@ -212,6 +227,98 @@ function transactionInput(fixture, result) {
     assert.equal(sha(payload), manifest.files[0].sha256);
     return { body: { gamePath: fixture.gamePath, packagePath: result.packagePath }, payload, manifestPath, manifest,
         patchedTree: { ...fixture.originalTree, [fixture.relativePath]: sha(payload) } };
+}
+
+const layerState = (appliedFiles, restoredFiles) => ({
+    state: appliedFiles ? (restoredFiles ? "partiallyRestored" : "applied") : "restored",
+    appliedFiles, restoredFiles,
+});
+
+async function appliedFixture(name, layers) {
+    const data = await fixture(name, layers);
+    const generated = await completed(await post("/generate", data.input), "generate");
+    const body = { gamePath: data.gamePath, packagePath: generated.packagePath };
+    const manifest = JSON.parse(fs.readFileSync(path.join(body.packagePath, "manifest.json"), "utf8"));
+    const receipt = await completed(await post("/apply", body), "apply");
+    const expected = { ...data.originalTree };
+    for (const file of manifest.files) {
+        expected[file.relativePath] = file.sha256;
+        const entry = receipt.files.find(value => value.relativePath === file.relativePath);
+        assert.equal(entry.kind, file.kind);
+        assert.equal(entry.state, "applied");
+    }
+    assert.deepEqual(tree(body.gamePath), expected);
+    return { body, data, manifest, receipt, expected };
+}
+
+async function layeredRestore() {
+    const { body, data, manifest, expected, receipt } = await appliedFixture("layered", ["translation", "mosaic", "composed"]);
+    for (const kinds of [[], "mosaic", ["unknown"], ["mosaic", 1]]) {
+        expectError(await post("/restore", { ...body, kinds }), 400, "INVALID_KINDS");
+        assert.deepEqual(tree(body.gamePath), expected);
+    }
+
+    const partial = await completed(await post("/restore", { ...body, kinds: ["mosaic"] }), "partial restore");
+    assert.equal(partial.state, "partiallyRestored");
+    assert.equal(partial.transactionId, receipt.transactionId);
+    const mosaic = manifest.files.find(file => file.kind === "mosaic");
+    expected[mosaic.relativePath] = mosaic.original.sha256;
+    assert.deepEqual(tree(body.gamePath), expected);
+    assert.deepEqual(Object.fromEntries(partial.files.map(file => [file.kind, file.state])),
+        { translated: "applied", mosaic: "restored", composed: "applied" });
+    const query = await post("/receipts/query", body);
+    assert.equal(query.status, 200);
+    assert.deepEqual(query.value, { receipt: partial, applied: true, canRestore: true, needsRecovery: false,
+        layerRestoreSupported: true, layers: { translated: layerState(1, 0), mosaic: layerState(0, 1), composed: layerState(1, 0) } });
+    expectError(await post("/remove", { packagePath: body.packagePath }), 409, "PACKAGE_IN_USE");
+    console.log("PASS T084 A mosaic-only restored bytes and layer states; translated and composed kept");
+
+    const repeated = await completed(await post("/restore", { ...body, kinds: ["mosaic"] }), "repeat layer");
+    assert.deepEqual(repeated, partial);
+    assert.deepEqual(tree(body.gamePath), expected);
+    assert.deepEqual((await post("/receipts/query", body)).value, query.value);
+    console.log("PASS T084 D repeated layer restore is byte- and receipt-idempotent");
+
+    const both = await completed(await post("/restore", { ...body, kinds: ["image", "composed"] }), "restore others");
+    assert.equal(both.state, "restored");
+    assert.deepEqual(tree(body.gamePath), data.originalTree);
+    console.log("PASS T084 B mosaic then translated/composed restored entire tree");
+}
+
+async function reverseAndResume() {
+    const { body, data, receipt, expected } = await appliedFixture("reverse", ["translation", "mosaic"]);
+    const selected = receipt.files.find(file => file.kind === "translated");
+    const { files, state, ...header } = receipt;
+    writeJson(path.join(body.packagePath, "receipts/restore-intent.json"), { ...header, targetPaths: [selected.relativePath] });
+    fs.copyFileSync(path.join(body.packagePath, selected.backupPath), path.join(body.gamePath, selected.relativePath));
+    expected[selected.relativePath] = selected.before.sha256;
+    assert.equal((await post("/receipts/query", body)).value.needsRecovery, true);
+    const resumed = await completed(await post("/restore", { ...body, kinds: ["image"] }), "resume scoped intent");
+    assert.equal(resumed.state, "partiallyRestored");
+    assert.equal((await post("/receipts/query", body)).value.layers.mosaic.state, "applied");
+    assert.deepEqual(tree(body.gamePath), expected);
+    const last = await completed(await post("/restore", { ...body, kinds: ["mosaic"] }), "finish reverse order");
+    assert.equal(last.state, "restored");
+    assert.deepEqual(tree(body.gamePath), data.originalTree);
+    console.log("PASS T084 B translated then mosaic, interrupted layer intent stays scoped and entire tree restored");
+}
+
+async function legacyRestore() {
+    const { body, data, receipt } = await appliedFixture("legacy-receipt", ["translation", "mosaic"]);
+    const legacy = { ...receipt, files: receipt.files.map(({ kind, state, ...file }) => file) };
+    writeJson(path.join(body.packagePath, "receipts/receipt.json"), legacy);
+    const query = await post("/receipts/query", body);
+    assert.equal(query.status, 200);
+    assert.equal(query.value.layerRestoreSupported, false);
+    assert.deepEqual(query.value.layers, {});
+    const restored = await completed(await post("/restore", { ...body, kinds: ["mosaic"] }), "legacy whole restore");
+    assert.equal(restored.state, "restored");
+    assert.equal(restored.layerRestoreSupported, false);
+    assert.equal(restored.restoredAsFullPackage, true);
+    assert.match(restored.warning, /旧收据.*整包/);
+    assert.deepEqual(tree(body.gamePath), data.originalTree);
+    assert.deepEqual(await completed(await post("/restore", body), "legacy unfiltered repeat"), restored);
+    console.log("PASS T084 C legacy filtered fallback and unfiltered whole recovery");
 }
 
 try {
@@ -291,7 +398,8 @@ try {
     assert.deepEqual(tree(second.gamePath), b.patchedTree);
     const applied = await post("/receipts/query", a.body);
     assert.equal(applied.status, 200);
-    assert.deepEqual(applied.value, { receipt: receiptA, applied: true, canRestore: true, needsRecovery: false });
+    assert.deepEqual(applied.value, { receipt: receiptA, applied: true, canRestore: true, needsRecovery: false,
+        layerRestoreSupported: true, layers: { mosaic: layerState(1, 0) } });
     expectError(await post("/remove", { packagePath: a.body.packagePath }), 409, "PACKAGE_IN_USE");
     console.log("PASS B/C apply: two successes, manifest 400, changed target 409, duplicate 409, concurrent 202/409, queued hash failure");
 
@@ -312,7 +420,8 @@ try {
     assert.deepEqual(await completed(await post("/restore", a.body), "restore"), restored);
     const restoredStatus = await post("/receipts/query", a.body);
     assert.equal(restoredStatus.status, 200);
-    assert.deepEqual(restoredStatus.value, { receipt: restored, applied: false, canRestore: false, needsRecovery: false });
+    assert.deepEqual(restoredStatus.value, { receipt: restored, applied: false, canRestore: false, needsRecovery: false,
+        layerRestoreSupported: true, layers: { mosaic: layerState(0, 1) } });
 
     // Simulate termination before the receipt was published; the real plan and backup stay intact.
     fs.unlinkSync(path.join(b.body.packagePath, "receipts/receipt.json"));
@@ -348,7 +457,10 @@ try {
     assert.deepEqual(tree(editedSource.gamePath), afterEdit);
     assert.equal(fs.readdirSync(editedSource.outputDir).length, 0);
     console.log("PASS T081 C confirm/generate/apply/restore restored all hashes; edited source rejected");
-    console.log("PASS T077/T081 HTTP fixtures");
+    await layeredRestore();
+    await reverseAndResume();
+    await legacyRestore();
+    console.log("PASS T077/T081/T084 HTTP fixtures");
 } catch (error) {
     console.error(log);
     throw error;
