@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction } from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type Ref, type SetStateAction } from "react";
 import { mosaicStatusLabels, type MosaicStatus } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
 import { GameImageListPagination } from "../GameImageBrowserLayout";
@@ -55,6 +55,7 @@ export const mosaicGalleryPageSize = 24;
 
 type Props = {
   images: readonly UnityImage[];
+  navigationRef: Ref<(event: ReactKeyboardEvent<HTMLElement>) => void>;
   activeId?: string;
   page: number;
   onPage: (page: number) => void;
@@ -84,7 +85,7 @@ function arrowDestination(index: number, key: string, length: number): number | 
   }
 }
 
-export function MosaicOriginalGallery({ images, activeId, page, onPage, selectedIds, setSelectedIds,
+export function MosaicOriginalGallery({ images, navigationRef, activeId, page, onPage, selectedIds, setSelectedIds,
   query, read, checked, status, draftChanges, disabled, onPreview, onCheck }: Props) {
   const [focusId, setFocusId] = useState<string>();
   const grid = useRef<HTMLUListElement>(null);
@@ -149,6 +150,8 @@ export function MosaicOriginalGallery({ images, activeId, page, onPage, selected
     selectImage(nextImage.id);
     setFocusId(nextImage.id);
   }
+
+  useImperativeHandle(navigationRef, () => navigateGallery);
 
   return <section className="game-mosaic-original-browser" aria-label="原图批量浏览" tabIndex={0} onKeyDown={navigateGallery}>
     <div className="game-mosaic-original-browser-controls">

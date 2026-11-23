@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { GameImagePreviewFrame } from "./GameImageBrowserLayout";
@@ -36,10 +36,13 @@ function BitmapPreview({ view, title, zoom }: { view: GameImageView & { src: str
   </GameImagePreviewFrame>;
 }
 
-export function GameImageViewer({ title, views, initialIndex = 0, onClose, onDetails }: {
+export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, onPrevious, onNext, onClose, onDetails }: {
   title: string;
   views: GameImageViews;
   initialIndex?: number;
+  resultLabel: "译图" | "去码结果";
+  onPrevious?: (showResult: boolean) => void;
+  onNext?: (showResult: boolean) => void;
   onClose: () => void;
   onDetails?: () => void;
 }) {
@@ -49,11 +52,16 @@ export function GameImageViewer({ title, views, initialIndex = 0, onClose, onDet
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const view = views[index] ?? views[0];
+  const showResult = index > 0 && views.length > 1;
+  const view = showResult ? views[Math.min(index, views.length - 1)] : views[0];
   const { width, height } = view;
-  const hasAlternatives = views.length > 1;
-  const navigationHint = views.length === 2 ? "← " + views[0].label + " · → " + views[1].label
-    : hasAlternatives ? "← 上一张 · → 下一张" : undefined;
+  const hasResult = views.length > 1;
+  const switchLabel = "查看" + (showResult ? "原图" : resultLabel);
+  const selectView = useCallback((result: boolean) => {
+    if (result && !hasResult) return;
+    setMenu(null);
+    setIndex(result ? Math.min(views.length - 1, Math.max(initialIndex, 1)) : 0);
+  }, [hasResult, initialIndex, views.length]);
 
   useLayoutEffect(() => {
     const element = body.current;
@@ -74,24 +82,21 @@ export function GameImageViewer({ title, views, initialIndex = 0, onClose, onDet
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-          !["Escape", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+          !["Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (event.key === "Escape") {
-        onClose();
-      } else if (views.length > 1) {
-        setMenu(null);
-        const step = event.key === "ArrowLeft" ? -1 : 1;
-        setIndex(current => Math.max(0, Math.min(views.length - 1, current + step)));
-      }
+      if (event.key === "Escape") onClose();
+      else if (event.key === "ArrowUp") onPrevious?.(showResult);
+      else if (event.key === "ArrowDown") onNext?.(showResult);
+      else selectView(event.key === "ArrowRight");
     };
     window.addEventListener("keydown", handleKey, true);
     return () => window.removeEventListener("keydown", handleKey, true);
-  }, [onClose, views.length]);
+  }, [onClose, onPrevious, onNext, selectView, showResult]);
 
   const endPan = () => { pan.current = null; setPanning(false); };
   return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={"查看" + view.label}
-    aria-modal="true" aria-keyshortcuts={hasAlternatives ? "Escape ArrowLeft ArrowRight" : "Escape"}
+    aria-modal="true" aria-keyshortcuts="Escape ArrowLeft ArrowRight ArrowUp ArrowDown"
     onPointerDown={event => event.stopPropagation()} onClick={event => {
       event.stopPropagation();
       if (event.target === event.currentTarget) onClose();
@@ -99,8 +104,14 @@ export function GameImageViewer({ title, views, initialIndex = 0, onClose, onDet
     }}>
     <section className="unity-original-viewer-window">
       <div className="unity-original-viewer-header">
-        <strong data-tooltip={navigationHint}>{title} · {view.label}</strong>
+        <strong>{title} · {view.label}</strong>
         <div className="unity-image-button-group">
+          <button type="button" className="unity-btn" disabled={!onPrevious} aria-keyshortcuts="ArrowUp"
+            data-tooltip="上一张（↑）" onClick={() => onPrevious?.(showResult)}>上一张</button>
+          <button type="button" className="unity-btn" disabled={!onNext} aria-keyshortcuts="ArrowDown"
+            data-tooltip="下一张（↓）" onClick={() => onNext?.(showResult)}>下一张</button>
+          <button type="button" className="unity-btn" disabled={!hasResult} aria-keyshortcuts={showResult ? "ArrowLeft" : "ArrowRight"}
+            data-tooltip={switchLabel + (showResult ? "（←）" : "（→）")} onClick={() => selectView(!showResult)}>{switchLabel}</button>
           <button type="button" className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button>
           <button type="button" className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
           <button type="button" className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button>

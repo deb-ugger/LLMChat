@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
-import { GameImagePreviewComparison, GameImagePreviewFrame } from "../GameImageBrowserLayout";
-import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "../GameImageViewer";
+import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
+import { GameImageViewer, useImageBlobUrl, type GameImageView, type GameImageViews } from "../GameImageViewer";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
 
 function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
@@ -103,13 +103,13 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
 
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
-  onStepImage, onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
+  getViewerNeighbors, onViewerImage, onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
   const previews = useRef<HTMLDivElement>(null);
   const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
-  const [viewer, setViewer] = useState<{ title: string; views: GameImageViews; initialIndex: number } | null>(null);
+  const [viewer, setViewer] = useState<{ showResult: boolean; version?: "saved" | MosaicModel } | null>(null);
 
   const result = active && candidate?.revision === active.sourceHash ? candidate : undefined;
   const versions: ResultVersion[] = (["turbo", "2511"] as const).flatMap(id => {
@@ -127,20 +127,35 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const savedUrl = useImageBlobUrl(showSaved ? confirmed?.blob : undefined);
   const openPreview = (id: "original" | "saved" | MosaicModel) => {
     if (editing || !active) return;
-    const { name: title, width, height } = active;
-    const originalView = { id: "original", label: "原图", src: original?.blob };
-    const savedView = { id: "saved", label: "已采用去码图", src: activeSaved ? confirmed?.blob : undefined };
-    const candidateViews = versions.map((version, index) => ({
-      id: version.id,
-      label: (versions.length === 2 ? "候选 " + (index === 0 ? "A" : "B") : "去码结果") + " · " + mosaicModelLabels[version.id],
-      src: version.blob,
-    }));
-    const ordered = showSaved ? [originalView, savedView, ...candidateViews] : [originalView, ...candidateViews, savedView];
-    const available = ordered.flatMap(view => view.src ? [{ ...view, src: view.src, width, height }] : []);
-    const initialIndex = available.findIndex(view => view.id === id);
-    const [first, ...others] = available;
-    if (initialIndex >= 0 && first) setViewer({ title, views: [first, ...others], initialIndex });
+    setViewer(id === "original" ? { showResult: false } : { showResult: true, version: id });
   };
+
+  function previewViews(image: NonNullable<typeof active>, version?: "saved" | MosaicModel): GameImageViews {
+    const dimensions = { width: image.width, height: image.height };
+    const makeView = (label: string, blob?: Blob, error?: string): GameImageView => ({
+      ...dimensions, label, ...(blob ? { src: blob } : {
+        render: () => <GameImagePreviewFrame caption={label} fallback={error
+          ? <p className="game-mosaic-error" role="alert">{error}</p>
+          : <p className="hint">正在读取图片…</p>} />,
+      }),
+    });
+    const originalView = makeView("原图", original?.blob, original?.error);
+    const saved = activeSaved && (version === "saved" || !version && showSaved);
+    const best = versions.find(item => item.id === version) ?? preferredVersion;
+    if (saved) return [originalView, makeView("已采用去码图", confirmed?.blob, confirmed?.error)];
+    return best ? [originalView, makeView("去码结果 · " + mosaicModelLabels[best.id], best.blob)] : [originalView];
+  }
+
+  const { previous: previousImage, next: nextImage } = viewer ? getViewerNeighbors() : {};
+  function moveViewer(image: NonNullable<typeof active>, showResult: boolean) {
+    setViewer({ showResult });
+    onViewerImage(image);
+  }
+
+  function closeViewer() {
+    setViewer(null);
+    previews.current?.querySelector<HTMLElement>(".game-mosaic-original-frame")?.focus({ preventScroll: true });
+  }
 
   useLayoutEffect(() => {
     const element = previews.current;
@@ -196,12 +211,16 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   </div>;
 
   return <>
-    {paneVisible && viewer && <GameImageViewer {...viewer} onClose={() => setViewer(null)} />}
+    {paneVisible && active && viewer && <GameImageViewer key={active.id} title={active.name}
+      views={previewViews(active, viewer.version)} initialIndex={viewer.showResult ? 1 : 0} resultLabel="去码结果"
+      onPrevious={previousImage ? showResult => moveViewer(previousImage, showResult) : undefined}
+      onNext={nextImage ? showResult => moveViewer(nextImage, showResult) : undefined}
+      onClose={closeViewer} />}
     {!active && <div className="unity-offline-empty">{visibleCount ? "从左侧列表选择图片预览" : "没有符合筛选条件的图片。"}</div>}
     {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
       {header}
       {notice}
-      <GameImagePreviewComparison ref={previews} imageId={active.id} onStepImage={onStepImage} navigationDisabled={!!draft || !!transformed}
+      <div ref={previews} data-image-preview-dragging={draft || transformed ? "" : undefined}
         className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <div className="unity-image-actions game-mosaic-results-bar">
@@ -226,7 +245,18 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             </button>)}
           </div>}
         </div>
-        <GameImagePreviewFrame keyboardPane caption="原图" className="game-mosaic-original-frame" aria-label="原图编辑区"
+        <GameImagePreviewFrame keyboardPane caption={<>
+          <span>原图</span>
+          {!!activeBoxes.length && <div className="game-mosaic-mask-tabs" role="group" aria-label="蒙版列表">
+            {activeBoxes.map((box, index) => <button key={index} type="button" className="unity-btn"
+              aria-label={"蒙版 " + (index + 1)} aria-pressed={selection.has(box)} disabled={!canSelectMask}
+              data-tooltip={"蒙版 " + (index + 1) + " · " + Math.round(box[0]) + ", " + Math.round(box[1])}
+              onDoubleClick={event => event.stopPropagation()}
+              onClick={event => masks.selectBox(box, event.ctrlKey || event.metaKey)}>
+              蒙版 {index + 1}
+            </button>)}
+          </div>}
+        </>} className="game-mosaic-original-frame" aria-label="原图编辑区"
           onKeyDown={onImageToolKey} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
           <div className="game-mosaic-original-viewport">
             {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}
@@ -270,7 +300,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             imageName={active.name} disabledReason={busyReason} onApprove={onApprove}
             onOpen={editing ? undefined : () => openPreview(version.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
-      </GameImagePreviewComparison>
+      </div>
       {footer}
     </section>}
   </>;

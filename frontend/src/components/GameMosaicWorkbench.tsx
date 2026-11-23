@@ -4,7 +4,7 @@ import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
-import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
@@ -207,6 +207,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [browseOriginals, setBrowseOriginals] = useState(false);
   const [galleryPage, setGalleryPage] = useState(0);
   const [gallerySelectedIds, setGallerySelectedIds] = useState(() => new Set<string>());
+  const galleryNavigation = useRef<((event: ReactKeyboardEvent<HTMLElement>) => void) | null>(null);
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
@@ -348,26 +349,29 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setGallerySelectedIds(new Set());
   }
 
-  function stepPreviewImage(direction: -1 | 1) {
-    if (browseOriginals) {
-      const page = Math.min(galleryPage, Math.max(0, Math.ceil(visible.length / mosaicGalleryPageSize) - 1));
-      const start = page * mosaicGalleryPageSize;
-      const imagesOnPage = visible.slice(start, start + mosaicGalleryPageSize);
-      const index = imagesOnPage.findIndex(image => image.id === active?.id);
-      const next = index < 0 ? (direction === 1 ? imagesOnPage[0] : imagesOnPage.at(-1))
-        : imagesOnPage[(index + direction + imagesOnPage.length) % imagesOnPage.length];
-      if (!next || next.id === active?.id) return false;
-      setGallerySelectedIds(new Set([next.id]));
-      selectPreview(next.id);
-      return true;
+  function getViewerNeighbors() {
+    if (!browseOriginals) {
+      const index = ordered.findIndex(item => item.image.id === active?.id);
+      if (index >= 0) return { previous: ordered[index - 1]?.image, next: ordered[index + 1]?.image };
     }
-    const index = ordered.findIndex(item => item.image.id === active?.id);
-    const next = index < 0 ? (direction === 1 ? ordered[0] : ordered.at(-1)) : ordered[index + direction];
-    if (!next || next.image.id === active?.id) return false;
-    const local = groups.get(next.id)?.findIndex(image => image.id === next.image.id) ?? -1;
-    if (local >= 0) setGroupPages(previous => ({ ...previous, [next.id]: Math.floor(local / mosaicStatusPageSize) }));
-    selectPreview(next.image.id);
-    return true;
+    const index = visible.findIndex(image => image.id === active?.id);
+    return { previous: index > 0 ? visible[index - 1] : undefined, next: index >= 0 ? visible[index + 1] : undefined };
+  }
+
+  function selectViewerImage(image: UnityImage) {
+    if (browseOriginals) {
+      const index = visible.findIndex(item => item.id === image.id);
+      if (index >= 0) setGalleryPage(Math.floor(index / mosaicGalleryPageSize));
+      setGallerySelectedIds(new Set([image.id]));
+    } else {
+      const status = imageStatus(image);
+      const local = groups.get(status)?.findIndex(item => item.id === image.id) ?? -1;
+      if (local >= 0) {
+        setGroupPages(previous => ({ ...previous, [status]: Math.floor(local / mosaicStatusPageSize) }));
+        setCollapsed(previous => previous[status] ? { ...previous, [status]: false } : previous);
+      }
+    }
+    selectPreview(image.id);
   }
 
   const selected = members.filter(image => resultFor(rows, image).checked);
@@ -1058,7 +1062,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onToggleFailureFilter={toggleFailureFilter} counts={{ ...counts, visible: visible.length, failed: failureCount }}
       active={active} groups={groups} ordered={ordered} refineChanges={refineChanges} groupPages={groupPages} setGroupPages={setGroupPages}
       collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={switchOriginalBrowser}
-      originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id}
+      onBrowsePreviewKeyDown={event => galleryNavigation.current?.(event)}
+      originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id} navigationRef={galleryNavigation}
           page={galleryPage} onPage={setGalleryPage} selectedIds={gallerySelectedIds} setSelectedIds={setGallerySelectedIds}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(draftRows, image).checked}
           draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
@@ -1067,7 +1072,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}
         source={source} approved={approved} activeSaved={activeSaved} candidate={active && draftCandidates[active.id]}
-        preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks} onStepImage={stepPreviewImage}
+        preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks}
+        getViewerNeighbors={getViewerNeighbors} onViewerImage={selectViewerImage}
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
         onRedraw={models => { if (active) generate([active], models); }}
         onApprove={blob => { if (active) approve(active, blob); }}

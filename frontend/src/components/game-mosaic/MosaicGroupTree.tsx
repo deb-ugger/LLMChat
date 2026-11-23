@@ -28,6 +28,7 @@ type Props = {
   browseOriginals: boolean;
   setBrowseOriginals: (browse: boolean) => void;
   originalGallery: ReactNode;
+  onBrowsePreviewKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   actionsDisabled: boolean;
   getRow: (image: UnityImage) => Result;
   draftChanges: (image: UnityImage) => { checked: boolean; mask: boolean };
@@ -45,7 +46,7 @@ type Props = {
 
 export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
-  browseOriginals, setBrowseOriginals, originalGallery, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
+  browseOriginals, setBrowseOriginals, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
   const { query, needle, scope, imageFilters, failuresOnly } = filters;
   const listRef = useRef<HTMLUListElement>(null);
@@ -142,6 +143,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
         onChange={event => onQueryChange(event.target.value)} />
     </div>
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={browseOriginals ? undefined : navigateList}
+      onPreviewKeyDown={browseOriginals ? onBrowsePreviewKeyDown : navigateList}
       list={<>
         <div className="game-mosaic-list-views" role="group" aria-label="左侧图片列表视图">
           <button type="button" className="unity-btn" aria-pressed={!browseOriginals} onClick={() => setBrowseOriginals(false)}>分组</button>

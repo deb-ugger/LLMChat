@@ -243,6 +243,27 @@
 }
 .game-mosaic-workbench .unity-image-previews figcaption { min-height: 30px; overflow-wrap: anywhere; }
 .game-mosaic-workbench .unity-image-previews figcaption small { white-space: nowrap; }
+.game-mosaic-workbench .game-mosaic-original-frame > figcaption { flex-wrap: nowrap; align-items: flex-start; }
+.game-mosaic-original-frame > figcaption > span { flex: none; }
+.game-mosaic-mask-tabs {
+  display: flex;
+  flex: 1;
+  min-inline-size: 0;
+  overflow-x: auto;
+  gap: var(--space-1);
+  padding: 2px;
+}
+.game-mosaic-mask-tabs > button {
+  flex: none;
+  min-block-size: 0;
+  padding: 2px var(--space-2);
+  font-size: var(--fs-caption);
+}
+.game-mosaic-mask-tabs > button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
 .game-mosaic-workbench .unity-image-previews figure > .hint { margin: 8px; }
 .game-mosaic-workbench .game-mosaic-results-bar {
   grid-column: 1 / -1;
