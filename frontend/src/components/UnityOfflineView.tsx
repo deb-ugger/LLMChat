@@ -69,18 +69,18 @@ import { runImagePasses, runImageRegionTranslation, runImageTranslation, unityIm
   useImageOrchestration, type UnityImagePhase } from "./unity-offline/useImageOrchestration";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import { useGameWorkspaceSplit } from "../hooks/useGameWorkspaceSplit";
-import { generateOfflinePatch, offlineExportMessage, type DeploymentPatch } from "./unity-offline/offlineExport";
+import { generateOfflinePatch, offlineExportMessage } from "./unity-offline/offlineExport";
 import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/useOfflineDeploy";
 import { useProjectMount } from "./unity-offline/projectMount";
 import { useProjectSwitch, type UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 import { runTextBranch, runTextRetry, runTextScreening, runTextTranslation, useTextOrchestration, type UnityTranslationOptions } from "./unity-offline/useTextOrchestration";
 import { StepCards, StepProgressContent, type TranslationCardFlow, type WorkflowTrack } from "./unity-offline/StepCards";
 import { DeploySlot, WorkspaceSlots } from "./unity-offline/WorkspaceSlots";
+import { useCheckpointParameterWrite, useCheckpointWriter, type GenerationProgress, type RunCheckpoint } from "./unity-offline/useCheckpointWriter";
 import "../unityOffline.css";
 
 export type { UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 const GENERATION_STEPS = UNITY_STEPS;
-type GenerationProgress = UnityProgress & { step: number; elapsedMs?: number; state: "pending" | "running" | "done" | "stopped" | "error" | "skipped"; failure?: string };
 type TranslationFileStatus = { action: "download" | "import"; state: "working" | "preview" | "done" | "cancelled" | "error"; detail: string; path?: string; folder?: string; issues?: UnityTranslationImportIssue[]; needsValidation?: boolean };
 type ImportPreview = { path: string; entries: UnityEntry[]; issues?: UnityTranslationImportIssue[]; remapped?: number; view: { search: string; reviewFilter: "all" | "unfinished" | "quality" | "target"; page: number; imagePart: boolean; activeStep: number } };
 const EMPTY_ENTRIES: UnityEntry[] = [];
@@ -96,19 +96,6 @@ const imageResetDescriptions: Record<UnityImageResetPhase, string> = {
 const deploymentLabel: Record<DeploymentStep, string> = { scan: "扫描资源", text: "文本翻译", image: "图片翻译", mosaic: "图片去码", apply: "生成与应用" };
 const deploymentStageId = { scan: "1", text: "2.1", image: "2.2", mosaic: "2.3", apply: "3" } as const satisfies Record<DeploymentStep, (typeof UNITY_STAGE_TABS)[number]["id"]>;
 
-type RunCheckpoint = {
-  step: number; endStep: number; automatic: boolean; finished: boolean;
-  projectFolder: string; scanFolder: string; patchFolder: string; patch: DeploymentPatch | null;
-  previousProjectFolder?: string; scopeVersion?: number; translationFailure?: string; scanElapsedMs?: number;
-  translationRuns?: Record<UnityTranslationPart, GenerationProgress>;
-  imageOnly?: boolean; imageVisionModel?:string; imageLayoutModel?:string; imageRedrawProfile?: StyleRedrawProfileId; imageOcrMode?: OcrMode; imageConcurrency?:number; imageConfidenceThreshold?: number; imageTask?: UnityImagePhase;
-  imageScreeningOptions?: UnityImageScreeningOptions;
-  imageChain?: boolean;
-  partial?: boolean; textScreenModel?: string; joinLines?: boolean; wrapMode?:GameWrapMode; includeContext?: boolean; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean; lineMode?: UnityLineMode; lineModel?: string; layoutOnly?: boolean;
-  textMode?: "lines" | "paragraphs" | "smart"; codeAssemblies?: string[] | null; typeDirectory?: string; extraCharacters?: string;
-  translationKind: GameTranslationKind; llmModel?: string; dialogueModel?: string; nameModel?: string; imageModel?: string; imageReviewModel?: string; engine: TranslateProvider; engines?: UnityEngineChoice[]; source: string; target: string; includeCode: boolean; fontPath: string;
-  progress: GenerationProgress;
-};
 type Props = {
   active: boolean; game: UnityGameInfo | null; settings: Settings;
   onOpenGeneralSettings?: () => void;
@@ -259,7 +246,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [checkpoint, setCheckpoint] = useState<RunCheckpoint | null>(null);
   const checkpointRef = useRef<RunCheckpoint | null>(null);
   const translationJobs = useRef<ReturnType<typeof createUnityTranslationJobs> | null>(null);
-  const projectWrites = useRef<Promise<unknown>>(Promise.resolve());
   const imageMode = useRef(imageOcrMode); imageMode.current = imageOcrMode;
   const imageThreshold = useRef(imageConfidenceThreshold); imageThreshold.current = imageConfidenceThreshold;
   const [restoring, setRestoring] = useState(false);
@@ -282,47 +268,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [originalRatio, setOriginalRatio] = useState(() => Math.min(70, Math.max(20, Number(localStorage.getItem("unity-offline-original-ratio")) || 45)));
   const tableRef = useRef<HTMLTableElement>(null);
   const columnDrag = useRef<{ x: number; ratio: number; width: number; latest: number } | null>(null);
-  const taskWrites = useRef<Promise<unknown>>(Promise.resolve());
-  const waitingWrite = useRef<{ stage: string; job: RunCheckpoint } | null>(null);
-  const queuedSignature = useRef("");
   const checkpointKey = "llmchat-unity-run:" + root.toLowerCase();
   const textConfigurationCommit = useRef<GameStepConfigurationCommit | null>(null);
   const imageConfigurationCommit = useRef<GameStepConfigurationCommit | null>(null);
-  const elapsedOrigins = useRef<Partial<Record<"scan" | UnityTranslationPart, number>>>({});
-  const remember = (value: RunCheckpoint) => {
-    const checkpoint = abort.current && value.step >= 2 ? { ...value, ...execution.current.parameters } : value;
-    checkpointRef.current = checkpoint; setCheckpoint(checkpoint); setGeneration(checkpoint.progress);
-    const { progress, translationRuns, scanElapsedMs: _elapsed, ...fields } = checkpoint;
-    const parts = translationRuns && Object.fromEntries(Object.entries(translationRuns).map(([part, value]) => [part, { state: value.state, total: value.total, failure: value.failure,
-      completed: value.completed, redrawFailed: value.redrawFailed,
-      engineStats: value.engineStats?.map(({ id, characters }) => ({ id, characters })) }]));
-    const signature = JSON.stringify({ root, ...fields, translationRuns: parts, progress: { step: progress.step, state: progress.state, folder: progress.folder, total: progress.total, failure: progress.failure } });
-    if (signature !== queuedSignature.current) {
-      queuedSignature.current = signature;
-      const job = structuredClone(checkpoint);
-      const now = performance.now(), clocks = elapsedOrigins.current;
-      if (clocks.scan !== undefined) job.scanElapsedMs = now - clocks.scan;
-      for (const part of ["text", "images"] as const) {
-        const origin = clocks[part];
-        if (job.translationRuns && origin !== undefined) job.translationRuns[part].elapsedMs = now - origin;
-      }
-      const stage = JSON.stringify([root, job.step, job.progress.state, job.finished, job.imageTask,
-        job.translationRuns?.text.state, job.translationRuns?.images.state, job.scanFolder, job.patchFolder]);
-      const waiting = waitingWrite.current;
-      if (job.progress.state === "running" && waiting?.stage === stage) {
-        waiting.job = job;
-        return;
-      }
-      const write = { stage, job };
-      waitingWrite.current = write;
-      taskWrites.current = taskWrites.current.catch(() => {}).then(() => {
-        if (waitingWrite.current === write) waitingWrite.current = null;
-        return unityRun("save-task", { root, task: write.job });
-      });
-      void taskWrites.current.catch(e => { queuedSignature.current = ""; setError(`任务检查点保存失败：${String(e)}`); });
-    }
-  };
   const abort = useRef<AbortController | null>(null);
+  const { remember, taskWrites, projectWrites, queueProjectWrite, elapsedOrigins, resetQueuedSignature } = useCheckpointWriter({
+    root, checkpointRef, setCheckpoint, setGeneration, setError,
+    getActiveParameters: () => abort.current ? execution.current.parameters : undefined,
+  });
   const running = useRef<Promise<void> | null>(null);
   const latest = useRef(project); latest.current = project;
   const publish = (value: UnityProject) => { latest.current = value; setProject(value); };
@@ -344,7 +297,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setPreparingRescan(false);
       setActiveStep(1); setImagePart(false); followProgress.current = true;
 
-      setWorkRoot(""); setOutput(""); setRowIssue(null); queuedSignature.current = "";
+      setWorkRoot(""); setOutput(""); setRowIssue(null); resetQueuedSignature();
       setCheckpoint(null); checkpointRef.current = null;
     },
     resetScreening: () => setImageScreeningOptions(defaultUnityImageScreening),
@@ -432,21 +385,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     remember({...(checkpointRef.current||projectCheckpoint(current)),translationKind,llmModel,dialogueModel,nameModel,imageModel,imageReviewModel,engine,engines:engineChoices,source,target,joinLines,wrapMode,textScreenModel,includeContext,skipTargetLanguage,onlySourceLanguage,lineMode,lineModel,imageOcrMode,imageVisionModel,imageLayoutModel,imageRedrawProfile,imageConcurrency,imageConfidenceThreshold, imageScreeningOptions,includeCode,fontPath,textMode,codeAssemblies,typeDirectory,extraCharacters});
     await taskWrites.current;
   };
-  const previousParameters = useRef(parameterSignature);
-  const parameterWrite = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    const changed = previousParameters.current !== parameterSignature;
-    previousParameters.current = parameterSignature;
-    if (!changed || restoring || !project) return;
-    let timer: number;
-    const commit = () => {
-      window.clearTimeout(timer); parameterWrite.current = null;
-      const current = latest.current; if (!current) return;
-      remember({ ...(checkpointRef.current || projectCheckpoint(current)), translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices, source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage, lineMode, lineModel, imageOcrMode, imageVisionModel, imageLayoutModel, imageRedrawProfile, imageConcurrency, imageConfidenceThreshold, imageScreeningOptions, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters });
-    };
-    parameterWrite.current = commit; timer = window.setTimeout(commit, 350);
-    return () => { window.clearTimeout(timer); if (parameterWrite.current === commit) parameterWrite.current = null; };
-  }, [parameterSignature, restoring, project?.folder]);
+  const parameterWrite = useCheckpointParameterWrite(parameterSignature, restoring, project, () => {
+    const current = latest.current; if (!current) return;
+    remember({ ...(checkpointRef.current || projectCheckpoint(current)), translationKind, llmModel, dialogueModel, nameModel, imageModel, imageReviewModel, engine, engines: engineChoices, source, target, joinLines, wrapMode, textScreenModel, includeContext, skipTargetLanguage, onlySourceLanguage, lineMode, lineModel, imageOcrMode, imageVisionModel, imageLayoutModel, imageRedrawProfile, imageConcurrency, imageConfidenceThreshold, imageScreeningOptions, includeCode, fontPath, textMode, codeAssemblies, typeDirectory, extraCharacters });
+  });
 
   const { closing, closingPhase, showClosing, exitPrompt, resolveExitChoice } = useProjectSwitch({
     ref, active, hasProject: project !== null, restoring, busy, imageEditorBusy, dirty, importPreview,
@@ -657,7 +599,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           setImageResetRevision(value => value + 1);
         }
         latest.current = p; setProject(p);
-        checkpointRef.current = workspace.task; setCheckpoint(workspace.task); queuedSignature.current = "";
+        checkpointRef.current = workspace.task; setCheckpoint(workspace.task); resetQueuedSignature();
         setPatch(workspace.task?.patch || null); setInstalled(workspace.installed); setApplied(false); onInstallationChange?.(root, workspace.installed); setGeneration(null); setDirty(false); setPage(0); setRowIssue(null);
         setFontPlan(null);
         reportRestore(workspace.saved.notices);
@@ -703,9 +645,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setActiveStep(1);
       setMessage("扫描及后续结果已清理，可以从头扫描");
     });
-  }
-  function queueProjectWrite<T>(job: () => Promise<T>): Promise<T> {
-    const next = projectWrites.current.catch(() => {}).then(job); projectWrites.current = next; return next;
   }
   async function save(p = latest.current, area: "all" | "text" | "images" = "all") {
     if (!p) return;
@@ -1626,7 +1565,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       const p = workspace.saved.project;
       if (p?.images) p.images = p.images.map(normalizeUnityImageSelection);
       latest.current = p; setProject(p);
-      checkpointRef.current = workspace.task; setCheckpoint(workspace.task); queuedSignature.current = "";
+      checkpointRef.current = workspace.task; setCheckpoint(workspace.task); resetQueuedSignature();
       setPatch(null);
     },
     finishUninstall: () => { setGeneration(null); setDirty(false); setActiveStep(3); },
