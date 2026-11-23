@@ -41,7 +41,7 @@ int httpStatus(const std::string& code) {
     if (code == "ALREADY_APPLIED" || code == "OPERATION_CONFLICT" || code == "TARGET_CHANGED" ||
         code == "RECOVERY_REQUIRED" || code == "PACKAGE_IN_USE" || code == "BACKUP_MISSING" ||
         code == "BACKUP_CORRUPT" || code == "CANCEL_TOO_LATE" || code == "OUTPUT_EXISTS" ||
-        code == "LEGACY_PATCH_ACTIVE" || code == "BASELINE_MISMATCH") return 409;
+        code == "LEGACY_PATCH_ACTIVE" || code == "LEGACY_SOURCE_CHANGED" || code == "BASELINE_MISMATCH") return 409;
     if (code.starts_with("INVALID_") || code == "UNSUPPORTED_SCHEMA" || code == "UNSUPPORTED_COMPOSE_RULE" ||
         code == "UNSUPPORTED_ENGINE" || code == "WOLF_ARCHIVE_ENTRY_UNSUPPORTED" ||
         code == "CONFIRMATION_REQUIRED" || code == "INPUT_STALE" || code == "FINGERPRINT_MISMATCH" ||
@@ -439,6 +439,26 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages, con
     svr.Post("/api/game-image-exports/legacy-status", withCors(exportHandler([](const auto& req, auto& res) {
         const auto game = locate(Json::parse(req.body), "gamePath");
         send(res, 200, {{"installed", export_game::legacyPatchInstalled(game.path)}});
+    })));
+
+    svr.Post("/api/game-image-exports/legacy/scan", withCors(exportHandler([&gameImages](const auto& req, auto& res) {
+        const auto game = locate(Json::parse(req.body), "gamePath");
+        send(res, 200, transaction::scanLegacy(gameImages, game.path));
+    })));
+
+    svr.Post("/api/game-image-exports/legacy/migrate", withCors(exportHandler([jobs, &gameImages](const auto& req, auto& res) {
+        const auto body = Json::parse(req.body);
+        const auto game = locate(body, "gamePath");
+        const auto output = locate(body, "outputDir");
+        auto entries = body.at("entries");
+        transaction::validateLegacyEntries(entries);
+        queued(res, jobs->submit(Operation::Generate, game, output, [] {},
+            [game = game.path, output = output.path, entries = std::move(entries), &gameImages](Jobs& active, Job& job) {
+                return transaction::migrateLegacy(gameImages, game, output, entries, {
+                    [&] { return active.cancelled(job); },
+                    [&](const auto& state) { active.progress(job, state); },
+                });
+            }));
     })));
 
     svr.Post("/api/game-image-exports/generate", withCors(exportHandler([jobs, &gameImages](const auto& req, auto& res) {

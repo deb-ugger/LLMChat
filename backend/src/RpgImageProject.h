@@ -16,12 +16,14 @@
 namespace gameimageexport { class PackageGenerator; }
 namespace gameimageexport::selection { class SnapshotBuilder; }
 namespace gameimageexport::confirmation { class ProjectConfirmation; }
+namespace gameimageexport::transaction { class LegacyMigration; }
 
 // MV/MZ and WOLF image adapter. OCR, translation, rendering and preview UI stay in the existing image workbench.
 class RpgImageProject {
     friend class gameimageexport::PackageGenerator;
     friend class gameimageexport::selection::SnapshotBuilder;
     friend class gameimageexport::confirmation::ProjectConfirmation;
+    friend class gameimageexport::transaction::LegacyMigration;
     using Path=std::filesystem::path;using Json=nlohmann::json;
     Path wolfTools_;
     std::recursive_mutex mutex_;

@@ -1242,6 +1242,175 @@ void splitFingerprints(const fs::path& scratch) {
     std::cout << "PASS T080 confirmation and write fingerprints diverge only for skipped file\n";
 }
 
+void legacyMigrationCases(const fs::path& scratch) {
+    namespace tx = gameimageexport::transaction;
+    const auto sourcePath = [](const Json& row) { return utf8path::pathFromUtf8(row.at("file").get<std::string>()); };
+    const auto backupPath = [](const Json& row) {
+        return fs::path("original") / (row.at("id").get<std::string>() + "-" + row.at("sourceHash").get<std::string>() + ".png");
+    };
+    const auto oldMark = [](std::string_view kind, const std::string& id) {
+        return fs::path(kind == "composed" ? "composed-installed" : kind == "mosaic" ? "mosaic-installed" : "installed") /
+            (id + ".bin");
+    };
+    const auto install = [&](Fixture& f, const std::string& kind, bool live = true) {
+        const auto name = f.add(false, false);
+        const auto& row = f.rows.back();
+        const auto id = row.at("id").get<std::string>();
+        gamefiles::write(f.project / backupPath(row), png(original));
+        const auto encode = [&](const Colors& colors) {
+            auto bytes = png(colors);
+            return f.encrypted ? rpgBytes(bytes, false) : bytes;
+        };
+        const auto applied = encode(kind == "composed" ? combined : kind == "mosaic" ? repaired : translation);
+        gamefiles::write(f.project / oldMark(kind, id), applied);
+        if (kind == "composed") {
+            gamefiles::write(f.project / oldMark("translated", id), encode(translation));
+            gamefiles::write(f.project / oldMark("mosaic", id), encode(repaired));
+        }
+        if (live) gamefiles::write(f.game / sourcePath(row), applied);
+        return Json{{"relativePath", name}, {"kind", kind}};
+    };
+
+    RpgImageProject project;
+    for (const auto engine : {"rpg-maker-mv", "rpg-maker-mz", "wolf"}) {
+        Fixture f(scratch / (std::string("legacy-") + engine), engine);
+        auto entries = Json::array({install(f, "translated"), install(f, "mosaic"), install(f, "composed")});
+        f.save();
+        const auto beforeScan = snapshot(f.game);
+        const auto scanned = tx::scanLegacy(project, f.game);
+        check(snapshot(f.game) == beforeScan && fs::is_empty(f.output), "T096 A scan is read-only");
+        check(scanned.at("totals") == Json{{"migratable", 3}, {"blocked", 0}}, "T096 A three migratable entries");
+        for (size_t i = 0; i < entries.size(); ++i)
+            check(scanned.at("entries").at(i).at("state") == "migratable" &&
+                scanned.at("entries").at(i).at("kind") == entries.at(i).at("kind"), "T096 A scan classifies each kind");
+
+        const auto appliedTree = fileTree(f.game);
+        const auto result = tx::migrateLegacy(project, f.game, f.output, entries);
+        const auto package = utf8path::pathFromUtf8(result.at("packagePath").get<std::string>());
+        const auto manifest = Json::parse(gamefiles::read(package / "manifest.json"));
+        check(manifest.at("composeRuleVersion") == "legacy-migration/1" &&
+            manifest.at("migration").at("from") == "legacy-patch" &&
+            result.at("manifestSha256") == sha(package / "manifest.json") && result.at("files") == 3,
+            "T096 B migrated manifest and result");
+        uint64_t bytes = 0;
+        for (const auto& entry : fs::recursive_directory_iterator(package))
+            if (entry.is_regular_file()) bytes += entry.file_size();
+        check(result.at("bytes") == bytes, "T096 B actual package size");
+        auto expectedRestore = appliedTree;
+        auto after = fileTree(f.game);
+        size_t moved = 0;
+        const auto afterMigration = after;
+        for (const auto& [name, digest] : afterMigration) {
+            const auto tag = name.find(".bin.migrated-");
+            if (tag == std::string::npos) continue;
+            const auto liveName = name.substr(0, tag + 4);
+            check(!after.contains(liveName) && appliedTree.at(liveName) == digest, "T096 B only rename old mark");
+            after.erase(name);
+            after.emplace(liveName, digest);
+            expectedRestore.erase(liveName);
+            expectedRestore.emplace(name, digest);
+            ++moved;
+        }
+        check(moved == 5 && after == appliedTree, "T096 B full tree bytes unchanged after accounting for marker names");
+        check(tx::scanLegacy(project, f.game).at("entries").empty() && !legacyPatchInstalled(f.game),
+            "T096 B retired markers no longer show as legacy");
+        for (const auto& file : manifest.at("files")) {
+            const auto name = file.at("relativePath").get<std::string>();
+            const auto path = utf8path::pathFromUtf8(name);
+            const auto payload = package / "payload" / path;
+            const auto backup = package / "receipts/backup" / path;
+            const auto raw = f.encrypted ? rpgBytes(png(original), false) : png(original);
+            check(gamefiles::read(payload) == gamefiles::read(f.game / path) && file.at("sha256") == sha(payload) &&
+                gamefiles::read(backup) == raw && file.at("original").at("sha256") == sha(backup),
+                "T096 B current image and original backup byte-for-byte");
+            check(file.at("sourceImage").at("layers") == Json::array({{{"kind", file.at("kind")},
+                {"confirmationId", "legacy-migration"}, {"pngSha256", file.at("sha256")}}}), "T096 B real whole-layer provenance");
+            expectedRestore.at(name) = sha(backup);
+        }
+        const auto status = tx::inspect(package, f.game);
+        check(status.applied && status.canRestore && status.receipt.at("state") == "applied", "T096 C compatible applied receipt");
+        check(tx::restore(package, f.game, std::vector<std::string>{"composed"}).at("state") == "partiallyRestored",
+            "T096 C whole composed layer is restorable");
+        check(tx::restore(package, f.game).at("state") == "restored" && fileTree(f.game) == expectedRestore,
+            "T096 C restore managed originals");
+        check(tx::restoreAndRemove(package, f.game) == Json{{"restored", false}, {"removed", true}} &&
+            fs::is_empty(f.output), "T096 C remove the restored package");
+        std::cout << "PASS T096 A/B/C " << engine << ": read-only scan, byte-for-byte migration, applied receipt, whole-layer restore\n";
+    }
+
+    Fixture blocked(scratch / "legacy-blocked", "wolf");
+    const auto good = install(blocked, "translated");
+    const auto changed = install(blocked, "mosaic");
+    const auto missing = install(blocked, "translated");
+    install(blocked, "mosaic", false);
+    install(blocked, "translated");
+    install(blocked, "composed");
+    blocked.rows.back()["archive"] = "Data/Picture.wolf";
+    blocked.save();
+    auto bytes = gamefiles::read(blocked.game / sourcePath(blocked.rows.at(1)));
+    bytes.back() ^= 1;
+    gamefiles::write(blocked.game / sourcePath(blocked.rows.at(1)), bytes);
+    fs::remove(blocked.project / backupPath(blocked.rows.at(2)));
+    fs::remove(blocked.project / oldMark("translated", "5"));
+    const auto before = snapshot(blocked.game);
+    const auto scan = tx::scanLegacy(project, blocked.game);
+    check(scan.at("totals") == Json{{"migratable", 1}, {"blocked", 5}} && snapshot(blocked.game) == before, "T096 D/E read-only blocked states");
+    const auto& found = scan.at("entries");
+    check(found.at(1).at("state") == "source-mismatch" && found.at(2).at("state") == "missing-backup" &&
+        found.at(3).at("detail") == "图片与受管原件一致，当前没有可迁移的补丁内容" &&
+        found.at(4).at("detail") == "缺少受管标记，无法确认来源" && found.at(5).at("state") == "unsupported",
+        "T096 D/E ownership, identical original and WOLF archive semantics");
+    for (const auto& item : {changed, missing}) {
+        try {
+            tx::migrateLegacy(project, blocked.game, blocked.output, Json::array({good, item}));
+            throw std::runtime_error("T096 D/E migration unexpectedly succeeded");
+        } catch (const Error& error) {
+            check(error.code == "LEGACY_SOURCE_CHANGED" && error.detail == item.at("relativePath").get_ref<const std::string&>(),
+                "T096 D/E first failing relative path");
+        }
+        check(fs::is_empty(blocked.output) && snapshot(blocked.game) == before, "T096 D/E no partially migrated entries");
+    }
+    std::cout << "PASS T096 D/E one-byte drift and missing backup reject the full selection\n";
+
+    Fixture rollback(scratch / "legacy-rollback", "wolf");
+    const auto first = install(rollback, "translated");
+    const auto second = install(rollback, "mosaic");
+    rollback.save();
+    const auto selected = Json::array({first, second});
+    const auto beforeRollback = fileTree(rollback.game);
+    bool cancelled = false;
+    requireError("CANCELLED", "T096 F cancel with staged receipt", [&] {
+        tx::migrateLegacy(project, rollback.game, rollback.output, selected, {
+            [&] { return cancelled; },
+            [&](const Progress& update) { if (update.phase == "publish") cancelled = true; },
+        });
+    });
+    check(fs::is_empty(rollback.output) && fileTree(rollback.game) == beforeRollback, "T096 F no changes after cancellation");
+    requireError("WRITE_FAILED", "T096 F writing the receipt fails", [&] {
+        tx::migrateLegacy(project, rollback.game, rollback.output, selected, {{}, [&](const Progress& update) {
+            if (update.phase == "copy" && update.completed == 1)
+                gamefiles::write(partial(rollback.output) / "receipts/.receipt.partial", "receipt write fault");
+        }});
+    });
+    check(fs::is_empty(rollback.output) && fileTree(rollback.game) == beforeRollback, "T096 F failed receipt leaves no changes");
+    fs::path conflict;
+    requireError("WRITE_FAILED", "T096 F second marker rename fails", [&] {
+        tx::migrateLegacy(project, rollback.game, rollback.output, selected, {{}, [&](const Progress& update) {
+            if (update.phase != "publish") return;
+            const auto data = Json::parse(gamefiles::read(partial(rollback.output) / "manifest.json"));
+            auto suffix = data.at("generatedAt").get<std::string>();
+            std::erase_if(suffix, [](char c) { return c == '-' || c == ':' || c == '.'; });
+            conflict = rollback.project / oldMark("mosaic", "2");
+            conflict += ".migrated-" + suffix;
+            gamefiles::write(conflict, "marker name conflict");
+        }});
+    });
+    check(gamefiles::read(conflict) == "marker name conflict", "T096 F preexisting marker preserved");
+    fs::remove(conflict);
+    check(fs::is_empty(rollback.output) && fileTree(rollback.game) == beforeRollback, "T096 F first rename rolled back");
+    std::cout << "PASS T096 F cancellation, receipt write fault and marker rename rollback\n";
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1267,6 +1436,7 @@ int main(int argc, char** argv) {
         selectionChangedSource(path);
         confirmationBinding(path);
         splitFingerprints(path);
+        legacyMigrationCases(path);
         std::cout << "PASS game image export fixtures\n";
         return 0;
     } catch (const std::exception& error) {
