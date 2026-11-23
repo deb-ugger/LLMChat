@@ -261,7 +261,8 @@ const RunComparePanel = memo(function RunComparePanel({
     </dl>
     {report && <section className="benchmark-report-table-section" aria-label="数据集对照总结">
       <p>{report.title} · 定位框按 IoU ≥ 0.5 一对一匹配</p>
-      <div className="benchmark-report-table" tabIndex={0} role="region" aria-label="运行结果表">
+      <p id={titleId + "-f1"}><strong>F1</strong> 衡量「是否有码」的判定质量，综合考虑漏检和误报，越高越好。只计入人工标注明确、程序也给出明确判定的图片。</p>
+      <div className="benchmark-report-table" tabIndex={0} role="region" aria-label="运行结果表" aria-describedby={titleId + "-f1"}>
         <table>
           <thead>
             <tr><th rowSpan={2} scope="col">配置</th><th colSpan={6} scope="colgroup">质量</th><th colSpan={3} scope="colgroup">效率</th></tr>
