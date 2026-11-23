@@ -2408,6 +2408,8 @@ body.ocr-image-resizing * {
 /* 工具条与结果条：按钮之间留出呼吸，并让弱操作和主操作分开 */
 .game-mosaic-workbench .unity-image-actions {
   gap: var(--space-2);
+  margin-block: 0;
+  flex-wrap: nowrap;
 }
 
 .game-mosaic-workbench .unity-image-actions > .unity-btn.is-ghost + .unity-btn.is-ghost {
