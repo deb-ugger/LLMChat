@@ -3665,7 +3665,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .help-io-box span{font-size:11.5px;color:var(--text-muted)}
 .help-io-mid{text-align:center;color:var(--text-muted);font-size:13px}
 .help-pit{display:flex;gap:8px;align-items:flex-start;margin:0 14px 12px;padding:8px 10px;border-radius:8px;
-  border:1px solid color-mix(in srgb,#d9a44b 24%,var(--border));
+  border:1px solid color-mix(in srgb,var(--warning) 70%,var(--border));
   background:color-mix(in srgb,#d9a44b 5%,var(--bg-panel))}
 .help-pit b{flex:none;font-size:9px;letter-spacing:.6px;color:var(--warning);padding-block-start:2px}
 .help-pit span{font-size:11.5px;color:var(--text-muted)}
