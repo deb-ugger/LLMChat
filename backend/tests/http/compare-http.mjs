@@ -304,9 +304,78 @@ async function occupiedPort(instance, signal) {
     return { exitCode: 1, stderr: "Failed to bind 127.0.0.1:<port>" };
 }
 
+
+const performancePrefix = "/api/system-performance/";
+async function checkSystemPerformance(instance, cases, signal) {
+    const read = async (name, method, suffix, body) => {
+        const res = await request(instance, method, performancePrefix + suffix, { body, signal });
+        const value = JSON.parse(res.body.toString("utf8"));
+        if (res.status !== 400) assert.ok(res.rawHeaders.includes(allowed[0]), "missing CORS for " + name);
+        return { status: res.status, value };
+    };
+    cases.push(await check("system performance now and history contract", signal, async () => {
+        const now = await read("now", "GET", "now");
+        assert.equal(now.status, 200);
+        assert.deepEqual(Object.keys(now.value).sort(), ["cpu", "disk", "gpu", "memory", "network", "sampledAt"]);
+        assert.ok(now.value.sampledAt === null || Number.isInteger(now.value.sampledAt));
+        const history = await read("history", "GET", "history?metric=cpu");
+        assert.equal(history.status, 200);
+        assert.ok(history.value.points.length <= 2000);
+        for (const point of history.value.points) {
+            assert.deepEqual(Object.keys(point).sort(), ["cpu", "t"]);
+            assert.ok(Number.isInteger(point.t));
+            assert.ok(point.cpu === null || Number.isFinite(point.cpu));
+        }
+        const empty = await read("empty range", "GET", "history?from=0&to=0");
+        assert.deepEqual(empty.value, { points: [] });
+        return { status: 200 };
+    }));
+    cases.push(await check("system performance rejects invalid inputs", signal, async () => {
+        for (const [method, url, body, code] of [
+            ["GET", "history?from=5&to=4", undefined, "INVALID_RANGE"],
+            ["GET", "history?metric=bogus", undefined, "INVALID_METRIC"],
+            ["POST", "runs", { taskId: "broken" }, "INVALID_RUN"],
+        ]) {
+            const res = await read(code, method, url, body);
+            assert.equal(res.status, 400);
+            assert.equal(res.value.code, code);
+        }
+        return { status: 400 };
+    }));
+    cases.push(await check("system performance CORS and archive retention", signal, async () => {
+        const blocked = await request(instance, "GET", performancePrefix + "now", { origin: hostile, signal });
+        assert.equal(blocked.status, 403);
+        const logs = path.join(instance.dir, "logs");
+        fs.mkdirSync(logs, { recursive: true });
+        const file = path.join(logs, "system-performance.jsonl");
+        const endedAt = Date.now();
+        const older = Array.from({ length: 201 }, (_, i) => ({ taskId: "recent-" + i, source: "formal", endedAt: endedAt - 1000 - i }));
+        fs.writeFileSync(file, [...older, { taskId: "expired", source: "formal", endedAt: endedAt - 8 * 86400000 }]
+            .map(row => JSON.stringify(row)).join("\n") + "\n");
+        const run = { taskId: "new-fixture", source: "benchmark", beginTime: new Date(endedAt - 100).toISOString(), endedAt: new Date(endedAt).toISOString() };
+        const response = await read("archive", "POST", "runs", run);
+        assert.deepEqual(response, { status: 202, value: { queued: true } });
+        let records;
+        for (let attempt = 0; attempt < 100; attempt++) {
+            try { records = fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line)); } catch {}
+            if (records?.some(record => record.taskId === run.taskId)) break;
+            await delay(25, undefined, { signal });
+        }
+        const saved = records?.find(record => record.taskId === run.taskId);
+        assert.ok(saved, "missing run summary");
+        assert.equal(saved.startedAt, endedAt - 100);
+        assert.equal(saved.endedAt, endedAt);
+        assert.equal(saved.source, "benchmark");
+        assert.equal(records.length, 200);
+        assert.ok(!records.some(record => record.taskId === "expired" || record.taskId === "recent-200"));
+        assert.ok(Number.isInteger(saved.metrics.cpu.samples));
+        return { status: 202, retained: records.length };
+    }));
+}
+
 async function compareRoutes(base, next, baseline, compare) {
     const missing = "/api/__h1_unregistered";
-    for (const route of baseline.routes.filter(item => item.method !== "OPTIONS")) {
+    for (const route of baseline.routes.filter(item => item.method !== "OPTIONS" && !item.pattern.startsWith(performancePrefix))) {
         await compare(route.method+" "+route.pattern,route.method, instance => {
             const input = specimen(route,instance);
             const actual = new URL(input.url, "http://127.0.0.1").pathname;
@@ -427,6 +496,9 @@ export async function compareHttp({ baseExe, nextExe, output, manifest = default
             cases.push(await paired(base, next, name, method, buildInput, verify, signal));
         });
         signal.throwIfAborted();
+        if (baseline.routes.some(route => route.pattern.startsWith(performancePrefix))) {
+            await checkSystemPerformance(next, cases, signal);
+        }
         cases.push(bindCheck.passed ? { ...bindCheck, recovered: true } : bindCheck);
     } catch (error) {
         failure = signal.aborted ? signal.reason : error;
