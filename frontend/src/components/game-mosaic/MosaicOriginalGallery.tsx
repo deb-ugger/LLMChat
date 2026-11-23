@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction } from "react";
 import { mosaicStatusLabels, type MosaicStatus } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
 import { GameImageListPagination } from "../GameImageBrowserLayout";
@@ -51,11 +51,15 @@ function MosaicOriginalThumbnail({ image, read }: { image: UnityImage; read: Mos
 }
 
 const galleryColumns = 6;
-const galleryPageSize = 24;
+export const mosaicGalleryPageSize = 24;
 
 type Props = {
   images: readonly UnityImage[];
   activeId?: string;
+  page: number;
+  onPage: (page: number) => void;
+  selectedIds: ReadonlySet<string>;
+  setSelectedIds: Dispatch<SetStateAction<Set<string>>>;
   query: string;
   read: MosaicWorkbenchProps["read"];
   checked: (image: UnityImage) => boolean;
@@ -67,25 +71,26 @@ type Props = {
 };
 
 function arrowDestination(index: number, key: string, length: number): number | undefined {
-  if (index < 0) return length ? 0 : undefined;
+  if (!length) return;
+  if (index < 0) return 0;
   const column = index % galleryColumns;
   switch (key) {
-    case "ArrowLeft": return column > 0 ? index - 1 : undefined;
-    case "ArrowRight": return column < galleryColumns - 1 && index + 1 < length ? index + 1 : undefined;
-    case "ArrowUp": return index >= galleryColumns ? index - galleryColumns : undefined;
-    case "ArrowDown": return index + galleryColumns < length ? index + galleryColumns : undefined;
+    case "ArrowLeft": return (index + length - 1) % length;
+    case "ArrowRight": return (index + 1) % length;
+    case "ArrowUp": return index >= galleryColumns ? index - galleryColumns
+      : column + Math.floor((length - 1 - column) / galleryColumns) * galleryColumns;
+    case "ArrowDown": return index + galleryColumns < length ? index + galleryColumns : column;
     default: return undefined;
   }
 }
 
-export function MosaicOriginalGallery({ images, activeId, query, read, checked, status, draftChanges, disabled, onPreview, onCheck }: Props) {
-  const [selectedIds, setSelectedIds] = useState(() => new Set<string>());
-  const [page, setPage] = useState(0);
+export function MosaicOriginalGallery({ images, activeId, page, onPage, selectedIds, setSelectedIds,
+  query, read, checked, status, draftChanges, disabled, onPreview, onCheck }: Props) {
   const [focusId, setFocusId] = useState<string>();
   const grid = useRef<HTMLUListElement>(null);
-  const pages = Math.max(1, Math.ceil(images.length / galleryPageSize));
+  const pages = Math.max(1, Math.ceil(images.length / mosaicGalleryPageSize));
   const currentPage = Math.min(page, pages - 1);
-  const visible = images.slice(currentPage * galleryPageSize, (currentPage + 1) * galleryPageSize);
+  const visible = images.slice(currentPage * mosaicGalleryPageSize, (currentPage + 1) * mosaicGalleryPageSize);
   const chosen = images.filter(image => selectedIds.has(image.id));
   const selectPage = () => setSelectedIds(new Set(visible.map(image => image.id)));
 
@@ -98,7 +103,7 @@ export function MosaicOriginalGallery({ images, activeId, query, read, checked, 
   }, [focusId, currentPage]);
 
   function changePage(next: number) {
-    setPage(next);
+    onPage(next);
     if (grid.current) grid.current.scrollTop = 0;
   }
 
@@ -131,8 +136,8 @@ export function MosaicOriginalGallery({ images, activeId, query, read, checked, 
     if (paging) {
       const nextPage = currentPage + (event.key === "PageUp" ? -1 : 1);
       if (nextPage < 0 || nextPage >= pages) return;
-      const start = nextPage * galleryPageSize;
-      const last = Math.min(start + galleryPageSize, images.length) - 1;
+      const start = nextPage * mosaicGalleryPageSize;
+      const last = Math.min(start + mosaicGalleryPageSize, images.length) - 1;
       nextImage = images[Math.min(start + Math.max(0, index), last)];
       changePage(nextPage);
     } else {

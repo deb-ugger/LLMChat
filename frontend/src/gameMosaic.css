@@ -162,6 +162,11 @@
 .game-mosaic-original-check > input { margin: 0; }
 .game-mosaic-original-tile { display: grid; block-size: 100%; align-content: start; min-inline-size: 0; inline-size: 100%; text-align: start; padding: var(--space-1); gap: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
 .game-mosaic-original-tile[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.game-mosaic-original-tile:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .game-mosaic-original-tile.is-mosaic-check-draft,
 .game-mosaic-workbench .unity-image-item.is-mosaic-check-draft {
   background: color-mix(in srgb, var(--warning) 18%, var(--bg-panel));
@@ -258,14 +263,20 @@
 .game-mosaic-workbench .unity-image-actions button[aria-pressed="true"] {
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }
-.game-mosaic-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.game-mosaic-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .game-mosaic-stage > svg:not(.is-editing) { pointer-events: none; }
 .game-mosaic-stage > svg.is-editing { cursor: crosshair; touch-action: none; }
 /* The outer CSS transform still scales the SVG's non-scaling stroke. */
 .game-mosaic-stage > svg { --mosaic-mask-stroke: calc(2px / var(--mosaic-preview-zoom, 1)); }
 .game-mosaic-mask { fill: color-mix(in srgb, var(--danger) 25%, transparent); stroke: var(--danger); stroke-width: var(--mosaic-mask-stroke); }
 .game-mosaic-mask.is-clickable { pointer-events: all; cursor: pointer; touch-action: none; }
-.game-mosaic-mask.is-selected { fill: color-mix(in srgb, var(--accent) 40%, transparent); stroke: var(--accent); }
+.game-mosaic-mask:focus { outline: none; }
+.game-mosaic-mask:focus-visible { stroke: var(--accent); }
+.game-mosaic-mask.is-selected {
+  fill: color-mix(in srgb, var(--accent) 40%, transparent);
+  stroke: var(--accent);
+  stroke-width: calc(1.5px / var(--mosaic-preview-zoom, 1));
+}
 .game-mosaic-mask-selection { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: var(--mosaic-mask-stroke); stroke-dasharray: calc(5px / var(--mosaic-preview-zoom, 1)) calc(3px / var(--mosaic-preview-zoom, 1)); }
 .game-mosaic-mask.is-selected.is-clickable { cursor: move; }
 .game-mosaic-resize-edge { stroke: transparent; stroke-width: calc(10px / var(--mosaic-preview-zoom, 1)); pointer-events: stroke; touch-action: none; }
@@ -292,17 +303,20 @@
   --mosaic-tool-size: 34px;
   --mosaic-tool-padding: var(--space-1);
   --mosaic-tool-offset: var(--space-2);
+  --mosaic-image-gutter: 12px;
 }
 .game-mosaic-image-area {
   position: absolute;
-  inset: 0;
+  inset: var(--mosaic-image-gutter);
   display: grid;
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   --mosaic-image-inset: calc(var(--mosaic-tool-size) + 2 * (var(--mosaic-tool-padding) + var(--mosaic-tool-offset) + 1px));
 }
 .game-mosaic-original-viewport .game-mosaic-stage {
-  inline-size: min(var(--mosaic-original-width), calc(100cqw - 2 * var(--mosaic-image-inset)), calc(100cqh * var(--mosaic-image-aspect)));
+  inline-size: min(var(--mosaic-original-width),
+    calc(100cqw - 2 * max(var(--mosaic-image-gutter), var(--mosaic-image-inset))),
+    calc(max(0px, 100cqh - 2 * var(--mosaic-image-gutter)) * var(--mosaic-image-aspect)));
 }
 .game-mosaic-stage.is-pannable { cursor: grab; touch-action: none; }
 .game-mosaic-stage.is-pannable:active { cursor: grabbing; }

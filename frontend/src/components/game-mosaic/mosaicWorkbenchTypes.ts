@@ -250,6 +250,7 @@ export type MosaicPreviewProps = {
   redrawReason?: string;
   testTitle?: string;
   model: MosaicModel;
+  onStepImage: (direction: -1 | 1) => boolean;
   onRedraw: (models: MosaicModel[]) => void;
   onApprove: (blob: Blob) => void;
   header: ReactNode;

@@ -609,6 +609,11 @@
 .unity-image-actions strong { flex: 1; min-width: 100px; overflow-wrap: anywhere; }
 .unity-image-previews { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 12px 0; }
 .unity-image-previews figure { margin: 0; min-width: 0; padding: 6px; border: 1px solid var(--border,#dcd6c6); border-radius: var(--radius-md); }
+.unity-image-previews figure[data-game-image-preview-pane]:focus-within {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .unity-image-previews figcaption { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; color: var(--muted,#6a675c); }
 .unity-image-previews figcaption label { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--fs-body); }
 .unity-image-preview-surface { background-color: var(--bg-muted); background-image: linear-gradient(45deg,var(--bg-hover) 25%,transparent 25%),linear-gradient(-45deg,var(--bg-hover) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--bg-hover) 75%),linear-gradient(-45deg,transparent 75%,var(--bg-hover) 75%); background-size: 20px 20px; background-position: 0 0,0 10px,10px -10px,-10px 0; }

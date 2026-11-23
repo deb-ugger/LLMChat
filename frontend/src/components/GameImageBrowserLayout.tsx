@@ -107,10 +107,57 @@ export function GameImageFilterOptions({ filters, onChange, doneHint }: {
   </>;
 }
 
-export function GameImagePreviewFrame({ caption, fallback, children, ...props }: ComponentPropsWithRef<"figure"> & {
-  caption?: ReactNode; fallback?: ReactNode;
+const previewPaneSelector = "[data-game-image-preview-pane]";
+const previewControls = "button, a, input, textarea, select, [contenteditable]";
+
+export function GameImagePreviewComparison({ imageId, onStepImage, navigationDisabled, ...props }:
+  Omit<ComponentPropsWithRef<"div">, "onKeyDown" | "onPointerDown"> & {
+    imageId: string;
+    onStepImage: (direction: -1 | 1) => boolean;
+    navigationDisabled?: boolean;
+  }) {
+  const restoreFocus = useRef<{ root: HTMLDivElement; index: number } | undefined>(undefined);
+  useLayoutEffect(() => {
+    const pending = restoreFocus.current;
+    restoreFocus.current = undefined;
+    if (!pending) return;
+    const panes = pending.root.querySelectorAll<HTMLElement>(previewPaneSelector);
+    panes[Math.min(pending.index, panes.length - 1)]?.focus({ preventScroll: true });
+  }, [imageId]);
+
+  return <div {...props} onPointerDown={event => {
+    const target = event.target as Element;
+    if (event.button !== 0 || target.closest(previewControls)) return;
+    const pane = target.closest<HTMLElement>(previewPaneSelector);
+    if (pane && event.currentTarget.contains(pane)) pane.focus({ preventScroll: true });
+  }} onKeyDown={event => {
+    if (navigationDisabled || event.defaultPrevented || event.nativeEvent.isComposing ||
+        event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    const target = event.target as Element;
+    if (target.closest(previewControls)) return;
+    const pane = target.closest<HTMLElement>(previewPaneSelector);
+    if (!pane) return;
+    const root = event.currentTarget;
+    const panes = Array.from(root.querySelectorAll<HTMLElement>(previewPaneSelector));
+    const index = panes.indexOf(pane);
+    if (index < 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      panes[index + (event.key === "ArrowRight" ? 1 : -1)]?.focus({ preventScroll: true });
+      return;
+    }
+    if (onStepImage(event.key === "ArrowDown" ? 1 : -1)) restoreFocus.current = { root, index };
+  }} />;
+}
+
+export function GameImagePreviewFrame({ caption, fallback, children, keyboardPane, ...props }: ComponentPropsWithRef<"figure"> & {
+  caption?: ReactNode; fallback?: ReactNode; keyboardPane?: boolean;
 }) {
-  return <figure {...props}>
+  return <figure {...props} tabIndex={keyboardPane ? 0 : props.tabIndex}
+    data-game-image-preview-pane={keyboardPane ? "" : undefined}
+    aria-keyshortcuts={keyboardPane ? "ArrowLeft ArrowRight ArrowUp ArrowDown" : props["aria-keyshortcuts"]}>
     {caption && <figcaption>{caption}</figcaption>}
     {children ? <div className="unity-image-preview-surface">{children}</div> : fallback}
   </figure>;

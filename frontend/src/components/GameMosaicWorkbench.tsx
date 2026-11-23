@@ -21,7 +21,7 @@ import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
-import { MosaicOriginalGallery } from "./game-mosaic/MosaicOriginalGallery";
+import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/MosaicOriginalGallery";
 import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
@@ -205,6 +205,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const failuresOnly = imageFilters.failed && !imageFilters.pending && !imageFilters.done;
   const [activeId, setActiveId] = useState("");
   const [browseOriginals, setBrowseOriginals] = useState(false);
+  const [galleryPage, setGalleryPage] = useState(0);
+  const [gallerySelectedIds, setGallerySelectedIds] = useState(() => new Set<string>());
   const [busy, setBusy] = useState("");
   const [progressStep, setProgressStep] = useState<MosaicStep>();
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
@@ -337,6 +339,35 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   function selectPreview(id: string) {
     setActiveId(id);
     if (!busy && !disabled) setError("");
+  }
+
+  function switchOriginalBrowser(next: boolean) {
+    if (next === browseOriginals) return;
+    setBrowseOriginals(next);
+    setGalleryPage(0);
+    setGallerySelectedIds(new Set());
+  }
+
+  function stepPreviewImage(direction: -1 | 1) {
+    if (browseOriginals) {
+      const page = Math.min(galleryPage, Math.max(0, Math.ceil(visible.length / mosaicGalleryPageSize) - 1));
+      const start = page * mosaicGalleryPageSize;
+      const imagesOnPage = visible.slice(start, start + mosaicGalleryPageSize);
+      const index = imagesOnPage.findIndex(image => image.id === active?.id);
+      const next = index < 0 ? (direction === 1 ? imagesOnPage[0] : imagesOnPage.at(-1))
+        : imagesOnPage[(index + direction + imagesOnPage.length) % imagesOnPage.length];
+      if (!next || next.id === active?.id) return false;
+      setGallerySelectedIds(new Set([next.id]));
+      selectPreview(next.id);
+      return true;
+    }
+    const index = ordered.findIndex(item => item.image.id === active?.id);
+    const next = index < 0 ? (direction === 1 ? ordered[0] : ordered.at(-1)) : ordered[index + direction];
+    if (!next || next.image.id === active?.id) return false;
+    const local = groups.get(next.id)?.findIndex(image => image.id === next.image.id) ?? -1;
+    if (local >= 0) setGroupPages(previous => ({ ...previous, [next.id]: Math.floor(local / mosaicStatusPageSize) }));
+    selectPreview(next.image.id);
+    return true;
   }
 
   const selected = members.filter(image => resultFor(rows, image).checked);
@@ -1026,8 +1057,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onQueryChange={value => { setQuery(value); setActiveId(""); setGroupPages({}); }}
       onToggleFailureFilter={toggleFailureFilter} counts={{ ...counts, visible: visible.length, failed: failureCount }}
       active={active} groups={groups} ordered={ordered} refineChanges={refineChanges} groupPages={groupPages} setGroupPages={setGroupPages}
-      collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={setBrowseOriginals}
+      collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={switchOriginalBrowser}
       originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id}
+          page={galleryPage} onPage={setGalleryPage} selectedIds={gallerySelectedIds} setSelectedIds={setGallerySelectedIds}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(draftRows, image).checked}
           draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
       actionsDisabled={actionsDisabled} getRow={image => resultFor(draftRows, image)} draftChanges={draftChanges} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
@@ -1035,7 +1067,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}
         source={source} approved={approved} activeSaved={activeSaved} candidate={active && draftCandidates[active.id]}
-        preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks}
+        preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks} onStepImage={stepPreviewImage}
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
         onRedraw={models => { if (active) generate([active], models); }}
         onApprove={blob => { if (active) approve(active, blob); }}

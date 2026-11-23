@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
-import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
+import { GameImagePreviewComparison, GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "../GameImageViewer";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
 
@@ -87,7 +87,7 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
   const url = useImageBlobUrl(version.blob);
   const modelName = mosaicModelLabels[version.id];
   return <div className="game-mosaic-result-version">
-    <GameImagePreviewFrame onDoubleClick={url ? onOpen : undefined} caption={<>
+    <GameImagePreviewFrame keyboardPane aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined} caption={<>
       <span>{letter && `${letter} · `}{modelName}</span>
       {version.seconds != null && <small>{version.seconds.toFixed(1)} 秒</small>}
     </>} fallback={<p className="hint">正在读取图片…</p>}>
@@ -103,7 +103,7 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
 
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
-  onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
+  onStepImage, onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
@@ -201,7 +201,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
     {active && activeResult && <section className="unity-image-detail" aria-label="去码预览">
       {header}
       {notice}
-      <div ref={previews} className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
+      <GameImagePreviewComparison ref={previews} imageId={active.id} onStepImage={onStepImage} navigationDisabled={!!draft || !!transformed}
+        className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <div className="unity-image-actions game-mosaic-results-bar">
           <strong>去码结果</strong>
@@ -225,10 +226,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             </button>)}
           </div>}
         </div>
-        <GameImagePreviewFrame caption="原图" className="game-mosaic-original-frame" tabIndex={0} aria-label="原图编辑区"
-          onKeyDown={onImageToolKey} onPointerDown={event => {
-            if (!(event.target as Element).closest("button, input, textarea, select")) event.currentTarget.focus({ preventScroll: true });
-          }} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
+        <GameImagePreviewFrame keyboardPane caption="原图" className="game-mosaic-original-frame" aria-label="原图编辑区"
+          onKeyDown={onImageToolKey} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
           <div className="game-mosaic-original-viewport">
             {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}
               onBackground={() => masks.selectBox(undefined, false)}>
@@ -260,7 +259,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             {imageToolbar}
           </div>
         </GameImagePreviewFrame>
-        {showSaved ? <GameImagePreviewFrame caption="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
+        {showSaved ? <GameImagePreviewFrame keyboardPane caption="已采用去码图" aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
           ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
           {savedUrl && <div className="unity-image-stage">
             <img src={savedUrl} alt={`${active.name} 已采用去码图`} draggable={false} />
@@ -270,8 +269,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
             imageName={active.name} disabledReason={busyReason} onApprove={onApprove}
             onOpen={editing ? undefined : () => openPreview(version.id)} />
-        ) : <GameImagePreviewFrame fallback={<p className="hint">尚未生成去码结果</p>} />}
-      </div>
+        ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
+      </GameImagePreviewComparison>
       {footer}
     </section>}
   </>;

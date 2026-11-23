@@ -5,7 +5,7 @@ import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GameStyleRedrawButton } from "./StyleRedraw";
 import { gameImageRedrawScreening, gameImageRedrawSelected, gameImageRedrawStatus } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
-import { allGameImageFilters, gameImageFilterMatch, GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { allGameImageFilters, gameImageFilterMatch, GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImagePreviewComparison, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, type GameImageView, type GameImageViews } from "./GameImageViewer";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
@@ -30,7 +30,7 @@ import { isUnityImageReviewable, unityImageReviewChecked } from "../unityImageFi
 
 export const ImagePreviewReaderContext = createContext<ImagePreviewReader | undefined>(undefined);
 
-const ImagePreview = memo(function ImagePreview({ project, image, translated, compact = false, full = false, enabled = true, zoom = 1, threshold = 50, activeRegion = -1, onRegion, onOpen, onMenu }: { project: UnityProject; image: UnityImage; translated: boolean; compact?: boolean; full?: boolean; enabled?: boolean; zoom?: number; threshold?: number; activeRegion?: number; onRegion?: (index: number) => void; onOpen?: () => void; onMenu?: (x: number, y: number) => void }) {
+const ImagePreview = memo(function ImagePreview({ project, image, translated, compact = false, full = false, enabled = true, zoom = 1, threshold = 50, activeRegion = -1, keyboardPane, onRegion, onOpen, onMenu }: { project: UnityProject; image: UnityImage; translated: boolean; compact?: boolean; full?: boolean; enabled?: boolean; zoom?: number; threshold?: number; activeRegion?: number; keyboardPane?: boolean; onRegion?: (index: number) => void; onOpen?: () => void; onMenu?: (x: number, y: number) => void }) {
   const reader=useContext(ImagePreviewReaderContext);
   const key = unityImagePreviewKey(project, image, translated, compact);
   const figure = useRef<HTMLElement>(null); const [visible, setVisible] = useState(!compact);
@@ -62,7 +62,8 @@ const ImagePreview = memo(function ImagePreview({ project, image, translated, co
   }, [enabled, value?.url, maskKey]);
   useEffect(()=>()=>{if(masked.url)URL.revokeObjectURL(masked.url);},[masked.url]);
   const url = excluded.length ? masked.key === maskKey ? masked.url : "" : value?.url || "", opaqueUrl = value?.opaqueUrl || "", displayUrl=ignoreAlpha&&opaqueUrl?opaqueUrl:url,error = loaded.key === key&&(!loaded.url||loaded.url===displayUrl) ? loaded.error || "" : "";
-  return <GameImagePreviewFrame ref={figure} onDoubleClick={onOpen} onContextMenu={event => { if (onMenu) { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); } }}
+  return <GameImagePreviewFrame ref={figure} keyboardPane={keyboardPane}
+    aria-label={keyboardPane ? (translated ? "译图预览" : "原图预览") : undefined} onDoubleClick={onOpen} onContextMenu={event => { if (onMenu) { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); } }}
     caption={!compact && <>{translated ? "译图" : "原图"}{opaqueUrl && <label data-tooltip="原图完全透明；忽略透明度只改变预览，不改写原图缓存"><input type="checkbox" checked={ignoreAlpha} onChange={event => setIgnoreAlpha(event.target.checked)} />忽略透明度</label>}</>}
     fallback={error ? <p className="unity-offline-error" role="alert">{error}</p> : <p className="hint">{file ? "正在读取图片…" : translated ? "尚未生成译图" : image.error || "没有可读取的原图"}</p>}>
     {!error && url && <div className="unity-image-stage" style={{ width: full ? image.width * zoom : Math.min(image.width, (compact ? 130 : 320) * image.width / Math.max(1, image.height)) }}><img src={displayUrl} alt={`${image.name} ${translated ? "译图" : "原图"}`} draggable={false} onError={event => {if(event.currentTarget.currentSrc===displayUrl)setLoaded({ key,url:displayUrl,error: "图片解码失败，请检查原图缓存或重新扫描" });}} />{!compact && onRegion && (!translated||unityImageUsesRegionMask(image)) && <svg viewBox={`0 0 ${image.width} ${image.height}`} preserveAspectRatio="none" className="unity-image-region-overlay" aria-label="图片文字区域">{image.regions.map((region, index) => translated && !effectiveRegions[index].selected ? null : <rect key={index} x={region.x0} y={region.y0} width={Math.max(1, region.x1 - region.x0)} height={Math.max(1, region.y1 - region.y0)} role="button" tabIndex={0} aria-label={`区域 ${index + 1}：${region.text}`} className={activeRegion === index ? "is-active" : ""} onClick={() => onRegion(index)} onFocus={() => onRegion(index)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onRegion(index); } }} />)}</svg>}</div>}
@@ -482,34 +483,50 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
     setCollapsed(previous => ({ ...previous, [group]: false }));
     selectListRow(group, groups[group].items.findIndex(matches), true);
   }, [active, listTarget, images, groups, deferredSearch, imageFilters]);
+  function stepImageList(id: string | undefined, direction: -1 | 1, focus: boolean) {
+    const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
+    if (!expanded.length) return false;
+    const matches = (row: UnityImage) => row.id === id;
+    const current = expanded.findIndex(([group]) => groups[group].items.some(matches));
+    if (current < 0) {
+      selectListRow(expanded[0][0], 0, focus);
+      return true;
+    }
+    const [group] = expanded[current];
+    const items = groups[group].items;
+    const next = items.findIndex(matches) + direction;
+    if (next >= 0 && next < items.length) {
+      selectListRow(group, next, focus);
+      return true;
+    }
+    const adjacent = expanded[current + direction]?.[0];
+    if (!adjacent) return false;
+    selectListRow(adjacent, direction > 0 ? 0 : groups[adjacent].items.length - 1, focus);
+    return true;
+  }
+
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const eventTarget = event.target as HTMLElement;
     if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index, [data-output-index]")) return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row]");
+    const id = focused?.dataset.imageRow || image?.id;
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      if (stepImageList(id, event.key === "ArrowDown" ? 1 : -1, true)) event.preventDefault();
+      return;
+    }
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
     if (!expanded.length) return;
     event.preventDefault();
-    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row]");
-    const id = focused?.dataset.imageRow || image?.id;
     const matches = (row: UnityImage) => row.id === id;
     const groupIndex = expanded.findIndex(([group]) => groups[group].items.some(matches));
     if (groupIndex < 0) { selectListRow(expanded[0][0], 0, true); return; }
     const [group] = expanded[groupIndex];
     const items = groups[group].items;
     const index = items.findIndex(matches);
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      const page = Math.floor(index / imageListPageSize) + (event.key === "ArrowRight" ? 1 : -1);
-      if (page >= 0 && page * imageListPageSize < items.length) selectListRow(group, imagePageIndex(index, page, items.length), true);
-      return;
-    }
-    const offset = event.key === "ArrowDown" ? 1 : -1;
-    const next = index + offset;
-    if (next >= 0 && next < items.length) selectListRow(group, next, true);
-    else {
-      const adjacent = expanded[groupIndex + offset]?.[0];
-      if (adjacent) selectListRow(adjacent, offset > 0 ? 0 : groups[adjacent].items.length - 1, true);
-    }
+    const page = Math.floor(index / imageListPageSize) + (event.key === "ArrowRight" ? 1 : -1);
+    if (page >= 0 && page * imageListPageSize < items.length) selectListRow(group, imagePageIndex(index, page, items.length), true);
   };
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
@@ -542,6 +559,15 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
   const renderRegions=image?unityImageTranslationRegions(image.regions,confidenceThreshold,image).filter(region=>region.selected):[];
   const renderHint=!image?.ocrCompleted?"请先识别图片":!renderRegions.length?"没有勾选区域，将保留原图生成译图":renderRegions.some(region=>!region.translation.trim())?"勾选区域还有空译文，请先翻译图片或填写译文":"使用当前勾选区域与现有译文重新嵌字，不重新识别或翻译";
   const focusedDetail = returnToGallery && !gallery;
+  function stepPreviewImage(direction: -1 | 1) {
+    if (!focusedDetail) return stepImageList(image?.id, direction, false);
+    const items = galleryScope ? groups[galleryScope].items : filtered;
+    const index = items.findIndex(item => item.id === image?.id);
+    const next = index < 0 ? undefined : items[index + direction];
+    if (!next) return false;
+    selectImage(next.id);
+    return true;
+  }
   const viewerImage = viewer && images.find(item => item.id === viewer.id);
   const checkAllRegions=(selected:boolean)=>{if(!image||disabled)return;onChange({...image,completed:image.renderedKind==="imported"?image.completed:false,error:"",regions:image.regions.map(region=>({...region,selected,manualSelected:selected}))});setRegionMenu(null);};
   const droppedImportDone=useRef<(()=>void)|null>(null);
@@ -661,7 +687,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
         {(failureDetail || failuresByImage.has(image.id)) && <p className="unity-offline-error" role="alert">
           {failureDetail || failuresByImage.get(image.id)}
         </p>}
-        <div className="unity-image-previews"><ImagePreview project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, ...getFixedMenuPoint(x, y, 170, 70) })} /><ImagePreview project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, ...getFixedMenuPoint(x, y, 170, 70) }) : undefined} /></div>
+        <GameImagePreviewComparison className="unity-image-previews" imageId={image.id} onStepImage={stepPreviewImage}><ImagePreview keyboardPane project={project} image={image} translated={false} enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={() => openViewer(image.id, false, false)} onMenu={(x, y) => setPreviewMenu({ id: image.id, translated: false, ...getFixedMenuPoint(x, y, 170, 70) })} /><ImagePreview keyboardPane project={project} image={image} translated enabled={active} threshold={confidenceThreshold} activeRegion={activeRegion} onRegion={locateRegion} onOpen={image.renderedFile ? () => openViewer(image.id, true, false) : undefined} onMenu={image.renderedFile ? (x, y) => setPreviewMenu({ id: image.id, translated: true, ...getFixedMenuPoint(x, y, 170, 70) }) : undefined} /></GameImagePreviewComparison>
         <div className="unity-image-regions">{unityImageTranslationRegions(image.regions, confidenceThreshold, image).map((region, index) => {
           const expanded = openRegionDetails.has(index);
           const error = expanded && (region.error || (region.selected ? gameImageJapaneseTextIssue(region.text, region.translation, region.translationTarget) : ""));
