@@ -874,7 +874,16 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     return latest;
   }, [history]);
   const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
-    <header className="game-benchmark-page-header"><h2>测试队列</h2></header>
+    <header className="game-benchmark-page-header"><h2>运行记录</h2>
+      <div className="game-benchmark-tabs" role="tablist" aria-label="测试模块">
+        <button type="button" role="tab" aria-selected="true">运行记录</button>
+        <button type="button" role="tab" aria-selected="false" onClick={() => {
+          const channel = new BroadcastChannel("llmchat-run-records");
+          channel.postMessage({ type: "open-build-speed" });
+          channel.close();
+        }}>构建测速</button>
+      </div>
+    </header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {!taskView && <div className="game-benchmark-runbar">
         <div className="game-benchmark-scope" role="region" aria-label="测试范围">
@@ -906,7 +915,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <div className="game-benchmark-task-actions">
         <button type="button" className="settings-panel-save" disabled={!!issue || adding}
           title={issue} onClick={() => void start(true)}>
-          {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即开始任务"}
+          {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "启动队列"}
         </button>
         <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
         {mosaicSetup && <>
@@ -935,6 +944,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             disabled={adding || !validRounds || !mosaicSetup}
             title="替换当前工程的复筛配置并保存，保留循环轮次、样本设置和测试记录"
             onClick={replaceWithMosaicRefinePresets}>替换并保存 24 组对照</button>}
+          <button type="button" className="settings-panel-save game-benchmark-start-here" disabled={!!issue || adding}
+            title={issue} onClick={() => void start(true)}>
+            {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即开始任务"}
+          </button>
         </div>
       <BenchmarkConfigCards step={step} configs={configs} setConfigs={setConfigs} readOnly={adding} expanded={expanded}
         toggleConfig={toggleConfig} images={images} engines={current.engines} models={models} currentProgress={currentProgress}

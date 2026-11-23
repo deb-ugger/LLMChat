@@ -110,38 +110,23 @@ function AppearanceButton({ railHidden }: { railHidden: boolean }) {
   </>;
 }
 
-function TestQueueButton({ railHidden, onGame, onBuild, buildSelected }: {
-  railHidden: boolean; onGame: () => void; onBuild: () => void; buildSelected: boolean;
+function TestQueueButton({ railHidden, onOpen, selected }: {
+  railHidden: boolean; onOpen: () => void; selected: boolean;
 }) {
-  const id = useId();
-  const panel = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (railHidden && panel.current?.matches(":popover-open")) panel.current.hidePopover();
-  }, [railHidden]);
-  return <>
-    <button type="button" className={open || buildSelected ? "nav-item active" : "nav-item"} popoverTarget={id}
-      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} aria-label="测试队列" data-tooltip="测试队列"
-      onClick={event => {
-        const { scale, height } = getLayoutViewport();
-        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
-        panel.current?.style.setProperty("--appearance-left", `${bounds.right + 8}px`);
-        panel.current?.style.setProperty("--appearance-bottom", `${height - bounds.bottom}px`);
-      }}><FeatureIcon feature="benchmark" size={20} /><span>测试队列</span></button>
-    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover" role="dialog" aria-label="选择测试模块"
-      onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
-      <button type="button" className="nav-appearance-option nav-test-option" onClick={() => {
-        panel.current?.hidePopover(); onGame();
-      }}><FeatureIcon feature="unity" size={18} /><span>游戏翻译</span></button>
-      <button type="button" className="nav-appearance-option nav-test-option" onClick={() => {
-        panel.current?.hidePopover(); onBuild();
-      }}><FeatureIcon feature="benchmark" size={18} /><span>构建测速</span></button>
-    </div>
-  </>;
+  return <button type="button" className={selected ? "nav-item active" : "nav-item"}
+    aria-label="运行记录" data-tooltip="运行记录" aria-current={selected ? "page" : undefined}
+    onClick={() => { if (!railHidden) onOpen(); }}><FeatureIcon feature="benchmark" size={20} /><span>运行记录</span></button>;
 }
 
 export default function App() {
   useEffect(attachBenchmarkRunner, []);
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel("llmchat-run-records");
+    const receive = (event: MessageEvent) => { if (event.data?.type === "open-build-speed") setPage("buildSpeed"); };
+    channel.addEventListener("message", receive);
+    return () => { channel.removeEventListener("message", receive); channel.close(); };
+  }, []);
   const [page, setPage] = useState<Page>("chat");
   const [helpSection, setHelpSection] = useState<HelpModule>("chat");
   const [openGameQueue, setOpenGameQueue] = useState(false);
@@ -463,9 +448,8 @@ export default function App() {
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
           {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> :
-            id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} buildSelected={page === "buildSpeed"}
-              onGame={() => { setOpenGameQueue(true); setPage("unity"); }}
-              onBuild={() => setPage("buildSpeed")} /> :
+            id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} selected={page === "unity"}
+              onOpen={() => { setOpenGameQueue(true); setPage("unity"); }} /> :
             id === "appearance" ? <AppearanceButton key={id} railHidden={navRailHidden} /> : (
             <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}

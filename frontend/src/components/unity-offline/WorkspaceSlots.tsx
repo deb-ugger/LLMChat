@@ -141,7 +141,7 @@ function TextWorkspaceSlot({ textDropRoot, dropHandlers, active, busy, restoring
       </div>
       <div className="unity-result-tools">
         <input type="search" aria-label="搜索来源、原文和译文" data-tooltip="搜索来源、原文和译文" placeholder="搜索" value={scanReady ? search : ""} disabled={!scanReady} onChange={e => onSearch(e.target.value)} />
-        <button className="unity-btn unity-text-discard" data-tooltip={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} aria-label={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} disabled={discardDisabled} onClick={onDiscard}>{importPreview?"取消导入":"取消修改"}</button><button className="unity-btn unity-result-save" data-tooltip={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} aria-label={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} disabled={saveDisabled} onClick={onSave}>{saving ? "保存中…" : importPreview?"保存导入":"保存"}</button>
+        <button className="unity-btn unity-text-discard" data-tooltip={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} aria-label={importPreview?"取消此次导入预览，保留原工程":"取消当前未保存的文本勾选和译文修改，需要再次确认"} disabled={discardDisabled} onClick={onDiscard}>{importPreview?"取消导入":"取消修改"}</button><button className={"unity-btn unity-result-save" + (saveDisabled ? "" : " is-primary")} data-tooltip={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} aria-label={importPreview?`${importMode==="replace"?"覆盖已有译文":"仅补空白"}；保存后重置补丁与应用进度，保留图片处理结果` : "仅保存文本勾选与译文修改"} disabled={saveDisabled} onClick={onSave}>{saving ? "保存中…" : importPreview?"保存导入":"保存"}</button>
       </div>
       </div>
       {scanReady && project ? <>
