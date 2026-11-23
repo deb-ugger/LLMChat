@@ -8,7 +8,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <objbase.h>
-#include <winhttp.h>
+#include "http/HttpTransport.h"
 
 namespace fs = std::filesystem;
 using utf8path::toWide;
@@ -89,136 +89,75 @@ bool downloadFile(
         return false;
     }
 
-    HINTERNET session = WinHttpOpen(
-        L"LLMChat-UnityInstaller/1.0",
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        0);
-    if (!session)
-    {
-        error = "无法初始化下载组件";
-        return false;
-    }
-    WinHttpSetTimeouts(session, 15000, 15000, 60000, 120000);
-
-    HINTERNET connect = WinHttpConnect(session, host, uc.nPort, 0);
-    if (!connect)
-    {
-        WinHttpCloseHandle(session);
-        error = "无法连接下载服务器";
-        return false;
-    }
-
-    const DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET request = WinHttpOpenRequest(
-        connect,
-        L"GET",
-        path,
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags);
-    if (!request)
-    {
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        error = "无法创建下载请求";
-        return false;
-    }
-
-    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
-
-    if (!WinHttpSendRequest(
-            request,
-            WINHTTP_NO_ADDITIONAL_HEADERS,
-            0,
-            WINHTTP_NO_REQUEST_DATA,
-            0,
-            0,
-            0)
-        || !WinHttpReceiveResponse(request, nullptr))
-    {
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        error = "下载请求失败";
-        return false;
-    }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(
-        request,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        &status,
-        &statusSize,
-        WINHTTP_NO_HEADER_INDEX);
-    if (status < 200 || status >= 300)
-    {
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        error = "下载失败，HTTP " + std::to_string(status);
-        return false;
-    }
+    const http_transport::Request request{
+        {host, uc.nPort, uc.nScheme == INTERNET_SCHEME_HTTPS},
+        {L"LLMChat-UnityInstaller/1.0", {WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY}, {15000, 15000, 60000, 120000}},
+        L"GET", path, {}, {}, {}, WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS,
+    };
 
     // Each installer writes a sibling file, leaving an existing cache entry intact.
-    auto receive = [&]() -> bool {
-        DWORD expected = 0, size = sizeof(expected);
-        if (status != 200 || !WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                WINHTTP_HEADER_NAME_BY_INDEX, &expected, &size, WINHTTP_NO_HEADER_INDEX) || !expected) {
-            error = "下载响应缺少可校验的完整文件长度";
-            return false;
-        }
-        GUID guid;
-        wchar_t suffix[40]{};
-        if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, suffix, 40)) {
-            error = "无法生成临时下载文件名";
-            return false;
-        }
-        const fs::path temporary = dest.wstring() + L"." + suffix + L".part";
-        struct Cleanup {
-            const fs::path& path;
-            ~Cleanup() { std::error_code ec; fs::remove(path, ec); }
-        } cleanup{temporary};
-        std::ofstream out(temporary, std::ios::binary);
-        if (!out) { error = "无法创建临时下载文件"; return false; }
-
-        char buffer[64 * 1024];
-        uint64_t received = 0;
-        for (;;) {
-            if (installCancelled()) { error = "下载已取消"; return false; }
-            DWORD count = 0;
-            if (!WinHttpReadData(request, buffer, sizeof(buffer), &count)) {
-                error = "读取下载响应失败，Windows 错误 " + std::to_string(GetLastError());
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { if (!path.empty()) { std::error_code ec; fs::remove(path, ec); } }
+    } temporary;
+    std::ofstream out;
+    DWORD expected = 0;
+    uint64_t received = 0;
+    const auto result = http_transport::perform(request, {
+        [&](DWORD status, const http_transport::ResponseHeaders& headers) {
+            if (status < 200 || status >= 300) {
+                error = "下载失败，HTTP " + std::to_string(status);
                 return false;
             }
-            if (!count) break;
-            received += count;
-            if (received > expected) break;
-            if (!out.write(buffer, count)) { error = "写入下载文件失败"; return false; }
-        }
-        if (received != expected) {
-            error = "下载长度不符，预期 " + std::to_string(expected) + " 字节，收到 " + std::to_string(received);
-            return false;
-        }
-        out.close();
-        if (!out) { error = "保存下载文件失败"; return false; }
-        if (installCancelled()) { error = "下载已取消"; return false; }
-        if (!MoveFileExW(temporary.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            error = "发布下载文件失败，Windows 错误 " + std::to_string(GetLastError());
-            return false;
-        }
-        return true;
-    };
-    const bool ok = receive();
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
-    return ok;
+            expected = status == 200 ? headers.number(WINHTTP_QUERY_CONTENT_LENGTH).value_or(0) : 0;
+            if (!expected) {
+                error = "下载响应缺少可校验的完整文件长度";
+                return false;
+            }
+            GUID guid;
+            wchar_t suffix[40]{};
+            if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid, suffix, 40)) {
+                error = "无法生成临时下载文件名";
+                return false;
+            }
+            temporary.path = dest.wstring() + L"." + suffix + L".part";
+            out.open(temporary.path, std::ios::binary);
+            if (!out) { error = "无法创建临时下载文件"; return false; }
+            return true;
+        },
+        [&](std::string_view bytes) {
+            if (installCancelled()) { error = "下载已取消"; return false; }
+            received += bytes.size();
+            if (received > expected) return false;
+            if (!out.write(bytes.data(), bytes.size())) { error = "写入下载文件失败"; return false; }
+            return true;
+        },
+    }, {control ? control->stop : std::stop_token{}});
+    if (result.failure) {
+        using http_transport::Stage;
+        const auto [stage, code] = *result.failure;
+        if (code == ERROR_WINHTTP_OPERATION_CANCELLED && installCancelled()) error = "下载已取消";
+        else if (stage == Stage::session) error = "无法初始化下载组件";
+        else if (stage == Stage::connection) error = "无法连接下载服务器";
+        else if (stage == Stage::request) error = "无法创建下载请求";
+        else if (stage == Stage::read) error = "读取下载响应失败，Windows 错误 " + std::to_string(code);
+        else error = "下载请求失败";
+        return false;
+    }
+    if (!out.is_open() || !out) return false;
+    if (installCancelled()) { error = "下载已取消"; return false; }
+    if (received != expected) {
+        error = "下载长度不符，预期 " + std::to_string(expected) + " 字节，收到 " + std::to_string(received);
+        return false;
+    }
+    out.close();
+    if (!out) { error = "保存下载文件失败"; return false; }
+    if (installCancelled()) { error = "下载已取消"; return false; }
+    if (!MoveFileExW(temporary.path.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = "发布下载文件失败，Windows 错误 " + std::to_string(GetLastError());
+        return false;
+    }
+    return true;
 }
 }
 #endif
