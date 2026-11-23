@@ -34,8 +34,8 @@ export type GameImageConfirmed = {
   gameRootFingerprint?: string;
 };
 
-export type GameImageConfirmationStatus = GameImageConfirmed |
-  { state: "needsConfirmation"; reason: string; message: string };
+export type GameImageConfirmationStatus = (GameImageConfirmed |
+  { state: "needsConfirmation"; reason: string; message: string }) & { bytes?: number };
 
 export type GameImageExportEngine = "rpg-maker-mv" | "rpg-maker-mz" | "wolf";
 
@@ -141,6 +141,7 @@ export type GameImageExportGenerateResult = {
   manifestSha256: string;
   files: number;
   skipped: number;
+  bytes?: number;
 };
 
 export type GameImageExportWarning = { code: string; message: string };
@@ -170,14 +171,19 @@ export type GameImageExportReceiptStatus = {
   needsRecovery: boolean;
   layerRestoreSupported: boolean;
   layers: GameImageExportLayerStates;
+  bytes?: number;
 };
 
-export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied" };
+export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied"; alreadyApplied: boolean; bytes?: number };
 export type GameImageExportRestoreResult = Omit<GameImageExportReceipt, "warning"> & {
   state: "partiallyRestored" | "restored";
   // Legacy and interrupted restores can return a plain message instead of the receipt warning.
   warning?: GameImageExportWarning | string;
 };
+
+type GameImageExportRemoveRequest = { packagePath: string } &
+  ({ restoreFirst: true; gamePath: string } | { restoreFirst?: false });
+type GameImageExportRemoveResult = { restored: boolean; removed: true };
 
 export type GameImageExportFailure = {
   code: string;
@@ -207,7 +213,7 @@ type StatusBase = {
 export type GameImageExportTerminalStatus<Result = GameImageExportResult> = StatusBase & (
   | { state: "succeeded"; result: Result; error: null }
   | { state: "failed"; result: null; error: GameImageExportFailure }
-  | { state: "cancelled"; result: null; error: GameImageExportFailure | null }
+  | { state: "cancelled"; result: Result | null; error: GameImageExportFailure | null }
 );
 
 export type GameImageExportOperationStatus<Result = GameImageExportResult> =
@@ -261,7 +267,7 @@ function operationPath(operationId: string) {
 export const gameImageExportApi = {
   confirm: (body: GameImageConfirmationInput, signal?: AbortSignal) =>
     post<GameImageConfirmed>("/confirm", body, signal),
-  confirmationStatus: (body: GameImageConfirmationLookup, signal?: AbortSignal) =>
+  confirmationStatus: (body: GameImageConfirmationLookup & { packagePath?: string }, signal?: AbortSignal) =>
     post<GameImageConfirmationStatus>("/confirmation-status", body, signal),
   legacyStatus: (gamePath: string, signal?: AbortSignal) =>
     post<{ installed: boolean }>("/legacy-status", { gamePath }, signal),
@@ -280,9 +286,10 @@ export const gameImageExportApi = {
   },
   cancel: (operationId: string, signal?: AbortSignal) =>
     post<GameImageExportCancelResult>(operationPath(operationId) + "/cancel", {}, signal),
-  remove: async (packagePath: string, signal?: AbortSignal): Promise<void> => {
-    await post<unknown>("/remove", { packagePath }, signal);
-    publishReceiptWarning(packagePath);
+  remove: async (body: GameImageExportRemoveRequest, signal?: AbortSignal) => {
+    const result = await post<GameImageExportRemoveResult | undefined>("/remove", body, signal);
+    publishReceiptWarning(body.packagePath);
+    return result;
   },
 };
 
