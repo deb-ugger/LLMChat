@@ -307,6 +307,7 @@ const GAME_CONFIGURATION_WINDOW: &str = "game-configuration";
 static WEBVIEW_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_WRITE: Mutex<()> = Mutex::new(());
+static SYSTEM_PERFORMANCE_BACKEND: OnceLock<(reqwest::Client, String)> = OnceLock::new();
 
 fn runtime_log(kind: &str, message: &str) -> Result<(), String> {
     let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
@@ -325,40 +326,100 @@ fn runtime_log(kind: &str, message: &str) -> Result<(), String> {
 #[tauri::command]
 fn write_runtime_log(kind: String, message: String) -> Result<(), String> { runtime_log(&kind, &message) }
 #[tauri::command]
-fn append_game_performance(record: serde_json::Value) -> Result<(), String> {
-    let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
+async fn append_game_performance(record: serde_json::Value) -> Result<(), String> {
     let directory = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?;
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let path = directory.join("game-performance.jsonl");
     let mut line = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
     line.push(b'\n');
-    std::fs::OpenOptions::new().create(true).append(true)
-        .open(directory.join("game-performance.jsonl"))
-        .and_then(|mut file| file.write_all(&line)).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn read_game_performance(scope: String, step: String) -> Result<Vec<serde_json::Value>, String> {
-    let file = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?.join("game-performance.jsonl");
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
-        use std::io::BufRead;
-        let file = match std::fs::File::open(file) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(format!("读取测试历史失败：{error}")),
+        std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path)
+            .and_then(|mut file| file.write_all(&line)).map_err(|error| error.to_string())
+    }).await.map_err(|error| error.to_string())??;
+
+    let benchmark = record["benchmark"]["config"].is_object();
+    let is_run = benchmark || !record["benchmark"].is_object();
+    // Ack only the enqueue. The system archive's file I/O runs on the backend worker.
+    if is_run && record["reason"].as_str() == Some("completed") {
+        notify_system_performance(&record, benchmark).await;
+    }
+    Ok(())
+}
+
+async fn notify_system_performance(record: &serde_json::Value, benchmark: bool) {
+    if let (Some((client, endpoint)), Some(task_id), Some(begin), Some(end)) = (
+        SYSTEM_PERFORMANCE_BACKEND.get(), record["taskId"].as_str(),
+        record["beginTime"].as_str(), record["endedAt"].as_str(),
+    ) {
+        let source = if benchmark { "benchmark" } else { "formal" };
+        let body = serde_json::json!({"taskId": task_id, "source": source, "beginTime": begin, "endedAt": end});
+        let response = client.post(endpoint).header("Content-Type", "application/json")
+            .body(body.to_string()).send().await.and_then(|response| response.error_for_status());
+        if let Err(error) = response {
+            let message = error.to_string();
+            let _ = tauri::async_runtime::spawn_blocking(move || runtime_log("system-performance-archive-error", &message)).await;
+        }
+    }
+}
+
+fn system_performance_backend(data: &std::path::Path) -> Option<(reqwest::Client, String)> {
+    let port = std::fs::read_to_string(data.join("config.ini")).ok().and_then(|text| {
+        text.lines().filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            if key.trim() != "port" { return None; }
+            value.trim().parse::<u16>().ok().filter(|port| *port != 0)
+        }).last()
+    }).unwrap_or(17800);
+    let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(1)).build().ok()?;
+    Some((client, format!("http://127.0.0.1:{port}/api/system-performance/runs")))
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GamePerformanceKind { Benchmark, Formal, All }
+
+#[tauri::command]
+async fn read_game_performance(
+    scope: Option<String>, step: Option<String>, kind: Option<GamePerformanceKind>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let path = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?.join("game-performance.jsonl");
+    let kind = kind.unwrap_or(GamePerformanceKind::Benchmark);
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::{BufRead, Read};
+        let (file, size) = {
+            // Capture a complete prefix under the append lock. Reading and JSON parsing can run concurrently.
+            let _guard = LOG_WRITE.lock().map_err(|error| error.to_string())?;
+            let file = match std::fs::File::open(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(format!("读取测试历史失败：{error}")),
+            };
+            let size = file.metadata().map_err(|error| error.to_string())?.len();
+            (file, size)
         };
         let mut records = Vec::new();
-        for (index, line) in std::io::BufReader::new(file).lines().enumerate() {
+        for (index, line) in std::io::BufReader::new(file.take(size)).lines().enumerate() {
             let line = line.map_err(|error| error.to_string())?;
             if line.trim().is_empty() { continue; }
             let record: serde_json::Value = serde_json::from_str(&line).map_err(|error| format!("测试历史第 {} 行无法读取：{error}", index + 1))?;
-            if record["scope"].as_str() == Some(scope.as_str()) && record["step"].as_str() == Some(step.as_str()) && record["benchmark"]["config"].is_object() {
+            let benchmark = record["benchmark"]["config"].is_object();
+            let matching_kind = match kind {
+                GamePerformanceKind::Benchmark => benchmark,
+                GamePerformanceKind::Formal => !record["benchmark"].is_object(),
+                GamePerformanceKind::All => true,
+            };
+            if matching_kind &&
+                scope.as_deref().is_none_or(|scope| record["scope"].as_str() == Some(scope)) &&
+                step.as_deref().is_none_or(|step| record["step"].as_str() == Some(step)) {
                 records.push(record);
             }
         }
         Ok(records)
     }).await.map_err(|error| error.to_string())?
 }
+
+
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -785,6 +846,9 @@ pub fn run() {
             let paths: serde_json::Value = serde_json::from_slice(&output.stdout)?;
             let data = std::path::PathBuf::from(paths["data"].as_str().ok_or("Missing data storage path")?);
             let _ = LOG_DIRECTORY.set(data.join("logs"));
+            if let Some(backend) = system_performance_backend(&data) {
+                let _ = SYSTEM_PERFORMANCE_BACKEND.set(backend);
+            }
             let _ = runtime_log("startup", &format!("LLMChat started; version={}; executable={:?}; logs={:?}", env!("CARGO_PKG_VERSION"), std::env::current_exe().ok(), LOG_DIRECTORY.get()));
             app.manage(speech::SpeechStorage(data));
             let profile = paths["webview"].as_str().ok_or("Missing WebView storage path")?;

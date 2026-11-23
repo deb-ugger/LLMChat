@@ -8,6 +8,8 @@ add_executable(llmchat-backend
     src/main.cpp
     src/Config.cpp
     src/http/SystemRoutes.cpp
+    src/http/SystemPerformanceRoutes.cpp
+    src/SystemPerformance.cpp
     src/http/FileRoutes.cpp
     src/http/HttpTransport.cpp
     src/ConversationManager.cpp
@@ -51,7 +53,7 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
     )
     target_compile_options(llmchat-backend PRIVATE /utf-8)
-    target_link_libraries(llmchat-backend PRIVATE winhttp ws2_32 pathcch)
+    target_link_libraries(llmchat-backend PRIVATE winhttp ws2_32 pathcch pdh)
 endif()
 
 install(TARGETS llmchat-backend RUNTIME DESTINATION bin)

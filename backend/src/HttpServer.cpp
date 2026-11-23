@@ -1,5 +1,6 @@
 #include "HttpServer.h"
 #include "http/SystemRoutes.h"
+#include "http/SystemPerformanceRoutes.h"
 #include "http/FileRoutes.h"
 #include "http/OcrRoutes.h"
 #include "http/HttpRouter.h"
@@ -83,6 +84,7 @@ int HttpServer::run()
     using http_router::withCors;
 
     http_router::registerSystemRoutes(svr, usage_, pricing_);
+    http_router::registerSystemPerformanceRoutes(svr, dataDirectory(config_) / "logs");
 
     http_router::registerOcrModelRoutes(svr, ocrModels_, config_);
 

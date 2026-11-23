@@ -41,7 +41,7 @@ export async function compareMosaicTaskWithDataset(queueId: string, runs: readon
         if (!annotation.partialBoxes) extraBoxes += boxes.length - count;
       }
     }
-    totals.push({ label: run.label, round: run.round, samples: samples.length, tp, fp, tn, fn, review, failed, unlabelled,
+    totals.push({ runId, label: run.label, round: run.round, samples: samples.length, tp, fp, tn, fn, review, failed, unlabelled,
       unlabelledPositive, expectedBoxes, foundBoxes, extraBoxes, seconds: Math.round(run.performance.elapsedMs / 10) / 100 });
   }
   if (!totals.length) throw new Error("此任务暂无逐图结果");
