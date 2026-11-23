@@ -3261,10 +3261,10 @@ body.ocr-image-resizing * {
 .sys-metric-spark svg { display: block; inline-size: 100%; block-size: 100%; }
 
 /* 三档只改颜色；中/高档把字重提一档，低档保持常规 */
-.sys-metric.is-lo .sys-metric-value, .sys-metric-sec.is-lo { color: var(--success, #7fa365); }
+.sys-metric.is-lo .sys-metric-value, .sys-metric-sec.is-lo { color: var(--success); font-weight: 400; }
 .sys-metric.is-mid .sys-metric-value, .sys-metric-sec.is-mid { color: var(--warning); font-weight: 600; }
 .sys-metric.is-hi .sys-metric-value, .sys-metric-sec.is-hi { color: var(--danger); font-weight: 700; }
-.sys-metric.is-lo .sys-metric-spark { color: var(--success, #7fa365); }
+.sys-metric.is-lo .sys-metric-spark { color: var(--success); }
 .sys-metric.is-mid .sys-metric-spark { color: var(--warning); }
 .sys-metric.is-hi .sys-metric-spark { color: var(--danger); }
 
@@ -3325,11 +3325,12 @@ body.ocr-image-resizing * {
 .sysbar-card-value { margin-inline-start: auto; color: var(--text); font-size: 15px; font-weight: 600; }
 .sysbar-card-peak { color: var(--text-muted); }
 .sysbar-card svg { display: block; inline-size: 100%; block-size: 56px; }
-.sysbar-card.is-lo { color: var(--success, #7fa365); }
+.sysbar-card.is-lo { color: var(--success); }
 .sysbar-card.is-mid { color: var(--warning); }
 .sysbar-card.is-hi { color: var(--danger); }
-.sysbar-card.is-mid .sysbar-card-value, .sysbar-card.is-mid .sysbar-card-peak { color: var(--warning); }
-.sysbar-card.is-hi .sysbar-card-value, .sysbar-card.is-hi .sysbar-card-peak { color: var(--danger); }
+.sysbar-card.is-lo .sysbar-card-value { color: var(--success); font-weight: 400; }
+.sysbar-card.is-mid .sysbar-card-value { color: var(--warning); font-weight: 600; }
+.sysbar-card.is-hi .sysbar-card-value { color: var(--danger); font-weight: 700; }
 .sysbar-panel-foot { color: var(--text-dim); }
 @media (width < 900px) { .sysbar-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
