@@ -3095,6 +3095,25 @@ body.ocr-image-resizing * {
 .game-benchmark-show-open[aria-pressed="true"] { border-color: var(--accent); }
 .game-benchmark-show-parameters { margin-block: var(--space-1); }
 .game-benchmark-show-executed { flex: none; font-size: var(--fs-caption); }
+.game-benchmark-item.has-config-draft {
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.game-benchmark-item.has-round-difference,
+.game-benchmark-round-warning {
+  background: color-mix(in srgb, var(--danger) 22%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--danger) 75%, var(--border));
+}
+.game-benchmark-item.has-round-difference::before { background: var(--danger); }
+.game-benchmark-item > summary > .game-benchmark-difference-label,
+.game-benchmark-item > summary > .game-benchmark-draft-label {
+  flex: none;
+  margin-inline-start: 0;
+  font-size: var(--fs-caption);
+}
+.game-benchmark-item > summary > .game-benchmark-difference-label { color: var(--danger); font-weight: 650; }
+.game-benchmark-item > summary > .game-benchmark-draft-label { color: var(--accent); }
+.game-benchmark-round-warning { margin: 0; padding: 8px 12px; border-radius: var(--radius-sm); }
 .game-benchmark-show-decision footer { justify-content: flex-end; }
 
 /* 主操作按钮：可执行时实心，不可执行时回到普通描边，不整排发灰。 */

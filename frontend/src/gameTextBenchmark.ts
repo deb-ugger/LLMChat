@@ -1,3 +1,4 @@
+import { configsForRound, type BenchmarkRoundPlan } from "./benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { mosaicBenchmarkSteps, type MosaicBenchmarkSetup, type MosaicBenchmarkStep } from "./gameMosaicBenchmark";
 import { clearMosaicReviews } from "./gameMosaicRefine";
@@ -33,7 +34,7 @@ export type BenchmarkResult = {
   status: "完成" | "失败" | "已中止" | "已暂停"; detail?: string; summary?: string; unobservedModels: string[]; performance: StepPerformance;
 };
 export type ArchivedBenchmarkRef = { queueId: string; step: MosaicBenchmarkStep };
-type BenchmarkBatchPlan = { rounds: number; configs: BenchmarkConfig[]; sampleSetPath?: string; referenceSampleSetPath?: string };
+type BenchmarkBatchPlan = BenchmarkRoundPlan & { rounds: number; sampleSetPath?: string; referenceSampleSetPath?: string };
 export type BenchmarkSample = { selected: number; text: number; dialogue: number; retained: number };
 
 export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
@@ -225,26 +226,29 @@ export async function runGameTextScreenSample(config: BenchmarkConfig, selected:
   return { translated: rows.length, failed: 0 };
 }
 
-export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: number, workload: Workload, scope: string, queueId: string, signal: AbortSignal,
+export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], rounds: number, workload: Workload, scope: string, queueId: string, signal: AbortSignal,
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
   target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
-  resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string, sampleLimit?: number) {
+  resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string, sampleLimit?: number,
+  roundConfigs?: BenchmarkRoundPlan["roundConfigs"]) {
+  const plan = { configs: baseConfigs, roundConfigs };
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
   const mosaic = Object.hasOwn(mosaicBenchmarkSteps, step);
   const activeRoles = target ? ["text"] as const : benchmarkRoles;
   const local = loadLocalModelProfiles();
-  const prepareModels = (settings: Settings) => prepareGameOllamaModels(configs
+  const prepareModels = (settings: Settings) => prepareGameOllamaModels(baseConfigs.concat(...Object.values(roundConfigs ?? {}))
     .flatMap(config => (target || config.models.text.id ? activeRoles : []).map(role => config.models[role]))
     .filter(model => !!model.id && !!local[model.id])
     .map(model => ({ connection: { ...resolveFeatureLlm(settings, model.id), localModel: true }, lanes: model.lanes })), signal, report);
   const samples = target?.imageSamples;
   const index = samples ? new Map(samples.map((sample, number) => [sample.id,number])) : undefined;
   let savedSamples = false;
-  for (let round = Math.floor(resumeAt / configs.length) + 1; round <= rounds; round++) {
+  for (let round = Math.floor(resumeAt / baseConfigs.length) + 1; round <= rounds; round++) {
     signal.throwIfAborted();
+    const configs = configsForRound(plan, round);
     const roundStarted = performance.now();
     const firstConfig = Math.max(0, resumeAt - (round - 1) * configs.length);
     let finishedConfigs = firstConfig, failedConfigs = 0;
@@ -261,7 +265,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         clearGamePerformance(scope, [step], false);
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
-      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === resumeAt ? { configs, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
+      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === resumeAt ? { ...plan, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
       const metadata = { queueId, round, rounds, configCount: configs.length, sampleLimit, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
         detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };

@@ -1,3 +1,4 @@
+import { benchmarkRoundChanges, configsForRound, earlierRoundConfigs, sameBenchmarkConfig, type BenchmarkRoundPlan } from "./benchmarkRoundPlan";
 import { benchmarkImageInput, readImageBenchmarkDetails, type ImageBenchmarkDetails, type ImageBenchmarkInput } from "./imageBenchmarkHistory";
 import { clearMosaicReviews } from "../gameMosaicRefine";
 import { clearGameImageRefinement } from "../gameImageScreening";
@@ -31,7 +32,7 @@ export type BenchmarkInput = {
   models: string[];
   onMessage: (text: string, level: "info" | "success" | "error") => void;
 };
-export type BenchmarkRequest = { scope: string; step: BenchmarkTarget; configs: BenchmarkConfig[]; rounds: number; priority?: boolean; sampleSetPath?: string; sampleLimit?: number; referenceSampleSetPath?: string };
+export type BenchmarkRequest = BenchmarkRoundPlan & { scope: string; step: BenchmarkTarget; rounds: number; priority?: boolean; sampleSetPath?: string; sampleLimit?: number; referenceSampleSetPath?: string };
 type BenchmarkProgress = {
   phase: "prepare" | "execute" | "finish";
   label: string;
@@ -70,7 +71,9 @@ export type BenchmarkJob = {
   startedTime?: string;
   status: "待开始" | "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
+  round: number;
   startedConfigIds: readonly string[];
+  completedConfigIds: readonly string[];
 };
 type FormalActivity = { id: string; game: string; label: string; state: "running" | "unfinished"; completed?: number; total?: number; detail?: string };
 export type BenchmarkSnapshot = {
@@ -102,11 +105,11 @@ type JobContext = {
   id: string;
   signal: AbortSignal;
   elapsedMs: () => number;
-  report: (patch: ProgressPatch, configTiming?: "start" | "stop") => void;
+  report: (patch: ProgressPatch, configTiming?: "start" | "stop" | "complete") => void;
 };
 type Prepared = { count: number; scope: string; runScope: string; restored?: number; run: (context: JobContext) => Promise<number>;
   cleanup: (jobId: string) => void; restart: (jobId: string) => void;
-  updateConfigs: (configs: BenchmarkConfig[], started: boolean) => void };
+  updatePlan: (plan: BenchmarkRoundPlan, started: boolean) => void };
 type QueuedJob = BenchmarkJob & { request: BenchmarkRequest; prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
 
 function initialImageRows(workload: ImageBenchmarkWorkload) {
@@ -141,7 +144,9 @@ export function benchmarkSampleCounts(input: BenchmarkInput) {
   };
 }
 
-export type BenchmarkTaskConfig = Pick<BenchmarkRequest, "configs" | "rounds" | "sampleLimit" | "sampleSetPath">;
+export type BenchmarkTaskConfig = Pick<BenchmarkRequest, "configs" | "rounds" | "sampleLimit" | "sampleSetPath"> & {
+  round: number; earlier: BenchmarkConfig[][]; fixedSlots: boolean;
+};
 export type BenchmarkTaskDecision = "run" | "stop" | "defer";
 
 export function canEditBenchmarkTask(job: BenchmarkJob) {
@@ -152,11 +157,17 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   archive?: { details: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[]; configElapsedMs: number }): Promise<Prepared> {
   const { step, rounds } = request;
   let configs = structuredClone(request.configs.filter(config => config.enabled !== false));
+  let roundConfigs = request.roundConfigs;
   const limit = request.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0;
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("样本上限必须为非负整数");
   const selectSamples = <T,>(eligible: T[]) => limit ? eligible.slice(0, limit) : eligible;
   if (request.scope !== input.scope) throw new Error("游戏工程已切换，请重新打开该工程的测试队列");
   if (!configs.length || !Number.isInteger(rounds) || rounds < 1 || rounds > 100) throw new Error("测试配置或轮次无效");
+  for (const [round, items] of Object.entries(roundConfigs ?? {})) {
+    if (!Number.isInteger(Number(round)) || Number(round) < 2 || Number(round) > rounds ||
+        items.length !== configs.length || items.some((item, index) => item.enabled === false || item.id !== configs[index].id))
+      throw new Error("跨轮测试的配置项与原批次不一致");
+  }
   const mosaic = isMosaicBenchmarkStep(step);
   const mosaicSelection = step !== "mosaicRefine" && configs[0].mosaic?.selection === "all" ? "all" : "checked";
   const imageStep = !mosaic && step !== "screen" && step !== "translate" ? step : undefined;
@@ -259,10 +270,10 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
   let unfinishedSamples = recoveredResults?.size ?? 0;
   const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope, runScope,
-    restored: finishedSamples + unfinishedSamples, updateConfigs: (next, started) => {
-      if (mosaic && next.some(config => !config.mosaic)) throw new Error("缺少去码测试配置");
-      if (!started) updateAnnotatedImageSamples?.(next);
-      configs = next;
+    restored: finishedSamples + unfinishedSamples, updatePlan: (plan, started) => {
+      if (!started) updateAnnotatedImageSamples?.(plan.configs);
+      configs = plan.configs;
+      roundConfigs = plan.roundConfigs;
       prepared.count = count * configs.length * rounds;
     }, cleanup: jobId => {
     const meter = stepPerformance(runScope, step);
@@ -337,13 +348,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           }
           failedSamples += result.failed;
           finishedSamples += done;
-          context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail }, "stop");
+          context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail }, "complete");
           // The result is already in the writer's outbox. Wait for that window's flush before notifying readers.
           void Promise.resolve(flushGamePerformanceArchive()).then(() => {
             historyRevision++;
             publish();
           });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath, request.referenceSampleSetPath, limit);
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath, request.referenceSampleSetPath, limit, roundConfigs);
       return failures;
     } finally {
       finishGameStep(totalScope);
@@ -506,6 +517,7 @@ async function runJobs() {
           if (controller !== abort || !progress) return;
           const next = { ...progress, ...patch };
           if (configTiming === "start") {
+            if (next.round !== undefined && job.round !== next.round) setJobRound(job, next.round);
             if (next.configId && !job.startedConfigIds.includes(next.configId))
               job.startedConfigIds = [...job.startedConfigIds, next.configId];
             const sameConfig = progress.configId === next.configId && progress.round === next.round;
@@ -513,7 +525,9 @@ async function runJobs() {
             configStartedAt = Date.now() - next.configElapsedMs;
           } else {
             next.configElapsedMs = currentConfigElapsedMs(progress);
-            if (configTiming === "stop") configStartedAt = undefined;
+            if (configTiming) configStartedAt = undefined;
+            if (configTiming === "complete" && next.configId)
+              job.completedConfigIds = [...job.completedConfigIds, next.configId];
           }
           next.percent = next.total > 0 ? Math.floor(100 * next.current / next.total) : null;
           progress = next;
@@ -532,6 +546,7 @@ async function runJobs() {
       configStartedAt = undefined;
       try {
         await cleanupJob(paused || waitForFormal ? undefined : job);
+        if (finished && isMosaicBenchmarkStep(job.step)) localStorage.removeItem(savedRoundPlanKey(job.id));
         historyRevision++;
       } finally {
         window.clearInterval(timer);
@@ -539,6 +554,8 @@ async function runJobs() {
         job.status = paused ? "已暂停" : waitForFormal ? running ? "等待" : "待开始" : failed ? "失败" : "完成";
         progress = { ...progress, state: job.status === "已暂停" ? "paused" : "idle", elapsedMs: performance.now() - startedAt };
         job.progress = progress;
+        if (paused && job.round < job.request.rounds &&
+            job.completedConfigIds.length === configsForRound(job.request, job.round).length) setJobRound(job, job.round + 1);
         if (job.status === "失败") job.failure = progress.detail || "测试任务失败";
         const index = jobs.indexOf(job);
         if (paused && index > 0) jobs.unshift(...jobs.splice(index, 1));
@@ -582,6 +599,13 @@ export function resumeBenchmarkJob(jobId: string): boolean {
 }
 
 type ArchivedTask = ReturnType<typeof groupBenchmarkTasks>[number];
+const savedRoundPlanKey = (id: string) => "llmchat-benchmark-round-plan:" + id;
+
+function setJobRound(job: QueuedJob, round: number) {
+  job.round = round;
+  job.startedConfigIds = [];
+  job.completedConfigIds = [];
+}
 
 async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkStep, task: ArchivedTask, history: BenchmarkResult[]): Promise<QueuedJob> {
   const { id, firstTime, continuation } = task;
@@ -592,19 +616,23 @@ async function prepareArchivedJob(input: BenchmarkInput, step: MosaicBenchmarkSt
     run.performance.benchmark?.batchIndex === completed.length ? total + run.performance.elapsedMs : total, 0);
   const details = await readImageBenchmarkDetails(id, sampleSource.performance.taskId!);
   if (details.samples.length !== sampleSource.selected) throw new Error("原测试样本清单不完整");
-  const request: BenchmarkRequest = structuredClone({
-    scope: input.scope, step, configs: plan.configs, rounds: plan.rounds, sampleSetPath: plan.sampleSetPath, referenceSampleSetPath: plan.referenceSampleSetPath,
-  });
+  const pendingPlan = JSON.parse(localStorage.getItem(savedRoundPlanKey(id)) || "null") as BenchmarkRoundPlan | null;
+  const request: BenchmarkRequest = structuredClone({ ...plan, ...pendingPlan, scope: input.scope, step });
   const prepared = await prepareJob(input, request, false, { details, reuse, completed, configElapsedMs });
-  const started = new Set(runs.map(run => (run.performance.benchmark?.config as BenchmarkConfig | undefined)?.id));
-  const label = benchmarkTargetLabel(step) + " · " + plan.configs.length + " 个配置 × " + plan.rounds + " 轮";
+  const round = Math.floor(completed.length / request.configs.length) + 1;
+  const configs = configsForRound(request, round);
+  const completedConfigIds = configs.slice(0, completed.length % request.configs.length).map(config => config.id);
+  const pausedRun = task.runs.find(run => run.status === "已暂停" && run.performance.benchmark?.batchIndex === completed.length);
+  const pausedId = (pausedRun?.performance.benchmark?.config as BenchmarkConfig | undefined)?.id;
+  const startedConfigIds = pausedId ? [...completedConfigIds, pausedId] : completedConfigIds;
+  const label = benchmarkTargetLabel(step) + " · " + request.configs.length + " 个配置 × " + request.rounds + " 轮";
   const current = prepared.restored ?? 0;
   return { id, scope: prepared.scope, requestScope: input.scope, step, label, startedTime: firstTime || undefined,
-    status: "已暂停", request, startedConfigIds: request.configs.filter(config => started.has(config.id)).map(config => config.id), prepared, onMessage: input.onMessage, resumeSamples: true,
+    status: "已暂停", request, round, startedConfigIds, completedConfigIds, prepared, onMessage: input.onMessage, resumeSamples: true,
     progress: { jobId: id, scope: prepared.scope, step, state: "paused", phase: "finish",
       label, sample: "", current, total: prepared.count, percent: prepared.count ? Math.floor(current * 100 / prepared.count) : null,
       elapsedMs: runs.reduce((total, run) => total + run.performance.elapsedMs, 0),
-      configElapsedMs, failed: completed.reduce((total, run) => total + run.failed, 0),
+      round, rounds: request.rounds, configId: pausedId, configElapsedMs, failed: completed.reduce((total, run) => total + run.failed, 0),
       performance: reuse ? performanceForDisplay(sampleSource.performance) : undefined } };
 }
 
@@ -619,7 +647,7 @@ async function createQueuedJob(input: BenchmarkInput, request: BenchmarkRequest)
     const title = benchmarkTargetLabel(request.step);
     const label = title + " · " + configs.length + " 个配置 × " + frozen.rounds + " 轮";
     const job: QueuedJob = { id: crypto.randomUUID(), scope: prepared?.scope || input.mosaicRoot || input.scope, requestScope: request.scope, step: request.step,
-      label, status: running ? "等待" : "待开始", request: frozen, startedConfigIds: [], prepared, onMessage: input.onMessage,
+      label, status: running ? "等待" : "待开始", request: frozen, round: 1, startedConfigIds: [], completedConfigIds: [], prepared, onMessage: input.onMessage,
       resumeSamples: isMosaicBenchmarkStep(request.step) };
     if (deferred) job.prepare = () => prepareJob(input, job.request, true);
     return job;
@@ -641,26 +669,47 @@ function shownJob(id: string) {
   return job;
 }
 
-function saveTaskConfigs(job: QueuedJob, draft: BenchmarkConfig[]) {
-  if (!canEditBenchmarkTask(job)) throw new Error("此任务的配置不可修改");
+function taskConfigView(job: QueuedJob): BenchmarkTaskConfig {
+  const { rounds, sampleLimit, sampleSetPath, roundConfigs } = job.request;
+  return structuredClone({ configs: configsForRound(job.request, job.round), rounds, sampleLimit, sampleSetPath,
+    round: job.round, earlier: earlierRoundConfigs(job.request, job.round),
+    fixedSlots: job.round > 1 || !!roundConfigs && Object.keys(roundConfigs).length > 0 });
+}
+
+function saveTaskConfigs(job: QueuedJob, round: number, draft: BenchmarkConfig[], confirmed = false) {
+  if (!canEditBenchmarkTask(job) || round !== job.round) throw new Error("任务已切换轮次或开始执行，请重新查看配置");
+  const view = taskConfigView(job);
+  const changes = benchmarkRoundChanges(job.step, draft, view.configs, view.earlier);
+  if (!changes.dirty) return;
+  if (changes.needsConfirmation.size && !confirmed) throw new Error("请确认本轮参数与前面轮次不同");
   const configs = structuredClone(draft);
   const enabled = configs.filter(config => config.enabled !== false);
   if (!enabled.length) throw new Error("请至少启用一张配置卡");
   if (new Set(configs.map(config => config.id)).size !== configs.length) throw new Error("任务配置编号重复");
-  if (job.startedConfigIds.length) {
-    const started = new Set(job.startedConfigIds);
-    const previous = job.request.configs.filter(config => started.has(config.id));
-    // Resuming uses the existing batch index. Never change or move the executed prefix.
-    if (JSON.stringify(previous) !== JSON.stringify(enabled.slice(0, previous.length)) ||
-        configs.some(config => !job.request.configs.some(item => item.id === config.id)))
-      throw new Error("已开始的配置不可修改，也不能在已开始的配置之前加入候选");
+  if (view.fixedSlots && (configs.length !== enabled.length || enabled.length !== view.configs.length ||
+      enabled.some((config, index) => config.id !== view.configs[index].id)))
+    throw new Error("跨轮测试保留原有配置项和顺序，请修改未开始项的参数");
+  const started = new Set(job.startedConfigIds);
+  const startedConfigs = view.configs.filter(config => started.has(config.id));
+  if (startedConfigs.some((config, index) => !enabled[index] || !sameBenchmarkConfig(job.step, config, enabled[index])))
+    throw new Error("本轮已开始的配置及顺序不可修改");
+  if (isMosaicBenchmarkStep(job.step) && enabled.some(config => !config.mosaic)) throw new Error("缺少去码测试配置");
+  const roundConfigs = { ...job.request.roundConfigs };
+  if (round > 1) {
+    if (benchmarkRoundChanges(job.step, enabled, job.request.configs).dirty) roundConfigs[round] = enabled;
+    else delete roundConfigs[round];
   }
-  job.prepared?.updateConfigs(enabled, job.startedConfigIds.length > 0);
-  job.request = { ...job.request, configs };
-  job.label = benchmarkTargetLabel(job.step) + " · " + enabled.length + " 个配置 × " + job.request.rounds + " 轮";
+  const plan: BenchmarkRoundPlan = { configs: round === 1 ? enabled : job.request.configs,
+    roundConfigs: Object.keys(roundConfigs).length ? roundConfigs : undefined };
+  const startedAny = started.size > 0 || round > 1;
+  if (startedAny && isMosaicBenchmarkStep(job.step))
+    localStorage.setItem(savedRoundPlanKey(job.id), JSON.stringify(plan));
+  job.prepared?.updatePlan(plan, startedAny);
+  job.request = { ...job.request, ...plan, configs: round === 1 && !startedAny && !view.fixedSlots ? configs : plan.configs };
+  job.label = benchmarkTargetLabel(job.step) + " · " + plan.configs.length + " 个配置 × " + job.request.rounds + " 轮";
   if (job.prepared && job.progress) {
     const total = job.prepared.count;
-    job.progress = { ...job.progress, total, configCount: enabled.length,
+    job.progress = { ...job.progress, total, configCount: plan.configs.length,
       percent: total ? Math.floor(100 * job.progress.current / total) : null };
   }
 }
@@ -746,8 +795,7 @@ export const benchmarkRunner = {
     if (!job) throw new Error("此任务已离开队列");
     if (showingTaskId !== id) closeShownTask();
     showingTaskId = id;
-    const { configs, rounds, sampleLimit, sampleSetPath } = job.request;
-    return structuredClone({ configs, rounds, sampleLimit, sampleSetPath });
+    return taskConfigView(job);
   },
   hideTask: closeShownTask,
   releaseTask(id: string) {
@@ -764,20 +812,20 @@ export const benchmarkRunner = {
       pumpQueue();
     }
   },
-  saveTask(id: string, configs: BenchmarkConfig[]) {
-    saveTaskConfigs(shownJob(id), configs);
+  saveTask(id: string, round: number, configs: BenchmarkConfig[], confirmed?: boolean) {
+    saveTaskConfigs(shownJob(id), round, configs, confirmed);
     shownTaskDirty = false;
     if (blockedTaskId === id) blockedTaskId = undefined;
     publish();
     pumpQueue();
   },
-  decideTask(id: string, decision: BenchmarkTaskDecision, configs?: BenchmarkConfig[]) {
+  decideTask(id: string, decision: BenchmarkTaskDecision, round?: number, configs?: BenchmarkConfig[], confirmed?: boolean) {
     const job = shownJob(id);
     if (blockedTaskId !== id) throw new Error("此任务已不在启动确认中");
     if (decision === "stop") { requestQueuePause("已中止队列"); return; }
     if (decision === "run") {
-      if (!configs) throw new Error("请先保存本次修改的任务配置");
-      saveTaskConfigs(job, configs);
+      if (!configs || round === undefined) throw new Error("请先保存本次修改的任务配置");
+      saveTaskConfigs(job, round, configs, confirmed);
       shownTaskDirty = false;
       jobs.splice(jobs.indexOf(job), 1);
       jobs.unshift(job);
@@ -809,7 +857,7 @@ export const benchmarkRunner = {
     job.id = crypto.randomUUID();
     job.progress = undefined;
     job.startedTime = undefined;
-    job.startedConfigIds = [];
+    setJobRound(job, 1);
     scheduleJob(job);
   },
   async remove(id: string) {

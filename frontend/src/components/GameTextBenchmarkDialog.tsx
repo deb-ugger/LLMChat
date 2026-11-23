@@ -1,3 +1,4 @@
+import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { readMosaicTaskPlan } from "../benchmark/benchmarkTaskPlan";
 import { compareMosaicTaskWithDataset, downloadMosaicTaskReport, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
@@ -62,8 +63,8 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
   if (kind === "benchmark-hide-task" && typeof data === "string") return benchmarkRunner.hideTask(data);
   if (kind === "benchmark-release-task" && typeof data === "string") return benchmarkRunner.releaseTask(data);
   if (data && typeof data !== "string" && "taskId" in data) {
-    if (kind === "benchmark-decide-task" && "decision" in data) return benchmarkRunner.decideTask(data.taskId, data.decision, data.configs);
-    if (kind === "benchmark-save-task" && "configs" in data && data.configs) return benchmarkRunner.saveTask(data.taskId, data.configs);
+    if (kind === "benchmark-decide-task" && "decision" in data) return benchmarkRunner.decideTask(data.taskId, data.decision, data.round, data.configs, data.confirmed);
+    if (kind === "benchmark-save-task" && "configs" in data && "round" in data && data.round !== undefined && data.configs) return benchmarkRunner.saveTask(data.taskId, data.round, data.configs, data.confirmed);
     if (kind === "benchmark-set-task-dirty" && "dirty" in data) return benchmarkRunner.setTaskDirty(data.taskId, data.dirty);
   }
   if (kind === "benchmark-restart" && typeof data === "string") return benchmarkRunner.restart(data);
@@ -334,9 +335,12 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const discard = useGameActionConfirm();
   const showingTaskId = taskDraft?.id;
   const shownJob = showingTaskId ? jobs.find(job => job.id === showingTaskId) : undefined;
-  const dirty = useMemo(() => !!taskDraft &&
-    JSON.stringify(taskDraft.configs) !== JSON.stringify(taskDraft.parameters.configs), [taskDraft]);
-  const canSave = !!shownJob && canEditBenchmarkTask(shownJob) && dirty;
+  const viewIsCurrent = !!shownJob && shownJob.round === taskDraft?.parameters.round;
+  const changes = useMemo(() => taskDraft && shownJob &&
+    benchmarkRoundChanges(shownJob.step, taskDraft.configs, taskDraft.parameters.configs, taskDraft.parameters.earlier),
+    [taskDraft, shownJob?.step]);
+  const dirty = changes?.dirty ?? false;
+  const canSave = viewIsCurrent && !!shownJob && canEditBenchmarkTask(shownJob) && dirty;
   const blocking = !!shownJob && props.snapshot.blockedTaskId === shownJob.id;
   const resuming = shownJob?.progress?.state === "paused";
   useLayoutEffect(() => {
@@ -359,6 +363,18 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       setTaskDraft(undefined);
     }
   }, [showingTaskId, shownJob]);
+  useEffect(() => {
+    if (!showingTaskId || !shownJob || viewIsCurrent) return;
+    let cancelled = false;
+    void viewerSession.current.control("benchmark-show-task", showingTaskId).then(value => {
+      if (cancelled || viewerSession.current.id !== showingTaskId) return;
+      const parameters = value as BenchmarkTaskConfig;
+      setTaskDraft({ id: showingTaskId, parameters, configs: structuredClone(parameters.configs) });
+    }).catch(error => {
+      if (!cancelled) showAppNotice(error instanceof Error ? error.message : String(error), "error");
+    });
+    return () => { cancelled = true; };
+  }, [showingTaskId, shownJob?.round, viewIsCurrent]);
   const actOnTask = async (action: () => Promise<void>) => {
     if (actionRef.current) return;
     actionRef.current = true;
@@ -399,29 +415,40 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   });
   // Each run commits to the enabled configuration list. Keep the clean viewer in sync with it.
   useEffect(() => {
-    if (shownJob?.status !== "运行中" || dirty) return;
+    if (shownJob?.status !== "运行中" || !viewIsCurrent || dirty) return;
     setTaskDraft(previous => {
       if (!previous?.configs.some(config => config.enabled === false)) return previous;
       const configs = previous.configs.filter(config => config.enabled !== false);
       return { ...previous, parameters: { ...previous.parameters, configs: structuredClone(configs) }, configs };
     });
-  }, [shownJob?.status, dirty]);
+  }, [shownJob?.status, viewIsCurrent, dirty]);
+  const confirmRoundChange = () => {
+    const count = changes?.needsConfirmation.size ?? 0;
+    if (!count || !taskDraft) return true;
+    const round = taskDraft.parameters.round;
+    return discard.confirm("第 " + round + " 轮有 " + count + " 项参数与前面轮次不同，结果将按各轮实际配置记录。本次修改只影响这一轮。",
+      { title: "确认本轮使用不同配置", okLabel: "确认修改", cancelLabel: "返回" });
+  };
   const saveTask = () => void actOnTask(async () => {
-    if (!taskDraft || !canSave) return;
-    await props.control("benchmark-save-task", { taskId: taskDraft.id, configs: taskDraft.configs });
+    if (!taskDraft || !canSave || !await confirmRoundChange()) return;
+    await props.control("benchmark-save-task", { taskId: taskDraft.id, round: taskDraft.parameters.round, configs: taskDraft.configs,
+      confirmed: !!changes?.needsConfirmation.size });
     acknowledgeSave(taskDraft.configs);
     showAppNotice("任务配置已保存");
   });
   const decide = (decision: BenchmarkTaskDecision) => void actOnTask(async () => {
     if (!taskDraft) return;
+    if (decision === "run" && (!viewIsCurrent || !await confirmRoundChange())) return;
     const configs = decision === "run" ? taskDraft.configs : undefined;
-    await props.control("benchmark-decide-task", { taskId: taskDraft.id, decision, configs });
+    await props.control("benchmark-decide-task", { taskId: taskDraft.id, decision, round: taskDraft.parameters.round, configs,
+      confirmed: decision === "run" && !!changes?.needsConfirmation.size });
     if (decision === "run") acknowledgeSave(taskDraft.configs.filter(config => config.enabled !== false));
   });
-  const taskView = shownJob && taskDraft && <BenchmarkTaskView key={shownJob.id} job={shownJob} number={queue.indexOf(shownJob) + 1}
-    parameters={taskDraft.parameters} configs={taskDraft.configs} setConfigs={setTaskConfigs} models={props.models}
-    saving={taskAction} stopping={stopping} canSave={canSave} onSave={saveTask} onExit={exitTask}
-    onStop={() => control("benchmark-stop", shownJob.id)} />;
+  const taskView = shownJob && taskDraft && (viewIsCurrent && changes
+    ? <BenchmarkTaskView key={shownJob.id + ":" + shownJob.round} job={shownJob} number={queue.indexOf(shownJob) + 1}
+        parameters={taskDraft.parameters} configs={taskDraft.configs} changes={changes} setConfigs={setTaskConfigs} models={props.models}
+        saving={taskAction} canSave={canSave} onSave={saveTask} onExit={exitTask} />
+    : <BenchmarkSection title="任务测试配置"><p className="hint" role="status">正在读取第 {shownJob.round} 轮配置…</p></BenchmarkSection>);
   const taskDialogs = <>
     {discard.dialog}
     {blocking && <GameDialog title="任务配置未保存"
@@ -514,10 +541,11 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
 }
 
 
-function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = new Set<string>(), expanded, toggleConfig,
+function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, completed, changes, fixedSlots, expanded, toggleConfig,
   images, engines, models, currentProgress, latestRunByConfig, samplePreview, onEdited, refineFilter, guardFilter }: {
   step: Target; configs: BenchmarkConfig[]; setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>;
-  readOnly: boolean; started?: ReadonlySet<string>; expanded: ReadonlySet<string>; toggleConfig: (id: string, open: boolean) => void;
+  readOnly: boolean; started?: ReadonlySet<string>; completed?: ReadonlySet<string>;
+  changes?: ReturnType<typeof benchmarkRoundChanges>; fixedSlots?: boolean; expanded: ReadonlySet<string>; toggleConfig: (id: string, open: boolean) => void;
   images?: ImageBenchmarkSetup; engines?: BenchmarkConfig["engines"]; models: string[]; currentProgress?: BenchmarkJob["progress"];
   latestRunByConfig?: ReadonlyMap<string, { run: BenchmarkResult }>; samplePreview?: Record<string, BenchmarkSample>;
   onEdited?: (id: string) => void;
@@ -532,7 +560,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = n
   const [refineModelFilter, setRefineModelFilter] = refineFilter;
   const [refineGuardFilter, setRefineGuardFilter] = guardFilter;
   const update = (id: string, change: (config: BenchmarkConfig) => BenchmarkConfig) => {
-    if (readOnly || started.has(id)) return;
+    if (readOnly || started?.has(id)) return;
     setConfigs(previous => previous.map(config => config.id === id ? change(config) : config));
     onEdited?.(id);
   };
@@ -540,23 +568,29 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = n
     update(id, config => ({ ...config, mosaic: { ...config.mosaic!, ...patch } }));
   };
   const move = (index: number, other: number) => setConfigs(previous => {
-    if (readOnly || started.has(previous[index].id) || started.has(previous[other].id)) return previous;
+    if (readOnly || fixedSlots || started?.has(previous[index].id) || started?.has(previous[other].id)) return previous;
     const next = previous.slice();
     [next[index], next[other]] = [next[other], next[index]];
     return next;
   });
   return configs.map((config, index) => {
         const lastRun = latestRunByConfig?.get(config.id)?.run;
-        const alreadyStarted = started.has(config.id);
+        const alreadyStarted = started?.has(config.id) ?? false;
         const locked = readOnly || alreadyStarted;
-        const activeProgress = currentProgress?.configId === config.id ? currentProgress : undefined;
-        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "") + (activeProgress ? " is-running" : "")} open={expanded.has(config.id)}
+        const finished = completed?.has(config.id);
+        const modified = changes?.changed.has(config.id);
+        const differs = changes?.different.has(config.id);
+        const activeProgress = !finished && currentProgress?.configId === config.id ? currentProgress : undefined;
+        return <details key={config.id} className={"game-benchmark-item" + (lastRun || finished ? " has-run" : "") +
+          (activeProgress ? " is-running" : "") + (differs ? " has-round-difference" : modified ? " has-config-draft" : "")} open={expanded.has(config.id)}
         onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
         <summary>
           {activeProgress && <span className="game-benchmark-item-live-dot" aria-hidden="true" />}
           <span className="game-benchmark-item-badge">Q{index + 1}</span>
           <strong>{config.label || "配置 " + (index + 1)}</strong>
-          {alreadyStarted && <span className="game-benchmark-show-executed">已执行</span>}
+          {started && <span className="game-benchmark-show-executed">{finished ? "已执行" : activeProgress ? "运行中" : alreadyStarted ? "已开始" : "未开始"}</span>}
+           {differs && <span className="game-benchmark-difference-label">跨轮差异</span>}
+           {modified && <span className="game-benchmark-draft-label">未保存</span>}
           <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
             ? (config.mosaic.detector === "grid" ? "方格规则" : "分类＋定位") + " · 并发 " + (config.mosaic.concurrency ?? 2)
             : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
@@ -569,12 +603,12 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = n
         </summary>
         <fieldset key={locked ? "read" : "edit"} disabled={locked} className="game-benchmark-item-fields">
         <div className="game-benchmark-toolbar">
-          <label><input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false}
+          <label><input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false} disabled={fixedSlots}
             onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} />启用</label>
           <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label} onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
-          <button type="button" className="unity-btn" disabled={index === 0 || started.has(configs[index - 1].id)} onClick={() => move(index, index - 1)}>上移</button>
-          <button type="button" className="unity-btn" disabled={index === configs.length - 1 || started.has(configs[index + 1].id)} onClick={() => move(index, index + 1)}>下移</button>
-          <button type="button" className="unity-btn" onClick={() => setConfigs(previous => previous.filter(item => item.id !== config.id))}>移除</button>
+          <button type="button" className="unity-btn" disabled={fixedSlots || index === 0 || started?.has(configs[index - 1].id)} onClick={() => move(index, index - 1)}>上移</button>
+          <button type="button" className="unity-btn" disabled={fixedSlots || index === configs.length - 1 || started?.has(configs[index + 1].id)} onClick={() => move(index, index + 1)}>下移</button>
+          <button type="button" className="unity-btn" disabled={fixedSlots} onClick={() => setConfigs(previous => previous.filter(item => item.id !== config.id))}>移除</button>
         </div>
         {mosaicStep && config.mosaic && <div className="game-benchmark-toolbar">
           {mosaicStep === "mosaicScreen" && <>
@@ -687,10 +721,10 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = n
       });
 }
 
-function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, models, saving, stopping, canSave, onSave, onExit, onStop }: {
+function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfigs, models, saving, canSave, onSave, onExit }: {
   job: BenchmarkJob; number: number; parameters: BenchmarkTaskConfig; configs: BenchmarkConfig[];
-  setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>; models: string[]; saving: boolean; stopping: boolean; canSave: boolean;
-  onSave: () => void; onExit: () => void; onStop: () => void;
+  setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>; models: string[]; saving: boolean; canSave: boolean; changes: ReturnType<typeof benchmarkRoundChanges>;
+  onSave: () => void; onExit: () => void;
 }) {
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const refineFilter = useState(defaultModelFilter);
@@ -698,38 +732,41 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
   const editing = canEditBenchmarkTask(job);
   const running = job.status === "运行中";
   const started = useMemo(() => new Set(job.startedConfigIds), [job.startedConfigIds]);
+  const completed = useMemo(() => new Set(job.completedConfigIds), [job.completedConfigIds]);
   const status = job.status === "已暂停" ? "已中止" : job.status;
   const title = number ? `正在查看任务 Q${number} 的配置` : "正在查看任务配置";
   const template = configs[0] ?? parameters.configs[0];
   return <BenchmarkSection title="任务测试配置" className="game-benchmark-show-section">
     <div className="game-benchmark-show-head">
       <div><strong>{job.label}</strong>
-        <p>{title}（{status}{!editing ? " · 只读" : ""}）</p></div>
+        <p>{title} · 第 {job.round} / {parameters.rounds} 轮（{status}{!editing ? " · 只读" : ""}）</p></div>
       <div className="game-benchmark-show-actions">
-        {running && <button type="button" className="unity-btn" disabled={stopping || saving} onClick={onStop}>中止任务</button>}
         <button type="button" className={`unity-btn${canSave && !saving ? " is-primary" : ""}`} disabled={!canSave || saving} onClick={onSave}>保存</button>
         <button type="button" className="unity-btn" disabled={saving} onClick={onExit}>退出显示</button>
       </div>
     </div>
-    {running && <p className="hint">任务运行中，配置不可修改。中止后可编辑未开始的配置。</p>}
-    {job.status === "已暂停" && <p className="hint">可修改未开始的配置。已执行的配置保留，只读。</p>}
+    {job.status === "已暂停" && <p className="hint">可修改本轮未开始的配置。{parameters.fixedSlots ? "各轮使用相同的配置项和顺序。" : "本轮已开始的配置只读。"}</p>}
+    {changes.different.size > 0 && <p className="game-benchmark-round-warning" role="status">
+      第 {job.round} 轮有 {changes.different.size} 项参数与前面轮次不同。{changes.needsConfirmation.size > 0 && "保存修改前需再次确认。"}
+    </p>}
+    {changes.removed > 0 && <p className="hint">已移除 {changes.removed} 项配置，尚未保存。</p>}
     <div className="game-benchmark-toolbar game-benchmark-show-parameters">
       <label>循环轮次 <input type="number" value={parameters.rounds} disabled /></label>
       <span className="hint">样本上限 {parameters.sampleLimit || "不限"}</span>
       {parameters.sampleSetPath && <span className="hint" title={parameters.sampleSetPath}>已标注样本集</span>}
-      {editing && !started.size && <button type="button" className="unity-btn" disabled={saving || !template} onClick={() => {
+      {editing && !started.size && !parameters.fixedSlots && <button type="button" className="unity-btn" disabled={saving || !template} onClick={() => {
         const config = { ...structuredClone(template), id: crypto.randomUUID(), label: "配置 " + (configs.length + 1), enabled: true };
         setConfigs(previous => [...previous, config]);
         setExpanded(previous => new Set([...previous, config.id]));
       }}>添加配置</button>}
     </div>
     <BenchmarkConfigCards step={job.step} configs={configs} setConfigs={setConfigs} readOnly={!editing || saving}
-      started={started} expanded={expanded} toggleConfig={(id, open) => setExpanded(previous => {
+      started={started} completed={completed} changes={changes} fixedSlots={parameters.fixedSlots} expanded={expanded} toggleConfig={(id, open) => setExpanded(previous => {
         if (previous.has(id) === open) return previous;
         const next = new Set(previous);
         if (open) next.add(id); else next.delete(id);
         return next;
-      })} models={models} currentProgress={running ? job.progress : undefined}
+      })} models={models} currentProgress={running && job.progress?.round === job.round ? job.progress : undefined}
       refineFilter={refineFilter} guardFilter={guardFilter} />
   </BenchmarkSection>;
 }
