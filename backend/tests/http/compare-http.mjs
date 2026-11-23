@@ -215,6 +215,8 @@ function changes(before, after) {
 }
 
 const concretePatterns = {
+    "/api/game-image-exports/operations/([^/]+)": "/api/game-image-exports/operations/00000000-0000-4000-8000-000000000000",
+    "/api/game-image-exports/operations/([^/]+)/cancel": "/api/game-image-exports/operations/00000000-0000-4000-8000-000000000000/cancel",
     "/api/ocr/models/(fast|precise|english|manga)": "/api/ocr/models/precise",
     "/api/ocr/models/(precise|english|manga)": "/api/ocr/models/precise",
     "/api/runtime-assets/(.+)": "/api/runtime-assets/h1-missing.png",
