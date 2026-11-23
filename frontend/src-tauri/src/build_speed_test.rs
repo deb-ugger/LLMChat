@@ -22,7 +22,10 @@ fn source_checkout() -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn run_build_speed_test(progress: Channel<String>) -> Result<serde_json::Value, String> {
+pub async fn run_build_speed_test(
+    progress: Channel<String>,
+    tests: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = RUNNING.try_lock().map_err(|_| "构建测速正在运行")?;
         let root = source_checkout()?;
@@ -34,6 +37,12 @@ pub async fn run_build_speed_test(progress: Channel<String>) -> Result<serde_jso
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(tests) = tests {
+            if tests.is_empty() {
+                return Err("请选择构建测试项。".to_string());
+            }
+            command.arg("-Tests").arg(tests.join(","));
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
