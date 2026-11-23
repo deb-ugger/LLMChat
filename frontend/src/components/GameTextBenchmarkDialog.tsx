@@ -15,7 +15,7 @@ import { benchmarkChannelName, benchmarkHistoryForRecords, requestBenchmarkWindo
 import { benchmarkRunner, benchmarkSampleCounts, benchmarkTargetLabel, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, canEditBenchmarkTask, type BenchmarkInput, type BenchmarkJob, type BenchmarkRequest, type BenchmarkSnapshot, type BenchmarkTaskConfig, type BenchmarkTaskDecision } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
 import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
-import { gameDuration, modelConcurrency, modelServiceTimingLines } from "../gameModelPerformance";
+import { gameDuration, modelConcurrency } from "../gameModelPerformance";
 import type { UnityEntry } from "../unityOffline";
 import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
@@ -25,7 +25,8 @@ import { RunPerformanceDetails } from "./RunPerformanceDetails";
 import { formatBenchmarkParameters } from "../benchmark/benchmarkParameters";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
-import { StepRunningMetrics } from "./GameFlowSequence";
+import { GameFlowPerformance } from "./GameFlowSequence";
+import { GameProgressBar } from "./GameStepProgress";
 import { showAppNotice } from "./AppNotice";
 import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
 
@@ -210,6 +211,131 @@ export function GameTextBenchmarkWindow() {
     requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
     enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
     control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} onClose={() => void close()} />;
+}
+
+
+type BenchmarkDetailRow = { label: string; value: string | number | undefined };
+
+function BenchmarkDetailRows({ rows, fixedLabels = false }: { rows: readonly BenchmarkDetailRow[]; fixedLabels?: boolean }) {
+  const visible = rows.filter(({ value }) => value !== undefined && value !== "" && value !== "—");
+  if (!visible.length) return null;
+  return <dl className={"game-benchmark-data-rows" + (fixedLabels ? " has-fixed-labels" : "")}>
+    {visible.map(({ label, value }, index) => <div key={label + index}>
+      <dt>{label}</dt><dd>{value}</dd>
+    </div>)}
+  </dl>;
+}
+
+function benchmarkSeconds(ms?: number) {
+  return ms === undefined ? undefined : (ms / 1000).toFixed(2) + " 秒";
+}
+
+function BenchmarkQueueDetails({ progress, position, unit }: { progress: NonNullable<BenchmarkJob["progress"]>; position: number; unit: "条" | "张" }) {
+  const measured = progress.performance;
+  const models = Object.values(measured?.models ?? {});
+  const outcomes = models.flatMap(model => model.outcomes ? [model.outcomes] : []);
+  const requestCount = (key: "succeeded" | "failed" | "cancelled") =>
+    outcomes.length ? outcomes.reduce((total, row) => total + row[key], 0) + " 次" : undefined;
+  const counts = (value?: number) => value === undefined ? undefined : value + " 次";
+  const busy = measured?.busyMs ?? measured?.wallTiming?.modelRequestMs;
+  const idle = measured?.idleMs ?? (measured?.requestTimingComplete && busy !== undefined
+    ? Math.max(0, measured.elapsedMs - busy) : undefined);
+  const requestRows: BenchmarkDetailRow[] = [
+    { label: "成功", value: requestCount("succeeded") },
+    { label: "失败", value: requestCount("failed") },
+    { label: "取消", value: requestCount("cancelled") },
+    { label: "结果复用", value: counts(measured?.cacheHits) },
+    { label: "检测推理", value: benchmarkSeconds(measured?.wallTiming?.detectorMs) },
+    { label: "本地 OCR", value: benchmarkSeconds(measured?.wallTiming?.ocrMs) },
+    { label: "ComfyUI 执行", value: benchmarkSeconds(measured?.timing?.workflowMs) },
+    { label: "样本失败", value: progress.failed ? progress.failed + " " + unit : undefined },
+    { label: "无在途模型请求", value: benchmarkSeconds(idle) },
+    { label: "文本请求重试", value: counts(measured?.textRequestRetries) },
+  ];
+  const tokens = [
+    ["promptTokens", "输入 Token"], ["completionTokens", "输出 Token"], ["totalTokens", "合计 Token"],
+    ["cacheReadTokens", "缓存读取"], ["cacheWriteTokens", "缓存写入"],
+  ] as const;
+  for (const [key, label] of tokens) {
+    const recorded = models.flatMap(model => model.usage?.[key] === undefined ? [] : [model.usage[key]]);
+    if (recorded.length) requestRows.push({ label, value: recorded.reduce((total, value) => total + value, 0).toLocaleString() });
+  }
+  const config = (progress.parameters ?? []).filter(parameter => parameter.scope === "config" && parameter.value && parameter.value !== "—");
+  const remaining = progress.current > 0 && progress.elapsedMs > 0
+    ? progress.elapsedMs / progress.current * Math.max(0, progress.total - progress.current) : undefined;
+  const phase = progress.state === "paused" ? "已暂停" : { prepare: "准备", execute: "执行", finish: "收尾" }[progress.phase];
+  return <details className="game-benchmark-queue-details">
+    <summary>进度详情</summary>
+    <div className="game-benchmark-queue-breakdown">
+      <div className="game-benchmark-progress-total">
+        <strong>{progress.current.toLocaleString()} / {progress.total.toLocaleString()} <small>{unit}</small></strong>
+        {progress.percent != null && <b>{Math.round(progress.percent)}%</b>}
+      </div>
+      <GameProgressBar label="整批测试进度" value={progress.percent ?? undefined} />
+      <div className="game-benchmark-progress-meta">
+        {progress.sampleCurrent != null && progress.sampleTotal != null && <span>本配置 <b>{progress.sampleCurrent}/{progress.sampleTotal}</b></span>}
+        <span>用时 <b>{gameDuration(progress.configElapsedMs ?? progress.elapsedMs)}</b></span>
+        {remaining !== undefined && <span title="根据当前整批样本处理速度估算">预计剩余 <b>{gameDuration(remaining)}</b></span>}
+      </div>
+      <section>
+        <h4>当前位置</h4>
+        <BenchmarkDetailRows rows={[
+          { label: "阶段", value: phase },
+          { label: "轮次", value: progress.round != null && progress.rounds != null ? progress.round + " / " + progress.rounds : undefined },
+          { label: "配置序号", value: progress.configIndex != null && progress.configCount != null ? progress.configIndex + " / " + progress.configCount : undefined },
+          { label: "当前样本", value: progress.sample },
+          { label: "队列位置", value: position },
+        ]} />
+      </section>
+      <GameFlowPerformance measured={measured} />
+      {requestRows.some(row => row.value !== undefined) && <section>
+        <h4>本次请求</h4>
+        <BenchmarkDetailRows rows={requestRows} />
+      </section>}
+      {config.length > 0 && <section>
+        <h4>配置来源</h4>
+        <BenchmarkDetailRows rows={config} />
+      </section>}
+    </div>
+  </details>;
+}
+
+function BenchmarkRunMeasurements({ result }: { result: BenchmarkResult }) {
+  const { performance, unobservedModels } = result;
+  const summaryRows: BenchmarkDetailRow[] = [];
+  const otherSummary: string[] = [];
+  for (const phrase of result.summary?.split(" · ") ?? []) {
+    const count = /^(复筛确认有码|待人工复核) (\d+ 张)$/.exec(phrase);
+    if (count) summaryRows.push({ label: count[1], value: count[2] });
+    else if (phrase) otherSummary.push(phrase);
+  }
+  return <>
+    <BenchmarkDetailRows fixedLabels rows={[
+      { label: "检测推理", value: benchmarkSeconds(performance.wallTiming?.detectorMs) },
+      { label: "本地 OCR", value: benchmarkSeconds(performance.wallTiming?.ocrMs) },
+      { label: "结果复用", value: performance.cacheHits === undefined ? undefined : performance.cacheHits + " 次" },
+      { label: "ComfyUI 执行", value: benchmarkSeconds(performance.timing?.workflowMs) },
+      { label: "未记录模型请求", value: unobservedModels.map(id => id.split("/").at(-1)).join("、") },
+    ]} />
+    {Object.values(performance.models).map(model => {
+      const timing = model.serviceTiming;
+      return <BenchmarkDetailRows key={model.model + ":" + model.concurrency} fixedLabels rows={[
+        { label: "模型", value: model.model },
+        { label: "并发", value: model.concurrency },
+        { label: "请求", value: model.requests + " 次" },
+        { label: "纯生成", value: model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) + "\u00a0tok/s" : undefined },
+        { label: "请求平均", value: model.requestMs > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) + "\u00a0tok/s" : undefined },
+        { label: "服务总计", value: benchmarkSeconds(timing?.totalMs) },
+        { label: "计时", value: timing?.requests === undefined ? undefined : timing.requests + "/" + model.requests + " 次" },
+        { label: "模型就绪", value: benchmarkSeconds(timing?.loadMs) },
+        { label: "输入评估", value: benchmarkSeconds(timing?.promptMs) },
+        { label: "输出生成", value: benchmarkSeconds(timing?.generationMs) },
+        { label: "服务外开销", value: benchmarkSeconds(timing?.outsideMs) },
+      ]} />;
+    })}
+    <BenchmarkDetailRows fixedLabels rows={summaryRows} />
+    {otherSummary.length > 0 && <ul className="game-benchmark-run-notes">{otherSummary.map((phrase, index) => <li key={index}>{phrase}</li>)}</ul>}
+  </>;
 }
 
 function ImageBenchmarkRunDetails({ queueId, runId }: { queueId: string; runId: string }) {
@@ -474,8 +600,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
         const progress = job.progress;
         const heldByPausedTask = jobs[0]?.status === "已暂停" && jobs[0].id !== job.id;
         const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
-        const phase = progress?.phase === "prepare" ? "准备样本与模型" :
-          progress?.phase === "finish" ? "正在收尾" : "正在处理样本";
+        const detailProgress = job.status === "运行中" || job.status === "已暂停" ? progress : undefined;
         return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
           <div className="game-benchmark-queue-copy">
             <div className="game-benchmark-queue-title">
@@ -483,25 +608,21 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
                 background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
                   job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
               <strong role={job.status === "运行中" ? "status" : undefined} title={progress?.label}>{job.label}</strong>
-              <span className="game-flow-metric" style={{ marginInlineStart: "auto" }}>
-                {progress?.percent == null ? "—" : progress.percent + "%"}
-              </span>
+              {progress?.percent != null && <span className="game-flow-metric game-benchmark-queue-percent" style={{ marginInlineStart: "auto" }}>
+                {progress.percent}%
+              </span>}
             </div>
             <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
               {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
               {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
-              <div className="hint" title={progress?.detail}>
+              {!detailProgress && <div className="hint" title={progress?.detail}>
                 {job.status === "待开始" ? statusLabel : job.status === "等待" ? (props.snapshot.blockedTaskId === job.id ? "等待保存配置" : !running ? "队列已暂停" : formalBusy ? formalBlockingReason : "等待前一任务") :
                   job.status === "失败" ? job.failure || progress?.detail : progress &&
-                  <>{job.status === "运行中" ? progress.sample || phase : statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
+                  <>{statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
-              </div>
+              </div>}
               {job.status === "已暂停" && <div className="hint">{progress?.detail ||
                 (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
-              {progress && (job.status === "运行中" || job.status === "已暂停") &&
-                <StepRunningMetrics measured={progress.performance} benchmark={progress}
-                  itemUnit={job.step === "screen" || job.step === "translate" ? "条" : "张"}
-                  queue={{ position: index + 1, ahead: job.status === "运行中" ? 0 : undefined, startedTime: job.startedTime }} />}
             </div>
           </div>
           <button type="button" className="unity-btn game-benchmark-show-open" aria-pressed={showingTaskId === job.id}
@@ -519,6 +640,8 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
           {job.status !== "运行中" && <button type="button" className="unity-btn" disabled={showingTaskId === job.id}
             data-tooltip={showingTaskId === job.id ? "请先退出显示" : "移出队列，保留测试记录"}
             onClick={() => control("benchmark-remove", job.id)}>移除</button>}
+          {detailProgress && <BenchmarkQueueDetails progress={detailProgress} position={index + 1}
+            unit={job.step === "screen" || job.step === "translate" ? "条" : "张"} />}
         </div>;
       })}
     </div>}
@@ -1136,29 +1259,39 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
                 .filter(parameter => parameter.scope === "config")
               : [];
             const failed = result.status === "失败" || result.failed > 0;
+            const observed = Object.values(result.performance.models);
+            const refine = taskStep === "mosaicRefine";
+            const configuredModels = refine ? [runConfig?.mosaic?.refineModel, runConfig?.mosaic?.refineGuardModel]
+              : Object.values(runConfig?.models ?? {}).map(model => model.id);
+            const configuredNames = configuredModels.filter(Boolean);
+            const modelNames = (configuredNames.length ? (refine ? configuredNames : [...new Set(configuredNames)])
+              : [...new Set(observed.map(model => model.model))]).map(id => id?.split("/").at(-1));
+            const concurrency = [...new Set(parameters.filter(parameter => parameter.label.endsWith("并发")).map(parameter => parameter.value))];
+            const lanes = concurrency.length ? concurrency : [...new Set(observed.map(model => model.concurrency))];
+            const modelLabel = modelNames.join(refine ? " → " : "、") || result.label;
+            const tone = failed ? "failure" : result.status === "完成" ? "complete" : "incomplete";
             return <details key={result.performance.taskId || index} className={failed ? "has-failure" : undefined}>
-          <summary>第 {result.round} 轮 · {result.label} · <span className={failed ? "game-benchmark-record-failure" : undefined}>
-            {result.status}{result.failed > 0 ? "（" + result.failed + " " + sampleUnit + "失败）" : ""}</span> · {gameDuration(result.performance.elapsedMs)} · 完成 {result.translated}/{result.selected}</summary>
-          {parameters.length > 0 && <dl className="game-benchmark-record-parameters">
-            {parameters.map(parameter => <div key={parameter.label}><dt>{parameter.label}</dt><dd>{parameter.value}</dd></div>)}
-          </dl>}
-          {result.detail && <p>{result.detail}</p>}
-          {result.summary && <p>{result.summary}</p>}
-          <RunPerformanceDetails run={result.performance} source="benchmark" />
-          {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
-          {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
-            <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
-          {!!result.unobservedModels.length && <p>未记录模型请求：{result.unobservedModels.map(id => id.split("/").at(-1)).join("、")}</p>}
-          {result.performance.wallTiming?.detectorMs !== undefined && <div>检测推理 {(result.performance.wallTiming.detectorMs / 1000).toFixed(2)} 秒</div>}
-          {result.performance.wallTiming?.ocrMs !== undefined && <div>本地 OCR {(result.performance.wallTiming.ocrMs / 1000).toFixed(2)} 秒</div>}
-          {!!result.performance.cacheHits && <div>结果复用 {result.performance.cacheHits} 次</div>}
-          {result.performance.timing?.workflowMs !== undefined && <div>ComfyUI 执行 {(result.performance.timing.workflowMs / 1000).toFixed(2)} 秒</div>}
-          {Object.values(result.performance.models).map(model => <div key={model.model + model.concurrency}>
-            {model.model.split("/").at(-1)} · 并发 {model.concurrency} · {model.requests} 次 · 纯生成 {model.generationMs ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) : "—"} tok/s · 请求平均 {model.requestMs ? (model.tokens * 1000 / model.requestMs).toFixed(1) : "—"} tok/s
-            {model.serviceTiming && modelServiceTimingLines(model.serviceTiming, model.requests, ms => (ms / 1000).toFixed(2) + " 秒")
-              .map(line => <div key={line}>{line}</div>)}
-          </div>)}
-          </details>})}
+              <summary className="game-benchmark-run-summary">
+                <span className="game-benchmark-run-model" title={result.label}>
+                  <strong>#{index + 1} {modelLabel}</strong><small>第 {result.round} 轮</small>
+                </span>
+                <span className="game-benchmark-run-columns">
+                  <span>{lanes.length > 0 && <><small>并发</small><b>{lanes.join(" / ")}</b></>}</span>
+                  <span><small>耗时</small><b>{gameDuration(result.performance.elapsedMs)}</b></span>
+                  <span><small>完成数</small><b>{result.translated}/{result.selected}</b></span>
+                  <span><b className="game-benchmark-run-badge" data-tone={tone}>{result.status}</b>
+                    {result.failed > 0 && <small>{result.failed} {sampleUnit}失败</small>}</span>
+                </span>
+              </summary>
+              <BenchmarkDetailRows rows={parameters} fixedLabels />
+              {result.detail && <p>{result.detail}</p>}
+              <BenchmarkRunMeasurements result={result} />
+              <RunPerformanceDetails run={result.performance} source="benchmark" />
+              {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
+              {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
+                <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
+            </details>;
+          })}
           </div>
         </details>})}
         </section>)}
