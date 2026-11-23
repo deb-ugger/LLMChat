@@ -8,7 +8,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 
-const [executable, scratch] = process.argv.slice(2);
+const [executable, scratch, checkpointExecutable] = process.argv.slice(2);
 assert.ok(executable && scratch, "Usage: node export-http.mjs BACKEND_EXE NEW_FIXTURE_DIRECTORY");
 const root = path.resolve(scratch);
 fs.mkdirSync(root);
@@ -40,9 +40,9 @@ const exited = new Promise((accept, reject) => {
     child.once("close", accept);
 });
 const origin = "http://127.0.0.1:1420";
-async function request(method, route, input, binary = false) {
+async function request(method, route, input, binary = false, targetPort = port) {
     const body = binary ? input : input === undefined ? undefined : JSON.stringify(input);
-    const res = await fetch("http://127.0.0.1:" + port + route, {
+    const res = await fetch("http://127.0.0.1:" + targetPort + route, {
         method, body, headers: { Origin: origin, ...(body ? { "Content-Type": binary ? "image/png" : "application/json" } : {}) },
         signal: AbortSignal.timeout(15000),
     });
@@ -216,6 +216,7 @@ async function waitReady() {
 }
 
 function transactionInput(fixture, result) {
+    assert.equal(result.bytes, packageSize(result.packagePath));
     const manifestPath = path.join(result.packagePath, "manifest.json");
     assert.equal(result.manifestSha256, sha(manifestPath));
     const manifest = JSON.parse(fs.readFileSync(manifestPath));
@@ -269,7 +270,8 @@ async function layeredRestore() {
     const query = await post("/receipts/query", body);
     assert.equal(query.status, 200);
     assert.deepEqual(query.value, { receipt: partial, applied: true, canRestore: true, needsRecovery: false,
-        layerRestoreSupported: true, layers: { translated: layerState(1, 0), mosaic: layerState(0, 1), composed: layerState(1, 0) } });
+        layerRestoreSupported: true, layers: { translated: layerState(1, 0), mosaic: layerState(0, 1), composed: layerState(1, 0) },
+        bytes: packageSize(body.packagePath) });
     expectError(await post("/remove", { packagePath: body.packagePath }), 409, "PACKAGE_IN_USE");
     console.log("PASS T084 A mosaic-only restored bytes and layer states; translated and composed kept");
 
@@ -288,7 +290,8 @@ async function layeredRestore() {
 async function reverseAndResume() {
     const { body, data, receipt, expected } = await appliedFixture("reverse", ["translation", "mosaic"]);
     const selected = receipt.files.find(file => file.kind === "translated");
-    const { files, state, ...header } = receipt;
+    const persisted = JSON.parse(fs.readFileSync(path.join(body.packagePath, "receipts/receipt.json"), "utf8"));
+    const { files, state, ...header } = persisted;
     writeJson(path.join(body.packagePath, "receipts/restore-intent.json"), { ...header, targetPaths: [selected.relativePath] });
     fs.copyFileSync(path.join(body.packagePath, selected.backupPath), path.join(body.gamePath, selected.relativePath));
     expected[selected.relativePath] = selected.before.sha256;
@@ -319,6 +322,130 @@ async function legacyRestore() {
     assert.deepEqual(tree(body.gamePath), data.originalTree);
     assert.deepEqual(await completed(await post("/restore", body), "legacy unfiltered repeat"), restored);
     console.log("PASS T084 C legacy filtered fallback and unfiltered whole recovery");
+}
+function packageSize(root) {
+    return fs.readdirSync(root, { recursive: true, withFileTypes: true })
+        .filter(entry => entry.isFile())
+        .reduce((size, entry) => size + fs.statSync(path.join(entry.parentPath, entry.name)).size, 0);
+}
+
+async function checkpointCases(executable) {
+    const testPort = await portForTest();
+    const scope = path.join(root, "checkpoints");
+    fs.mkdirSync(scope);
+    const probe = spawn(path.resolve(executable), [String(testPort), scope], { cwd: scope, windowsHide: true, stdio: "ignore" });
+    const done = once(probe, "close");
+    const api = (method, route, body) => request(method, prefix + route, body, false, testPort);
+    const probePost = (route, body) => api("POST", route, body);
+    const probeGet = route => api("GET", route);
+    const mode = path.join(scope, "mode");
+    const release = path.join(scope, "continue");
+    const reached = path.join(scope, "reached");
+    const reset = () => { for (const file of [mode, release, reached]) fs.rmSync(file, { force: true }); };
+    const terminal = async (id) => {
+        for (let i = 0; i < 200; i++) {
+            const status = await probeGet("/operations/" + id);
+            if (["failed", "succeeded", "cancelled"].includes(status.value.state)) return status.value;
+            await sleep(20);
+        }
+        throw new Error("checkpoint operation did not finish");
+    };
+    try {
+        let ready = false;
+        for (let i = 0; i < 100; i++) {
+            try { ready = (await fetch("http://127.0.0.1:" + testPort + "/api/health")).ok; }
+            catch {}
+            if (ready) break;
+            await sleep(30);
+        }
+        assert.ok(ready, "checkpoint fixture server ready");
+        const a = await fixture("cancel-apply", ["translation", "mosaic"]);
+        const pkg = await completed(await post("/generate", a.input), "generate");
+        const body = { gamePath: a.gamePath, packagePath: pkg.packagePath };
+        const manifest = JSON.parse(fs.readFileSync(path.join(pkg.packagePath, "manifest.json"), "utf8"));
+        const installed = { ...a.originalTree };
+        for (const file of manifest.files) installed[file.relativePath] = file.sha256;
+
+        async function cancelAt(action, boundary) {
+            reset();
+            const checkpoint = boundary === "middle" ? "middle-" + action : boundary;
+            fs.writeFileSync(mode, checkpoint);
+            const start = await probePost("/" + action, body);
+            assert.equal(start.status, 202, JSON.stringify(start.value));
+            const id = start.value.operationId;
+            let observed = "";
+            for (let i = 0; i < 200; i++) {
+                if (fs.existsSync(reached)) observed = fs.readFileSync(reached, "utf8");
+                if (observed === checkpoint) break;
+                await sleep(15);
+            }
+            assert.equal(observed, checkpoint);
+            const cancel = await probePost("/operations/" + id + "/cancel", {});
+            if (boundary === "middle") {
+                expectError(cancel, 409, "CANCEL_TOO_LATE");
+                if (action === "apply") expectError(await probePost("/apply", body), 409, "OPERATION_CONFLICT");
+            } else {
+                assert.deepEqual(cancel, { status: 202, value: { state: "cancelling" } });
+                assert.equal((await probeGet("/operations/" + id)).value.state, "cancelling");
+            }
+            fs.writeFileSync(release, "");
+            const result = await terminal(id);
+            reset();
+            return result;
+        }
+
+        const early = await cancelAt("apply", "early");
+        assert.equal(early.state, "cancelled");
+        assert.equal(early.result, null);
+        assert.equal(early.error.code, "CANCELLED");
+        assert.deepEqual(tree(a.gamePath), a.originalTree);
+        assert.deepEqual(fs.readdirSync(path.join(pkg.packagePath, "receipts")), []);
+
+        const late = await cancelAt("apply", "late");
+        assert.equal(late.state, "cancelled");
+        assert.equal(late.result.state, "applied");
+        assert.equal(late.result.alreadyApplied, false);
+        assert.equal(late.result.bytes, packageSize(pkg.packagePath));
+        assert.equal(late.error.code, "CANCELLED");
+        assert.deepEqual(tree(a.gamePath), installed);
+        const receipt = path.join(pkg.packagePath, "receipts", "receipt.json");
+        assert.equal(JSON.parse(fs.readFileSync(receipt, "utf8")).state, "applied");
+
+        const restoreEarly = await cancelAt("restore", "early");
+        assert.equal(restoreEarly.state, "cancelled");
+        assert.equal(restoreEarly.result, null);
+        assert.deepEqual(tree(a.gamePath), installed);
+        const restoreLate = await cancelAt("restore", "late");
+        assert.equal(restoreLate.state, "cancelled");
+        assert.equal(restoreLate.result.state, "restored");
+        assert.deepEqual(tree(a.gamePath), a.originalTree);
+        assert.equal(JSON.parse(fs.readFileSync(receipt, "utf8")).state, "restored");
+
+        // A fresh source project is needed because replacing/restoring can change source version stamps.
+        const b = await fixture("cancel-middle", ["translation", "mosaic"]);
+        const generated = await completed(await post("/generate", b.input), "generate");
+        Object.assign(body, { gamePath: b.gamePath, packagePath: generated.packagePath });
+        const mid = await cancelAt("apply", "middle");
+        assert.equal(mid.state, "succeeded");
+        assert.equal(mid.result.state, "applied");
+        const packageTree = tree(body.packagePath);
+        const appliedTree = tree(body.gamePath);
+        fs.writeFileSync(mode, "restore-fail");
+        expectError(await probePost("/remove", { ...body, restoreFirst: true }), 500, "WRITE_FAILED");
+        reset();
+        assert.deepEqual(tree(body.packagePath), packageTree);
+        assert.deepEqual(tree(body.gamePath), appliedTree);
+        const restoredMiddle = await cancelAt("restore", "middle");
+        assert.equal(restoredMiddle.state, "succeeded");
+        assert.equal(restoredMiddle.result.state, "restored");
+        assert.deepEqual(tree(body.gamePath), b.originalTree);
+        console.log("PASS T093 D injected restore failure preserved the package and applied tree");
+        console.log("PASS T093 E early, late and closed HTTP cancellation windows for apply and restore");
+    } finally {
+        reset();
+        if (probe.exitCode === null && probe.signalCode === null) probe.kill();
+        await done;
+    }
 }
 
 try {
@@ -387,21 +514,40 @@ try {
     fs.writeFileSync(a.payload, payload);
 
     const racing = await Promise.all([post("/apply", a.body), post("/apply", a.body)]);
-    assert.deepEqual(racing.map(item => item.status).sort(), [202, 409]);
-    assert.ok(["OPERATION_CONFLICT", "ALREADY_APPLIED"].includes(racing.find(item => item.status === 409).value.error.code));
-    const receiptA = await completed(racing.find(item => item.status === 202), "apply");
+    const accepted = racing.filter(item => item.status === 202);
+    assert.ok(accepted.length >= 1);
+    for (const item of racing.filter(item => item.status !== 202)) expectError(item, 409, "OPERATION_CONFLICT");
+    const results = await Promise.all(accepted.map(item => completed(item, "apply")));
+    const actual = results.filter(item => item.alreadyApplied === false);
+    assert.equal(actual.length, 1);
+    const { bytes: installedBytes, alreadyApplied, ...receiptA } = actual[0];
+    assert.equal(installedBytes, packageSize(a.body.packagePath));
+    const measuredConfirmation = await post("/confirmation-status", { ...first.lookup, packagePath: a.body.packagePath });
+    assert.equal(measuredConfirmation.status, 200);
+    assert.equal(measuredConfirmation.value.bytes, installedBytes);
+    assert.ok(results.every(item => item.transactionId === receiptA.transactionId));
     assert.equal(receiptA.state, "applied");
     assert.deepEqual(tree(first.gamePath), a.patchedTree);
-    expectError(await post("/apply", a.body), 409, "ALREADY_APPLIED");
+    const packageTree = tree(a.body.packagePath);
+    const repeatedApply = await completed(await post("/apply", a.body), "idempotent apply");
+    assert.equal(repeatedApply.alreadyApplied, true);
+    assert.equal(repeatedApply.transactionId, receiptA.transactionId);
+    assert.equal(repeatedApply.bytes, packageSize(a.body.packagePath));
+    assert.deepEqual(tree(a.body.packagePath), packageTree);
+
+    fs.writeFileSync(first.target, corrupted);
+    expectError(await post("/apply", a.body), 409, "TARGET_CHANGED");
+    fs.writeFileSync(first.target, payload);
+    assert.deepEqual(tree(first.gamePath), a.patchedTree);
     const receiptB = await completed(await post("/apply", b.body), "apply");
     assert.equal(receiptB.state, "applied");
     assert.deepEqual(tree(second.gamePath), b.patchedTree);
     const applied = await post("/receipts/query", a.body);
     assert.equal(applied.status, 200);
     assert.deepEqual(applied.value, { receipt: receiptA, applied: true, canRestore: true, needsRecovery: false,
-        layerRestoreSupported: true, layers: { mosaic: layerState(1, 0) } });
+        layerRestoreSupported: true, layers: { mosaic: layerState(1, 0) }, bytes: packageSize(a.body.packagePath) });
     expectError(await post("/remove", { packagePath: a.body.packagePath }), 409, "PACKAGE_IN_USE");
-    console.log("PASS B/C apply: two successes, manifest 400, changed target 409, duplicate 409, concurrent 202/409, queued hash failure");
+    console.log("PASS T093 A/B/C exact bytes, idempotent receipt and backup, target drift rejected");
 
     const backup = path.join(a.body.packagePath, receiptA.files[0].backupPath);
     const backupBytes = fs.readFileSync(backup);
@@ -421,7 +567,7 @@ try {
     const restoredStatus = await post("/receipts/query", a.body);
     assert.equal(restoredStatus.status, 200);
     assert.deepEqual(restoredStatus.value, { receipt: restored, applied: false, canRestore: false, needsRecovery: false,
-        layerRestoreSupported: true, layers: { mosaic: layerState(0, 1) } });
+        layerRestoreSupported: true, layers: { mosaic: layerState(0, 1) }, bytes: packageSize(a.body.packagePath) });
 
     // Simulate termination before the receipt was published; the real plan and backup stay intact.
     fs.unlinkSync(path.join(b.body.packagePath, "receipts/receipt.json"));
@@ -460,7 +606,23 @@ try {
     await layeredRestore();
     await reverseAndResume();
     await legacyRestore();
-    console.log("PASS T077/T081/T084 HTTP fixtures");
+    const remove = await appliedFixture("restore-first", ["translation", "mosaic"]);
+    const restoredPackage = await post("/remove", { ...remove.body, restoreFirst: true });
+    assert.deepEqual(restoredPackage, { status: 200, value: { restored: true, removed: true } });
+    assert.deepEqual(tree(remove.body.gamePath), remove.data.originalTree);
+    assert.equal(fs.existsSync(remove.body.packagePath), false);
+    assert.equal(Object.hasOwn((await post("/receipts/query", remove.body)).value, "bytes"), false);
+    const deletedStatus = await post("/confirmation-status", { ...remove.data.lookup, packagePath: remove.body.packagePath });
+    assert.equal(deletedStatus.status, 200);
+    assert.equal(Object.hasOwn(deletedStatus.value, "bytes"), false);
+    const unused = await fixture("unused-remove");
+    const unusedPackage = await completed(await post("/generate", unused.input), "generate");
+    assert.deepEqual(await post("/remove", { packagePath: unusedPackage.packagePath, restoreFirst: true }),
+        { status: 200, value: { restored: false, removed: true } });
+    console.log("PASS T093 A/D exact deleted-size omission and restore-first removal");
+    if (checkpointExecutable) await checkpointCases(checkpointExecutable);
+    else console.log("T093 checkpoint tests require the optional game-image-export-http-fixture.exe argument");
+    console.log("PASS export HTTP fixtures");
 } catch (error) {
     console.error(log);
     throw error;

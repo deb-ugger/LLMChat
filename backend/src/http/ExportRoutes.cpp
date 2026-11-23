@@ -224,6 +224,7 @@ class Jobs {
     std::condition_variable_any ready_;
     std::map<std::string, JobPtr> jobs_;
     std::deque<JobPtr> queue_;
+    ExportCheckpoint checkpoint_;
     std::jthread worker_;
 
     void prune() {
@@ -254,7 +255,7 @@ class Jobs {
         job->operation = operation;
         job->game = game;
         job->directory = directory;
-        job->acceptsCancel = operation == Operation::Generate;
+        job->acceptsCancel = operation != Operation::Remove;
         jobs_.emplace(id, job);
         return job;
     }
@@ -272,6 +273,10 @@ class Jobs {
 
     void finish(Job& job, const char* state, Json result, Json error) {
         std::lock_guard lock(mutex_);
+        if (job.cancelRequested && std::string_view(state) == "succeeded") {
+            state = "cancelled";
+            error = failure(Error("CANCELLED", "已取消，文件和收据已完整提交"));
+        }
         job.state = state;
         job.result = std::move(result);
         job.error = std::move(error);
@@ -294,7 +299,7 @@ class Jobs {
                 ++job->sequence;
             }
             try {
-                if (cancelled(*job)) throw Error("CANCELLED", "已取消生成成品");
+                if (cancelled(*job)) throw Error("CANCELLED", "已取消成品包操作");
                 auto result = action(*this, *job);
                 finish(*job, "succeeded", std::move(result), nullptr);
             } catch (const Error& error) {
@@ -306,7 +311,8 @@ class Jobs {
     }
 
 public:
-    Jobs() : worker_([this](std::stop_token stopped) { run(stopped); }) {}
+    explicit Jobs(ExportCheckpoint checkpoint)
+        : checkpoint_(std::move(checkpoint)), worker_([this](std::stop_token stopped) { run(stopped); }) {}
 
     template<class Preflight>
     std::string submit(Operation operation, const Location& game, const Location& directory,
@@ -325,15 +331,40 @@ public:
         return job->id;
     }
 
-    void remove(const Location& package) {
-        auto job = reserve(Operation::Remove, {}, package.identity);
+    Json remove(const Location& package, const std::optional<Location>& game, bool restoreFirst) {
+        auto job = reserve(Operation::Remove, game ? game->identity : std::string{}, package.identity);
+        Json result;
         try {
-            transaction::remove(package.path);
+            if (restoreFirst)
+                result = transaction::restoreAndRemove(package.path, game ? std::optional(game->path) : std::nullopt,
+                    {checkpoint_});
+            else
+                transaction::remove(package.path);
         } catch (...) {
             forget(job);
             throw;
         }
         forget(job);
+        return result;
+    }
+
+    transaction::ApplyControl transactionControl(Job& job) {
+        return {[this, &job](transaction::ApplyPhase phase, size_t index) {
+            using transaction::ApplyPhase;
+            if (phase == ApplyPhase::BeforeReceipt) {
+                std::lock_guard lock(mutex_);
+                job.acceptsCancel = true;
+                ++job.sequence;
+            }
+            if (checkpoint_) checkpoint_(phase, index);
+            if (phase == ApplyPhase::BeginMutation || phase == ApplyPhase::CommitReceipt) {
+                std::lock_guard lock(mutex_);
+                job.acceptsCancel = false;
+                ++job.sequence;
+                if (phase == ApplyPhase::BeginMutation && job.cancelRequested)
+                    throw Error("CANCELLED", "已在替换文件前取消");
+            }
+        }, [this, &job] { return cancelled(job); }};
     }
 
     Json status(const std::string& id) {
@@ -376,15 +407,14 @@ void queued(httplib::Response& response, const std::string& operationId) {
     send(response, 202, {{"operationId", operationId}, {"state", "queued"}});
 }
 
-Json persistedReceipt(const Path& package) {
-    const Root root(package);
-    return readJson(root.path, L"receipts/receipt.json", "INVALID_RECEIPT", 64ull << 20);
+void addPackageBytes(Json& body, const Path& package) {
+    if (const auto bytes = transaction::packageBytes(package)) body["bytes"] = *bytes;
 }
 
 } // namespace
 
-void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
-    const auto jobs = std::make_shared<Jobs>();
+void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages, const ExportCheckpoint& checkpoint) {
+    const auto jobs = std::make_shared<Jobs>(checkpoint);
 
     svr.Post("/api/game-image-exports/confirm", withCors(exportHandler([&gameImages](const auto& req, auto& res) {
         const auto body = Json::parse(req.body);
@@ -395,7 +425,15 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
     svr.Post("/api/game-image-exports/confirmation-status", withCors(exportHandler([&gameImages](const auto& req, auto& res) {
         const auto body = Json::parse(req.body);
         const auto game = locate(body, "gamePath");
-        send(res, 200, export_game::confirmation::status(gameImages, game.path, body));
+        auto value = export_game::confirmation::status(gameImages, game.path, body);
+        if (body.contains("packagePath")) {
+            try {
+                addPackageBytes(value, locate(body, "packagePath", true).path);
+            } catch (const Error& error) {
+                if (error.code != "PACKAGE_NOT_FOUND") throw;
+            }
+        }
+        send(res, 200, value);
     })));
 
     svr.Post("/api/game-image-exports/legacy-status", withCors(exportHandler([](const auto& req, auto& res) {
@@ -415,8 +453,10 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
                     [&] { return active.cancelled(job); },
                     [&](const auto& state) { active.progress(job, state); },
                 });
-                return {{"packageId", result.packageId}, {"packagePath", gamefiles::key(result.packagePath)},
+                Json value{{"packageId", result.packageId}, {"packagePath", gamefiles::key(result.packagePath)},
                     {"manifestSha256", result.manifestSha256}, {"files", result.files}, {"skipped", result.skipped}};
+                addPackageBytes(value, result.packagePath);
+                return value;
             }));
     })));
 
@@ -435,9 +475,10 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
         const auto game = locate(body, "gamePath");
         queued(res, jobs->submit(Operation::Apply, game, package,
             [&] { transaction::checkApply(package.path, game.path); },
-            [game, package](Jobs&, Job&) {
-                transaction::apply(package.path, game.path);
-                return persistedReceipt(package.path);
+            [game, package](Jobs& active, Job& job) {
+                auto result = transaction::apply(package.path, game.path, active.transactionControl(job));
+                addPackageBytes(result, package.path);
+                return result;
             }));
     })));
 
@@ -464,9 +505,10 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
                 }
                 *rollback = std::move(state.rollbackReceipt);
             },
-            [game, package, rollback, kinds](Jobs&, Job&) {
+            [game, package, rollback, kinds](Jobs& active, Job& job) {
+                const auto control = active.transactionControl(job);
                 if (!rollback->is_null()) {
-                    if (transaction::recover(package.path, game.path) != transaction::Recovery::RolledBack)
+                    if (transaction::recover(package.path, game.path, control) != transaction::Recovery::RolledBack)
                         throw Error("RECOVERY_REQUIRED", "成品包状态已变化，请重新查询后恢复");
                     if (kinds) {
                         (*rollback)["restoredAsFullPackage"] = true;
@@ -474,7 +516,7 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
                     }
                     return std::move(*rollback);
                 }
-                return transaction::restore(package.path, game.path, kinds);
+                return transaction::restore(package.path, game.path, kinds, control);
             }));
     })));
 
@@ -491,13 +533,20 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
         value["needsRecovery"] = status.needsRecovery;
         value["layerRestoreSupported"] = status.layerRestoreSupported;
         value["layers"] = std::move(status.layers);
+        addPackageBytes(value, package.path);
         send(res, status.receipt.is_null() ? 404 : 200, value);
     })));
 
     svr.Post("/api/game-image-exports/remove", withCors(exportHandler([jobs](const auto& req, auto& res) {
         const auto body = Json::parse(req.body);
-        jobs->remove(locate(body, "packagePath", true));
-        res.status = 204;
+        const auto package = locate(body, "packagePath", true);
+        if (body.value("restoreFirst", false)) {
+            const auto game = body.contains("gamePath") ? std::optional(locate(body, "gamePath")) : std::nullopt;
+            send(res, 200, jobs->remove(package, game, true));
+        } else {
+            jobs->remove(package, std::nullopt, false);
+            res.status = 204;
+        }
     })));
 }
 
@@ -505,6 +554,6 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
 
 #else
 namespace http_router {
-void registerExportRoutes(httplib::Server&, RpgImageProject&) {}
+void registerExportRoutes(httplib::Server&, RpgImageProject&, const ExportCheckpoint&) {}
 }
 #endif

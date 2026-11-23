@@ -57,6 +57,11 @@ struct Plan {
 
 using FileMask = std::vector<bool>;
 
+struct Transition {
+    FileMask scope;
+    bool apply;
+};
+
 struct Receipt {
     Json value = nullptr;
     bool layered = false;
@@ -416,6 +421,7 @@ void writeAtomic(const Path& root, const Path& temp, const Path& target, const J
     if (digest(written, root / temp).sha != expected)
         throw Error("WRITE_FAILED", "事务记录写入后 SHA-256 不符：" + key(target), key(target));
     checkpoint(control, ApplyPhase::BeforeReceiptPublish, index);
+    checkpoint(control, ApplyPhase::CommitReceipt, index);
     renameHandle(written, root / target, replace);
 }
 
@@ -644,27 +650,36 @@ struct Transaction {
             deleteFile(game.path, tempName(plan.manifest.files[i], plan.id, i));
     }
 
-    FileMask toOriginal(const Plan& plan, FileMask applied, const FileMask& scope) const {
+    FileMask changeTargets(const Plan& plan, FileMask applied, const Transition& change,
+        const ApplyControl& control = {}) const {
         cleanTemps(plan);
-        for (auto i = plan.manifest.files.size(); i != 0;) {
-            const auto& file = plan.manifest.files[--i];
-            if (!scope[i] || !applied[i]) continue;
-            replace(game.path, file, tempName(file, plan.id, i), package.path, Path(backupDir) / file.path,
-                file.after, file.before, "BACKUP_CORRUPT");
-            applied[i] = false;
+        for (size_t step = 0; step < plan.manifest.files.size(); ++step) {
+            const auto i = change.apply ? step : plan.manifest.files.size() - 1 - step;
+            const auto& file = plan.manifest.files[i];
+            if (!change.scope[i] || applied[i] == change.apply) continue;
+            checkpoint(control, ApplyPhase::BeforeReplace, i);
+            if (change.apply)
+                replace(game.path, file, tempName(file, plan.id, i), package.path, Path(payloadDir) / file.path,
+                    file.before, file.after, "PAYLOAD_HASH_MISMATCH");
+            else
+                replace(game.path, file, tempName(file, plan.id, i), package.path, Path(backupDir) / file.path,
+                    file.after, file.before, "BACKUP_CORRUPT");
+            applied[i] = change.apply;
         }
         targets(plan, applied);
         return applied;
     }
 
-    std::optional<FileMask> readRestoreIntent(const Plan& plan) const {
+    std::optional<Transition> readRestoreIntent(const Plan& plan) const {
         if (!fileExists(package.path, restoreIntent)) return std::nullopt;
         auto value = readJson(package.path, restoreIntent, "INVALID_RECEIPT");
         const auto paths = value.contains("targetPaths") ? value.at("targetPaths") : Json(nullptr);
         const bool scoped = value.erase("targetPaths") != 0;
-        if (value != planHeader(plan, game))
+        const auto direction = value.value("direction", "restore");
+        value.erase("direction");
+        if (value != planHeader(plan, game) || (direction != "apply" && direction != "restore"))
             throw Error("INVALID_RECEIPT", "恢复标记与备份计划不符");
-        if (!scoped) return allFiles(plan.manifest);
+        if (!scoped) return Transition{allFiles(plan.manifest), false};
         if (!paths.is_array() || paths.empty())
             throw Error("INVALID_RECEIPT", "分层恢复标记缺少目标");
         std::set<std::string> remaining;
@@ -674,15 +689,16 @@ struct Transaction {
         FileMask scope;
         for (const auto& file : plan.manifest.files) scope.push_back(remaining.erase(file.name) != 0);
         if (!remaining.empty()) throw Error("INVALID_RECEIPT", "分层恢复标记含有计划外的目标");
-        return scope;
+        return Transition{std::move(scope), direction == "apply"};
     }
 
-    void writeRestoreIntent(const Plan& plan, const FileMask& scope) const {
+    void writeRestoreIntent(const Plan& plan, const Transition& change) const {
         auto value = planHeader(plan, game);
         auto paths = Json::array();
         for (size_t i = 0; i < plan.manifest.files.size(); ++i)
-            if (scope[i]) paths.push_back(plan.manifest.files[i].name);
+            if (change.scope[i]) paths.push_back(plan.manifest.files[i].name);
         value["targetPaths"] = std::move(paths);
+        if (change.apply) value["direction"] = "apply";
         writeAtomic(package.path, restoreStage, restoreIntent, value, false);
     }
 
@@ -693,7 +709,21 @@ struct Transaction {
     }
 };
 
-Recovery recoverLocked(const Transaction& tx) {
+void verifyPayload(const Transaction& tx, const Manifest& manifest, const FileMask& scope = {}) {
+    for (size_t i = 0; i < manifest.files.size(); ++i) {
+        if (!scope.empty() && !scope[i]) continue;
+        const auto& file = manifest.files[i];
+        if (digestFile(tx.package.path, Path(payloadDir) / file.path, "PAYLOAD_HASH_MISMATCH", maxImageBytes) != file.after)
+            throw Error("PAYLOAD_HASH_MISMATCH", "成品文件 SHA-256 或大小与清单不符：" + file.name, file.name);
+    }
+}
+
+void verifyReplaceAccess(const Transaction& tx, const Manifest& manifest, const FileMask& scope) {
+    for (size_t i = 0; i < manifest.files.size(); ++i)
+        if (scope[i]) writable(tx.game.path, manifest.files[i]);
+}
+
+Recovery recoverLocked(const Transaction& tx, const ApplyControl& control = {}) {
     const bool hasReceipt = fileExists(tx.package.path, receiptName);
     if (!directoryExists(tx.package.path / backupDir)) {
         if (hasReceipt) throw Error("BACKUP_MISSING", "收据存在，但原件备份目录缺失");
@@ -707,14 +737,20 @@ Recovery recoverLocked(const Transaction& tx) {
         throw Error("INVALID_RECEIPT", "恢复标记存在，但应用收据缺失");
 
     if (intent || !hasReceipt) {
-        const auto scope = intent.value_or(allFiles(plan.manifest));
+        const auto change = intent.value_or(Transition{allFiles(plan.manifest), false});
         const auto expected = hasReceipt ? receipt.applied : allFiles(plan.manifest, false);
-        tx.verifyBackups(plan, scope);
-        const auto applied = tx.targets(plan, expected, scope, scope);
+        if (change.apply) verifyPayload(tx, plan.manifest, change.scope);
+        else tx.verifyBackups(plan, change.scope);
+        const auto applied = tx.targets(plan, expected, change.scope);
+        auto pending = change.scope;
+        for (size_t i = 0; i < pending.size(); ++i) pending[i] = pending[i] && applied[i] != change.apply;
+        verifyReplaceAccess(tx, plan.manifest, pending);
+        checkpoint(control, ApplyPhase::BeginMutation, 0);
         tx.cleanPackageTemps();
-        const auto remaining = tx.toOriginal(plan, applied, scope);
+        const auto remaining = tx.changeTargets(plan, applied, change, control);
         if (intent) {
-            tx.writeReceipt(plan, remaining, receipt.layered, true);
+            checkpoint(control, ApplyPhase::BeforeReceipt, remaining.size());
+            tx.writeReceipt(plan, remaining, receipt.layered, true, control);
             deleteFile(tx.package.path, restoreIntent);
             return recoveryState(remaining);
         }
@@ -734,40 +770,103 @@ Recovery recoverLocked(const Transaction& tx) {
     return recoveryState(receipt.applied);
 }
 
-void applyLocked(const Transaction& tx, const ApplyControl& control) {
-    if (fileExists(tx.package.path, receiptName))
-        throw Error("ALREADY_APPLIED", "这个成品包已使用过，请勿重复应用");
-    if (directoryExists(tx.package.path / backupDir) || directoryExists(tx.package.path / backupStage) ||
-        fileExists(tx.package.path, receiptStage) || fileExists(tx.package.path, restoreIntent) ||
-        fileExists(tx.package.path, restoreStage))
+Json updateReceipt(const Transaction& tx, const Plan& plan, const Receipt& receipt, const Transition& change,
+    const ApplyControl& control, bool rollbackOnFailure) {
+    checkpoint(control, ApplyPhase::BeginMutation, 0);
+    tx.writeRestoreIntent(plan, change);
+    bool committed = false;
+    try {
+        const auto remaining = tx.changeTargets(plan, receipt.applied, change, control);
+        checkpoint(control, ApplyPhase::BeforeReceipt, remaining.size());
+        auto result = tx.writeReceipt(plan, remaining, receipt.layered, true, control);
+        committed = true;
+        deleteFile(tx.package.path, restoreIntent);
+        return result;
+    } catch (...) {
+        if (rollbackOnFailure && !committed) {
+            try {
+                const auto current = tx.targets(plan, receipt.applied, change.scope);
+                tx.changeTargets(plan, current, {change.scope, !change.apply});
+                tx.cleanPackageTemps();
+                deleteFile(tx.package.path, restoreIntent);
+            } catch (const std::exception& error) {
+                throw Error("RECOVERY_REQUIRED", std::string("无法撤销未完成的文件替换：") + error.what());
+            }
+        }
+        throw;
+    }
+}
+
+struct Application {
+    std::optional<Plan> plan;
+    Receipt receipt;
+    FileMask pending;
+    std::optional<Digest> marker;
+};
+
+Application checkApplication(const Transaction& tx, const Manifest& manifest) {
+    const auto& root = tx.package.path;
+    const bool hasReceipt = fileExists(root, receiptName);
+    if ((!hasReceipt && directoryExists(root / backupDir)) || directoryExists(root / backupStage) ||
+        fileExists(root, receiptStage) || fileExists(root, restoreIntent) || fileExists(root, restoreStage))
         throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
 
+    payloadMembership(root, manifest);
+    if (!hasReceipt) {
+        const auto marker = tx.checkApplicationTargets(manifest);
+        auto pending = allFiles(manifest);
+        verifyReplaceAccess(tx, manifest, pending);
+        return {std::nullopt, {}, std::move(pending), marker};
+    }
+
+    auto plan = tx.readPlan();
+    auto receipt = tx.receipt(plan);
+    if (plan.manifest.packageId != manifest.packageId || plan.manifest.fingerprint != manifest.fingerprint ||
+        !std::equal(manifest.files.begin(), manifest.files.end(), plan.manifest.files.begin(),
+            plan.manifest.files.end(), [](const Entry& left, const Entry& right) {
+                return left.after == right.after && left.kind == right.kind;
+            }))
+        throw Error("TARGET_CHANGED", "当前成品清单与已应用收据不一致");
+    if (!anyFiles(receipt.applied))
+        throw Error("TARGET_CHANGED", "成品包已整包恢复，请重新生成后应用");
+    tx.targets(plan, receipt.applied);
+    auto pending = allFiles(manifest, false);
+    for (size_t i = 0; i < receipt.applied.size(); ++i) pending[i] = !receipt.applied[i];
+    verifyReplaceAccess(tx, manifest, pending);
+    return {std::move(plan), std::move(receipt), std::move(pending), std::nullopt};
+}
+
+Json applyLocked(const Transaction& tx, const ApplyControl& control) {
     const auto json = readJson(tx.package.path, manifestName, "INVALID_MANIFEST");
     const auto manifest = parseManifest(json, true);
-    payloadMembership(tx.package.path, manifest);
-    const auto appliedMarker = tx.checkApplicationTargets(manifest);
-    for (const auto& file : manifest.files) {
-        if (digestFile(tx.package.path, Path(payloadDir) / file.path, "PAYLOAD_HASH_MISMATCH", maxImageBytes) != file.after)
-            throw Error("PAYLOAD_HASH_MISMATCH", "成品文件 SHA-256 或大小与清单不符：" + file.name, file.name);
-    }
-    for (const auto& file : manifest.files) writable(tx.game.path, file);
-
-    try {
-        const auto plan = tx.prepare(json, manifest, appliedMarker);
-        for (size_t i = 0; i < manifest.files.size(); ++i) {
-            checkpoint(control, ApplyPhase::BeforeReplace, i);
-            const auto& file = manifest.files[i];
-            replace(tx.game.path, file, tempName(file, plan.id, i), tx.package.path, Path(payloadDir) / file.path,
-                file.before, file.after, "PAYLOAD_HASH_MISMATCH");
+    auto application = checkApplication(tx, manifest);
+    verifyPayload(tx, manifest);
+    if (application.plan) {
+        if (!anyFiles(application.pending)) {
+            checkpoint(control, ApplyPhase::BeginMutation, 0);
+            auto result = std::move(application.receipt.value);
+            result["alreadyApplied"] = true;
+            return result;
         }
-        tx.targets(plan, allFiles(manifest));
+        tx.verifyBackups(*application.plan, application.pending);
+        auto result = updateReceipt(tx, *application.plan, application.receipt,
+            {application.pending, true}, control, true);
+        result["alreadyApplied"] = false;
+        return result;
+    }
+
+    Json result;
+    try {
+        const auto plan = tx.prepare(json, manifest, application.marker);
+        checkpoint(control, ApplyPhase::BeginMutation, 0);
+        const auto remaining = tx.changeTargets(plan, allFiles(manifest, false), {application.pending, true}, control);
         checkpoint(control, ApplyPhase::BeforeReceipt, manifest.files.size());
         try {
-            tx.writeReceipt(plan, allFiles(manifest), true, false, control);
+            result = tx.writeReceipt(plan, remaining, true, false, control);
         } catch (const std::exception& error) {
             throw Error("RECEIPT_WRITE_FAILED", std::string("写入最终收据失败：") + error.what());
         }
-        if (appliedMarker)
+        if (application.marker)
             std::clog << markerChangedCode << " [" << manifest.packageId << "] " << manifest.markerName
                       << " " << markerChangedMessage << std::endl;
     } catch (...) {
@@ -779,34 +878,39 @@ void applyLocked(const Transaction& tx, const ApplyControl& control) {
         }
         std::rethrow_exception(original);
     }
+    result["alreadyApplied"] = false;
+    return result;
 }
 
-Json restoreLocked(const Transaction& tx, const RestoreKinds& kinds) {
+Json restoreLocked(const Transaction& tx, const RestoreKinds& kinds, const ApplyControl& control,
+    bool rollbackOnFailure = false) {
     if (!fileExists(tx.package.path, receiptName))
         throw Error("INVALID_RECEIPT", "没有已应用的收据，若应用异常中断请先恢复事务");
     const auto plan = tx.readPlan();
     auto receipt = tx.receipt(plan);
     const auto scope = restoreScope(plan.manifest, receipt, kinds);
-    if (tx.readRestoreIntent(plan)) {
-        recoverLocked(tx);
+    const auto pending = tx.readRestoreIntent(plan);
+    if (pending) {
+        recoverLocked(tx, control);
         receipt = tx.receipt(plan);
     }
-    const auto selected = appliedIn(receipt.applied, scope);
-    tx.verifyBackups(plan, kinds && receipt.layered ? selected : scope);
-    const auto applied = tx.targets(plan, receipt.applied, {}, selected);
-    Json result = std::move(receipt.value);
-    if (anyFiles(selected)) {
-        tx.writeRestoreIntent(plan, selected);
-        const auto remaining = tx.toOriginal(plan, applied, selected);
-        result = tx.writeReceipt(plan, remaining, receipt.layered, true);
-        deleteFile(tx.package.path, restoreIntent);
+    if (!pending || !control.cancelRequested || !control.cancelRequested()) {
+        const auto selected = appliedIn(receipt.applied, scope);
+        tx.verifyBackups(plan, kinds && receipt.layered ? selected : scope);
+        tx.targets(plan, receipt.applied, {}, selected);
+        if (anyFiles(selected)) {
+            if (rollbackOnFailure) verifyPayload(tx, plan.manifest, selected);
+            receipt.value = updateReceipt(tx, plan, receipt, {selected, false}, control, rollbackOnFailure);
+        } else {
+            checkpoint(control, ApplyPhase::BeginMutation, 0);
+        }
     }
     if (!receipt.layered) {
-        result["layerRestoreSupported"] = false;
-        result["restoredAsFullPackage"] = true;
-        result["warning"] = "旧收据没有图层信息，已按整包恢复";
+        receipt.value["layerRestoreSupported"] = false;
+        receipt.value["restoredAsFullPackage"] = true;
+        receipt.value["warning"] = "旧收据没有图层信息，已按整包恢复";
     }
-    return result;
+    return std::move(receipt.value);
 }
 
 template<class Function>
@@ -828,34 +932,26 @@ decltype(auto) guard(Function run) {
 
 } // namespace
 
-void apply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+nlohmann::json apply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
     const ApplyControl& control) {
-    guard([&] { applyLocked(Transaction(packageDir, gameRoot), control); });
+    return guard([&] { return applyLocked(Transaction(packageDir, gameRoot), control); });
 }
 
 nlohmann::json restore(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
-    const RestoreKinds& kinds) {
-    return guard([&] { return restoreLocked(Transaction(packageDir, gameRoot), kinds); });
+    const RestoreKinds& kinds, const ApplyControl& control) {
+    return guard([&] { return restoreLocked(Transaction(packageDir, gameRoot), kinds, control); });
 }
 
-Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot) {
-    return guard([&] { return recoverLocked(Transaction(packageDir, gameRoot)); });
+Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+    const ApplyControl& control) {
+    return guard([&] { return recoverLocked(Transaction(packageDir, gameRoot), control); });
 }
 
 
 void checkApply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot) {
     guard([&] {
         const Transaction tx(packageDir, gameRoot);
-        if (fileExists(tx.package.path, receiptName))
-            throw Error("ALREADY_APPLIED", "这个成品包已使用过，请勿重复应用");
-        if (directoryExists(tx.package.path / backupDir) || directoryExists(tx.package.path / backupStage) ||
-            fileExists(tx.package.path, receiptStage) || fileExists(tx.package.path, restoreIntent) ||
-            fileExists(tx.package.path, restoreStage))
-            throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
-        const auto manifest = parseManifest(readJson(tx.package.path, manifestName, "INVALID_MANIFEST"), true);
-        payloadMembership(tx.package.path, manifest);
-        tx.checkApplicationTargets(manifest);
-        for (const auto& file : manifest.files) writable(tx.game.path, file);
+        checkApplication(tx, parseManifest(readJson(tx.package.path, manifestName, "INVALID_MANIFEST"), true));
     });
 }
 
@@ -887,7 +983,7 @@ PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesy
             if (receipt.layered) result.layers = layerStates(plan.manifest, receipt.applied);
             const auto scope = restoreScope(plan.manifest, receipt, kinds);
             const auto expected = hasReceipt ? receipt.applied : allFiles(plan.manifest, false);
-            const auto uncertain = intent.value_or(allFiles(plan.manifest, !hasReceipt));
+            const auto uncertain = intent ? intent->scope : allFiles(plan.manifest, !hasReceipt);
             const auto selected = hasReceipt ? appliedIn(receipt.applied, scope) : scope;
             auto backups = kinds && receipt.layered ? selected : scope;
             auto writable = selected;
@@ -908,34 +1004,98 @@ PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesy
     });
 }
 
+namespace {
+
+bool validateRemoval(const Root& package, bool restoreFirst) {
+    if (package.path.extension() != L".llmchat-images")
+        throw Error("INVALID_PATH", "仅可删除成品包目录", utf8(package.path));
+    const auto manifest = parseManifest(readJson(package.path, manifestName, "INVALID_MANIFEST"), true);
+    if (directoryExists(package.path / backupStage) || fileExists(package.path, restoreIntent) ||
+        fileExists(package.path, receiptStage) || fileExists(package.path, restoreStage))
+        throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
+    const bool hasBackup = directoryExists(package.path / backupDir);
+    const bool hasReceipt = fileExists(package.path, receiptName);
+    bool applied = false;
+    if (hasBackup || hasReceipt) {
+        if (!hasReceipt) throw Error("RECOVERY_REQUIRED", "成品包有未完成的应用，请先恢复");
+        const auto receipt = readJson(package.path, receiptName, "INVALID_RECEIPT", maxPlanBytes);
+        if (receipt.at("packageId") != manifest.packageId || receipt.at("schemaVersion") != 1)
+            throw Error("INVALID_RECEIPT", "收据不属于此成品包");
+        applied = receipt.at("state") != "restored";
+        if (applied && !restoreFirst) throw Error("PACKAGE_IN_USE", "成品仍已应用，请先恢复原件再清理");
+        const auto planFile = Path(backupDir) / planName;
+        const auto plan = digestFile(package.path, planFile, "BACKUP_MISSING", maxPlanBytes);
+        if (receipt.at("planSha256") != plan.sha)
+            throw Error("INVALID_RECEIPT", "收据的备份计划校验失败");
+    }
+    auto inspect = [](const Path& name) { relative(key(name)); };
+    walk(package.path, {}, inspect);
+    return applied;
+}
+
+void detachPackage(Root& package) {
+    const auto retired = package.path.parent_path() / (".llmchat-removed-" + newId() + ".partial");
+    package.handles.pop_back();
+    {
+        const auto source = openNode(package.path, true, false, DELETE);
+        renameHandle(source, retired, false);
+    }
+    // The rename removes the package from its published path atomically.
+    // Cleanup of the detached tree is separate from the committed removal.
+    try {
+        removeTree(retired);
+    } catch (const std::exception& error) {
+        std::clog << "PACKAGE_CLEANUP_PENDING " << utf8(retired) << ": " << error.what() << '\n';
+    }
+}
+
+} // namespace
+
 void remove(const std::filesystem::path& packageDir) {
     guard([&] {
         Root package(packageDir);
         const DirectoryLock lock(package.ids.back());
-        if (package.path.extension() != L".llmchat-images")
-            throw Error("INVALID_PATH", "仅可删除成品包目录", utf8(package.path));
-        const auto manifest = parseManifest(readJson(package.path, manifestName, "INVALID_MANIFEST"), true);
-        if (directoryExists(package.path / backupStage) || fileExists(package.path, restoreIntent) ||
-            fileExists(package.path, receiptStage) || fileExists(package.path, restoreStage))
-            throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
-        const bool hasBackup = directoryExists(package.path / backupDir);
-        const bool hasReceipt = fileExists(package.path, receiptName);
-        if (hasBackup || hasReceipt) {
-            if (!hasReceipt) throw Error("RECOVERY_REQUIRED", "成品包有未完成的应用，请先恢复");
-            const auto receipt = readJson(package.path, receiptName, "INVALID_RECEIPT", maxPlanBytes);
-            if (receipt.at("packageId") != manifest.packageId || receipt.at("schemaVersion") != 1)
-                throw Error("INVALID_RECEIPT", "收据不属于此成品包");
-            if (receipt.at("state") != "restored")
-                throw Error("PACKAGE_IN_USE", "成品仍已应用，请先恢复原件再清理");
-            const auto planFile = Path(backupDir) / planName;
-            const auto plan = digestFile(package.path, planFile, "BACKUP_MISSING", maxPlanBytes);
-            if (receipt.at("planSha256") != plan.sha)
-                throw Error("INVALID_RECEIPT", "收据的备份计划校验失败");
-        }
-        auto inspect = [](const Path& name) { relative(key(name)); };
-        walk(package.path, {}, inspect);
+        validateRemoval(package, false);
         package.handles.pop_back();
         removeTree(package.path);
+    });
+}
+
+nlohmann::json restoreAndRemove(const std::filesystem::path& packageDir,
+    const std::optional<std::filesystem::path>& gameRoot, const ApplyControl& control) {
+    return guard([&]() -> Json {
+        {
+            Root package(packageDir);
+            const DirectoryLock lock(package.ids.back());
+            if (!validateRemoval(package, true)) {
+                detachPackage(package);
+                return {{"restored", false}, {"removed", true}};
+            }
+        }
+        if (!gameRoot) throw Error("INVALID_REQUEST", "已应用的成品包需要 gamePath 才能恢复并删除");
+        Transaction tx(packageDir, *gameRoot);
+        const bool applied = validateRemoval(tx.package, true);
+        if (applied) restoreLocked(tx, std::nullopt, control, true);
+        tx.receipts = Handle();
+        detachPackage(tx.package);
+        return {{"restored", applied}, {"removed", true}};
+    });
+}
+
+std::optional<uint64_t> packageBytes(const std::filesystem::path& packageDir) {
+    return guard([&]() -> std::optional<uint64_t> {
+        if (!directoryExists(packageDir)) return std::nullopt;
+        const Root package(packageDir);
+        const auto manifest = openSource(package.path, manifestName, true);
+        if (!manifest) throw Error("INVALID_MANIFEST", "成品包缺少 manifest.json");
+        auto bytes = length(manifest, package.path / manifestName);
+        auto add = [&](const Path& name) {
+            const auto file = openSource(package.path, name);
+            bytes += length(file, package.path / name);
+        };
+        for (const auto folder : {payloadDir, receiptDir})
+            if (directoryExists(package.path / folder)) walk(package.path, folder, add);
+        return bytes;
     });
 }
 
@@ -949,12 +1109,14 @@ namespace {
 [[noreturn]] void unsupported() { throw Error("UNSUPPORTED_PLATFORM", "成品包事务需要 Windows"); }
 }
 
-void apply(const std::filesystem::path&, const std::filesystem::path&, const ApplyControl&) { unsupported(); }
-nlohmann::json restore(const std::filesystem::path&, const std::filesystem::path&, const RestoreKinds&) { unsupported(); }
-Recovery recover(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
+nlohmann::json apply(const std::filesystem::path&, const std::filesystem::path&, const ApplyControl&) { unsupported(); }
+nlohmann::json restore(const std::filesystem::path&, const std::filesystem::path&, const RestoreKinds&, const ApplyControl&) { unsupported(); }
+Recovery recover(const std::filesystem::path&, const std::filesystem::path&, const ApplyControl&) { unsupported(); }
 void checkApply(const std::filesystem::path&, const std::filesystem::path&) { unsupported(); }
 PackageStatus inspect(const std::filesystem::path&, const std::filesystem::path&, const RestoreKinds&) { unsupported(); }
 void remove(const std::filesystem::path&) { unsupported(); }
+nlohmann::json restoreAndRemove(const std::filesystem::path&, const std::optional<std::filesystem::path>&, const ApplyControl&) { unsupported(); }
+std::optional<uint64_t> packageBytes(const std::filesystem::path&) { unsupported(); }
 
 } // namespace gameimageexport::transaction
 
