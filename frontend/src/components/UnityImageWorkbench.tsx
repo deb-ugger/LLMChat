@@ -5,7 +5,7 @@ import { SearchHighlight, SearchTextarea } from "./SearchHighlight";
 import { GameStyleRedrawButton } from "./StyleRedraw";
 import { gameImageRedrawScreening, gameImageRedrawSelected, gameImageRedrawStatus } from "../gameImagePlacement";
 import { GamePageNumber } from "./GamePageNumber";
-import { allGameImageFilters, gameImageFilterMatch, GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
+import { allGameImageFilters, focusGameImagePreview, gameImageFilterMatch, GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImagePreviewFrame, GameImageSplit } from "./GameImageBrowserLayout";
 import { GameImageViewer, type GameImageView, type GameImageViews } from "./GameImageViewer";
 import { gameImageJapaneseTextIssue } from "../gameDisplayText";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
@@ -458,14 +458,14 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
     errorIndex.sections.some(({ rows }) => rows.some(row => row.id === selectedFailure.id && row.detail === selectedFailure.detail))
     ? selectedFailure.detail : "";
   const listRef = useRef<HTMLDivElement>(null);
-  const [keyboardTarget, setKeyboardTarget] = useState<string>();
+  const [keyboardTarget, setKeyboardTarget] = useState<{ id: string }>();
   const [listTarget, setListTarget] = useState<string>();
   const selectListRow = (group: string, index: number, focus: boolean) => {
     const item = groups[group].items[index];
     if (!item) return;
     setGroupPages(previous => ({ ...previous, [group]: Math.floor(index / imageListPageSize) }));
     selectImage(item.id);
-    if (focus) setKeyboardTarget(item.id);
+    if (focus) setKeyboardTarget({ id: item.id });
   };
   useEffect(() => {
     const target = listTarget;
@@ -488,54 +488,59 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
     setCollapsed(previous => ({ ...previous, [group]: false }));
     selectListRow(group, groups[group].items.findIndex(matches), true);
   }, [active, listTarget, images, groups, deferredSearch, imageFilters]);
-  function stepImageList(id: string | undefined, direction: -1 | 1, focus: boolean) {
-    const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
-    if (!expanded.length) return false;
-    const matches = (row: UnityImage) => row.id === id;
-    const current = expanded.findIndex(([group]) => groups[group].items.some(matches));
-    if (current < 0) {
-      selectListRow(expanded[0][0], 0, focus);
-      return true;
-    }
-    const [group] = expanded[current];
-    const items = groups[group].items;
-    const next = items.findIndex(matches) + direction;
-    if (next >= 0 && next < items.length) {
-      selectListRow(group, next, focus);
-      return true;
-    }
-    const adjacent = expanded[current + direction]?.[0];
-    if (!adjacent) return false;
-    selectListRow(adjacent, direction > 0 ? 0 : groups[adjacent].items.length - 1, focus);
-    return true;
-  }
-
   const navigateImageList = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const eventTarget = event.target as HTMLElement;
-    if (eventTarget.matches("input[type=text]") || eventTarget.closest(".unity-image-error-index, [data-output-index]")) return;
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-image-row]");
-    const id = focused?.dataset.imageRow || image?.id;
-    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      if (stepImageList(id, event.key === "ArrowDown" ? 1 : -1, true)) event.preventDefault();
+    const target = event.target as Element;
+    if (target.closest("input:not([type=checkbox]), select, textarea, [contenteditable], .unity-image-error-index, [data-output-index]")) return;
+
+    const vertical = event.key === "ArrowUp" || event.key === "ArrowDown";
+    const direction = event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1;
+    const summary = target.closest<HTMLElement>("details[data-image-group] > summary");
+    if (summary) {
+      event.preventDefault();
+      if (vertical) {
+        const headings = Array.from(listRef.current!.querySelectorAll<HTMLElement>("details[data-image-group] > summary"));
+        headings[Math.max(0, Math.min(headings.length - 1, headings.indexOf(summary) + direction))]?.focus();
+      } else {
+        const group = summary.parentElement!.dataset.imageGroup!;
+        setCollapsed(previous => ({ ...previous, [group]: direction < 0 }));
+      }
       return;
     }
+
     const expanded = imageListGroups.filter(([group]) => !collapsed[group] && groups[group].items.length);
     if (!expanded.length) return;
     event.preventDefault();
+    const id = target.closest<HTMLElement>("[data-image-item]")?.dataset.imageItem ?? image?.id;
     const matches = (row: UnityImage) => row.id === id;
     const groupIndex = expanded.findIndex(([group]) => groups[group].items.some(matches));
-    if (groupIndex < 0) { selectListRow(expanded[0][0], 0, true); return; }
+    if (groupIndex < 0) {
+      selectListRow(expanded[0][0], 0, true);
+      return;
+    }
+
     const [group] = expanded[groupIndex];
     const items = groups[group].items;
     const index = items.findIndex(matches);
-    const page = Math.floor(index / imageListPageSize) + (event.key === "ArrowRight" ? 1 : -1);
+    if (vertical) {
+      const next = index + direction;
+      if (next >= 0 && next < items.length) {
+        selectListRow(group, next, true);
+        return;
+      }
+      const adjacent = expanded[groupIndex + direction]?.[0];
+      if (adjacent) selectListRow(adjacent, direction > 0 ? 0 : groups[adjacent].items.length - 1, true);
+      return;
+    }
+
+    const currentPage = Math.min(groupPages[group] || 0, Math.ceil(items.length / imageListPageSize) - 1);
+    const page = currentPage + direction;
     if (page >= 0 && page * imageListPageSize < items.length) selectListRow(group, imagePageIndex(index, page, items.length), true);
   };
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
-    const node = listRef.current?.querySelector<HTMLButtonElement>(`button[data-image-row="${CSS.escape(keyboardTarget)}"]`);
+    const node = listRef.current?.querySelector<HTMLButtonElement>(`button[data-image-row="${CSS.escape(keyboardTarget.id)}"]`);
     node?.focus({ preventScroll: true });
     node?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [keyboardTarget]);
@@ -662,12 +667,12 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
               disabled={disabled || !!archiveBusy || !eligible} checked={eligible > 0 && checked === eligible} ref={node => { if (node) node.indeterminate = checked > 0 && checked < eligible; }}
               onClick={event => event.stopPropagation()} onChange={event => selectImages(items, event.target.checked)} />
           </summary>
-          {visible.map(item => <div key={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${failuresByImage.has(item.id) ? " has-error" : ""}${added.has(item.id) ? " is-added" : ""}`}
+          {visible.map(item => <div key={item.id} data-image-item={item.id} className={`unity-image-item${item.id === image?.id ? " is-selected" : ""}${failuresByImage.has(item.id) ? " has-error" : ""}${added.has(item.id) ? " is-added" : ""}`}
               onContextMenu={event => openRowMenu(event, item.id, item.file, false, added.has(item.id) ? groupHistory.origins.get(item.id)?.group : undefined)}>
         <input type="checkbox" aria-label={(isUnityImageReviewable(item) ? "复筛图片 " : "选择图片 ") + item.name}
           disabled={disabled || !!archiveBusy || !imageWorkSelectable(item)} checked={imageWorkChecked(item) && imageWorkSelectable(item)}
           onChange={event => onChange(setImageWorkChecked(item, event.target.checked))} />
-        <button data-image-row={item.id} onClick={() => selectImage(item.id)}
+        <button data-image-row={item.id} aria-current={item.id === image?.id || undefined} onClick={() => selectImage(item.id)}
           data-tooltip={[item.name, item.file !== item.name ? item.file : "", imageListStatus(item, failuresByImage.get(item.id))].filter(Boolean).join("\n")}
           aria-label={item.file || item.name}>
           <strong><SearchHighlight text={item.name} query={deferredSearch} /></strong>
@@ -683,7 +688,7 @@ export function UnityImageWorkbench({ project, redrawingId, initialScreeningComp
           onMenu={(event, id) => openRowMenu(event, id, undefined, true)} />)}
       </details>}</>}>
       {!focusedDetail && !filtered.length && <div className="unity-offline-empty">没有符合筛选条件的图片。</div>}
-      {image && <div className="unity-image-detail" tabIndex={0} aria-label="当前图片详情" onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="a"){event.preventDefault();event.stopPropagation();setSelectedRegions(new Set(image.regions.map((_,index)=>index)));setActiveRegion(-1);}if(event.key==="Escape")setRegionMenu(null);}} onContextMenu={event=>{event.preventDefault();event.stopPropagation();setRegionMenu({...getFixedMenuPoint(event.clientX, event.clientY, 190, 90)});}}>
+      {image && <div className="unity-image-detail" tabIndex={0} data-game-image-preview-pane="" onPointerDown={focusGameImagePreview} aria-label="当前图片详情" onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="a"){event.preventDefault();event.stopPropagation();setSelectedRegions(new Set(image.regions.map((_,index)=>index)));setActiveRegion(-1);}if(event.key==="Escape")setRegionMenu(null);}} onContextMenu={event=>{event.preventDefault();event.stopPropagation();setRegionMenu({...getFixedMenuPoint(event.clientX, event.clientY, 190, 90)});}}>
         <div className="unity-image-actions">{focusedDetail && <button className="unity-btn unity-image-back" aria-label="返回缩略图位置" data-tooltip="返回原来的缩略图位置" onClick={() => requestView(()=>setGallery(true))}>←</button>}<strong data-tooltip={image.file}><SearchHighlight text={image.name} query={deferredSearch} />{deferredSearch && image.file.toLowerCase().includes(deferredSearch) && <small className="search-matched-field"><SearchHighlight text={image.file} query={deferredSearch} /></small>}</strong><div className="unity-image-button-group">
           {image.screening && image.sourceFile && (!image.completed || image.ocrCompleted) && <select aria-label="移动图片到分组" disabled={disabled || !!archiveBusy}
             data-tooltip="移动图片到指定分组并保留已有识字结果"
