@@ -1,10 +1,9 @@
 #include "LlmClient.h"
-#include "CancellableWinHttp.h"
+#include "http/HttpTransport.h"
 #include "RequestCancellation.h"
 
 #ifdef _WIN32
 #include <windows.h>
-#include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
 #endif
 
@@ -97,58 +96,17 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         return result;
     }
 
-    HINTERNET session = WinHttpOpen(
-        L"LLMChatBackend/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        WINHTTP_FLAG_ASYNC);
-    if (!session)
-    {
-        result.error = "WinHttpOpen failed";
-        return result;
-    }
-
-    if (readOnly) WinHttpSetTimeouts(session, 1000, 1000, 2000, 2000);
-    else WinHttpSetTimeouts(session, 5000, 10000, 30000, 300000);
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
-    if (!connect)
-    {
-        WinHttpCloseHandle(session);
-        result.error = "WinHttpConnect failed";
-        return result;
-    }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET request = WinHttpOpenRequest(
-        connect,
-        readOnly ? L"GET" : L"POST",
-        path.c_str(),
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags);
-    if (!request)
-    {
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        result.error = "WinHttpOpenRequest failed";
-        return result;
-    }
-
-    CancellableWinHttp operation(request);
+    std::optional<http_transport::Proxy> requestProxy;
     if (proxyMode == "direct" || proxyMode == "custom") {
         if (proxy.rfind("http://", 0) == 0) proxy.erase(0, 7);
         else if (proxy.rfind("https://", 0) == 0) proxy.erase(0, 8);
-        const auto wideProxy = toWide(proxy);
-        WINHTTP_PROXY_INFO info{};
-        info.dwAccessType = proxyMode == "direct" ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_NAMED_PROXY;
-        info.lpszProxy = proxyMode == "direct" ? nullptr : const_cast<wchar_t*>(wideProxy.c_str());
-        if ((proxyMode == "custom" && proxy.empty()) || !WinHttpSetOption(request, WINHTTP_OPTION_PROXY, &info, sizeof(info))) {
+        if (proxyMode == "custom" && proxy.empty()) {
             result.error = "网络代理配置无效";
-            operation.close(); WinHttpCloseHandle(connect); WinHttpCloseHandle(session);
             return result;
         }
+        const DWORD access = proxyMode == "direct" ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+        requestProxy = http_transport::Proxy{access,
+            proxyMode == "direct" ? std::wstring{} : toWide(proxy)};
     }
     std::wstring headers = L"Content-Type: application/json\r\n";
     if (!bearer.empty())
@@ -156,66 +114,40 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
         headers += L"Authorization: Bearer " + toWide(bearer) + L"\r\n";
     }
 
-    result.externalCall = true;
-    const bool sent = operation.send(headers.c_str(), body.empty() ? nullptr : (LPVOID)body.data(), static_cast<DWORD>(body.size()));
-
-    if (!sent || !operation.receive())
+    const auto timeouts = readOnly ? http_transport::Timeouts{1000, 1000, 2000, 2000}
+        : http_transport::Timeouts{5000, 10000, 30000, 300000};
+    const http_transport::Request request{{host, port, https},
+        {L"LLMChatBackend/1.0", {WINHTTP_ACCESS_TYPE_DEFAULT_PROXY}, timeouts},
+        readOnly ? L"GET" : L"POST", path, headers, body, requestProxy,
+    };
+    const auto cancellation = request_cancel::current ? request_cancel::current : std::make_shared<request_cancel::State>();
+    std::string responseBody;
+    const auto response = http_transport::perform(request, {
+        {}, [&](std::string_view bytes) { responseBody.append(bytes); return true; },
+    }, {{}, &cancellation->cancelled, cancellation->deadline});
+    result.externalCall = response.attemptedSend;
+    using http_transport::Stage;
+    if (response.failure && response.failure->stage != Stage::read)
     {
-        const auto error = GetLastError();
-        const bool loopback = host == L"127.0.0.1" || host == L"localhost" || host == L"::1" || host == L"[::1]";
-        if (error == ERROR_WINHTTP_CANNOT_CONNECT && loopback)
-        {
-            const auto address = host == L"::1" ? "[::1]" : toUtf8(host);
-            result.error = "无法连接本地模型服务 " + std::string(address) + ":" + std::to_string(port) +
-                "。请启动所选模型的服务（Ollama 可在「设置 → 通用 → 本地大模型」开启），再继续。";
-            result.errorCode = "LLM_LOCAL_CONNECTION_FAILED";
-        }
-        else
-        {
-            result.error = std::string(sent ? "HTTP receive failed" : "HTTP send failed") +
+        const auto [stage, error] = *response.failure;
+        if (stage == Stage::session) result.error = "WinHttpOpen failed";
+        else if (stage == Stage::connection) result.error = "WinHttpConnect failed";
+        else if (stage == Stage::request) result.error = "WinHttpOpenRequest failed";
+        else if (stage == Stage::options) result.error = "网络代理配置无效";
+        else {
+            const bool loopback = host == L"127.0.0.1" || host == L"localhost" || host == L"::1" || host == L"[::1]";
+            if (error == ERROR_WINHTTP_CANNOT_CONNECT && loopback) {
+                const auto address = host == L"::1" ? "[::1]" : toUtf8(host);
+                result.error = "无法连接本地模型服务 " + std::string(address) + ":" + std::to_string(port) +
+                    "。请启动所选模型的服务（Ollama 可在「设置 → 通用 → 本地大模型」开启），再继续。";
+                result.errorCode = "LLM_LOCAL_CONNECTION_FAILED";
+            } else result.error = std::string(stage == Stage::receive ? "HTTP receive failed" : "HTTP send failed") +
                 " (WinHTTP " + std::to_string(error) + ")";
         }
-        operation.close();
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
         return result;
     }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(
-        request,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        &status,
-        &statusSize,
-        WINHTTP_NO_HEADER_INDEX);
+    const DWORD status = response.status;
     result.statusCode = static_cast<int>(status);
-
-    std::string responseBody;
-    for (;;)
-    {
-        DWORD available = 0;
-        if (!operation.available(available))
-        {
-            break;
-        }
-        if (available == 0)
-        {
-            break;
-        }
-        std::vector<char> buffer(available);
-        DWORD read = 0;
-        if (!operation.read(buffer.data(), available, read))
-        {
-            break;
-        }
-        responseBody.append(buffer.data(), read);
-    }
-
-    operation.close();
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
 
     if (status < 200 || status >= 300)
     {
@@ -639,7 +571,6 @@ LlmListModelsResponse LlmClient::listModels(const LlmListModelsRequest& request)
     }
 
     DWORD accessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
-    LPCWSTR proxyName = WINHTTP_NO_PROXY_NAME;
     std::wstring proxyBuf;
     const std::string mode = toLower(request.proxyMode.empty() ? "auto" : request.proxyMode);
     if (mode == "direct" || mode == "none" || mode == "off")
@@ -650,111 +581,37 @@ LlmListModelsResponse LlmClient::listModels(const LlmListModelsRequest& request)
     {
         accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
         proxyBuf = normalizeProxyList(request.httpProxy);
-        proxyName = proxyBuf.c_str();
     }
     else
     {
         accessType = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
     }
 
-    HINTERNET session = WinHttpOpen(
-        L"LLMChatBackend/1.0",
-        accessType,
-        proxyName,
-        WINHTTP_NO_PROXY_BYPASS,
-        0);
-    if (!session && accessType == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)
-    {
-        session = WinHttpOpen(
-            L"LLMChatBackend/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS,
-            0);
-    }
-    if (!session)
-    {
-        result.error = "无法初始化网络组件";
-        return result;
-    }
-
-    WinHttpSetTimeouts(session, 5000, 5000, 15000, 15000);
-
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
-    if (!connect)
-    {
-        WinHttpCloseHandle(session);
-        result.error = "无法连接服务器";
-        return result;
-    }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET req = WinHttpOpenRequest(
-        connect,
-        L"GET",
-        path.c_str(),
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags);
-    if (!req)
-    {
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        result.error = "无法创建请求";
-        return result;
-    }
-
     std::wstring headers = L"Accept: application/json\r\n";
     if (!request.apiKey.empty())
         headers += L"Authorization: Bearer " + toWide(request.apiKey) + L"\r\n";
 
-    result.externalCall = true;
-    const BOOL sent = WinHttpSendRequest(
-        req,
-        headers.c_str(),
-        static_cast<DWORD>(-1),
-        WINHTTP_NO_REQUEST_DATA,
-        0,
-        0,
-        0);
-
-    if (!sent || !WinHttpReceiveResponse(req, nullptr))
+    const http_transport::Request outgoing{{host, port, https},
+        {L"LLMChatBackend/1.0", {accessType, proxyBuf}, {5000, 5000, 15000, 15000}, true},
+        L"GET", path, headers,
+    };
+    std::string responseBody;
+    const auto response = http_transport::perform(outgoing, {
+        {}, [&](std::string_view bytes) { responseBody.append(bytes); return true; },
+    });
+    result.externalCall = response.attemptedSend;
+    using http_transport::Stage;
+    if (response.failure && response.failure->stage != Stage::read)
     {
-        result.error = "HTTP 请求失败（请检查网络或代理）";
-        WinHttpCloseHandle(req);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        const auto stage = response.failure->stage;
+        if (stage == Stage::session) result.error = "无法初始化网络组件";
+        else if (stage == Stage::connection) result.error = "无法连接服务器";
+        else if (stage == Stage::request) result.error = "无法创建请求";
+        else result.error = "HTTP 请求失败（请检查网络或代理）";
         return result;
     }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(
-        req,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        &status,
-        &statusSize,
-        WINHTTP_NO_HEADER_INDEX);
+    const DWORD status = response.status;
     result.statusCode = static_cast<int>(status);
-
-    std::string responseBody;
-    for (;;)
-    {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(req, &available) || available == 0)
-            break;
-        std::vector<char> buffer(available);
-        DWORD read = 0;
-        if (!WinHttpReadData(req, buffer.data(), available, &read))
-            break;
-        responseBody.append(buffer.data(), read);
-    }
-
-    WinHttpCloseHandle(req);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
 
     if (status < 200 || status >= 300)
     {
