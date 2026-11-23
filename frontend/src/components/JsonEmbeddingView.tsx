@@ -25,7 +25,7 @@ import { gameDropTarget } from "../hooks/useGameFileDrop";
 import { GameTextWorkspace, type GameTextHandle, type GameTextInfo } from "./GameTextWorkspace";
 import { UnityGameWorkspace } from "./UnityGameWorkspace";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { DeploymentCanvas, DeploymentThroughput, ImageExportPackagePanel, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
+import { DeploymentCanvas, DeploymentThroughput, ImageExportPackageSection, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
   type DeploymentStep as CanvasStep, type DeploymentPhase as CanvasPhase, type DeploymentModel } from "./UnityDeploymentPanel";
 import { GameImageWorkbench, type GameImageInfo, type GameImageHandle } from "./GameImageWorkbench";
 import { createPortal } from "react-dom";
@@ -74,6 +74,7 @@ const deploymentLabels = {
   applyText: "应用文本补丁",
   applyImages: "应用译图",
   applyMosaic: "应用去码图",
+  applyImagePackage: "生成并应用图片成品包",
   uninstallImages: "卸载译图",
   uninstallMosaic: "卸载去码图",
 };
@@ -162,6 +163,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [part,setPart]=useState<"text"|"images"|"mosaic">(savedStage.step >= 3 ? "text" : savedStage.part);
   const [mosaicBusy,setMosaicBusy]=useState(false);
   const [mosaicComplete,setMosaicComplete]=useState(false);
+  const [packageMosaicIds, setPackageMosaicIds] = useState<string[]>([]);
+  const updatePackageMosaicIds = useCallback((ids: string[]) => {
+    setPackageMosaicIds(previous => previous.length === ids.length && previous.every((id, index) => id === ids[index]) ? previous : ids);
+  }, []);
   useEffect(() => { rememberGameStage(game.path,textStep,part==="mosaic"?"images":part); }, [game.path,textStep,part]);
   const [imageWorkflow,setImageWorkflow]=useState<GameImageInfo>({state:"idle",stage:"filter",complete:false,count:null,folder:"",exists:null,loaded:false,selected:0,valid:0});
   const [textFailures, setTextFailures] = useState<BatchRow[]>([]);
@@ -541,6 +546,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       }
       let imageIds: string[] = [];
       let mosaicDraft: ImageArtifact | undefined;
+      let mosaicIds: string[] = [];
       for (const phase of deploymentSequence(plan)) {
         signal.throwIfAborted();
         if (phase === "text" && !workflowRef.current.textSkipped) {
@@ -552,7 +558,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           if (!await step("translateImages", () => imageHandle.current!.automatic(signal)))
             throw new Error("图片翻译未完成，请检查失败图片");
           imageIds = imageHandle.current!.outputIds();
-          recordImageArtifact("images", imageIds);
+          if (!imageExport) recordImageArtifact("images", imageIds);
         } else if (phase === "mosaic") {
           await step("generateMosaic", async () => {
             if (!imageHandle.current) throw new Error("图片工程尚未加载");
@@ -560,17 +566,29 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             await deploymentPoll();
             signal.throwIfAborted();
             if (!mosaicHandle.current) throw new Error("去码工程尚未加载");
-            const ids = await mosaicHandle.current.automatic(signal);
-            if (ids.length) mosaicDraft = await prepareMosaic(signal, ids);
+            mosaicIds = await mosaicHandle.current.automatic(signal);
+            if (mosaicIds.length && !imageExport) mosaicDraft = await prepareMosaic(signal, mosaicIds);
           });
         } else if (phase === "apply") {
           if (followAutomatic.current) { setPart("text"); setTextStep(3); }
           const text = latestWorkflow.current.text;
           const translated = canUseTextResources && !plan.disabled.includes("text") && (text.changed > 0 || text.positionRepairs) ? await generateText(step, signal) : "";
           if (translated) await step("applyText", () => applyText(signal, translated));
-          if (imageIds.length) await step("applyImages", () => applyImageArtifacts("images", imageIds));
-          const mosaic = mosaicDraft;
-          if (mosaic) await step("applyMosaic", () => applyImageArtifacts("mosaic", mosaic.ids, mosaic));
+          if (imageExport) {
+            const selected = new Set([...imageIds, ...mosaicIds]);
+            if (selected.size) await step("applyImagePackage", async () => {
+              const translations = new Set(imageIds);
+              const candidates = (imageHandle.current?.exportCandidates() ?? []).filter(row => selected.has(row.imageId))
+                .map(row => translations.has(row.imageId) ? { ...row, renderedHash: row.renderedHash ?? "" } : { ...row, renderedHash: undefined });
+              if (candidates.length !== selected.size) throw new Error("部分图片不支持成品包导出，请检查游戏图片来源。");
+              if (await exportPackage.deploy(candidates, mosaicIds, signal))
+                appendLog("图片已通过成品包应用，收据已保存", "success");
+            });
+          } else {
+            if (imageIds.length) await step("applyImages", () => applyImageArtifacts("images", imageIds));
+            const mosaic = mosaicDraft;
+            if (mosaic) await step("applyMosaic", () => applyImageArtifacts("mosaic", mosaic.ids, mosaic));
+          }
           signal.throwIfAborted();
           if (launchAfterApply) await launchGame();
         }
@@ -618,10 +636,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const generateImages = () => void runDeployment("manual", (step, signal) => step("generateImages", async () => {
     const ids = await measureDeploymentStage(game.path, "generateImages", async () => await imageHandle.current?.generate(signal) || []);
     if (!ids.length) throw new Error("没有可用于部署的译图");
-    recordImageArtifact("images", ids);
+    if (!imageExport) recordImageArtifact("images", ids);
   }));
   const generateMosaic = () => {
-    if (!mosaicHandle.current?.selectedIds().length) { selectWorkflow("2.3"); return; }
+    if (imageExport || !mosaicHandle.current?.selectedIds().length) { selectWorkflow("2.3"); return; }
     void runDeployment("manual", async (step, signal) => { await step("generateMosaic", () => prepareMosaic(signal)); });
   };
   const applyTextPatch = async () => {
@@ -729,11 +747,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     patch.installed ? "文本补丁已安装" : patch.legacy ? "发现旧版文本补丁" : patch.managed ? "文本补丁已卸载" : "未安装文本补丁";
   const products = [
     artifacts.text && { name: "文本补丁", applied: artifacts.text.applied },
-    artifacts.images && { name: `${artifacts.images.ids.length} 张译图`, applied: artifacts.images.applied },
-    artifacts.mosaic && { name: `${artifacts.mosaic.ids.length} 张去码图`, applied: artifacts.mosaic.applied },
+    !imageExport && artifacts.images ? { name: `${artifacts.images.ids.length} 张译图`, applied: artifacts.images.applied } : undefined,
+    !imageExport && artifacts.mosaic ? { name: `${artifacts.mosaic.ids.length} 张去码图`, applied: artifacts.mosaic.applied } : undefined,
   ].filter(product => product !== undefined);
   const stagedProducts = products.filter(product => !product.applied).map(product => product.name).join("、");
-  const appliedProducts = products.filter(product => product.applied).map(product => product.name).join("、");
   const phaseLabel = deployment?.phase === "translate" && !imageProject ? "文本翻译"
     : deployment?.phase ? deploymentLabels[deployment.phase] : "一键流程";
   const phaseStatus = deployment?.state === "running" ? `正在${phaseLabel}`
@@ -743,51 +760,63 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const exportLocked = otherWorkflowBusy || mosaicBusy || testing;
   const exportPackage = useGameImageExportPackage({
     gamePath: game.path, active: active && imageExport && part === "text" && textStep === 3,
-    locked: exportLocked, candidates: imageWorkflow.exportCandidates ?? [], mosaicIds: mosaicHandle.current?.selectedIds() ?? [],
-    onBusyChange: setExportBusy, confirm, launch: () => void launchGame(),
+    locked: exportLocked, candidates: imageWorkflow.exportCandidates ?? [], mosaicIds: packageMosaicIds,
+    onBusyChange: setExportBusy, confirm, legacyRevision: status.state,
   });
+  const exportState = exportPackage.model;
+  const imagePackageApplied = exportState.applied && !exportState.partiallyRestored && !exportState.needsRecovery;
+  const pendingImagePackage = exportState.needsRecovery || exportState.partiallyRestored ||
+    !imagePackageApplied && !!(exportState.path || exportState.confirmed || exportState.needsConfirmation || exportState.legacyInstalled);
+  const readyToLaunch = !imageExport || !canApplyText && !pendingImagePackage;
+  const installState = exportState.needsRecovery ? "需恢复" : exportState.partiallyRestored || exportState.used && !exportState.applied && patch.installed ? "部分恢复"
+    : patch.installed || exportState.applied || !imageExport && (artifacts.images?.applied || artifacts.mosaic?.applied) ? "已应用" : "未安装";
   const deploymentPanel = <div className="embed-deployment">
     <section className="embed-deploy-main" aria-label="生成与应用">
       <div className="dpl dpl-grid embed-product-grid">
         {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div></section>}
         {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div></section>}
-        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>生成去码图</button></div></section>}
-        {imageExport && <ImageExportPackagePanel model={{ locked: exportLocked || exportBusy, exportPackage: exportPackage.model }} actions={exportPackage.actions} />}
-        <section className="dpl-panel" aria-label="应用到游戏"><div className="dpl-panel-head"><h3>应用到游戏</h3></div>
-      <div className="embed-deploy-status" role="status">
-        {stagedProducts && <strong>已生成，未应用 · {stagedProducts}</strong>}
-        {appliedProducts && <strong className="is-installed">已应用 · {appliedProducts}</strong>}
-        {(canUseTextResources || imageProject) && !stagedProducts && !appliedProducts && <span>本次尚无部署产物</span>}
-        {artifacts.mosaic?.path && <button type="button" className="unity-btn" onClick={() => void api.revealPath(artifacts.mosaic!.path!)}>去码补丁目录</button>}
-        {phaseStatus && <span className={deployment?.state === "error" ? "is-warning" : undefined}>{phaseStatus}</span>}
-        {deploymentRunning && automatic !== "running" && <button type="button" className="unity-btn" onClick={stopDeployment}>中止</button>}
-        <strong className={patch.conflicts.length ? "is-warning" : patch.installed ? "is-installed" : ""}>{patchStatus}</strong>
-        {patch.conflicts.length ? <span>请先处理文件冲突，再更新或卸载。</span> :
-          patch.installed ? <span>可以直接启动游戏，或生成新补丁后更新。</span> :
-          patch.legacy ? <span>检测补丁后可接管现有安装。</span> : null}
-      </div>
-      <div className="embed-deploy-launch">
-        <button type="button" className="unity-btn unity-btn-primary" disabled={busy || !game.supported} onClick={() => void launchGame()}>{launching ? "正在启动…" : "启动游戏"}</button>
-        {canUseTextResources && <label><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
-          const value = event.target.checked;
-          setLaunchAfterApply(value);
-          localStorage.setItem(launchPreference, String(value));
-        }} />应用后启动</label>}
-      </div>
-      <div className="embed-deploy-actions" role="group" aria-label="应用">
-        <strong>应用</strong>
-        {canUseTextResources && <button type="button" className="unity-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>}
-        {imageProject && <button type="button" className="unity-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>}
-        {selfMosaic && <button type="button" className="unity-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length} title={testTitle} onClick={() => void applyMosaic()}>应用去码图</button>}
-        <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
-        <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-        {imageProject && <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
-          if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
-          setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
-        }))} />}
-        {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
-        <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
-      </div>
+        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={!imageExport && mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>{imageExport ? "查看去码图" : "生成去码图"}</button></div></section>}
+        <section className="dpl-panel dpl-panel-apply" aria-label="应用到游戏">
+          <div className="dpl-panel-head">
+            <h4>应用到游戏</h4>
+            <span className={`dpl-tag${installState === "已应用" ? " is-ok" : ""}`}>{installState}</span>
+          </div>
+          <div className="dpl-path" title={game.path}>{game.path || "尚未选择游戏目录"}</div>
+          {imageExport && <ImageExportPackageSection state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />}
+          {canUseTextResources && <div className="dpl-plan">
+            <p>文本与字体</p>
+            <div className="dpl-actions">
+              <button type="button" className="dpl-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>
+              <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
+              <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
+              <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
+            </div>
+            <p className="dpl-hint">{patchStatus}{patch.conflicts.length ? "，请先处理文件冲突。" : ""}</p>
+          </div>}
+          {!imageExport && imageProject && <div className="dpl-plan">
+            <p>图片补丁</p>
+            <div className="dpl-actions">
+              <button type="button" className="dpl-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>
+              {selfMosaic && <button type="button" className="dpl-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length} title={testTitle} onClick={() => void applyMosaic()}>应用去码图</button>}
+              <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
+                if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
+                setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
+              }))} />
+              {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
+            </div>
+            {artifacts.mosaic?.path && <button type="button" className="dpl-btn" onClick={() => void api.revealPath(artifacts.mosaic!.path!)}>去码补丁目录</button>}
+          </div>}
+          {thirdPartyMosaic && <div className="dpl-mosaic"><span>第三方去码补丁</span><GameMosaicPatchButton gamePath={game.path} disabled={busy} /></div>}
+          {phaseStatus && <p className={deployment?.state === "error" ? "dpl-hint is-warning" : "dpl-hint"} role="status">{phaseStatus}</p>}
+          {deploymentRunning && automatic !== "running" && <button className="dpl-btn" type="button" onClick={stopDeployment}>中止</button>}
+          <div className="embed-deploy-launch">
+            <button type="button" className="dpl-btn dpl-btn-primary" disabled={busy || !game.supported || !readyToLaunch} onClick={() => void launchGame()}>{launching ? "正在启动…" : "启动游戏"}</button>
+            {canUseTextResources && <label><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
+              const value = event.target.checked;
+              setLaunchAfterApply(value);
+              localStorage.setItem(launchPreference, String(value));
+            }} />应用后启动</label>}
+          </div>
         </section></div>
     </section>
     {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running">
@@ -888,14 +917,17 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const { enabledSteps } = validation;
   const enabledArtifacts = [
     enabledSteps.includes("text") ? artifacts.text : undefined,
-    enabledSteps.includes("image") && !workflow.imagesSkipped ? artifacts.images : undefined,
-    enabledSteps.includes("mosaic") ? artifacts.mosaic : undefined,
+    !imageExport && enabledSteps.includes("image") && !workflow.imagesSkipped ? artifacts.images : undefined,
+    !imageExport && enabledSteps.includes("mosaic") ? artifacts.mosaic : undefined,
   ];
+  const enabledImageIds = enabledSteps.includes("image") && !workflow.imagesSkipped ? imageHandle.current?.outputIds() ?? [] : [];
+  const enabledMosaicIds = enabledSteps.includes("mosaic") ? mosaicHandle.current?.selectedIds() ?? [] : [];
   const outputsApplied = (!enabledSteps.includes("text") || !(textInfo.changed || textInfo.positionRepairs) || !!artifacts.text?.applied) &&
-    (!enabledSteps.includes("image") || workflow.imagesSkipped || appliedIds(artifacts.images, imageHandle.current?.outputIds() ?? [])) &&
-    (!enabledSteps.includes("mosaic") || appliedIds(artifacts.mosaic, mosaicHandle.current?.selectedIds() ?? []));
+    (imageExport ? !(enabledImageIds.length || enabledMosaicIds.length) || imagePackageApplied
+      : (!enabledSteps.includes("image") || workflow.imagesSkipped || appliedIds(artifacts.images, enabledImageIds)) &&
+        (!enabledSteps.includes("mosaic") || appliedIds(artifacts.mosaic, enabledMosaicIds)));
   const applied = isGameDeploymentComplete(enabledSteps, completed, {
-    applied: outputsApplied && (enabledArtifacts.some(artifact => artifact?.applied) || automatic === "done"),
+    applied: outputsApplied && !pendingImagePackage && (imagePackageApplied || enabledArtifacts.some(artifact => artifact?.applied) || automatic === "done"),
     blocked: enabledArtifacts.some(artifact => artifact && !artifact.applied) || !!patch.conflicts.length || !!validation.issues.length || textInfo.dirty ||
       textUnfinished || imageUnfinished || mosaicBusy || imageBusy || textBusy || pending || status.state === "running" ||
       deploymentRunning || deployment?.state === "stopped" || deployment?.state === "error",
@@ -910,7 +942,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const canvas: DeploymentModel = {
     root: game.path, supportedPhases, plan, run, metrics: deploymentMetrics(game.path), stoppedStep: deployment?.state === "stopped" ? activeCanvasStep ?? null : null,
     completed, canStop: deploymentRunning, textCount: textInfo.changed, busyLabel: deploymentRunning ? phaseLabel : null,
-    locked: busy || !(canUseTextResources || imageProject), patchReady: canGenerate, patch: null, staged: !!stagedProducts, applied,
+    locked: busy || !(canUseTextResources || imageProject), patchReady: canGenerate, patch: null, staged: !!stagedProducts || !!exportState.path && !exportState.used, applied,
     installed: patch.installed, fontPath, fontName: "", extraCharacters: "", fontPlan: null, entries: [],
     images: { total: imageWorkflow.count ?? 0, ready: imageWorkflow.valid },
     mosaic: { enabled: selfMosaic, count: mosaicHandle.current?.selectedIds().length ?? 0 },
@@ -954,7 +986,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" onClick={() => {
       const input = textHandle.current?.benchmark?.();
       if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), mosaicRoot: selfMosaic ? game.path : undefined, initialPart: part === "mosaic" ? "mosaic" : part === "images" ? "images" : "text" });
-    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
+    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && !deploymentPage && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
 
       <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">
@@ -999,7 +1031,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {textStep===3&&imageProject&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
         </div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} batchResults={textBatch} visible={part==="text"} step={textStep} active={active} disabled={mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {imageProject&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench mosaicDeployment={selfMosaic ? mosaicHandle : undefined} mosaicActive={active&&selfMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
+      {imageProject&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench packageOnly={imageExport} onPackageMosaicSelection={imageExport ? updatePackageMosaicIds : undefined} mosaicDeployment={selfMosaic ? mosaicHandle : undefined} mosaicActive={active&&selfMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
 
     </main>
 

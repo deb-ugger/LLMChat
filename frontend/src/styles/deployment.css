@@ -407,25 +407,6 @@
 
 .dpl-mosaic { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-caption); }
 
-/* 五个面板（多一个「图片成品包」）：够宽时排一行，中等宽度走 3+2 并让成品包占两格。 */
-@container (min-width: 1500px) {
-  .dpl-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-@container (min-width: 1000px) and (max-width: 1499px) {
-  .dpl-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .dpl-panel-export { grid-column: span 2; }
-}
-
-/* 导航与步骤栏占用空间后，1600px 窗口下仍能容纳五张卡。 */
-@container (min-width: 1440px) {
-  .dpl-grid:has(> .dpl-panel-export) {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    max-width: 2000px;
-    margin-inline: auto;
-  }
-  .dpl-grid > .dpl-panel-export { grid-column: auto; }
-}
-
 @container (max-width: 920px) {
   .dpl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

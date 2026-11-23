@@ -126,6 +126,14 @@ export type GameImageExportApplyRequest = {
 };
 
 export type GameImageExportReceiptLookup = GameImageExportApplyRequest;
+export type GameImageExportKind = GameImageExportFile["kind"];
+export type GameImageExportReceiptState = "applied" | "partiallyRestored" | "restored";
+export type GameImageExportLayerStates = Partial<Record<GameImageExportKind, {
+  state: GameImageExportReceiptState;
+  appliedFiles: number;
+  restoredFiles: number;
+}>>;
+export type GameImageExportRestoreRequest = GameImageExportReceiptLookup & { kinds?: GameImageExportKind[] };
 
 export type GameImageExportGenerateResult = {
   packageId: string;
@@ -141,8 +149,10 @@ export type GameImageExportReceipt = {
   transactionId: string;
   gameRootId: string;
   planSha256: string;
-  state: "applied" | "restored";
+  state: GameImageExportReceiptState;
   files: {
+    kind?: GameImageExportKind;
+    state?: "applied" | "restored";
     relativePath: string;
     backupPath: string;
     before: GameImageExportDigest;
@@ -155,10 +165,12 @@ export type GameImageExportReceiptStatus = {
   applied: boolean;
   canRestore: boolean;
   needsRecovery: boolean;
+  layerRestoreSupported: boolean;
+  layers: GameImageExportLayerStates;
 };
 
 export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied" };
-export type GameImageExportRestoreResult = GameImageExportReceipt & { state: "restored" };
+export type GameImageExportRestoreResult = GameImageExportReceipt & { state: "partiallyRestored" | "restored" };
 
 export type GameImageExportFailure = {
   code: string;
@@ -227,13 +239,15 @@ export const gameImageExportApi = {
     post<GameImageConfirmed>("/confirm", body, signal),
   confirmationStatus: (body: GameImageConfirmationLookup, signal?: AbortSignal) =>
     post<GameImageConfirmationStatus>("/confirmation-status", body, signal),
+  legacyStatus: (gamePath: string, signal?: AbortSignal) =>
+    post<{ installed: boolean }>("/legacy-status", { gamePath }, signal),
   generate: (body: GameImageExportGenerateRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/generate", body, signal),
   status: <Result = GameImageExportResult>(operationId: string, signal?: AbortSignal) =>
     request<GameImageExportOperationStatus<Result>>(operationPath(operationId), { signal }),
   apply: (body: GameImageExportApplyRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/apply", body, signal),
-  restore: (body: GameImageExportReceiptLookup, signal?: AbortSignal) =>
+  restore: (body: GameImageExportRestoreRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/restore", body, signal),
   queryReceipt: (body: GameImageExportReceiptLookup, signal?: AbortSignal) =>
     post<GameImageExportReceiptStatus>("/receipts/query", body, signal),

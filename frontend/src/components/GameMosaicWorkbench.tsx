@@ -248,7 +248,7 @@ function MosaicOriginalGallery({ groups, images, activeId, query, read, checked,
   </section>;
 }
 
-export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle }: Props) {
+export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle, packageOnly = false, onDeploymentSelectionChange }: Props & { packageOnly?: boolean; onDeploymentSelectionChange?: (ids: string[]) => void }) {
   const task = useRef<AbortController | null>(null);
   const onCompletionChange = useContext(GameMosaicCompletionContext);
   const savedKey = mosaicRowsStorageKey(gamePath);
@@ -533,8 +533,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const row = resultFor(rows, image);
       return row.checked && row.saved;
     });
+    const selectedIds = selected.map(image => image.id);
+    onDeploymentSelectionChange?.(selectedIds);
     deploymentHandle.current = {
-      selectedIds: () => selected.map(image => image.id),
+      selectedIds: () => selectedIds,
       automatic: signal => measureDeploymentStage(gamePath, "mosaic", () => runAutomaticMosaic({
         selected, scoped, usable, rows, detectorKey, protect, refine: preferences.refine, model, steps, timingScope: deploymentMetricScope(gamePath, "mosaic"),
       }, signal, {
@@ -1112,7 +1114,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
             {activeRetry && "重试中 · 上次"}{activeFailure}
           </p> : activeResult?.review && <p className="hint">{activeResult.review}</p>}</>}
-        footer={
+        footer={packageOnly ? undefined :
           <div className="unity-image-actions">
             <button className="unity-btn" disabled={testing || actionsDisabled || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
               {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}

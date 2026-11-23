@@ -398,6 +398,11 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
         send(res, 200, export_game::confirmation::status(gameImages, game.path, body));
     })));
 
+    svr.Post("/api/game-image-exports/legacy-status", withCors(exportHandler([](const auto& req, auto& res) {
+        const auto game = locate(Json::parse(req.body), "gamePath");
+        send(res, 200, {{"installed", export_game::legacyPatchInstalled(game.path)}});
+    })));
+
     svr.Post("/api/game-image-exports/generate", withCors(exportHandler([jobs, &gameImages](const auto& req, auto& res) {
         const auto body = Json::parse(req.body);
         const auto game = locate(body, "gamePath");

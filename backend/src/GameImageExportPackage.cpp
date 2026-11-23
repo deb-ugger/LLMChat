@@ -54,6 +54,26 @@ void report(const Control& control, std::string_view phase, size_t done, size_t 
     cancel(control);
 }
 
+bool legacyPatchMatches(const Path& game, const Path& project, const std::string& id,
+    const Path& target, std::optional<std::string_view> current = {}) {
+    std::string targetBytes;
+    for (const auto dir : {"installed", "mosaic-installed", "composed-installed"}) {
+        const auto marker = project / dir / (id + ".bin");
+        const auto installed = openSource(game, marker, true);
+        if (!installed) continue;
+        if (!current) {
+            const auto file = openSource(game, target, true);
+            if (!file) return false;
+            targetBytes = read(file, game / target, maxImageBytes);
+            current = targetBytes;
+        }
+        if (length(installed, game / marker) == current->size() &&
+            read(installed, game / marker, maxImageBytes) == *current)
+            return true;
+    }
+    return false;
+}
+
 struct Selection {
     const ImageSelection* expected;
     const Json* row;
@@ -285,13 +305,8 @@ class PackageGenerator {
             throw Error("INVALID_PATH", "多个目标指向同一个游戏文件：" + selected.name, selected.name);
         const auto current = read(original, game_ / selected.relative, maxImageBytes);
         const auto sourceSha256 = hash(current);
-        for (const auto dir : {"installed", "mosaic-installed", "composed-installed"}) {
-            const auto marker = projectDir_ / dir / (image.imageId + ".bin");
-            const auto installed = openSource(game_, marker, true);
-            if (installed && length(installed, game_ / marker) == current.size() &&
-                read(installed, game_ / marker, maxImageBytes) == current)
-                throw Error("LEGACY_PATCH_ACTIVE", "请先卸载已应用的旧图片补丁：" + selected.name, selected.name);
-        }
+        if (legacyPatchMatches(game_, projectDir_, image.imageId, selected.relative, current))
+            throw Error("LEGACY_PATCH_ACTIVE", "请先卸载已应用的旧图片补丁：" + selected.name, selected.name);
         if (RpgImageProject::stamp(game_ / selected.relative) != image.sourceHash)
             throw Error("INPUT_STALE", "原图已改变，请重新扫描：" + selected.name, selected.name);
         const auto encrypted = gameresourcebackup::imageExtension(selected.relative) != ".png";
@@ -476,6 +491,23 @@ public:
     }
 };
 
+bool legacyPatchInstalled(const std::filesystem::path& gamePath) {
+    const Root game(gamePath);
+    const DirectoryLock lock(game.ids.back());
+    const Path project = "LLMChat-JSON/images";
+    const auto file = project / "project.json";
+    const auto index = openSource(game.path, file, true);
+    if (!index) return false;
+    const auto rows = parse(index, game.path / file);
+    for (const auto& image : rows.at("images")) {
+        if (image.contains("archive")) continue;
+        const auto id = image.at("id").get<std::string>();
+        if (!hexString(id) || id.size() > 16) continue;
+        if (legacyPatchMatches(game.path, project, id, relative(image.at("file").get<std::string>()))) return true;
+    }
+    return false;
+}
+
 Result generate(RpgImageProject& project, const Request& request, const Control& control) {
     try {
         return PackageGenerator::run(project, request, control);
@@ -493,6 +525,10 @@ Result generate(RpgImageProject& project, const Request& request, const Control&
 } // namespace gameimageexport
 #else
 namespace gameimageexport {
+
+bool legacyPatchInstalled(const std::filesystem::path&) {
+    throw Error("UNSUPPORTED_PLATFORM", "图片成品导出需要 Windows");
+}
 
 Result generate(RpgImageProject&, const Request&, const Control&) {
     throw Error("UNSUPPORTED_PLATFORM", "图片成品导出需要 Windows");
