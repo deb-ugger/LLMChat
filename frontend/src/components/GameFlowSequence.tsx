@@ -193,7 +193,9 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
             .reduce((total, model) => total + model.generationMs, 0);
           const rates = tokenMetrics({ ...row, generationMs });
           return <tr key={row.model} data-model-row={row.model}>
-            <th scope="row" style={{ overflowWrap: "anywhere" }} data-tooltip={row.model}>{row.model.split("/").at(-1)}</th>
+            <th scope="row"><span className="game-step-metric-model" data-tooltip={row.model}>
+              {row.model.split("/").at(-1)}
+            </span></th>
             <td>{row.requests} 次</td>
             {(["generationRate", "requestRate"] as const).map(key => {
               const metric = rates.find(rate => rate.key === key);
