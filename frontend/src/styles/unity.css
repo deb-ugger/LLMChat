@@ -3207,3 +3207,39 @@ body.ocr-image-resizing * {
 .game-benchmark-syschart { flex: 1 1 120px; min-inline-size: 60px; block-size: 22px; display: block; }
 .game-benchmark-syschart-canvas { display: block; inline-size: 100%; block-size: 100%; }
 .game-benchmark-syschart-empty { display: block; color: var(--text-dim); line-height: 22px; }
+
+/* 运行记录分类切换：正式 / 测试，弱化一点，别跟页签抢。 */
+.game-benchmark-modes {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  overflow: hidden;
+  background: var(--bg-app);
+}
+.game-benchmark-modes > button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-block-size: 26px;
+  padding: 2px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.game-benchmark-modes > button + button { border-inline-start: 1px solid var(--border); }
+.game-benchmark-modes > button:hover { background: var(--bg-hover); color: var(--text); }
+.game-benchmark-modes > button.is-active { background: var(--text); color: var(--bg-panel); }
+.game-benchmark-modes > button > small { opacity: 0.7; font-size: var(--fs-caption); }
+
+/* 正式运行列表：一行一条，时间在前、指标在后。 */
+.game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.game-benchmark-formal-item { display: grid; gap: 2px; padding: 8px var(--space-3); border-top: 1px solid var(--border); }
+.game-benchmark-formal-item:first-child { border-top: 0; }
+.game-benchmark-formal-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.game-benchmark-formal-row > time { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; font-size: var(--fs-caption); }
+.game-benchmark-formal-models { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-benchmark-formal-metrics { display: flex; gap: var(--space-3); margin-inline-start: auto; color: var(--text-dim); font-size: var(--fs-caption); }
+.game-benchmark-formal-metrics > span > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }

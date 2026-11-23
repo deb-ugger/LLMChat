@@ -18,6 +18,11 @@ import { gameDuration, modelConcurrency, modelServiceTimingLines } from "../game
 import type { UnityEntry } from "../unityOffline";
 import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
+import { RunRecordTabs, type RunRecordMode } from "./RunRecordTabs";
+import { SystemPerfBar } from "./SystemPerfBar";
+import { FormalRunRecords } from "./FormalRunRecords";
+import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../systemPerformance";
+import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { StepRunningMetrics } from "./GameFlowSequence";
@@ -729,6 +734,33 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const [history, setHistory] = useState<BenchmarkResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
+  const [recordMode, setRecordMode] = useState<RunRecordMode>("test");
+  const [perfNow, setPerfNow] = useState<SystemPerformancePoint | null>(null);
+  const [perfPoints, setPerfPoints] = useState<SystemPerformancePoint[]>([]);
+  const anyRunning = snapshot.jobs.some(job => job.status === "运行中");
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const pull = async () => {
+      try {
+        const [now, history] = await Promise.all([
+          fetchSystemPerformanceNow(),
+          fetchSystemPerformanceHistory({ from: Date.now() - 30 * 60 * 1000 }),
+        ]);
+        if (cancelled) return;
+        if (now) setPerfNow(now);
+        setPerfPoints(history);
+      } catch {
+        /* 后端未起时静默，性能条保持上一次读数 */
+      }
+    };
+    void pull();
+    if (anyRunning) timer = window.setInterval(pull, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [anyRunning]);
   const [reload, setReload] = useState(0);
   const [samplePreview, setSamplePreview] = useState<Record<string, BenchmarkSample>>({});
   const [checking, setChecking] = useState(false);
@@ -883,6 +915,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           channel.close();
         }}>构建测速</button>
       </div>
+      <RunRecordTabs mode={recordMode} onChange={setRecordMode} />
     </header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {!taskView && <div className="game-benchmark-runbar">
@@ -930,6 +963,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <span role="status">{adding && "正在准备样本…"}</span>
         </div>
       </div>}
+      {recordMode === "test" ? <>
       <div className="game-benchmark-columns">
       {taskView || <BenchmarkSection title="测试配置">
         <div className="game-benchmark-toolbar">
@@ -1002,8 +1036,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </details>})}
       </BenchmarkSection>
       </div>
+      </> : <FormalRunRecords scope={scope} step={step} />}
     </div></div>
     {taskDialogs}
+    <SystemPerfBar latest={perfNow} points={perfPoints} />
     {report && <section className="game-benchmark-section" aria-label="数据集对照总结" style={{ maxHeight: "35vh", overflow: "auto" }}>
       <header className="game-benchmark-records-head">
         <h3>{report.title} · 对照总结</h3>
