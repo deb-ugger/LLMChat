@@ -6,68 +6,72 @@ import { deploymentMetrics, type DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { StepRunningMetrics } from "./GameFlowSequence";
 import { GameProgressBar } from "./GameStepProgress";
+import type { GameImageExportKind } from "../gameImageExport";
 import type { ImageExportActions, ImageExportPackage } from "../hooks/useGameImageExportPackage";
 import { modelServiceTimingLines } from "../gameModelPerformance";
 
-export function ImageExportPackagePanel({ model, actions }: {
-  model: Pick<DeploymentModel, "locked" | "exportPackage">;
-  actions?: ImageExportActions;
+export function ImageExportPackageSection({ state, actions, locked }: {
+  state: ImageExportPackage;
+  actions: ImageExportActions;
+  locked: boolean;
 }) {
-  const state = model.exportPackage;
-  if (!state || !actions) return null;
-  const { activity, path, count, confirmed, needsConfirmation, percent, applied, needsRecovery } = state;
-  const locked = model.locked || !!activity;
-  const canUsePackage = !locked && state.canUsePackage;
-  const button = (label: string, variant: "" | "primary" | "danger", disabled: boolean, onClick?: () => void, title?: string) =>
-    <button type="button" className={"dpl-btn" + (variant ? " dpl-btn-" + variant : "")} disabled={disabled} onClick={onClick} data-tooltip={title}>{label}</button>;
+  const { activity, path, confirmed, needsConfirmation, percent, layers, applied, needsRecovery } = state;
+  const ready = !locked && !activity && state.canUsePackage;
+  const button = (label: string, variant: "" | "primary" | "danger", disabled: boolean, onClick?: () => void) =>
+    <button type="button" className={"dpl-btn" + (variant ? " dpl-btn-" + variant : "")} disabled={disabled} onClick={onClick}>{label}</button>;
+  const layerLabel = (kind: GameImageExportKind) => {
+    const layer = layers[kind];
+    if (needsRecovery) return "需恢复";
+    if (!layer) return applied && !state.layerRestoreSupported ? "见收据" : "—";
+    return layer.state === "restored" ? "已恢复" : layer.state === "partiallyRestored" ? "部分恢复" : "已应用";
+  };
+  const restore = (kind: GameImageExportKind, label: string) =>
+    button(layers[kind]?.state === "restored" ? label + "已恢复" : "恢复" + label, "",
+      !ready || !state.canRestore || !layers[kind]?.appliedFiles, () => actions.restore(kind));
+  const deletePackage = button("删除包", "danger", !ready || applied || needsRecovery, actions.remove);
   let hintText: string;
   let buttons: ReactNode;
   if (activity === "generate") {
     hintText = "正在合成，可取消。";
-    buttons = <>{button(percent === null ? "生成中" : `生成中 ${percent}%`, "primary", true)}
-      {button("取消", "", !state.canCancel, actions.cancel)}</>;
-  } else if (activity === "apply") {
-    hintText = "正在写入游戏目录，完成后会生成收据。";
-    buttons = <>{button("应用中", "primary", true)}
-      {button("取消", "", true, undefined, "应用事务完成后可恢复原图")}</>;
+    buttons = <>{button(percent === null ? "生成中" : `生成中 ${percent}%`, "", true)}{button("取消", "", !state.canCancel, actions.cancel)}</>;
+  } else if (activity === "apply" || activity === "restore" || activity === "remove") {
+    const label = { apply: "应用中", restore: "恢复中", remove: "删除中" }[activity];
+    hintText = label + "，请等待操作完成。";
+    buttons = button(label, "", true);
   } else if (needsRecovery) {
-    hintText = "上次应用未完成，需要先恢复。";
-    buttons = <>{button("恢复原图", "primary", !canUsePackage, actions.restore)}
-      {button("删除包", "", true, undefined, "恢复原图后可删除成品包")}</>;
+    hintText = "上次应用或恢复未完成，请先恢复原图。";
+    buttons = <>{button("恢复原图", "primary", !ready, () => actions.restore())}{deletePackage}</>;
   } else if (applied) {
-    hintText = `已应用 ${count} 张，收据已保存，可随时恢复。`;
-    buttons = <>{button("启动游戏", "primary", locked, actions.launch)}
-      {button("重新应用", "", true, undefined, "成品包只能应用一次")}
-      {button("恢复原图", "", !canUsePackage || !state.canRestore, actions.restore)}
-      {button("删除包", "danger", true, undefined, "恢复原图后可删除成品包")}</>;
+    hintText = layers.composed ? "合成图包含译图和去码，恢复合成图会整张还原。" : state.partiallyRestored ? "部分图片已恢复，可继续恢复其余图片。" : "图片已应用，收据已保存。";
+    buttons = <>{state.layerRestoreSupported ? <>
+      {restore("translated", "译图")}{restore("mosaic", "去码")}
+      {layers.composed && restore("composed", "合成图")}
+    </> : button("恢复原图", "", !ready || !state.canRestore, () => actions.restore())}{deletePackage}</>;
   } else if (path) {
-    hintText = "应用后可用恢复回滚到应用前的原图。";
-    buttons = <>{button("应用到游戏", "primary", !canUsePackage || state.used, actions.apply, state.used ? "这个成品包已使用过。删除后可生成新包" : undefined)}
-      {button("打开包目录", "", locked, actions.openDirectory)}
-      {button("删除", "", !canUsePackage, actions.remove)}</>;
+    hintText = state.used ? "图片已恢复。删除旧包后可以生成新包。" : "成品包已生成，可以应用到游戏。";
+    buttons = <>{button("应用成品包", "primary", !ready || state.used || state.legacyInstalled, actions.apply)}
+      {button("打开包目录", "", locked, actions.openDirectory)}{deletePackage}</>;
   } else {
     hintText = needsConfirmation ? `有 ${needsConfirmation} 张图需要重新确认，先在图片翻译或去码页确认。`
-      : confirmed ? `将把 ${confirmed} 张已确认的图合成成品包，不改动游戏目录。` : "还没有已确认的译图或去码图。";
-    buttons = button("生成成品包", "primary", locked || !state.canGenerate, actions.generate);
+      : confirmed ? `将把 ${confirmed} 张已确认的图合成成品包。` : "还没有已确认的译图或去码图。";
+    buttons = button("生成成品包", "", locked || !state.canGenerate || state.legacyInstalled, actions.generate);
   }
 
-  return <section className="dpl-panel dpl-panel-export" aria-label="图片成品包">
-    <div className="dpl-panel-head">
-      <h4>图片成品包</h4>
-      <span className={`dpl-tag${applied ? " is-ok" : ""}`}>{applied ? "已应用" : path ? `${count} 张` : "未生成"}</span>
-    </div>
+  return <div className="dpl-plan" role="group" aria-label="图片成品包">
+    <p>图片成品包</p>
     <dl className="dpl-stats dpl-stats-stack">
       <div><dt>已确认</dt><dd>{confirmed}</dd></div>
       <div><dt>待确认</dt><dd>{needsConfirmation}</dd></div>
-      <div><dt>包大小</dt><dd>—</dd></div>
+      <div><dt>译图 / 去码</dt><dd><span className="dpl-hint">{layerLabel("translated")} / {layerLabel("mosaic")}</span></dd></div>
+      {layers.composed && <div><dt>合成图</dt><dd><span className="dpl-hint">{layerLabel("composed")}</span></dd></div>}
     </dl>
-    <div className="dpl-path" title={path}>{path || "尚未生成成品包"}</div>
-    <p className="dpl-hint">{hintText}</p>
+    {path && <div className="dpl-path" title={path}>{path}</div>}
     {(activity === "generate" || activity === "apply") && <div className="game-flow-progress">
       <GameProgressBar label={activity === "generate" ? "成品包生成进度" : "成品包应用进度"} value={percent ?? undefined} />
     </div>}
     <div className="dpl-actions">{buttons}</div>
-  </section>;
+    <p className="dpl-hint">{state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。" : hintText}</p>
+  </div>;
 }
 
 export type DeploymentStageState = "todo" | "active" | "done" | "warn" | "error";
@@ -95,7 +99,6 @@ export type DeploymentModel = {
   fontPlan: UnityFontPlan | null;
   entries: UnityEntry[];
   images: { total: number; ready: number };
-  exportPackage?: ImageExportPackage;
   mosaic: { enabled: boolean; count: number };
   progress: { percent: number | null; state: DeploymentStageState; detail: string; label: string } | null;
 };
@@ -120,7 +123,6 @@ export type DeploymentActions = {
   openReport: () => void;
   openGlyphFolder: () => void;
   locateText: (character: string) => void;
-  exportPackage?: ImageExportActions;
 };
 
 export const deploymentPhases = ["text", "image", "mosaic"] as const;
@@ -791,8 +793,6 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
           <p className="dpl-hint">{enabled("mosaic") ? "纳入的去码图随补丁一起应用。" : "此阶段关闭，本次不写入去码图。"}</p>
           <div className="dpl-panel-foot">{generate("mosaic")}</div>
         </section>
-
-        <ImageExportPackagePanel model={model} actions={actions.exportPackage} />
 
         <section className="dpl-panel dpl-panel-apply" aria-label="应用到游戏">
           <div className="dpl-panel-head">

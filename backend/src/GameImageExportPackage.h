@@ -59,6 +59,7 @@ public:
     const std::string detail;
 };
 
+bool legacyPatchInstalled(const std::filesystem::path& gamePath);
 Result generate(RpgImageProject& project, const Request& request, const Control& control = {});
 
 } // namespace gameimageexport
