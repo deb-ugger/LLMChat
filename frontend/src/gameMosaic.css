@@ -245,25 +245,41 @@
 .game-mosaic-workbench .unity-image-previews figcaption small { white-space: nowrap; }
 .game-mosaic-workbench .game-mosaic-original-frame > figcaption { flex-wrap: nowrap; align-items: flex-start; }
 .game-mosaic-original-frame > figcaption > span { flex: none; }
+/* 蒙版标签：一个分段控件，等宽、共享一个容器，选中项实心。 */
 .game-mosaic-mask-tabs {
-  display: flex;
-  flex: 1;
+  display: inline-flex;
+  flex: 0 1 auto;
   min-inline-size: 0;
+  max-inline-size: 100%;
   overflow-x: auto;
-  gap: var(--space-1);
-  padding: 2px;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg-panel);
 }
 .game-mosaic-mask-tabs > button {
-  flex: none;
-  min-block-size: 0;
-  padding: 2px var(--space-2);
+  flex: 0 0 auto;
+  min-block-size: 26px;
+  min-inline-size: 64px;
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
   font-size: var(--fs-caption);
+  font-weight: 500;
 }
+.game-mosaic-mask-tabs > button + button { border-inline-start: 1px solid var(--border); }
+.game-mosaic-mask-tabs > button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .game-mosaic-mask-tabs > button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+  border-color: transparent;
+  background: var(--text);
+  color: var(--bg-panel);
 }
+.game-mosaic-mask-tabs > button:disabled { opacity: 0.5; }
 .game-mosaic-workbench .unity-image-previews figure > .hint { margin: 8px; }
 .game-mosaic-workbench .game-mosaic-results-bar {
   grid-column: 1 / -1;

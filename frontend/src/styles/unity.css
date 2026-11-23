@@ -2821,7 +2821,8 @@ body.ocr-image-resizing * {
   padding: 14px clamp(var(--space-3), 3vw, 26px);
   background: var(--panel, var(--bg-panel)); border-bottom: 1px solid var(--border, #dcd6c6);
 }
-.game-benchmark-page-header h2 { margin: 0 0 5px; font-size: var(--fs-dialog); font-weight: 600; }
+.game-benchmark-page-header { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.game-benchmark-page-header h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .game-benchmark-page-header p { margin: 0; }
 .game-benchmark-scroll { min-height: 0; overflow: auto; }
 .game-text-benchmark { display: grid; gap: var(--space-3); max-width: var(--content-max); padding: var(--page-inset); margin-inline: auto; }
@@ -3073,3 +3074,172 @@ body.ocr-image-resizing * {
 .game-benchmark-show-parameters { margin-block: var(--space-1); }
 .game-benchmark-show-executed { flex: none; font-size: var(--fs-caption); }
 .game-benchmark-show-decision footer { justify-content: flex-end; }
+
+/* 主操作按钮：可执行时实心，不可执行时回到普通描边，不整排发灰。 */
+.unity-btn.is-primary {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg-panel);
+  font-weight: 600;
+}
+.unity-btn.is-primary:hover:not(:disabled) {
+  border-color: var(--text);
+  background: color-mix(in srgb, var(--text) 86%, transparent);
+  color: var(--bg-panel);
+}
+
+/* 运行记录页顶部的模块切换：与蒙版标签同一套分段控件。 */
+.game-benchmark-tabs {
+  display: inline-flex;
+  margin-inline-start: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.game-benchmark-tabs > button {
+  min-block-size: 28px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  cursor: pointer;
+}
+.game-benchmark-tabs > button + button { border-inline-start: 1px solid var(--border); }
+.game-benchmark-tabs > button:hover { background: var(--bg-hover); color: var(--text); }
+.game-benchmark-tabs > button[aria-selected="true"] { background: var(--text); color: var(--bg-panel); }
+
+/* 页面底部系统性能条：扁平一行，不占纵向空间。 */
+.game-benchmark-sysbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-block-size: 28px;
+  padding: 0 var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  overflow: hidden;
+}
+.game-benchmark-sys-item { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.game-benchmark-sys-item > span { color: var(--text-dim); }
+.game-benchmark-sys-item > strong {
+  color: var(--text);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.game-benchmark-sysbar > .hint { margin-inline-start: auto; }
+.game-benchmark-syschart { flex: none; block-size: 160px; border-top: 1px solid var(--border); background: var(--bg-panel); }
+
+/* 立即开始任务：推到测试配置卡头右侧，和运行条的主按钮区分开。 */
+.game-benchmark-start-here { margin-inline-start: auto; }
+
+/* 模型比较面板：三张图，等宽两列，散点占整行。 */
+.game-benchmark-compare {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg-panel);
+}
+.game-benchmark-compare-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.game-benchmark-compare-head > strong { font-size: var(--fs-section); font-weight: 600; }
+.game-benchmark-compare-head > .hint { margin: 0; }
+.game-benchmark-compare-head > button:last-child { margin-inline-start: auto; }
+.game-benchmark-compare-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.game-benchmark-compare-card {
+  display: grid;
+  gap: 6px;
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg-app);
+}
+.game-benchmark-compare-card.is-wide { grid-column: 1 / -1; }
+.game-benchmark-compare-card > header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.game-benchmark-compare-card > header > strong { font-size: var(--fs-body); font-weight: 600; }
+.game-benchmark-compare-card > header > span { color: var(--text-dim); font-size: var(--fs-caption); }
+.game-benchmark-compare-chart { block-size: 220px; min-inline-size: 0; }
+.game-benchmark-compare-card.is-wide .game-benchmark-compare-chart { block-size: 260px; }
+@media (max-width: 900px) {
+  .game-benchmark-compare-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 系统性能条：贴着页面底部的扁平一行，不占垂直空间。 */
+.game-benchmark-sysbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 26px;
+  padding: 2px var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--bg-app);
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+  overflow: hidden;
+}
+.game-benchmark-sys-title { flex: none; color: var(--text-muted); font-weight: 600; }
+.game-benchmark-sys-item { display: flex; align-items: baseline; gap: 4px; flex: none; white-space: nowrap; }
+.game-benchmark-sys-item > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.game-benchmark-sys-item > small { color: var(--text-dim); }
+.game-benchmark-syschart { flex: 1 1 120px; min-inline-size: 60px; block-size: 22px; display: block; }
+.game-benchmark-syschart-canvas { display: block; inline-size: 100%; block-size: 100%; }
+.game-benchmark-syschart-empty { display: block; color: var(--text-dim); line-height: 22px; }
+
+/* 运行记录分类切换：正式 / 测试，弱化一点，别跟页签抢。 */
+.game-benchmark-modes {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  overflow: hidden;
+  background: var(--bg-app);
+}
+.game-benchmark-modes > button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-block-size: 26px;
+  padding: 2px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.game-benchmark-modes > button + button { border-inline-start: 1px solid var(--border); }
+.game-benchmark-modes > button:hover { background: var(--bg-hover); color: var(--text); }
+.game-benchmark-modes > button.is-active { background: var(--text); color: var(--bg-panel); }
+.game-benchmark-modes > button > small { opacity: 0.7; font-size: var(--fs-caption); }
+
+/* 正式运行列表：一行一条，时间在前、指标在后。 */
+.game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.game-benchmark-formal-item { display: grid; gap: 2px; padding: 8px var(--space-3); border-top: 1px solid var(--border); }
+.game-benchmark-formal-item:first-child { border-top: 0; }
+.game-benchmark-formal-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.game-benchmark-formal-row > time { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; font-size: var(--fs-caption); }
+.game-benchmark-formal-models { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-benchmark-formal-metrics { display: flex; gap: var(--space-3); margin-inline-start: auto; color: var(--text-dim); font-size: var(--fs-caption); }
+.game-benchmark-formal-metrics > span > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }

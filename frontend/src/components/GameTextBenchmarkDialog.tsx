@@ -18,6 +18,13 @@ import { gameDuration, modelConcurrency, modelServiceTimingLines } from "../game
 import type { UnityEntry } from "../unityOffline";
 import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
+import { RunRecordTabs, type RunRecordMode } from "./RunRecordTabs";
+import { SystemPerfBar } from "./SystemPerfBar";
+import { FormalRunRecords } from "./FormalRunRecords";
+import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../systemPerformance";
+import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
+import { RunComparePanel } from "./RunComparePanel";
+import type { BenchmarkCompareRun } from "../benchmark/benchmarkCompare";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { StepRunningMetrics } from "./GameFlowSequence";
@@ -653,7 +660,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
         <p>{title}（{status}{!editing ? " · 只读" : ""}）</p></div>
       <div className="game-benchmark-show-actions">
         {running && <button type="button" className="unity-btn" disabled={stopping || saving} onClick={onStop}>中止任务</button>}
-        <button type="button" className="unity-btn" disabled={!canSave || saving} onClick={onSave}>保存</button>
+        <button type="button" className={`unity-btn${canSave && !saving ? " is-primary" : ""}`} disabled={!canSave || saving} onClick={onSave}>保存</button>
         <button type="button" className="unity-btn" disabled={saving} onClick={onExit}>退出显示</button>
       </div>
     </div>
@@ -729,6 +736,34 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
   const [history, setHistory] = useState<BenchmarkResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState("");
+  const [recordMode, setRecordMode] = useState<RunRecordMode>("test");
+  const [compareRuns, setCompareRuns] = useState<readonly BenchmarkCompareRun[] | null>(null);
+  const [perfNow, setPerfNow] = useState<SystemPerformancePoint | null>(null);
+  const [perfPoints, setPerfPoints] = useState<SystemPerformancePoint[]>([]);
+  const anyRunning = snapshot.jobs.some(job => job.status === "运行中");
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const pull = async () => {
+      try {
+        const [now, history] = await Promise.all([
+          fetchSystemPerformanceNow(),
+          fetchSystemPerformanceHistory({ from: Date.now() - 30 * 60 * 1000 }),
+        ]);
+        if (cancelled) return;
+        if (now) setPerfNow(now);
+        setPerfPoints(history);
+      } catch {
+        /* 后端未起时静默，性能条保持上一次读数 */
+      }
+    };
+    void pull();
+    if (anyRunning) timer = window.setInterval(pull, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [anyRunning]);
   const [reload, setReload] = useState(0);
   const [samplePreview, setSamplePreview] = useState<Record<string, BenchmarkSample>>({});
   const [checking, setChecking] = useState(false);
@@ -874,7 +909,17 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     return latest;
   }, [history]);
   const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
-    <header className="game-benchmark-page-header"><h2>测试队列</h2></header>
+    <header className="game-benchmark-page-header"><h2>运行记录</h2>
+      <div className="game-benchmark-tabs" role="tablist" aria-label="测试模块">
+        <button type="button" role="tab" aria-selected="true">运行记录</button>
+        <button type="button" role="tab" aria-selected="false" onClick={() => {
+          const channel = new BroadcastChannel("llmchat-run-records");
+          channel.postMessage({ type: "open-build-speed" });
+          channel.close();
+        }}>构建测速</button>
+      </div>
+      <RunRecordTabs mode={recordMode} onChange={setRecordMode} />
+    </header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {!taskView && <div className="game-benchmark-runbar">
         <div className="game-benchmark-scope" role="region" aria-label="测试范围">
@@ -906,7 +951,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <div className="game-benchmark-task-actions">
         <button type="button" className="settings-panel-save" disabled={!!issue || adding}
           title={issue} onClick={() => void start(true)}>
-          {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即开始任务"}
+          {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "启动队列"}
         </button>
         <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
         {mosaicSetup && <>
@@ -921,6 +966,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <span role="status">{adding && "正在准备样本…"}</span>
         </div>
       </div>}
+      {recordMode === "test" ? <>
       <div className="game-benchmark-columns">
       {taskView || <BenchmarkSection title="测试配置">
         <div className="game-benchmark-toolbar">
@@ -935,6 +981,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             disabled={adding || !validRounds || !mosaicSetup}
             title="替换当前工程的复筛配置并保存，保留循环轮次、样本设置和测试记录"
             onClick={replaceWithMosaicRefinePresets}>替换并保存 24 组对照</button>}
+          <button type="button" className="settings-panel-save game-benchmark-start-here" disabled={!!issue || adding}
+            title={issue} onClick={() => void start(true)}>
+            {running ? "加入队首" : snapshot.formalBusy ? "正式任务完成后运行" : "立即开始任务"}
+          </button>
         </div>
       <BenchmarkConfigCards step={step} configs={configs} setConfigs={setConfigs} readOnly={adding} expanded={expanded}
         toggleConfig={toggleConfig} images={images} engines={current.engines} models={models} currentProgress={currentProgress}
@@ -959,6 +1009,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
               "已归档 " + task.runs.length + " 项"}{task.failed > 0 && ` · ${task.failed} 项含失败`}{task.stopped > 0 && ` · ${task.stopped} 项暂停或中止`}
           </summary>
           <div className="game-benchmark-record-runs">
+          {task.runs.length > 1 ? <button type="button" className="unity-btn is-secondary"
+            onClick={() => setCompareRuns(task.runs as unknown as readonly BenchmarkCompareRun[])}>
+            比较这次记录（{task.runs.length} 项）
+          </button> : null}
           {mosaicStep && mosaicStep !== "mosaicRedraw" && typeof reference === "string" &&
             <button type="button" className="unity-btn" disabled={reportBusy}
               onClick={() => void showTaskReport(task.id, task.runs, reference)}>数据集对照总结</button>}
@@ -989,8 +1043,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </details>})}
       </BenchmarkSection>
       </div>
+      </> : <FormalRunRecords scope={scope} step={step} />}
     </div></div>
     {taskDialogs}
+    {compareRuns ? <RunComparePanel runs={compareRuns} onClose={() => setCompareRuns(null)} /> : null}
+    <SystemPerfBar latest={perfNow} points={perfPoints} />
     {report && <section className="game-benchmark-section" aria-label="数据集对照总结" style={{ maxHeight: "35vh", overflow: "auto" }}>
       <header className="game-benchmark-records-head">
         <h3>{report.title} · 对照总结</h3>
