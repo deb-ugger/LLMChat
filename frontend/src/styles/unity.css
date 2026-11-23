@@ -3217,6 +3217,7 @@ body.ocr-image-resizing * {
 .sysbar {
   position: relative;
   flex: none;
+  block-size: 38px;
   border-top: 1px solid var(--border);
   background: var(--bg-app);
   color: var(--text-muted);
@@ -3227,7 +3228,7 @@ body.ocr-image-resizing * {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-block-size: 38px;
+  block-size: 100%;
   padding: 0 var(--space-4);
 }
 .sysbar-toggle {
@@ -3249,8 +3250,8 @@ body.ocr-image-resizing * {
 .sysbar-toggle svg { inline-size: 9px; block-size: 9px; transition: transform .15s ease; }
 .sysbar-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 
-.sysbar-items { display: flex; align-items: center; gap: 18px; flex: 1 1 auto; min-inline-size: 0; }
-.sys-metric { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-inline-size: 0; }
+.sysbar-items { display: flex; align-items: center; gap: 18px; flex: 1 1 auto; min-inline-size: 0; overflow-x: auto; }
+.sys-metric { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-inline-size: min-content; }
 .sys-metric-text { display: flex; align-items: baseline; gap: 4px; flex: none; white-space: nowrap; }
 .sys-metric-key { color: var(--text-muted); }
 .sys-metric-sec { color: var(--text-muted); }
@@ -3269,15 +3270,12 @@ body.ocr-image-resizing * {
 
 @media (width < 1080px) {
   .sysbar-items { gap: 12px; }
-  .sys-metric-spark { min-inline-size: 22px; }
-}
-@media (width < 860px) {
-  .sys-metric-spark { display: none; }
 }
 
 /* 展开面板：向上浮起，不挤压页面 */
 .sysbar-panel {
   position: absolute;
+  z-index: 24;
   inset-inline: 0;
   bottom: 100%;
   block-size: 340px;
