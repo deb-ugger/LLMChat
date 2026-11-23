@@ -3213,36 +3213,127 @@ body.ocr-image-resizing * {
 }
 
 /* 页脚保持在滚动内容外，指标按当前值和峰值成组。 */
-.game-benchmark-sysbar {
+/* ── 底部系统性能条（收起 38px / 展开 340px 面板） ───────────────── */
+.sysbar {
+  position: relative;
   flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+}
+.sysbar-row {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-block-size: 26px;
-  padding: 2px var(--space-3);
+  min-block-size: 38px;
+  padding: 0 var(--space-4);
+}
+.sysbar-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: -4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.sysbar-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.sysbar-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sysbar-toggle svg { inline-size: 9px; block-size: 9px; transition: transform .15s ease; }
+.sysbar-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+.sysbar-items { display: flex; align-items: center; gap: 18px; flex: 1 1 auto; min-inline-size: 0; }
+.sys-metric { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-inline-size: 0; }
+.sys-metric-text { display: flex; align-items: baseline; gap: 4px; flex: none; white-space: nowrap; }
+.sys-metric-key { color: var(--text-muted); }
+.sys-metric-sec { color: var(--text-muted); }
+.sys-metric-value { color: var(--text); font-size: 13px; font-weight: 600; }
+.sys-metric-unit { color: var(--text-muted); }
+.sys-metric-spark { flex: 1 1 auto; min-inline-size: 26px; max-inline-size: 360px; block-size: 20px; color: var(--text-dim); }
+.sys-metric-spark svg { display: block; inline-size: 100%; block-size: 100%; }
+
+/* 三档只改颜色；中/高档把字重提一档，低档保持常规 */
+.sys-metric.is-lo .sys-metric-value, .sys-metric-sec.is-lo { color: var(--success, #7fa365); }
+.sys-metric.is-mid .sys-metric-value, .sys-metric-sec.is-mid { color: var(--warning); font-weight: 600; }
+.sys-metric.is-hi .sys-metric-value, .sys-metric-sec.is-hi { color: var(--danger); font-weight: 700; }
+.sys-metric.is-lo .sys-metric-spark { color: var(--success, #7fa365); }
+.sys-metric.is-mid .sys-metric-spark { color: var(--warning); }
+.sys-metric.is-hi .sys-metric-spark { color: var(--danger); }
+
+@media (width < 1080px) {
+  .sysbar-items { gap: 12px; }
+  .sys-metric-spark { min-inline-size: 22px; }
+}
+@media (width < 860px) {
+  .sys-metric-spark { display: none; }
+}
+
+/* 展开面板：向上浮起，不挤压页面 */
+.sysbar-panel {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 100%;
+  block-size: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-3);
   border-top: 1px solid var(--border);
-  background: var(--bg-app);
-  font-size: var(--fs-caption);
-  color: var(--text-dim);
+  background: var(--bg-panel);
+  box-shadow: 0 -18px 40px rgb(0 0 0 / 22%);
+  overflow: auto;
+}
+.sysbar-panel-head { display: flex; align-items: center; gap: var(--space-3); }
+.sysbar-panel-head h3 { margin: 0; font-size: var(--fs-section); font-weight: 600; color: var(--text); }
+.sysbar-panel-sub { color: var(--text-muted); }
+.sysbar-chips {
+  margin-inline-start: auto;
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
-.game-benchmark-sys-title { flex: none; color: var(--text-muted); font-weight: 600; }
-.game-benchmark-sys-item { display: flex; align-items: baseline; gap: var(--space-1); flex: none; white-space: nowrap; }
-.game-benchmark-sys-item > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.game-benchmark-sys-item > small { color: var(--text-muted); font-size: inherit; }
-.game-benchmark-syschart {
-  flex: 1 1 120px;
-  min-inline-size: 60px;
-  max-inline-size: 300px;
-  block-size: 22px;
-  margin-inline-start: auto;
+.sysbar-chips button {
+  border: 0;
+  padding: 4px 10px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
 }
-@media (width < 900px) {
-  .game-benchmark-sysbar { gap: var(--space-2); }
-  .game-benchmark-sys-item > small { display: none; }
+.sysbar-chips button + button { border-inline-start: 1px solid var(--border); }
+.sysbar-chips button.is-on { background: var(--text); color: var(--bg-panel); }
+.sysbar-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.sysbar-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+  color: var(--text-dim);
+  min-inline-size: 0;
 }
-.game-benchmark-syschart-canvas { display: block; inline-size: 100%; block-size: 100%; }
-.game-benchmark-syschart-empty { display: block; color: var(--text-dim); line-height: 22px; }
+.sysbar-card-head { display: flex; align-items: baseline; gap: 6px; min-inline-size: 0; }
+.sysbar-card-key { color: var(--text-muted); }
+.sysbar-card-value { margin-inline-start: auto; color: var(--text); font-size: 15px; font-weight: 600; }
+.sysbar-card-peak { color: var(--text-muted); }
+.sysbar-card svg { display: block; inline-size: 100%; block-size: 56px; }
+.sysbar-card.is-lo { color: var(--success, #7fa365); }
+.sysbar-card.is-mid { color: var(--warning); }
+.sysbar-card.is-hi { color: var(--danger); }
+.sysbar-card.is-mid .sysbar-card-value, .sysbar-card.is-mid .sysbar-card-peak { color: var(--warning); }
+.sysbar-card.is-hi .sysbar-card-value, .sysbar-card.is-hi .sysbar-card-peak { color: var(--danger); }
+.sysbar-panel-foot { color: var(--text-dim); }
+@media (width < 900px) { .sysbar-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* 运行记录分类切换：正式 / 测试，弱化一点，别跟页签抢。 */
 .game-benchmark-modes {

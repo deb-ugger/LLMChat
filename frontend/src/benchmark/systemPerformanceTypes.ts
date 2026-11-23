@@ -11,15 +11,27 @@ export type SystemPerformancePoint = {
   network: number | null;
   /** GPU 引擎占用率，0–100 */
   gpu: number | null;
+  /** 磁盘占用率（% Disk Time），0–100；取不到为 null */
+  diskPercent?: number | null;
+  /** CPU 封装温度，摄氏度；取不到为 null */
+  cpuTempC?: number | null;
+  /** GPU 温度，摄氏度；取不到为 null */
+  gpuTempC?: number | null;
+  /** 温度来源：lhm / acpi / null */
+  tempSource?: "lhm" | "acpi" | null;
+  /** 最近窗口内的生成速率，token/秒 */
+  tokensPerSecond?: number | null;
+  /** 当前有请求的模型数量 */
+  modelCount?: number | null;
 };
 
 export type SystemPerformanceSource = "formal" | "benchmark";
-export type SystemPerformanceMetric = Exclude<keyof SystemPerformancePoint, "at">;
+export type SystemPerformanceMetric = "cpu" | "memory" | "disk" | "network" | "gpu";
 
 export type SystemPerformanceSample = {
   /** 本轮各指标的均值与峰值 */
-  average: Omit<SystemPerformancePoint, "at">;
-  peak: Omit<SystemPerformancePoint, "at">;
+  average: Record<SystemPerformanceMetric, number | null>;
+  peak: Record<SystemPerformanceMetric, number | null>;
   samples: number;
   timelines: SystemPerformancePoint[][];
 };
