@@ -14,7 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <winhttp.h>
+#include "http/HttpTransport.h"
 #endif
 
 using json = nlohmann::json;
@@ -199,14 +199,6 @@ std::uintmax_t cachedBytes(const fs::path& root)
 
 #ifdef _WIN32
 
-struct WinHttpHandle {
-    HINTERNET value = nullptr;
-    ~WinHttpHandle() { if (value) WinHttpCloseHandle(value); }
-    WinHttpHandle(const WinHttpHandle&) = delete;
-    WinHttpHandle& operator=(const WinHttpHandle&) = delete;
-    WinHttpHandle() = default;
-};
-
 std::wstring normalizeProxy(const std::string& value)
 {
     std::string proxy = value;
@@ -236,7 +228,7 @@ std::string downloadNetworkError(DWORD error, const AppConfig& config, const std
 }
 
 void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppConfig& config,
-                  const std::function<void(std::uintmax_t, std::uintmax_t)>& onProgress)
+                  const std::function<void(std::uintmax_t, std::uintmax_t)>& onProgress, std::stop_token stop = {})
 {
     const std::wstring url = utf8path::toWide(spec.url);
     URL_COMPONENTS parts{};
@@ -255,7 +247,6 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
 
     std::wstring proxy;
     DWORD accessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
-    LPCWSTR proxyName = WINHTTP_NO_PROXY_NAME;
     if (config.proxyMode == "auto")
     {
 #ifdef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
@@ -268,76 +259,53 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
     {
         proxy = normalizeProxy(config.httpProxy);
         accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
-        proxyName = proxy.c_str();
     }
 
-    WinHttpHandle session;
-    session.value = WinHttpOpen(L"LLMChat OCR Model Store/1.0", accessType, proxyName,
-                                WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session.value)
-        throw std::runtime_error("无法初始化模型下载连接");
-    WinHttpSetTimeouts(session.value, 15000, 30000, 30000, 60000);
-
-    WinHttpHandle connection;
-    connection.value = WinHttpConnect(session.value, host.c_str(), parts.nPort, 0);
-    if (!connection.value)
-        throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
-
-    WinHttpHandle request;
-    request.value = WinHttpOpenRequest(
-        connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-    if (!request.value)
-        throw std::runtime_error("无法创建模型下载请求");
-
-    if (!WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
-        || !WinHttpReceiveResponse(request.value, nullptr))
-        throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(request.value,
-                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
-                        WINHTTP_NO_HEADER_INDEX);
-    if (status == 408 || status == 504)
-        throw std::runtime_error("模型下载超时（HTTP " + std::to_string(status) + "）。" + downloadNetworkHint(config));
-    if (status != 200)
-        throw std::runtime_error("模型下载服务器返回 HTTP " + std::to_string(status));
-
+    const http_transport::Request request{
+        {host, parts.nPort, parts.nScheme == INTERNET_SCHEME_HTTPS},
+        {L"LLMChat OCR Model Store/1.0", {accessType, proxy}, {15000, 30000, 30000, 60000}}, L"GET", path,
+    };
     const fs::path partial = destination.wstring() + L".part";
     std::error_code ec;
-    fs::create_directories(destination.parent_path(), ec);
-    if (ec)
-        throw std::runtime_error("无法创建 OCR 模型子目录");
-    fs::remove(partial, ec);
-    std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    if (!out)
-        throw std::runtime_error("无法创建模型缓存文件");
-
+    std::ofstream out;
     std::uintmax_t written = 0;
+    bool opened = false;
     try
     {
-        for (;;)
-        {
-            DWORD available = 0;
-            if (!WinHttpQueryDataAvailable(request.value, &available))
-                throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
-            if (available == 0)
-                break;
-            std::vector<char> buffer(available);
-            DWORD received = 0;
-            if (!WinHttpReadData(request.value, buffer.data(), available, &received))
-                throw std::runtime_error(downloadNetworkError(GetLastError(), config, host));
-            out.write(buffer.data(), received);
-            if (!out)
-                throw std::runtime_error("写入模型缓存失败，请检查磁盘空间");
-            written += received;
-            onProgress(written, spec.bytes);
-            if (written > spec.bytes)
-                throw std::runtime_error("模型文件大小异常，已终止下载");
+        const auto result = http_transport::perform(request, {
+            [&](DWORD status, const http_transport::ResponseHeaders&) {
+                if (status == 408 || status == 504)
+                    throw std::runtime_error("模型下载超时（HTTP " + std::to_string(status) + "）。" + downloadNetworkHint(config));
+                if (status != 200)
+                    throw std::runtime_error("模型下载服务器返回 HTTP " + std::to_string(status));
+                fs::create_directories(destination.parent_path(), ec);
+                if (ec)
+                    throw std::runtime_error("无法创建 OCR 模型子目录");
+                fs::remove(partial, ec);
+                out.open(partial, std::ios::binary | std::ios::trunc);
+                if (!out)
+                    throw std::runtime_error("无法创建模型缓存文件");
+                opened = true;
+                return true;
+            },
+            [&](std::string_view bytes) {
+                out.write(bytes.data(), bytes.size());
+                if (!out)
+                    throw std::runtime_error("写入模型缓存失败，请检查磁盘空间");
+                written += bytes.size();
+                onProgress(written, spec.bytes);
+                if (written > spec.bytes)
+                    throw std::runtime_error("模型文件大小异常，已终止下载");
+                return true;
+            },
+        }, {stop});
+        if (result.failure) {
+            using http_transport::Stage;
+            if (result.failure->stage == Stage::session)
+                throw std::runtime_error("无法初始化模型下载连接");
+            if (result.failure->stage == Stage::request)
+                throw std::runtime_error("无法创建模型下载请求");
+            throw std::runtime_error(downloadNetworkError(result.failure->code, config, host));
         }
         out.close();
         if (written != spec.bytes)
@@ -352,8 +320,7 @@ void downloadFile(const ModelSpec& spec, const fs::path& destination, const AppC
     }
     catch (...)
     {
-        out.close();
-        fs::remove(partial, ec);
+        if (opened) { out.close(); fs::remove(partial, ec); }
         throw;
     }
 }
