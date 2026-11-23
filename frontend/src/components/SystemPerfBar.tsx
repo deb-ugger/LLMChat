@@ -2,9 +2,10 @@ import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useChartColors } from "./chartTheme";
 import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
+import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../systemPerformance";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -33,10 +34,24 @@ function useTimeline(
   points: readonly SystemPerformancePoint[],
   colors: ReturnType<typeof useChartColors>,
 ) {
+  const chartRef = useRef<ReturnType<typeof echarts.init> | undefined>(undefined);
+  const hasPoints = points.length > 0;
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || points.length === 0) return;
+    if (!host || !hasPoints) return;
     const chart = echarts.init(host, undefined, { renderer: "canvas" });
+    chartRef.current = chart;
+    const observer = new ResizeObserver(() => chart.resize());
+    observer.observe(host);
+    return () => {
+      observer.disconnect();
+      chart.dispose();
+      chartRef.current = undefined;
+    };
+  }, [hostRef, hasPoints]);
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
     const times = points.map((point) =>
       typeof point.at === "number" ? point.at : Date.parse(point.at),
     );
@@ -82,22 +97,42 @@ function useTimeline(
         },
       ],
     });
-    const observer = new ResizeObserver(() => chart.resize());
-    observer.observe(host);
-    return () => {
-      observer.disconnect();
-      chart.dispose();
-    };
-  }, [hostRef, points, colors]);
+  }, [points, colors]);
 }
 
-export function SystemPerfBar({
-  latest,
-  points,
-}: {
-  latest: SystemPerformancePoint | null;
-  points: readonly SystemPerformancePoint[];
-}) {
+const atMs = (point: SystemPerformancePoint) => typeof point.at === "number" ? point.at : Date.parse(point.at);
+const timelineLength = 30 * 60 * 1000;
+
+export function SystemPerfBar() {
+  const [latest, setLatest] = useState<SystemPerformancePoint | null>(null);
+  const [points, setPoints] = useState<SystemPerformancePoint[]>([]);
+  useEffect(() => {
+    let active = true, hasHistory = false;
+    let timer: number;
+    const update = async () => {
+      try {
+        if (document.hidden) return;
+        const [point, previous] = await Promise.all([
+          fetchSystemPerformanceNow(),
+          hasHistory ? Promise.resolve(undefined) : fetchSystemPerformanceHistory({ from: Date.now() - timelineLength }).catch(() => undefined),
+        ]);
+        if (!active) return;
+        if (previous) hasHistory = true;
+        if (point) setLatest(point);
+        if (point || previous) setPoints(current => {
+          const timeline = previous ?? current;
+          if (!point || timeline.length && atMs(timeline[timeline.length - 1]) >= atMs(point)) return timeline;
+          return [...timeline.filter(sample => atMs(sample) >= atMs(point) - timelineLength), point];
+        });
+      } catch {
+        // Keep the last reading if the sidecar is temporarily unavailable.
+      } finally {
+        if (active) timer = window.setTimeout(update, 3000);
+      }
+    };
+    void update();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, []);
   const colors = useChartColors();
   const chartRef = useRef<HTMLDivElement | null>(null);
   useTimeline(chartRef, points, colors);

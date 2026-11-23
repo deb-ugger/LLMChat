@@ -97,7 +97,7 @@ export function formatBenchmarkParameters(step: BenchmarkTarget, config: Benchma
   return rows;
 }
 
-export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Partial<typeof defaultMosaicSettings>): BenchmarkParameter[] {
+export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Partial<typeof defaultMosaicSettings> & { screenVisionModel?: string }): BenchmarkParameter[] {
   const rows: BenchmarkParameter[] = [];
   const add = (label: string, value: string | number) => rows.push({ label, value: String(value), scope: "config" });
   const mosaic = { ...defaultMosaicSettings, ...settings };
@@ -111,6 +111,7 @@ export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Par
     } else if (step === "mosaicScreen") {
       add("筛选方式", mosaic.detector === "grid" ? "方格规则" : "分类＋定位");
       add("筛选并发", mosaic.concurrency ?? 2);
+      if (settings?.screenVisionModel) add("视觉补检模型", labelForModelId(settings.screenVisionModel));
     } else {
       add("重绘模型", mosaicModelLabels[mosaic.model]);
       add("步数", mosaic.steps);

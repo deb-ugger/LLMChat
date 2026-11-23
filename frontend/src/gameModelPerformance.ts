@@ -10,6 +10,8 @@ type RequestOutcome = "succeeded" | "failed" | "cancelled";
 type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number; outcomes?: Record<RequestOutcome, number>; usage?: TokenUsage; service?: "local" | "online"; serviceTiming?: ServiceTimingTotals };
 export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs" | "detectorMs" | "ocrMs" | "workflowMs";
 export type StepPerformance = {
+  scope?: string;
+  step?: string;
   elapsedMs: number;
   itemsDone?: number;
   failures?: number;
@@ -64,9 +66,9 @@ export function recoverGamePerformanceArchives() {
   if (!isGameBenchmarkWindow) void flushGamePerformanceArchive(benchmarkArchiveKey);
 }
 
-export function pendingGameBenchmarkArchives(scope: string, step: string) {
+export function pendingGameBenchmarkArchives(scope?: string, step?: string) {
   return [mainArchiveKey, benchmarkArchiveKey].flatMap(key => pendingArchives(key))
-    .filter(record => record.scope === scope && record.step === step);
+    .filter(record => (scope === undefined || record.scope === scope) && (step === undefined || record.step === step));
 }
 
 function archiveStep(scope: string, step: string, meter: StepPerformance, reason: Archive["reason"]) {

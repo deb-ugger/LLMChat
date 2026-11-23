@@ -2816,7 +2816,7 @@ body.ocr-image-resizing * {
 .game-benchmark-running-params.is-stacked > .kv > b { max-width:none; }
 .game-benchmark-page {
   box-sizing: border-box; width: 100%; height: 100dvh; min-width: 0;
-  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--bg, #fbf9f4); color: var(--text, #1b1a16);
 }
 .game-benchmark-page-header, .game-benchmark-footer {
@@ -3014,6 +3014,21 @@ body.ocr-image-resizing * {
 .game-benchmark-queue-title > strong { min-width: 0; text-wrap: pretty; }
 .game-benchmark-queue-title > .game-flow-metric { flex: none; }
 .game-benchmark-record-task { min-width: 0; }
+.game-benchmark-record-task.has-failure,
+.game-benchmark-record-runs > details.has-failure { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
+.game-benchmark-record-failure { color: var(--danger); font-weight: 600; }
+.game-benchmark-record-parameters {
+  display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3);
+  margin-block: var(--space-2); font-size: var(--fs-caption);
+}
+.game-benchmark-record-parameters div { display: flex; gap: var(--space-1); }
+.game-benchmark-record-parameters dt { color: var(--text-muted); }
+.game-benchmark-record-parameters dd { margin: 0; }
+.game-action-confirm.game-benchmark-report-dialog { width: min(1100px, calc(100vw - 32px)); max-width: none; }
+.game-benchmark-report-dialog .game-confirm-details { max-height: min(55dvh, 560px); background: var(--bg-panel); }
+.game-benchmark-report-dialog table { width: 100%; border-collapse: collapse; }
+.game-benchmark-report-dialog :is(th, td) { padding: 6px 8px; text-align: start; border-bottom: 1px solid var(--border); }
+.game-benchmark-report-dialog th { white-space: nowrap; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
 @media (900px <= width < 1400px) {
   .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
@@ -3177,6 +3192,7 @@ body.ocr-image-resizing * {
 
 /* 页脚保持在滚动内容外，指标按当前值和峰值成组。 */
 .game-benchmark-sysbar {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-3);

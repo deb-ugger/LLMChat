@@ -343,7 +343,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
             historyRevision++;
             publish();
           });
-        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath, request.referenceSampleSetPath);
+        }, target, sample => context.report({ sample: sampleLabel(sample) }), resumeAt, request.sampleSetPath, request.referenceSampleSetPath, limit);
       return failures;
     } finally {
       finishGameStep(totalScope);

@@ -1,5 +1,6 @@
 import { getLayoutRect, getLayoutViewport } from "./viewportLayout";
 import { FeatureIcon } from "./components/FeatureIcon";
+import { SystemPerfBar } from "./components/SystemPerfBar";
 import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
 import { openProjectBenchmark } from "./gameBenchmarkWindow";
 import { ApplicationHelpPage, isHelpModule, type HelpModule } from "./components/GameWorkflowHelp";
@@ -613,6 +614,7 @@ export default function App() {
           document.querySelector<HTMLButtonElement>('[aria-controls="app-output-drawer"]')?.focus();
           setOutputExpanded(false);
         }} />}
+        <SystemPerfBar />
       </div>
     </div>
   );

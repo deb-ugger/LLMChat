@@ -54,14 +54,17 @@ export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
       (run.performance.benchmark?.batchPlan as BenchmarkBatchPlan | undefined) ?? latest, undefined);
     const latestRuns = plan ? [...new Map(runs.map(run => [run.performance.benchmark?.batchIndex, run])).values()] : runs;
     const completed = latestRuns.filter(run => run.status === "完成" || run.status === "失败");
+    const meta = latestRuns[0]?.performance.benchmark;
+    const rounds = plan?.rounds ?? (typeof meta?.rounds === "number" ? meta.rounds : undefined);
+    const configCount = plan?.configs.length ?? (typeof meta?.configCount === "number" ? meta.configCount : undefined);
     const sampleRecord = latestRuns.find(run => run.performance.benchmark?.batchIndex === completed.length &&
       run.status === "已暂停" && run.performance.benchmark?.imageDetails);
     const sampleSource = sampleRecord ?? runs.find(run => run.performance.benchmark?.imageDetails);
     const continuation = plan && completed.length < plan.rounds * plan.configs.length && sampleSource?.performance.taskId
       ? { plan, completed, sampleSource, reuse: !!sampleRecord } : undefined;
-    return { id, runs: latestRuns, firstTime, completed: completed.length, planned: !!plan, continuation,
-      rounds: plan?.rounds ?? new Set(runs.map(run => run.round)).size, configs: plan?.configs.length ?? configs.size,
-      failed: latestRuns.filter(run => run.status === "失败").length,
+    return { id, runs: latestRuns, firstTime, completed: completed.length, planned: rounds !== undefined && configCount !== undefined, continuation,
+      rounds: rounds ?? new Set(runs.map(run => run.round)).size, configs: configCount ?? configs.size,
+      failed: latestRuns.filter(run => run.status === "失败" || run.failed > 0).length,
       stopped: latestRuns.filter(run => run.status === "已中止" || run.status === "已暂停").length };
   }).sort((left, right) => right.firstTime.localeCompare(left.firstTime));
 }
@@ -85,7 +88,7 @@ export function benchmarkHistoryResults(records: StepPerformance[]): BenchmarkRe
   return [...unique.values()].sort((left, right) => (right.performance.endedAt || right.performance.beginTime || "").localeCompare(left.performance.endedAt || left.performance.beginTime || ""));
 }
 
-export async function readGameBenchmarkHistory(scope: string, step: string): Promise<BenchmarkResult[]> {
+export async function readGameBenchmarkHistory(scope?: string, step?: string): Promise<BenchmarkResult[]> {
   await flushGamePerformanceArchive();
   const records = isTauri() ? await invoke<StepPerformance[]>("read_game_performance", { scope, step }) : [];
   return benchmarkHistoryResults([...records, ...pendingGameBenchmarkArchives(scope, step)]);
@@ -226,7 +229,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
   target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
-  resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string) {
+  resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string, sampleLimit?: number) {
   let settings: Settings | undefined;
   let modelsReady = false;
   const step = target?.step || "translate";
@@ -259,7 +262,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
       const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === resumeAt ? { configs, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
-      const metadata = { queueId, round, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
+      const metadata = { queueId, round, rounds, configCount: configs.length, sampleLimit, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
         detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);
