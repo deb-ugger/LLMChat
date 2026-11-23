@@ -3013,10 +3013,15 @@ body.ocr-image-resizing * {
 .game-benchmark-queue-title > .game-flow-metric { flex: none; }
 .game-benchmark-record-task { min-width: 0; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
-@media (width < 1400px) {
-  .game-benchmark-columns {
-    grid-template-columns: minmax(0, 1fr);
+@media (900px <= width < 1400px) {
+  .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
   }
+  .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns > :first-child { grid-row: 1 / 3; }
+}
+@media (width < 900px) {
+  .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
 }
 
 .game-step-running-metrics { min-width: 0; font-size: var(--fs-caption); text-align: start; }
@@ -3091,7 +3096,8 @@ body.ocr-image-resizing * {
 /* 运行记录页顶部的模块切换：与蒙版标签同一套分段控件。 */
 .game-benchmark-tabs {
   display: inline-flex;
-  margin-inline-start: var(--space-3);
+  flex: none;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 6px);
   background: var(--bg-panel);
@@ -3139,7 +3145,7 @@ body.ocr-image-resizing * {
 .game-benchmark-syschart { flex: none; block-size: 160px; border-top: 1px solid var(--border); background: var(--bg-panel); }
 
 /* 立即开始任务：推到测试配置卡头右侧，和运行条的主按钮区分开。 */
-.game-benchmark-start-here { margin-inline-start: auto; }
+.game-benchmark-start-here { margin-inline-start: auto; white-space: nowrap; }
 
 /* 模型比较面板：三张图，等宽两列，散点占整行。 */
 .game-benchmark-compare {
@@ -3212,6 +3218,9 @@ body.ocr-image-resizing * {
 .game-benchmark-modes {
   display: inline-flex;
   align-items: stretch;
+  flex: none;
+  margin-inline-start: auto;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 6px);
   overflow: hidden;
@@ -3221,8 +3230,8 @@ body.ocr-image-resizing * {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  min-block-size: 26px;
-  padding: 2px 12px;
+  min-block-size: 28px;
+  padding: var(--space-1) var(--space-3);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -3233,6 +3242,9 @@ body.ocr-image-resizing * {
 .game-benchmark-modes > button:hover { background: var(--bg-hover); color: var(--text); }
 .game-benchmark-modes > button.is-active { background: var(--text); color: var(--bg-panel); }
 .game-benchmark-modes > button > small { opacity: 0.7; font-size: var(--fs-caption); }
+@media (max-width: 620px) {
+  .game-benchmark-modes { margin-inline-start: 0; }
+}
 
 /* 正式运行列表：一行一条，时间在前、指标在后。 */
 .game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
