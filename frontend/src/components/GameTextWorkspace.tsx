@@ -14,7 +14,6 @@ import { GamePageNumber } from "./GamePageNumber";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
-import { GameStepProgress } from "./GameStepProgress";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, recommendedGameModels, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
@@ -42,7 +41,7 @@ import { createUnityEnginePool, normalizeUnityEngines } from "../unityEnginePool
 import { engineReady, parseEngineKeys } from "../translateEngines";
 import type { UnityEntry, UnityProgress, UnityEngineProgress } from "../unityOffline";
 import { UnityEngineList } from "./UnityEngineList";
-import { gameTextStageLabels, UnityTranslationProgress } from "./UnityTranslationProgress";
+import { UnityTranslationProgress } from "./UnityTranslationProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { useGameFileDrop } from "../hooks/useGameFileDrop";
 import type { GameImportSource } from "../gameImageImport";
@@ -665,7 +664,6 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     };
   }, [running, state]);
   const elapsedLabel = gameDuration(stepPerformance(promptState.scope + ":text", currentPhase).elapsedMs);
-  const stepLabel = progress?.textStage ? gameTextStageLabels[progress.textStage] : screeningProgress ? "筛选文本" : "翻译正文";
   const progressLabel = loading ? "正在读取" : state === "clearing" ? "正在清理"
     : state === "screening" ? "正在筛选" : state === "screen-stopped" || state === "stopped" ? "已中止"
     : running ? "正在处理"
@@ -701,13 +699,11 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const progressState = loading || state === "clearing" || state === "screening" || running ? "running"
     : state === "screen-stopped" || state === "stopped" ? "stopped"
     : state === "error" ? "error" : screeningProgress && screenComplete || textReady ? "done" : "pending";
-  const progressContent = <GameStepProgress title={stepLabel} state={progressState} label={progressLabel}
-    elapsed={elapsedLabel} percent={loading || state === "clearing" || !progressTotal && progressState === "running" ? undefined : percent}
-    count={!loading && state !== "clearing" && progressTotal ? `${progressCompleted} / ${progressTotal} 条` : undefined}>
+  const progressDetails = <>
     {state === "clearing" && <p className="unity-task-detail">{progress?.detail}</p>}
     {progress && (!screeningProgress || progress.textStage === "screening") && <UnityTranslationProgress progress={progress} running={running || state === "screening"} failure={state === "error" ? progressFailure : undefined} onLocate={locateEntry} />}
     {!progress && state === "error" && progressFailure && <p className="game-text-progress-failure" role="alert">{progressFailure}</p>}
-  </GameStepProgress>;
+  </>;
   return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{active && visible && importPreview && createPortal(<div className="game-import-backdrop"><section role="dialog" aria-modal="true" aria-label="导入预览" className="game-import-dialog">
       <header><strong>导入预览 · {importPreview.rows.length} 条</strong><button type="button" className="unity-btn" onClick={()=>setImportPreview(undefined)}>取消</button></header>
       <div className="game-import-rows">{importPreview.rows.slice(importPreview.page*40,importPreview.page*40+40).map(entry=><label key={entry.id}><span>#{entry.id} · {entry.source}</span><textarea value={entry.translation} onChange={event=>{const translation=event.target.value;setImportPreview({...importPreview,rows:importPreview.rows.map(row=>row.id===entry.id?{...row,translation}:row)});}}/><small>{entry.translation && gameTextProblem(entry.source, entry.translation)}</small></label>)}</div>
@@ -717,7 +713,12 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       { scope: "config", label: "仅翻译原语言", value: options.onlySourceLanguage !== false ? "开启" : "关闭" },
       { scope: "config", label: "跳过目标语言", value: options.skipTargetLanguage !== false ? "开启" : "关闭" },
       { scope: "config", label: "合并换行", value: options.joinLines ? "开启" : "关闭" },
-    ]} configurationCommit={configurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || busy || !project} onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{step: currentPhase, state: state === "screening" || running ? "running" : state === "screen-stopped" ? "stopped" : state, progress: progressContent}} configured={configured} onConfigure={setConfigured}
+    ]} configurationCommit={configurationCommit} configurationRevision={configurationRevision} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || busy || !project} onSaveConfiguration={saveConfiguration} configurationScope={project && !loading ? gamePath + ':' + sourcePath : null} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={busy || !entries.length || skipped || stats.coverageCompleted === selected.length} onClick={onSkip}>跳过剩余内容</button>} activity={{ step: currentPhase, state: progressState, label: progressLabel, elapsed: elapsedLabel,
+      progress: { current: !loading && state !== "clearing" && progressTotal ? progressCompleted : undefined,
+        total: !loading && state !== "clearing" ? progressTotal || undefined : undefined,
+        percent: loading || state === "clearing" || !progressTotal && progressState === "running" ? undefined : percent,
+        details: progressState === "running" ? progressDetails : undefined },
+      details: progressState !== "running" ? progressDetails : undefined }} configured={configured} onConfigure={setConfigured}
     onRun={!busy && !textReady && selected.length ? () => void handle.current?.automatic(new AbortController().signal) : undefined}
     steps={[
       { id: "screen", title: "筛选文本", models: [{role:"textScreen",id:options.screeningModel}], summary: options.screeningModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选",

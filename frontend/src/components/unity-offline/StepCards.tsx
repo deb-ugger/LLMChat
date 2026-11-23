@@ -2,8 +2,10 @@ import type { ComponentProps, CSSProperties, ReactNode, Ref } from "react";
 import { createPortal } from "react-dom";
 import { GamePromptContext } from "../../gamePrompts";
 import type { UnityProject } from "../../unityOffline";
-import { GameFlowSequence, StepRunningMetrics } from "../GameFlowSequence";
-import { GameProgressBar, GameStepProgress } from "../GameStepProgress";
+import { GameFlowSequence, GameFlowPerformance } from "../GameFlowSequence";
+import { GameFlowCard, type GameFlowActivity } from "../GameFlowCard";
+import { GameProgressBar } from "../GameStepProgress";
+import type { StepPerformance } from "../../gameModelPerformance";
 import { GameWorkflowSteps } from "../GameWorkflowSteps";
 import { UnityActionIcon } from "../UnityActionIcon";
 import { UnityIconButton } from "../UnityIconButton";
@@ -12,22 +14,20 @@ import { UnityTranslationProgress } from "../UnityTranslationProgress";
 export type TranslationCardFlow = Omit<ComponentProps<typeof GameFlowSequence>, "actions" | "children">;
 export type WorkflowTrack = Omit<ComponentProps<typeof GameWorkflowSteps>, "idPrefix" | "panelId">;
 
-type ProgressContentProps = ComponentProps<typeof GameStepProgress> & {
+type ProgressDetailsProps = {
   manualReviewCount?: number;
   scanResource?: RegExpMatchArray | null;
   taskDetail?: string | false;
   scanThroughput?: string;
   scanTiming?: UnityProject["scanMetrics"];
   translation?: ComponentProps<typeof UnityTranslationProgress>;
-  metrics?: ComponentProps<typeof StepRunningMetrics>;
 };
 
-export function StepProgressContent({ manualReviewCount, scanResource, taskDetail, scanThroughput, scanTiming,
-  translation, metrics, ...progress }: ProgressContentProps) {
-  return <GameStepProgress {...progress}>
+export function StepProgressDetails({ manualReviewCount, scanResource, taskDetail, scanThroughput, scanTiming,
+  translation }: ProgressDetailsProps) {
+  return <>
     {!!manualReviewCount && <p className="unity-task-detail">待人工确认 {manualReviewCount} 张。请在右侧分组处理，或跳过剩余内容。</p>}
     {scanResource ? <div className="unity-scan-current-resource">
-      <span className="unity-scan-resource-path" data-tooltip={scanResource[1]}>{scanResource[1]}</span>
       <div className="unity-scan-resource-metrics"><span>对象 <b>{scanResource[2]}</b> / {scanResource[3]}</span><span>已提取 <b>{scanResource[4]}</b> 条文本</span></div>
       <GameProgressBar label="当前文件的对象进度" value={Math.min(100, Math.floor(Number(scanResource[2]) / Number(scanResource[3]) * 100))} />
     </div> : taskDetail && <p className="unity-task-detail">{taskDetail}</p>}
@@ -41,8 +41,7 @@ export function StepProgressContent({ manualReviewCount, scanResource, taskDetai
       ] as const).map(([label, ms]) => `${label} ${(ms / 1000).toFixed(2)} 秒`).join(" · ")}</p>
     </details>}
     {translation && <UnityTranslationProgress {...translation} />}
-    {metrics && <StepRunningMetrics {...metrics} />}
-  </GameStepProgress>;
+  </>;
 }
 
 type StepCardsProps = {
@@ -56,7 +55,7 @@ type StepCardsProps = {
   track: WorkflowTrack;
   toolbar?: { target: HTMLElement; saveDisabled: boolean; saveTitle: string; save: () => void };
   mosaic?: { controlsRef: Ref<HTMLDivElement>; scanReady: boolean; hasImages: boolean; error?: string; hasMosaic: boolean };
-  scan?: { busy: boolean; progress: ReactNode; configuration: ReactNode; resources: ReactNode };
+  scan?: GameFlowActivity & { configuration: ReactNode; resources: ReactNode; measurement?: StepPerformance };
   translation?: {
     prompts: ComponentProps<typeof GamePromptContext.Provider>["value"];
     flow: TranslationCardFlow;
@@ -66,12 +65,11 @@ type StepCardsProps = {
   };
   batch?: ReactNode;
   deployment?: ReactNode;
-  deploymentProgress?: ReactNode;
   errorPanel?: ReactNode;
 };
 
 export function StepCards({ panelRef, workflowRef, panelStyle, generationState, activeStep, imagePart, mosaicPage, track,
-  toolbar, mosaic, scan, translation, batch, deployment, deploymentProgress, errorPanel }: StepCardsProps) {
+  toolbar, mosaic, scan, translation, batch, deployment, errorPanel }: StepCardsProps) {
   return <>
     {toolbar && createPortal(<>
       <UnityIconButton className="unity-project-save" aria-label="保存工程" title={toolbar.saveTitle} disabled={toolbar.saveDisabled} onClick={toolbar.save}><UnityActionIcon kind="save" /></UnityIconButton>
@@ -90,11 +88,10 @@ export function StepCards({ panelRef, workflowRef, panelStyle, generationState, 
             </div>}
             {!mosaicPage && <>
               {scan && <div className="unity-scan-layout">
-                <div className="unity-scan-progress-card">{scan.progress}</div>
-                <details className="unity-scan-configuration" open={!scan.busy}>
-                  <summary>扫描设置</summary>
-                  {scan.configuration}
-                </details>
+                <div><GameFlowCard title="扫描资源" state={scan.state} label={scan.label} elapsed={scan.elapsed}
+                  actions={scan.actions} progress={scan.progress} details={scan.details}
+                  performance={<GameFlowPerformance measured={scan.measurement} />}
+                  configuration={<div className="game-flow-field-wide">{scan.configuration}</div>} /></div>
                 {scan.resources}
               </div>}
               {translation && <GamePromptContext.Provider value={translation.prompts}>
@@ -108,7 +105,6 @@ export function StepCards({ panelRef, workflowRef, panelStyle, generationState, 
               {deployment}
             </>}
           </div>
-          {deploymentProgress}
           {errorPanel && <div className="unity-step-batch">{errorPanel}</div>}
         </section>
       </div>

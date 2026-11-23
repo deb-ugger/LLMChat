@@ -26,7 +26,8 @@ import { collectGameImageNames, translateNamedImageText } from "../gameImageName
 import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type GameTestConfigurationAccess } from "../gameModelPreset";
 import type { GameStepConfigurationCommit } from "./GameFlowSequence";
 import { formatFlowThroughput } from "../gameFlowMetrics";
-import { GameProgressBar } from "./GameStepProgress";
+import { GameProgressBar, gameProgressLabels } from "./GameStepProgress";
+import type { GameFlowActivity } from "./GameFlowCard";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { prepareUnityImageSources, readUnitySourceImage } from "../unityImagePreview";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
@@ -65,7 +66,6 @@ import { mergeUnityTranslationProject, UnityTranslationStopped, type UnityTransl
 import { normalizeUnityImageSelection, createUnityImageOcr, translateCurrentUnityImage, processUnityImages, maskUnityImageRegions, unityImageUsesRegionMask, unityImageTranslationRegions } from "../unityImages";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UnityEngineList } from "./UnityEngineList";
-import { gameTextStageLabels } from "./UnityTranslationProgress";
 import { createUnityEnginePool, loadUnityEngines, normalizeUnityEngines, defaultUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "../unityEnginePool";
 import { UnityDescriptionSelect, UNITY_WRAP_CHOICES, UNITY_LINE_CHOICES, UNITY_SEGMENT_CHOICES } from "./UnityDescriptionSelect";
 import { runImageRegionTranslation, runImageTranslation, unityImagePhaseNames, unityImagePhases,
@@ -77,7 +77,7 @@ import { mapOfflineDeploymentProgress, useOfflineDeploy } from "./unity-offline/
 import { useProjectMount } from "./unity-offline/projectMount";
 import { useProjectSwitch, type UnityOfflineHandle } from "./unity-offline/useProjectSwitch";
 import { runTextRetry, runTextScreening, runTextTranslation, useTextOrchestration, type UnityTranslationOptions } from "./unity-offline/useTextOrchestration";
-import { StepCards, StepProgressContent, type TranslationCardFlow, type WorkflowTrack } from "./unity-offline/StepCards";
+import { StepCards, StepProgressDetails, type TranslationCardFlow, type WorkflowTrack } from "./unity-offline/StepCards";
 import { DeploySlot, WorkspaceSlots } from "./unity-offline/WorkspaceSlots";
 import { useCheckpointParameterWrite, useCheckpointWriter, type GenerationProgress, type RunCheckpoint } from "./unity-offline/useCheckpointWriter";
 import { getPausedScanState, usePauseResume } from "./unity-offline/usePauseResume";
@@ -969,7 +969,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   const progressPercent = generation?.total ? Math.floor(generation.completed / generation.total * 100) : generation?.state === "done" && generation.total === 0 ? 100 : null;
   const progressIsImage = generation?.step === 2 && (localActivity && generation === localActivity.value ? localActivity.images : activeStep === 2 && checkpoint?.translationRuns ? imagePart : !!checkpoint?.imageOnly);
-  const progressUnit = generation?.step === 2 ? progressIsImage ? "张图片" : checkpoint?.layoutOnly ? "处文本" : generation.translation ? "种原文（已检查）" : "种原文（已有译文）" : "个文件";
   const resumable = !preparingRescan && !!checkpoint && !checkpoint.finished;
   const { pausedScan, scanOptionsChanged } = getPausedScanState(checkpoint, { includeCode, textMode, typeDirectory, codeAssemblies });
   const locked = !!busy || restoring || resumable || saving || applyingTestConfiguration || !!importPreview;
@@ -1558,11 +1557,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     ? "running" : activeStep === 2 ? flowProgressState : visibleGeneration?.state ?? (activeStep === 3 ? applied ? "done" : "pending" : activeStep <= completedThrough ? "done" : "pending");
   const redrawSummary = activeStep === 2 && redrawPhase ? gameImageRedrawSummary(visibleGeneration, progressState === "error") : undefined;
   const showProgressCount = !(activeStep === 2 && redrawPhase && progressState === "error" && !redrawSummary);
-  const progressTitle = activeStep === 2
-    ? imagePart ? unityImagePhaseNames[imageTask.current]
-      : visibleGeneration?.textStage ? gameTextStageLabels[visibleGeneration.textStage]
-      : textScreening || !screenComplete ? "筛选文本" : "翻译正文"
-    : GENERATION_STEPS[(activeStep === 3 ? visibleGeneration?.step ?? (patch ? 4 : 3) : activeStep) - 1];
   const scanTiming = activeStep === 1 && progressState === "done" ? project?.scanMetrics : undefined;
   const scanThroughput = activeStep === 1 && progressState === "done" && project
     ? formatFlowThroughput(stepPerformance(deploymentMetricScope(root, "scan"), "scan"), "个") ??
@@ -1581,7 +1575,6 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const scanResource = activeStep === 1
     ? taskDetail?.match(/^读取资源对象：(.+) · 对象 (\d+) \/ (\d+) · 已提取 (\d+) 条文本$/)
     : undefined;
-  const scanBusy = activeStep === 1 && progressState === "running";
   const mosaicMounted = mosaicPage || !!mosaicControls;
   const mosaicDisabled = !!workflowBusy || restoring || saving || applyingTestConfiguration || !!imageEditorBusy || !!importPreview;
   const selectWorkflowStage = (tab: (typeof UNITY_STAGE_TABS)[number]) => {
@@ -1599,11 +1592,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (activeStep === 2 && imagePart && tab.id !== "2.2" && imageLeaveGuard.current) imageLeaveGuard.current(change);
     else change();
   };
-  const progressContent = <StepProgressContent title={progressTitle} state={progressState} elapsed={<WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} />}
-    label={redrawSummary?.label}
-    percent={redrawSummary?.percent ?? (visibleGeneration && showProgressCount ? progressPercent : undefined)}
-    count={redrawSummary?.count ?? (showProgressCount && visibleGeneration?.total ? `${visibleGeneration.completed} / ${visibleGeneration.total} ${progressUnit}` : undefined)}
-    actions={<>
+  const cardActions = <>
       {activeStep !== 2 && !(activeStep === 3 && busy) && taskAction}
       {activeStep === 1 && !busy && !restoring && <button className="unity-btn unity-btn-primary" disabled={testing || !root || !output} title={testTitle}
         onClick={() => void (preparingRescan ? startWorkflow(1, 1, false, false, true) : scanStarted ? restartStage(1) : startWorkflow(1, 1))}>
@@ -1612,17 +1601,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       {activeStep === 1 && project && !busy && !restoring && !saving && <button type="button" className="unity-btn unity-btn-warning" onClick={() => void clearResourceScan()}>清理扫描</button>}
       {imageEditorBusy && <button className="unity-btn" onClick={() => imageEditorAbort.current?.abort()}>停止处理</button>}
       {generation && !viewingProgress && <button className="unity-btn" onClick={() => { setActiveStep(generation.step); setImagePart(!!checkpoint?.imageOnly); }}>查看进度</button>}
-    </>}
+  </>;
+  const cardProgressDetails = <StepProgressDetails
     manualReviewCount={activeStep === 2 && imagePart && !readiness.imagesSkipped ? readiness.manualReviewImages : undefined}
     scanResource={scanResource} taskDetail={(activeStep !== 2 || imagePart) && taskDetail} scanThroughput={scanThroughput} scanTiming={scanTiming}
     translation={activeStep === 2 && !imagePart && !progressIsImage && generation?.step === 2 ? {
       progress: generation, running: progressRunning, failure: generation.state === "error" ? generation.failure || generation.detail : undefined,
       onLocate: locateTranslationFailure,
     } : undefined}
-    metrics={progressMetricStage && (progressState === "running" || progressState === "stopped" && progressMeasurement?.taskId) ? {
-      measured: progressMeasurement, stopped: progressState === "stopped", elapsedMs: elapsed,
-      parameters: [{ scope: "task", label: "操作", value: progressTitle }, { scope: "task", label: "项目", value: root }],
-    } : undefined} />;
+    />;
+  const cardActivity: GameFlowActivity = {
+    state: progressState, label: redrawSummary?.label ?? gameProgressLabels[progressState],
+    elapsed: elapsed > 0 || elapsedOrigin !== undefined ? <WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} /> : undefined,
+    actions: cardActions,
+    progress: {
+      sample: scanResource?.[1],
+      current: !redrawSummary && showProgressCount && visibleGeneration?.total ? visibleGeneration.completed : undefined,
+      total: !redrawSummary && showProgressCount ? visibleGeneration?.total || undefined : undefined,
+      count: redrawSummary?.count,
+      percent: redrawSummary?.percent ?? (visibleGeneration && showProgressCount ? progressPercent : undefined),
+      details: progressState === "running" ? cardProgressDetails : undefined,
+    },
+    details: progressState !== "running" ? cardProgressDetails : undefined,
+  };
   const deploymentPlan = useMemo(() => deploymentPlanState?.root === root ? deploymentPlanState.plan : loadDeploymentPlan(root), [deploymentPlanState, root]);
   const patchScope = checkpoint?.patch?.deploymentExcluded ?? [];
   const deploymentValidation = useMemo(() => validateDeploymentPlan(deploymentPlan), [deploymentPlan]);
@@ -1957,6 +1958,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       root,
       busyLabel: busy,
       metrics: deploymentMetrics(root),
+      cardActivity,
       plan: deploymentPlan, run: deploymentRun, stoppedStep: currentStoppedStep,
       completed: deploymentCompleted, canStop: !!deploymentController.current || !!abort.current,
       textCount,
@@ -2062,8 +2064,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         ],
     configurationCommit: imagePart ? imageConfigurationCommit : textConfigurationCommit, configurationRevision, testConfigurations, testConfigurationDisabled,
     onSaveConfiguration: saveConfiguration, configurationScope: project && !restoring ? root : null, configuration, restoreConfiguration,
-    activity: { step: runningFlowStep, state: flowProgressState, label: redrawSummary?.label,
-      progress: (!generation || generation.step === 2 && progressIsImage === imagePart) ? progressContent : undefined },
+    activity: { ...((!generation || generation.step === 2 && progressIsImage === imagePart) ? cardActivity : {}),
+      step: runningFlowStep, state: flowProgressState },
     configured: flowConfig, onConfigure: setFlowConfig,
     onRun: imagePart && !testConfigurationDisabled && !project?.imagesSkipped && !imagesReady ? () => void startWorkflow(2, 2, false, false, false, "images", true) : undefined,
     steps: imagePart ? [
@@ -2243,13 +2245,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       mosaic={mosaicMounted ? { controlsRef: setMosaicControls, scanReady,
         hasImages: !!project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0),
         error: mosaicStatus?.root === root ? mosaicStatus.error : undefined, hasMosaic } : undefined}
-      scan={activeStep === 1 ? { busy: scanBusy, progress: progressContent, configuration: scanConfiguration, resources: scanResources } : undefined}
+      scan={activeStep === 1 ? { ...cardActivity, measurement: progressMeasurement,
+        configuration: scanConfiguration, resources: scanResources } : undefined}
       translation={translationFlow ? { prompts: promptState, flow: translationFlow, configuration: translationConfiguration,
         skipDisabled: !!busy || restoring || saving || !scanReady, skipRemaining: () => void skipTranslationPart(imagePart) } : undefined}
       batch={activeStep === 2 && !imagePart && (textBatch || textTransfer) ? <>{textBatch}{textTransfer}</> : undefined}
       deployment={deploymentPage && <DeploySlot model={deployment.model} actions={deployment.actions} onFocusStep={focusDeploymentStep}
         mosaicDisabled={!root || !!busy || mosaicBusy || restoring || saving} />}
-      deploymentProgress={activeStep === 3 && progressContent}
       errorPanel={errorPanel && (generation?.state !== "error" || Math.min(generation.step, 3) === activeStep) && errorPanel} />
     <WorkspaceSlots divider={!deploymentPage ? dividerProps : undefined}
       mosaic={mosaicMounted ? { visible: mosaicPage, onCompletion: reportMosaicCompletion,

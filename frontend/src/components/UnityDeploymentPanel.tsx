@@ -4,7 +4,8 @@ import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type Uni
 
 import { deploymentMetrics, type DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
-import { StepRunningMetrics } from "./GameFlowSequence";
+import { GameFlowPerformance, StepRunningMetrics } from "./GameFlowSequence";
+import { GameFlowCard, type GameFlowActivity } from "./GameFlowCard";
 import { GameProgressBar } from "./GameStepProgress";
 import { gameImageExportWarning, subscribeGameImageExportWarnings, type GameImageExportKind } from "../gameImageExport";
 import type { ImageExportActions, ImageExportPackage, LegacyImagePatch } from "../hooks/useGameImageExportPackage";
@@ -156,6 +157,7 @@ export type DeploymentModel = {
   applied: boolean;
   installed: boolean;
   metrics?: DeploymentMetrics;
+  cardActivity?: GameFlowActivity;
   fontPath: string;
   fontName: string;
   extraCharacters: string;
@@ -763,15 +765,16 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
     <div className={`dpl${running ? " is-running" : ""}`}>
       <DeploymentCanvas key={model.root} model={model} actions={actions} percent={percent} running={running} onFocusStep={onFocusStep} />
 
-      {model.progress && <div className="dpl-run" role="status">
-        <span className="dpl-run-bar" aria-hidden="true"><i style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} /></span>
-        <span className="dpl-run-text">{model.progress.detail}</span>
-        {model.progress.percent !== null && <span className="dpl-run-count">{Math.round(percent)}%</span>}
-      </div>}
-
-      <DeploymentThroughput metrics={model.metrics} />
-
-      <div className="dpl-grid">
+      <div><GameFlowCard title="生成与应用" state={running ? "running" : model.cardActivity?.state ?? (model.applied ? "done" : "pending")}
+        label={model.progress?.label ?? model.cardActivity?.label ?? (model.applied ? "已应用" : model.patch ? "已生成" : "未生成")}
+        elapsed={model.cardActivity?.elapsed} actions={model.cardActivity?.actions}
+        progress={{ ...model.cardActivity?.progress,
+          percent: model.run?.total ? 100 * model.run.completed / model.run.total : model.progress?.percent ?? model.cardActivity?.progress?.percent,
+          current: model.run?.completed ?? model.cardActivity?.progress?.current,
+          total: model.run?.total ?? model.cardActivity?.progress?.total,
+          sample: model.progress?.detail }} details={model.cardActivity?.details}
+        performance={<GameFlowPerformance measured={model.applied || model.run?.steps.includes("apply") ? model.metrics?.apply : model.metrics?.generate} />}
+        configuration={<div className="dpl-grid game-flow-field-wide">
         <section className="dpl-panel" aria-label="文本补丁">
           <div className="dpl-panel-head">
             <h4>文本补丁</h4>
@@ -885,7 +888,9 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
             {mosaic}
           </div>
         </section>
-      </div>
+      </div>} /></div>
+
+      <DeploymentThroughput metrics={model.metrics} />
 
       <footer className="dpl-foot">
         <p className="dpl-foot-note">

@@ -1,19 +1,12 @@
-import type { CSSProperties, ReactNode } from "react";
-import { formatMosaicParameters } from "../../benchmark/benchmarkParameters";
+import { useLayoutEffect, type CSSProperties, type ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
 import { mosaicModelLabels, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
 import { GameFlowCard } from "../GameFlowCard";
-import { GameMetricHint, GameModelUsage, GameStepTimingDetails, StepRunningMetrics } from "../GameFlowSequence";
-import { GameProgressBar, gameProgressLabels } from "../GameStepProgress";
+import { GameFlowPerformance } from "../GameFlowSequence";
+import { gameProgressLabels } from "../GameStepProgress";
 import { ModelFilterSelect, type ModelFilter } from "../ModelFilterSelect";
 import type { MosaicStep, StepRun } from "./mosaicWorkbenchTypes";
-
-function formatMosaicRequestTime(ms: number) {
-  if (ms < 1) return "不足 1 毫秒";
-  if (ms < 100) return Math.round(ms) + " 毫秒";
-  return ms < 60_000 ? (ms / 1000).toFixed(1) + " 秒" : gameDuration(ms);
-}
 
 type Props = {
   paneVisible: boolean;
@@ -84,6 +77,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, configured, onConfig
   measurements, now, progress, error, screen, refine, redraw, unresolvedRefineFailures, retryCount }: Props) {
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
+  useLayoutEffect(() => {
+    if (paneVisible && configured === null) onConfigure("screen");
+  }, [configured, onConfigure, paneVisible]);
   const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
     const status = ({ screen, refine, redraw })[id].status;
     const state = status?.state || "pending";
@@ -92,85 +88,34 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, configured, onConfig
     const failed = status?.failed ?? 0;
     const processed = status && Math.min(status.total, status.completed + (id === "refine" ? failed : 0));
     const percent = status?.total && processed !== undefined ? processed / status.total * 100 : undefined;
-    const { formalMeasurement, measured } = measurements[id];
+    const { measured } = measurements[id];
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : now - status.started);
-    const expanded = configured === id;
-    const toggle = () => onConfigure(expanded ? null : id);
-    const modelTitle = (running || id === "redraw" && redraw.paused) ? status?.summary : summary;
-    const models = Object.entries(measured.models);
-    const multipleModels = id !== "screen" && models.length > 1;
-    const foldedModels = id !== "screen" && !expanded && models.length > 0;
-    const showModelTitle = id === "screen" || models.length === 0;
-    const detection = id === "screen" ? models[0]?.[1] : undefined;
-    const detectionMs = detection?.requests ? detection.requestMs / detection.requests : 0;
-    const batchElapsed = status?.batchElapsed ?? (status?.batchStarted === undefined ? 0 : now - status.batchStarted);
-    const imageRate = status?.processed && batchElapsed > 0 ? status.processed * 1000 / batchElapsed : undefined;
+    const selected = configured === id;
     const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
-    const formalPaused = state === "stopped" && !!formalMeasurement.taskId;
-    const liveMetrics = running || formalPaused || !!benchmark;
-    const modelRows = id === "screen" ? [] : models.map(([key, model]) => <div className="game-flow-model-row" data-model-row={model.model} key={key}>
-      {(multipleModels || foldedModels) && <span className="game-flow-model-name" data-tooltip={model.model} onClick={toggle}>{model.model.split("/").at(-1)}</span>}
-      <div className="game-flow-model-values">
-        {!expanded ? <>
-          <small>并发 <span className="game-flow-metric">{model.concurrency}</span></small>
-          {model.requests > 0 && <small className="game-flow-model-glance">
-            {model.requests} 次 · 均 {formatMosaicRequestTime(model.requestMs / model.requests)}
-          </small>}
-        </>
-          : <GameModelUsage model={model} wallRequestMs={measured.modelWallTiming?.[model.model]?.requestMs}
-              perImage={id !== "refine"} onToggle={toggle} />}
-      </div>
-    </div>);
-    return <GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark} expanded={expanded}
-      toggleTooltip={expanded ? "收起设置" : "展开设置"} onToggle={toggle}
-      status={<>{screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}{elapsed != null && !screeningMethodChanged && <> · <span className="game-flow-metric">{gameDuration(elapsed)}</span></>}</>}
-      summary={liveMetrics ? <div className="game-mosaic-step-summary">
-        {running && status?.total ? <GameProgressBar label={title + "进度"} value={percent} /> : null}
-        <StepRunningMetrics measured={benchmark ? benchmark.performance : formalMeasurement}
-          benchmark={benchmark} stopped={formalPaused && !benchmark} elapsedMs={benchmark ? undefined : elapsed}
-          device={!benchmark && status?.device ? status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU" : undefined}
-          parameters={!benchmark ? formatMosaicParameters(benchmarkSteps[id], preferences) : undefined} />
-      </div> : <div className="game-mosaic-step-summary">
-        {(showModelTitle || status?.device) && <span data-tooltip={status?.device?.reason}>
-          {showModelTitle && modelTitle}
-          {status?.device && <>{showModelTitle && " · "}{status.device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"}</>}
+    return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
+      onConfigure={() => { if (!selected) onConfigure(id); }}
+      label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
+      elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
+      progress={{ current: processed, total: status?.total || undefined, percent }}
+      performance={(selected || running || state === "stopped" || benchmark) &&
+        <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
+      details={<small className="game-flow-model-rates">
+        {id === "screen" && <span data-tooltip={status?.device?.reason}>{summary}{status?.device &&
+          (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}</span>}
+        {screeningMethodChanged && <span>其他筛选方式已有 {screen.otherDetectorCount} 张</span>}
+        {status && id === "refine" && (failed > 0 || unresolvedRefineFailures > 0) && <span>
+          成功 {status.completed} 张 · 本轮失败 {failed} 张 · 未解决的复筛失败 {unresolvedRefineFailures} 张
+          {retryCount > 0 && <>（{retryCount} 张重试中）</>}
         </span>}
-        {multipleModels || foldedModels ? <div className={"game-flow-model-list" + (foldedModels ? " is-folded" : "")}>{modelRows}</div> : modelRows}
-        {screeningMethodChanged && <small>其他筛选方式已有 {screen.otherDetectorCount} 张</small>}
-        {status && (status.total > 0 || id === "refine" && unresolvedRefineFailures > 0) ? <small className="game-flow-model-rates">
-          {status.total > 0 && <>
-            <span>{id === "refine" && "已处理 "}{processed} / {status.total} 张</span><span>{Math.round(percent ?? 0)}%</span>
-          </>}
-          {id === "refine" && <span>
-            成功 {status.completed} 张 · 本轮失败 {failed} 张 · 未解决的复筛失败 {unresolvedRefineFailures} 张
-            {retryCount > 0 && `（${retryCount} 张重试中）`}
-          </span>}
-          {id === "refine" && status.prepared !== undefined && status.prepared > (processed ?? 0) &&
-            <span>候选已准备 {status.prepared} / {status.total} 张</span>}
-        </small> : null}
-        {expanded && (imageRate !== undefined || detection || id !== "refine" && failed > 0) &&
-          <small className="game-flow-model-rates">
-            {imageRate !== undefined && <GameMetricHint onClick={toggle} detail="本批已处理张数除以整批经过时间。含读图、准备、等待和结果处理，不含步骤结束后的异步保存。">
-              <span className="game-flow-metric">{imageRate.toFixed(imageRate < 0.1 ? 3 : 2)}</span> 张/秒
-            </GameMetricHint>}
-            {detection && <>
-              <GameMetricHint onClick={toggle} detail="本地检测调用的单张平均耗时，含检测内部的解码与图像处理，不含调用前读图及返回后的结果整理和写回。">
-                检测每张 <span className="game-flow-metric">{detectionMs.toFixed(detectionMs < 10 ? 1 : 0)}</span> 毫秒
-              </GameMetricHint>
-              <span>并发 <span className="game-flow-metric">{detection.concurrency}</span></span>
-              <span>请求 <span className="game-flow-metric">{detection.requests} 次</span></span>
-            </>}
-            {id !== "refine" && failed > 0 && <span>失败 <span className="game-flow-metric">{failed} 张</span></span>}
-          </small>}
-        {expanded && <GameStepTimingDetails measured={measured} onToggle={toggle} />}
-        {(status?.total || id === "screen") && <GameProgressBar label={`${title}进度`} value={percent ?? 0} />}
-      </div>}
+        {status && id === "refine" && status.prepared !== undefined && status.prepared > (processed ?? 0) &&
+          <span>候选已准备 {status.prepared} / {status.total} 张</span>}
+        {id !== "refine" && failed > 0 && <span>失败 {failed} 张</span>}
+      </small>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={aborting} onClick={() => onStop(id)}>
         {aborting ? "正在中止" : "中止"}</button> : actions}
-      configuration={expanded && <div className="game-mosaic-step-settings">{settings}</div>} />;
+      configuration={selected && <div className="game-mosaic-step-settings game-flow-field-wide">{settings}</div>} /></li>;
   };
-
   return <div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
     <div className="game-flow-list"><ol>
       {stepCard("screen", "筛选打码图片", screen.summary, <>

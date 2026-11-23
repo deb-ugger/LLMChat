@@ -3,8 +3,9 @@ import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFo
 import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
-import { StepRunningMetrics } from "./GameFlowSequence";
-import { GameStepProgress } from "./GameStepProgress";
+import { GameFlowPerformance, StepRunningMetrics } from "./GameFlowSequence";
+import { GameFlowCard } from "./GameFlowCard";
+import { GameStepProgress, gameProgressLabels } from "./GameStepProgress";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
@@ -684,7 +685,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     });
   };
 
-  const progress = (actions: string[], idle?: { step: string; title: string; done: boolean }) => {
+  const readProgress = (actions: string[], idle?: { step: string; title: string; done: boolean }) => {
     const action=pending ? pendingAction : status.action;
     const matches=!!action&&actions.includes(action);
     if(!matches&&!idle)return null;
@@ -701,16 +702,23 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const scanThroughput = step === "1" && (running || done) ? formatFlowThroughput(measurement, "个") ??
       formatFlowThroughput(imageWorkflow.loaded ? stepPerformance(deploymentMetricScope(game.path, "scanImages"), "scanImages") : undefined, "张")
       : undefined;
-    return <GameStepProgress title={`步骤 ${step} · ${title}`}
-      state={running ? "running" : failed ? "error" : stopped ? "stopped" : done ? "done" : "pending"}
-      elapsed={measurement?.taskId ? gameDuration(measurement.elapsedMs) : undefined}
-      percent={total ? Math.floor(completed / total * 100) : undefined}
-      count={total ? `${completed} / ${total}` : undefined}
-      actions={running && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}>
-      {scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}
-      {running && <p className="unity-task-detail">{pending ? "正在准备…" : status.detail}</p>}
-      {(running || stopped && measurement?.taskId) && <StepRunningMetrics measured={measurement} stopped={stopped}
-        parameters={[{ scope: "task", label: "操作", value: title }, { scope: "task", label: "引擎", value: game.engine }, { scope: "task", label: "项目", value: game.path }]} />}
+    const detail = running ? pending ? "正在准备…" : status.detail : undefined;
+    const details = <>{scanThroughput && <p className="game-flow-stage-throughput">扫描吞吐 <b>{scanThroughput}</b></p>}</>;
+    return { title, step, running, stopped, state: running ? "running" as const : failed ? "error" as const
+      : stopped ? "stopped" as const : done ? "done" as const : "pending" as const,
+      measurement, elapsed: measurement?.taskId ? gameDuration(measurement.elapsedMs) : undefined,
+      detail, details, completed, total, percent: total ? Math.floor(completed / total * 100) : undefined };
+  };
+  const progress = (actions: string[]) => {
+    const task = readProgress(actions);
+    if (!task) return null;
+    return <GameStepProgress title={"步骤 " + task.step + " · " + task.title} state={task.state}
+      elapsed={task.elapsed} percent={task.percent} count={task.total ? task.completed + " / " + task.total : undefined}
+      actions={task.running && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}>
+      {task.details}
+      {task.detail && <p className="unity-task-detail">{task.detail}</p>}
+      {(task.running || task.stopped && task.measurement?.taskId) && <StepRunningMetrics measured={task.measurement} stopped={task.stopped}
+        parameters={[{ scope: "task", label: "操作", value: task.title }, { scope: "task", label: "引擎", value: game.engine }, { scope: "task", label: "项目", value: game.path }]} />}
     </GameStepProgress>;
   };
   const output = (label:string,path?:string) => path&&<div className="json-embedding-output"><button type="button" className="embed-path-link" data-tooltip={path} aria-label={`打开${label}`} onClick={()=>void api.revealPath(path).catch(e=>setError(String(e)))}><span>{label}</span><code>{path}</code></button></div>;
@@ -778,9 +786,22 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const readyToLaunch = !imageExport || !canApplyText && !pendingImagePackage;
   const installState = exportState.needsRecovery ? "需恢复" : exportState.partiallyRestored || exportState.used && !exportState.applied && patch.installed ? "部分恢复"
     : patch.installed || exportState.applied || !imageExport && (artifacts.images?.applied || artifacts.mosaic?.applied) ? "已应用" : "未安装";
+  const deploymentProgress = readProgress(["inspect", "embed", "apply", "uninstall-text", "cleanup-text"]);
+  const productRunning = deploymentRunning || deploymentProgress?.running || imageBusy && imageWorkflow.stage === "restore";
+  const productState = productRunning ? "running" : deployment?.state === "error" ? "error"
+    : deployment?.state === "stopped" ? "stopped" : deploymentProgress?.state === "error" || deploymentProgress?.state === "stopped"
+      ? deploymentProgress.state : installState === "已应用" ? "done" : "pending";
+  const packageProgress = deploymentProgress?.running ? deploymentProgress : undefined;
   const deploymentPanel = <div className="embed-deployment">
-    <section className="embed-deploy-main" aria-label="生成与应用">
-      <div className="dpl dpl-grid embed-product-grid">
+    <div><GameFlowCard title="生成与应用" state={productState}
+      label={productState === "pending" || productState === "done" ? installState : gameProgressLabels[productState]}
+      elapsed={deploymentProgress?.elapsed} progress={{
+        current: packageProgress?.completed, total: packageProgress?.total,
+        percent: packageProgress?.percent, sample: packageProgress?.detail ?? phaseStatus,
+      }} actions={packageProgress && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}
+      performance={<GameFlowPerformance measured={imageBusy && imageWorkflow.stage === "restore"
+        ? stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages") : deploymentProgress?.measurement} />}
+      configuration={<div className="dpl dpl-grid embed-product-grid game-flow-field-wide">
         {canUseTextResources && <section className="dpl-panel">
           <div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div>
           <dl className="dpl-stats dpl-stats-stack">
@@ -860,12 +881,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
               localStorage.setItem(launchPreference, String(value));
             }} />应用后启动</label>}
           </div>
-        </section></div>
-    </section>
-    {imageBusy && imageWorkflow.stage === "restore" && <GameStepProgress title="处理译图补丁" state="running">
-      <StepRunningMetrics measured={stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages")}
-        parameters={[{ scope: "task", label: "引擎", value: game.engine }, { scope: "task", label: "项目", value: game.path }]} />
-    </GameStepProgress>}
+        </section></div>} /></div>
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
     {runtimeDictionary && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>
       <summary>运行时加载译文</summary>
@@ -878,9 +894,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       </div>
       {progress(["runtime"])}
     </details>}
-    {(["running", "error", "stopped"].includes(status.state) || pending) && progress(["apply", "uninstall-text", "cleanup-text"])}
   </div>;
 
+  const scanProgress = readProgress(["extract"], { step: "1", title: "扫描资源",
+    done: hasTextScan || !canUseTextResources && imageWorkflow.loaded });
   const workRoot = game.path.replace(/[\\/]+$/, "") + "/LLMChat-JSON";
   const workDirectory = <GameWorkDirectory path={workRoot} disabled={!status.outputPath&&!textInfo.sourcePath&&!imageWorkflow.folder} onOpen={path=>void api.revealPath(path).catch(cause=>setError(String(cause)))}/>;
   const gameRoot = game.path.replace(/[\\/]+$/, "");
@@ -1038,14 +1055,26 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">
 
-        {textStep===1&&<div className="unity-task-actions">
+        {textStep === 1 && scanProgress && <><div><GameFlowCard title="扫描资源" state={scanProgress.state}
+          label={gameProgressLabels[scanProgress.state]} elapsed={scanProgress.elapsed}
+          progress={{ current: scanProgress.completed, total: scanProgress.total, percent: scanProgress.percent, sample: scanProgress.detail }}
+          details={scanProgress.details} performance={<GameFlowPerformance measured={scanProgress.measurement} />}
+          actions={<>
           {scanning ? <button className="unity-btn unity-btn-primary" onClick={stopScan}>中止扫描</button>
             : needsLooseLocres ? <><button className="unity-btn unity-btn-primary" disabled={testing || busy} title={testTitle} onClick={() => void start("extract")}>{imageWorkflow.exists ? "重新扫描图片" : "扫描图片"}</button><button className="unity-btn" disabled={busy} onClick={() => void recheckLooseLocres()}>{checkingTextSource ? "正在检测…" : "重新检测散装 .locres"}</button></>
             : canUseTextResources && <button className="unity-btn unity-btn-primary" disabled={testing || busy} title={testTitle} onClick={() => void start("extract")}>{hasTextScan ? "重新扫描资源" : "开始扫描"}</button>}
-        </div>}
+        </>}
+        /></div>
+            {textSource === "locres" && <p className="hint">图片翻译支持游戏 Content 目录中的散装 PNG。封包中的纹理暂不支持。</p>}
+            {textSource === "locres" && (needsLooseLocres || !hasTextScan) && <p className="hint">
+              {needsLooseLocres
+                ? "当前目录没有散装 .locres。请先用外部工具将本地化字符串导出为散装 .locres，放到游戏对应的 Content/Localization 目录，再重新检测。"
+                : "扫描 Content/Localization 下的散装 .locres。按游戏实际使用的原文语言筛选后再翻译。"}
+            </p>}
+            {scanResources}
+        </>}
         {textStep===3&&<>
           <div className="unity-control-group"><span>待回写译文 {textInfo.changed} 条</span>{!!textInfo.positionRepairs && <span>对话纠错 {textInfo.positionRepairs} 条</span>}</div>
-          {(status.state === "running" || status.state === "error" || status.state === "stopped") && progress(["inspect","embed"])}
           {output("补丁目录",artifacts.text?.path)}
           <div className="dpl embed-deployment-canvas">
             <DeploymentThroughput metrics={canvas.metrics} />
@@ -1062,14 +1091,6 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           </div>
           {deploymentPanel}
         </>}
-        {textStep===1&&progress(["extract"],{step:"1",title:"扫描资源",done:hasTextScan||(!canUseTextResources&&imageWorkflow.loaded)})}
-        {textStep===1&&textSource==="locres"&&<p className="hint">图片翻译支持游戏 Content 目录中的散装 PNG。封包中的纹理暂不支持。</p>}
-        {textStep === 1 && textSource === "locres" && (needsLooseLocres || !hasTextScan) && <p className="hint">
-          {needsLooseLocres
-            ? "当前目录没有散装 .locres。请先用外部工具将本地化字符串导出为散装 .locres，放到游戏对应的 Content/Localization 目录，再重新检测。"
-            : "扫描 Content/Localization 下的散装 .locres。按游戏实际使用的原文语言筛选后再翻译。"}
-        </p>}
-        {textStep===1&&scanResources}
         {textStep===1 && imageWorkflow.scanTiming && <details><summary>图片扫描 · 重新解析 {imageWorkflow.scanTiming.parsed} 张 · 复用 {imageWorkflow.scanTiming.reused} 张</summary>
           <p>读取旧工程 {imageWorkflow.scanTiming.loadMs} ms · 查找资源 {imageWorkflow.scanTiming.listMs} ms · 校验与解析 {imageWorkflow.scanTiming.parseMs} ms</p></details>}
         {textStep===1 && scanElapsed!==null && !scanning && <details><summary>扫描计时 · {scanElapsed.toFixed(1)} 秒</summary><p>文本 {textInfo.count} 条 · 图片 {imageWorkflow.count ?? 0} 张</p></details>}

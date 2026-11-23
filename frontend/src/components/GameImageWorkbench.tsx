@@ -14,7 +14,6 @@ import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, 
 import { readRpgGameImageNames, translateNamedImageText, type ImageNameMemory } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
-import { GameStepProgress } from "./GameStepProgress";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { logRuntimeError } from "../runtimeLog";
 import { useGameActionConfirm } from "./GameActionConfirm";
@@ -870,16 +869,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   }));
   const progressState = busy ? "running" : stepProgress?.state === "error" ? "error"
     : stepPaused || stepProgress?.state === "stopped" ? "stopped" : stepProgress?.state === "done" ? "done" : "pending";
-  const progressTitle = step === "restore" ? "应用到游戏" : imageFlow.find(flow => flow.id === operationStep.current)?.title || "图片工程";
   const progressCount = stepProgress?.completed ?? 0;
   const redrawSummary = operationStep.current === "redraw" ? gameImageRedrawSummary(stepProgress, progressState === "error") : undefined;
-  const progressContent = <GameStepProgress title={progressTitle} state={progressState}
-    label={clearing ? "正在清理" : redrawSummary?.label} elapsed={imageTaskDuration(task.elapsed)}
-    percent={redrawSummary?.percent ?? (stepProgress?.total ? Math.floor(progressCount / stepProgress.total * 100) : undefined)}
-    count={redrawSummary?.count ?? (stepProgress?.total ? `${progressCount} / ${stepProgress.total} 张` : undefined)}>
-    {(busy || progressState === "error") && stepProgress?.detail && <p className="unity-task-detail">{stepProgress.detail}</p>}
-    {busy && stepProgress?.etaMs !== undefined && <p className="unity-task-detail">预计剩余 {imageTaskDuration(stepProgress.etaMs)}</p>}
-  </GameStepProgress>;
+  const progressDetails = (busy || progressState === "error") && stepProgress?.detail &&
+    <p className="unity-task-detail">{stepProgress.detail}</p>;
   const prompt = (scene: keyof typeof promptState.selection) => promptState.selection[scene] || "builtin:" + scene;
   const configuration = {
     filter: JSON.stringify(stageModels.filter === undefined ? [strategy] : [stageModels.filter, prompt("screen")]),
@@ -930,7 +923,12 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       { scope: "config", label: "仅翻译原语言", value: onlySourceLanguage ? "开启" : "关闭" },
       { scope: "config", label: "跳过目标语言", value: skipTargetLanguage ? "开启" : "关闭" },
       { scope: "config", label: "本地并发", value: String(concurrency) },
-    ]} configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || flowBusy} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{step: operationStep.current, state: busy || clearing ? "running" : stepProgress?.state || "pending", label: redrawSummary?.label, progress: progressContent}} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
+    ]} configurationCommit={configurationCommit} configurationRevision={configurationRevision} onSaveConfiguration={saveConfiguration} testConfigurations={testConfigurations} testConfigurationDisabled={testConfigurationDisabled || flowBusy} configurationScope={gamePath} configuration={configuration} restoreConfiguration={restoreConfiguration} actions={<button className="unity-btn unity-btn-warning unity-skip-remaining" disabled={disabled || clearing || !!busy || skipped} onClick={onSkip}>跳过剩余内容</button>} activity={{ step: operationStep.current, state: progressState,
+      label: clearing ? "正在清理" : redrawSummary?.label, elapsed: imageTaskDuration(task.elapsed),
+      progress: { current: redrawSummary ? undefined : progressCount, total: redrawSummary ? undefined : stepProgress?.total || undefined,
+        count: redrawSummary?.count, percent: redrawSummary?.percent ?? (stepProgress?.total ? Math.floor(progressCount / stepProgress.total * 100) : undefined),
+        remainingMs: stepProgress?.etaMs, details: progressState === "running" ? progressDetails : undefined },
+      details: progressState !== "running" ? progressDetails : undefined }} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
       {configured === "translate" && <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => { setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm"); }}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
         {translationKind !== "engine" && <>
           {configured === "translate" && <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked} models={models} onChange={setTranslationModel} />}
