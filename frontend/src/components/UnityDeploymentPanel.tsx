@@ -10,6 +10,13 @@ import { gameImageExportWarning, subscribeGameImageExportWarnings, type GameImag
 import type { ImageExportActions, ImageExportPackage } from "../hooks/useGameImageExportPackage";
 import { modelServiceTimingLines } from "../gameModelPerformance";
 
+function imagePackageSize(bytes: number | undefined) {
+  if (bytes === undefined) return "—";
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " B";
+}
+
 export function ImageExportPackageSection({ state, actions, locked }: {
   state: ImageExportPackage;
   actions: ImageExportActions;
@@ -23,34 +30,35 @@ export function ImageExportPackageSection({ state, actions, locked }: {
   const layerLabel = (kind: GameImageExportKind) => {
     const layer = layers[kind];
     if (needsRecovery) return "需恢复";
-    if (!layer) return applied && !state.layerRestoreSupported ? "见收据" : "—";
+    if (!layer) return state.canUsePackage && applied && !state.layerRestoreSupported ? "见收据" : "—";
     return layer.state === "restored" ? "已恢复" : layer.state === "partiallyRestored" ? "部分恢复" : "已应用";
   };
   const restore = (kind: GameImageExportKind, label: string) =>
     button(layers[kind]?.state === "restored" ? label + "已恢复" : "恢复" + label, "",
       !ready || !state.canRestore || !layers[kind]?.appliedFiles, () => actions.restore(kind));
-  const deletePackage = button("删除包", "danger", !ready || applied || needsRecovery, actions.remove);
+  const deletePackage = button(applied ? "恢复并删除" : "删除包", "danger", !ready || needsRecovery, actions.remove);
+  const cancel = () => button(state.cancelling ? "正在取消…" : "取消", "", !state.canCancel, actions.cancel);
   let hintText: string;
   let buttons: ReactNode;
   if (activity === "generate") {
     hintText = "正在合成，可取消。";
-    buttons = <>{button(percent === null ? "生成中" : `生成中 ${percent}%`, "", true)}{button("取消", "", !state.canCancel, actions.cancel)}</>;
+    buttons = <>{button(percent === null ? "生成中" : `生成中 ${percent}%`, "", true)}{cancel()}</>;
   } else if (activity === "apply" || activity === "restore" || activity === "remove") {
     const label = { apply: "应用中", restore: "恢复中", remove: "删除中" }[activity];
     hintText = label + "，请等待操作完成。";
-    buttons = button(label, "", true);
+    buttons = <>{button(label, "", true)}{activity !== "remove" && cancel()}</>;
   } else if (needsRecovery) {
     hintText = "上次应用或恢复未完成，请先恢复原图。";
     buttons = <>{button("恢复原图", "primary", !ready, () => actions.restore())}{deletePackage}</>;
   } else if (applied) {
     hintText = layers.composed ? "合成图包含译图和去码，恢复合成图会整张还原。" : state.partiallyRestored ? "部分图片已恢复，可继续恢复其余图片。" : "图片已应用，收据已保存。";
-    buttons = <>{state.layerRestoreSupported ? <>
+    buttons = <>{button("重新应用", "", !ready || state.targetChanged, actions.apply)}{state.canUsePackage && (state.layerRestoreSupported ? <>
       {restore("translated", "译图")}{restore("mosaic", "去码")}
       {layers.composed && restore("composed", "合成图")}
-    </> : button("恢复原图", "", !ready || !state.canRestore, () => actions.restore())}{deletePackage}</>;
+    </> : button("恢复原图", "", !ready || !state.canRestore, () => actions.restore()))}{deletePackage}</>;
   } else if (path) {
     hintText = state.used ? "图片已恢复。删除旧包后可以生成新包。" : "成品包已生成，可以应用到游戏。";
-    buttons = <>{button("应用成品包", "primary", !ready || state.used || state.legacyInstalled, actions.apply)}
+    buttons = <>{button("应用成品包", "primary", !ready || state.used || state.legacyInstalled || state.targetChanged, actions.apply)}
       {button("打开包目录", "", locked, actions.openDirectory)}{deletePackage}</>;
   } else {
     hintText = needsConfirmation ? `有 ${needsConfirmation} 张图需要重新确认，先在图片翻译或去码页确认。`
@@ -63,6 +71,7 @@ export function ImageExportPackageSection({ state, actions, locked }: {
     <dl className="dpl-stats dpl-stats-stack">
       <div><dt>已确认</dt><dd>{confirmed}</dd></div>
       <div><dt>待确认</dt><dd>{needsConfirmation}</dd></div>
+      <div><dt>包大小</dt><dd>{imagePackageSize(state.bytes)}</dd></div>
       <div><dt>译图 / 去码</dt><dd><span className="dpl-hint">{layerLabel("translated")} / {layerLabel("mosaic")}</span></dd></div>
       {layers.composed && <div><dt>合成图</dt><dd><span className="dpl-hint">{layerLabel("composed")}</span></dd></div>}
     </dl>
@@ -71,7 +80,8 @@ export function ImageExportPackageSection({ state, actions, locked }: {
       <GameProgressBar label={activity === "generate" ? "成品包生成进度" : "成品包应用进度"} value={percent ?? undefined} />
     </div>}
     <div className="dpl-actions">{buttons}</div>
-    <p className="dpl-hint">{state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。" : hintText}</p>
+    <p className="dpl-hint">{state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。"
+      : state.targetChanged && !activity && !needsRecovery ? "游戏里的图片已被改动，需要重新生成" : hintText}</p>
     {applied && !activity && !needsRecovery && warning?.message && <div className="embed-deploy-status" role="status">
       <p className="dpl-hint is-warning">{warning.message}</p>
     </div>}

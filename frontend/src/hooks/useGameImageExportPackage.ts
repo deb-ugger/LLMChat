@@ -12,14 +12,17 @@ import {
 
 export type ImageExportCandidate = { imageId: string; sourceHash: string; renderedHash?: string };
 type ExportSource = ImageExportCandidate & { mosaic: boolean };
-type ConfirmationSelection = { images: GameImageExportImageSelection[]; needsConfirmation: number };
+type ConfirmationSelection = { images: GameImageExportImageSelection[]; needsConfirmation: number; bytes?: number };
 type ExportJobKind = "generate" | "apply" | "restore";
-type ExportJob = { kind: ExportJobKind; id: string; selectionKey?: string };
-type ExportRecord = { package?: GameImageExportGenerateResult; selectionKey?: string; pending?: ExportJob; outputDir?: string };
-type PackageDisposition = Omit<GameImageExportReceiptStatus, "receipt"> & { receiptState?: GameImageExportReceiptState };
+type ExportJob = { kind: ExportJobKind; id: string; selectionKey?: string; reapply?: boolean };
+type ExportRecord = { package?: GameImageExportGenerateResult; selectionKey?: string; pending?: ExportJob; outputDir?: string; targetChanged?: boolean };
+type PackageDisposition = Pick<GameImageExportReceiptStatus, "canRestore" | "needsRecovery" | "layerRestoreSupported" | "layers">;
+type PackageReceipt = { path: string; state?: GameImageExportReceiptState; status?: PackageDisposition; bytes?: number };
+const hasAppliedImages = (state?: GameImageExportReceiptState) => state === "applied" || state === "partiallyRestored";
 const unusedPackage: PackageDisposition = {
-  applied: false, canRestore: false, needsRecovery: false, layerRestoreSupported: false, layers: {},
+  canRestore: false, needsRecovery: false, layerRestoreSupported: false, layers: {},
 };
+const targetChangedHint = "游戏里的图片已被改动，需要重新生成";
 const migrationHint = "建议先恢复旧图片补丁，再用成品包重新应用。";
 
 function exportSources(candidates: readonly ImageExportCandidate[], mosaicIds: readonly string[]): ExportSource[] {
@@ -32,6 +35,8 @@ export type ImageExportPackage = {
   confirmed: number;
   needsConfirmation: number;
   path: string;
+  bytes?: number;
+  targetChanged: boolean;
   applied: boolean;
   partiallyRestored: boolean;
   layers: GameImageExportLayerStates;
@@ -45,6 +50,7 @@ export type ImageExportPackage = {
   activity: ExportJobKind | "remove" | null;
   percent: number | null;
   canCancel: boolean;
+  cancelling: boolean;
 };
 
 export type ImageExportActions = {
@@ -89,37 +95,45 @@ async function withExportLockRetry<T>(read: () => Promise<T>, signal: AbortSigna
   }
 }
 
-async function readConfirmations(gamePath: string, sources: ExportSource[], signal: AbortSignal): Promise<ConfirmationSelection> {
+async function readConfirmations(gamePath: string, sources: ExportSource[], signal: AbortSignal, sizePath?: string): Promise<ConfirmationSelection> {
   const images: GameImageExportImageSelection[] = [];
   let needsConfirmation = 0;
+  let bytes: number | undefined;
+  const lookup = async (imageId: string, layer: "translation" | "mosaic") => {
+    const packagePath = sizePath;
+    sizePath = undefined;
+    const status = await withExportLockRetry(() =>
+      gameImageExportApi.confirmationStatus({ gamePath, imageId, layer, packagePath }, signal), signal);
+    if (packagePath) bytes = status.bytes;
+    return status;
+  };
   // Confirmation reads take the same per-game directory lock as export operations.
   for (const { imageId, sourceHash, renderedHash, mosaic } of sources) {
     if (renderedHash === "") { needsConfirmation++; continue; }
-    const translation = renderedHash ? await withExportLockRetry(() =>
-      gameImageExportApi.confirmationStatus({ gamePath, imageId, layer: "translation" }, signal), signal) : undefined;
+    const translation = renderedHash ? await lookup(imageId, "translation") : undefined;
     if (translation && (translation.state !== "confirmed" || translation.candidateVersion !== renderedHash)) {
       needsConfirmation++;
       continue;
     }
-    const mosaicStatus = mosaic ? await withExportLockRetry(() =>
-      gameImageExportApi.confirmationStatus({ gamePath, imageId, layer: "mosaic" }, signal), signal) : undefined;
+    const mosaicStatus = mosaic ? await lookup(imageId, "mosaic") : undefined;
     if (mosaicStatus && mosaicStatus.state !== "confirmed") { needsConfirmation++; continue; }
     const repair = mosaicStatus?.state === "confirmed" ? { confirmationId: mosaicStatus.confirmationId, pngSha256: mosaicStatus.pngSha256 } : undefined;
     if (translation?.state === "confirmed" && renderedHash)
       images.push({ imageId, sourceHash, translation: { confirmationId: translation.confirmationId, renderedHash }, mosaic: repair });
     else if (repair) images.push({ imageId, sourceHash, mosaic: repair });
   }
-  return { images, needsConfirmation };
+  return { images, needsConfirmation, bytes };
 }
 
-async function readDisposition(gamePath: string, packagePath: string, signal: AbortSignal): Promise<PackageDisposition> {
+async function readDisposition(gamePath: string, packagePath: string, signal: AbortSignal): Promise<PackageReceipt> {
   try {
-    const { receipt, ...status } = await withExportLockRetry(() => gameImageExportApi.queryReceipt({ gamePath, packagePath }, signal), signal);
-    return { ...status, receiptState: receipt.state, layers: status.layers ?? {} };
+    const { receipt, bytes, canRestore, needsRecovery, layerRestoreSupported, layers } = await withExportLockRetry(() =>
+      gameImageExportApi.queryReceipt({ gamePath, packagePath }, signal), signal);
+    return { path: packagePath, state: receipt.state, bytes, status: { canRestore, needsRecovery, layerRestoreSupported, layers } };
   } catch (cause) {
     if (code(cause) !== "RECEIPT_NOT_FOUND") throw cause;
     const status = (cause as { response?: Partial<GameImageExportReceiptStatus> }).response;
-    return { ...unusedPackage, needsRecovery: !!status?.needsRecovery, canRestore: !!status?.canRestore };
+    return { path: packagePath, bytes: status?.bytes, status: { ...unusedPackage, needsRecovery: !!status?.needsRecovery, canRestore: !!status?.canRestore } };
   }
 }
 
@@ -139,17 +153,20 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
   const [legacyInstalled, setLegacyInstalled] = useState(false);
   const lifetime = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<GameImageExportOperationStatus | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const [cancelRequest, setCancelRequest] = useState<{ id: string; state: "requesting" | "cancelling" }>();
   const [retry, setRetry] = useState(0);
   const pollWarning = useRef<string | undefined>(undefined);
   const [selection, setSelection] = useState<{ key: string; value: ConfirmationSelection }>();
-  const [receipt, setReceipt] = useState<{ path: string; status: PackageDisposition }>();
+  const [receipt, setReceipt] = useState<PackageReceipt>();
   const packagePath = record.package?.packagePath ?? "";
   const activity = record.pending?.kind ?? submitting;
   const busy = activity !== null;
   const key = JSON.stringify(exportSources(candidates, mosaicIds));
   const current = selection?.key === key ? selection.value : undefined;
-  const disposition = receipt?.path === packagePath ? receipt.status : undefined;
+  const packageReceipt = receipt?.path === packagePath ? receipt : undefined;
+  const disposition = packageReceipt?.status;
+  const receiptState = packageReceipt?.state;
+  const applied = hasAppliedImages(receiptState);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -166,19 +183,29 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     if (!active || busy) return;
     const controller = new AbortController(), { signal } = controller;
     void (async () => {
+      let sizePath: string | undefined;
       if (packagePath) {
         try {
-          const status = await readDisposition(gamePath, packagePath, signal);
-          if (!signal.aborted) setReceipt({ path: packagePath, status });
-          if (status.applied || status.needsRecovery) return;
+          const current = await readDisposition(gamePath, packagePath, signal);
+          if (signal.aborted) return;
+          setReceipt(current);
+          if (hasAppliedImages(current.state) || current.status?.needsRecovery) return;
+          if (current.bytes === undefined) sizePath = packagePath;
         } catch (cause) {
-          if (!signal.aborted) { setReceipt(undefined); notify(cause); }
+          if (signal.aborted) return;
+          if (code(cause) === "PACKAGE_NOT_FOUND") setReceipt({ path: packagePath });
+          notify(cause);
         }
       }
-      if (signal.aborted) return;
       try {
-        const value = await readConfirmations(gamePath, JSON.parse(key) as ExportSource[], signal);
-        if (!signal.aborted) setSelection({ key, value });
+        const value = await readConfirmations(gamePath, JSON.parse(key) as ExportSource[], signal, sizePath);
+        if (!signal.aborted) {
+          setSelection({ key, value });
+          if (value.bytes !== undefined) {
+            const bytes = value.bytes;
+            setReceipt(previous => previous?.path === packagePath ? { ...previous, bytes } : previous);
+          }
+        }
       } catch (cause) {
         if (!signal.aborted) { setSelection(undefined); notify(cause); }
       }
@@ -197,27 +224,48 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
 
   const finish = useCallback((pending: ExportJob, terminal: GameImageExportTerminalStatus) => {
     const { pending: _pending, ...previous } = latest.current;
-    if (terminal.state === "succeeded" && "packagePath" in terminal.result) {
-      setReceipt({ path: terminal.result.packagePath, status: unusedPackage });
-      persist({ ...previous, package: terminal.result, selectionKey: pending.selectionKey });
-    } else {
-      if (terminal.state === "succeeded") setReceipt(undefined);
-      if (terminal.state === "failed" && terminal.error.code === "LEGACY_PATCH_ACTIVE") setLegacyInstalled(true);
-      persist(previous);
+    const result = terminal.result;
+    if (terminal.state === "succeeded" && result && "packagePath" in result) {
+      setReceipt({ path: result.packagePath, status: unusedPackage, bytes: result.bytes });
+      persist({ ...previous, package: result, selectionKey: pending.selectionKey, targetChanged: undefined });
+      return;
+    }
+    const path = previous.package?.packagePath;
+    if (path && result && "transactionId" in result) {
+      setReceipt(current => ({
+        path,
+        state: result.state,
+        bytes: ("bytes" in result ? result.bytes : undefined) ?? (current?.path === path ? current.bytes : previous.package?.bytes),
+      }));
+    }
+    if (terminal.state === "failed" && terminal.error.code === "LEGACY_PATCH_ACTIVE") setLegacyInstalled(true);
+    const targetChanged = pending.kind === "apply" && terminal.state === "failed" && terminal.error.code === "TARGET_CHANGED";
+    persist(targetChanged ? { ...previous, targetChanged: true } : previous);
+    if (terminal.state === "cancelled" && pending.kind !== "generate") {
+      const state = result && "transactionId" in result ? result.state : undefined;
+      showAppNotice(state === undefined ? "已取消，游戏文件未修改" : {
+        applied: "已取消，但图片已全部写入（等同已应用）",
+        restored: "已取消，但图片已全部还原",
+        partiallyRestored: "已取消，已还原部分图层",
+      }[state]);
+    } else if (terminal.state === "succeeded" && pending.reapply && "alreadyApplied" in terminal.result) {
+      showAppNotice(terminal.result.alreadyApplied ? "目标文件已与包一致，已重新校验" : "已写回剩余图层");
     }
   }, [persist]);
 
   useEffect(() => {
     if (automaticPolling.current) return;
     const pending = record.pending;
-    if (!pending) { setStatus(null); setCancelling(false); return; }
+    if (!pending) { setStatus(null); setCancelRequest(undefined); return; }
     const controller = new AbortController();
     let reconnect: number | undefined;
     void pollGameImageExport(pending.id, { signal: controller.signal, onStatus: setStatus }).then(terminal => {
       if (controller.signal.aborted) return;
       finish(pending, terminal);
-      if (terminal.state === "failed")
-        notify(terminal.error.code === "LEGACY_PATCH_ACTIVE" ? migrationHint : terminal.error.message);
+      if (terminal.state === "failed") {
+        const { code, message } = terminal.error;
+        notify(code === "LEGACY_PATCH_ACTIVE" ? migrationHint : code === "TARGET_CHANGED" && pending.kind === "apply" ? targetChangedHint : message);
+      }
     }).catch(cause => {
       if (controller.signal.aborted) return;
       if (code(cause) === "OPERATION_NOT_FOUND") {
@@ -231,38 +279,59 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     return () => { controller.abort(); window.clearTimeout(reconnect); };
   }, [record.pending, finish, persist, retry]);
 
-  async function start(kind: ExportJobKind | "remove", work: (signal: AbortSignal) => Promise<(GameImageExportQueued & { outputDir?: string; selectionKey?: string }) | void>) {
+  async function start(kind: ExportJobKind | "remove", work: (signal: AbortSignal) => Promise<(GameImageExportQueued & { outputDir?: string; selectionKey?: string }) | void>, reapply = false) {
     const signal = lifetime.current?.signal;
     if (locked || submittingRef.current || latest.current.pending || !signal || signal.aborted) return;
     submittingRef.current = true;
     setSubmitting(kind);
     try {
       const queued = await work(signal);
-      if (queued && kind !== "remove") persist({ ...latest.current, outputDir: queued.outputDir ?? latest.current.outputDir, pending: { id: queued.operationId, kind, selectionKey: queued.selectionKey } });
+      if (queued && kind !== "remove") persist({ ...latest.current, outputDir: queued.outputDir ?? latest.current.outputDir, pending: { id: queued.operationId, kind, selectionKey: queued.selectionKey, ...(reapply ? { reapply } : {}) } });
     } catch (cause) {
-      if (!signal.aborted) notify(cause);
+      if (!signal.aborted) {
+        if (kind === "apply" && code(cause) === "TARGET_CHANGED") {
+          persist({ ...latest.current, targetChanged: true });
+          notify(targetChangedHint);
+        } else notify(cause);
+      }
     } finally {
       if (!signal.aborted) { submittingRef.current = false; setSubmitting(null); }
     }
   }
 
-  const progress = status?.progress;
-  const canCancel = record.pending?.kind === "generate" && !cancelling &&
-    status?.state !== "cancelling" && progress?.phase !== "publish";
+  const pending = record.pending;
+  const liveStatus = pending?.id === status?.operationId ? status : null;
+  const progress = liveStatus?.progress;
+  const requestState = pending?.id === cancelRequest?.id ? cancelRequest?.state : undefined;
+  const cancelling = requestState === "cancelling" || liveStatus?.state === "cancelling";
+  const canCancel = !!pending && !requestState && !cancelling &&
+    (!liveStatus || liveStatus.state === "queued" || liveStatus.state === "running") &&
+    (pending.kind !== "generate" || progress?.phase !== "publish");
   const cancel = async () => {
     const pending = latest.current.pending;
-    if (!pending || !canCancel || cancelling) return;
-    setCancelling(true);
-    try { await gameImageExportApi.cancel(pending.id); }
-    catch (cause) { setCancelling(false); notify(cause); }
+    const signal = lifetime.current?.signal;
+    if (!pending || !canCancel || !signal || signal.aborted) return;
+    setCancelRequest({ id: pending.id, state: "requesting" });
+    try {
+      await gameImageExportApi.cancel(pending.id, signal);
+      if (!signal.aborted && latest.current.pending?.id === pending.id)
+        setCancelRequest({ id: pending.id, state: "cancelling" });
+    } catch (cause) {
+      if (signal.aborted || latest.current.pending?.id !== pending.id) return;
+      setCancelRequest(undefined);
+      if (code(cause) === "CANCEL_TOO_LATE") showAppNotice("已错过安全取消点，正在完成");
+      else notify(cause);
+    }
   };
 
   const apply = () => {
-    if (!packagePath || !disposition || disposition.receiptState || disposition.needsRecovery || legacyInstalled) return;
+    if (!packagePath || !disposition || disposition.needsRecovery || latest.current.targetChanged ||
+        receiptState === "restored" || (!applied && legacyInstalled)) return;
+    const title = applied ? "重新应用" : "应用成品包";
     void start("apply", async signal => {
-      if (await confirm("请先关闭游戏，再将成品包写入游戏目录。", { title: "应用成品包", okLabel: "应用成品包" }))
+      if (await confirm("请先关闭游戏，再将成品包写入游戏目录。", { title, okLabel: title }))
         return withExportLockRetry(() => gameImageExportApi.apply({ gamePath, packagePath }, signal), signal);
-    });
+    }, applied);
   };
   const restore = (kind?: GameImageExportKind) => {
     if (!packagePath || !(disposition?.canRestore || disposition?.needsRecovery)) return;
@@ -274,11 +343,15 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     });
   };
   const remove = () => {
-    if (!packagePath || !disposition || disposition.applied || disposition.needsRecovery) return;
+    if (!packagePath || !disposition || disposition.needsRecovery) return;
+    const title = applied ? "恢复并删除" : "删除成品包";
     void start("remove", async signal => {
-      if (!await confirm("删除这个成品包目录？", { title: "删除成品包", okLabel: "删除成品包" })) return;
-      await withExportLockRetry(() => gameImageExportApi.remove(packagePath, signal), signal);
+      if (!await confirm(applied ? "请先关闭游戏。将已应用的图片恢复为原图，再删除成品包目录？" : "删除这个成品包目录？",
+        { title, okLabel: title })) return;
+      const body = applied ? { packagePath, restoreFirst: true as const, gamePath } : { packagePath };
+      const result = await withExportLockRetry(() => gameImageExportApi.remove(body, signal), signal);
       persist({ outputDir: latest.current.outputDir });
+      if (result?.removed) showAppNotice("已恢复原图并删除包");
     });
   };
 
@@ -299,8 +372,8 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
       setSubmitting("generate");
       let path = latest.current.package?.packagePath;
       const current = path ? await readDisposition(gamePath, path, scoped) : undefined;
-      if (current?.needsRecovery) throw new Error("上次图片应用或恢复未完成，请先在应用面板恢复原图。");
-      if (current?.receiptState) throw new Error(current.applied
+      if (current?.status?.needsRecovery) throw new Error("上次图片应用或恢复未完成，请先在应用面板恢复原图。");
+      if (current?.state) throw new Error(hasAppliedImages(current.state)
         ? "已有图片成品包正在使用，请先恢复并删除旧包。"
         : "请先删除已恢复的旧成品包，再生成当前版本。");
       if ((await withExportLockRetry(() => gameImageExportApi.legacyStatus(gamePath, scoped), scoped)).installed) {
@@ -355,22 +428,25 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
   }
 
   const model: ImageExportPackage = {
-    confirmed: disposition?.applied || disposition?.needsRecovery ? (record.package?.files ?? 0) + (record.package?.skipped ?? 0) : current?.images.length ?? 0,
-    needsConfirmation: disposition?.applied || disposition?.needsRecovery ? 0 : current?.needsConfirmation ?? 0,
+    confirmed: applied || disposition?.needsRecovery ? (record.package?.files ?? 0) + (record.package?.skipped ?? 0) : current?.images.length ?? 0,
+    needsConfirmation: applied || disposition?.needsRecovery ? 0 : current?.needsConfirmation ?? 0,
     path: packagePath,
-    applied: disposition?.applied ?? false,
-    partiallyRestored: disposition?.receiptState === "partiallyRestored",
+    bytes: packageReceipt ? packageReceipt.bytes : record.package?.bytes,
+    targetChanged: !!record.targetChanged,
+    applied,
+    partiallyRestored: receiptState === "partiallyRestored",
     layers: disposition?.layers ?? {},
     layerRestoreSupported: disposition?.layerRestoreSupported ?? false,
-    legacyInstalled: !disposition?.receiptState && legacyInstalled,
+    legacyInstalled: !receiptState && legacyInstalled,
     needsRecovery: disposition?.needsRecovery ?? false,
-    used: !!disposition?.receiptState,
+    used: !!receiptState,
     canRestore: disposition?.canRestore ?? false,
     canGenerate: !!current?.images.length && !current.needsConfirmation,
     canUsePackage: !!disposition,
     activity,
     percent: progress?.total ? Math.min(100, Math.max(0, Math.round(progress.completed / progress.total * 100))) : null,
-    canCancel: !!canCancel,
+    canCancel,
+    cancelling,
   };
   const actions: ImageExportActions = {
     generate: () => {
