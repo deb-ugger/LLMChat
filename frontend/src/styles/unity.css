@@ -3278,6 +3278,14 @@ body.ocr-image-resizing * {
 .game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .game-benchmark-formal-item { display: grid; gap: var(--space-1); padding: var(--space-2) 0; border-top: 1px solid var(--border); }
 .game-benchmark-formal-item:first-child { border-top: 0; }
+.game-run-system { margin-block: var(--space-2); min-width: 0; }
+.game-run-system > summary { cursor: pointer; }
+.game-run-system-metrics {
+  width: 100%; border-collapse: collapse; font-size: var(--fs-caption); font-variant-numeric: tabular-nums;
+}
+.game-run-system-metrics :is(th, td) { padding: 5px var(--space-1); border-bottom: 1px solid var(--border); text-align: end; }
+.game-run-system-metrics th:first-child { text-align: start; }
+.game-run-system-chart { width: 100%; min-width: 0; height: 240px; margin-top: var(--space-2); }
 .game-benchmark-formal-row {
   display: grid;
   grid-template-columns: 20ch minmax(0, 1fr) auto;

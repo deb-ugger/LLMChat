@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { RunPerformanceDetails } from "./RunPerformanceDetails";
 import { readGameFormalHistory } from "../gameTextBenchmark";
 import { gameDuration, type StepPerformance } from "../gameModelPerformance";
 
@@ -83,6 +84,7 @@ export function FormalRunRecords({ scope, step }: { scope: string; step: string 
                 {run.itemsDone != null && <p className="hint">已处理 {run.itemsDone}
                   {!!run.failures && ` · 失败 ${run.failures}`}
                 </p>}
+                <RunPerformanceDetails run={run} source="formal" />
               </li>
             );
           })}

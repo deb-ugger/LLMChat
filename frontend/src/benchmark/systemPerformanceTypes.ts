@@ -13,9 +13,13 @@ export type SystemPerformancePoint = {
   gpu: number | null;
 };
 
+export type SystemPerformanceSource = "formal" | "benchmark";
+export type SystemPerformanceMetric = Exclude<keyof SystemPerformancePoint, "at">;
+
 export type SystemPerformanceSample = {
   /** 本轮各指标的均值与峰值 */
   average: Omit<SystemPerformancePoint, "at">;
   peak: Omit<SystemPerformancePoint, "at">;
   samples: number;
+  timelines: SystemPerformancePoint[][];
 };

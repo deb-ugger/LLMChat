@@ -40,6 +40,10 @@ std::optional<int64_t> timestamp(std::string_view text) {
     return duration_cast<milliseconds>(result.time_since_epoch()).count();
 }
 
+bool validRunKey(std::string_view taskId, std::string_view source) {
+    return !taskId.empty() && taskId.size() <= 128 && (source == "benchmark" || source == "formal");
+}
+
 bool knownMetric(std::string_view name) {
     return name.empty() || name == "cpu" || name == "memory" || name == "disk" || name == "network" || name == "gpu";
 }
@@ -65,6 +69,34 @@ void registerSystemPerformanceRoutes(httplib::Server& svr, const std::filesystem
         }
         res.set_content(performance->history(*from, *to, metric).dump(), "application/json; charset=utf-8");
     }));
+    svr.Get("/api/system-performance/runs", withCors([performance](const httplib::Request& req, httplib::Response& res) {
+        const auto taskId = req.get_param_value("taskId"), source = req.get_param_value("source");
+        if (!validRunKey(taskId, source)) {
+            error(res, 400, "INVALID_RUN", "性能归档编号无效");
+            return;
+        }
+        res.set_content(performance->runs(taskId, source).dump(), "application/json; charset=utf-8");
+    }));
+    svr.Post("/api/system-performance/runs/start", withCors([performance](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = Json::parse(req.body);
+            const auto taskId = body.at("taskId").get<std::string>(), source = body.at("source").get<std::string>();
+            const auto start = timestamp(body.at("beginTime").get<std::string>());
+            if (!validRunKey(taskId, source) || !start || *start < 0) {
+                error(res, 400, "INVALID_RUN", "性能归档记录无效");
+                return;
+            }
+            if (!performance->begin(taskId, source, *start)) {
+                error(res, 429, "ARCHIVE_BUSY", "正在采集的性能记录已满");
+                return;
+            }
+        } catch (const Json::exception&) {
+            error(res, 400, "INVALID_RUN", "性能归档记录无效");
+            return;
+        }
+        res.status = 202;
+        res.set_content(R"({"queued":true})", "application/json; charset=utf-8");
+    }));
     svr.Post("/api/system-performance/runs", withCors([performance](const httplib::Request& req, httplib::Response& res) {
         try {
             const auto body = Json::parse(req.body);
@@ -72,8 +104,7 @@ void registerSystemPerformanceRoutes(httplib::Server& svr, const std::filesystem
             const auto source = body.at("source").get<std::string>();
             const auto start = timestamp(body.at("beginTime").get<std::string>());
             const auto end = timestamp(body.at("endedAt").get<std::string>());
-            if (taskId.empty() || taskId.size() > 128 || (source != "benchmark" && source != "formal") ||
-                !start || !end || *start < 0 || *start > *end) {
+            if (!validRunKey(taskId, source) || !start || !end || *start < 0 || *start > *end) {
                 error(res, 400, "INVALID_RUN", "性能归档记录无效");
                 return;
             }

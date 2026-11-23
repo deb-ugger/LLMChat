@@ -341,7 +341,7 @@ async fn append_game_performance(record: serde_json::Value) -> Result<(), String
     let benchmark = record["benchmark"]["config"].is_object();
     let is_run = benchmark || !record["benchmark"].is_object();
     // Ack only the enqueue. The system archive's file I/O runs on the backend worker.
-    if is_run && record["reason"].as_str() == Some("completed") {
+    if is_run && (record["reason"].as_str() == Some("completed") || record["systemPerformanceSegment"]["endedAt"].is_string()) {
         notify_system_performance(&record, benchmark).await;
     }
     Ok(())
@@ -350,7 +350,8 @@ async fn append_game_performance(record: serde_json::Value) -> Result<(), String
 async fn notify_system_performance(record: &serde_json::Value, benchmark: bool) {
     if let (Some((client, endpoint)), Some(task_id), Some(begin), Some(end)) = (
         SYSTEM_PERFORMANCE_BACKEND.get(), record["taskId"].as_str(),
-        record["beginTime"].as_str(), record["endedAt"].as_str(),
+        record["systemPerformanceSegment"]["beginTime"].as_str().or_else(|| record["beginTime"].as_str()),
+        record["systemPerformanceSegment"]["endedAt"].as_str().or_else(|| record["endedAt"].as_str()),
     ) {
         let source = if benchmark { "benchmark" } else { "formal" };
         let body = serde_json::json!({"taskId": task_id, "source": source, "beginTime": begin, "endedAt": end});

@@ -21,6 +21,7 @@ import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup 
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { RunRecordTabs, type RunRecordMode } from "./RunRecordTabs";
 import { FormalRunRecords } from "./FormalRunRecords";
+import { RunPerformanceDetails } from "./RunPerformanceDetails";
 import { formatBenchmarkParameters } from "../benchmark/benchmarkParameters";
 import { RunComparePanel } from "./RunComparePanel";
 import type { BenchmarkCompareRun } from "../benchmark/benchmarkCompare";
@@ -1131,6 +1132,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           </dl>}
           {result.detail && <p>{result.detail}</p>}
           {result.summary && <p>{result.summary}</p>}
+          <RunPerformanceDetails run={result.performance} source="benchmark" />
           {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
           {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
             <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}

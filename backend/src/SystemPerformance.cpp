@@ -13,6 +13,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -35,6 +36,7 @@ constexpr auto stopAfter = 60s;
 constexpr auto keepRuns = 7 * 24h;
 constexpr size_t maxRuns = 200;
 constexpr size_t maxPoints = 2000;
+constexpr size_t maxArchivePoints = 360;
 
 enum Metric { Cpu, AvailableMemory, UsedMemory, DiskRead, DiskWrite, NetworkReceive, NetworkSend, Gpu, MetricCount };
 using Value = std::optional<double>;
@@ -184,17 +186,34 @@ struct Totals {
 
 Json summarize(const Run& run, const std::deque<Point>& history) {
     std::array<Totals, MetricCount> totals;
+    std::array<Totals, 5> system;
+    std::vector<const Point*> selected;
     Json first, last;
     for (const auto& point : history) {
         if (point.time < run.startedAt || point.time > run.endedAt) continue;
         if (first.is_null()) first = point.time;
         last = point.time;
+        selected.push_back(&point);
         for (size_t i = 0; i < totals.size(); ++i) if (point.values[i]) totals[i].add(*point.values[i]);
+        const auto& v = point.values;
+        if (v[Cpu]) system[0].add(*v[Cpu]);
+        if (v[AvailableMemory] && v[UsedMemory] && *v[AvailableMemory] + *v[UsedMemory] > 0)
+            system[1].add(*v[UsedMemory] / (*v[AvailableMemory] + *v[UsedMemory]) * 100);
+        if (v[DiskRead] || v[DiskWrite]) system[2].add(v[DiskRead].value_or(0) + v[DiskWrite].value_or(0));
+        if (v[NetworkReceive] || v[NetworkSend]) system[3].add(v[NetworkReceive].value_or(0) + v[NetworkSend].value_or(0));
+        if (v[Gpu]) system[4].add(*v[Gpu]);
     }
+    auto timeline = Json::array();
+    const auto stride = std::max(size_t{1}, (selected.size() + maxArchivePoints - 1) / maxArchivePoints);
+    for (size_t i = 0; i < selected.size(); i += stride) timeline.push_back(pointJson(selected[i], "t"));
+    if (!selected.empty() && (selected.size() - 1) % stride) timeline.push_back(pointJson(selected.back(), "t"));
     Json metrics = Json::object();
     appendMetrics(metrics, {}, [&](Metric metric) { return totals[metric].json(); });
     return {{"taskId", run.taskId}, {"source", run.source}, {"startedAt", run.startedAt}, {"endedAt", run.endedAt},
-        {"firstSampledAt", first}, {"lastSampledAt", last}, {"metrics", std::move(metrics)}};
+        {"firstSampledAt", first}, {"lastSampledAt", last}, {"metrics", std::move(metrics)},
+        {"summary", {{"cpu", system[0].json()}, {"memory", system[1].json()}, {"disk", system[2].json()},
+            {"network", system[3].json()}, {"gpu", system[4].json()}}},
+        {"sampleCount", selected.size()}, {"points", std::move(timeline)}};
 }
 
 void writeRuns(const std::filesystem::path& file, const std::deque<Json>& incoming) {
@@ -259,11 +278,41 @@ public:
         return {{"points", std::move(output)}};
     }
 
+    Json runs(std::string_view taskId, std::string_view source) {
+        std::lock_guard lock(archiveMutex_);
+        std::ifstream input(file_);
+        auto matches = Json::array();
+        const auto marker = Json(taskId).dump();
+        std::string line;
+        while (std::getline(input, line)) {
+            if (line.find(marker) == std::string::npos) continue;
+            auto row = Json::parse(line, nullptr, false);
+            if (row.is_object() && row.value("taskId", std::string{}) == taskId &&
+                row.value("source", std::string{}) == source) matches.push_back(std::move(row));
+        }
+        return {{"runs", std::move(matches)}};
+    }
+
+    bool begin(Run run) {
+        std::lock_guard lock(mutex_);
+        const SegmentKey key{run.startedAt, run.taskId, run.source};
+        if (std::find(completed_.begin(), completed_.end(), key) != completed_.end()) return true;
+        if (active_.size() >= maxRuns && !active_.contains(key)) return false;
+        active_.insert(key);
+        touch();
+        return true;
+    }
+
     bool complete(Run run) {
         std::lock_guard lock(mutex_);
+        const SegmentKey key{run.startedAt, run.taskId, run.source};
+        if (std::find(completed_.begin(), completed_.end(), key) != completed_.end()) return true;
         if (pending_.size() >= maxRuns) return false;
         trimSamples(epochMilliseconds());
         pending_.push_back(summarize(run, samples_));
+        active_.erase(key);
+        completed_.push_back(key);
+        if (completed_.size() > maxRuns) completed_.pop_front();
         start();
         wake_.notify_one();
         return true;
@@ -272,7 +321,11 @@ public:
 private:
     const std::filesystem::path file_;
     const std::chrono::seconds interval_ = std::thread::hardware_concurrency() <= 2 ? 5s : 2s;
+    using SegmentKey = std::tuple<int64_t, std::string, std::string>;
+    std::set<SegmentKey> active_;
+    std::deque<SegmentKey> completed_;
     std::mutex mutex_;
+    std::mutex archiveMutex_;
     std::condition_variable wake_;
     std::thread worker_;
     bool running_ = false;
@@ -283,8 +336,9 @@ private:
     std::deque<Json> pending_;
 
     void trimSamples(int64_t now) {
-        const auto cutoff = now - std::chrono::duration_cast<std::chrono::milliseconds>(keepSamples).count();
-        while (!samples_.empty() && (samples_.front().time < cutoff || samples_.size() > keepSamples / interval_))
+        const auto recentCutoff = now - std::chrono::duration_cast<std::chrono::milliseconds>(keepSamples).count();
+        const auto cutoff = active_.empty() ? recentCutoff : std::min(recentCutoff, std::get<0>(*active_.begin()));
+        while (!samples_.empty() && samples_.front().time < cutoff)
             samples_.pop_front();
     }
 
@@ -312,15 +366,18 @@ private:
                 std::deque<Json> batch;
                 batch.swap(pending_);
                 lock.unlock();
-                try { writeRuns(file_, batch); }
+                try {
+                    std::lock_guard archiveLock(archiveMutex_);
+                    writeRuns(file_, batch);
+                }
                 catch (const std::exception& error) { std::cerr << "System performance archive: " << error.what() << '\n'; }
                 lock.lock();
                 continue;
             }
             const auto now = Steady::now();
-            if (stopping_ || now >= readUntil_) break;
+            if (stopping_ || (active_.empty() && now >= readUntil_)) break;
             if (now < nextSample_) {
-                wake_.wait_until(lock, std::min(nextSample_, readUntil_));
+                wake_.wait_until(lock, active_.empty() ? std::min(nextSample_, readUntil_) : nextSample_);
                 continue;
             }
             nextSample_ = now + interval_;
@@ -342,6 +399,10 @@ SystemPerformance::SystemPerformance(const std::filesystem::path& logs) : impl_(
 SystemPerformance::~SystemPerformance() = default;
 Json SystemPerformance::now() { return impl_->now(); }
 Json SystemPerformance::history(int64_t from, int64_t to, std::string_view metric) { return impl_->history(from, to, metric); }
+Json SystemPerformance::runs(std::string_view taskId, std::string_view source) { return impl_->runs(taskId, source); }
+bool SystemPerformance::begin(std::string taskId, std::string source, int64_t startedAt) {
+    return impl_->begin({std::move(taskId), std::move(source), startedAt, startedAt});
+}
 bool SystemPerformance::complete(std::string taskId, std::string source, int64_t startedAt, int64_t endedAt) {
     return impl_->complete({std::move(taskId), std::move(source), startedAt, endedAt});
 }

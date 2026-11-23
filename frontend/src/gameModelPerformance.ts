@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
 import { logRuntimeError } from "./runtimeLog";
+import { startSystemPerformanceRun, stopSystemPerformanceRun } from "./systemPerformance";
 
 type Execution = { llmConcurrency?: number; performanceConcurrency?: number; performanceScope: string; performanceStep: string };
 export type ModelServiceTiming = { totalMs: number; loadMs: number; promptMs: number; generationMs: number };
@@ -28,6 +29,7 @@ export type StepPerformance = {
   taskId?: string;
   beginTime?: string;
   endedAt?: string;
+  systemPerformanceSegment?: { beginTime: string; endedAt?: string };
   benchmark?: Record<string, unknown>;
 };
 type Archive = Omit<StepPerformance, "started"> & { totalMs: number; scope: string; step: string; reason: "completed" | "cleared" | "paused" };
@@ -79,6 +81,7 @@ function archiveStep(scope: string, step: string, meter: StepPerformance, reason
   if (reason !== "paused") meter.endedAt = endedAt;
   flushGamePerformanceArchive();
 }
+const systemPerformanceStarts = new WeakMap<StepPerformance, Promise<unknown>>();
 const checkpoints = new Map<string, ReturnType<typeof setInterval>>();
 const scopes = new Map<string, Record<string, StepPerformance>>();
 const selectionScopes = new WeakMap<object, string>();
@@ -181,7 +184,15 @@ export function beginGameStep(scope: string, step: string, benchmark?: Record<st
   }
   const meter = all[step];
   if (benchmark) meter.benchmark = benchmark;
-  meter.started ??= performance.now(); commit(scope);
+  meter.started = performance.now();
+  if (meter.taskId && (meter.benchmark === undefined || meter.benchmark.config)) {
+    const segment = { beginTime: new Date().toISOString() };
+    meter.systemPerformanceSegment = segment;
+    systemPerformanceStarts.set(meter, startSystemPerformanceRun({
+      taskId: meter.taskId, source: meter.benchmark ? "benchmark" : "formal", ...segment,
+    }).catch(error => logRuntimeError("system-performance-start-error", error)));
+  }
+  commit(scope);
 }
 export function reportGameStepItems(scope: string, step: string, itemsDone: number, failures?: number) {
   const meter = records(scope)[step];
@@ -270,6 +281,16 @@ function performanceSnapshot(meter: StepPerformance, now = performance.now()): S
 }
 function stopMeter(meter: StepPerformance) {
   if (meter.started === undefined) return;
+  const segment = meter.systemPerformanceSegment;
+  if (meter.taskId && segment && !segment.endedAt) {
+    const endedAt = new Date().toISOString();
+    meter.systemPerformanceSegment = { ...segment, endedAt };
+    const request = { taskId: meter.taskId, source: meter.benchmark ? "benchmark" as const : "formal" as const,
+      beginTime: segment.beginTime, endedAt };
+    void Promise.resolve(systemPerformanceStarts.get(meter)).then(() => stopSystemPerformanceRun(request))
+      .catch(error => logRuntimeError("system-performance-stop-error", error));
+    systemPerformanceStarts.delete(meter);
+  }
   const snapshot = performanceSnapshot(meter);
   meter.elapsedMs = snapshot.elapsedMs;
   meter.wallTiming = snapshot.wallTiming;
