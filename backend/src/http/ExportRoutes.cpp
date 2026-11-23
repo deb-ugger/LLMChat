@@ -440,10 +440,18 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
         const auto body = Json::parse(req.body);
         const auto package = locate(body, "packagePath", true);
         const auto game = locate(body, "gamePath");
+        transaction::RestoreKinds kinds;
+        if (body.contains("kinds")) {
+            const auto& values = body.at("kinds");
+            if (!values.is_array() || values.empty() ||
+                !std::all_of(values.begin(), values.end(), [](const Json& value) { return value.is_string(); }))
+                throw Error("INVALID_KINDS", "kinds 必须是非空字符串数组，整包恢复请省略");
+            kinds = values.get<std::vector<std::string>>();
+        }
         auto rollback = std::make_shared<Json>();
         queued(res, jobs->submit(Operation::Restore, game, package,
             [&] {
-                auto state = transaction::inspect(package.path, game.path);
+                auto state = transaction::inspect(package.path, game.path, kinds);
                 if (state.restoreError) throw *state.restoreError;
                 if (state.receipt.is_null() && state.rollbackReceipt.is_null()) {
                     if (state.needsRecovery) transaction::recover(package.path, game.path);
@@ -451,14 +459,17 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
                 }
                 *rollback = std::move(state.rollbackReceipt);
             },
-            [game, package, rollback](Jobs&, Job&) {
+            [game, package, rollback, kinds](Jobs&, Job&) {
                 if (!rollback->is_null()) {
                     if (transaction::recover(package.path, game.path) != transaction::Recovery::RolledBack)
                         throw Error("RECOVERY_REQUIRED", "成品包状态已变化，请重新查询后恢复");
+                    if (kinds) {
+                        (*rollback)["restoredAsFullPackage"] = true;
+                        (*rollback)["warning"] = "应用中断且尚无收据，已按整包回滚";
+                    }
                     return std::move(*rollback);
                 }
-                transaction::restore(package.path, game.path);
-                return persistedReceipt(package.path);
+                return transaction::restore(package.path, game.path, kinds);
             }));
     })));
 
@@ -473,6 +484,8 @@ void registerExportRoutes(httplib::Server& svr, RpgImageProject& gameImages) {
         value["applied"] = status.applied;
         value["canRestore"] = status.canRestore;
         value["needsRecovery"] = status.needsRecovery;
+        value["layerRestoreSupported"] = status.layerRestoreSupported;
+        value["layers"] = std::move(status.layers);
         send(res, status.receipt.is_null() ? 404 : 200, value);
     })));
 
