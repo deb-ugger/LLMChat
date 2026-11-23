@@ -42,8 +42,8 @@ function formatPercent(value: number | null): string {
   return value == null || Number.isNaN(value) ? "—" : `${value.toFixed(0)}%`;
 }
 
-function formatTemp(value: number | null): string {
-  return value == null || Number.isNaN(value) ? "—" : `${value.toFixed(0)}°C`;
+function formatTemp(value: number | null, spaceBeforeUnit = false): string {
+  return value == null || Number.isNaN(value) ? "—" : `${value.toFixed(0)}${spaceBeforeUnit ? " " : ""}°C`;
 }
 
 function formatRate(value: number | null): { value: string; unit: string } {
@@ -160,6 +160,7 @@ export function SystemPerfBar() {
     const network = formatRate(latest?.network ?? null);
     const tok = formatTokPerSecond(latest?.tokensPerSecond ?? null);
     const modelCount = latest?.modelCount ?? null;
+    const gpuTemperature = formatTemp(latest?.gpuTempC ?? null);
     return [
       {
         key: "cpu",
@@ -200,7 +201,7 @@ export function SystemPerfBar() {
       {
         key: "gpu",
         label: "GPU",
-        secondary: formatTemp(latest?.gpuTempC ?? null),
+        secondary: gpuTemperature === "—" ? undefined : gpuTemperature,
         secondaryLevel: levelOfTemp(latest?.gpuTempC ?? null),
         value: formatPercent(latest?.gpu ?? null),
         level: levelOfPercent(latest?.gpu ?? null),
@@ -226,6 +227,8 @@ export function SystemPerfBar() {
   }, [points, range]);
 
   const at = latest ? atMs(latest) : null;
+  const gpuPanelTemperature = formatTemp(latest?.gpuTempC ?? null, true);
+  const gpuPanelPeak = peakOf(panelSeries, "gpu", formatPercent) + (gpuPanelTemperature === "—" ? "" : ` · ${gpuPanelTemperature}`);
 
   return (
     <div className={expanded ? "sysbar is-expanded" : "sysbar"}>
@@ -298,7 +301,7 @@ export function SystemPerfBar() {
             <PanelCard label="内存" value={formatPercent(latest?.memory ?? null)} peak={peakOf(panelSeries, "memory", formatPercent)} level={levelOfPercent(latest?.memory ?? null)} series={panelSeries.map(point => point.memory)} max={100} />
             <PanelCard label="磁盘" value={formatPercent(latest?.diskPercent ?? null)} peak={peakOf(panelSeries, "diskPercent", formatPercent)} level={levelOfPercent(latest?.diskPercent ?? null)} series={panelSeries.map(point => point.diskPercent ?? null)} max={100} />
             <PanelCard label="网络" value={formatRateShort(latest?.network ?? null)} peak={peakOf(panelSeries, "network", formatRateShort)} level={null} series={panelSeries.map(point => point.network)} max={null} />
-            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={[peakOf(panelSeries, "gpu", formatPercent), formatTemp(latest?.gpuTempC ?? null)].filter(part => part && part !== "—").join(" · ")} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
+            <PanelCard label="GPU" value={formatPercent(latest?.gpu ?? null)} peak={gpuPanelPeak} level={levelOfPercent(latest?.gpu ?? null)} series={panelSeries.map(point => point.gpu)} max={100} />
             <PanelCard label="CPU 温度" value={formatTemp(latest?.cpuTempC ?? null)} peak={peakOf(panelSeries, "cpuTempC", formatTemp)} level={levelOfTemp(latest?.cpuTempC ?? null)} series={panelSeries.map(point => point.cpuTempC ?? null)} max={100} />
             <PanelCard label="模型服务" value={formatTokShort(latest?.tokensPerSecond ?? null)} peak={peakOf(panelSeries, "tokensPerSecond", formatTokShort)} level={null} series={panelSeries.map(point => point.tokensPerSecond ?? null)} max={null} />
           </div>
