@@ -174,7 +174,24 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
   measured?: StepPerformance;
   models?: ConfiguredModel[];
 }) {
-  const rows = groupModels(measured, models);
+  const rateColumns = [
+    { key: "generationRate", label: "纯生成" },
+    { key: "requestRate", label: "请求平均" },
+  ] as const;
+  const rows = groupModels(measured, models).map(row => {
+    const generationMs = Object.values(measured.models).filter(model => model.model === row.model)
+      .reduce((total, model) => total + model.generationMs, 0);
+    const rates = tokenMetrics({ ...row, generationMs });
+    return {
+      model: row.model,
+      name: row.model.split("/").at(-1),
+      requests: row.requests,
+      rates: rateColumns.map(column => {
+        const rate = rates.find(metric => metric.key === column.key);
+        return { ...column, value: rate ? rate.value + "\u00a0tok/s" : "—" };
+      }),
+    };
+  });
   const { timings, input } = stepMetrics(measured);
   const timingColors = { queueMs: "var(--accent)", processingMs: "var(--signal)", saveMs: "var(--success)", busyMs: "var(--warning)" } as const;
   const segments = (Object.keys(timingColors) as (keyof typeof timingColors)[]).flatMap(key => {
@@ -183,28 +200,35 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
   });
   const duration = segments.reduce((total, segment) => total + segment.ms, 0);
   if (!rows.length && !segments.length) return null;
-  return <section className="game-step-metrics-group is-performance" aria-label="性能">
+  return <section className="game-step-metrics-group is-performance game-flow-performance" aria-label="性能">
     <h4 className="game-step-metrics-label">{rows.length ? "模型性能" : "性能"} <small>只读</small></h4>
-    {rows.length > 0 && <div className="game-benchmark-compare-table">
-      <table style={{ tableLayout: "fixed" }}>
-        <thead><tr><th scope="col" style={{ width: "40%" }}>模型</th><th scope="col">请求</th><th scope="col">纯生成</th><th scope="col">请求平均</th></tr></thead>
-        <tbody>{rows.map(row => {
-          const generationMs = Object.values(measured.models).filter(model => model.model === row.model)
-            .reduce((total, model) => total + model.generationMs, 0);
-          const rates = tokenMetrics({ ...row, generationMs });
-          return <tr key={row.model} data-model-row={row.model}>
-            <th scope="row"><span className="game-step-metric-model" data-tooltip={row.model}>
-              {row.model.split("/").at(-1)}
-            </span></th>
+    {rows.length > 0 && <>
+      <div className="game-benchmark-compare-table game-flow-performance-wide">
+        <table style={{ tableLayout: "fixed" }}>
+          <thead><tr><th scope="col" style={{ width: "40%" }}>模型</th><th scope="col">请求</th>
+            {rateColumns.map(({ key, label }) => <th key={key} scope="col">{label}</th>)}
+          </tr></thead>
+          <tbody>{rows.map(row => <tr key={row.model} data-model-row={row.model}>
+            <th scope="row"><span className="game-step-metric-model" data-tooltip={row.model}>{row.name}</span></th>
             <td>{row.requests} 次</td>
-            {(["generationRate", "requestRate"] as const).map(key => {
-              const metric = rates.find(rate => rate.key === key);
-              return <td key={key} data-tooltip={metricDetails[key]}>{metric ? metric.value + " tok/s" : "—"}</td>;
-            })}
-          </tr>;
-        })}</tbody>
-      </table>
-    </div>}
+            {row.rates.map(({ key, value }) => <td key={key} data-tooltip={metricDetails[key]}>{value}</td>)}
+          </tr>)}</tbody>
+        </table>
+      </div>
+      <ul className="game-flow-performance-compact" role="list">
+        {rows.map(row => <li key={row.model} data-model-row={row.model}>
+          <div className="game-flow-model-identity">
+            <strong className="game-step-metric-model" data-tooltip={row.model}>{row.name}</strong>
+            <span>请求 <b>{row.requests} 次</b></span>
+          </div>
+          <dl className="game-flow-model-speed">
+            {row.rates.map(({ key, label, value }) => <div key={key} data-tooltip={metricDetails[key]}>
+              <dt>{label}</dt><dd>{value}</dd>
+            </div>)}
+          </dl>
+        </li>)}
+      </ul>
+    </>}
     {duration > 0 && <div className="game-flow-progress-bar" style={{ display: "flex" }} aria-hidden="true">
       {segments.filter(segment => segment.ms > 0).map(({ metric, ms, color }) =>
         <i key={metric.key} style={{ inlineSize: 100 * ms / duration + "%", background: color, borderRadius: 0 }} />)}

@@ -23,12 +23,13 @@ export type GameFlowActivity = {
 };
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, performance,
-  actions, onConfigure, configuration, saveConfiguration }: GameFlowActivity & {
+  actions, onConfigure, body, configuration, saveConfiguration }: GameFlowActivity & {
   title: string;
   current?: boolean;
   benchmark?: BenchmarkState;
   performance?: ReactNode;
   onConfigure?: () => void;
+  body?: ReactNode;
   configuration?: ReactNode;
   saveConfiguration?: { run: () => void; disabled: boolean; saving?: boolean };
 }) {
@@ -83,6 +84,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
       </div>}
       {details}
       {performance}
+      {body}
       {(onConfigure || configured) && <section id={settingsId} className="game-flow-editable" role="region"
         aria-label={`${title}运行参数`} hidden={!configured}>
         <h5 className="game-flow-editable-title">运行参数<span className="game-flow-tag">可改</span>

@@ -801,7 +801,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       }} actions={packageProgress && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}
       performance={<GameFlowPerformance measured={imageBusy && imageWorkflow.stage === "restore"
         ? stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages") : deploymentProgress?.measurement} />}
-      configuration={<div className="dpl dpl-grid embed-product-grid game-flow-field-wide">
+      body={<div className="dpl dpl-grid embed-product-grid">
         {canUseTextResources && <section className="dpl-panel">
           <div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div>
           <dl className="dpl-stats dpl-stats-stack">

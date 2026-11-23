@@ -3460,7 +3460,21 @@ body.ocr-image-resizing * {
   border:1px solid color-mix(in srgb,var(--flow-color) 45%,transparent);color:var(--text);
   background:color-mix(in srgb,var(--flow-color) 12%,transparent)}
 .game-flow-elapsed{margin-inline-start:auto;font-size:13px;font-variant-numeric:tabular-nums;color:var(--text)}
-.game-flow-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.game-flow-head > .game-flow-actions{margin-inline-start:auto}
+
+.game-flow-performance{container:game-flow-performance / inline-size}
+.game-flow-performance-compact{display:none;list-style:none;margin:0;padding:0}
+.game-flow-performance-compact > li{padding-block:6px;border-block-end:1px solid var(--border)}
+.game-flow-model-identity,.game-flow-model-speed{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.game-flow-model-identity > span{flex:none;white-space:nowrap}
+.game-flow-model-speed{margin:4px 0 0}
+.game-flow-model-speed > div{display:flex;flex-wrap:wrap;column-gap:4px}
+.game-flow-model-speed dt,.game-flow-model-identity > span{color:var(--text-muted)}
+.game-flow-model-speed dd{margin:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+@container game-flow-performance (max-width:420px){
+  .game-flow-performance-wide{display:none}
+  .game-flow-performance-compact{display:block}
+}
 .game-flow-progress{margin:0 0 9px;padding:9px 10px;border:1px solid var(--border);border-radius:9px;
   background:var(--bg-panel)}
 .game-flow-progress-main{display:flex;align-items:baseline;gap:8px}

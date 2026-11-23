@@ -774,7 +774,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
           total: model.run?.total ?? model.cardActivity?.progress?.total,
           sample: model.progress?.detail }} details={model.cardActivity?.details}
         performance={<GameFlowPerformance measured={model.applied || model.run?.steps.includes("apply") ? model.metrics?.apply : model.metrics?.generate} />}
-        configuration={<div className="dpl-grid game-flow-field-wide">
+        body={<div className="dpl-grid">
         <section className="dpl-panel" aria-label="文本补丁">
           <div className="dpl-panel-head">
             <h4>文本补丁</h4>
