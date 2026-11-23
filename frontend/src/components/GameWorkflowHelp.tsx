@@ -291,7 +291,7 @@ export function ApplicationHelpPage({ onBack }: { onBack: () => void }) {
           </li>)}
         </ol>}
         {mode === "guide" && current.steps.length > 1 && <p className="help-chain-note">
-          横排顺序就是执行顺序；「图片翻译」与「图片去码」都只依赖扫描结果，可以互换先后，其余步骤按箭头依次进行。
+          横排顺序是默认顺序。文本翻译、图片翻译、图片去码三步都只依赖扫描结果，先后随意、也可以并行；扫描资源必须最先，生成与应用必须最后。
         </p>}
 
         {mode === "guide"
