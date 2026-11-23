@@ -773,9 +773,38 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const deploymentPanel = <div className="embed-deployment">
     <section className="embed-deploy-main" aria-label="生成与应用">
       <div className="dpl dpl-grid embed-product-grid">
-        {canUseTextResources && <section className="dpl-panel"><div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div></section>}
-        {imageProject && <section className="dpl-panel"><div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div></section>}
-        {selfMosaic && <section className="dpl-panel"><div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div><div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={!imageExport && mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>{imageExport ? "查看去码图" : "生成去码图"}</button></div></section>}
+        {canUseTextResources && <section className="dpl-panel">
+          <div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div>
+          <dl className="dpl-stats dpl-stats-stack">
+            <div><dt>已改条目</dt><dd>{textInfo.sourcePath ? textInfo.changed : "—"}</dd></div>
+            <div><dt>字符集 / 缺字</dt><dd>—</dd></div>
+            <div><dt>替换字体</dt><dd>{runtimeDictionary && fontPath.trim() ? <span className="dpl-hint" title={fontPath}>已选择</span> : "—"}</dd></div>
+          </dl>
+          <p className="dpl-hint">{canApplyText ? "文本补丁已生成，尚未应用。"
+            : patch.installed ? "文本补丁已安装。" : patch.legacy ? "发现旧版文本补丁。" : "尚未生成文本补丁。"}</p>
+          <div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div>
+        </section>}
+        {imageProject && <section className="dpl-panel">
+          <div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div>
+          <dl className="dpl-stats dpl-stats-stack">
+            <div><dt>可用译图</dt><dd>{imageWorkflow.loaded ? imageWorkflow.valid : "—"}</dd></div>
+            <div><dt>图片总数</dt><dd>{imageWorkflow.count ?? "—"}</dd></div>
+            <div><dt>已译比例</dt><dd>{imageWorkflow.loaded && imageWorkflow.count ? (imageWorkflow.valid / imageWorkflow.count * 100).toFixed(1) + "%" : "—"}</dd></div>
+          </dl>
+          <p className="dpl-hint">{imageWorkflow.valid
+            ? imageExport ? `确认后将通过成品包写入 ${imageWorkflow.valid} 张译图。` : `应用时将写入 ${imageWorkflow.valid} 张译图。`
+            : "译图尚未生成，可在「图片翻译」中处理。"}</p>
+          <div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div>
+        </section>}
+        {selfMosaic && <section className="dpl-panel">
+          <div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div>
+          <dl className="dpl-stats dpl-stats-stack">
+            <div><dt>已选去码图</dt><dd>{mosaicHandle.current ? imageExport ? packageMosaicIds.length : mosaicHandle.current.selectedIds().length : "—"}</dd></div>
+            <div><dt>覆盖区域</dt><dd>—</dd></div>
+          </dl>
+          <p className="dpl-hint">{imageExport ? "已确认的去码图随成品包一起应用。" : "纳入的去码图随补丁一起应用。"}</p>
+          <div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={!imageExport && mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>{imageExport ? "查看去码图" : "生成去码图"}</button></div>
+        </section>}
         <section className="dpl-panel dpl-panel-apply" aria-label="应用到游戏">
           <div className="dpl-panel-head">
             <h4>应用到游戏</h4>
