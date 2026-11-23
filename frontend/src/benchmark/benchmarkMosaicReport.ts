@@ -3,7 +3,7 @@ import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "./imageBe
 import { loadAnnotatedSampleSet } from "./imageSampleSet";
 import { countMosaicResults } from "./mosaicScoreCounts";
 import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
-import { scoreMosaicRun, type MosaicScoreStage } from "./mosaicScore";
+import { bestMosaicRuns, mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./mosaicScore";
 import type { BenchmarkResult } from "../gameTextBenchmark";
 
 export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path?: string, stage: MosaicScoreStage = "mosaicRefine") {
@@ -54,14 +54,37 @@ export async function compareMosaicTaskWithDataset(queueId: string, runs: readon
 }
 export type MosaicTaskReport = Awaited<ReturnType<typeof compareMosaicTaskWithDataset>>;
 
-export async function downloadMosaicTaskReport(report: MosaicTaskReport) {
+export async function createMosaicTaskWorkbook(report: MosaicTaskReport) {
   const { default: Zip } = await import("jszip");
   const book = new Zip();
   const namespace = "http://schemas.openxmlformats.org";
-  const rows = [["配置", "轮次", "样本数", "判对有码", "漏检", "判对无码", "误报", "已标注待复核", "已标注失败或跳过",
-    "未确认样本", "未确认图判为有码", "人工框数", "匹配框数（IoU≥0.5）", "未找回框数", "多余框（完整标注）", "用时秒"],
-  ...report.totals.map(r => [r.label, r.round, r.samples, r.tp, r.fn, r.tn, r.fp, r.review, r.failed,
-    r.unlabelled, r.unlabelledPositive, r.expectedBoxes, r.foundBoxes, r.expectedBoxes-r.foundBoxes, r.extraBoxes, r.seconds])];
+  const best = bestMosaicRuns(report.totals);
+  const screening = report.stage === "mosaicScreen";
+  const percentage = (value: number | null) => value === null ? "" : Number((value * 100).toFixed(2));
+  const rows = [["配置", "轮次", "样本数", "不同原图", mosaicScoreTitle(report.stage), "评分标记", "有效权重", "缺项",
+    "最佳", "最佳资格", "运行状态", "图级F1（%）", "判对有码", "漏图", "判对无码", "误报",
+    "已确认有码图", "已确认无码图", "有码待复核", "无码待复核", "失败", "跳过", "待筛选", "缺行", "异常",
+    "未确认样本", "未确认图判为有码", "未确认图待复核", "固定人工框数", "可评人工框数", "匹配框数（IoU≥0.5）",
+    "未交付框数", "多余框（完整标注）", "完整域预测框数", "完整域匹配框数",
+    "交付覆盖（%）", "可评框覆盖（%）", "有码明确判定率（%）", "无码明确判定率（%）",
+    "用时秒", "每百张秒数", "冻结样本与种子", "冻结标注版本", "计时协议", "异常原因",
+    ...(screening ? ["保留给下游的有码", "移交的无码"] : []),
+    ...(report.totals[0]?.score.items ?? []).flatMap(item => ["分子", "分母", "权重", "得分"].map(column => item.label + " " + column))],
+  ...report.totals.map(r => {
+    const denominator = 2 * r.tp + r.fp + r.fn;
+    return [r.label, r.round, r.samples, r.originals, r.score.displayScore ?? "", r.score.provisional ? "暂定" : "",
+      r.score.effectiveWeight, r.score.items.filter(item => item.missing).map(item => item.label + "：" + item.missing).join(" · "),
+      best.has(r.runId) ? "最佳" : "", r.score.eligible ? "合格" : r.score.rankingReasons.join(" · "), r.status,
+      percentage(denominator ? 2 * r.tp / denominator : null), r.tp, r.fn, r.tn, r.fp, r.confirmedPositive, r.confirmedNegative,
+      r.reviewPositive, r.reviewNegative, r.failed, r.skipped, r.pending, r.missing, r.invalid,
+      r.unlabelled, r.unlabelledPositive, r.unlabelledReview, r.expectedBoxes, r.evaluatedBoxes, r.foundBoxes,
+      r.expectedBoxes - r.foundBoxes, r.extraBoxes, r.completePredictedBoxes, r.completeMatchedBoxes,
+      percentage(r.score.delivery), percentage(r.score.boxCoverage), percentage(r.score.positiveCoverage), percentage(r.score.negativeCoverage),
+      Number.isFinite(r.seconds) ? r.seconds : "", r.score.speed ?? "", r.freeze?.inputs ?? "", r.freeze?.truth ?? "", r.timing ?? "",
+      [...r.issues, ...Object.entries(r.reasons).map(([reason, count]) => reason + " × " + count)].join(" · "),
+      ...(screening ? [r.evaluatedPositive - r.fn, r.fp + r.reviewNegative] : []),
+      ...r.score.items.flatMap(item => [item.numerator, item.denominator, item.weight, item.ratio === null ? "" : item.ratio * item.weight])];
+  })];
   const xml = (value: string) => value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   book.file("[Content_Types].xml", '<Types xmlns="' + namespace + '/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
@@ -71,11 +94,18 @@ export async function downloadMosaicTaskReport(report: MosaicTaskReport) {
   book.file("xl/workbook.xml", '<workbook xmlns="' + namespace + '/spreadsheetml/2006/main" xmlns:r="' + namespace + '/officeDocument/2006/relationships"><sheets><sheet name="数据集对照" sheetId="1" r:id="rId1"/></sheets></workbook>');
   book.file("xl/worksheets/sheet1.xml", '<worksheet xmlns="' + namespace + '/spreadsheetml/2006/main"><sheetData>' +
     rows.map((row, index) => '<row r="' + (index + 1) + '">' + row.map((value, column) => {
-      const ref = String.fromCharCode(65 + column) + (index + 1);
+      let letters = "";
+      for (let number = column + 1; number > 0; number = Math.floor((number - 1) / 26))
+        letters = String.fromCharCode(65 + (number - 1) % 26) + letters;
+      const ref = letters + (index + 1);
       return typeof value === "number" ? '<c r="' + ref + '"><v>' + value + '</v></c>' :
         '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xml(value) + '</t></is></c>';
     }).join("") + '</row>').join("") + '</sheetData></worksheet>');
-  const blob = await book.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  return book.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+export async function downloadMosaicTaskReport(report: MosaicTaskReport) {
+  const blob = await createMosaicTaskWorkbook(report);
   const url = URL.createObjectURL(blob);
   const linkElement = document.createElement("a");
   linkElement.href = url; linkElement.download = "图片去码测试总结.xlsx"; linkElement.click();
