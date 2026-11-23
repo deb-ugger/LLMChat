@@ -57,6 +57,8 @@ foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'mosaic-detector')) {
     }
 }
 
+& node (Join-Path $root 'frontend/build/bundledAssets.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare the bundled Noto CJK font.' }
 Stop-PortableProcesses
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null

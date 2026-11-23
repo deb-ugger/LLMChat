@@ -121,9 +121,17 @@ npm run dev
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
 
-脚本自动取得全局构建锁，先关闭构建目录中的主程序和后端，再并行准备后端和工具，随后构建 Release 桌面程序、更新并校验便携版。脚本优先正常关闭窗口，开始构建前最多等待 60 秒，替换 `dist-portable/` 中的文件前单独等待最多 20 秒。若某阶段开始时只检测到后端进程，该阶段最多等待 3 秒。默认等待超时会报错并停止，仍在运行的进程会保留。显式运行 `build.cmd -ForceClose` 才会在对应阶段超时后强制结束已按可执行文件路径核实的本仓库进程，未保存的内容可能丢失。任何一步失败都会停止后续步骤，并释放构建锁。脚本不运行全量测试。
+脚本自动取得全局构建锁，先关闭构建目录中的主程序和后端。完整构建会并行编译前端与 C++ 后端，准备所需工具，再构建 Release 桌面程序、更新并校验便携版。脚本优先正常关闭窗口，开始构建前最多等待 60 秒，替换 `dist-portable/` 中的文件前单独等待最多 20 秒。若某阶段开始时只检测到后端进程，该阶段最多等待 3 秒。默认等待超时会报错并停止，仍在运行的进程会保留。显式运行 `build.cmd -ForceClose` 才会在对应阶段超时后强制结束已按可执行文件路径核实的本仓库进程，未保存的内容可能丢失。任何一步失败都会停止后续步骤，并释放构建锁。脚本不运行全量测试。
 
-首次准备语音解码工具需要联网下载 FFmpeg；工具版本未变化时复用已有文件。缺少前端依赖时自动运行 `npm ci`。可通过 `-Proxy http://127.0.0.1:7892` 指定 FFmpeg 下载代理。自动化代理调用时可传入自己的稳定 `-Owner`，但必须先释放文件锁。
+缺少前端依赖时自动运行 `npm ci`。首次准备语音解码工具需要联网下载 FFmpeg，可通过 `-Proxy http://127.0.0.1:7892` 指定 FFmpeg 下载代理。自动化代理调用时可传入自己的稳定 `-Owner`，须先释放文件锁。
+
+### 随包资源
+
+- 前端开发和构建时，从 `package-lock.json` 锁定的两套 ONNX Runtime Web 依赖复制 WASM 和对应加载器，从 PaddleOCR 官方地址下载基础 PP-OCRv6 模型。
+- 生成便携版时，从固定版本 Sans2.004 下载 Noto Sans CJK SC 字体，并随包保留许可和来源说明。
+- 上述文件按 SHA-256 校验，通过校验的本地文件会复用。源码检出首次准备这些资源需要联网，打包后的基础 OCR 和字体可离线使用。漫画 OCR 转换后的模型仍随源码提供。
+
+构建缓存、便携版、临时样本和测速报告留在本地。
 
 更新只替换程序和资源，保留已有的配置、会话、统计数据、翻译工程、语音任务输出和模型缓存。
 
@@ -143,6 +151,7 @@ powershell -File scripts/prepare-sidecar.ps1
 powershell -File scripts/prepare-speech-tools.ps1
 powershell -File scripts/prepare-unity-tools.ps1
 cd frontend
+npm ci
 npm run tauri -- build --no-bundle
 ```
 
@@ -297,6 +306,6 @@ MV/MZ 的独立手动备份可选择文本资源、本地插件与字体、图�
 
 ### 增量构建
 
-`build.cmd` 会并行准备 C++ 后端和工具资源，按可用内存选择编译并发，并输出各阶段耗时。显式设置的 `CARGO_BUILD_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL` 会优先采用。
+`build.cmd` 根据已发布的桌面输入判断是否只更新后端。需要强制完整构建时运行 `build.cmd -Full`。前后端一起改动并需要联调时，可用 `build.cmd -IntegrationPreview`，它使用独立端口和数据目录。构建按可用内存选择编译并发，并输出各阶段耗时。显式设置的 `CARGO_BUILD_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL` 会优先采用。
 
 前端和 Unity 工具的输入、工具版本及产物未变时复用上次结果；输入改变或产物缺失时重新生成。脚本缓存位于 `backend/build/incremental`。便携版只复制变化的程序和资源，保留个人配置、模型缓存及工程；本次替换的主程序和后端各校验一次。

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { copyPublicAssets, syncDirectory } from "./build/runtimeAssets.mjs";
+import { prepareFrontendAssets } from "./build/bundledAssets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const frontendRoot = path.resolve(".");
@@ -60,6 +61,11 @@ export default defineConfig(async () => ({
   worker: { format: "es", plugins:()=>[paddleBatchingPlugin()] },
   build: { copyPublicDir: false, outDir: stagingDirectory, emptyOutDir: true },
   plugins: [paddleBatchingPlugin(), react(), servePdfjsAssets(), {
+    name: "prepare-bundled-assets",
+    config(_config, { isPreview }) {
+      if (!isPreview) return prepareFrontendAssets(frontendRoot);
+    },
+  }, {
     name: "external-runtime-assets",
     apply: "build",
     writeBundle(options) {

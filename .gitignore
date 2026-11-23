@@ -44,7 +44,17 @@ dist/
 release/
 **/bundle/
 
+# Build-prepared assets
+/assets/fonts/NotoSansCJKsc-Regular.otf
+/frontend/public/ocr/PP-OCRv6_small_det_onnx_infer.tar
+/frontend/public/ocr/PP-OCRv6_small_rec_onnx_infer.tar
+/frontend/public/ort/ort-wasm-simd-threaded.jsep.mjs
+/frontend/public/ort/ort-wasm-simd-threaded.jsep.wasm
+/frontend/public/manga-ort/ort-wasm-simd-threaded.asyncify.mjs
+/frontend/public/manga-ort/ort-wasm-simd-threaded.asyncify.wasm
+
 # Build logs & compiler scratch
+/tmp/
 tauri-build.log
 tsc-out.txt
 *.log
