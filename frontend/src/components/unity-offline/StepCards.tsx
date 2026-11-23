@@ -54,7 +54,7 @@ type StepCardsProps = {
   imagePart: boolean;
   mosaicPage: boolean;
   track: WorkflowTrack;
-  toolbar?: { target: HTMLElement; benchmarkDisabled: boolean; saveDisabled: boolean; saveTitle: string; openBenchmark: () => void; save: () => void };
+  toolbar?: { target: HTMLElement; saveDisabled: boolean; saveTitle: string; save: () => void };
   mosaic?: { controlsRef: Ref<HTMLDivElement>; scanReady: boolean; hasImages: boolean; error?: string; hasMosaic: boolean };
   scan?: { busy: boolean; progress: ReactNode; configuration: ReactNode; resources: ReactNode };
   translation?: {
@@ -74,7 +74,6 @@ export function StepCards({ panelRef, workflowRef, panelStyle, generationState, 
   toolbar, mosaic, scan, translation, batch, deployment, deploymentProgress, errorPanel }: StepCardsProps) {
   return <>
     {toolbar && createPortal(<>
-      <UnityIconButton aria-label="测试队列" title="测试队列" disabled={toolbar.benchmarkDisabled} onClick={toolbar.openBenchmark}><UnityActionIcon kind="benchmark" /></UnityIconButton>
       <UnityIconButton aria-label="保存工程" title={toolbar.saveTitle} disabled={toolbar.saveDisabled} onClick={toolbar.save}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbar.target)}
     <aside ref={panelRef} className="unity-offline-config" style={panelStyle}>

@@ -12,6 +12,7 @@ import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWit
 import { screenGameText } from "../gameTextScreening";
 import { GAME_CONTEXT_HINT } from "../gameTranslationContext";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
+import { useProjectBenchmarkLauncher } from "../gameBenchmarkWindow";
 import { sameTextEdit } from "../gameTextProject";
 import { beginGameStep, finishGameStep, gameModelExecution, modelConcurrency, clearGamePerformance, stepPerformance, measureGameAsync, measureGameWork, recordGameCacheHit, reportGameStepItems, gameStepSelections } from "../gameModelPerformance";
 import { type GameWrapMode } from "../gameTextLayout";
@@ -1440,7 +1441,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       current: { source: onlySourceLanguage ? scope.language : "auto", target, wrap: wrapMode, includeContext, skipTarget: skipTargetLanguage,
         prompts: promptState.selection, engines: engineChoices, modelIds: {text:translationKind === "engine" ? "" : llmModel,dialogue:dialogueModel,names:nameModel} },
     });
+    return true;
   };
+  useProjectBenchmarkLauncher(active && !!game, openBenchmark);
   const [flowConfig, setFlowConfig] = useState<string | null>(null);
   const imageRefine = imageScreeningOptions.refine;
   const imageRefineModel = imageRefine.method === "llm" ? imageRefine.model ?? defaultGameImageVision(gameModels) : undefined;
@@ -2197,9 +2200,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       activeStep={activeStep} imagePart={imagePart} mosaicPage={mosaicPage}
       track={{ steps: trackSteps, edges: trackEdges, enabled: trackEnabled, skipped: trackSkipped,
         disconnected: deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined }}
-      toolbar={toolbarTarget ? { target: toolbarTarget, benchmarkDisabled: !game,
+      toolbar={toolbarTarget ? { target: toolbarTarget,
         saveTitle: importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改",
-        saveDisabled: !project || !dirty || saving || !!busy || restoring || !!importPreview, openBenchmark, save: () => void saveUserChanges(),
+        saveDisabled: !project || !dirty || saving || !!busy || restoring || !!importPreview, save: () => void saveUserChanges(),
       } : undefined}
       mosaic={mosaicMounted ? { controlsRef: setMosaicControls, scanReady,
         hasImages: !!project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0),

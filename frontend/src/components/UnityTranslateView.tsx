@@ -1,6 +1,5 @@
 import { EmptyState } from "./EmptyState";
 import { getFixedMenuPoint, getLayoutRect, getLayoutViewport } from "../viewportLayout";
-import { GameWorkflowHelp } from "./GameWorkflowHelp";
 import { writeOutput } from "../appOutput";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
@@ -40,9 +39,7 @@ type RecentUnityGame,
 } from "../unityLastGame";
 import { unityRun } from "../unityOffline";
 import { ClosingProgress,useClosingProgress } from "./ClosingProgress";
-import { UnityActionIcon } from "./UnityActionIcon";
 import { UnityExitDialog,type UnityExitChoice } from "./UnityExitDialog";
-import { UnityIconButton } from "./UnityIconButton";
 import { JsonEmbeddingView, type EmbeddingGame } from "./JsonEmbeddingView";
 import { UnityOfflineView,type UnityOfflineHandle } from "./UnityOfflineView";
 import { archLabel,emptyScanState,gameTitle,getIniValue,joinGameExePath,runtimeLabel,serializeIniSections,type OutputLevel,type ScanState } from "./UnityViewHelpers";
@@ -176,13 +173,11 @@ function formatClock(d = new Date()) {
 export function UnityTranslateView({
   active = true,
   settings,
-  onOpenUnitySettings,
   onOpenGeneralSettings,
   onRestoreWorkspace,
 }: {
   active?: boolean;
   settings: Settings;
-  onOpenUnitySettings?: () => void;
   onOpenGeneralSettings?: () => void;
   onRestoreWorkspace?: () => void;
 }) {
@@ -1662,7 +1657,7 @@ export function UnityTranslateView({
   return (
     <>
     {confirmation.dialog}
-    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} settings={settings} onOpenSettings={onOpenUnitySettings} active={active} onBack={() => { rememberGameWorkspace(null); setEmbeddingGame(null); }} onGameDrop={path => { rememberGameWorkspace(null); setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
+    {embeddingGame && <JsonEmbeddingView key={embeddingGame.path} initialGame={embeddingGame} settings={settings} active={active} onBack={() => { rememberGameWorkspace(null); setEmbeddingGame(null); }} onGameDrop={path => { rememberGameWorkspace(null); setEmbeddingGame(null); resetPath(path); void runDetect(path); }} />}
     <div className="unity-shell" onClickCapture={event => { if (mode === "runtime" || !showDetail) logGameButton(event, text => pushOutput(text, "info")); }} hidden={!!embeddingGame} aria-hidden={!active || !!embeddingGame} data-unity-mode={showDetail ? mode : "games"}
       onDragOver={event => {
         if(showDetail||busy||scanning||!event.dataTransfer.types.some(type=>type==="Files"||type==="text/uri-list"))return;
@@ -1702,7 +1697,6 @@ export function UnityTranslateView({
             >
               ← 返回游戏列表
             </button>
-            {mode === "runtime" && helpButton}
           </div>
           {selected && <div className="unity-game-heading"><strong>{gameTitle(selected)}</strong><span>{archLabel(selected.arch)} · {runtimeLabel(selected.runtime, selected.isIl2Cpp)}</span><code data-tooltip={selected.gameDir}>{selected.gameDir}</code></div>}
           <nav className="unity-mode-nav" aria-label="游戏翻译模式">
@@ -1710,18 +1704,6 @@ export function UnityTranslateView({
             <button role="tab" aria-selected={mode === "runtime"} disabled={busy || offlineBusy} onClick={() => void changeMode("runtime")}>运行时翻译</button>
           </nav>
           <div ref={setOfflineToolbar} className="unity-header-primary unity-header-icons" hidden={mode !== "offline"} />
-            <div className="unity-top-actions unity-header-icon-group">
-              {onOpenUnitySettings && <UnityIconButton
-                type="button"
-                aria-label="Unity 设置"
-                disabled={busy || offlineBusy}
-                onClick={onOpenUnitySettings}
-                title="打开 Unity 模块设置"
-              >
-                <UnityActionIcon kind="settings" />
-              </UnityIconButton>}
-              {mode === "runtime" && <GameWorkflowHelp mode="unity-runtime" />}
-            </div>
         </header>
       ) : null}
 

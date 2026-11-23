@@ -2,9 +2,26 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { BenchmarkRequest, BenchmarkSnapshot } from "./benchmark/benchmarkRunner";
 import type { ArchivedBenchmarkRef, BenchmarkResult } from "./gameTextBenchmark";
+import { useLayoutEffect, useRef } from "react";
 
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
 export const benchmarkChannelName = "llmchat-game-benchmark-window";
+const projectBenchmarks = new Set<() => boolean>();
+
+export function useProjectBenchmarkLauncher(active: boolean, open: () => boolean) {
+  const latest = useRef(open);
+  latest.current = open;
+  useLayoutEffect(() => {
+    if (!active) return;
+    const launch = () => latest.current();
+    projectBenchmarks.add(launch);
+    return () => { projectBenchmarks.delete(launch); };
+  }, [active]);
+}
+
+export function openProjectBenchmark() {
+  return [...projectBenchmarks].some(open => open());
+}
 
 export type BenchmarkQueueCommand = "benchmark-start" | "benchmark-stop" | "benchmark-remove" | "benchmark-cleanup" | "benchmark-continue-batch" | "benchmark-restart";
 export type BenchmarkQueueArgument = string | ArchivedBenchmarkRef;

@@ -1,122 +1,103 @@
 import { useId } from "react";
-import { openGameAuxWindow, type GameHelpSetup } from "../gameAuxWindows";
-import { UnityActionIcon } from "./UnityActionIcon";
-import { UnityIconButton } from "./UnityIconButton";
+import type { GameHelpSetup } from "../gameAuxWindows";
 
-type Section = {
-  number: string;
-  title: string;
-  description: string;
-  details?: readonly (readonly [string, string])[];
-};
+const guide = {
+  chat: { label: "对话", steps: [
+    ["开始对话", "用「新建对话」开始，在输入框发送消息。已有对话可从列表搜索、切换或重命名。"],
+    ["连接模型", "在「设置 → 通用」配置 API、代理或本地 Ollama。连接成功后再选择用于对话的模型。"],
+  ] },
+  literature: { label: "文献翻译", steps: [
+    ["打开文献", "打开 PDF 或 EPUB 后，通过目录或页码定位要读的内容。"],
+    ["翻译与核对", "为当前文献选择语言和翻译方式，结合原文核对译文。可从最近打开列表接着阅读。"],
+  ] },
+  image: { label: "图片文字识别", steps: [
+    ["添加图片", "打开或拖入图片，选好识别模型和原文语言。只需识别一部分时，在预览中框定范围。"],
+    ["检查文字", "识别后核对文字和区域位置。需要其他语言时继续翻译，并按所选格式输出。"],
+  ] },
+  redraw: { label: "AI 风格重绘", steps: [
+    ["准备工作流", "选择 ComfyUI 便携版目录，确认工作流和模型文件。自定义工作流使用 ComfyUI 导出的 API 格式。"],
+    ["生成候选", "添加原图和所需参考图，调整文字区域或蒙版，再运行工作流。对照原图核对候选后保存。"],
+  ] },
+  speech: { label: "语音转文字", steps: [
+    ["添加音频", "打开或拖入音频。需要分段时，在波形里选择处理范围。"],
+    ["转写与导出", "按当前任务选识别模型、语言和输出格式。完成后校对文本及时间轴，再导出。"],
+  ] },
+  text: { label: "文本翻译工程", steps: [
+    ["打开工程", "从原文创建工程，或打开已有工程。通过筛选和搜索找到要处理的条目。"],
+    ["翻译与保存", "选择源语言、目标语言和翻译方式。核对已有译文、失败条目和格式标记，再保存或导出。"],
+  ] },
+  unity: { label: "游戏翻译", steps: [
+    ["扫描资源", "选择游戏目录或程序进入工程。扫描会建立可处理资源的索引，已有结果会按原资源匹配复用。"],
+    ["文本翻译", "先筛选要处理的文字，再执行翻译。保存人工修改，检查占位符、换行以及失败条目。"],
+    ["图片翻译", "在支持的引擎里依次筛选、识字定位、翻译和生成译图。可调整勾选、区域、译文，或导入替换图。"],
+    ["图片去码", "初筛和视觉复筛会整理候选框。在待复核分组检查框选范围，生成候选后需手动采用，结果才可用于补丁。"],
+    ["生成与应用", "最后一步提供「一键生成并应用」，也可逐项生成和应用。应用前关闭游戏，在此页查看备份、冲突和卸载操作。"],
+  ] },
+  output: { label: "输出", steps: [
+    ["查找运行信息", "从左下角打开全局输出。任务开始、停止、完成和报错会显示对应模块，方便定位失败步骤。"],
+  ] },
+  downloads: { label: "下载", steps: [
+    ["查看资源下载", "从左下角查看模型和工具下载。资源下载完成后回到原模块选择使用。"],
+  ] },
+  stats: { label: "统计", steps: [
+    ["查看用量", "按时间和模型查看请求及 token 使用情况。价格和费用使用设置中的计价配置。"],
+  ] },
+  benchmark: { label: "测试队列", steps: [
+    ["游戏翻译", "先打开游戏工程，再从左下角「测试队列」选择「游戏翻译」。选择样本、配置和轮次，结果保存在测试记录。"],
+    ["构建测速", "在独立目录对比 WASM 内嵌和外置时的全量及增量 Release 构建。结束后清理测试目录，结果在测速页查看。"],
+  ] },
+  appearance: { label: "外观", steps: [
+    ["切换主题", "从左下角「外观」选择界面配色。主题立即更新并保存在本机。"],
+  ] },
+  settings: { label: "设置", steps: [
+    ["全局连接", "在通用设置配置模型服务、代理和凭证，并用连接测试确认设置可用。"],
+    ["模块设置", "切换到对应模块管理长期选项。单次运行的语言、模型或输出选项在该模块的任务页面调整。"],
+  ] },
+} as const;
 
-function offlineGuide(unity: boolean, images: boolean): Section[] {
-  const sections: Section[] = [
-    {
-      number: "1", title: "扫描资源",
-      description: "读取游戏目录并建立翻译工程。扫描完成后可以查看原文和可处理的资源。",
-      details: [
-        ["提取文本", unity ? "读取可回写的 Unity 文本和资源位置。代码字面量可按程序集范围选扫。" : "提取引擎支持的游戏文本，建立原文与回写资源的对应关系。"],
-        ...(images ? [["整理图片", "登记可处理的原图。是否包含需要翻译的文字，由图片步骤判断。"]] as const : []),
-        ...(unity ? [["重新扫描", "更新资源清单，复用能匹配的旧译文、识别结果、导入译图和勾选状态。"]] as const : []),
-      ],
-    },
-    {
-      number: "2.1", title: "文本翻译",
-      description: "先筛选，再翻译正文。处理后可在右侧检查原文、译文和失败条目。",
-      details: [
-        ["筛选文本", "根据原文与目标语言选项确定处理范围。可用本地规则或独立的大模型判断哪些内容已经符合目标语言，并将其原样保留。"],
-        ["翻译正文", "使用所选翻译引擎或大模型处理剩余正文。大模型可选提示词，也可按设置附带同一资源的上下文。已确定的插件姓名框译名优先复用术语表或已有合格译文。"],
-        ["换行与校验", "按所选方式保留原换行、合并翻译后恢复换行，或使用大模型自然断行。写回前检查占位符、富文本标签等格式，失败条目可修正后重试。"],
-      ],
-    },
-  ];
-  if (images) {
-    sections.push({
-      number: "2.2", title: "图片翻译",
-      description: "识别图内文字并生成译图。可在右侧检查区域、修改译文、重绘或导入替换图。",
-      details: [
-        ["筛选图片", "从扫描出的图片中找出可能含有待译文字的候选。"],
-        ["复筛图片（可选）", "用本地 OCR 或视觉大模型检查「待复核」和「待正式识别」的图片，更新分组和默认勾选。"],
-        ["识字与定位", "正式识别已勾选的图片，记录文字、区域坐标和置信度，供翻译和排版使用。"],
-        ["翻译图片文字", "用所选引擎或大模型翻译区域文字，保存译文以供复核。"],
-        ["复核与重译", "检查翻译结果。配置了重译模型时，可重新处理未通过校验的区域。"],
-        ["生成译图", "把区域译文排回原图。可选本地原位排版或大模型辅助断行，生成供应用的译图。"],
-        ["AI 风格重绘", "可选择模型工作流，对译图继续重绘并采用结果。"],
-      ],
-    }, { number: "2.3", title: "图片去码", description: "按方格规则或 Lada 模型筛选图片。检查蒙版、重绘并确认要纳入补丁的结果。" });
-  }
-  sections.push({
-    number: "3", title: "生成与应用",
-    description: "检查并生成补丁，关闭游戏后在同一页应用。应用完成后启动游戏检查实际显示。",
-    details: [
-      ["生成补丁", images ? "处理完需要的文本和图片后，保存修改并检查译文格式。其余内容可以跳过。" : "处理完需要的文本后，保存修改并检查译文格式。其余内容可以跳过。"],
-      ...(unity ? [
-        ["检查字库", "选用替换字体后，可以检查缺字清单。"],
-        ["安装或更新", "将补丁写入游戏目录。检测到已安装的本软件补丁时，应用新补丁前先恢复原件。"],
-        ["启动与卸载", "可从此步骤启动游戏。卸载补丁可以恢复备份中的原件。"],
-      ] : [
-        ["备份与安装文本", "按所选备份方式保留原件，再应用新补丁或更新已安装的译文。"],
-        ...(images ? [["应用译图", "可以在此步骤写入已勾选且生成完成的译图。文本补丁与译图可以分别卸载。"]] : []),
-        ["卸载与恢复", "通过卸载或备份恢复操作还原原件。检测到文件冲突时，可在该步骤查看冲突文件。"],
-      ]) as [string, string][],
-    ],
-  });
-  return sections;
+export type HelpModule = keyof typeof guide;
+export const isHelpModule = (value: string): value is HelpModule => Object.hasOwn(guide, value);
+
+const runtimeSteps = [
+  ["检测 Unity 游戏", "在游戏详情切换到「运行时翻译」，按检测结果确认运行环境和位数。"],
+  ["安装翻译插件", "Mono 使用 ReiPatcher。IL2CPP 先安装 BepInEx，首次启动完成初始化后关闭游戏，再安装并配置翻译插件。"],
+  ["启动与检查", "使用 LLMChat 模型端点时保持软件运行。在游戏内按 Alt+0 检查翻译插件。卸载时先卸翻译插件，再卸插件框架。"],
+] as const;
+
+type HelpSteps = readonly (readonly [string, string])[];
+function GuideSections({ steps }: { steps: HelpSteps }) {
+  return <>{steps.map(([label, content]) => <section key={label} className="game-workflow-help-section">
+    <h3>{label}</h3><p>{content}</p>
+  </section>)}</>;
 }
 
-const runtimeGuide: Section[] = [
-  { number: "1", title: "检测游戏", description: "选择游戏目录或程序，确认识别结果中的运行环境和位数。" },
-  {
-    number: "2", title: "安装插件框架", description: "先按运行环境安装对应框架。",
-    details: [["Mono", "安装 ReiPatcher。"], ["IL2CPP", "安装 BepInEx，启动一次游戏完成初始化，再关闭游戏。"]],
-  },
-  {
-    number: "3", title: "安装并配置翻译插件", description: "安装 XUnity.AutoTranslator，选择翻译端点并保存配置。使用 LLMChat 大模型端点时，游戏翻译期间需保持 LLMChat 运行。",
-  },
-  {
-    number: "4", title: "启动并检查", description: "启动游戏。Mono 首次可使用「补丁并启动」。在游戏内按 Alt+0 打开翻译面板。卸载时先卸翻译插件，再卸插件框架。",
-  },
-];
-
-export function GameWorkflowHelp({ mode, supportsImages = true }: {
-  mode: GameHelpSetup["mode"];
-  supportsImages?: boolean;
-}) {
-  return <UnityIconButton title="游戏翻译流程帮助" onClick={() => openGameAuxWindow({ kind: "help", mode, supportsImages })}>
-    <UnityActionIcon kind="help" />
-  </UnityIconButton>;
+export function ApplicationHelpPage({ section, onSection }: { section: HelpModule; onSection: (section: HelpModule) => void }) {
+  return <main className="game-workflow-help app-help-view" aria-label="帮助">
+    <header className="game-workflow-help-header">
+      <h1>帮助</h1>
+      <label>模块 <select aria-label="帮助模块" value={section} onChange={event => {
+        const next = event.target.value;
+        if (isHelpModule(next)) onSection(next);
+      }}>
+        {Object.entries(guide).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
+      </select></label>
+    </header>
+    <div key={section} className="game-workflow-help-content">
+      <GuideSections steps={guide[section].steps} />
+      {section === "unity" && <GuideSections steps={runtimeSteps} />}
+    </div>
+  </main>;
 }
 
 export function GameWorkflowHelpPage({ mode, supportsImages, onClose }: Omit<GameHelpSetup, "kind"> & { onClose: () => void }) {
-  const id = useId();
+  const titleId = useId();
   const runtime = mode === "unity-runtime";
-  const sections = runtime ? runtimeGuide : offlineGuide(mode === "unity-offline", supportsImages);
-  return <main className="game-workflow-help" aria-labelledby={id + "-title"}>
-      <header className="game-workflow-help-header">
-        <h1 id={id + "-title"}>{runtime ? "Unity 运行时翻译流程" : "游戏翻译流程"}</h1>
-        <button type="button" className="unity-btn" aria-label="关闭流程帮助" onClick={onClose}>关闭</button>
-      </header>
-      <div className="game-workflow-help-content">
-        {!runtime && <p className="game-workflow-help-summary">
-          「一键生成并应用」会连续执行各阶段。{supportsImages && "文本与图片按流程图顺序串行处理。"}中止后可继续，跳过剩余内容会保留已完成结果。
-        </p>}
-        <nav className="game-workflow-help-index" aria-label="流程目录">
-          {sections.map(section => {
-            const target = `${id}-${section.number}`;
-            return <a key={section.number} href={`#${target}`} onClick={event => {
-              event.preventDefault();
-              document.getElementById(target)?.scrollIntoView({ block: "start" });
-            }}>{section.number} {section.title}</a>;
-          })}
-        </nav>
-        {sections.map(section => <section key={section.number} id={`${id}-${section.number}`} className="game-workflow-help-section">
-          <h3><span>{section.number}</span>{section.title}</h3>
-          <p>{section.description}</p>
-          {section.details && <dl>{section.details.map(([name, description]) =>
-            <div key={name}><dt>{name}</dt><dd>{description}</dd></div>,
-          )}</dl>}
-        </section>)}
-      </div>
+  const steps = runtime ? runtimeSteps : guide.unity.steps.filter(([label]) => supportsImages || (label !== "图片翻译" && label !== "图片去码"));
+  return <main className="game-workflow-help" aria-labelledby={titleId}>
+    <header className="game-workflow-help-header">
+      <h1 id={titleId}>{runtime ? "Unity 运行时翻译流程" : "游戏翻译流程"}</h1>
+      <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
+    </header>
+    <div className="game-workflow-help-content"><GuideSections steps={steps} /></div>
   </main>;
 }

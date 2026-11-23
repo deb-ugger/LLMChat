@@ -9,7 +9,7 @@ import { showAppNotice } from "./AppNotice";
 import type { GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
-import { GameWorkflowHelp } from "./GameWorkflowHelp";
+import { useProjectBenchmarkLauncher } from "../gameBenchmarkWindow";
 import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { GameMosaicCompletionContext, type GameMosaicDeploymentHandle } from "./GameMosaicWorkbench";
 import { UnityIconButton } from "./UnityIconButton";
@@ -115,7 +115,7 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}/api/json-embedding/${action}`, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const value = await response.json(); if (!response.ok) throw new Error(value.error || "操作失败"); return value;
 }
-export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true, onOpenSettings }: { onOpenSettings?: () => void; settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
+export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true }: { settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
   const { textSource, imageProject, imageExport, selfMosaic, thirdPartyMosaic, runtimeDictionary, backupScopes: availableBackupScopes } = embeddingCapabilities(game);
   const [hasLooseLocres, setHasLooseLocres] = useState(game.textSupported === true);
   const [checkingTextSource, setCheckingTextSource] = useState(false);
@@ -1000,18 +1000,16 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     const state=running?"current":failed?"error":finished?"complete":ready?"current":"pending";
     return {...item,state,selected,paused:deployment?.state==="stopped"&&deploymentStep===item.id||!finished&&(textInfo.state==="stopped"&&item.id==="2.1"||imageWorkflow.state==="stopped"&&item.id===imageStep||status.state==="stopped"&&operationStep===item.id),running,onSelect:()=>selectWorkflow(item.id)};
   })}/>;
+  useProjectBenchmarkLauncher(active, () => {
+    const input = textHandle.current?.benchmark?.();
+    if (!input) return false;
+    openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), mosaicRoot: selfMosaic ? game.path : undefined,
+      initialPart: part === "mosaic" ? "mosaic" : part === "images" ? "images" : "text" });
+    return true;
+  });
   return <div className="json-embedding-view" onClickCapture={event => logGameButton(event, appendLog)} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>{confirmation.dialog}
     <main className="embed-workspace embed-unity-workspace" data-workflow-part={part}>
       <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}>
-        {(canUseTextResources || imageProject || automatic === "running") && <UnityIconButton
-          aria-label={automatic === "running" ? "中止一键流程" : automatic === "stopped" || automatic === "error" ? "继续一键生成并应用" : "一键生成并应用"}
-          title={automatic === "running"
-            ? (imageProject ? "中止一键流程，保留已完成的文本和图片产物" : "中止并保存文本进度")
-            : testTitle ?? `扫描、${!canUseTextResources ? "翻译图片" : imageProject ? "串行翻译文本与图片" : "翻译文本"}、生成并应用${game.engine}补丁`}
-          disabled={automatic !== "running" && (testing || busy)}
-          onClick={() => automatic === "running" ? stopDeployment() : void runAutomatic()}>
-          <UnityActionIcon kind={automatic === "running" ? "cancel" : "run"} />
-        </UnityIconButton>}
         <UnityIconButton aria-label="保存工程" title="保存文本与图片修改" disabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} onClick={async()=>{
           try {
             if (textInfo.dirty && !await textHandle.current?.prepare()) return;
@@ -1019,10 +1017,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             showAppNotice("工程已保存");
           } catch (cause) { setError(String(cause)); }
         }}><UnityActionIcon kind="save"/></UnityIconButton>
-        <UnityIconButton aria-label="游戏翻译设置" title="打开游戏翻译设置" disabled={busy||!onOpenSettings} onClick={onOpenSettings}><UnityActionIcon kind="settings"/></UnityIconButton><UnityIconButton aria-label="测试队列" title="测试队列" onClick={() => {
-      const input = textHandle.current?.benchmark?.();
-      if (input) openGameTextBenchmark({ ...input, images: imageHandle.current?.benchmark(), mosaicRoot: selfMosaic ? game.path : undefined, initialPart: part === "mosaic" ? "mosaic" : part === "images" ? "images" : "text" });
-    }}><UnityActionIcon kind="benchmark" /></UnityIconButton>{thirdPartyMosaic && !deploymentPage && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}<GameWorkflowHelp mode="embedded" supportsImages={imageProject} /></div></header>
+        {thirdPartyMosaic && !deploymentPage && <GameMosaicPatchButton gamePath={game.path} disabled={busy} />}
+      </div></header>
 
       <UnityGameWorkspace active={active} deployment={deploymentPage} mosaic={part === "mosaic"} steps={workflowSteps} controls={<div ref={setControlsTarget} id="embed-step-panel" role="tabpanel" aria-labelledby={`embed-step-${activeWorkflowId}`} className="engine-workspace-slot"/>} results={<div ref={setResultsTarget} hidden={deploymentPage} className="engine-workspace-slot engine-result-slot"/>}/>
       {controlsTarget&&createPortal(<div hidden={part!=="text"||textStep===2} className="engine-workflow-content"><div className="unity-step-panel">

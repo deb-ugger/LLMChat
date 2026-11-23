@@ -1,4 +1,5 @@
 mod build_close;
+mod build_speed_test;
 mod clipboard;
 mod game_image_zip;
 mod style_redraw;
@@ -728,6 +729,7 @@ pub fn run() {
         .manage(BackendChild(Mutex::new(None)))
         .manage(ollama::OllamaChild::default())
         .invoke_handler(tauri::generate_handler![
+            build_speed_test::run_build_speed_test,
             ollama::ollama_service_status,
             ollama::ollama_runtime_status,
             ollama::ollama_service_start,

@@ -18,6 +18,8 @@ const glyphs: Record<string, ReactNode> = {
   text: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 12h8M8 16h6"/></>,
   unity: <><path d="M7 7h10c2 0 3 2 3.5 4l1 6c.5 3-2 4-4 2l-3-3h-5l-3 3c-2 2-4.5 1-4-2l1-6C4 9 5 7 7 7Z"/><path d="M7 10v5m-2.5-2.5h5M16 11h.1M19 14h.1"/></>,
   stats: <><path d="M3 3v17h18M7 16v-5m5 5V6m5 10V9"/></>,
+  help: <><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-.9.6-1.5 1-1.5 2.5m0 3h.01"/></>,
+  benchmark: <><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6m-3 0v3m6 2 1.5-1.5"/></>,
   settings: <><path d="M4 6h8m5 0h3M4 12h2m5 0h9M4 18h11m5 0h1"/><circle cx="14.5" cy="6" r="2.5"/><circle cx="8.5" cy="12" r="2.5"/><circle cx="17.5" cy="18" r="2.5"/></>,
 };
 

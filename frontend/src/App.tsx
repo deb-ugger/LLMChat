@@ -1,6 +1,9 @@
 import { getLayoutRect, getLayoutViewport } from "./viewportLayout";
 import { FeatureIcon } from "./components/FeatureIcon";
 import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
+import { openProjectBenchmark } from "./gameBenchmarkWindow";
+import { ApplicationHelpPage, isHelpModule, type HelpModule } from "./components/GameWorkflowHelp";
+import { BuildSpeedTest } from "./components/BuildSpeedTest";
 import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
@@ -46,20 +49,22 @@ const pageLabels = {
   output: "输出",
   downloads: "下载",
   stats: "统计",
+  help: "帮助",
+  benchmark: "测试队列",
   appearance: "外观",
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
-type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance">;
+type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance" | "benchmark"> | "buildSpeed";
 const navigation: readonly NavigationItem[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
-  ["output", "downloads", "stats", "appearance", "settings"],
+  ["output", "downloads", "stats", "benchmark", "help", "appearance", "settings"],
 ];
 const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
-    <DeferredPanel active={active} label={pageLabels[feature]}>{children}</DeferredPanel>
+    <DeferredPanel active={active} label={feature === "buildSpeed" ? "构建测速" : pageLabels[feature]}>{children}</DeferredPanel>
   </div>;
 }
 
@@ -105,9 +110,49 @@ function AppearanceButton({ railHidden }: { railHidden: boolean }) {
   </>;
 }
 
+function TestQueueButton({ railHidden, onGame, onBuild, buildSelected }: {
+  railHidden: boolean; onGame: () => void; onBuild: () => void; buildSelected: boolean;
+}) {
+  const id = useId();
+  const panel = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (railHidden && panel.current?.matches(":popover-open")) panel.current.hidePopover();
+  }, [railHidden]);
+  return <>
+    <button type="button" className={open || buildSelected ? "nav-item active" : "nav-item"} popoverTarget={id}
+      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} aria-label="测试队列" data-tooltip="测试队列"
+      onClick={event => {
+        const { scale, height } = getLayoutViewport();
+        const bounds = getLayoutRect(event.currentTarget.getBoundingClientRect(), scale);
+        panel.current?.style.setProperty("--appearance-left", `${bounds.right + 8}px`);
+        panel.current?.style.setProperty("--appearance-bottom", `${height - bounds.bottom}px`);
+      }}><FeatureIcon feature="benchmark" size={20} /><span>测试队列</span></button>
+    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover" role="dialog" aria-label="选择测试模块"
+      onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
+      <button type="button" className="nav-appearance-option nav-test-option" onClick={() => {
+        panel.current?.hidePopover(); onGame();
+      }}><FeatureIcon feature="unity" size={18} /><span>游戏翻译</span></button>
+      <button type="button" className="nav-appearance-option nav-test-option" onClick={() => {
+        panel.current?.hidePopover(); onBuild();
+      }}><FeatureIcon feature="benchmark" size={18} /><span>构建测速</span></button>
+    </div>
+  </>;
+}
+
 export default function App() {
   useEffect(attachBenchmarkRunner, []);
   const [page, setPage] = useState<Page>("chat");
+  const [helpSection, setHelpSection] = useState<HelpModule>("chat");
+  const [openGameQueue, setOpenGameQueue] = useState(false);
+  useEffect(() => {
+    if (!openGameQueue || page !== "unity") return;
+    const frame = requestAnimationFrame(() => {
+      setOpenGameQueue(false);
+      if (!openProjectBenchmark()) showAppNotice("请先打开游戏翻译工程", "error");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [openGameQueue, page]);
   const [outputExpanded, setOutputExpanded] = useState(false);
   const startupInteracted = useRef(false);
 
@@ -418,6 +463,9 @@ export default function App() {
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
           {group.map(id => id === "downloads" ? <AppDownloadsButton key={id} railHidden={navRailHidden} /> :
+            id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} buildSelected={page === "buildSpeed"}
+              onGame={() => { setOpenGameQueue(true); setPage("unity"); }}
+              onBuild={() => setPage("buildSpeed")} /> :
             id === "appearance" ? <AppearanceButton key={id} railHidden={navRailHidden} /> : (
             <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
@@ -426,6 +474,7 @@ export default function App() {
               onClick={() => {
                 if (id === "output") { setOutputExpanded(expanded => !expanded); return; }
                 if (id === "settings" || id === "chat") setSettingsInitialTab(undefined);
+                if (id === "help" && isHelpModule(page)) setHelpSection(page);
                 setPage(id);
               }}>
               <FeatureIcon feature={id === "redraw" ? "image" : id} size={20} /><span>{pageLabels[id]}</span>{id === "output" && <OutputBadge />}
@@ -562,12 +611,10 @@ export default function App() {
               setSettingsInitialTab("general");
               setPage("settings");
             }}
-            onOpenUnitySettings={() => {
-              setSettingsInitialTab("unity");
-              setPage("settings");
-            }}
           /></PagePanel>
         <PagePanel feature="stats" active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
+        <PagePanel feature="help" active={page === "help"}><ApplicationHelpPage section={helpSection} onSection={setHelpSection} /></PagePanel>
+        <PagePanel feature="buildSpeed" active={page === "buildSpeed"}><BuildSpeedTest /></PagePanel>
         <PagePanel feature="settings" active={page === "settings"}><SettingsView
             settings={settings}
             onSave={onSaveSettings}
