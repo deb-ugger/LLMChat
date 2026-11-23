@@ -660,7 +660,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
         <p>{title}（{status}{!editing ? " · 只读" : ""}）</p></div>
       <div className="game-benchmark-show-actions">
         {running && <button type="button" className="unity-btn" disabled={stopping || saving} onClick={onStop}>中止任务</button>}
-        <button type="button" className="unity-btn" disabled={!canSave || saving} onClick={onSave}>保存</button>
+        <button type="button" className={`unity-btn${canSave && !saving ? " is-primary" : ""}`} disabled={!canSave || saving} onClick={onSave}>保存</button>
         <button type="button" className="unity-btn" disabled={saving} onClick={onExit}>退出显示</button>
       </div>
     </div>
