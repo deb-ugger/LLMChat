@@ -141,15 +141,45 @@
   padding: var(--space-1);
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 96px), 1fr));
   gap: var(--space-1);
   align-content: start;
 }
-.game-mosaic-original-tile { display: grid; align-content: start; min-inline-size: 0; inline-size: 100%; text-align: start; padding: var(--space-1); gap: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
+.game-mosaic-original-grid > li { position: relative; min-inline-size: 0; }
+.game-mosaic-original-grid > .game-mosaic-original-empty { grid-column: 1 / -1; }
+.game-mosaic-original-check {
+  position: absolute;
+  inset-block-start: var(--space-2);
+  inset-inline-start: var(--space-2);
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.game-mosaic-original-check > input { margin: 0; }
+.game-mosaic-original-tile { display: grid; block-size: 100%; align-content: start; min-inline-size: 0; inline-size: 100%; text-align: start; padding: var(--space-1); gap: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
 .game-mosaic-original-tile[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.game-mosaic-original-tile.is-mosaic-check-draft,
+.game-mosaic-workbench .unity-image-item.is-mosaic-check-draft {
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-panel));
+}
+.game-mosaic-mask-draft {
+  display: inline-block;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 17%, var(--bg-panel));
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
 .game-mosaic-original-tile > :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
 .game-mosaic-original-tile > small { color: var(--text-muted); }
-.game-mosaic-original-tile > small:last-child { white-space: normal; overflow-wrap: anywhere; }
+.game-mosaic-original-tile > .game-mosaic-original-status { white-space: normal; overflow-wrap: anywhere; }
 .game-mosaic-original-thumbnail { display: grid; place-items: center; aspect-ratio: 4 / 3; overflow: hidden; background: var(--bg-muted); font-size: var(--fs-caption); color: var(--text-muted); }
 .game-mosaic-original-thumbnail > canvas { inline-size: 100%; block-size: 100%; object-fit: contain; }
 .game-mosaic-status-group > details > ul { list-style: none; margin: 0; padding: 0; }

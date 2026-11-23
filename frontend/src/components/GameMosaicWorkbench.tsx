@@ -15,12 +15,13 @@ import { showAppNotice } from "./AppNotice";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { usePersistedModelFilter } from "./ModelFilterSelect";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { allGameImageFilters, gameImageFilterMatch, GameImageListPagination, type GameImageFilters } from "./GameImageBrowserLayout";
+import { allGameImageFilters, gameImageFilterMatch, type GameImageFilters } from "./GameImageBrowserLayout";
 import { type GameProgressState } from "./GameStepProgress";
 import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
+import { MosaicOriginalGallery } from "./game-mosaic/MosaicOriginalGallery";
 import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
@@ -132,126 +133,6 @@ function dissolveIndependentGroup(rows: Results, key: string): Results {
 async function mosaicResponse(response: Response) {
   if (!response.ok) throw new Error((await response.json()).error || "图片去码操作失败");
   return response;
-}
-
-function MosaicOriginalThumbnail({ image, read }: { image: UnityImage; read: Props["read"] }) {
-  const thumbnail = useRef<HTMLCanvasElement>(null);
-  const [state, setState] = useState<"waiting" | "ready" | "error">("waiting");
-
-  useEffect(() => {
-    const canvas = thumbnail.current!;
-    const controller = new AbortController();
-    setState("waiting");
-
-    async function load() {
-      try {
-        const blob = await read(image, controller.signal);
-        if (controller.signal.aborted) return;
-        const scale = Math.min(1, 180 / Math.max(image.width, image.height));
-        const bitmap = await createImageBitmap(blob, {
-          resizeWidth: Math.max(1, Math.round(image.width * scale)),
-          resizeHeight: Math.max(1, Math.round(image.height * scale)),
-        });
-        try {
-          if (controller.signal.aborted) return;
-          canvas.width = bitmap.width;
-          canvas.height = bitmap.height;
-          canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
-          setState("ready");
-        } finally { bitmap.close(); }
-      } catch {
-        if (!controller.signal.aborted) setState("error");
-      }
-    }
-
-    const observer = new IntersectionObserver(entries => {
-      if (!entries.some(entry => entry.isIntersecting)) return;
-      observer.disconnect();
-      void load();
-    });
-    observer.observe(canvas.parentElement!);
-    return () => { observer.disconnect(); controller.abort(); };
-  }, [image, read]);
-
-  return <span className="game-mosaic-original-thumbnail">
-    <canvas ref={thumbnail} aria-hidden="true" hidden={state !== "ready"} />
-    {state === "error" && <span>缩略图无法读取</span>}
-  </span>;
-}
-
-function MosaicOriginalGallery({ images, activeId, query, read, checked, status, disabled, onPreview, onCheck }: {
-  images: readonly UnityImage[];
-  activeId?: string;
-  query: string;
-  read: Props["read"];
-  checked: (image: UnityImage) => boolean;
-  status: (image: UnityImage) => MosaicStatus;
-  disabled: boolean;
-  onPreview: (id: string) => void;
-  onCheck: (images: readonly UnityImage[], checked: boolean) => void;
-}) {
-  const [selectedIds, setSelectedIds] = useState(() => new Set<string>());
-  const [page, setPage] = useState(0);
-  const grid = useRef<HTMLUListElement>(null);
-  const pages = Math.max(1, Math.ceil(images.length / 24));
-  const currentPage = Math.min(page, pages - 1);
-  const visible = images.slice(currentPage * 24, (currentPage + 1) * 24);
-  const chosen = images.filter(image => selectedIds.has(image.id));
-  const selectPage = () => setSelectedIds(new Set(visible.map(image => image.id)));
-
-  function applyCheck(value: boolean) {
-    onCheck(chosen, value);
-    setSelectedIds(new Set());
-  }
-
-  function changePage(next: number) {
-    setPage(next);
-    if (grid.current) grid.current.scrollTop = 0;
-  }
-
-  return <section className="game-mosaic-original-browser" aria-label="原图批量浏览"
-    onKeyDown={event => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a" ||
-          (event.target as HTMLElement).closest("input, select, textarea, [contenteditable]")) return;
-      event.preventDefault();
-      selectPage();
-    }}>
-    <div className="game-mosaic-original-browser-controls">
-      <div className="game-mosaic-original-selection">
-        <span role="status">选中 {chosen.length} 张</span>
-        <button type="button" className="unity-btn" disabled={!visible.length}
-          onClick={selectPage}>全选本页</button>
-        <button type="button" className="unity-btn" disabled={disabled || !chosen.some(image => !checked(image))}
-          onClick={() => applyCheck(true)}>批量勾选</button>
-        <button type="button" className="unity-btn" disabled={disabled || !chosen.some(checked)}
-          onClick={() => applyCheck(false)}>批量取消勾选</button>
-      </div>
-    </div>
-    <ul ref={grid} className="game-mosaic-original-grid">
-      {visible.map(image => <li key={image.id}>
-        <button type="button" className="game-mosaic-original-tile" aria-pressed={selectedIds.has(image.id)}
-          aria-current={image.id === activeId || undefined}
-          data-tooltip={image.file + "\n" + image.width + " × " + image.height + " · " + mosaicStatusLabels[status(image)]}
-          onClick={event => {
-            const additive = event.ctrlKey || event.metaKey;
-            setSelectedIds(previous => {
-              if (!additive) return new Set([image.id]);
-              const next = new Set(previous);
-              if (next.has(image.id)) next.delete(image.id); else next.add(image.id);
-              return next;
-            });
-            onPreview(image.id);
-          }}>
-          <MosaicOriginalThumbnail image={image} read={read} />
-          <strong><SearchHighlight text={image.name} query={query} /></strong>
-          <small>{image.width} × {image.height}</small>
-          <small>{mosaicStatusLabels[status(image)]} · {checked(image) ? "已勾选" : "未勾选"}</small>
-        </button>
-      </li>)}
-      {!visible.length && <li className="hint">没有符合筛选条件的图片。</li>}
-    </ul>
-    <GameImageListPagination label="原图分页" page={currentPage} pages={pages} onPage={changePage} />
-  </section>;
 }
 
 export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle, packageOnly = false, onDeploymentSelectionChange }: Props & { packageOnly?: boolean; onDeploymentSelectionChange?: (ids: string[]) => void }) {
@@ -465,10 +346,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const confirmationNotice = useImageConfirmationNotice(gamePath, active, "mosaic", activeSaved && !storage && !busy);
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
-    if (row.checked) total.checked++;
+    if (resultFor(draftRows, image).checked) total.checked++;
     if (row.saved && !storage?.index[image.id]?.included) total.saved++;
     return total;
-  }, { checked: 0, saved: 0 }), [visible, rows, storage?.index]);
+  }, { checked: 0, saved: 0 }), [visible, rows, draftRows, storage?.index]);
 
   useEffect(() => () => { task.current?.abort(); onBusy?.(false); }, [onBusy]);
   useEffect(() => {
@@ -653,8 +534,25 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     })));
   }
 
+  function draftChanges(image: UnityImage) {
+    const edit = drafts.get(image.id);
+    if (edit?.base.source !== image.sourceHash) return { checked: false, mask: false };
+    return { checked: edit.patch.checked !== undefined, mask: edit.patch.boxes !== undefined };
+  }
+
   function setMosaicChecked(images: readonly UnityImage[], checked: boolean) {
-    stageImageEdits(images, () => ({ checked, manualChecked: true }));
+    const current = latestRows.current;
+    const pending = mosaicDraftsOf(gamePath);
+    const changed = images.filter(image => {
+      const row = resultFor(current, image);
+      const edit = pending.get(image.id);
+      const effective = edit?.base.source === row.source ? edit.patch.checked ?? row.checked : row.checked;
+      return effective !== checked;
+    });
+    stageImageEdits(changed, image => {
+      const row = resultFor(current, image);
+      return { checked, manualChecked: checked === row.checked ? row.manualChecked : true };
+    });
   }
 
   function moveToStatus(value: string) {
@@ -1131,8 +1029,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       collapsed={collapsed} setCollapsed={setCollapsed} browseOriginals={browseOriginals} setBrowseOriginals={setBrowseOriginals}
       originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(draftRows, image).checked}
-          disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
-      actionsDisabled={actionsDisabled} getRow={image => resultFor(draftRows, image)} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
+          draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
+      actionsDisabled={actionsDisabled} getRow={image => resultFor(draftRows, image)} draftChanges={draftChanges} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
       isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked}
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}

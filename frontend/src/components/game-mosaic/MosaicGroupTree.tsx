@@ -30,6 +30,7 @@ type Props = {
   originalGallery: ReactNode;
   actionsDisabled: boolean;
   getRow: (image: UnityImage) => Result;
+  draftChanges: (image: UnityImage) => { checked: boolean; mask: boolean };
   imageStatus: (image: UnityImage) => MosaicStatus;
   refineMovementFor: (row: Result) => RefineMovement | undefined;
   isRefineRetrying: (image: UnityImage) => boolean;
@@ -44,7 +45,7 @@ type Props = {
 
 export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
-  browseOriginals, setBrowseOriginals, originalGallery, actionsDisabled, getRow, imageStatus, refineMovementFor,
+  browseOriginals, setBrowseOriginals, originalGallery, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
   const { query, needle, scope, imageFilters, failuresOnly } = filters;
   const listRef = useRef<HTMLUListElement>(null);
@@ -171,6 +172,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
               </summary>
             <ul>{!collapsed[id] && items.slice(page*mosaicStatusPageSize,(page+1)*mosaicStatusPageSize).map(image => {
                 const row = getRow(image);
+                const edited = draftChanges(image);
                 const state = imageStatus(image);
                 const status = mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
                 const movement = refineMovementFor(row);
@@ -179,7 +181,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                 const failure = mosaicProcessingError(row);
                 const retrying = !!row.refineError && isRefineRetrying(image);
                 const detail = `${image.width} × ${image.height} · ${retrying ? "重试中 · 上次" + failure : row.manualStatus ? [status, failure].filter(Boolean).join(" · ") : failure || status + change}`;
-                return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}`}>
+                return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}${edited.checked ? " is-mosaic-check-draft" : ""}`}>
                   <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={actionsDisabled}
                     onChange={event => setMosaicChecked([image], event.target.checked)} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail}
@@ -187,6 +189,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                     onContextMenu={event => openGroupMenu(event, row.group)}>
                     <strong><SearchHighlight text={image.name} query={needle} /></strong>
                     <small>{detail}</small>
+                    {edited.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
                   </button>
                 </li>;
             })}</ul>
