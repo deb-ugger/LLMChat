@@ -66,6 +66,7 @@ type BenchmarkJob = {
   step: BenchmarkTarget;
   label: string;
   progress?: BenchmarkState;
+  failure?: string;
   startedTime?: string;
   status: "待开始" | "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
@@ -233,6 +234,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   let runs = archive?.completed.length ?? 0;
   let archivedConfigElapsedMs = archive?.configElapsedMs ?? 0;
   let failures = archive?.completed.filter(result => result.status === "失败").length ?? 0;
+  let failureDetail = archive?.completed.find(result => result.status === "失败")?.detail;
   let failedSamples = archive?.completed.reduce((total, result) => total + result.failed, 0) ?? 0;
   let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
   let unfinishedSamples = recoveredResults?.size ?? 0;
@@ -249,6 +251,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     prepared.cleanup(jobId);
     prepared.restored = recoveredResults = pausedRunId = undefined;
     failures = failedSamples = runs = finishedSamples = unfinishedSamples = 0;
+    failureDetail = undefined;
     archivedConfigElapsedMs = 0;
   }, run: async context => {
     if (pausedRunId) await readMosaicCheckpoint?.(context.id, pausedRunId);
@@ -303,7 +306,10 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
           runs++;
           pausedRunId = recoveredResults = undefined;
           unfinishedSamples = 0;
-          if (result.status === "失败") failures++;
+          if (result.status === "失败") {
+            failures++;
+            failureDetail = result.detail || failureDetail;
+          }
           failedSamples += result.failed;
           finishedSamples += done;
           context.report({ ...measurement, current: finishedSamples, failed: failedSamples, detail: result.detail }, "stop");
@@ -318,7 +324,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       finishGameStep(totalScope);
       const detail = "已执行 " + runs + "/" + (configs.length * rounds) + " 项" +
         (failures ? " · 失败 " + failures + " 项" : "") + " · " + gameDuration(context.elapsedMs());
-      if (!context.signal.aborted) context.report({ phase: "finish" });
+      if (!context.signal.aborted) context.report({ phase: "finish", detail: failures ? failureDetail || detail : undefined });
       input.onMessage(title + "测试 · " + detail, failures ? "error" : "info");
     }
   } };
@@ -488,9 +494,10 @@ async function runJobs() {
         job.status = paused ? "已暂停" : waitForFormal ? running ? "等待" : "待开始" : failed ? "失败" : "完成";
         progress = { ...progress, state: job.status === "已暂停" ? "paused" : "idle", elapsedMs: performance.now() - startedAt };
         job.progress = progress;
+        if (job.status === "失败") job.failure = progress.detail || "测试任务失败";
         const index = jobs.indexOf(job);
         if (paused && index > 0) jobs.unshift(...jobs.splice(index, 1));
-        else if (!paused && !waitForFormal && (!failed || progress.total > 0)) jobs.splice(index, 1);
+        else if (job.status === "完成") jobs.splice(index, 1);
         publish();
       }
     }
@@ -632,6 +639,20 @@ export const benchmarkRunner = {
       if (!scheduleJob(job)) publish();
     }
   },
+  startQueue(): string | null {
+    const active = jobs.find(job => job.status === "运行中");
+    if (active) return active.id;
+    if (jobs[0]?.status === "已暂停") return null;
+
+    const pending = jobs.filter(job => job.status === "待开始" || job.status === "等待");
+    if (!pending.length) return null;
+    pending.forEach(job => { job.status = "等待"; });
+    running = true;
+    publish();
+    pumpQueue();
+    return pending[0].id;
+  },
+  pauseQueue: () => pauseQueue("已暂停测试队列"),
   start(id: string) {
     const job = jobs.find(item => item.id === id && (item.status === "待开始" || item.status === "已暂停"));
     if (job) scheduleJob(job);
