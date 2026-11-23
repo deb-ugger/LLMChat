@@ -3459,7 +3459,7 @@ body.ocr-image-resizing * {
 .game-flow-state{font-size:9.5px;border-radius:20px;padding:0 7px;line-height:1.75;white-space:nowrap;
   border:1px solid color-mix(in srgb,var(--flow-color) 45%,transparent);color:var(--text);
   background:color-mix(in srgb,var(--flow-color) 12%,transparent)}
-.game-flow-elapsed{margin-inline-start:auto;font-size:13px;font-variant-numeric:tabular-nums;color:var(--text)}
+.game-flow-elapsed{font-size:13px;font-variant-numeric:tabular-nums;color:var(--text)}
 .game-flow-head > .game-flow-actions{margin-inline-start:auto}
 
 .game-flow-performance{container:game-flow-performance / inline-size}
