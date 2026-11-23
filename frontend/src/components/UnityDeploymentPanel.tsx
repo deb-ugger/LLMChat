@@ -783,7 +783,7 @@ export function UnityDeploymentPanel({ model, actions, mosaic, onFocusStep, onFl
           <div className="dpl-field">
             <label htmlFor="dpl-font">替换字体</label>
             <div className="dpl-input-row">
-              <input id="dpl-font" className="dpl-input" readOnly value={model.fontPath === ":original:" ? "" : model.fontName} placeholder="未替换 · 可在软件目录 fonts 中选择" />
+              <input id="dpl-font" className="dpl-input" readOnly value={model.fontPath === ":original:" ? "" : model.fontName} placeholder="未替换 · 选字体" />
               <button className="dpl-btn" disabled={model.locked} onClick={actions.chooseFont}>选择</button>
             </div>
             {model.fontPath && <button className="dpl-link" disabled={model.locked} onClick={actions.clearFont}>取消替换</button>}
