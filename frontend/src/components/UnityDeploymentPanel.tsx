@@ -1,12 +1,12 @@
 import { benchmarkBlockingReason, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { countMissingGlyphEntries, type UnityEntry, type UnityFontPlan, type UnityPatch } from "../unityOffline";
 
 import { deploymentMetrics, type DeploymentMetrics } from "../unityWorkflow";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { StepRunningMetrics } from "./GameFlowSequence";
 import { GameProgressBar } from "./GameStepProgress";
-import type { GameImageExportKind } from "../gameImageExport";
+import { gameImageExportWarning, subscribeGameImageExportWarnings, type GameImageExportKind } from "../gameImageExport";
 import type { ImageExportActions, ImageExportPackage } from "../hooks/useGameImageExportPackage";
 import { modelServiceTimingLines } from "../gameModelPerformance";
 
@@ -16,6 +16,7 @@ export function ImageExportPackageSection({ state, actions, locked }: {
   locked: boolean;
 }) {
   const { activity, path, confirmed, needsConfirmation, percent, layers, applied, needsRecovery } = state;
+  const warning = useSyncExternalStore(subscribeGameImageExportWarnings, () => gameImageExportWarning(path));
   const ready = !locked && !activity && state.canUsePackage;
   const button = (label: string, variant: "" | "primary" | "danger", disabled: boolean, onClick?: () => void) =>
     <button type="button" className={"dpl-btn" + (variant ? " dpl-btn-" + variant : "")} disabled={disabled} onClick={onClick}>{label}</button>;
@@ -71,6 +72,9 @@ export function ImageExportPackageSection({ state, actions, locked }: {
     </div>}
     <div className="dpl-actions">{buttons}</div>
     <p className="dpl-hint">{state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。" : hintText}</p>
+    {applied && !activity && !needsRecovery && warning?.message && <div className="embed-deploy-status" role="status">
+      <p className="dpl-hint is-warning">{warning.message}</p>
+    </div>}
   </div>;
 }
 
