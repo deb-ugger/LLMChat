@@ -3,6 +3,7 @@
 #include "GameImageExportSelection.h"
 #include "GameImageExportTransaction.h"
 #include "GameMosaicPatch.h"
+#include "ManagedGamePatch.h"
 #include "RpgImageProject.h"
 
 #include <iostream>
@@ -758,8 +759,102 @@ void transactionPaths(const fs::path& scratch) {
     check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "read-only directory remained unchanged");
 }
 
+void applyTextMarkerPatch(const Exported& data) {
+    const auto patch = data.fixture.root / "text-work" / "patch";
+    auto system = Json::parse(gamefiles::read(data.game() / data.fixture.marker));
+    system["gameTitle"] = "Translated game title";
+    system["currencyUnit"] = "Gold";
+    gamefiles::write(patch / data.fixture.marker, system.dump(2));
+    const auto backup = gamepatch::install(data.game(), data.fixture.marker.parent_path(), patch);
+    check(!backup.empty() && gamepatch::record(data.game()).at("installed") == true, "text patch installed");
+    check(sha(data.game() / data.fixture.marker) == sha(patch / data.fixture.marker), "text patch rewrote marker");
+}
+
+void assertMarkerWarning(const Exported& data, const FileTree& original) {
+    const auto manifestHash = sha(data.dir / "manifest.json");
+    // Exercise the same preflight that the HTTP route runs before queuing.
+    tx::checkApply(data.dir, data.game());
+    tx::apply(data.dir, data.game());
+    const auto status = tx::inspect(data.dir, data.game());
+    check(status.applied && status.canRestore && !status.restoreError, "receipt sees the marker accepted at apply");
+    check(status.receipt.at("warning").at("code") == "BASELINE_MARKER_CHANGED" &&
+        !status.receipt.at("warning").at("message").get<std::string>().empty(), "receipt contains marker warning");
+    auto expected = original;
+    for (const auto& file : status.receipt.at("files"))
+        expected[file.at("relativePath").get<std::string>()] = file.at("after").at("sha256").get<std::string>();
+    check(fileTree(data.game()) == expected, "only the image files were applied");
+    check(sha(data.dir / "manifest.json") == manifestHash, "original package manifest unchanged");
+    check(tx::recover(data.dir, data.game()) == tx::Recovery::Applied, "recover verifies the accepted marker");
+    check(tx::restore(data.dir, data.game()).at("state") == "restored", "restore committed");
+    check(fileTree(data.game()) == original, "restore preserved the entire tree at the time of image application");
+    tx::remove(data.dir);
+    check(!fs::exists(data.dir) && fileTree(data.game()) == original, "remove preserved the text installation");
+}
+
+void baselineMarkerCases(const fs::path& scratch) {
+    for (const std::string engine : {"rpg-maker-mv", "rpg-maker-mz"}) {
+        Exported data(scratch / ("marker-text-" + engine), engine);
+        applyTextMarkerPatch(data);
+        const auto afterText = fileTree(data.game());
+        check(afterText.at(gamefiles::key(data.fixture.marker)) != data.original.at(gamefiles::key(data.fixture.marker)),
+            "fixture marker changed after package generation");
+        assertMarkerWarning(data, afterText);
+        std::cout << "PASS T088 A " << engine << " text then images, warning, restore and remove\n";
+    }
+
+    Exported conflict(scratch / "marker-conflict", "rpg-maker-mz");
+    applyTextMarkerPatch(conflict);
+    const auto item = conflict.manifest().at("files").at(1);
+    const auto relativePath = item.at("relativePath").get<std::string>();
+    const auto file = conflict.game() / utf8path::pathFromUtf8(relativePath);
+    const auto expected = sha(file);
+    auto bytes = gamefiles::read(file);
+    bytes.back() ^= 1;
+    gamefiles::write(file, bytes);
+    const auto actual = sha(file);
+    const auto afterConflict = fileTree(conflict.game());
+    const auto verifyConflict = [&](const auto& run) {
+        try {
+            run();
+        } catch (const Error& error) {
+            const std::string message = error.what();
+            check(error.detail == relativePath && message.find(expected) != std::string::npos &&
+                message.find(actual) != std::string::npos, "conflict reports relative path and both SHA-256 values");
+            throw;
+        }
+    };
+    requireError("BASELINE_MISMATCH", "T088 B source byte changed after marker drift (preflight)", [&] {
+        verifyConflict([&] { tx::checkApply(conflict.dir, conflict.game()); });
+    });
+    requireError("BASELINE_MISMATCH", "T088 B source byte changed after marker drift (apply)", [&] {
+        verifyConflict([&] { tx::apply(conflict.dir, conflict.game()); });
+    });
+    check(fileTree(conflict.game()) == afterConflict && fs::is_empty(conflict.dir / "receipts"), "conflict did not write files");
+
+    Exported metadata(scratch / "marker-title", "rpg-maker-mz");
+    auto system = Json::parse(gamefiles::read(metadata.game() / metadata.fixture.marker));
+    system["gameTitle"] = "Changed directly, without installing a text patch";
+    gamefiles::write(metadata.game() / metadata.fixture.marker, system.dump());
+    const auto afterTitle = fileTree(metadata.game());
+    assertMarkerWarning(metadata, afterTitle);
+    std::cout << "PASS T088 C direct gameTitle edit allowed with warning and restored image tree\n";
+
+    Exported interrupted(scratch / "marker-rollback", "rpg-maker-mz");
+    applyTextMarkerPatch(interrupted);
+    const auto beforeFailure = fileTree(interrupted.game());
+    requireError("WRITE_FAILED", "T088 fallback preserves rollback after receipt checkpoint fails", [&] {
+        tx::apply(interrupted.dir, interrupted.game(), {{[](tx::ApplyPhase phase, size_t) {
+            if (phase == tx::ApplyPhase::BeforeReceipt) throw Error("WRITE_FAILED", "fixture interrupted before receipt");
+        }}});
+    });
+    check(tx::recover(interrupted.dir, interrupted.game()) == tx::Recovery::Clean &&
+        fileTree(interrupted.game()) == beforeFailure && fs::is_empty(interrupted.dir / "receipts"),
+        "rollback kept the post-text tree and cleaned the plan");
+}
+
 void transactionCases(const fs::path& scratch) {
     normalTransactions(scratch);
+    baselineMarkerCases(scratch);
     transactionManifestErrors(scratch);
     transactionFaults(scratch);
     interrupted(scratch);

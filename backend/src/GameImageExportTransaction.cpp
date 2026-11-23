@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <exception>
+#include <iostream>
 
 namespace gameimageexport::transaction {
 namespace {
@@ -51,6 +52,7 @@ struct Plan {
     std::string id;
     Manifest manifest;
     std::string sha;
+    std::optional<Digest> appliedMarker;
 };
 
 using FileMask = std::vector<bool>;
@@ -85,10 +87,10 @@ std::string key(const Path& name) { return gamefiles::key(name); }
 
 bool isSha(const std::string& value) { return value.size() == 64 && hexString(value); }
 
-Digest parseDigest(const Json& json, uint64_t limit) {
+Digest parseDigest(const Json& json, uint64_t limit, bool allowEmpty = false) {
     if (!json.at("bytes").is_number_unsigned()) invalidManifest("清单字节数无效");
     Digest digest{json.at("bytes").get<uint64_t>(), json.at("sha256").get<std::string>()};
-    if (!digest.bytes || digest.bytes > limit || !isSha(digest.sha))
+    if ((!allowEmpty && !digest.bytes) || digest.bytes > limit || !isSha(digest.sha))
         invalidManifest("清单中的字节数或 SHA-256 无效");
     return digest;
 }
@@ -249,14 +251,35 @@ void separate(const Root& game, const Root& package) {
         throw Error("INVALID_PATH", "成品包与游戏目录必须互不包含", utf8(package.path));
 }
 
-Engine validateBaseline(const Path& game, const Manifest& manifest) {
-    const auto engine = detectEngine(game);
-    if (engine.name != manifest.engine || manifest.markerName != key(engine.marker) ||
-        digestFile(game, engine.marker, "BASELINE_MISMATCH", manifest.baseline.bytes) != manifest.baseline)
+struct BaselineCheck {
+    Engine engine;
+    Digest marker;
+    bool changed;
+};
+
+constexpr auto markerChangedCode = "BASELINE_MARKER_CHANGED";
+constexpr auto markerChangedMessage = "基准标记已被其他补丁更新，已按逐文件校验放行";
+
+BaselineCheck validateBaseline(const Path& game, const Manifest& manifest,
+    const std::optional<Digest>& appliedMarker, bool allowChange = false) {
+    auto engine = detectEngine(game);
+    if (engine.name != manifest.engine || manifest.markerName != key(engine.marker))
+        throw Error("BASELINE_MISMATCH", "游戏引擎或基准标记路径与清单不符", manifest.markerName);
+    auto marker = digestFile(game, engine.marker, "BASELINE_MISMATCH", UINT64_MAX);
+    const bool changed = marker != appliedMarker.value_or(manifest.baseline);
+    const bool validFingerprint = fingerprint(manifest) == manifest.fingerprint;
+    if (changed && (!allowChange || !validFingerprint))
         throw Error("BASELINE_MISMATCH", "游戏引擎或基准标记与清单不符", manifest.markerName);
-    if (fingerprint(manifest) != manifest.fingerprint)
+    if (!validFingerprint)
         throw Error("FINGERPRINT_MISMATCH", "清单的游戏根指纹与资源记录不符");
-    return engine;
+    return {std::move(engine), std::move(marker), changed};
+}
+
+[[noreturn]] void baselineConflict(const Entry& file, const std::optional<Digest>& actual) {
+    const auto observed = actual ? actual->sha + "（" + std::to_string(actual->bytes) + " 字节）" : "不可用（文件不存在）";
+    throw Error("BASELINE_MISMATCH", "基准标记已改变，且原图逐文件校验未通过：" + file.name +
+        "，预期 SHA-256 " + file.before.sha + "（" + std::to_string(file.before.bytes) + " 字节），实际 SHA-256 " + observed,
+        file.name);
 }
 
 template<class Match>
@@ -507,6 +530,8 @@ struct Transaction {
         auto value = planHeader(plan, game);
         value["files"] = fileRecords(plan.manifest, applied, layered, layered);
         value["state"] = receiptState(applied);
+        if (plan.appliedMarker)
+            value["warning"] = {{"code", markerChangedCode}, {"message", markerChangedMessage}};
         return value;
     }
 
@@ -528,13 +553,15 @@ struct Transaction {
             if (json.at("schemaVersion") != 1 || !uuid(id) || json.at("gameRootId") != game.ids.back() ||
                 json.at("packageRootId") != package.ids.back())
                 throw Error("INVALID_RECEIPT", "备份计划不属于当前成品包或游戏目录");
-            return {id, parseManifest(json.at("manifest"), false), hash(raw)};
+            std::optional<Digest> appliedMarker;
+            if (json.contains("appliedMarker")) appliedMarker = parseDigest(json.at("appliedMarker"), UINT64_MAX, true);
+            return {id, parseManifest(json.at("manifest"), false), hash(raw), std::move(appliedMarker)};
         } catch (const Json::exception& e) {
             throw Error("INVALID_RECEIPT", std::string("备份计划无效：") + e.what());
         }
     }
 
-    Plan prepare(const Json& json, const Manifest& manifest) const {
+    Plan prepare(const Json& json, const Manifest& manifest, const std::optional<Digest>& appliedMarker) const {
         const auto id = newId();
         const auto stage = package.path / backupStage;
         if (!CreateDirectoryW(stage.c_str(), nullptr))
@@ -548,12 +575,14 @@ struct Transaction {
             if (digestFile(stage, file.path, "BACKUP_MISSING", maxImageBytes) != file.before)
                 throw Error("WRITE_FAILED", "备份写入后 SHA-256 不符：" + file.name, file.name);
         }
-        auto data = Json{{"schemaVersion", 1}, {"transactionId", id}, {"gameRootId", game.ids.back()},
-            {"packageRootId", package.ids.back()}, {"manifest", json}}.dump(2) + "\n";
+        Json record{{"schemaVersion", 1}, {"transactionId", id}, {"gameRootId", game.ids.back()},
+            {"packageRootId", package.ids.back()}, {"manifest", json}};
+        if (appliedMarker) record["appliedMarker"] = fields(*appliedMarker);
+        const auto data = record.dump(2) + "\n";
         if (data.size() > maxPlanBytes) throw Error("WRITE_FAILED", "备份计划超出允许大小");
         const auto sha = write(stage, planName, data);
         renameHandle(pin, package.path / backupDir, false);
-        return {id, manifest, sha};
+        return {id, manifest, sha, appliedMarker};
     }
 
     void verifyBackups(const Plan& plan, const FileMask& scope = {}) const {
@@ -566,23 +595,28 @@ struct Transaction {
         }
     }
 
-    FileMask targets(const Manifest& manifest, const FileMask& expected,
-        const FileMask& allowEither = {}, const FileMask& requireWritable = {}) const {
-        const auto engine = validateBaseline(game.path, manifest);
+    FileMask verifyTargets(const Manifest& manifest, const Engine& engine, const FileMask& expected,
+        const FileMask& allowEither = {}, const FileMask& requireWritable = {}, bool markerChanged = false) const {
         std::set<std::string> ids;
         FileMask applied;
         for (size_t i = 0; i < manifest.files.size(); ++i) {
             const auto& file = manifest.files[i];
             targetPath(game.path, engine, Json::object(), file.path, file.name);
             auto handle = openSource(game.path, file.path, true);
-            if (!handle || length(handle, game.path / file.path) > maxImageBytes)
+            if (!handle) {
+                if (markerChanged) baselineConflict(file, std::nullopt);
+                throw Error("TARGET_CHANGED", "游戏目标缺失或大小已变化：" + file.name, file.name);
+            }
+            if (!markerChanged && length(handle, game.path / file.path) > maxImageBytes)
                 throw Error("TARGET_CHANGED", "游戏目标缺失或大小已变化：" + file.name, file.name);
             if (!ids.insert(identity(handle, game.path / file.path)).second)
                 throw Error("INVALID_PATH", "多个目标指向同一游戏文件：" + file.name, file.name);
             const auto current = digest(handle, game.path / file.path);
             const bool after = current == file.after;
-            if ((!after && current != file.before) || ((allowEither.empty() || !allowEither[i]) && after != expected[i]))
+            if ((!after && current != file.before) || ((allowEither.empty() || !allowEither[i]) && after != expected[i])) {
+                if (markerChanged) baselineConflict(file, current);
                 throw Error("TARGET_CHANGED", "游戏目标已变化：" + file.name, file.name);
+            }
             applied.push_back(after);
             if (!requireWritable.empty() && requireWritable[i] && after) {
                 handle = Handle();
@@ -590,6 +624,19 @@ struct Transaction {
             }
         }
         return applied;
+    }
+
+    std::optional<Digest> checkApplicationTargets(const Manifest& manifest) const {
+        const auto baseline = validateBaseline(game.path, manifest, std::nullopt, true);
+        verifyTargets(manifest, baseline.engine, allFiles(manifest, false), {}, {}, baseline.changed);
+        if (baseline.changed) return baseline.marker;
+        return std::nullopt;
+    }
+
+    FileMask targets(const Plan& plan, const FileMask& expected,
+        const FileMask& allowEither = {}, const FileMask& requireWritable = {}) const {
+        const auto baseline = validateBaseline(game.path, plan.manifest, plan.appliedMarker);
+        return verifyTargets(plan.manifest, baseline.engine, expected, allowEither, requireWritable);
     }
 
     void cleanTemps(const Plan& plan) const {
@@ -606,7 +653,7 @@ struct Transaction {
                 file.after, file.before, "BACKUP_CORRUPT");
             applied[i] = false;
         }
-        targets(plan.manifest, applied);
+        targets(plan, applied);
         return applied;
     }
 
@@ -663,7 +710,7 @@ Recovery recoverLocked(const Transaction& tx) {
         const auto scope = intent.value_or(allFiles(plan.manifest));
         const auto expected = hasReceipt ? receipt.applied : allFiles(plan.manifest, false);
         tx.verifyBackups(plan, scope);
-        const auto applied = tx.targets(plan.manifest, expected, scope, scope);
+        const auto applied = tx.targets(plan, expected, scope, scope);
         tx.cleanPackageTemps();
         const auto remaining = tx.toOriginal(plan, applied, scope);
         if (intent) {
@@ -681,7 +728,7 @@ Recovery recoverLocked(const Transaction& tx) {
         return Recovery::RolledBack;
     }
     tx.verifyBackups(plan);
-    tx.targets(plan.manifest, receipt.applied);
+    tx.targets(plan, receipt.applied);
     tx.cleanTemps(plan);
     tx.cleanPackageTemps();
     return recoveryState(receipt.applied);
@@ -698,7 +745,7 @@ void applyLocked(const Transaction& tx, const ApplyControl& control) {
     const auto json = readJson(tx.package.path, manifestName, "INVALID_MANIFEST");
     const auto manifest = parseManifest(json, true);
     payloadMembership(tx.package.path, manifest);
-    tx.targets(manifest, allFiles(manifest, false));
+    const auto appliedMarker = tx.checkApplicationTargets(manifest);
     for (const auto& file : manifest.files) {
         if (digestFile(tx.package.path, Path(payloadDir) / file.path, "PAYLOAD_HASH_MISMATCH", maxImageBytes) != file.after)
             throw Error("PAYLOAD_HASH_MISMATCH", "成品文件 SHA-256 或大小与清单不符：" + file.name, file.name);
@@ -706,20 +753,23 @@ void applyLocked(const Transaction& tx, const ApplyControl& control) {
     for (const auto& file : manifest.files) writable(tx.game.path, file);
 
     try {
-        const auto plan = tx.prepare(json, manifest);
+        const auto plan = tx.prepare(json, manifest, appliedMarker);
         for (size_t i = 0; i < manifest.files.size(); ++i) {
             checkpoint(control, ApplyPhase::BeforeReplace, i);
             const auto& file = manifest.files[i];
             replace(tx.game.path, file, tempName(file, plan.id, i), tx.package.path, Path(payloadDir) / file.path,
                 file.before, file.after, "PAYLOAD_HASH_MISMATCH");
         }
-        tx.targets(manifest, allFiles(manifest));
+        tx.targets(plan, allFiles(manifest));
         checkpoint(control, ApplyPhase::BeforeReceipt, manifest.files.size());
         try {
             tx.writeReceipt(plan, allFiles(manifest), true, false, control);
         } catch (const std::exception& error) {
             throw Error("RECEIPT_WRITE_FAILED", std::string("写入最终收据失败：") + error.what());
         }
+        if (appliedMarker)
+            std::clog << markerChangedCode << " [" << manifest.packageId << "] " << manifest.markerName
+                      << " " << markerChangedMessage << std::endl;
     } catch (...) {
         const auto original = std::current_exception();
         try {
@@ -743,7 +793,7 @@ Json restoreLocked(const Transaction& tx, const RestoreKinds& kinds) {
     }
     const auto selected = appliedIn(receipt.applied, scope);
     tx.verifyBackups(plan, kinds && receipt.layered ? selected : scope);
-    const auto applied = tx.targets(plan.manifest, receipt.applied, {}, selected);
+    const auto applied = tx.targets(plan, receipt.applied, {}, selected);
     Json result = std::move(receipt.value);
     if (anyFiles(selected)) {
         tx.writeRestoreIntent(plan, selected);
@@ -804,7 +854,7 @@ void checkApply(const std::filesystem::path& packageDir, const std::filesystem::
             throw Error("RECOVERY_REQUIRED", "成品包有未完成的事务，请先恢复");
         const auto manifest = parseManifest(readJson(tx.package.path, manifestName, "INVALID_MANIFEST"), true);
         payloadMembership(tx.package.path, manifest);
-        tx.targets(manifest, allFiles(manifest, false));
+        tx.checkApplicationTargets(manifest);
         for (const auto& file : manifest.files) writable(tx.game.path, file);
     });
 }
@@ -847,7 +897,7 @@ PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesy
                 writable[i] = true;
             }
             tx.verifyBackups(plan, backups);
-            tx.targets(plan.manifest, expected, uncertain, writable);
+            tx.targets(plan, expected, uncertain, writable);
             result.canRestore = anyFiles(selected) || intent.has_value();
             if (!hasReceipt)
                 result.rollbackReceipt = tx.receiptValue(plan, allFiles(plan.manifest, false), true);
