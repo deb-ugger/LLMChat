@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
 import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../systemPerformance";
 
@@ -94,28 +94,29 @@ export function SystemPerfBar() {
     }
   });
   const [range, setRange] = useState<"3m" | "30m" | "run">("3m");
-  const barRef = useRef<HTMLDivElement | null>(null);
+  const panelId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
-  const toggle = useCallback(() => {
-    setExpanded(current => {
-      const next = !current;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
-      } catch {
-        // 存不下就算了，只影响下次默认值。
-      }
-      return next;
-    });
+  const changeExpanded = useCallback((next: boolean) => {
+    setExpanded(next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      // 存不下就算了，只影响下次默认值。
+    }
   }, []);
 
   useEffect(() => {
     if (!expanded) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (panelRef.current?.contains(document.activeElement)) toggleRef.current?.focus();
+      changeExpanded(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expanded]);
+  }, [changeExpanded, expanded]);
 
   useEffect(() => {
     let active = true;
@@ -229,15 +230,17 @@ export function SystemPerfBar() {
   const at = latest ? atMs(latest) : null;
 
   return (
-    <div className={expanded ? "sysbar is-expanded" : "sysbar"} ref={barRef}>
+    <div className={expanded ? "sysbar is-expanded" : "sysbar"}>
       <div className="sysbar-row">
       <button
         type="button"
         className="sysbar-toggle"
+        ref={toggleRef}
         aria-expanded={expanded}
+        aria-controls={expanded ? panelId : undefined}
         aria-label={expanded ? "收起系统性能" : "展开系统性能"}
         title={expanded ? "收起系统性能" : "展开系统性能"}
-        onClick={toggle}
+        onClick={() => changeExpanded(!expanded)}
       >
         <span>性能</span>
         <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
@@ -272,19 +275,18 @@ export function SystemPerfBar() {
       </div>
       </div>
       {expanded ? (
-        <div className="sysbar-panel" role="region" aria-label="系统性能详情">
+        <div className="sysbar-panel" ref={panelRef} id={panelId} role="region" aria-label="系统性能详情">
           <div className="sysbar-panel-head">
             <h3>系统性能</h3>
             <span className="sysbar-panel-sub">
               {range === "3m" ? "近 3 分钟" : range === "30m" ? "近 30 分钟" : "本次运行"} · 每 {POLL_MS / 1000} 秒采样
             </span>
-            <span className="sysbar-chips" role="tablist" aria-label="时间区间">
+            <span className="sysbar-chips" role="group" aria-label="时间区间">
               {([["3m", "3 分钟"], ["30m", "30 分钟"], ["run", "本次运行"]] as const).map(([key, label]) => (
                 <button
                   type="button"
                   key={key}
-                  role="tab"
-                  aria-selected={range === key}
+                  aria-pressed={range === key}
                   className={range === key ? "is-on" : undefined}
                   onClick={() => setRange(key)}
                 >
