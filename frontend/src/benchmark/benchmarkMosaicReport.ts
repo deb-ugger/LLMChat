@@ -1,51 +1,54 @@
 
-import { readImageBenchmarkDetails } from "./imageBenchmarkHistory";
-import { compareBoxes, loadAnnotatedSampleSet } from "./imageSampleSet";
+import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "./imageBenchmarkHistory";
+import { loadAnnotatedSampleSet } from "./imageSampleSet";
+import { countMosaicResults } from "./mosaicScoreCounts";
+import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
 import type { BenchmarkResult } from "../gameTextBenchmark";
 
-export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path: string) {
-  const dataset = await loadAnnotatedSampleSet(path, { preserveDuplicates: true });
-  const byId = new Map(dataset.images.map(image => [image.id, image]));
-  const byProject = new Map(dataset.images.filter(image => image.projectImageId && image.projectSourceHash)
-    .map(image => [image.projectImageId + "\0" + image.projectSourceHash, image]));
-  const totals = [];
+export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path?: string) {
+  const entries: { run: BenchmarkResult; runId: string; details?: ImageBenchmarkDetails; issue?: string }[] = [];
   for (const run of runs) {
     const runId = run.performance.taskId;
-    if (!runId || !run.performance.benchmark?.imageDetails) continue;
-    const { samples, results } = await readImageBenchmarkDetails(queueId, runId);
-    let tp = 0, fp = 0, tn = 0, fn = 0, review = 0, failed = 0, unlabelled = 0, unlabelledPositive = 0;
-    let expectedBoxes = 0, foundBoxes = 0, extraBoxes = 0;
-    for (const [index, sample] of samples.entries()) {
-      const original = byId.get(sample.id);
-      const annotation = (original?.sourceHash === sample.sourceHash ? original :
-        byProject.get(sample.id + "\0" + sample.sourceHash))?.annotation.mosaic;
-      const result = results[index];
-      const present = result?.category === "疑似有码" || result?.category === "复筛确认有码";
-      if (!annotation || annotation.state === "uncertain") {
-        unlabelled++;
-        if (present) unlabelledPositive++;
-        continue;
-      }
-      if (annotation.state === "present") expectedBoxes += annotation.boxes?.length ?? 0;
-      if (!result || result.status === "失败" || result.status === "跳过") { failed++; continue; }
-      if (result.category === "待复核") { review++; continue; }
-      if (annotation.state === "present") {
-        if (present) tp++; else fn++;
-      } else {
-        if (present) fp++; else tn++;
-      }
-      if (present && (annotation.state === "none" || annotation.boxes?.length)) {
-        const boxes = result.boxes ?? [];
-        const count = compareBoxes(annotation.boxes ?? [], boxes).length;
-        foundBoxes += count;
-        if (!annotation.partialBoxes) extraBoxes += boxes.length - count;
-      }
+    if (!runId) continue;
+    if (!run.performance.benchmark?.imageDetails) {
+      entries.push({ run, runId, issue: "本轮没有逐图归档" });
+      continue;
     }
-    totals.push({ runId, label: run.label, round: run.round, samples: samples.length, tp, fp, tn, fn, review, failed, unlabelled,
-      unlabelledPositive, expectedBoxes, foundBoxes, extraBoxes, seconds: Math.round(run.performance.elapsedMs / 10) / 100 });
+    try { entries.push({ run, runId, details: await readImageBenchmarkDetails(queueId, runId) }); }
+    catch (error) { entries.push({ run, runId, issue: "逐图归档读取失败：" + String(error) }); }
   }
-  if (!totals.length) throw new Error("此任务暂无逐图结果");
-  return { title: dataset.title, totals };
+  const shared = entries.find(entry => entry.details)?.details?.samples;
+  if (!shared) throw new Error(entries.find(entry => entry.issue)?.issue || "此任务暂无逐图结果");
+  const dataset = path && shared.some(sample => sample.mosaicTruth === undefined) ? await loadAnnotatedSampleSet(path) : undefined;
+  const lookup = mosaicTruthLookup(dataset);
+  const totals = [];
+  for (const { run, runId, details, issue } of entries) {
+    const { samples, results } = details ?? { samples: shared, results: {} };
+    const issues = issue ? [issue] : [];
+    const metadata = run.performance.benchmark;
+    const expected = metadata?.scoreFreeze as MosaicScoreFreeze | undefined;
+    let freeze: MosaicScoreFreeze | undefined;
+    if (expected && samples.every(sample => sample.mosaicTruth !== undefined)) {
+      try {
+        const actual = await freezeMosaicInputs(samples);
+        if (expected.version === actual.version && expected.inputs === actual.inputs && expected.truth === actual.truth) freeze = actual;
+        else issues.push("归档与冻结样本、初筛种子或标注版本不符");
+      } catch (error) { issues.push(String(error)); }
+    }
+    if (samples.length !== run.selected) issues.push("归档样本数与计划不一致");
+    const counts = countMosaicResults(samples, results, sample => {
+      try { return lookup(sample); }
+      catch (error) {
+        issues.push(String(error));
+        return null;
+      }
+    });
+    totals.push({ ...counts, runId, label: run.label, round: run.round, elapsedMs: run.performance.elapsedMs,
+      seconds: run.performance.elapsedMs / 1000, status: run.status, runFailures: run.failed, freeze, issues,
+      timing: typeof metadata?.scoreTiming === "string" ? metadata.scoreTiming : undefined,
+      configId: (metadata?.config as { id?: string } | undefined)?.id || run.label });
+  }
+  return { title: dataset?.title ?? "冻结样本对照", totals };
 }
 export type MosaicTaskReport = Awaited<ReturnType<typeof compareMosaicTaskWithDataset>>;
 
