@@ -135,13 +135,31 @@ export type GameImageExportLayerStates = Partial<Record<GameImageExportKind, {
 }>>;
 export type GameImageExportRestoreRequest = GameImageExportReceiptLookup & { kinds?: GameImageExportKind[] };
 
-export type GameImageExportGenerateResult = {
+type GameImageExportPackageResult = {
   packageId: string;
   packagePath: string;
   manifestSha256: string;
   files: number;
-  skipped: number;
   bytes?: number;
+};
+
+export type GameImageExportGenerateResult = GameImageExportPackageResult & { skipped: number };
+export type GameImageExportMigrationResult = GameImageExportPackageResult & { bytes: number };
+
+type GameImageExportLegacySelection = { relativePath: string; kind: GameImageExportKind };
+export type GameImageExportLegacyScan = {
+  entries: (GameImageExportLegacySelection & {
+    imageId: string;
+    state: "migratable" | "source-mismatch" | "missing-backup" | "unsupported";
+    detail: string;
+  })[];
+  totals: { migratable: number; blocked: number };
+};
+
+type GameImageExportLegacyMigrationRequest = {
+  gamePath: string;
+  outputDir: string;
+  entries: GameImageExportLegacySelection[];
 };
 
 export type GameImageExportWarning = { code: string; message: string };
@@ -192,7 +210,7 @@ export type GameImageExportFailure = {
 };
 
 export type GameImageExportProgress = {
-  phase: "snapshot" | "compose" | "publish";
+  phase: "snapshot" | "compose" | "copy" | "publish";
   completed: number;
   total: number;
   relativePath: string;
@@ -202,7 +220,7 @@ export type GameImageExportQueued = { operationId: string; state: "queued" };
 
 export type GameImageExportCancelResult = { state: "cancelling" | "cancelled" };
 
-export type GameImageExportResult = GameImageExportGenerateResult | GameImageExportApplyResult | GameImageExportRestoreResult;
+export type GameImageExportResult = GameImageExportGenerateResult | GameImageExportMigrationResult | GameImageExportApplyResult | GameImageExportRestoreResult;
 
 type StatusBase = {
   operationId: string;
@@ -271,6 +289,10 @@ export const gameImageExportApi = {
     post<GameImageConfirmationStatus>("/confirmation-status", body, signal),
   legacyStatus: (gamePath: string, signal?: AbortSignal) =>
     post<{ installed: boolean }>("/legacy-status", { gamePath }, signal),
+  scanLegacy: (gamePath: string, signal?: AbortSignal) =>
+    post<GameImageExportLegacyScan>("/legacy/scan", { gamePath }, signal),
+  migrateLegacy: (body: GameImageExportLegacyMigrationRequest, signal?: AbortSignal) =>
+    post<GameImageExportQueued>("/legacy/migrate", body, signal),
   generate: (body: GameImageExportGenerateRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/generate", body, signal),
   status: <Result = GameImageExportResult>(operationId: string, signal?: AbortSignal) =>

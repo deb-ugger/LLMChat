@@ -7,8 +7,52 @@ import { formatFlowThroughput } from "../gameFlowMetrics";
 import { StepRunningMetrics } from "./GameFlowSequence";
 import { GameProgressBar } from "./GameStepProgress";
 import { gameImageExportWarning, subscribeGameImageExportWarnings, type GameImageExportKind } from "../gameImageExport";
-import type { ImageExportActions, ImageExportPackage } from "../hooks/useGameImageExportPackage";
+import type { ImageExportActions, ImageExportPackage, LegacyImagePatch } from "../hooks/useGameImageExportPackage";
 import { modelServiceTimingLines } from "../gameModelPerformance";
+
+export function LegacyImagePatchSection({ legacy, state, actions, locked }: {
+  legacy: LegacyImagePatch;
+  state: ImageExportPackage;
+  actions: ImageExportActions;
+  locked: boolean;
+}) {
+  const { scan, migrating, progress, scanning } = legacy;
+  if (!migrating && !scan?.totals.migratable && !scan?.totals.blocked) return null;
+  const counts = { translated: 0, mosaic: 0, composed: 0 };
+  const blocked = scan?.entries.filter(entry => entry.state !== "migratable") ?? [];
+  for (const entry of scan?.entries ?? []) if (entry.state === "migratable") counts[entry.kind]++;
+  const kinds = [["译图", counts.translated], ["去码", counts.mosaic], ["合成", counts.composed]]
+    .filter(([, count]) => count).map(([label, count]) => label + " " + count).join(" · ");
+  const phase = progress?.phase === "publish" ? "发布成品包" : progress?.phase === "copy" ? "复制图片" : "核对旧补丁";
+  return <div className="dpl-plan" role="group" aria-label="旧补丁">
+    <p>旧补丁</p>
+    {migrating ? <>
+      <p className="dpl-hint" role="status">{phase}{progress?.total ? " · " + progress.completed + " / " + progress.total : ""}</p>
+      <div className="game-flow-progress"><GameProgressBar label="旧补丁迁移进度" value={state.percent ?? undefined} /></div>
+      {progress?.relativePath && <div className="dpl-path" title={progress.relativePath}>{progress.relativePath}</div>}
+      <div className="dpl-actions"><button type="button" className="dpl-btn" disabled={!state.canCancel} onClick={actions.cancel}>
+        {state.cancelling ? "正在取消…" : "取消"}
+      </button></div>
+    </> : <div className="dpl-actions">
+      {!!scan?.totals.migratable && <>
+        <span>检测到 {scan.totals.migratable} 张旧补丁图片（{kinds}），可转为成品包</span>
+        <button type="button" className="unity-btn" disabled={locked || scanning || !!state.path}
+          title={state.path ? "请先处理当前成品包" : "已核实旧补丁和受管原件，可以转为成品包。"}
+          onClick={actions.migrateLegacy}>转为成品包</button>
+      </>}
+      <button type="button" className="dpl-btn" disabled={scanning} onClick={actions.scanLegacy}>{scanning ? "正在检测…" : "重新检测"}</button>
+    </div>}
+    {blocked.length > 0 && <details>
+      <summary>无法迁移 {blocked.length} 项</summary>
+      <ul>
+        {blocked.map(entry => <li key={entry.relativePath}>
+          <div className="dpl-path" title={entry.relativePath}>{entry.relativePath}</div>
+          <p className="dpl-hint">{entry.detail}</p>
+        </li>)}
+      </ul>
+    </details>}
+  </div>;
+}
 
 function imagePackageSize(bytes: number | undefined) {
   if (bytes === undefined) return "—";
@@ -47,6 +91,9 @@ export function ImageExportPackageSection({ state, actions, locked }: {
     const label = { apply: "应用中", restore: "恢复中", remove: "删除中" }[activity];
     hintText = label + "，请等待操作完成。";
     buttons = <>{button(label, "", true)}{activity !== "remove" && cancel()}</>;
+  } else if (activity === "migrate") {
+    hintText = "";
+    buttons = null;
   } else if (needsRecovery) {
     hintText = "上次应用或恢复未完成，请先恢复原图。";
     buttons = <>{button("恢复原图", "primary", !ready, () => actions.restore())}{deletePackage}</>;
@@ -79,9 +126,11 @@ export function ImageExportPackageSection({ state, actions, locked }: {
     {(activity === "generate" || activity === "apply") && <div className="game-flow-progress">
       <GameProgressBar label={activity === "generate" ? "成品包生成进度" : "成品包应用进度"} value={percent ?? undefined} />
     </div>}
-    <div className="dpl-actions">{buttons}</div>
-    <p className="dpl-hint">{state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。"
-      : state.targetChanged && !activity && !needsRecovery ? "游戏里的图片已被改动，需要重新生成" : hintText}</p>
+    {buttons && <div className="dpl-actions">{buttons}</div>}
+    {hintText && !(state.legacyInstalled && state.legacyMigrationAvailable) && <p className="dpl-hint">
+      {state.legacyInstalled ? "建议先恢复旧图片补丁，再用成品包重新应用。"
+        : state.targetChanged && !activity && !needsRecovery ? "游戏里的图片已被改动，需要重新生成" : hintText}
+    </p>}
     {applied && !activity && !needsRecovery && warning?.message && <div className="embed-deploy-status" role="status">
       <p className="dpl-hint is-warning">{warning.message}</p>
     </div>}

@@ -25,7 +25,7 @@ import { gameDropTarget } from "../hooks/useGameFileDrop";
 import { GameTextWorkspace, type GameTextHandle, type GameTextInfo } from "./GameTextWorkspace";
 import { UnityGameWorkspace } from "./UnityGameWorkspace";
 import { GameWorkflowSteps } from "./GameWorkflowSteps";
-import { DeploymentCanvas, DeploymentThroughput, ImageExportPackageSection, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
+import { DeploymentCanvas, DeploymentThroughput, ImageExportPackageSection, LegacyImagePatchSection, deploymentSequence, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan,
   type DeploymentStep as CanvasStep, type DeploymentPhase as CanvasPhase, type DeploymentModel } from "./UnityDeploymentPanel";
 import { GameImageWorkbench, type GameImageInfo, type GameImageHandle } from "./GameImageWorkbench";
 import { createPortal } from "react-dom";
@@ -760,6 +760,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const exportLocked = otherWorkflowBusy || mosaicBusy || testing;
   const exportPackage = useGameImageExportPackage({
     gamePath: game.path, active: active && imageExport && part === "text" && textStep === 3,
+    scanLegacyOnEntry: active && imageExport,
     locked: exportLocked, candidates: imageWorkflow.exportCandidates ?? [], mosaicIds: packageMosaicIds,
     onBusyChange: setExportBusy, confirm, legacyRevision: status.state,
   });
@@ -811,12 +812,18 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             <span className={`dpl-tag${installState === "已应用" ? " is-ok" : ""}`}>{installState}</span>
           </div>
           <div className="dpl-path" title={game.path}>{game.path || "尚未选择游戏目录"}</div>
-          {imageExport && <ImageExportPackageSection state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />}
+          {imageExport && <>
+            <LegacyImagePatchSection legacy={exportPackage.legacy} state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
+            <ImageExportPackageSection state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
+          </>}
           {canUseTextResources && <div className="dpl-plan">
             <p>文本与字体</p>
             <div className="dpl-actions">
               <button type="button" className="dpl-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>
-              <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => void loadPatch(true)} />
+              <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => {
+                if (imageExport) exportPackage.actions.scanLegacy();
+                void loadPatch(true);
+              }} />
               <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
               <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
             </div>

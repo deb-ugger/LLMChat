@@ -7,15 +7,16 @@ import type { useGameActionConfirm } from "../components/GameActionConfirm";
 import {
   gameImageExportApi, pollGameImageExport, type GameImageExportGenerateResult, type GameImageExportImageSelection,
   type GameImageExportOperationStatus, type GameImageExportQueued, type GameImageExportReceiptStatus,
+  type GameImageExportFailure, type GameImageExportLegacyScan, type GameImageExportMigrationResult, type GameImageExportProgress,
   type GameImageExportKind, type GameImageExportLayerStates, type GameImageExportReceiptState, type GameImageExportTerminalStatus,
 } from "../gameImageExport";
 
 export type ImageExportCandidate = { imageId: string; sourceHash: string; renderedHash?: string };
 type ExportSource = ImageExportCandidate & { mosaic: boolean };
 type ConfirmationSelection = { images: GameImageExportImageSelection[]; needsConfirmation: number; bytes?: number };
-type ExportJobKind = "generate" | "apply" | "restore";
+type ExportJobKind = "generate" | "apply" | "restore" | "migrate";
 type ExportJob = { kind: ExportJobKind; id: string; selectionKey?: string; reapply?: boolean };
-type ExportRecord = { package?: GameImageExportGenerateResult; selectionKey?: string; pending?: ExportJob; outputDir?: string; targetChanged?: boolean };
+type ExportRecord = { package?: GameImageExportGenerateResult | GameImageExportMigrationResult; selectionKey?: string; pending?: ExportJob; outputDir?: string; targetChanged?: boolean };
 type PackageDisposition = Pick<GameImageExportReceiptStatus, "canRestore" | "needsRecovery" | "layerRestoreSupported" | "layers">;
 type PackageReceipt = { path: string; state?: GameImageExportReceiptState; status?: PackageDisposition; bytes?: number };
 const hasAppliedImages = (state?: GameImageExportReceiptState) => state === "applied" || state === "partiallyRestored";
@@ -42,6 +43,7 @@ export type ImageExportPackage = {
   layers: GameImageExportLayerStates;
   layerRestoreSupported: boolean;
   legacyInstalled: boolean;
+  legacyMigrationAvailable: boolean;
   needsRecovery: boolean;
   used: boolean;
   canRestore: boolean;
@@ -53,7 +55,16 @@ export type ImageExportPackage = {
   cancelling: boolean;
 };
 
+export type LegacyImagePatch = {
+  scan?: GameImageExportLegacyScan;
+  scanning: boolean;
+  migrating: boolean;
+  progress?: GameImageExportProgress | null;
+};
+
 export type ImageExportActions = {
+  scanLegacy: () => void;
+  migrateLegacy: () => void;
   generate: () => void;
   cancel: () => void;
   apply: () => void;
@@ -65,6 +76,7 @@ export type ImageExportActions = {
 type Options = {
   gamePath: string;
   active: boolean;
+  scanLegacyOnEntry: boolean;
   locked: boolean;
   candidates: readonly ImageExportCandidate[];
   mosaicIds: readonly string[];
@@ -78,6 +90,16 @@ function notify(cause: unknown) {
 }
 
 const code = (cause: unknown) => (cause as { code?: string } | null)?.code;
+
+function notifyLegacy(cause: unknown) {
+  const error = cause as (Partial<GameImageExportFailure> & { response?: { error?: GameImageExportFailure } }) | null;
+  const failure = error?.response?.error ?? error;
+  const detail = failure?.detail ? " · " + failure.detail : "";
+  if (failure?.code === "LEGACY_SOURCE_CHANGED") notify("有图片在迁移前发生了变化，已取消整批" + detail);
+  else if (failure?.code === "INVALID_LEGACY_INDEX") notify("旧补丁索引不可读");
+  else if (failure?.code === "RECOVERY_REQUIRED") notify("回滚未完成，请检查" + detail);
+  else notify(failure?.message ?? cause);
+}
 
 function readRecord(key: string): ExportRecord {
   try { return JSON.parse(localStorage.getItem(key) || "{}") || {}; }
@@ -137,7 +159,7 @@ async function readDisposition(gamePath: string, packagePath: string, signal: Ab
   }
 }
 
-export function useGameImageExportPackage({ gamePath, active, locked, candidates, mosaicIds, onBusyChange, confirm, legacyRevision }: Options) {
+export function useGameImageExportPackage({ gamePath, active, scanLegacyOnEntry, locked, candidates, mosaicIds, onBusyChange, confirm, legacyRevision }: Options) {
   const storageKey = "llmchat-game-image-export:" + gamePath.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
   const [record, setRecord] = useState(() => readRecord(storageKey));
   const latest = useRef(record);
@@ -151,6 +173,9 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
   const submittingRef = useRef(false);
   const automaticPolling = useRef(false);
   const [legacyInstalled, setLegacyInstalled] = useState(false);
+  const [legacyScan, setLegacyScan] = useState<GameImageExportLegacyScan>();
+  const [legacyScanning, setLegacyScanning] = useState(false);
+  const [legacyScanRevision, setLegacyScanRevision] = useState(0);
   const lifetime = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<GameImageExportOperationStatus | null>(null);
   const [cancelRequest, setCancelRequest] = useState<{ id: string; state: "requesting" | "cancelling" }>();
@@ -158,9 +183,11 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
   const pollWarning = useRef<string | undefined>(undefined);
   const [selection, setSelection] = useState<{ key: string; value: ConfirmationSelection }>();
   const [receipt, setReceipt] = useState<PackageReceipt>();
+  const prefetchedReceipt = useRef<string>(undefined);
   const packagePath = record.package?.packagePath ?? "";
   const activity = record.pending?.kind ?? submitting;
   const busy = activity !== null;
+  const migrating = activity === "migrate";
   const key = JSON.stringify(exportSources(candidates, mosaicIds));
   const current = selection?.key === key ? selection.value : undefined;
   const packageReceipt = receipt?.path === packagePath ? receipt : undefined;
@@ -181,6 +208,10 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
 
   useEffect(() => {
     if (!active || busy) return;
+    if (packagePath && prefetchedReceipt.current === packagePath) {
+      prefetchedReceipt.current = undefined;
+      return;
+    }
     const controller = new AbortController(), { signal } = controller;
     void (async () => {
       let sizePath: string | undefined;
@@ -214,20 +245,44 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
   }, [active, busy, gamePath, key, packagePath]);
 
   useEffect(() => {
-    if (!active || busy) return;
+    if (!scanLegacyOnEntry || migrating) return;
     const controller = new AbortController(), { signal } = controller;
-    void withExportLockRetry(() => gameImageExportApi.legacyStatus(gamePath, signal), signal)
-      .then(({ installed }) => { if (!signal.aborted) setLegacyInstalled(installed); })
-      .catch(cause => { if (!signal.aborted) notify(cause); });
+    setLegacyScanning(true);
+    void (async () => {
+      try {
+        const { installed } = await withExportLockRetry(() => gameImageExportApi.legacyStatus(gamePath, signal), signal);
+        if (!signal.aborted) setLegacyInstalled(installed);
+      } catch (cause) {
+        if (!signal.aborted) notify(cause);
+      }
+      if (signal.aborted) return;
+      try {
+        const scan = await withExportLockRetry(() => gameImageExportApi.scanLegacy(gamePath, signal), signal);
+        if (!signal.aborted) setLegacyScan(scan);
+      } catch (cause) {
+        if (!signal.aborted) {
+          setLegacyScan(undefined);
+          notifyLegacy(cause);
+        }
+      } finally {
+        if (!signal.aborted) setLegacyScanning(false);
+      }
+    })();
     return () => controller.abort();
-  }, [active, busy, gamePath, legacyRevision, packagePath]);
+  }, [gamePath, scanLegacyOnEntry, migrating, legacyScanRevision, legacyRevision]);
 
-  const finish = useCallback((pending: ExportJob, terminal: GameImageExportTerminalStatus) => {
+  const finish = useCallback((pending: ExportJob, terminal: GameImageExportTerminalStatus, migratedReceipt?: PackageReceipt) => {
     const { pending: _pending, ...previous } = latest.current;
     const result = terminal.result;
     if (terminal.state === "succeeded" && result && "packagePath" in result) {
-      setReceipt({ path: result.packagePath, status: unusedPackage, bytes: result.bytes });
+      const migrated = pending.kind === "migrate";
+      if (migrated) {
+        setLegacyScan(undefined);
+        if (migratedReceipt) prefetchedReceipt.current = migratedReceipt.path;
+      }
+      setReceipt(migratedReceipt ?? { path: result.packagePath, status: migrated ? undefined : unusedPackage, bytes: result.bytes });
       persist({ ...previous, package: result, selectionKey: pending.selectionKey, targetChanged: undefined });
+      if (migrated) showAppNotice("已把 " + result.files + " 张旧补丁图片转为成品包");
       return;
     }
     const path = previous.package?.packagePath;
@@ -241,7 +296,9 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     if (terminal.state === "failed" && terminal.error.code === "LEGACY_PATCH_ACTIVE") setLegacyInstalled(true);
     const targetChanged = pending.kind === "apply" && terminal.state === "failed" && terminal.error.code === "TARGET_CHANGED";
     persist(targetChanged ? { ...previous, targetChanged: true } : previous);
-    if (terminal.state === "cancelled" && pending.kind !== "generate") {
+    if (terminal.state === "cancelled" && pending.kind === "migrate") {
+      showAppNotice("已取消旧补丁迁移");
+    } else if (terminal.state === "cancelled" && pending.kind !== "generate") {
       const state = result && "transactionId" in result ? result.state : undefined;
       showAppNotice(state === undefined ? "已取消，游戏文件未修改" : {
         applied: "已取消，但图片已全部写入（等同已应用）",
@@ -259,10 +316,17 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     if (!pending) { setStatus(null); setCancelRequest(undefined); return; }
     const controller = new AbortController();
     let reconnect: number | undefined;
-    void pollGameImageExport(pending.id, { signal: controller.signal, onStatus: setStatus }).then(terminal => {
+    void pollGameImageExport(pending.id, { signal: controller.signal, onStatus: setStatus }).then(async terminal => {
       if (controller.signal.aborted) return;
-      finish(pending, terminal);
-      if (terminal.state === "failed") {
+      const result = terminal.result;
+      // A new legacy scan takes the receipt query's game lock. Fetch the applied receipt first.
+      const migratedReceipt = pending.kind === "migrate" && terminal.state === "succeeded" && result && "packagePath" in result
+        ? await readDisposition(gamePath, result.packagePath, controller.signal).catch(() => undefined) : undefined;
+      if (controller.signal.aborted) return;
+      finish(pending, terminal, migratedReceipt);
+      if (terminal.state === "failed" && pending.kind === "migrate") {
+        notifyLegacy(terminal.error);
+      } else if (terminal.state === "failed") {
         const { code, message } = terminal.error;
         notify(code === "LEGACY_PATCH_ACTIVE" ? migrationHint : code === "TARGET_CHANGED" && pending.kind === "apply" ? targetChangedHint : message);
       }
@@ -277,7 +341,7 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
       reconnect = window.setTimeout(() => setRetry(value => value + 1), 1500);
     });
     return () => { controller.abort(); window.clearTimeout(reconnect); };
-  }, [record.pending, finish, persist, retry]);
+  }, [record.pending, finish, gamePath, persist, retry]);
 
   async function start(kind: ExportJobKind | "remove", work: (signal: AbortSignal) => Promise<(GameImageExportQueued & { outputDir?: string; selectionKey?: string }) | void>, reapply = false) {
     const signal = lifetime.current?.signal;
@@ -292,7 +356,8 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
         if (kind === "apply" && code(cause) === "TARGET_CHANGED") {
           persist({ ...latest.current, targetChanged: true });
           notify(targetChangedHint);
-        } else notify(cause);
+        } else if (kind === "migrate") notifyLegacy(cause);
+        else notify(cause);
       }
     } finally {
       if (!signal.aborted) { submittingRef.current = false; setSubmitting(null); }
@@ -319,7 +384,8 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     } catch (cause) {
       if (signal.aborted || latest.current.pending?.id !== pending.id) return;
       setCancelRequest(undefined);
-      if (code(cause) === "CANCEL_TOO_LATE") showAppNotice("已错过安全取消点，正在完成");
+      if (code(cause) === "CANCEL_TOO_LATE")
+        showAppNotice(pending.kind === "migrate" ? "已进入发布阶段，无法取消" : "已错过安全取消点，正在完成");
       else notify(cause);
     }
   };
@@ -427,8 +493,24 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     }
   }
 
+  const chooseOutputDirectory = async () => open({ directory: true, title: "选择成品包输出目录",
+    defaultPath: latest.current.outputDir || await resourceDir() });
+
+  const migrateLegacy = () => {
+    if (legacyScanning || latest.current.package || !legacyScan?.totals.migratable) return;
+    void start("migrate", async signal => {
+      const outputDir = await chooseOutputDirectory();
+      if (typeof outputDir !== "string") return;
+      const entries = legacyScan.entries
+        .filter(entry => entry.state === "migratable")
+        .map(({ relativePath, kind }) => ({ relativePath, kind }));
+      const queued = await withExportLockRetry(() => gameImageExportApi.migrateLegacy({ gamePath, outputDir, entries }, signal), signal);
+      return { ...queued, outputDir };
+    });
+  };
+
   const model: ImageExportPackage = {
-    confirmed: applied || disposition?.needsRecovery ? (record.package?.files ?? 0) + (record.package?.skipped ?? 0) : current?.images.length ?? 0,
+    confirmed: applied || disposition?.needsRecovery ? (record.package?.files ?? 0) + (record.package && "skipped" in record.package ? record.package.skipped : 0) : current?.images.length ?? 0,
     needsConfirmation: applied || disposition?.needsRecovery ? 0 : current?.needsConfirmation ?? 0,
     path: packagePath,
     bytes: packageReceipt ? packageReceipt.bytes : record.package?.bytes,
@@ -438,6 +520,7 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     layers: disposition?.layers ?? {},
     layerRestoreSupported: disposition?.layerRestoreSupported ?? false,
     legacyInstalled: !receiptState && legacyInstalled,
+    legacyMigrationAvailable: !!legacyScan?.totals.migratable,
     needsRecovery: disposition?.needsRecovery ?? false,
     used: !!receiptState,
     canRestore: disposition?.canRestore ?? false,
@@ -449,10 +532,12 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     cancelling,
   };
   const actions: ImageExportActions = {
+    scanLegacy: () => setLegacyScanRevision(value => value + 1),
+    migrateLegacy,
     generate: () => {
       if (!model.canGenerate || packagePath || legacyInstalled) return;
       void start("generate", async signal => {
-        const outputDir = await open({ directory: true, title: "选择成品包输出目录", defaultPath: latest.current.outputDir || await resourceDir() });
+        const outputDir = await chooseOutputDirectory();
         if (typeof outputDir !== "string") return;
         const value = await readConfirmations(gamePath, JSON.parse(key) as ExportSource[], signal);
         setSelection({ key, value });
@@ -464,5 +549,6 @@ export function useGameImageExportPackage({ gamePath, active, locked, candidates
     apply, restore, remove,
     openDirectory: () => { if (packagePath) void api.revealPath(packagePath).catch(notify); },
   };
-  return { model, actions, deploy };
+  const legacy: LegacyImagePatch = { scan: legacyScan, scanning: legacyScanning, migrating, progress: migrating ? progress : undefined };
+  return { model, actions, deploy, legacy };
 }
