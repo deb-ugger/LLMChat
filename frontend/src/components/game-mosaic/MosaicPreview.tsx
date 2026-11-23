@@ -248,7 +248,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         <GameImagePreviewFrame keyboardPane caption={<>
           <span>原图</span>
           {!!activeBoxes.length && <div className="game-mosaic-mask-tabs" role="group" aria-label="蒙版列表">
-            {activeBoxes.map((box, index) => <button key={index} type="button" className="unity-btn"
+            {activeBoxes.map((box, index) => <button key={index} type="button"
               aria-label={"蒙版 " + (index + 1)} aria-pressed={selection.has(box)} disabled={!canSelectMask}
               data-tooltip={"蒙版 " + (index + 1) + " · " + Math.round(box[0]) + ", " + Math.round(box[1])}
               onDoubleClick={event => event.stopPropagation()}
