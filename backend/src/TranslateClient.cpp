@@ -1,5 +1,5 @@
 #include "TranslateClient.h"
-#include "CancellableWinHttp.h"
+#include "http/HttpTransport.h"
 #include "RequestCancellation.h"
 #include "LlmClient.h"
 #include "TranslationPromptLeak.h"
@@ -20,7 +20,6 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <winhttp.h>
 #include <wincrypt.h>
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -448,28 +447,8 @@ void mergeCookiePair(std::string& jar, const std::string& pair)
     jar = std::move(next);
 }
 
-void collectSetCookies(HINTERNET request, std::string& jar)
+void collectSetCookies(const std::wstring& raw, std::string& jar)
 {
-    DWORD size = 0;
-    WinHttpQueryHeaders(
-        request,
-        WINHTTP_QUERY_RAW_HEADERS_CRLF,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        WINHTTP_NO_OUTPUT_BUFFER,
-        &size,
-        WINHTTP_NO_HEADER_INDEX);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) return;
-    std::wstring raw(size / sizeof(wchar_t), L'\0');
-    if (!WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_RAW_HEADERS_CRLF,
-            WINHTTP_HEADER_NAME_BY_INDEX,
-            raw.data(),
-            &size,
-            WINHTTP_NO_HEADER_INDEX))
-    {
-        return;
-    }
     std::wstringstream ss(raw);
     std::wstring line;
     while (std::getline(ss, line))
@@ -664,7 +643,6 @@ HttpResult winHttpRequest(
     }
 
     DWORD accessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
-    LPCWSTR proxyName = WINHTTP_NO_PROXY_NAME;
     std::wstring proxyBuf;
     const std::string mode = toLower(g_proxyMode.empty() ? "auto" : g_proxyMode);
     if (mode == "direct" || mode == "none" || mode == "off")
@@ -675,7 +653,6 @@ HttpResult winHttpRequest(
     {
         accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
         proxyBuf = normalizeProxyList(g_httpProxy);
-        proxyName = proxyBuf.c_str();
     }
     else
     {
@@ -683,118 +660,42 @@ HttpResult winHttpRequest(
         accessType = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
     }
 
-    HINTERNET session = WinHttpOpen(
-        L"Mozilla/5.0 LLMChatBackend/1.0",
-        accessType,
-        proxyName,
-        WINHTTP_NO_PROXY_BYPASS,
-        WINHTTP_FLAG_ASYNC);
-    // AUTOMATIC_PROXY unsupported on some builds → fall back
-    if (!session && accessType == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)
-    {
-        session = WinHttpOpen(
-            L"Mozilla/5.0 LLMChatBackend/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS,
-            WINHTTP_FLAG_ASYNC);
-    }
-    if (!session)
-    {
-        result.error = withZhHint("WinHttpOpen failed", "无法初始化网络组件");
-        return result;
-    }
-
-    // 解析 / 连接 / 发送 / 接收 超时（毫秒）
-    WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000);
-
     // Prefer TLS1.2+
     DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
 #ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
     protocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
 #endif
-    WinHttpSetOption(
-        session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
-
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
-    if (!connect)
-    {
-        const DWORD err = GetLastError();
-        WinHttpCloseHandle(session);
-        result.error = winHttpErrMessage(err, host);
-        return result;
-    }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET request = WinHttpOpenRequest(
-        connect, toWide(method).c_str(), path.c_str(), nullptr,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!request)
-    {
-        const DWORD err = GetLastError();
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        result.error = winHttpErrMessage(err, host);
-        return result;
-    }
-
-    CancellableWinHttp operation(request);
-    // For HTTPS through named proxy, ensure CONNECT works
-    if (https && accessType == WINHTTP_ACCESS_TYPE_NAMED_PROXY)
-    {
-        DWORD opt = WINHTTP_DISABLE_KEEP_ALIVE;
-        // no-op optional; keep defaults
-        (void)opt;
-    }
-
     std::wstring headers =
         L"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         L"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
         L"Accept: application/json,text/plain,*/*\r\n";
     if (!extraHeaders.empty()) headers += extraHeaders;
 
-    const bool sent = operation.send(headers.c_str(), body.empty() ? WINHTTP_NO_REQUEST_DATA : (LPVOID)body.data(), static_cast<DWORD>(body.size()));
-
-    if (!sent || !operation.receive())
-    {
-        const DWORD err = GetLastError();
-        result.error = winHttpErrMessage(err, host);
-        operation.close();
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+    const http_transport::Request request{
+        {host, port, https},
+        {L"Mozilla/5.0 LLMChatBackend/1.0", {accessType, proxyBuf}, {5000, 5000, 10000, 10000}, true, protocols},
+        toWide(method), path, headers, body,
+    };
+    const auto cancellation = request_cancel::current ? request_cancel::current : std::make_shared<request_cancel::State>();
+    std::wstring rawHeaders;
+    const auto response = http_transport::perform(request, {
+        [&](DWORD, const http_transport::ResponseHeaders& received) {
+            result.finalUrl = fromWide(received.url());
+            rawHeaders = received.raw();
+            return true;
+        },
+        [&](std::string_view bytes) { result.body.append(bytes); return true; },
+    }, {{}, &cancellation->cancelled, cancellation->deadline});
+    if (response.failure && response.failure->stage != http_transport::Stage::read) {
+        const auto [stage, code] = *response.failure;
+        result.error = stage == http_transport::Stage::session
+            ? withZhHint("WinHttpOpen failed", "无法初始化网络组件") : winHttpErrMessage(code, host);
         return result;
     }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(
-        request,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
+    const DWORD status = response.status;
     result.status = static_cast<int>(status);
-    DWORD urlBytes = 0;
-    WinHttpQueryOption(request, WINHTTP_OPTION_URL, nullptr, &urlBytes);
-    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && urlBytes) {
-        std::wstring effective(urlBytes / sizeof(wchar_t), L'\0');
-        if (WinHttpQueryOption(request, WINHTTP_OPTION_URL, effective.data(), &urlBytes)) result.finalUrl = fromWide(effective);
-    }
-
-    for (;;)
-    {
-        DWORD available = 0;
-        if (!operation.available(available) || available == 0) break;
-        std::vector<char> buffer(available);
-        DWORD read = 0;
-        if (!operation.read(buffer.data(), available, read)) break;
-        result.body.append(buffer.data(), read);
-    }
-
-    if (operation.isOpen()) collectSetCookies(request, result.cookies);
-
-    operation.close();
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
+    if (!response.failure || response.failure->code != ERROR_WINHTTP_OPERATION_CANCELLED || !cancellation->stopped())
+        collectSetCookies(rawHeaders, result.cookies);
 
     result.ok = (status >= 200 && status < 300);
     if (!result.ok)
