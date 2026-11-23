@@ -3452,20 +3452,20 @@ body.ocr-image-resizing * {
 .game-benchmark-formal-metrics > span > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ---------- 步骤卡三段式：卡头 / 进度 / 只读性能 / 可改参数 ---------- */
-.game-flow-head{display:flex;align-items:center;gap:8px;padding:1px 2px 7px}
+.game-flow-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:1px 2px 7px}
 .game-flow-dot{inline-size:7px;block-size:7px;border-radius:50%;background:var(--flow-color);flex:none}
-.game-flow-title{font-size:13.5px;font-weight:600;color:var(--text)}
+.game-flow-title{font-size:13.5px;font-weight:600;color:var(--text);min-inline-size:0;overflow-wrap:anywhere}
 .game-flow-position{font-size:9.5px;color:var(--text-muted);border:1px solid var(--border-strong);border-radius:20px;padding:0 7px;line-height:1.75;white-space:nowrap}
 .game-flow-state{font-size:9.5px;border-radius:20px;padding:0 7px;line-height:1.75;white-space:nowrap;
-  border:1px solid color-mix(in srgb,var(--flow-color) 45%,transparent);color:var(--flow-color);
+  border:1px solid color-mix(in srgb,var(--flow-color) 45%,transparent);color:var(--text);
   background:color-mix(in srgb,var(--flow-color) 12%,transparent)}
 .game-flow-elapsed{margin-inline-start:auto;font-size:13px;font-variant-numeric:tabular-nums;color:var(--text)}
-.game-flow-actions{display:flex;gap:5px;align-items:center}
+.game-flow-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .game-flow-progress{margin:0 0 9px;padding:9px 10px;border:1px solid var(--border);border-radius:9px;
-  background:color-mix(in srgb,var(--bg-panel) 62%,#000)}
+  background:var(--bg-panel)}
 .game-flow-progress-main{display:flex;align-items:baseline;gap:8px}
-.game-flow-sample{font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.game-flow-progress-count{margin-inline-start:auto;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.game-flow-sample{flex:1 1 0%;min-inline-size:0;font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.game-flow-progress-count{flex:0 0 auto;margin-inline-start:auto;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .game-flow-progress-count small{font-size:10.5px;color:var(--text-muted);font-weight:400}
 .game-flow-progress-bar{block-size:6px;border-radius:3px;overflow:hidden;margin:7px 0 6px;
   background:color-mix(in srgb,var(--border-strong) 55%,transparent)}
@@ -3478,10 +3478,10 @@ body.ocr-image-resizing * {
 /* 可改区：暖色底，与上面的只读数据区分开 */
 .game-flow-editable{margin-block-start:10px;padding:9px 10px;border-radius:9px;
   border:1px solid color-mix(in srgb,#d9a44b 26%,var(--border));
-  background:color-mix(in srgb,#d9a44b 5%,var(--bg-panel))}
+  background:color-mix(in srgb,#d9a44b 5%,var(--bg-panel));container-type:inline-size}
 .game-flow-editable-title{display:flex;align-items:center;gap:6px;margin:0 0 8px;font-size:9.5px;
-  letter-spacing:1.1px;font-weight:600;color:color-mix(in srgb,#d9a44b 62%,var(--text-muted))}
-.game-flow-tag{font-size:8.5px;letter-spacing:0;padding:0 4px;border-radius:4px;
+  letter-spacing:1.1px;font-weight:600;color:var(--warning)}
+.game-flow-tag{font-size:8.5px;letter-spacing:0;padding:0 4px;border-radius:4px;color:var(--warning);
   border:1px solid color-mix(in srgb,#d9a44b 40%,transparent);
   background:color-mix(in srgb,#d9a44b 12%,transparent)}
 .game-flow-editable-title button{margin-inline-start:auto;font-size:9.5px;letter-spacing:0;padding:2px 9px;
@@ -3489,4 +3489,4 @@ body.ocr-image-resizing * {
 .game-flow-editable-title button:disabled{opacity:.45;cursor:not-allowed}
 .game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}
 .game-flow-editable-fields > .game-flow-field-wide{grid-column:1 / -1}
-@media (max-width:1200px){.game-flow-editable-fields{grid-template-columns:1fr}}
+@container (max-width:492px){.game-flow-editable-fields{grid-template-columns:minmax(0,1fr)}}
