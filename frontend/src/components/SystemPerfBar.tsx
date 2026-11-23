@@ -7,7 +7,7 @@ import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../sys
  *
  * 收起态（38px）：性能⌄ │ CPU 56°C 12% ▁▂▃ │ 内存 72% ▁▂▃ │ 磁盘 9.4MB/s 62% ▁▂▃ │
  *               网络 477KB/s ▁▂▃ │ GPU 84°C 88% ▁▂▃ │ 模型服务 2模型 53.0tok/s ▁▂▃
- * 展开态：向上抬起 340px 面板，7 张卡片（CPU / 内存 / 磁盘 / 网络 / GPU / CPU 温度 / 模型服务）。
+ * 展开态：向上浮起随内容定高的面板，7 张卡片（CPU / 内存 / 磁盘 / 网络 / GPU / CPU 温度 / 模型服务）。
  *
  * 取不到的字段（温度、磁盘占用率、tok/s、模型数量）显示「—」，不参与取档，
  * 避免把「没采到」误画成绿色正常。
@@ -375,13 +375,7 @@ function peakOf(
   key: NumericKey,
   format: (value: number | null) => string,
 ): string {
-  let peak: number | null = null;
-  for (const point of points) {
-    const value = point[key];
-    if (value == null || Number.isNaN(value)) continue;
-    if (peak == null || value > peak) peak = value;
-  }
-  return format(peak);
+  return format(peakValue(points, key));
 }
 
 function formatRateShort(value: number | null): string {

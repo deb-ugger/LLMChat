@@ -3306,7 +3306,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 }
 
 /* 页脚保持在滚动内容外，指标按当前值和峰值成组。 */
-/* ── 底部系统性能条（收起 38px / 展开 340px 面板） ───────────────── */
+/* ── 底部系统性能条（收起 38px / 展开浮层） ───────────────── */
 .sysbar {
   position: relative;
   flex: none;
@@ -3318,21 +3318,23 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   font-variant-numeric: tabular-nums;
 }
 .sysbar {
-  --tone-cpu: #8fae7a;
-  --tone-memory: #7f9cc0;
-  --tone-disk: #c0a06a;
-  --tone-network: #9a8fc0;
-  --tone-gpu: #6fa3a0;
-  --tone-temp: #d08a5a;
-  --tone-service: #b58fb0;
+  --sysbar-tone-share: 100%;
+  --tone-cpu: color-mix(in srgb, #8fae7a var(--sysbar-tone-share), var(--text));
+  --tone-memory: color-mix(in srgb, #7f9cc0 var(--sysbar-tone-share), var(--text));
+  --tone-disk: color-mix(in srgb, #c0a06a var(--sysbar-tone-share), var(--text));
+  --tone-network: color-mix(in srgb, #9a8fc0 var(--sysbar-tone-share), var(--text));
+  --tone-gpu: color-mix(in srgb, #6fa3a0 var(--sysbar-tone-share), var(--text));
+  --tone-temp: color-mix(in srgb, #d08a5a var(--sysbar-tone-share), var(--text));
+  --tone-service: color-mix(in srgb, #b58fb0 var(--sysbar-tone-share), var(--text));
 }
-.tone-cpu { --metric-tone: var(--tone-cpu); }
-.tone-memory { --metric-tone: var(--tone-memory); }
-.tone-disk { --metric-tone: var(--tone-disk); }
-.tone-network { --metric-tone: var(--tone-network); }
-.tone-gpu { --metric-tone: var(--tone-gpu); }
-.tone-temp { --metric-tone: var(--tone-temp); }
-.tone-service { --metric-tone: var(--tone-service); }
+:root:not([data-theme="ink"]) .sysbar { --sysbar-tone-share: 64%; }
+.sysbar .tone-cpu { --metric-tone: var(--tone-cpu); }
+.sysbar .tone-memory { --metric-tone: var(--tone-memory); }
+.sysbar .tone-disk { --metric-tone: var(--tone-disk); }
+.sysbar .tone-network { --metric-tone: var(--tone-network); }
+.sysbar .tone-gpu { --metric-tone: var(--tone-gpu); }
+.sysbar .tone-temp { --metric-tone: var(--tone-temp); }
+.sysbar .tone-service { --metric-tone: var(--tone-service); }
 .sysbar-row {
   display: flex;
   align-items: center;
@@ -3356,7 +3358,10 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 }
 .sysbar-toggle:hover { background: var(--bg-hover); color: var(--text); }
 .sysbar-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.sysbar-toggle svg { inline-size: 9px; block-size: 9px; transition: transform .15s ease; }
+.sysbar-toggle svg { inline-size: 9px; block-size: 9px; }
+@media (prefers-reduced-motion: no-preference) {
+  .sysbar-toggle svg { transition: transform .15s ease; }
+}
 .sysbar-toggle[aria-expanded="true"] {
   background: var(--bg-hover);
   color: var(--text);
@@ -3385,7 +3390,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .sys-metric-sec { color: var(--metric-tone, var(--text-muted)); opacity: .9; }
 .sys-metric-value { color: var(--text); font-size: 13px; font-weight: 600; }
 .sys-metric-unit { color: var(--text-muted); }
-.sys-metric-spark { flex: 1 1 auto; min-inline-size: 26px; max-inline-size: 360px; block-size: 20px; color: var(--text-dim); }
+.sys-metric-spark { flex: 1 1 auto; min-inline-size: 26px; max-inline-size: 360px; block-size: 20px; color: var(--metric-tone, var(--text-dim)); }
 .sys-metric-spark svg { display: block; inline-size: 100%; block-size: 100%; }
 
 /* 三档只改颜色；中/高档把字重提一档，低档保持常规 */
@@ -3393,13 +3398,14 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .sys-metric.is-mid .sys-metric-value, .sys-metric-sec.is-mid { color: var(--warning); font-weight: 600; }
 .sys-metric.is-hi .sys-metric-value, .sys-metric-sec.is-hi { color: var(--danger); font-weight: 700; }
 .sys-metric:not(.is-lo):not(.is-mid):not(.is-hi) .sys-metric-value { color: var(--metric-tone, var(--text)); }
-.sys-metric:not(.is-lo):not(.is-mid):not(.is-hi) .sys-metric-spark { color: var(--metric-tone, var(--text-dim)); }
-.sys-metric.is-lo .sys-metric-spark { color: var(--success); }
-.sys-metric.is-mid .sys-metric-spark { color: var(--warning); }
-.sys-metric.is-hi .sys-metric-spark { color: var(--danger); }
+
+.sys-metric:is(.tone-network, .tone-service) :is(.sys-metric-sec, .sys-metric-unit) { color: var(--metric-tone); opacity: 1; }
 
 @media (width < 1080px) {
-  .sysbar-items { gap: 12px; }
+  .sysbar-row { gap: 8px; }
+  .sysbar-items { gap: 6px; }
+  .sys-metric { gap: 4px; }
+  .sys-metric-text { gap: 3px; }
 }
 
 /* 展开面板：向上浮起，不挤压页面 */
@@ -3483,18 +3489,15 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   content: "▲";
   margin-inline-end: 2px;
   font-size: 8px;
-  vertical-align: 1px;
+  vertical-align: baseline;
 }
-.sysbar-card-peak-value { color: var(--text-muted); }
+.sysbar-card-peak-value { color: var(--text-muted); font-weight: 400; }
+.sysbar-card:is(.tone-network, .tone-service) .sysbar-card-peak-value { color: var(--metric-tone); }
 .sysbar-card-peak.is-lo .sysbar-card-peak-value { color: var(--success); }
 .sysbar-card-peak.is-mid .sysbar-card-peak-value { color: var(--warning); font-weight: 600; }
 .sysbar-card-peak.is-hi .sysbar-card-peak-value { color: var(--danger); font-weight: 700; }
-.sysbar-card svg { display: block; inline-size: 100%; block-size: 56px; }
-.sysbar-card:not(.is-lo):not(.is-mid):not(.is-hi) { color: var(--metric-tone, var(--text-dim)); }
+.sysbar-card svg { display: block; inline-size: 100%; block-size: 56px; color: var(--metric-tone, var(--text-dim)); }
 .sysbar-card:not(.is-lo):not(.is-mid):not(.is-hi) .sysbar-card-value { color: var(--metric-tone, var(--text)); }
-.sysbar-card.is-lo { color: var(--success); }
-.sysbar-card.is-mid { color: var(--warning); }
-.sysbar-card.is-hi { color: var(--danger); }
 .sysbar-card.is-lo .sysbar-card-value { color: var(--success); font-weight: 400; }
 .sysbar-card.is-mid .sysbar-card-value { color: var(--warning); font-weight: 600; }
 .sysbar-card.is-hi .sysbar-card-value { color: var(--danger); font-weight: 700; }
