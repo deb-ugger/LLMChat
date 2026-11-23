@@ -85,6 +85,8 @@ public sealed class Request
     public string ImageResetPhase { get; set; } = "";
     public bool Thumbnail { get; set; }
     public bool CleanImageCache { get; set; }
+    public bool ResumeImageWork { get; set; }
+    public Dictionary<string, string>? ObsoleteRenderedFiles { get; set; }
     public string? SavedRenderedFile {get;set;}
     public int Step { get; set; }
     public string[]? SelectedIds { get; set; }
@@ -292,8 +294,8 @@ public static class Program
         var definitions = Path.Combine(project.Folder, "type-definitions");
         if (project.DefinitionHashes.Count > 0 || File.Exists(Path.Combine(definitions, ScanInspection.PendingDefinitions))) project.TypeDirectory = definitions;
         foreach (var e in project.Entries) _ = Within(project.Root, e.File);
-        GameText.ProtectProject(project);
         LoadTextStates(project, path);
+        GameText.ProtectProject(project);
         ImageResources.LoadStates(project, File.GetLastWriteTimeUtc(path));
         var performance = Path.Combine(project.Folder, ScanMetrics.FileName);
         if (File.Exists(performance)) project.ScanMetrics = JsonSerializer.Deserialize<ScanMetrics>(File.ReadAllText(performance), Json);

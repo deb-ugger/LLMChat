@@ -1,7 +1,7 @@
 import type { ImageBenchmarkDetails, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
-import { refineMosaicBatch } from "./gameMosaicRefine";
+import { readMosaicRows, refineMosaicBatch } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { requestGameModelJson } from "./gameModelRequest";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
@@ -72,7 +72,7 @@ export function publishMosaicBenchmarkSource(root: string, rows?: Record<string,
 }
 
 export function captureMosaicBenchmark(workload: ImageBenchmarkWorkload, root: string, initialSnapshot = false, requireScreened = false): MosaicBenchmarkWorkload {
-  const rows = liveSources.get(root) ?? JSON.parse(localStorage.getItem("llmchat-game-mosaic:" + root) || "{}") as Record<string, MosaicSourceRow>;
+  const rows = liveSources.get(root) ?? readMosaicRows(root);
   const images = (workload.project?.images || []).filter(image => !!image.sourceFile && image.width > 0 && image.height > 0);
   const checked: string[] = [];
   const boxes: Record<string, MosaicBox[]> = {};

@@ -42,7 +42,7 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
 
   return <div ref={surface} className="game-mosaic-image-area" style={{ "--mosaic-original-width": width + "px" } as CSSProperties}>
     <div ref={stage} className={"unity-image-stage game-mosaic-stage" + (!editing && view.zoom > 1 ? " is-pannable" : "")}
-      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom }}
+      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom, "--mosaic-preview-zoom": view.zoom } as CSSProperties}
       onPointerDown={event => {
         if (editing || event.button !== 0 || !event.isPrimary || (event.target as Element).closest("svg")) return;
         onBackground();
@@ -104,7 +104,7 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
   onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
-  const { tool, draft, resizing, resizeTarget, activeBoxes, selection, hasSelection } = masks;
+  const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
   const previews = useRef<HTMLDivElement>(null);
@@ -237,7 +237,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
                 aria-label="去码蒙版" onPointerDown={masks.onPointerDown} onPointerMove={masks.onPointerMove}
                 onPointerUp={masks.onPointerUp} onPointerCancel={masks.onPointerCancel} onLostPointerCapture={masks.onPointerCancel}>
                 {activeBoxes.map((box, index) => {
-                  const [left, top, right, bottom] = resizing?.original === box ? resizing.box : box;
+                  const [left, top, right, bottom] = transformed?.get(box) ?? box;
                   const selected = selection.has(box);
                   return <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
                     className={`game-mosaic-mask${selected ? " is-selected" : ""}${canSelectMask ? " is-clickable" : ""}`}
@@ -252,7 +252,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
                 })}
                 {draft && <rect x={draft[0]} y={draft[1]} width={draft[2] - draft[0]} height={draft[3] - draft[1]}
                   className={tool === "select" ? "game-mosaic-mask-selection" : "game-mosaic-mask"} vectorEffect="non-scaling-stroke" />}
-                {canSelectMask && resizeTarget && <MaskResizeControls box={resizing?.box ?? resizeTarget} />}
+                {canSelectMask && resizeTarget && <MaskResizeControls box={transformed?.get(resizeTarget) ?? resizeTarget} />}
               </svg>
             </MosaicOriginalCanvas> : original?.error
               ? <p className="game-mosaic-error" role="alert">{original.error}</p>

@@ -1,7 +1,7 @@
 import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
+import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
@@ -650,7 +650,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         root, step: 1, path: current.folder, task: checkpointRef.current || projectCheckpoint(current),
       });
       clearImageGroupHistory(current.folder);
-      try { localStorage.removeItem("llmchat-game-mosaic:" + root); } catch { /* Storage can be unavailable. */ }
+      try { clearMosaicRows(root); } catch { /* Storage can be unavailable. */ }
       clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
       clearGamePerformance(promptState.scope + ":images", unityImagePhases);
       latest.current = null;
@@ -663,7 +663,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setMessage("扫描及后续结果已清理，可以从头扫描");
     });
   }
-  async function save(p = latest.current, area: "all" | "text" | "images" = "all") {
+  async function save(p = latest.current, area: "all" | "text" | "images" = "all", editsOnly = false) {
     if (!p) return;
     await queueProjectWrite(async () => {
       let current = latest.current?.folder === p.folder ? latest.current : p;
@@ -678,14 +678,36 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         publish(current); pendingImageMasks.current.delete(id);
       }
       if (closing.current) await showClosing("正在写入 Unity 工程文件…");
-      publish(current);
-      const saved = { ...current,
-        entries: area === "images" ? current.entries.map(entry => textDraftOriginals.current.get(entry.id) || entry) : current.entries,
-        images: area === "text" ? current.images?.map(image => imageDraftOriginals.current.get(image.id) || image) : current.images };
-      const cache=await unityRun<{cacheErrors?:string[]}>("save", { project:saved,cleanImageCache:area !== "text" && !deploymentController.current });
-      if(cache.cacheErrors?.length)setActionError("工程已保存，部分译图缓存未能清理："+cache.cacheErrors.join("；"));
+      if (!editsOnly) publish(current);
+      if (editsOnly) {
+        const { root, folder } = current;
+        if (area !== "images" && textDraftOriginals.current.size) {
+          const entries = current.entries.filter(entry => textDraftOriginals.current.has(entry.id));
+          await unityRun("save-text-states", { project: { root, folder, entries } });
+        }
+        if (area !== "text" && imageDraftOriginals.current.size) {
+          const images = current.images?.filter(image => imageDraftOriginals.current.has(image.id)) ?? [];
+          for (let offset = 0; offset < images.length; offset += 128) {
+            const batch = images.slice(offset, offset + 128);
+            const obsoleteRenderedFiles = Object.fromEntries(batch.flatMap(image => {
+              const previous = imageDraftOriginals.current.get(image.id)?.renderedFile;
+              return previous && previous !== image.renderedFile ? [[image.id, previous]] : [];
+            }));
+            const { cacheErrors } = await unityRun<{ cacheErrors?: string[] }>("save-image-states", {
+              project: { root, folder, images: batch }, obsoleteRenderedFiles, resumeImageWork: !current.imagesSkipped,
+            });
+            if (cacheErrors?.length) setActionError("工程已保存，部分译图缓存未能清理：" + cacheErrors.join("；"));
+          }
+        }
+      } else {
+        const saved = { ...current,
+          entries: area === "images" ? current.entries.map(entry => textDraftOriginals.current.get(entry.id) || entry) : current.entries,
+          images: area === "text" ? current.images?.map(image => imageDraftOriginals.current.get(image.id) || image) : current.images };
+        const cache = await unityRun<{ cacheErrors?: string[] }>("save", { project: saved, cleanImageCache: area !== "text" && !deploymentController.current });
+        if (cache.cacheErrors?.length) setActionError("工程已保存，部分译图缓存未能清理：" + cache.cacheErrors.join("；"));
+      }
       for (const key of pendingEdits.current) {
-        const image = key.startsWith("图片与译文：") || key.startsWith("译图");
+        const image = key.startsWith("图片") || key.startsWith("译图");
         if (area === "all" || (area === "images") === image) pendingEdits.current.delete(key);
       }
       if (area !== "text") imageDraftOriginals.current.clear();
@@ -695,13 +717,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   }
   async function saveUserChanges(area: "all" | "text" | "images" = "all") {
     if (saving || importPreviewRef.current) return false;
-    const changes = [...pendingEdits.current].filter(key => area === "all" || (area === "images") === (key.startsWith("图片与译文：") || key.startsWith("译图")));
+    const changes = [...pendingEdits.current].filter(key => area === "all" || (area === "images") === (key.startsWith("图片") || key.startsWith("译图")));
     if (!changes.length) { logAction("当前没有需要保存的修改"); return true; }
     setSavedChanges(changes.map(change => {
       const id = change.match(/^文本与译文：第 (.+) 条$/)?.[1]; const entry = id && latest.current?.entries.find(row => row.id === id);
       return entry ? `${change} · ${entry.translation.slice(0, 80) || "空译文"}` : change;
     })); setSaving(true); setSaveNotice(""); setSaveComplete(false); logAction(`正在保存${area === "images" ? "图片" : area === "text" ? "文本" : "工程"}修改`);
-    try { await save(undefined, area); setSaveNotice("已保存"); setSaveComplete(true); logAction("修改已保存", "success"); return true; }
+    try { await save(undefined, area, true); setSaveNotice("已保存"); setSaveComplete(true); logAction("修改已保存", "success"); return true; }
     catch (error) { setDirty(true); setActionError(`保存失败：${String(error)}`); setSaveNotice("保存失败"); logAction(`保存失败：${String(error)}`, "error"); return false; }
     finally { setSaving(false); }
   }
@@ -712,7 +734,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const next={...current,images:current.images?.map(image=>imageDraftOriginals.current.get(image.id)||image)};
     const count = imageDraftOriginals.current.size;
     publish(next); imageDraftOriginals.current.clear(); pendingImageMasks.current.clear();
-    for(const key of pendingEdits.current)if(key.startsWith("图片与译文：")||key.startsWith("译图"))pendingEdits.current.delete(key);
+    for(const key of pendingEdits.current)if(key.startsWith("图片")||key.startsWith("译图"))pendingEdits.current.delete(key);
     setDirty(pendingEdits.current.size>0);setSaveNotice(""); logAction(`已取消 ${count} 张图片的未保存修改`, "success");
     const cleanupProject = { folder: next.folder, images: next.images?.map(({id, renderedFile}) => ({id, renderedFile})) };
     void queueProjectWrite(()=>unityRun<{errors:string[]}>("save-image",{project:cleanupProject,cleanImageCache:true})).then(cleanup=>{
@@ -2208,7 +2230,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       track={{ steps: trackSteps, edges: trackEdges, enabled: trackEnabled, skipped: trackSkipped,
         disconnected: deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined }}
       toolbar={toolbarTarget ? { target: toolbarTarget,
-        saveTitle: importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改",
+        saveTitle: importPreview ? "请先应用或取消导入预览"
+          : saving ? "正在保存工程修改" : dirty || mosaicDirty ? "保存工程修改" : "没有未保存的修改",
         saveDisabled: !project || (!dirty && !mosaicDirty) || saving || !!busy || restoring || !!importPreview,
         save: () => void (async () => {
           if (dirty && !await saveUserChanges()) return;

@@ -1,11 +1,17 @@
 import { useSyncExternalStore } from "react";
-import { mosaicRowsStorageKey, readMosaicRows } from "../../gameMosaicRefine";
+import { readMosaicRows, writeMosaicRowEdits } from "../../gameMosaicRefine";
 import type { MosaicCandidate, Result, Results } from "./mosaicWorkbenchTypes";
 
 type RowDraft = { base: Result; storedSource?: string; patch: Partial<Result>; candidate?: { value?: MosaicCandidate } };
 type Drafts = ReadonlyMap<string, RowDraft>;
 const emptyDrafts: Drafts = new Map();
 const projects = new Map<string, Drafts>();
+const currentRows = new Map<string, () => Results>();
+
+export function registerMosaicRows(root: string, read: () => Results) {
+  currentRows.set(root, read);
+  return () => { if (currentRows.get(root) === read) currentRows.delete(root); };
+}
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
@@ -60,18 +66,20 @@ export function applyMosaicDrafts(rows: Results, drafts: Drafts): Results {
   return next;
 }
 
-export type MosaicDraftSaved = { root: string; rows: Results; drafts: Drafts };
+export type MosaicDraftSaved = { root: string; changes: Results; drafts: Drafts };
 export function saveMosaicDrafts(root: string) {
   const drafts = mosaicDraftsOf(root);
   if (!drafts.size) return false;
-  const stored = readMosaicRows<Result>(root);
-  for (const [id, { base, storedSource }] of drafts) {
-    const source = stored[id]?.source;
-    if (source !== base.source && source !== storedSource) throw new Error("原图已更新，无法保存上一版的去码修改");
+  const stored = currentRows.get(root)?.() ?? readMosaicRows<Result>(root);
+  const changes: Results = {};
+  for (const [id, { base, storedSource, patch }] of drafts) {
+    const row = stored[id];
+    if (row?.source !== base.source && row?.source !== storedSource)
+      throw new Error("原图已更新，无法保存上一版的去码修改");
+    changes[id] = { ...(row?.source === base.source ? row : base), ...patch };
   }
-  const rows = applyMosaicDrafts(stored, drafts);
-  localStorage.setItem(mosaicRowsStorageKey(root), JSON.stringify(rows));
-  window.dispatchEvent(new CustomEvent<MosaicDraftSaved>(mosaicDraftSavedEvent, { detail: { root, rows, drafts } }));
+  writeMosaicRowEdits(root, changes);
+  window.dispatchEvent(new CustomEvent<MosaicDraftSaved>(mosaicDraftSavedEvent, { detail: { root, changes, drafts } }));
   publishDrafts(root, emptyDrafts);
   return true;
 }

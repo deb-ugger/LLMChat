@@ -55,6 +55,13 @@ button:is(.chat-icon-button, .unity-header-icon, .pdf-toolbar-glyph-btn, .pdf-to
   --button-inset: 0;
 }
 
+button.unity-project-save:enabled {
+  --button-bg: var(--accent);
+  --button-border: var(--accent);
+  --button-fg: var(--bg-panel);
+  --button-hover-bg: var(--accent-hover);
+}
+
 button:is(.pdf-tool-btn, .text-tool-btn):is(.active, .is-active) {
   --button-bg: var(--accent-soft);
   --button-border: var(--accent);

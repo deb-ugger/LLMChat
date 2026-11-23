@@ -270,14 +270,36 @@ public static class ImageResources
         Directory.CreateDirectory(Path.GetDirectoryName(state)!);
         Program.WriteJson(state, image);
     }
+    static string ImageResumePath(Project project) => Program.Within(project.Folder, "images/work-resumed.json");
     public static object SaveStates(Request request) {
         var project = request.Project ?? throw new Exception("缺少图片工程");
-        if (!File.Exists(Program.Within(project.Folder, "unity-project.json"))) throw new Exception("图片工程尚未保存");
+        var manifest = Program.Within(project.Folder, "unity-project.json");
+        if (!File.Exists(manifest)) throw new Exception("图片工程尚未保存");
         if (project.Images.Count > 128 || project.Images.Any(image => !Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")))
             throw new Exception("图片状态批次无效");
         foreach (var image in project.Images) { Program.CheckStop(request, project.Folder); WriteState(project.Folder, image); }
-        return new { saved = project.Images.Count };
+        if (request.ResumeImageWork && project.Images.Count != 0) {
+            var resumed = ImageResumePath(project);
+            if (!File.Exists(resumed) || File.GetLastWriteTimeUtc(resumed) <= File.GetLastWriteTimeUtc(manifest))
+                Program.WriteJson(resumed, true);
+        }
+        var errors = new List<string>();
+        var obsolete = request.ObsoleteRenderedFiles;
+        foreach (var image in project.Images) {
+            if (obsolete == null || !obsolete.TryGetValue(image.Id, out var previous) ||
+                string.Equals(previous, image.RenderedFile, StringComparison.OrdinalIgnoreCase)) continue;
+            var name = Path.GetFileName(previous);
+            if (previous.Replace('\\', '/') != "images/rendered/" + name ||
+                !Regex.IsMatch(name, "^" + image.Id + "(-[a-f0-9]{64})?\\.png$")) continue;
+            try {
+                var file = Program.Within(project.Folder, previous);
+                if (File.Exists(file) && !IsLinked(file) && !IsLinked(Path.GetDirectoryName(file)!) &&
+                    !IsLinked(Program.Within(project.Folder, "images"))) File.Delete(file);
+            } catch (Exception error) { errors.Add(name + "：" + error.Message); }
+        }
+        return new { saved = project.Images.Count, cacheErrors = errors };
     }
+    static bool IsLinked(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
     public static ImageCacheCleanup CleanupCache(Project project)=>SweepRendered(project,project.Images.Select(image=>image.RenderedFile).Where(path=>path.Length>0),null);
     static ImageCacheCleanup CleanupDraft(Project project,ImageResource image,string path,string? savedRenderedFile){
         // The UI owns the unsaved draft baseline; background saves must not replace it.
@@ -293,7 +315,9 @@ public static class ImageResources
             if(!Directory.Exists(folder))return new(0,errors);
             if((File.GetAttributes(images)&FileAttributes.ReparsePoint)!=0||(File.GetAttributes(folder)&FileAttributes.ReparsePoint)!=0)throw new Exception("不清理目录联接或符号链接中的缓存");
             var retained=keep.Select(path=>Program.Within(project.Folder,path)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach(var file in Directory.EnumerateFiles(folder,"*.png",SearchOption.TopDirectoryOnly)){
+            var files = imageId == null ? Directory.EnumerateFiles(folder, "*.png")
+                : Directory.EnumerateFiles(folder, imageId + "-*.png").Append(Path.Combine(folder, imageId + ".png")).Where(File.Exists);
+            foreach(var file in files){
                 var name=Path.GetFileName(file);
                 if(!Regex.IsMatch(name,"^[a-f0-9]{64}(-[a-f0-9]{64})?\\.png$")||retained.Contains(Path.GetFullPath(file)))continue;
                 if(imageId!=null&&name!=imageId+".png"&&!name.StartsWith(imageId+"-",StringComparison.Ordinal))continue;
@@ -460,6 +484,10 @@ public static class ImageResources
         }
     }
     public static void LoadStates(Project project, DateTime projectTime) {
+        if (project.ImagesSkipped) {
+            var resumed = ImageResumePath(project);
+            if (File.Exists(resumed) && File.GetLastWriteTimeUtc(resumed) > projectTime) project.ImagesSkipped = false;
+        }
         for (var index = 0; index < project.Images.Count; index++) {
             var image = project.Images[index];
             if (!Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) continue;
@@ -472,6 +500,8 @@ public static class ImageResources
         }
     }
     public static void CommitStates(Project project) {
+        var resumed = ImageResumePath(project);
+        if (File.Exists(resumed)) File.Delete(resumed);
         foreach (var image in project.Images) if (Regex.IsMatch(image.Id, "^[a-f0-9]{64}$")) {
             var path = Program.Within(project.Folder, "images/state/" + image.Id + ".json"); if (File.Exists(path)) File.Delete(path);
         }

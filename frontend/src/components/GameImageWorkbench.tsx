@@ -49,7 +49,7 @@ import "../unityOffline.css";
 type ReviewedRegion = UnityImageRegion & {beforeReview?:{translation:string;error:string}};
 const EMPTY_GAME_IMAGES:UnityImage[]=[];
 type ImageScanTiming = { parsed:number; reused:number; loadMs:number; listMs:number; parseMs:number };
-export type GameImageInfo = {scanTiming?:ImageScanTiming;state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number;
+export type GameImageInfo = {scanTiming?:ImageScanTiming;state:string;stage:string;complete:boolean;count:number|null;folder:string;exists:boolean|null;loaded:boolean;selected:number;valid:number;dirty:boolean;
   exportCandidates?: ImageExportCandidate[];
   operation?: { label: string; detail?: string; completed?: number; total?: number }};
 const imageOperationLabels = {
@@ -576,7 +576,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       stage: step,
       complete: !!project && (images.length === 0 || complete.filter && complete.refine && !manualReviewPending &&
         !redrawCount && selected.every(image => unityImageWorkDone(image, target))),
-      count: project ? images.length : null, folder: project?.folder || "", exists: existing, loaded: !!project,
+      count: project ? images.length : null, folder: project?.folder || "", exists: existing, loaded: !!project, dirty,
       selected: selected.length, valid: selected.filter(image => unityImageReadyForTarget(image, target)).length, exportCandidates,
       operation: {
         label: busy || imageOperationLabels[operationStep.current],
@@ -585,7 +585,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         total: progress?.total ?? undefined,
       },
     });
-  }, [busy, task.task, progress?.state, progress?.detail, progress?.completed, progress?.total, step, project?.folder,
+  }, [busy, dirty, task.task, progress?.state, progress?.detail, progress?.completed, progress?.total, step, project?.folder,
     images.length, existing, selected, complete.filter, complete.refine, complete.translate, manualReviewPending,
     redrawCount, onTaskStateChange, target, exportCandidates, (project as (UnityProject & { imageScanTiming?: ImageScanTiming }) | null)?.imageScanTiming]);
   const resetImages = async (phase: keyof typeof resetLabels) => {

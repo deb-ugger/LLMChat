@@ -74,7 +74,7 @@ export function StepCards({ panelRef, workflowRef, panelStyle, generationState, 
   toolbar, mosaic, scan, translation, batch, deployment, deploymentProgress, errorPanel }: StepCardsProps) {
   return <>
     {toolbar && createPortal(<>
-      <UnityIconButton aria-label="保存工程" title={toolbar.saveTitle} disabled={toolbar.saveDisabled} onClick={toolbar.save}><UnityActionIcon kind="save" /></UnityIconButton>
+      <UnityIconButton className="unity-project-save" aria-label="保存工程" title={toolbar.saveTitle} disabled={toolbar.saveDisabled} onClick={toolbar.save}><UnityActionIcon kind="save" /></UnityIconButton>
     </>, toolbar.target)}
     <aside ref={panelRef} className="unity-offline-config" style={panelStyle}>
       <div className="unity-offline-upper unity-workflow-layout">

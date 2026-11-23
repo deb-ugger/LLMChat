@@ -3,7 +3,7 @@ import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mo
 import { api } from "../api";
 import { requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
-import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, mosaicRowsStorageKey, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
+import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
@@ -28,7 +28,7 @@ import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
 import { confirmationBoxes, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
-import { applyMosaicDrafts, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, stageMosaicEdits,
+import { applyMosaicDrafts, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, registerMosaicRows, stageMosaicEdits,
   useMosaicDrafts, type MosaicDraftSaved } from "./game-mosaic/mosaicDrafts";
 import type { ImagePreview, MosaicMaskCommit, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
   MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
@@ -257,7 +257,6 @@ function MosaicOriginalGallery({ images, activeId, query, read, checked, status,
 export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle, packageOnly = false, onDeploymentSelectionChange }: Props & { packageOnly?: boolean; onDeploymentSelectionChange?: (ids: string[]) => void }) {
   const task = useRef<AbortController | null>(null);
   const onCompletionChange = useContext(GameMosaicCompletionContext);
-  const savedKey = mosaicRowsStorageKey(gamePath);
   const [rows, setRows] = useState<Results>(() => {
     try {
       const saved = readMosaicRows<Result>(gamePath);
@@ -267,7 +266,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   });
   const latestRows = useRef(rows);
   latestRows.current = rows;
-  const writtenRows = useRef<Results | undefined>(undefined);
+  const writtenRows = useRef(rows);
+  useLayoutEffect(() => registerMosaicRows(gamePath, () => latestRows.current), [gamePath]);
   const drafts = useMosaicDrafts(gamePath);
   const draftRows = useMemo(() => applyMosaicDrafts(rows, drafts), [rows, drafts]);
   const draftReason = drafts.size ? "请先点击右上角保存去码修改" : undefined;
@@ -413,8 +413,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   previewedImage.current = active;
   useLayoutEffect(() => {
     const onSave = (event: Event) => {
-      const { root, rows: nextRows, drafts } = (event as CustomEvent<MosaicDraftSaved>).detail;
+      const { root, changes, drafts } = (event as CustomEvent<MosaicDraftSaved>).detail;
       if (root !== gamePath) return;
+      const nextRows = { ...latestRows.current, ...changes };
       const nextActive = previewedImage.current;
       if (nextActive) {
         const before = imageStatus(nextActive);
@@ -497,14 +498,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   useEffect(() => {
     if (writtenRows.current === rows) return;
     try {
-      localStorage.setItem(savedKey, JSON.stringify(rows));
+      writeMosaicRows(gamePath, rows);
       writtenRows.current = rows;
     }
     catch { showAppNotice("无法保存图片去码筛选记录", "error"); }
-  }, [savedKey, rows]);
+  }, [gamePath, rows]);
 
   function replaceRows(next: Results) {
-    localStorage.setItem(savedKey, JSON.stringify(next));
+    writeMosaicRows(gamePath, next);
     writtenRows.current = next;
     setRows(next);
   }

@@ -13,10 +13,28 @@ export type MosaicStoredResult = { source: string; refined?: string; refineError
 type ReviewCheckpoint = { key: string; images: Record<string, StoredReview>; proposals?: Record<string, StoredProposal> };
 const checkpointPath = (root: string) => "llmchat-game-mosaic-refine:" + root;
 const regionCheckpointPrefix = (root: string) => checkpointPath(root) + ":regions:";
-export const mosaicRowsStorageKey = (root: string) => "llmchat-game-mosaic:" + root;
+const mosaicRowsStorageKey = (root: string) => "llmchat-game-mosaic:" + root;
+const mosaicEditKey = (root: string) => "llmchat-game-mosaic-edits:" + root;
+
+export function writeMosaicRowEdits<T extends MosaicStoredResult>(root: string, changes: Record<string, T>) {
+  const edits = JSON.parse(localStorage.getItem(mosaicEditKey(root)) || "{}") || {};
+  localStorage.setItem(mosaicEditKey(root), JSON.stringify(Object.assign(edits, changes)));
+}
+
+export function writeMosaicRows(root: string, rows: Record<string, MosaicStoredResult>) {
+  localStorage.setItem(mosaicRowsStorageKey(root), JSON.stringify(rows));
+  localStorage.removeItem(mosaicEditKey(root));
+}
+
+export function clearMosaicRows(root: string) {
+  localStorage.removeItem(mosaicRowsStorageKey(root));
+  localStorage.removeItem(mosaicEditKey(root));
+}
 
 export function readMosaicRows<T extends MosaicStoredResult = MosaicStoredResult>(root: string): Record<string, T> {
-  return JSON.parse(localStorage.getItem(mosaicRowsStorageKey(root)) || "{}") || {};
+  const rows = JSON.parse(localStorage.getItem(mosaicRowsStorageKey(root)) || "{}") || {};
+  const edits = localStorage.getItem(mosaicEditKey(root));
+  return edits ? Object.assign(rows, JSON.parse(edits)) : rows;
 }
 
 export const mosaicErrorUpdateEvent = "llmchat-game-mosaic-error-update";
@@ -38,7 +56,7 @@ export function mergeMosaicErrorUpdates(rows: Record<string, MosaicStoredResult>
 export function persistMosaicErrorUpdates(root: string, updates: readonly MosaicErrorUpdate[]) {
   if (!updates.length) return;
   const rows = mergeMosaicErrorUpdates(readMosaicRows(root), updates);
-  localStorage.setItem(mosaicRowsStorageKey(root), JSON.stringify(rows));
+  writeMosaicRows(root, rows);
   window.dispatchEvent(new CustomEvent(mosaicErrorUpdateEvent, { detail: { root, updates } }));
 }
 
