@@ -99,6 +99,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
     details: progress?.details,
   } : state === "running" ? progress ?? {} : undefined;
   const percent = activeProgress?.percent == null ? undefined : Math.min(100, Math.max(0, activeProgress.percent));
+  const configSamples = benchmark?.sampleCurrent != null && benchmark.sampleTotal ? benchmark.sampleTotal : undefined;
+  const configPercent = configSamples ? Math.min(100, Math.max(0, Math.round((benchmark?.sampleCurrent ?? 0) / configSamples * 100))) : undefined;
   const summaryProgress = activeProgress ?? progress;
   const summaryValue = summaryProgress?.percent ?? (summaryProgress?.current != null &&
     summaryProgress.total != null && summaryProgress.total > 0 ? 100 * summaryProgress.current / summaryProgress.total : undefined);
@@ -140,17 +142,19 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {activeProgress && <div className="game-flow-progress">
           <div className="game-flow-progress-main">
             {activeProgress.sample && <span className="game-flow-sample" data-tooltip={activeProgress.sample}>{activeProgress.sample}</span>}
-            {activeProgress.current != null && activeProgress.total != null
-              ? <span className="game-flow-progress-count">{activeProgress.current.toLocaleString()} <small>/ {activeProgress.total.toLocaleString()}</small></span>
-              : activeProgress.count && <span className="game-flow-progress-count">{activeProgress.count}</span>}
+            {benchmark?.sampleCurrent != null && configSamples != null
+              ? <span className="game-flow-progress-count">{benchmark.sampleCurrent.toLocaleString()} <small>/ {configSamples.toLocaleString()}</small></span>
+              : activeProgress.current != null && activeProgress.total != null
+                ? <span className="game-flow-progress-count">{activeProgress.current.toLocaleString()} <small>/ {activeProgress.total.toLocaleString()}</small></span>
+                : activeProgress.count && <span className="game-flow-progress-count">{activeProgress.count}</span>}
           </div>
-          {percent === undefined ? <GameProgressBar label={title + "进度"} /> :
+          {configPercent === undefined && percent === undefined ? <GameProgressBar label={title + "进度"} /> :
             <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
-              aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ inlineSize: percent + "%" }} /></div>}
+              aria-valuemin={0} aria-valuemax={100} aria-valuenow={configPercent ?? percent}><i style={{ inlineSize: (configPercent ?? percent) + "%" }} /></div>}
           {(benchmark?.sampleCurrent != null && benchmark.sampleTotal != null || activeProgress.remainingMs !== undefined) &&
             <div className="game-flow-progress-meta">
-              {benchmark?.sampleCurrent != null && benchmark.sampleTotal != null &&
-                <span>本配置 <b>{benchmark.sampleCurrent}/{benchmark.sampleTotal}</b></span>}
+              {configSamples != null && benchmark?.sampleCurrent != null &&
+                <span>本配置进度 <b>{configPercent}%</b></span>}
               {activeProgress.remainingMs !== undefined && <span className="game-flow-eta">预计剩余 <b>{gameDuration(activeProgress.remainingMs)}</b></span>}
             </div>}
           {activeProgress.details}
