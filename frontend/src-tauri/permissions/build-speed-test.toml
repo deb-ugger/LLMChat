@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-build-speed-test"
+description = "Run isolated build speed tests from the Records and Tests window."
+commands.allow = ["run_build_speed_test"]

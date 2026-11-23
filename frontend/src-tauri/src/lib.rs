@@ -464,7 +464,7 @@ async fn read_game_benchmark_image_details(queue_id: String, run_id: String) -> 
 
 #[tauri::command]
 async fn open_game_benchmark_window(webview: tauri::Webview) -> Result<bool, String> {
-    open_game_window(webview, BENCHMARK_WINDOW, "测试队列 · LLMChat", 930.0, 760.0)
+    open_game_window(webview, BENCHMARK_WINDOW, "记录与测试 · LLMChat", 930.0, 760.0)
 }
 
 #[tauri::command]

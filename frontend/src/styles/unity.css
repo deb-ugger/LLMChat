@@ -2825,6 +2825,15 @@ body.ocr-image-resizing * {
 .game-benchmark-page-header { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .game-benchmark-page-header h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .game-benchmark-page-header p { margin: 0; }
+.game-benchmark-module { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.game-benchmark-module[hidden] { display: none; }
+.game-benchmark-module > .app-help-view { height: auto; }
+.game-benchmark-module-status { flex: 1; margin: var(--page-inset); }
+.game-benchmark-game {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  flex: 1; min-height: 0; min-width: 0;
+}
+.game-benchmark-game > .game-benchmark-page-header { padding-block: 8px; }
 .game-benchmark-scroll { min-height: 0; overflow: auto; }
 .game-text-benchmark { display: grid; gap: var(--space-3); max-width: var(--content-max); padding: var(--page-inset); margin-inline: auto; }
 .game-text-benchmark .hint { margin: 0; max-inline-size: 76ch; }

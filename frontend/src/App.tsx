@@ -4,7 +4,7 @@ import { SystemPerfBar } from "./components/SystemPerfBar";
 import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
 import { openProjectBenchmark } from "./gameBenchmarkWindow";
 import { ApplicationHelpPage } from "./components/GameWorkflowHelp";
-import { BuildSpeedTest } from "./components/BuildSpeedTest";
+import { openGameTextBenchmark } from "./components/GameTextBenchmarkDialog";
 import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
@@ -56,7 +56,7 @@ const pageLabels = {
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
-type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance" | "benchmark"> | "buildSpeed";
+type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance" | "benchmark">;
 const navigation: readonly Exclude<NavigationItem, "downloads" | "help" | "appearance">[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "stats", "benchmark", "settings"],
@@ -65,7 +65,7 @@ const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
-    <DeferredPanel active={active} label={feature === "buildSpeed" ? "构建测速" : pageLabels[feature]}>{children}</DeferredPanel>
+    <DeferredPanel active={active} label={pageLabels[feature]}>{children}</DeferredPanel>
   </div>;
 }
 
@@ -102,34 +102,10 @@ function AppearanceButton() {
   </>;
 }
 
-function TestQueueButton({ railHidden, onOpen, selected }: {
-  railHidden: boolean; onOpen: () => void; selected: boolean;
-}) {
-  return <button type="button" className={selected ? "nav-item active" : "nav-item"}
-    aria-label={pageLabels.benchmark} data-tooltip={pageLabels.benchmark} aria-current={selected ? "page" : undefined}
-    onClick={() => { if (!railHidden) onOpen(); }}><FeatureIcon feature="benchmark" size={20} /><span>{pageLabels.benchmark}</span></button>;
-}
-
 export default function App() {
   useEffect(attachBenchmarkRunner, []);
-  useEffect(() => {
-    if (typeof BroadcastChannel === "undefined") return;
-    const channel = new BroadcastChannel("llmchat-run-records");
-    const receive = (event: MessageEvent) => { if (event.data?.type === "open-build-speed") setPage("buildSpeed"); };
-    channel.addEventListener("message", receive);
-    return () => { channel.removeEventListener("message", receive); channel.close(); };
-  }, []);
   const [page, setPage] = useState<Page>("chat");
   const helpReturnPage = useRef<Exclude<Page, "help">>("chat");
-  const [openGameQueue, setOpenGameQueue] = useState(false);
-  useEffect(() => {
-    if (!openGameQueue || page !== "unity") return;
-    const frame = requestAnimationFrame(() => {
-      setOpenGameQueue(false);
-      if (!openProjectBenchmark()) showAppNotice("请先打开游戏翻译工程", "error");
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [openGameQueue, page]);
   const [outputExpanded, setOutputExpanded] = useState(false);
   const startupInteracted = useRef(false);
 
@@ -451,14 +427,17 @@ export default function App() {
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>
-          {group.map(id => id === "benchmark" ? <TestQueueButton key={id} railHidden={navRailHidden} selected={page === "buildSpeed"}
-              onOpen={() => { setOpenGameQueue(true); setPage("unity"); }} /> : (
+          {group.map(id => (
             <button key={id} type="button" className={(id === "output" ? outputExpanded : page === id) ? "nav-item active" : "nav-item"}
               aria-current={page === id ? "page" : undefined} aria-label={pageLabels[id]} data-tooltip={pageLabels[id]}
               aria-expanded={id === "output" ? outputExpanded : undefined}
               aria-controls={id === "output" && outputExpanded ? "app-output-drawer" : undefined}
               onClick={() => {
                 if (id === "output") { setOutputExpanded(expanded => !expanded); return; }
+                if (id === "benchmark") {
+                  if (!openProjectBenchmark()) openGameTextBenchmark();
+                  return;
+                }
                 if (id === "settings" || id === "chat") setSettingsInitialTab(undefined);
                 setPage(id);
               }}>
@@ -599,7 +578,6 @@ export default function App() {
           /></PagePanel>
         <PagePanel feature="stats" active={page === "stats"}><StatsView active={page === "stats"} /></PagePanel>
         <PagePanel feature="help" active={page === "help"}><ApplicationHelpPage onBack={() => setPage(helpReturnPage.current)} /></PagePanel>
-        <PagePanel feature="buildSpeed" active={page === "buildSpeed"}><BuildSpeedTest /></PagePanel>
         <PagePanel feature="settings" active={page === "settings"}><SettingsView
             settings={settings}
             onSave={onSaveSettings}

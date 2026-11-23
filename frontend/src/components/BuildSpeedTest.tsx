@@ -106,7 +106,7 @@ function measurementsDetail(row: Measurement) {
   return row.dirty === undefined ? "" : "重编 " + row.dirty + " 项 · 复用 " + (row.fresh ?? "—") + " 项";
 }
 
-export function BuildSpeedTest() {
+export function BuildSpeedTest({ onRunningChange }: { onRunningChange?: (running: boolean) => void }) {
   const [selection, setSelection] = useState<TestId[]>(() => {
     const saved = readList(selectionKey);
     return saved ? testIds.filter(id => saved.includes(id)) : [...testIds];
@@ -127,19 +127,23 @@ export function BuildSpeedTest() {
 
   async function start() {
     if (progress || !selection.length) return;
+    onRunningChange?.(true);
     setError("");
     setProgress(progressLabel("waiting"));
-    const channel = new Channel<string>();
-    channel.onmessage = phase => setProgress(progressLabel(phase));
     try {
+      const channel = new Channel<string>();
+      channel.onmessage = phase => setProgress(progressLabel(phase));
       const measurements = await invoke<Measurement[]>("run_build_speed_test", { progress: channel, tests: selection });
       setResult(measurements);
       localStorage.setItem(resultKey, JSON.stringify(measurements));
     } catch (cause) { setError(String(cause)); }
-    finally { setProgress(""); }
+    finally {
+      setProgress("");
+      onRunningChange?.(false);
+    }
   }
 
-  return <main className="game-workflow-help app-help-view" aria-label="构建测速">
+  return <section className="game-workflow-help app-help-view" aria-label="构建测速">
     <header className="game-workflow-help-header">
       <h1>构建测速</h1>
       <button type="button" className="unity-btn unity-btn-primary" disabled={!canRun || !!progress || !selection.length}
@@ -187,5 +191,5 @@ export function BuildSpeedTest() {
         </table>
       </section>}
     </div>
-  </main>;
+  </section>;
 }

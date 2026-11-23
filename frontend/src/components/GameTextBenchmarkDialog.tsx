@@ -1,3 +1,4 @@
+import { BuildSpeedTest } from "./BuildSpeedTest";
 import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { readMosaicTaskPlan } from "../benchmark/benchmarkTaskPlan";
@@ -7,7 +8,7 @@ import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -39,8 +40,6 @@ type BenchmarkPageInput = BenchmarkSetup & {
   enqueue: (request: BenchmarkRequest | BenchmarkRequest[]) => Promise<unknown>;
   control: (kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument) => Promise<unknown>;
   snapshot: BenchmarkSnapshot;
-  onClose: () => void;
-  channel?: BroadcastChannel;
 };
 type QueueDraft = { configs: BenchmarkConfig[]; rounds: string; sampleLimit: number; sampleSetPath?: string; useSampleSet?: boolean };
 const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
@@ -50,7 +49,7 @@ const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
   imageSetup: input.images?.setup, ...benchmarkSampleCounts(input),
 });
 const openEvent = "llmchat-open-game-benchmark";
-export function openGameTextBenchmark(input: BenchmarkInput) {
+export function openGameTextBenchmark(input?: BenchmarkInput) {
   window.dispatchEvent(new CustomEvent(openEvent, { detail: input }));
 }
 
@@ -74,19 +73,45 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
   if (kind === "benchmark-cleanup") return benchmarkRunner.cleanup();
 }
 
-function LocalGameBenchmark({ input, onClose }: { input: BenchmarkInput; onClose: () => void }) {
+function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, browser = false }: {
+  gameView?: ReactNode; gameStatus?: string; onClose: () => void;
+  onBuildRunning?: (running: boolean) => void; browser?: boolean;
+}) {
+  const [module, setModule] = useState<"game" | "build">("game");
+  const tabId = useId();
+  const page = <main className={"game-benchmark-page" + (browser ? " game-benchmark-browser-fallback" : "")}>
+    <header className="game-benchmark-page-header"><h2>记录与测试</h2>
+      <div className="game-benchmark-tabs" role="tablist" aria-label="测试模块">
+        <button type="button" role="tab" id={tabId + "-game"} aria-controls={tabId + "-game-panel"}
+          aria-selected={module === "game"} onClick={() => setModule("game")}>游戏翻译</button>
+        <button type="button" role="tab" id={tabId + "-build"} aria-controls={tabId + "-build-panel"}
+          aria-selected={module === "build"} onClick={() => setModule("build")}>构建测速</button>
+      </div>
+      {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
+    </header>
+    <div className="game-benchmark-module" id={tabId + "-game-panel"} role="tabpanel"
+      aria-labelledby={tabId + "-game"} hidden={module !== "game"}>
+      {gameView ?? <p className="game-benchmark-module-status hint" role="status">{gameStatus || "请先打开游戏翻译工程。"}</p>}
+    </div>
+    <div className="game-benchmark-module" id={tabId + "-build-panel"} role="tabpanel"
+      aria-labelledby={tabId + "-build"} hidden={module !== "build"}>
+      <BuildSpeedTest onRunningChange={onBuildRunning} />
+    </div>
+  </main>;
+  return browser ? createPortal(page, document.body) : page;
+}
+
+function LocalGameBenchmark({ input }: { input: BenchmarkInput }) {
   const snapshot = useSyncExternalStore(benchmarkRunner.subscribe, benchmarkRunner.snapshot);
   const setup = useMemo(() => setupFor(input), [input]);
   return <GameBenchmarkPage {...setup} snapshot={snapshot}
     requestSelection={async () => input.getWorkload().selected}
     enqueue={async request => benchmarkRunner.enqueue(input, request)}
-    control={async (kind, data) => controlQueue(kind, data, input)} onClose={() => {
-      void benchmarkRunner.cleanup().then(onClose).catch(error => showAppNotice(String(error), "error"));
-    }} />;
+    control={async (kind, data) => controlQueue(kind, data, input)} />;
 }
 
 export function GameTextBenchmarkHost() {
-  const [local, setLocal] = useState<BenchmarkInput>();
+  const [local, setLocal] = useState<{ input?: BenchmarkInput }>();
   useEffect(() => {
     let active: BenchmarkInput | undefined;
     const restore = (input: BenchmarkInput) => {
@@ -97,10 +122,10 @@ export function GameTextBenchmarkHost() {
     };
     if (!isTauri()) {
       const open = (event: Event) => {
-        const input = (event as CustomEvent<BenchmarkInput>).detail;
-        active = input;
-        setLocal(input);
-        restore(input);
+        const input = (event as CustomEvent<BenchmarkInput | null>).detail;
+        active = input ?? active;
+        setLocal({ input: active });
+        if (input) restore(input);
       };
       window.addEventListener(openEvent, open);
       return () => { active = undefined; window.removeEventListener(openEvent, open); };
@@ -110,12 +135,13 @@ export function GameTextBenchmarkHost() {
     const open = (event: Event) => {
       if (opening) return;
       const previous = active;
-      const input = (event as CustomEvent<BenchmarkInput>).detail;
+      const requested = (event as CustomEvent<BenchmarkInput | null>).detail;
+      const input = requested ?? active;
       active = input;
       opening = invoke<boolean>("open_game_benchmark_window").then(created => {
         if (active !== input) return;
-        if (!created) channel.postMessage({ type: "refresh-setup", setup: setupFor(input), snapshot: benchmarkRunner.snapshot() });
-        restore(input);
+        if (!created) channel.postMessage({ type: "refresh-setup", setup: input && setupFor(input), snapshot: benchmarkRunner.snapshot() });
+        if (requested) restore(requested);
       }).catch(error => {
         active = previous;
         showAppNotice("打开测试队列失败：" + String(error), "error");
@@ -126,14 +152,14 @@ export function GameTextBenchmarkHost() {
       if (message?.type !== "request") return;
       try {
         let value: unknown = true;
-        if (message.kind === "benchmark-snapshot") value = benchmarkRunner.snapshot();
+        if (message.kind === "setup") value = active && setupFor(active);
+        else if (message.kind === "benchmark-snapshot") value = benchmarkRunner.snapshot();
         else if (typeof message.kind === "string" && message.kind.startsWith("benchmark-") &&
             message.kind !== "benchmark-enqueue" && message.kind !== "benchmark-continue-batch")
           value = await controlQueue(message.kind, message.data);
         else {
           if (!active) throw new Error("测试队列没有关联的游戏工程");
           if (message.kind === "benchmark-continue-batch") value = await controlQueue(message.kind, message.data, active);
-          else if (message.kind === "setup") value = setupFor(active);
           else if (message.kind === "selection") value = active.getWorkload().selected;
           else if (message.kind === "benchmark-enqueue") value = await benchmarkRunner.enqueue(active, message.data);
           else throw new Error("未知的测试队列请求");
@@ -150,17 +176,23 @@ export function GameTextBenchmarkHost() {
     window.addEventListener(openEvent, open);
     return () => { active = undefined; unsubscribe(); window.removeEventListener(openEvent, open); channel.close(); };
   }, []);
-  return local ? <LocalGameBenchmark key={local.scope} input={local} onClose={() => setLocal(undefined)} /> : null;
+  if (!local) return null;
+  const close = () => void benchmarkRunner.cleanup().then(() => setLocal(undefined))
+    .catch(error => showAppNotice(String(error), "error"));
+  return <RecordsAndTestsPage browser onClose={close}
+    gameView={local.input && <LocalGameBenchmark key={local.input.scope} input={local.input} />} />;
 }
 
 export function GameTextBenchmarkWindow() {
-  const [page, setPage] = useState<{ setup: BenchmarkSetup; channel: BroadcastChannel }>();
+  const [page, setPage] = useState<{ setup?: BenchmarkSetup; channel: BroadcastChannel }>();
   const [snapshot, setSnapshot] = useState(emptyBenchmarkSnapshot);
   const [error, setError] = useState("");
   const closing = useRef<"idle" | "checking" | "allowed">("idle");
   const connection = useRef<BroadcastChannel | null>(null);
+  const building = useRef(false);
   const close = useCallback(async () => {
     if (closing.current !== "idle") return;
+    if (building.current) { showAppNotice("构建测速正在运行，完成后可关闭"); return; }
     closing.current = "checking";
     try {
       if (connection.current) await requestBenchmarkWindow(connection.current, "benchmark-cleanup");
@@ -193,7 +225,7 @@ export function GameTextBenchmarkWindow() {
     });
     void unlisten.catch(error => showAppNotice(String(error), "error"));
     void Promise.all([
-      requestBenchmarkWindow<BenchmarkSetup>(channel, "setup"),
+      requestBenchmarkWindow<BenchmarkSetup | undefined>(channel, "setup"),
       requestBenchmarkWindow<BenchmarkSnapshot>(channel, "benchmark-snapshot"),
     ]).then(([setup, state]) => {
       if (active) { receiveSnapshot(state); setPage({ setup, channel }); }
@@ -205,12 +237,13 @@ export function GameTextBenchmarkWindow() {
       void unlisten.then(remove => remove()).catch(console.error);
     };
   }, [close]);
-  if (!page) return <main className="game-benchmark-page"><p role="status">{error || "正在读取测试队列…"}</p>
-    <button type="button" className="unity-btn" onClick={() => void close()}>关闭</button></main>;
-  return <GameBenchmarkPage key={page.setup.scope} {...page.setup} channel={page.channel} snapshot={snapshot}
-    requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
-    enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
-    control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} onClose={() => void close()} />;
+  const closeWindow = () => void close();
+  return <RecordsAndTestsPage onClose={closeWindow} onBuildRunning={value => { building.current = value; }}
+    gameStatus={error || (!page ? "正在读取游戏测试记录…" : undefined)}
+    gameView={page?.setup && <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
+      requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
+      enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
+      control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />} />;
 }
 
 
@@ -896,7 +929,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfi
 }
 
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
-  requestSelection, imageSetup, mosaicSetup, mosaicRoot, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, control, queueContents, archive, recordMode, onRecordModeChange, taskView, taskDialogs }:
+  requestSelection, imageSetup, mosaicSetup, mosaicRoot, imageCounts, mosaicCounts, selectedCount, models, snapshot, control, queueContents, archive, recordMode, onRecordModeChange, taskView, taskDialogs }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
     targetControls: ReactNode; queueContents: ReactNode; archive: ReturnType<typeof useBenchmarkArchive>; recordMode: RunRecordMode;
     onRecordModeChange: (mode: RunRecordMode) => void; taskView: ReactNode; taskDialogs: ReactNode }) {
@@ -1100,19 +1133,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。"
     : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。"
     : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。";
-  const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
-    <header className="game-benchmark-page-header"><h2>记录与测试</h2>
-      <div className="game-benchmark-tabs" role="tablist" aria-label="测试模块">
-        <button type="button" role="tab" aria-selected="true">游戏翻译</button>
-        <button type="button" role="tab" aria-selected="false" onClick={() => {
-          const channel = new BroadcastChannel("llmchat-run-records");
-          channel.postMessage({ type: "open-build-speed" });
-          channel.close();
-        }}>构建测速</button>
-      </div>
+  return <section className={"game-benchmark-game" + (running ? " is-running" : "")}>
+    <div className="game-benchmark-page-header">
       <RunRecordTabs mode={recordMode} onChange={onRecordModeChange} />
-      {!channel && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
-    </header>
+    </div>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {recordMode === "test" && !taskView && <div className="game-benchmark-runbar">
         <div className="game-benchmark-scope" role="region" aria-label="测试范围" aria-description={scopeDescription}>
@@ -1321,6 +1345,5 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </>}
     </div></div>
     {taskDialogs}
-  </main>;
-  return channel ? page : createPortal(page, document.body);
+  </section>;
 }
