@@ -1,3 +1,5 @@
+import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
+import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { requestGameModelJson } from "../gameModelRequest";
@@ -121,6 +123,7 @@ function WorkflowElapsed({ elapsed, origin }: { elapsed: number; origin?: number
 
 export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function UnityOfflineView({ active, game, settings, onBusyChange, onInstallationChange, toolbarTarget }, ref) {
   const root = game?.gameDir || "";
+  const mosaicDirty = useHasMosaicDrafts(root);
   const [output, setOutput] = useState("");
   const [project, setProject] = useState<UnityProject | null>(null);
   const [deploymentPlanState, setDeploymentPlanState] = useState<{ root: string; plan: DeploymentPlan }>();
@@ -1776,6 +1779,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (isBenchmarkRunning() || !root || locked || deploymentController.current || running.current || mosaicBusy ||
         action !== "automatic" && action !== "export" && deploymentPlan.disabled.includes(action)) return;
     const automatic = action === "automatic";
+    if (hasMosaicDrafts(root) && (automatic || action === "mosaic" || action === "export")) {
+      showAppNotice("请先点击右上角保存去码修改");
+      return;
+    }
     if (automatic && deploymentValidation.issues.length) {
       setActionError(deploymentValidation.issues.join("。"));
       return;
@@ -2202,7 +2209,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         disconnected: deploymentPage ? deploymentValidation.disconnected.map(id => deploymentStageId[id]) : undefined }}
       toolbar={toolbarTarget ? { target: toolbarTarget,
         saveTitle: importPreview ? "请先应用或取消导入预览" : "保存当前工程的参数、文本和图片修改",
-        saveDisabled: !project || !dirty || saving || !!busy || restoring || !!importPreview, save: () => void saveUserChanges(),
+        saveDisabled: !project || (!dirty && !mosaicDirty) || saving || !!busy || restoring || !!importPreview,
+        save: () => void (async () => {
+          if (dirty && !await saveUserChanges()) return;
+          try {
+            if (saveMosaicDrafts(root)) showAppNotice("已保存图片去码修改");
+          } catch (cause) { showAppNotice(cause instanceof Error ? cause.message : "无法保存图片去码修改", "error"); }
+        })(),
       } : undefined}
       mosaic={mosaicMounted ? { controlsRef: setMosaicControls, scanReady,
         hasImages: !!project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0),

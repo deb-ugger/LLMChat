@@ -19,8 +19,6 @@ export function resultFor(rows: Results, image: UnityImage) {
 }
 
 export function restoreDefaultSelection(row: Result): Result {
-  const boxes = removeContainedMosaicBoxes(row.boxes);
-  if (boxes !== row.boxes) row = { ...row, boxes };
   if (!row.review && row.manualChecked && !row.manualBoxes && !row.saved && row.refineMovement?.to === "review")
     row = { ...row, review: "候选区域待复核" };
   if (row.checked || row.manualChecked || row.manualBoxes || row.saved || row.discardedHash || row.refined || row.refineError)

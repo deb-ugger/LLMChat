@@ -1,3 +1,4 @@
+import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
@@ -117,6 +118,7 @@ async function call<T>(action: string, body?: unknown): Promise<T> {
 }
 export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, settings, active = true }: { settings: Settings; onBack: () => void; initialGame: EmbeddingGame; onGameDrop: (path: string) => void; active?: boolean }) {
   const { textSource, imageProject, imageExport, selfMosaic, thirdPartyMosaic, runtimeDictionary, backupScopes: availableBackupScopes } = embeddingCapabilities(game);
+  const mosaicDirty = useHasMosaicDrafts(game.path);
   const [hasLooseLocres, setHasLooseLocres] = useState(game.textSupported === true);
   const [checkingTextSource, setCheckingTextSource] = useState(false);
   const needsLooseLocres = textSource === "locres" && !hasLooseLocres;
@@ -523,6 +525,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
 
   const runAutomatic = async () => {
+    if (hasMosaicDrafts(game.path)) { showAppNotice("请先点击右上角保存去码修改"); return; }
     if (isBenchmarkRunning() || deploymentAbort.current || busy || validation.issues.length || !await confirmInstalledPatch()) return;
     if (canUseTextResources && !await textHandle.current?.leave()) return;
     if (imageProject && !plan.disabled.includes("image") && !await imageHandle.current?.prepare()) return;
@@ -639,6 +642,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     if (!imageExport) recordImageArtifact("images", ids);
   }));
   const generateMosaic = () => {
+    if (hasMosaicDrafts(game.path)) { showAppNotice("请先点击右上角保存去码修改"); return; }
     if (imageExport || !mosaicHandle.current?.selectedIds().length) { selectWorkflow("2.3"); return; }
     void runDeployment("manual", async (step, signal) => { await step("generateMosaic", () => prepareMosaic(signal)); });
   };
@@ -658,6 +662,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     if (launchAfterApply && !signal.aborted) await launchGame();
   });
   const applyMosaic = async (undo = false) => {
+    if (hasMosaicDrafts(game.path)) { showAppNotice("请先点击右上角保存去码修改"); return; }
     const ids = artifacts.mosaic?.ids ?? (undo ? mosaicHandle.current?.selectedIds() : undefined);
     if (!ids?.length || !await confirm(`请关闭游戏后继续。将处理 ${ids.length} 张去码图。`, {
       title: undo ? "卸载去码图" : "应用去码图",
@@ -1010,10 +1015,11 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   return <div className="json-embedding-view" onClickCapture={event => logGameButton(event, appendLog)} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const file=event.dataTransfer.files[0] as (File&{path?:string})|undefined;const raw=file?.path||event.dataTransfer.getData("text/uri-list").split(/\r?\n/).find(line=>!line.startsWith("#"));if(raw)void dropped(raw.startsWith("file://")?decodeURIComponent(raw.replace(/^file:\/\/\/?/,"")):raw);}}>{confirmation.dialog}
     <main className="embed-workspace embed-unity-workspace" data-workflow-part={part}>
       <header className="embed-game-header"><IconAction name="back" label="返回游戏列表" disabled={busy} onClick={()=>{const change=()=>void textHandle.current?.leave().then(ok=>{if(ok)onBack();});if(imageLeaveGuard.current)imageLeaveGuard.current(change);else change();}}/><strong data-tooltip={game.name}>{game.name}</strong><span className="embed-engine">{game.engine}</span><button type="button" className="embed-game-location" data-tooltip={game.path} aria-label={game.path} onClick={()=>void api.revealPath(game.path).catch(e=>setError(String(e)))}>{game.path}</button><div className="unity-top-actions unity-header-icon-group" style={{marginLeft:"auto",flexShrink:0}}>
-        <UnityIconButton aria-label="保存工程" title="保存文本与图片修改" disabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} onClick={async()=>{
+        <UnityIconButton aria-label="保存工程" title="保存工程修改" disabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded || mosaicDirty)} onClick={async()=>{
           try {
             if (textInfo.dirty && !await textHandle.current?.prepare()) return;
             await imageHandle.current?.saveChanges();
+            saveMosaicDrafts(game.path);
             showAppNotice("工程已保存");
           } catch (cause) { setError(String(cause)); }
         }}><UnityActionIcon kind="save"/></UnityIconButton>
