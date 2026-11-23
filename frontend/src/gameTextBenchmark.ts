@@ -1,5 +1,6 @@
 import { configsForRound, type BenchmarkRoundPlan } from "./benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, saveImageBenchmarkDetails, type ImageBenchmarkInput, type ImageBenchmarkOutcome, type RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
+import { mosaicWallClock, type MosaicScoreFreeze } from "./benchmark/mosaicScoreInputs";
 import { mosaicBenchmarkSteps, type MosaicBenchmarkSetup, type MosaicBenchmarkStep } from "./gameMosaicBenchmark";
 import { clearMosaicReviews } from "./gameMosaicRefine";
 import { api, type Settings, type OcrMode, type TranslateProvider } from "./api";
@@ -229,7 +230,7 @@ export async function runGameTextScreenSample(config: BenchmarkConfig, selected:
 export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], rounds: number, workload: Workload, scope: string, queueId: string, signal: AbortSignal,
   report: Reporter, onStart: (round: number, config: BenchmarkConfig) => void, onProgress: (value: UnityProgress) => void,
   onResult: (result: BenchmarkResult) => void,
-  target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
+  target?: { step: string; selected: number; imageSamples?: ImageBenchmarkInput[]; scoreFreeze?: MosaicScoreFreeze; reusedImages?: () => number; run: BenchmarkStepRunner }, onSample?: (sample: string) => void,
   resumeAt = 0, sampleSetPath?: string, referenceSampleSetPath?: string, sampleLimit?: number,
   roundConfigs?: BenchmarkRoundPlan["roundConfigs"]) {
   const plan = { configs: baseConfigs, roundConfigs };
@@ -266,7 +267,12 @@ export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], roun
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
       const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === resumeAt ? { ...plan, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
+      const reusedImages = target?.reusedImages?.() ?? 0;
+      const scoreTiming = target?.scoreFreeze ? former
+        ? former.scoreTiming === mosaicWallClock && saved.elapsedMs > 0 ? mosaicWallClock : "segment-only"
+        : reusedImages ? "reused-output" : mosaicWallClock : undefined;
       const metadata = { queueId, round, rounds, configCount: configs.length, sampleLimit, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
+        scoreFreeze: target?.scoreFreeze, scoreTiming, reusedImages,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
         detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
       beginGameStep(scope, step, metadata);

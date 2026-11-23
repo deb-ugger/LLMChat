@@ -1,4 +1,6 @@
 import { readFileBytes } from "../localDocFile";
+import { sha256Hex } from "../fileFingerprint";
+import { mosaicBoxCoverage, type MosaicTruth } from "./mosaicScoreInputs";
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "../gameDisplayText";
 import type { ImageBenchmarkStep } from "../gameImageBenchmark";
 import type { MosaicBox } from "../gameMosaic";
@@ -12,7 +14,7 @@ type ExpectedText = { box: MosaicBox; text?: string; language?: string; keep?: b
   translations?: Record<string, string>; drafts?: Record<string, string> };
 type Annotation = {
   provenance?: string;
-  mosaic?: { state: Presence; boxes?: MosaicBox[]; partialBoxes?: boolean };
+  mosaic?: MosaicTruth;
   text?: { state: Presence; regions?: ExpectedText[]; initialBoxes?: MosaicBox[] };
 };
 type Manifest = { version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string };
@@ -48,7 +50,7 @@ function validBox(box: MosaicBox, { width, height }: SampleImage) {
     box[0] >= 0 && box[1] >= 0 && box[2] > box[0] && box[3] > box[1] && box[2] <= width && box[3] <= height;
 }
 
-export async function loadAnnotatedSampleSet(path: string, options?: { includeUnannotated?: boolean; preserveDuplicates?: boolean }): Promise<AnnotatedSampleSet> {
+export async function loadAnnotatedSampleSet(path: string, options?: { includeUnannotated?: boolean; preserveDuplicates?: boolean; verifyContent?: boolean }): Promise<AnnotatedSampleSet> {
   const absolute = path.replaceAll("\\", "/");
   const directory = absolute.slice(0, absolute.lastIndexOf("/") + 1);
   if (!directory) throw new Error("请选择样本集的 manifest.json");
@@ -78,6 +80,13 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
     const annotation = saved || {};
     const { mosaic, text } = annotation;
     const states = [mosaic?.state, text?.state].filter(state => state !== undefined);
+    if (mosaic && (!states.includes(mosaic.state) || (mosaic.boxes !== undefined && !Array.isArray(mosaic.boxes)) ||
+        (mosaic.partialBoxes !== undefined && typeof mosaic.partialBoxes !== "boolean") ||
+        (mosaic.boxCoverage !== undefined && mosaic.boxCoverage !== "complete" && mosaic.boxCoverage !== "partial") ||
+        (mosaic.state === "none" && !!mosaic.boxes?.length) ||
+        (mosaic.boxCoverage === "complete" && (mosaic.partialBoxes === true || mosaic.state === "uncertain" ||
+          (mosaic.state === "present" && !mosaic.boxes?.length)))))
+      throw new Error("样本标注完整性与真值不一致：" + item.path);
     const boxes = [...(mosaic?.boxes ?? []), ...(text?.initialBoxes ?? []), ...(text?.regions ?? []).map(region => region.box)];
     if (states.some(state => state !== "present" && state !== "none" && state !== "uncertain") ||
         !boxes.every(box => validBox(box, item)))
@@ -94,6 +103,7 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
       signal.throwIfAborted();
       if (!pngId.test(image.sourceHash)) throw new Error("标注样本编号无效");
       const data = await readFileBytes(directory + "images/" + image.sourceHash + ".png");
+      if (options?.verifyContent && await sha256Hex(data) !== image.sourceHash) throw new Error("样本内容与冻结哈希不一致：" + image.file);
       signal.throwIfAborted();
       return new Blob([data], { type: "image/png" });
     },
@@ -182,7 +192,7 @@ export function mosaicBoxScore(rows: Iterable<readonly [Annotation, MosaicBox[]]
     const count = compareBoxes(expected,predicted).length;
     matched += count;
     expectedCount += expected.length;
-    if (!mosaic?.partialBoxes) {
+    if (mosaic && mosaicBoxCoverage(mosaic) === "complete") {
       extra += predicted.length - count;
       fullSamples++;
     }
