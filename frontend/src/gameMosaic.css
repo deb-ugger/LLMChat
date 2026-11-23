@@ -232,8 +232,15 @@
 .game-mosaic-stage > svg:not(.is-editing) { pointer-events: none; }
 .game-mosaic-stage > svg.is-editing { cursor: crosshair; touch-action: none; }
 .game-mosaic-mask { fill: color-mix(in srgb, var(--danger) 25%, transparent); stroke: var(--danger); stroke-width: 2; }
+.game-mosaic-mask.is-clickable { pointer-events: all; cursor: pointer; touch-action: none; }
 .game-mosaic-mask.is-selected { fill: color-mix(in srgb, var(--accent) 40%, transparent); stroke: var(--accent); stroke-width: 3; }
 .game-mosaic-mask-selection { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
+.game-mosaic-resize-edge { stroke: transparent; stroke-width: 10px; pointer-events: stroke; touch-action: none; }
+.game-mosaic-resize-corner { stroke: var(--accent); stroke-width: 8px; stroke-linecap: round; pointer-events: stroke; touch-action: none; }
+[data-mosaic-resize="n"], [data-mosaic-resize="s"] { cursor: ns-resize; }
+[data-mosaic-resize="e"], [data-mosaic-resize="w"] { cursor: ew-resize; }
+[data-mosaic-resize="nw"], [data-mosaic-resize="se"] { cursor: nwse-resize; }
+[data-mosaic-resize="ne"], [data-mosaic-resize="sw"] { cursor: nesw-resize; }
 .game-mosaic-progress, .game-mosaic-error { margin: 0; font-size: var(--fs-body); }
 .game-mosaic-progress { color: var(--text-muted); overflow-wrap: anywhere; }
 .game-mosaic-status-group.has-error > details > summary > span:first-child,

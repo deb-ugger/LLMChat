@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { mosaicModelLabels, type MosaicModel } from "../../gameMosaic";
+import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
 import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageViews } from "../GameImageViewer";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
 
-function MosaicOriginalCanvas({ width, editing, children }: { width: number; editing: boolean; children: ReactNode }) {
+function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
+  width: number; editing: boolean; onBackground: () => void; children: ReactNode;
+}) {
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const surface = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -42,7 +44,9 @@ function MosaicOriginalCanvas({ width, editing, children }: { width: number; edi
     <div ref={stage} className={"unity-image-stage game-mosaic-stage" + (!editing && view.zoom > 1 ? " is-pannable" : "")}
       style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom }}
       onPointerDown={event => {
-        if (editing || view.zoom <= 1 || event.button !== 0 || !event.isPrimary) return;
+        if (editing || event.button !== 0 || !event.isPrimary || (event.target as Element).closest("svg")) return;
+        onBackground();
+        if (view.zoom <= 1) return;
         const scale = event.currentTarget.currentCSSZoom;
         pan.current = { pointer: event.pointerId, x: event.clientX / scale - view.x, y: event.clientY / scale - view.y };
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -57,6 +61,23 @@ function MosaicOriginalCanvas({ width, editing, children }: { width: number; edi
       {children}
     </div>
   </div>;
+}
+
+function MaskResizeControls({ box }: { box: MosaicBox }) {
+  const [left, top, right, bottom] = box;
+  const sides = [
+    ["n", left, top, right, top], ["s", left, bottom, right, bottom],
+    ["w", left, top, left, bottom], ["e", right, top, right, bottom],
+  ] as const;
+  const corners = [
+    ["nw", left, top], ["ne", right, top], ["sw", left, bottom], ["se", right, bottom],
+  ] as const;
+  return <g aria-hidden="true">
+    {sides.map(([edge, x1, y1, x2, y2]) => <line key={edge} data-mosaic-resize={edge}
+      className="game-mosaic-resize-edge" x1={x1} y1={y1} x2={x2} y2={y2} vectorEffect="non-scaling-stroke" />)}
+    {corners.map(([edge, x, y]) => <line key={edge} data-mosaic-resize={edge}
+      className="game-mosaic-resize-corner" x1={x} y1={y} x2={x + .01} y2={y} vectorEffect="non-scaling-stroke" />)}
+  </g>;
 }
 
 function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
@@ -83,8 +104,9 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
   onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
-  const { tool, draft, activeBoxes, selection, hasSelection } = masks;
+  const { tool, draft, resizing, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
+  const canSelectMask = !actionsDisabled && tool !== "add";
   const previews = useRef<HTMLDivElement>(null);
   const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
   const [viewer, setViewer] = useState<{ title: string; views: GameImageViews; initialIndex: number } | null>(null);
@@ -208,18 +230,29 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             if (!(event.target as Element).closest("button, input, textarea, select")) event.currentTarget.focus({ preventScroll: true });
           }} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
           <div className="game-mosaic-original-viewport">
-            {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}>
+            {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}
+              onBackground={() => masks.selectBox(undefined, false)}>
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
               <svg viewBox={`0 0 ${active.width} ${active.height}`} className={editing ? "is-editing" : undefined}
                 aria-label="去码蒙版" onPointerDown={masks.onPointerDown} onPointerMove={masks.onPointerMove}
                 onPointerUp={masks.onPointerUp} onPointerCancel={masks.onPointerCancel} onLostPointerCapture={masks.onPointerCancel}>
                 {activeBoxes.map((box, index) => {
-                  const [left, top, right, bottom] = box;
+                  const [left, top, right, bottom] = resizing?.original === box ? resizing.box : box;
+                  const selected = selection.has(box);
                   return <rect key={index} x={left} y={top} width={right - left} height={bottom - top}
-                    className={selection.has(box) ? "game-mosaic-mask is-selected" : "game-mosaic-mask"} vectorEffect="non-scaling-stroke" />;
+                    className={`game-mosaic-mask${selected ? " is-selected" : ""}${canSelectMask ? " is-clickable" : ""}`}
+                    data-mosaic-box={index} vectorEffect="non-scaling-stroke"
+                    role={canSelectMask ? "button" : undefined} tabIndex={canSelectMask ? 0 : undefined}
+                    aria-label={canSelectMask ? `蒙版 ${index + 1}` : undefined} aria-pressed={canSelectMask ? selected : undefined}
+                    onKeyDown={event => {
+                      if (!canSelectMask || (event.key !== "Enter" && event.key !== " ")) return;
+                      event.preventDefault();
+                      masks.selectBox(box, event.ctrlKey || event.metaKey);
+                    }} />;
                 })}
                 {draft && <rect x={draft[0]} y={draft[1]} width={draft[2] - draft[0]} height={draft[3] - draft[1]}
                   className={tool === "select" ? "game-mosaic-mask-selection" : "game-mosaic-mask"} vectorEffect="non-scaling-stroke" />}
+                {canSelectMask && resizeTarget && <MaskResizeControls box={resizing?.box ?? resizeTarget} />}
               </svg>
             </MosaicOriginalCanvas> : original?.error
               ? <p className="game-mosaic-error" role="alert">{original.error}</p>
