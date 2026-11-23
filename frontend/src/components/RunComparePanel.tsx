@@ -2,8 +2,12 @@ import * as echarts from "echarts/core";
 import { BarChart, HeatmapChart, ScatterChart } from "echarts/charts";
 import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { memo, useEffect, useId, useMemo, useRef, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { compareMosaicTaskWithDataset, downloadMosaicTaskReport, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
+import { groupBenchmarkTasks, readGameBenchmarkHistory } from "../gameTextBenchmark";
+import { gameDuration } from "../gameModelPerformance";
+import type { GameBenchmarkReviewSetup } from "../gameAuxWindows";
+import { showAppNotice } from "./AppNotice";
 import { useChartColors, type ChartColors } from "./chartTheme";
 import {
   buildConcurrencyHeatmap,
@@ -61,26 +65,61 @@ function tooltipStyle(colors: ChartColors) {
   };
 }
 
-export const RunComparePanel = memo(function RunComparePanel({
-  runs, loading, qualityError, itemUnit, onClose,
+export function BenchmarkReviewWindow({ setup, onClose }: { setup: GameBenchmarkReviewSetup; onClose: () => void }) {
+  const { queueId, scope, step } = setup;
+  const [runs, setRuns] = useState<readonly BenchmarkCompareRun[]>();
+  const [report, setReport] = useState<MosaicTaskReport>();
+  const [loadingReport, setLoadingReport] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [qualityError, setQualityError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const records = await readGameBenchmarkHistory(scope, step);
+      if (!active) return;
+      const task = groupBenchmarkTasks(records).find(item => item.id === queueId);
+      if (!task) throw new Error("找不到该测试任务的记录");
+      setRuns(task.runs);
+      const metadata = task.runs[0].performance.benchmark;
+      const path = metadata?.referenceSampleSetPath ?? metadata?.sampleSetPath;
+      if (typeof path !== "string" || (step !== "mosaicScreen" && step !== "mosaicRefine")) return;
+      setLoadingReport(true);
+      try {
+        const results = await compareMosaicTaskWithDataset(queueId, task.runs, path);
+        if (!active) return;
+        const qualityByRun = new Map(results.totals.map(row => [row.runId, row]));
+        setRuns(task.runs.map(run => ({ ...run, quality: qualityByRun.get(run.performance.taskId ?? "") })));
+        setReport(results);
+      } catch (error) {
+        if (active) setQualityError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (active) setLoadingReport(false);
+      }
+    })().catch(error => {
+      if (active) setLoadError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { active = false; };
+  }, [queueId, scope, step]);
+  if (!runs) return <main className="game-aux-loading">
+    <p role={loadError ? "alert" : "status"}>{loadError || "正在读取测试记录…"}</p>
+    <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
+  </main>;
+  return <RunComparePanel label={setup.label} runs={runs} report={report} loading={loadingReport}
+    qualityError={qualityError} itemUnit={setup.itemUnit} onClose={onClose} />;
+}
+
+const RunComparePanel = memo(function RunComparePanel({
+  label, runs, report, loading, qualityError, itemUnit, onClose,
 }: {
+  label: string;
   runs: readonly BenchmarkCompareRun[];
+  report?: MosaicTaskReport;
   loading?: boolean;
   qualityError?: string;
   itemUnit: "条" | "张";
   onClose: () => void;
 }) {
   const titleId = useId();
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = dialogRef.current!;
-    const previous = document.activeElement;
-    dialog.showModal();
-    return () => {
-      dialog.close();
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
   const colors = useChartColors();
   const scatterRef = useRef<HTMLDivElement | null>(null);
   const heatRef = useRef<HTMLDivElement | null>(null);
@@ -224,18 +263,31 @@ export const RunComparePanel = memo(function RunComparePanel({
     .filter((summary) => summary.f1 != null)
     .sort((a, b) => (b.f1 ?? 0) - (a.f1 ?? 0))[0];
 
-  return createPortal(
-    <dialog ref={dialogRef} className="game-benchmark-compare" aria-labelledby={titleId}
-      onCancel={event => { event.preventDefault(); onClose(); }}>
+  return <main className="game-benchmark-compare" aria-labelledby={titleId}>
       <header className="game-benchmark-compare-head">
-        <h2 id={titleId}>模型比较</h2>
+        <h2 id={titleId}>{label}</h2>
         <span className="hint">
           共 {runs.length} 次运行
           {best?.f1 != null && ` · 最高 F1 ${(best.f1 * 100).toFixed(1)}%${best.model ? `（${best.model}）` : ""}`}
         </span>
-        <button type="button" className="unity-btn" autoFocus onClick={onClose}>关闭比较</button>
+        {report && <button type="button" className="unity-btn" onClick={() => void downloadMosaicTaskReport(report)
+          .catch(error => showAppNotice(String(error), "error"))}>下载 Excel</button>}
+        <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
       </header>
       <div className="game-benchmark-compare-grid">
+        {report && <section className="game-benchmark-compare-card is-wide" aria-label="数据集对照总结">
+          <header><strong>数据集对照总结</strong><span>{report.title}</span></header>
+          <p className="hint">未确认样本独立计数，定位框按 IoU ≥ 0.5 一对一匹配。</p>
+          <div className="game-benchmark-compare-table"><table>
+            <thead><tr><th>配置</th><th>轮次</th><th>漏检</th><th>误报</th><th>待复核</th>
+              <th>匹配框 / 人工框</th><th>多余框</th><th>未确认判有码</th><th>用时</th></tr></thead>
+            <tbody>{report.totals.map((row, index) => <tr key={row.runId ?? index}>
+              <td>{row.label}</td><td>{row.round}</td><td>{row.fn}</td><td>{row.fp}</td><td>{row.review}</td>
+              <td>{row.foundBoxes} / {row.expectedBoxes}</td><td>{row.extraBoxes}</td>
+              <td>{row.unlabelledPositive}</td><td>{gameDuration(row.seconds * 1000)}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </section>}
         <section className="game-benchmark-compare-card is-wide" aria-label="质量与用时">
           <header>
             <strong>质量与用时</strong>
@@ -257,7 +309,5 @@ export const RunComparePanel = memo(function RunComparePanel({
             : <p className="hint">此记录没有分阶段耗时。</p>}
         </section>
       </div>
-    </dialog>,
-    document.body,
-  );
+    </main>;
 });

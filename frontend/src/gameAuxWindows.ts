@@ -3,13 +3,18 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { GameTestConfiguration, GameTestConfigurationAccess, SavedGameTestConfiguration } from "./gameModelPreset";
 
-export type GameAuxKind = "help" | "configuration";
+export type GameAuxKind = "help" | "configuration" | "benchmark-review";
 export type GameHelpSetup = { kind: "help"; mode: "unity-offline" | "unity-runtime" | "embedded"; supportsImages: boolean };
 export type GameConfigurationSetup = {
   kind: "configuration"; scope: string; models: string[]; current: GameTestConfiguration; initialPart: "text" | "images";
 };
-export type GameAuxSetup = (GameHelpSetup | GameConfigurationSetup) & { session: string };
+export type GameBenchmarkReviewSetup = {
+  kind: "benchmark-review"; queueId: string; scope?: string; step?: string; label: string; itemUnit: "条" | "张";
+};
+export type GameAuxOpenSetup = GameHelpSetup | GameConfigurationSetup | GameBenchmarkReviewSetup;
+export type GameAuxSetup = GameAuxOpenSetup & { session: string };
 export type GameAuxRequest = { action: "setup"; kind: GameAuxKind } |
+  { action: "open-benchmark-review"; setup: GameBenchmarkReviewSetup } |
   { action: "capture"; session: string } | { action: "apply"; session: string; row: SavedGameTestConfiguration };
 
 export const gameAuxOpenEvent = "llmchat:open-game-aux";
@@ -33,10 +38,21 @@ export function currentGameAuxWindow(): GameAuxKind | undefined {
   const label = isTauri() ? getCurrentWindow().label : new URLSearchParams(window.location.search).get("game-window");
   if (label === "game-help") return "help";
   if (label === "game-configuration") return "configuration";
+  if (label === "game-benchmark-review") return "benchmark-review";
 }
 
-export function openGameAuxWindow(setup: GameConfigurationSetup | GameHelpSetup) {
+export function openGameAuxWindow(setup: GameAuxOpenSetup) {
   window.dispatchEvent(new CustomEvent(gameAuxOpenEvent, { detail: setup }));
+}
+
+export async function openBenchmarkReview(setup: GameBenchmarkReviewSetup) {
+  if (!isTauri()) {
+    openGameAuxWindow(setup);
+    return;
+  }
+  const channel = new BroadcastChannel(gameAuxChannel);
+  try { await requestGameAux(channel, { action: "open-benchmark-review", setup }); }
+  finally { channel.close(); }
 }
 
 export function requestGameAux<T>(channel: BroadcastChannel, request: GameAuxRequest, timeout = 15000) {

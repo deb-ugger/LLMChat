@@ -3024,11 +3024,6 @@ body.ocr-image-resizing * {
 .game-benchmark-record-parameters div { display: flex; gap: var(--space-1); }
 .game-benchmark-record-parameters dt { color: var(--text-muted); }
 .game-benchmark-record-parameters dd { margin: 0; }
-.game-action-confirm.game-benchmark-report-dialog { width: min(1100px, calc(100vw - 32px)); max-width: none; }
-.game-benchmark-report-dialog .game-confirm-details { max-height: min(55dvh, 560px); background: var(--bg-panel); }
-.game-benchmark-report-dialog table { width: 100%; border-collapse: collapse; }
-.game-benchmark-report-dialog :is(th, td) { padding: 6px 8px; text-align: start; border-bottom: 1px solid var(--border); }
-.game-benchmark-report-dialog th { white-space: nowrap; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
 @media (900px <= width < 1400px) {
   .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
@@ -3157,20 +3152,24 @@ body.ocr-image-resizing * {
 /* 立即开始任务：推到测试配置卡头右侧，和运行条的主按钮区分开。 */
 .game-benchmark-start-here { margin-inline-start: auto; white-space: nowrap; }
 
-/* 散点图占整行，比较对话框独立于运行记录的滚动区。 */
+/* 测试对照窗口的操作留在顶部，表格和图表可独立滚动。 */
 .game-benchmark-compare {
   box-sizing: border-box;
-  inline-size: min(1400px, calc(100% - 2 * var(--page-inset)));
-  max-block-size: calc(100dvh - 2 * var(--page-inset));
+  inline-size: 100%;
+  block-size: 100dvh;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-3);
   padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
   background: var(--bg-panel);
   color: var(--text);
-  overflow: auto;
 }
-.game-benchmark-compare[open] { display: grid; gap: var(--space-3); }
-.game-benchmark-compare::backdrop { background: rgb(0 0 0 / 42%); }
+.game-benchmark-compare-table { max-height: min(45dvh, 440px); overflow: auto; }
+.game-benchmark-compare-table table { width: 100%; border-collapse: collapse; }
+.game-benchmark-compare-table :is(th, td) { padding: 6px 8px; text-align: start; border-bottom: 1px solid var(--border); }
+.game-benchmark-compare-table thead { position: sticky; top: 0; background: var(--bg-panel); }
+.game-benchmark-compare-table th { white-space: nowrap; }
 .game-benchmark-compare-head {
   display: flex;
   align-items: center;
@@ -3182,6 +3181,10 @@ body.ocr-image-resizing * {
 .game-benchmark-compare-head > button:last-child { margin-inline-start: auto; }
 .game-benchmark-compare-grid {
   display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
   gap: var(--space-3);
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }

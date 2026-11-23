@@ -304,6 +304,7 @@ mod window_frame {
 const BENCHMARK_WINDOW: &str = "game-benchmark";
 const GAME_HELP_WINDOW: &str = "game-help";
 const GAME_CONFIGURATION_WINDOW: &str = "game-configuration";
+const GAME_BENCHMARK_REVIEW_WINDOW: &str = "game-benchmark-review";
 static WEBVIEW_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_WRITE: Mutex<()> = Mutex::new(());
@@ -471,6 +472,7 @@ async fn open_game_aux_window(webview: tauri::Webview, kind: String) -> Result<b
     match kind.as_str() {
         "help" => open_game_window(webview, GAME_HELP_WINDOW, "游戏翻译流程 · LLMChat", 760.0, 730.0),
         "configuration" => open_game_window(webview, GAME_CONFIGURATION_WINDOW, "测试配置 · LLMChat", 980.0, 740.0),
+        "benchmark-review" => open_game_window(webview, GAME_BENCHMARK_REVIEW_WINDOW, "测试结果对照 · LLMChat", 1180.0, 800.0),
         _ => Err("未知的游戏翻译窗口".into()),
     }
 }
@@ -718,7 +720,7 @@ async fn finish_app_close(webview: tauri::Webview) -> Result<(), String> {
         return Err("只允许主窗口退出应用".into());
     }
     let _ = runtime_log("shutdown-native-begin", &format!("window={}; frontend close guards accepted", window.label()));
-    for label in [BENCHMARK_WINDOW, GAME_HELP_WINDOW, GAME_CONFIGURATION_WINDOW] {
+    for label in [BENCHMARK_WINDOW, GAME_HELP_WINDOW, GAME_CONFIGURATION_WINDOW, GAME_BENCHMARK_REVIEW_WINDOW] {
         if let Some(child) = window.app_handle().get_webview_window(label) {
             child.destroy().map_err(|error| error.to_string())?;
         }
