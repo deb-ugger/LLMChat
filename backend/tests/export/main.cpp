@@ -505,7 +505,7 @@ void normalTransactions(const fs::path& scratch) {
         check(tx::recover(data.dir, data.game()) == tx::Recovery::Applied, "applied receipt checkpoint");
         data.noPartials();
         std::cout << "PASS T072 A " << engine << " target payload hashes and non-target tree\n";
-        requireError("ALREADY_APPLIED", "T072 B repeat apply", [&] { tx::apply(data.dir, data.game()); });
+        check(tx::apply(data.dir, data.game()).at("alreadyApplied") == true, "T072 B repeat apply is now idempotent");
         check(fileTree(data.game()) == data.installed, "B repeated apply unchanged");
         requireError("PACKAGE_IN_USE", "T072 remove active package", [&] { tx::remove(data.dir); });
 
@@ -852,9 +852,82 @@ void baselineMarkerCases(const fs::path& scratch) {
         "rollback kept the post-text tree and cleaned the plan");
 }
 
+void completeTransitions(const fs::path& scratch) {
+    Exported data(scratch / "t093-transitions", "wolf");
+    const auto first = tx::apply(data.dir, data.game());
+    const auto packaged = fileTree(data.dir);
+    const auto expectedBytes = [&] {
+        uint64_t size = 0;
+        for (const auto& file : fs::recursive_directory_iterator(data.dir))
+            if (file.is_regular_file()) size += file.file_size();
+        return size;
+    }();
+    check(tx::packageBytes(data.dir) == expectedBytes, "package byte count");
+    const auto repeat = tx::apply(data.dir, data.game());
+    check(repeat.at("alreadyApplied") == true && repeat.at("transactionId") == first.at("transactionId") &&
+        fileTree(data.dir) == packaged && fileTree(data.game()) == data.installed, "idempotent apply preserves receipt and backup");
+
+    auto target = utf8path::pathFromUtf8(first.at("files").at(0).at("relativePath").get<std::string>());
+    auto current = gamefiles::read(data.game() / target);
+    auto corrupt = current;
+    corrupt.back() ^= 1;
+    gamefiles::write(data.game() / target, corrupt);
+    requireError("TARGET_CHANGED", "T093 already-applied target changed", [&] { tx::apply(data.dir, data.game()); });
+    gamefiles::write(data.game() / target, current);
+
+    check(tx::restore(data.dir, data.game(), std::vector<std::string>{"mosaic"}).at("state") ==
+        "partiallyRestored", "partial restore");
+    const auto reapply = tx::apply(data.dir, data.game());
+    check(reapply.at("alreadyApplied") == false && reapply.at("state") == "applied" &&
+        reapply.at("transactionId") == first.at("transactionId") && fileTree(data.game()) == data.installed &&
+        fileTree(data.dir) == packaged, "reapply writes only restored files and retains the transaction");
+
+    requireError("WRITE_FAILED", "T093 restore-before-remove rollback", [&] {
+        tx::restoreAndRemove(data.dir, data.game(), {{[&](tx::ApplyPhase phase, size_t index) {
+            if (phase == tx::ApplyPhase::BeforeReplace && index == 0) {
+                check(fileTree(data.game()) != data.installed, "fault is after the first restored file");
+                throw Error("WRITE_FAILED", "fixture interrupted restore");
+            }
+        }}});
+    });
+    check(fileTree(data.game()) == data.installed && fileTree(data.dir) == packaged, "failure kept package and applied tree");
+    const auto removal = tx::restoreAndRemove(data.dir, data.game());
+    check(removal.at("restored") == true && removal.at("removed") == true &&
+        fileTree(data.game()) == data.original && !tx::packageBytes(data.dir), "restore-delete commits original tree and package absence");
+    std::cout << "PASS T093 A/B/C/D package size, replay, drift, scoped replay and atomic restore-delete\n";
+}
+
+void cancelTransitions(const fs::path& scratch) {
+    Exported data(scratch / "t093-cancel", "wolf");
+    const tx::ApplyControl early{{[](tx::ApplyPhase phase, size_t) {
+        if (phase == tx::ApplyPhase::BeginMutation) throw Error("CANCELLED", "fixture cancelled before first write");
+    }}};
+    requireError("CANCELLED", "T093 E early apply", [&] { tx::apply(data.dir, data.game(), early); });
+    check(fileTree(data.game()) == data.original && fs::is_empty(data.dir / "receipts"), "early apply kept original bytes");
+
+    bool applyLate = false;
+    auto applied = tx::apply(data.dir, data.game(), {{[&](tx::ApplyPhase phase, size_t) {
+        if (phase == tx::ApplyPhase::BeforeReceipt) applyLate = true;
+    }}});
+    check(applyLate && applied.at("state") == "applied" && fileTree(data.game()) == data.installed,
+        "late apply request still commits every file and receipt");
+    requireError("CANCELLED", "T093 E early restore", [&] { tx::restore(data.dir, data.game(), std::nullopt, early); });
+    check(fileTree(data.game()) == data.installed, "early restore left applied state untouched");
+
+    bool restoreLate = false;
+    auto restored = tx::restore(data.dir, data.game(), std::nullopt, {{[&](tx::ApplyPhase phase, size_t) {
+        if (phase == tx::ApplyPhase::BeforeReceipt) restoreLate = true;
+    }}});
+    check(restoreLate && restored.at("state") == "restored" && fileTree(data.game()) == data.original,
+        "late restore request still commits every file and receipt");
+    std::cout << "PASS T093 E apply and restore boundary integrity\n";
+}
+
 void transactionCases(const fs::path& scratch) {
     normalTransactions(scratch);
     baselineMarkerCases(scratch);
+    completeTransitions(scratch);
+    cancelTransitions(scratch);
     transactionManifestErrors(scratch);
     transactionFaults(scratch);
     interrupted(scratch);

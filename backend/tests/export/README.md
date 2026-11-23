@@ -78,3 +78,14 @@ PASS game image export fixtures
 ## T088 文本补丁与成品包基准
 
 同一测试程序用上述命令运行 T088。对 MV 和 MZ 先生成成品包，再用现有文本补丁安装函数写入 System.json，记录此时的整树 SHA-256。验证应用前置校验通过、收据包含 BASELINE_MARKER_CHANGED、恢复和删除后游戏树回到安装文本补丁之后。另覆盖手工改 gameTitle、基准变化后改动一个目标字节，以及基准变化后的故障回滚。
+
+## T093 成品包操作
+
+定向库夹具核对实际文件字节数、重复应用不重写收据和备份、部分恢复后只补写缺失文件、目标漂移、恢复中段失败的回滚，以及应用和恢复两个取消边界。HTTP 夹具第三个参数是隔离的检查点服务器。它复用生产路由和事务，让测试能确定地停在首次替换前、两次替换之间和最后提交收据前。
+
+```powershell
+cmake -S backend/tests/export -B "$scratch/export" -A x64
+cmake --build "$scratch/export" --config Release
+& "$scratch/export/Release/game-image-export-tests.exe" "$scratch/library-fixture"
+node backend/tests/http/export-http.mjs "$scratch/backend/Release/llmchat-backend.exe" "$scratch/http-fixtures" "$scratch/export/Release/game-image-export-http-fixture.exe"
+```

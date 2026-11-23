@@ -5,11 +5,12 @@
 
 namespace gameimageexport::transaction {
 
-enum class ApplyPhase { BeforeReplace, BeforeReceipt, BeforeReceiptPublish };
+enum class ApplyPhase { BeforeReplace, BeforeReceipt, BeforeReceiptPublish, BeginMutation, CommitReceipt };
 
 struct ApplyControl {
     // Called synchronously. Throwing aborts the operation and triggers rollback.
     std::function<void(ApplyPhase, size_t)> checkpoint;
+    std::function<bool()> cancelRequested;
 };
 
 enum class Recovery { Clean, Applied, RolledBack, Restored, PartiallyRestored };
@@ -17,11 +18,12 @@ enum class Recovery { Clean, Applied, RolledBack, Restored, PartiallyRestored };
 using RestoreKinds = std::optional<std::vector<std::string>>;
 
 // Errors are reported as gameimageexport::Error, with a stable code and detail.
-void apply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+nlohmann::json apply(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
     const ApplyControl& control = {});
 nlohmann::json restore(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
-    const RestoreKinds& kinds = std::nullopt);
-Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot);
+    const RestoreKinds& kinds = std::nullopt, const ApplyControl& control = {});
+Recovery recover(const std::filesystem::path& packageDir, const std::filesystem::path& gameRoot,
+    const ApplyControl& control = {});
 
 struct PackageStatus {
     nlohmann::json receipt = nullptr;
@@ -41,5 +43,8 @@ PackageStatus inspect(const std::filesystem::path& packageDir, const std::filesy
 
 // Active and interrupted packages must be restored/recovered first.
 void remove(const std::filesystem::path& packageDir);
+nlohmann::json restoreAndRemove(const std::filesystem::path& packageDir,
+    const std::optional<std::filesystem::path>& gameRoot, const ApplyControl& control = {});
+std::optional<uint64_t> packageBytes(const std::filesystem::path& packageDir);
 
 } // namespace gameimageexport::transaction
