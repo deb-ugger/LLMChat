@@ -9,16 +9,16 @@ export function logGameButton(event: MouseEvent<HTMLElement>, output: (text: str
   // filters and menus change the view, not the project or its progress.
   if (label && /^(?:(?:开始|继续|恢复|中止|停止)(?:筛选|识别|翻译|扫描|处理|读取|断行|一键流程).*|中止|停止|重新(?:筛选|识别|翻译|扫描|生成译图).*|清理(?:译文|图片|缓存).*|重做(?:翻译|断行|图片处理|此步)|跳过剩余.*|生成补丁|应用(?:到游戏|译图)|卸载(?:补丁|译图)|安装(?:翻译插件|插件框架)|保存(?:修改|导入|工程|图片与译文修改)?|取消(?:修改|当前修改|导入)|下载(?:全部|筛选内容)|(?:识别|翻译)(?:图片|所选|所选图片|当前图片)?|重绘|替换(?:译图)?)$/.test(label)) output(`操作：${label}`);
 }
-export function GameDialog({ title, description, onCancel, disabled = false, children, details, className }: {
-  title: string; description: string; onCancel: () => void; disabled?: boolean; children: ReactNode; details?: ReactNode; className?: string;
+export function GameDialog({ title, description, onCancel, disabled = false, dismissible = true, children, details, className }: {
+  title: string; description: string; onCancel?: () => void; disabled?: boolean; dismissible?: boolean; children: ReactNode; details?: ReactNode; className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null), id = useId();
   const actions = Children.toArray(children);
   const isCancel = (node: ReactNode) => isValidElement<{ className?: string }>(node) && node.props.className?.split(/\s+/).includes("game-confirm-cancel") ? 1 : 0;
   actions.sort((a, b) => isCancel(a) - isCancel(b));
   useEffect(() => { const previous = document.activeElement; const el = ref.current!; el.showModal(); return () => { el.close(); if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); }; }, []);
-  return createPortal(<dialog ref={ref} className={className ? `game-action-confirm ${className}` : "game-action-confirm"} aria-labelledby={id} aria-describedby={`${id}-body`} onCancel={event => { event.preventDefault(); if (!disabled) onCancel(); }}>
-    <header><h2 id={id}>{title}</h2><button type="button" className="game-confirm-close" aria-label="关闭提示" disabled={disabled} onClick={onCancel}>×</button></header>
+  return createPortal(<dialog ref={ref} className={className ? `game-action-confirm ${className}` : "game-action-confirm"} aria-labelledby={id} aria-describedby={`${id}-body`} onCancel={event => { event.preventDefault(); if (dismissible && !disabled) onCancel?.(); }}>
+    <header><h2 id={id}>{title}</h2>{dismissible && <button type="button" className="game-confirm-close" aria-label="关闭提示" disabled={disabled} onClick={onCancel}>×</button>}</header>
     <p id={`${id}-body`}>{description}</p>{details && <section className="game-confirm-details">{details}</section>}
     <footer>{actions}</footer>
   </dialog>, document.body);

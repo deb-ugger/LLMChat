@@ -3058,3 +3058,18 @@ body.ocr-image-resizing * {
 .game-step-metrics-arrow::before { content: "▾"; }
 .game-step-running-metrics[open] .game-step-metrics-arrow::before { content: "▴"; }
 .game-step-running-metrics[open] > .game-flow-model-list { padding-block-start: var(--space-2); }
+
+.game-benchmark-show-section { align-content: start; }
+.game-benchmark-show-head, .game-benchmark-show-actions, .game-benchmark-show-decision footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.game-benchmark-show-head { justify-content: space-between; }
+.game-benchmark-show-head p { margin: var(--space-1) 0 0; color: var(--text-muted); }
+.game-benchmark-show-actions button { white-space: nowrap; }
+.game-benchmark-show-open[aria-pressed="true"] { border-color: var(--accent); }
+.game-benchmark-show-parameters { margin-block: var(--space-1); }
+.game-benchmark-show-executed { flex: none; font-size: var(--fs-caption); }
+.game-benchmark-show-decision footer { justify-content: flex-end; }

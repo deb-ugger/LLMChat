@@ -2,16 +2,16 @@ import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchm
 import { readMosaicTaskPlan } from "../benchmark/benchmarkTaskPlan";
 import { compareMosaicTaskWithDataset, downloadMosaicTaskReport, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
-import { ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
+import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { benchmarkChannelName, benchmarkHistoryForRecords, requestBenchmarkWindow, type BenchmarkQueueArgument, type BenchmarkQueueCommand } from "../gameBenchmarkWindow";
-import { benchmarkRunner, benchmarkSampleCounts, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, type BenchmarkInput, type BenchmarkRequest, type BenchmarkSnapshot } from "../benchmark/benchmarkRunner";
+import { benchmarkRunner, benchmarkSampleCounts, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, canEditBenchmarkTask, type BenchmarkInput, type BenchmarkJob, type BenchmarkRequest, type BenchmarkSnapshot, type BenchmarkTaskConfig, type BenchmarkTaskDecision } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
 import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
 import { gameDuration, modelConcurrency, modelServiceTimingLines } from "../gameModelPerformance";
@@ -22,6 +22,7 @@ import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { StepRunningMetrics } from "./GameFlowSequence";
 import { showAppNotice } from "./AppNotice";
+import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type BenchmarkSetup = Pick<BenchmarkInput, "scope" | "current" | "models" | "screenModel" | "initialPart"> & {
@@ -48,8 +49,15 @@ export function openGameTextBenchmark(input: BenchmarkInput) {
 }
 
 function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument, input?: BenchmarkInput) {
-  if (kind === "benchmark-continue-batch" && data && typeof data !== "string" && input)
+  if (kind === "benchmark-continue-batch" && data && typeof data !== "string" && "queueId" in data && input)
     return benchmarkRunner.continueArchivedBatch(input, data);
+  if (kind === "benchmark-show-task" && typeof data === "string") return benchmarkRunner.showTask(data);
+  if (kind === "benchmark-hide-task" && typeof data === "string") return benchmarkRunner.hideTask(data);
+  if (kind === "benchmark-release-task" && typeof data === "string") return benchmarkRunner.releaseTask(data);
+  if (data && typeof data !== "string" && "taskId" in data) {
+    if (kind === "benchmark-decide-task" && "decision" in data) return benchmarkRunner.decideTask(data.taskId, data.decision, data.configs);
+    if (kind === "benchmark-save-task" && data.configs) return benchmarkRunner.saveTask(data.taskId, data.configs);
+  }
   if (kind === "benchmark-restart" && typeof data === "string") return benchmarkRunner.restart(data);
   if (kind === "benchmark-start" && typeof data === "string") benchmarkRunner.start(data);
   if (kind === "benchmark-stop" && typeof data === "string") benchmarkRunner.stop(data);
@@ -110,9 +118,9 @@ export function GameTextBenchmarkHost() {
       try {
         let value: unknown = true;
         if (message.kind === "benchmark-snapshot") value = benchmarkRunner.snapshot();
-        else if (message.kind === "benchmark-start" || message.kind === "benchmark-stop" ||
-            message.kind === "benchmark-remove" || message.kind === "benchmark-cleanup" || message.kind === "benchmark-restart")
-          await controlQueue(message.kind, message.data);
+        else if (typeof message.kind === "string" && message.kind.startsWith("benchmark-") &&
+            message.kind !== "benchmark-enqueue" && message.kind !== "benchmark-continue-batch")
+          value = await controlQueue(message.kind, message.data);
         else {
           if (!active) throw new Error("测试队列没有关联的游戏工程");
           if (message.kind === "benchmark-continue-batch") value = await controlQueue(message.kind, message.data, active);
@@ -282,8 +290,100 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const queue = jobs.filter(job => job.status !== "完成" && (job.status !== "失败" || !job.progress?.total));
   const control = (kind: BenchmarkQueueCommand, id: string) =>
     void props.control(kind, id).catch(error => showAppNotice(String(error), "error"));
+  const [taskDraft, setTaskDraft] = useState<{ id: string; parameters: BenchmarkTaskConfig; configs: BenchmarkConfig[] }>();
+  const [taskAction, setTaskAction] = useState(false);
+  const actionRef = useRef(false);
+  const viewerSession = useRef<{ id?: string; control: BenchmarkPageInput["control"]; mounted: boolean }>({ control: props.control, mounted: true });
+  viewerSession.current.control = props.control;
+  const discard = useGameActionConfirm();
+  const showingTaskId = taskDraft?.id;
+  const shownJob = showingTaskId ? jobs.find(job => job.id === showingTaskId) : undefined;
+  const dirty = useMemo(() => !!taskDraft &&
+    JSON.stringify(taskDraft.configs) !== JSON.stringify(taskDraft.parameters.configs), [taskDraft]);
+  const canSave = !!shownJob && canEditBenchmarkTask(shownJob) && dirty;
+  const blocking = !!shownJob && props.snapshot.blockedTaskId === shownJob.id;
+  const canDefer = jobs.some(job => job.id !== showingTaskId && (job.status === "等待" || job.status === "待开始"));
+  useEffect(() => {
+    const session = viewerSession.current;
+    session.mounted = true;
+    return () => {
+      session.mounted = false;
+      if (session.id) void session.control("benchmark-release-task", session.id).catch(console.error);
+    };
+  }, []);
+  useEffect(() => {
+    if (showingTaskId && !shownJob) {
+      viewerSession.current.id = undefined;
+      setTaskDraft(undefined);
+    }
+  }, [showingTaskId, shownJob]);
+  const actOnTask = async (action: () => Promise<void>) => {
+    if (actionRef.current) return;
+    actionRef.current = true;
+    setTaskAction(true);
+    try { await action(); }
+    catch (error) { showAppNotice(error instanceof Error ? error.message : String(error), "error"); }
+    finally {
+      actionRef.current = false;
+      if (viewerSession.current.mounted) setTaskAction(false);
+    }
+  };
+  const allowDiscard = () => !dirty || discard.confirm("此任务的配置尚未保存，确定丢弃修改？",
+    { title: "退出显示", okLabel: "丢弃并退出", cancelLabel: "继续编辑" });
+  const showTask = async (id: string) => {
+    if (actionRef.current || id === showingTaskId || !await allowDiscard()) return;
+    await actOnTask(async () => {
+      const parameters = await props.control("benchmark-show-task", id) as BenchmarkTaskConfig;
+      if (!viewerSession.current.mounted) {
+        await props.control("benchmark-release-task", id);
+        return;
+      }
+      viewerSession.current.id = id;
+      setTaskDraft({ id, parameters, configs: structuredClone(parameters.configs) });
+    });
+  };
+  const exitTask = async () => {
+    if (actionRef.current || !showingTaskId || !await allowDiscard()) return;
+    await actOnTask(async () => {
+      await props.control("benchmark-hide-task", showingTaskId);
+      viewerSession.current.id = undefined;
+      setTaskDraft(undefined);
+    });
+  };
+  const setTaskConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>> = action => setTaskDraft(previous =>
+    previous && { ...previous, configs: typeof action === "function" ? action(previous.configs) : action });
+  const acknowledgeSave = (configs: BenchmarkConfig[]) => setTaskDraft(previous => previous && {
+    ...previous, parameters: { ...previous.parameters, configs: structuredClone(configs) }, configs,
+  });
+  const saveTask = () => void actOnTask(async () => {
+    if (!taskDraft || !canSave) return;
+    await props.control("benchmark-save-task", { taskId: taskDraft.id, configs: taskDraft.configs });
+    acknowledgeSave(taskDraft.configs);
+    showAppNotice("任务配置已保存");
+  });
+  const decide = (decision: BenchmarkTaskDecision) => void actOnTask(async () => {
+    if (!taskDraft) return;
+    const configs = decision === "run" && dirty ? taskDraft.configs : undefined;
+    await props.control("benchmark-decide-task", { taskId: taskDraft.id, decision, configs });
+    if (decision === "run") acknowledgeSave(taskDraft.configs.filter(config => config.enabled !== false));
+  });
+  const taskView = shownJob && taskDraft && <BenchmarkTaskView key={shownJob.id} job={shownJob} number={queue.indexOf(shownJob) + 1}
+    parameters={taskDraft.parameters} configs={taskDraft.configs} setConfigs={setTaskConfigs} models={props.models}
+    saving={taskAction} stopping={stopping} canSave={canSave} onSave={saveTask} onExit={exitTask}
+    onStop={() => control("benchmark-stop", shownJob.id)} />;
+  const taskDialogs = <>
+    {discard.dialog}
+    {blocking && <GameDialog title="任务已轮到" description={shownJob.label + "。请选择如何继续队列。"}
+      dismissible={false} disabled={taskAction} className="game-benchmark-show-decision">
+      <button type="button" className="game-confirm-primary" autoFocus disabled={taskAction} onClick={() => decide("run")}>保存并运行</button>
+      <button type="button" className="game-confirm-accept" disabled={taskAction} onClick={() => decide("stop")}>中止队列</button>
+      <button type="button" className="unity-btn" disabled={taskAction || !canDefer}
+        title={canDefer ? undefined : "队列中没有其他待开始的任务"} onClick={() => decide("defer")}>当前任务后移</button>
+    </GameDialog>}
+  </>;
   return <GameTextBenchmarkDialog key={step} {...props} step={step} draft={drafts.current[step]}
     onDraft={draft => { drafts.current[step] = draft; }} historyRevision={historyRevision}
+    taskView={taskView} taskDialogs={taskDialogs}
     queueContents={<div className="game-benchmark-results">
       {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
       {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
@@ -312,7 +412,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
               {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
               <div className="hint" title={progress?.detail}>
-                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (formalBusy ? formalBlockingReason : "等待前一任务") :
+                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (props.snapshot.blockedTaskId === job.id ? "等待启动确认" : formalBusy ? formalBlockingReason : "等待前一任务") :
                   job.status === "失败" ? progress?.detail : progress &&
                   <>{job.status === "运行中" ? progress.sample || phase : statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
                     {progress.failed > 0 && " · 失败 " + progress.failed}</>}
@@ -325,6 +425,8 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
                   queue={{ position: index + 1, ahead: job.status === "运行中" ? 0 : undefined, startedTime: job.startedTime }} />}
             </div>
           </div>
+          <button type="button" className="unity-btn game-benchmark-show-open" aria-pressed={showingTaskId === job.id}
+            disabled={taskAction} onClick={() => showTask(job.id)}>显示</button>
           {job.status === "运行中" &&
             <button type="button" className="unity-btn" disabled={stopping} onClick={() => control("benchmark-stop", job.id)}>中止任务</button>}
           {(job.status === "待开始" || job.status === "已暂停") &&
@@ -332,9 +434,10 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
               onClick={() => control("benchmark-start", job.id)}>
               {job.status === "已暂停" ? "继续任务" : "开始任务"}</button>}
           {job.status === "已暂停" &&
-            <button type="button" className="unity-btn" data-tooltip="新建任务，从零重跑"
+            <button type="button" className="unity-btn" disabled={showingTaskId === job.id} data-tooltip="新建任务，从零重跑"
               onClick={() => control("benchmark-restart", job.id)}>从头运行</button>}
-          {job.status !== "运行中" && <button type="button" className="unity-btn" data-tooltip="移出队列，保留测试记录"
+          {job.status !== "运行中" && <button type="button" className="unity-btn" disabled={showingTaskId === job.id}
+            data-tooltip={showingTaskId === job.id ? "请先退出显示" : "移出队列，保留测试记录"}
             onClick={() => control("benchmark-remove", job.id)}>移除</button>}
         </div>;
       })}
@@ -357,10 +460,230 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
 }
 
 
+function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started = new Set<string>(), expanded, toggleConfig,
+  images, engines, models, currentProgress, latestRunByConfig, samplePreview, onEdited, refineFilter, guardFilter }: {
+  step: Target; configs: BenchmarkConfig[]; setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>;
+  readOnly: boolean; started?: ReadonlySet<string>; expanded: ReadonlySet<string>; toggleConfig: (id: string, open: boolean) => void;
+  images?: ImageBenchmarkSetup; engines?: BenchmarkConfig["engines"]; models: string[]; currentProgress?: BenchmarkJob["progress"];
+  latestRunByConfig?: ReadonlyMap<string, { run: BenchmarkResult }>; samplePreview?: Record<string, BenchmarkSample>;
+  onEdited?: (id: string) => void;
+  refineFilter: ReturnType<typeof usePersistedModelFilter>; guardFilter: ReturnType<typeof usePersistedModelFilter>;
+}) {
+  const mosaicStep = isMosaicStep(step) ? step : undefined;
+  const imageStep = !mosaicStep && step !== "screen" && step !== "translate" ? step as ImageBenchmarkStep : undefined;
+  const mainRole = imageStep ? imageBenchmarkSteps[imageStep].role : "textScreen";
+  const roles = step === "translate" ? benchmarkRoles : ["text"] as const;
+  const requiresModel = step === "review";
+  const localLabel = step === "translate" || step === "imageTranslate" ? "翻译引擎" : step === "render" ? "本地原位排版" : step === "recognize" ? "本地 OCR" : "本地筛选";
+  const [refineModelFilter, setRefineModelFilter] = refineFilter;
+  const [refineGuardFilter, setRefineGuardFilter] = guardFilter;
+  const update = (id: string, change: (config: BenchmarkConfig) => BenchmarkConfig) => {
+    if (readOnly || started.has(id)) return;
+    setConfigs(previous => previous.map(config => config.id === id ? change(config) : config));
+    onEdited?.(id);
+  };
+  const changeMosaic = (id: string, patch: Partial<NonNullable<BenchmarkConfig["mosaic"]>>) => {
+    update(id, config => ({ ...config, mosaic: { ...config.mosaic!, ...patch } }));
+  };
+  const move = (index: number, other: number) => setConfigs(previous => {
+    if (readOnly || started.has(previous[index].id) || started.has(previous[other].id)) return previous;
+    const next = previous.slice();
+    [next[index], next[other]] = [next[other], next[index]];
+    return next;
+  });
+  return configs.map((config, index) => {
+        const lastRun = latestRunByConfig?.get(config.id)?.run;
+        const alreadyStarted = started.has(config.id);
+        const locked = readOnly || alreadyStarted;
+        const activeProgress = currentProgress?.configId === config.id ? currentProgress : undefined;
+        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "") + (activeProgress ? " is-running" : "")} open={expanded.has(config.id)}
+        onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
+        <summary>
+          {activeProgress && <span className="game-benchmark-item-live-dot" aria-hidden="true" />}
+          <span className="game-benchmark-item-badge">Q{index + 1}</span>
+          <strong>{config.label || "配置 " + (index + 1)}</strong>
+          {alreadyStarted && <span className="game-benchmark-show-executed">已执行</span>}
+          <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
+            ? (config.mosaic.detector === "grid" ? "方格规则" : "分类＋定位") + " · 并发 " + (config.mosaic.concurrency ?? 2)
+            : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
+            : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
+            : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
+          {activeProgress ? <span className="game-benchmark-item-score is-live">
+            正在跑 · {activeProgress.sampleCurrent ?? activeProgress.current}/{activeProgress.sampleTotal ?? activeProgress.total} · 用时 {gameDuration(activeProgress.configElapsedMs ?? activeProgress.elapsedMs)}
+            {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}
+          </span> : lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
+        </summary>
+        <fieldset key={locked ? "read" : "edit"} disabled={locked} className="game-benchmark-item-fields">
+        <div className="game-benchmark-toolbar">
+          <label><input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false}
+            onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} />启用</label>
+          <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label} onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
+          <button type="button" className="unity-btn" disabled={index === 0 || started.has(configs[index - 1].id)} onClick={() => move(index, index - 1)}>上移</button>
+          <button type="button" className="unity-btn" disabled={index === configs.length - 1 || started.has(configs[index + 1].id)} onClick={() => move(index, index + 1)}>下移</button>
+          <button type="button" className="unity-btn" onClick={() => setConfigs(previous => previous.filter(item => item.id !== config.id))}>移除</button>
+        </div>
+        {mosaicStep && config.mosaic && <div className="game-benchmark-toolbar">
+          {mosaicStep === "mosaicScreen" && <>
+            <label>筛选方式<select value={config.mosaic.detector} onChange={event => changeMosaic(config.id, { detector: event.target.value as MosaicSettings["detector"] })}>
+              <option value="anime">分类＋定位</option><option value="grid">方格规则</option>
+            </select></label>
+            <label>视觉补检<select value={config.mosaic.screenVisionModel || ""}
+              onChange={event => changeMosaic(config.id, { screenVisionModel: event.target.value || undefined })}>
+              <option value="">关闭</option>{[...new Set([config.mosaic.screenVisionModel, ...models])].filter((model): model is string => !!model).map(model =>
+                <option key={model} value={model}>{model}</option>)}
+            </select></label>
+            <label>并发<select value={config.mosaic.concurrency ?? 2} onChange={event => changeMosaic(config.id, { concurrency: Number(event.target.value) })}>
+              {[1, 2, 4].map(value => <option key={value}>{value}</option>)}
+            </select></label>
+          </>}
+          {mosaicStep === "mosaicRefine" && <>
+            <div className="game-mosaic-model-field">
+              <span>候选区域推理模型</span>
+              <ModelFilterSelect label="候选区域推理模型" value={config.mosaic.refineModel || "qwen3.5:latest"}
+                models={[...new Set([config.mosaic.refineModel || "qwen3.5:latest", ...models])]}
+                filter={refineModelFilter} setFilter={setRefineModelFilter} disabled={locked}
+                onChange={model => changeMosaic(config.id, { refineModel: model })} />
+            </div>
+            <div className="game-mosaic-model-field">
+              <span>纹理与漏检复核模型</span>
+              <ModelFilterSelect label="纹理与漏检复核模型" value={config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct"}
+                models={[...new Set([config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct", ...models])]}
+                filter={refineGuardFilter} setFilter={setRefineGuardFilter} disabled={locked}
+                onChange={model => changeMosaic(config.id, { refineGuardModel: model })} />
+            </div>
+            <label>并发<select value={config.mosaic.refineConcurrency ?? 1} onChange={event => changeMosaic(config.id, { refineConcurrency: Number(event.target.value) })}>
+              <option>1</option><option>2</option><option>4</option>
+            </select></label>
+          </>}
+          {mosaicStep === "mosaicRedraw" && <>
+            <label>重绘模型<select value={config.mosaic.model} onChange={event => changeMosaic(config.id,
+              { model: event.target.value as MosaicSettings["model"], steps: event.target.value === "turbo" ? 8 : 20 })}>
+              <option value="turbo">Qwen Image 2.1 Turbo</option><option value="2511">Qwen Image Edit 2511</option>
+            </select></label>
+            <label>步数<input type="number" min={1} max={100} value={config.mosaic.steps}
+              onChange={event => changeMosaic(config.id, { steps: Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)))) })} /></label>
+            <label><input type="checkbox" checked={config.mosaic.protect} onChange={event => changeMosaic(config.id, { protect: event.target.checked })} />保护已识别文字</label>
+          </>}
+        </div>}
+        {!mosaicStep && roles.filter(role => role === "text" || !!config.models.text.id).map(role => {
+          const promptRole: GamePromptScene = step === "translate" ? role : mainRole;
+          return <div className="game-benchmark-model" key={role}>
+            <label>{step === "translate" ? roleLabels[role] : "处理方式"}<select value={config.models[role].id}
+              onChange={event => update(config.id, previous => ({ ...previous, models: { ...previous.models, [role]: { ...previous.models[role], id: event.target.value } } }))}>
+              <option value="">{role !== "text" ? "跟随正文模型" : requiresModel ? "请选择模型" : localLabel}</option>
+              {[...new Set([...models, config.models[role].id].filter(Boolean))].map(model => <option key={model} value={model}>{model.split("/").at(-1)}</option>)}
+            </select></label>
+            <label>并发<select disabled={!config.models[role].id} value={config.models[role].lanes}
+              onChange={event => update(config.id, previous => ({ ...previous, models: { ...previous.models, [role]: { ...previous.models[role], lanes: Number(event.target.value) } } }))}>
+              {[1, 2, 3, 4].map(lanes => <option key={lanes} value={lanes}>{lanes}</option>)}
+            </select></label>
+            {config.models[role].id && <label>提示词<select value={config.prompts[promptRole] || "builtin:" + promptRole}
+              onChange={event => update(config.id, previous => ({ ...previous, prompts: { ...previous.prompts, [promptRole]: event.target.value } }))}>
+              {gamePromptCatalog().filter(entry => entry.scene === promptRole).map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </select></label>}
+          </div>;
+        })}
+        {(step === "filter" || step === "recognize" || step === "refine") && !config.models.text.id && <div className="game-benchmark-toolbar">
+          {step === "filter" ? <label>筛选策略<select value={config.imageStrategy || "staged"}
+            onChange={event => update(config.id, previous => ({ ...previous, imageStrategy: event.target.value as BenchmarkConfig["imageStrategy"] }))}>
+            <option value="staged">分级快速筛选</option><option value="full">完整范围筛选</option>
+          </select></label> : <label>{step === "refine" ? "本地模型" : "识别模式"}<select value={config.imageMode || (step === "refine" ? "precise" : "fast")}
+            onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.value as BenchmarkConfig["imageMode"] }))}>
+            {(step === "refine" ? LOCAL_REFINE_MODELS : OCR_MODE_OPTIONS).map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
+          </select></label>}
+          <label>本地并发<select value={config.localLanes || 1}
+            onChange={event => update(config.id, previous => ({ ...previous, localLanes: Number(event.target.value) }))}>
+            {(step === "refine" ? [1, 2, 3, 4] : [1, 2, 3, 4, 6, 8]).map(value => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+        </div>}
+        {(step === "translate" || step === "imageTranslate") && !config.models.text.id && <div className="game-benchmark-toolbar" role="group" aria-label="翻译引擎">
+          {(config.engines || images?.engines || engines || []).map(engine => <label key={engine.id}>
+            <input type="checkbox" checked={engine.enabled} onChange={event => {
+              const enabled = event.target.checked;
+              update(config.id, previous => ({ ...previous, engines: (previous.engines || images?.engines || engines || [])
+                .map(item => item.id === engine.id ? { ...item, enabled } : item) }));
+            }} />{engine.id}
+          </label>)}
+        </div>}
+        {step === "recognize" && config.models.text.id && <label className="unity-inline-check"><input type="checkbox" checked={(config.imageMode || images?.mode) === "manga"}
+          onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.checked ? "manga" : "precise" }))} />用 Manga OCR 复读日文竖排</label>}
+        {(step === "refine" || step === "recognize" && images?.confidence !== undefined) && <div className="game-benchmark-toolbar"><label>置信度阈值（%）
+          <input type="number" min={0} max={100} value={config.imageConfidence ?? (step === "refine" ? images?.refineConfidence : images?.confidence) ?? 50}
+            onChange={event => update(config.id, previous => ({ ...previous, imageConfidence: Math.min(100, Math.max(0, Number(event.target.value))) }))} />
+        </label></div>}
+        {!mosaicStep && <div className="game-benchmark-toolbar">
+          {step !== "render" && <><label>原文语言<select value={config.source} onChange={event => update(config.id, previous => ({ ...previous, source: event.target.value }))}>
+            <option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
+          </select></label>
+          <label>目标语言<select value={config.target} onChange={event => update(config.id, previous => ({ ...previous, target: event.target.value }))}>
+            {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
+          </select></label>
+          {["translate", "imageTranslate", "review", "screen"].includes(step) && <label><input type="checkbox" checked={config.skipTarget} onChange={event => update(config.id, previous => ({ ...previous, skipTarget: event.target.checked }))}/>跳过目标语言</label>}</>}
+          {step === "translate" && <><label>换行处理<select value={config.wrap} onChange={event => update(config.id, previous => ({ ...previous, wrap: event.target.value as BenchmarkConfig["wrap"] }))}>
+            <option value="keep">保留换行</option><option value="join">合并后恢复换行</option><option value="natural">大模型自然断行</option>
+          </select></label><label><input type="checkbox" checked={config.includeContext} onChange={event => update(config.id, previous => ({ ...previous, includeContext: event.target.checked }))}/>附带上下文</label></>}
+        </div>}
+        </fieldset>
+        {samplePreview?.[config.id] && <p style={{ padding: "0 12px 8px" }}>
+          共 {samplePreview?.[config.id].selected} 条 · 正文候选 {samplePreview?.[config.id].text} · 对白候选 {samplePreview?.[config.id].dialogue} · 原样保留 {samplePreview?.[config.id].retained}
+          {config.models.dialogue.id && config.models.dialogue.id !== config.models.text.id && samplePreview?.[config.id].dialogue === 0 &&
+            <strong> · 此样本测不到专用对白模型</strong>}
+        </p>}
+        </details>;
+      });
+}
+
+function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, models, saving, stopping, canSave, onSave, onExit, onStop }: {
+  job: BenchmarkJob; number: number; parameters: BenchmarkTaskConfig; configs: BenchmarkConfig[];
+  setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>; models: string[]; saving: boolean; stopping: boolean; canSave: boolean;
+  onSave: () => void; onExit: () => void; onStop: () => void;
+}) {
+  const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
+  const refineFilter = useState(defaultModelFilter);
+  const guardFilter = useState(defaultModelFilter);
+  const editing = canEditBenchmarkTask(job);
+  const running = job.status === "运行中";
+  const started = useMemo(() => new Set(job.startedConfigIds), [job.startedConfigIds]);
+  const status = job.status === "已暂停" ? "已中止" : job.status;
+  const title = "正在查看" + (number ? "任务 Q" + number : "任务") + " 的配置";
+  const template = configs[0] ?? parameters.configs[0];
+  return <BenchmarkSection title="任务测试配置" className="game-benchmark-show-section">
+    <div className="game-benchmark-show-head">
+      <div><strong>{job.label}</strong>
+        <p>{title}（{status}{!editing ? " · 只读" : ""}）</p></div>
+      <div className="game-benchmark-show-actions">
+        {running && <button type="button" className="unity-btn" disabled={stopping || saving} onClick={onStop}>中止任务</button>}
+        <button type="button" className="unity-btn" disabled={!canSave || saving} onClick={onSave}>保存</button>
+        <button type="button" className="unity-btn" disabled={saving} onClick={onExit}>退出显示</button>
+      </div>
+    </div>
+    {running && <p className="hint">任务运行中，配置不可修改，可中止后编辑未开始的任务</p>}
+    {job.status === "已暂停" && <p className="hint">可修改未开始的配置。已执行的配置保留，只读。</p>}
+    <div className="game-benchmark-toolbar game-benchmark-show-parameters">
+      <label>循环轮次 <input type="number" value={parameters.rounds} disabled /></label>
+      <span className="hint">样本上限 {parameters.sampleLimit || "不限"}</span>
+      {parameters.sampleSetPath && <span className="hint" title={parameters.sampleSetPath}>已标注样本集</span>}
+      {editing && !started.size && <button type="button" className="unity-btn" disabled={saving || !template} onClick={() => {
+        const config = { ...structuredClone(template), id: crypto.randomUUID(), label: "配置 " + (configs.length + 1), enabled: true };
+        setConfigs(previous => [...previous, config]);
+        setExpanded(previous => new Set([...previous, config.id]));
+      }}>添加配置</button>}
+    </div>
+    <BenchmarkConfigCards step={job.step} configs={configs} setConfigs={setConfigs} readOnly={!editing || saving}
+      started={started} expanded={expanded} toggleConfig={(id, open) => setExpanded(previous => {
+        if (previous.has(id) === open) return previous;
+        const next = new Set(previous);
+        if (open) next.add(id); else next.delete(id);
+        return next;
+      })} models={models} currentProgress={running ? job.progress : undefined}
+      refineFilter={refineFilter} guardFilter={guardFilter} />
+  </BenchmarkSection>;
+}
+
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
-  requestSelection, imageSetup, mosaicSetup, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, control, queueContents, historyRevision }:
+  requestSelection, imageSetup, mosaicSetup, imageCounts, mosaicCounts, selectedCount, models, onClose, channel, snapshot, control, queueContents, historyRevision, taskView, taskDialogs }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
-    targetControls: ReactNode; queueContents: ReactNode; historyRevision: number }) {
+    targetControls: ReactNode; queueContents: ReactNode; historyRevision: number; taskView: ReactNode; taskDialogs: ReactNode }) {
   const mosaicStep = isMosaicStep(step) ? step : undefined;
   const imageStep = !isMosaicStep(step) && step !== "screen" && step !== "translate" ? step : undefined;
   const images = imageStep ? imageSetup : undefined;
@@ -368,7 +691,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const mainRole = imageStep ? imageBenchmarkSteps[imageStep].role : "textScreen";
   const roles = step === "translate" ? benchmarkRoles : ["text"] as const;
   const requiresModel = step === "review";
-  const localLabel = step === "translate" || step === "imageTranslate" ? "翻译引擎" : step === "render" ? "本地原位排版" : step === "recognize" ? "本地 OCR" : "本地筛选";
+
   const key = "llmchat-game-benchmark:" + scope + (step === "translate" ? "" : ":" + step);
   const [refineModelFilter, setRefineModelFilter] = usePersistedModelFilter("mosaic:refineModel");
   const [refineGuardFilter, setRefineGuardFilter] = usePersistedModelFilter("mosaic:refineGuardModel");
@@ -490,9 +813,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     }
   };
   const sampleSettings = configs[0]?.mosaic;
-  const changeMosaic = (id: string, patch: Partial<NonNullable<BenchmarkConfig["mosaic"]>>) => {
-    update(id, config => ({ ...config, mosaic: { ...config.mosaic!, ...patch } }));
-  };
   const changeSample = (patch: Pick<Partial<NonNullable<BenchmarkConfig["mosaic"]>>, "selection">) =>
     setConfigs(previous => previous.map(config => config.mosaic ? { ...config, mosaic: { ...config.mosaic, ...patch } } : config));
   const toggleConfig = (id: string, open: boolean) => setExpanded(previous => {
@@ -519,15 +839,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     } catch (error) { showAppNotice(String(error), "error"); }
     finally { setChecking(false); }
   };
-  const update = (id: string, change: (config: BenchmarkConfig) => BenchmarkConfig) => {
-    setConfigs(previous => previous.map(config => config.id === id ? change(config) : config));
-    setSamplePreview(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => key !== id)));
-  };
-  const move = (index: number, other: number) => setConfigs(previous => {
-    const next = previous.slice();
-    [next[index], next[other]] = [next[other], next[index]];
-    return next;
-  });
   const start = async (priority: boolean) => {
     if (adding || issue) return;
     const configsSnapshot = structuredClone(enabledConfigs).map(config => ({ ...config, engines: config.engines || (imageStep ? images?.engines : current.engines) }));
@@ -565,7 +876,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const page = <main className={"game-benchmark-page" + (running ? " is-running" : "") + (channel ? "" : " game-benchmark-browser-fallback")}>
     <header className="game-benchmark-page-header"><h2>测试队列</h2></header>
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
-      <div className="game-benchmark-runbar">
+      {!taskView && <div className="game-benchmark-runbar">
         <div className="game-benchmark-scope" role="region" aria-label="测试范围">
         {targetControls}
         <p className="hint" style={{ margin: 0 }}>{sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。" : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。" : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。" : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。" : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。"}</p>
@@ -609,9 +920,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </>}
         <span role="status">{adding && "正在准备样本…"}</span>
         </div>
-      </div>
+      </div>}
       <div className="game-benchmark-columns">
-      <BenchmarkSection title="测试配置">
+      {taskView || <BenchmarkSection title="测试配置">
         <div className="game-benchmark-toolbar">
           <label>循环轮次 <input type="number" min={1} max={100} step={1} value={rounds} disabled={adding} onChange={event => setRounds(event.target.value)} /></label>
           <button type="button" className="unity-btn" disabled={adding} onClick={() => {
@@ -625,144 +936,12 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             title="替换当前工程的复筛配置并保存，保留循环轮次、样本设置和测试记录"
             onClick={replaceWithMosaicRefinePresets}>替换并保存 24 组对照</button>}
         </div>
-      {configs.map((config, index) => {
-        const lastRun = latestRunByConfig.get(config.id)?.run;
-        const activeProgress = currentProgress?.configId === config.id ? currentProgress : undefined;
-        return <details key={config.id} className={"game-benchmark-item" + (lastRun ? " has-run" : "") + (activeProgress ? " is-running" : "")} open={expanded.has(config.id)}
-        onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
-        <summary>
-          {activeProgress && <span className="game-benchmark-item-live-dot" aria-hidden="true" />}
-          <span className="game-benchmark-item-badge">Q{index + 1}</span>
-          <strong>{config.label || "配置 " + (index + 1)}</strong>
-          <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
-            ? (config.mosaic.detector === "grid" ? "方格规则" : "分类＋定位") + " · 并发 " + (config.mosaic.concurrency ?? 2)
-            : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
-            : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
-            : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
-          {activeProgress ? <span className="game-benchmark-item-score is-live">
-            正在跑 · {activeProgress.sampleCurrent ?? activeProgress.current}/{activeProgress.sampleTotal ?? activeProgress.total} · 用时 {gameDuration(activeProgress.configElapsedMs ?? activeProgress.elapsedMs)}
-            {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}
-          </span> : lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
-        </summary>
-        <fieldset disabled={adding} className="game-benchmark-item-fields">
-        <div className="game-benchmark-toolbar">
-          <label><input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false}
-            onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} />启用</label>
-          <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label} onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
-          <button type="button" className="unity-btn" disabled={index === 0} onClick={() => move(index, index - 1)}>上移</button>
-          <button type="button" className="unity-btn" disabled={index === configs.length - 1} onClick={() => move(index, index + 1)}>下移</button>
-          <button type="button" className="unity-btn" onClick={() => setConfigs(previous => previous.filter(item => item.id !== config.id))}>移除</button>
-        </div>
-        {mosaicStep && config.mosaic && <div className="game-benchmark-toolbar">
-          {mosaicStep === "mosaicScreen" && <>
-            <label>筛选方式<select value={config.mosaic.detector} onChange={event => changeMosaic(config.id, { detector: event.target.value as MosaicSettings["detector"] })}>
-              <option value="anime">分类＋定位</option><option value="grid">方格规则</option>
-            </select></label>
-            <label>视觉补检<select value={config.mosaic.screenVisionModel || ""}
-              onChange={event => changeMosaic(config.id, { screenVisionModel: event.target.value || undefined })}>
-              <option value="">关闭</option>{[...new Set([config.mosaic.screenVisionModel, ...models])].filter((model): model is string => !!model).map(model =>
-                <option key={model} value={model}>{model}</option>)}
-            </select></label>
-            <label>并发<select value={config.mosaic.concurrency ?? 2} onChange={event => changeMosaic(config.id, { concurrency: Number(event.target.value) })}>
-              {[1, 2, 4].map(value => <option key={value}>{value}</option>)}
-            </select></label>
-          </>}
-          {mosaicStep === "mosaicRefine" && <>
-            <div className="game-mosaic-model-field">
-              <span>候选区域推理模型</span>
-              <ModelFilterSelect label="候选区域推理模型" value={config.mosaic.refineModel || "qwen3.5:latest"}
-                models={[...new Set([config.mosaic.refineModel || "qwen3.5:latest", ...models])]}
-                filter={refineModelFilter} setFilter={setRefineModelFilter} disabled={adding}
-                onChange={model => changeMosaic(config.id, { refineModel: model })} />
-            </div>
-            <div className="game-mosaic-model-field">
-              <span>纹理与漏检复核模型</span>
-              <ModelFilterSelect label="纹理与漏检复核模型" value={config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct"}
-                models={[...new Set([config.mosaic.refineGuardModel || "qwen3-vl:8b-instruct", ...models])]}
-                filter={refineGuardFilter} setFilter={setRefineGuardFilter} disabled={adding}
-                onChange={model => changeMosaic(config.id, { refineGuardModel: model })} />
-            </div>
-            <label>并发<select value={config.mosaic.refineConcurrency ?? 1} onChange={event => changeMosaic(config.id, { refineConcurrency: Number(event.target.value) })}>
-              <option>1</option><option>2</option><option>4</option>
-            </select></label>
-          </>}
-          {mosaicStep === "mosaicRedraw" && <>
-            <label>重绘模型<select value={config.mosaic.model} onChange={event => changeMosaic(config.id,
-              { model: event.target.value as MosaicSettings["model"], steps: event.target.value === "turbo" ? 8 : 20 })}>
-              <option value="turbo">Qwen Image 2.1 Turbo</option><option value="2511">Qwen Image Edit 2511</option>
-            </select></label>
-            <label>步数<input type="number" min={1} max={100} value={config.mosaic.steps}
-              onChange={event => changeMosaic(config.id, { steps: Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)))) })} /></label>
-            <label><input type="checkbox" checked={config.mosaic.protect} onChange={event => changeMosaic(config.id, { protect: event.target.checked })} />保护已识别文字</label>
-          </>}
-        </div>}
-        {!mosaicStep && roles.filter(role => role === "text" || !!config.models.text.id).map(role => {
-          const promptRole: GamePromptScene = step === "translate" ? role : mainRole;
-          return <div className="game-benchmark-model" key={role}>
-            <label>{step === "translate" ? roleLabels[role] : "处理方式"}<select value={config.models[role].id}
-              onChange={event => update(config.id, previous => ({ ...previous, models: { ...previous.models, [role]: { ...previous.models[role], id: event.target.value } } }))}>
-              <option value="">{role !== "text" ? "跟随正文模型" : requiresModel ? "请选择模型" : localLabel}</option>
-              {[...new Set([...models, config.models[role].id].filter(Boolean))].map(model => <option key={model} value={model}>{model.split("/").at(-1)}</option>)}
-            </select></label>
-            <label>并发<select disabled={!config.models[role].id} value={config.models[role].lanes}
-              onChange={event => update(config.id, previous => ({ ...previous, models: { ...previous.models, [role]: { ...previous.models[role], lanes: Number(event.target.value) } } }))}>
-              {[1, 2, 3, 4].map(lanes => <option key={lanes} value={lanes}>{lanes}</option>)}
-            </select></label>
-            {config.models[role].id && <label>提示词<select value={config.prompts[promptRole] || "builtin:" + promptRole}
-              onChange={event => update(config.id, previous => ({ ...previous, prompts: { ...previous.prompts, [promptRole]: event.target.value } }))}>
-              {gamePromptCatalog().filter(entry => entry.scene === promptRole).map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-            </select></label>}
-          </div>;
-        })}
-        {(step === "filter" || step === "recognize" || step === "refine") && !config.models.text.id && <div className="game-benchmark-toolbar">
-          {step === "filter" ? <label>筛选策略<select value={config.imageStrategy || "staged"}
-            onChange={event => update(config.id, previous => ({ ...previous, imageStrategy: event.target.value as BenchmarkConfig["imageStrategy"] }))}>
-            <option value="staged">分级快速筛选</option><option value="full">完整范围筛选</option>
-          </select></label> : <label>{step === "refine" ? "本地模型" : "识别模式"}<select value={config.imageMode || (step === "refine" ? "precise" : "fast")}
-            onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.value as BenchmarkConfig["imageMode"] }))}>
-            {(step === "refine" ? LOCAL_REFINE_MODELS : OCR_MODE_OPTIONS).map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
-          </select></label>}
-          <label>本地并发<select value={config.localLanes || 1}
-            onChange={event => update(config.id, previous => ({ ...previous, localLanes: Number(event.target.value) }))}>
-            {(step === "refine" ? [1, 2, 3, 4] : [1, 2, 3, 4, 6, 8]).map(value => <option key={value} value={value}>{value}</option>)}
-          </select></label>
-        </div>}
-        {(step === "translate" || step === "imageTranslate") && !config.models.text.id && <div className="game-benchmark-toolbar" role="group" aria-label="翻译引擎">
-          {(config.engines || images?.engines || current.engines || []).map(engine => <label key={engine.id}>
-            <input type="checkbox" checked={engine.enabled} onChange={event => {
-              const enabled = event.target.checked;
-              update(config.id, previous => ({ ...previous, engines: (previous.engines || images?.engines || current.engines || [])
-                .map(item => item.id === engine.id ? { ...item, enabled } : item) }));
-            }} />{engine.id}
-          </label>)}
-        </div>}
-        {step === "recognize" && config.models.text.id && <label className="unity-inline-check"><input type="checkbox" checked={(config.imageMode || images?.mode) === "manga"}
-          onChange={event => update(config.id, previous => ({ ...previous, imageMode: event.target.checked ? "manga" : "precise" }))} />用 Manga OCR 复读日文竖排</label>}
-        {(step === "refine" || step === "recognize" && images?.confidence !== undefined) && <div className="game-benchmark-toolbar"><label>置信度阈值（%）
-          <input type="number" min={0} max={100} value={config.imageConfidence ?? (step === "refine" ? images?.refineConfidence : images?.confidence) ?? 50}
-            onChange={event => update(config.id, previous => ({ ...previous, imageConfidence: Math.min(100, Math.max(0, Number(event.target.value))) }))} />
-        </label></div>}
-        {!mosaicStep && <div className="game-benchmark-toolbar">
-          {step !== "render" && <><label>原文语言<select value={config.source} onChange={event => update(config.id, previous => ({ ...previous, source: event.target.value }))}>
-            <option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
-          </select></label>
-          <label>目标语言<select value={config.target} onChange={event => update(config.id, previous => ({ ...previous, target: event.target.value }))}>
-            {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
-          </select></label>
-          {["translate", "imageTranslate", "review", "screen"].includes(step) && <label><input type="checkbox" checked={config.skipTarget} onChange={event => update(config.id, previous => ({ ...previous, skipTarget: event.target.checked }))}/>跳过目标语言</label>}</>}
-          {step === "translate" && <><label>换行处理<select value={config.wrap} onChange={event => update(config.id, previous => ({ ...previous, wrap: event.target.value as BenchmarkConfig["wrap"] }))}>
-            <option value="keep">保留换行</option><option value="join">合并后恢复换行</option><option value="natural">大模型自然断行</option>
-          </select></label><label><input type="checkbox" checked={config.includeContext} onChange={event => update(config.id, previous => ({ ...previous, includeContext: event.target.checked }))}/>附带上下文</label></>}
-        </div>}
-        </fieldset>
-        {samplePreview[config.id] && <p style={{ padding: "0 12px 8px" }}>
-          共 {samplePreview[config.id].selected} 条 · 正文候选 {samplePreview[config.id].text} · 对白候选 {samplePreview[config.id].dialogue} · 原样保留 {samplePreview[config.id].retained}
-          {config.models.dialogue.id && config.models.dialogue.id !== config.models.text.id && samplePreview[config.id].dialogue === 0 &&
-            <strong> · 此样本测不到专用对白模型</strong>}
-        </p>}
-        </details>;
-      })}
-      </BenchmarkSection>
+      <BenchmarkConfigCards step={step} configs={configs} setConfigs={setConfigs} readOnly={adding} expanded={expanded}
+        toggleConfig={toggleConfig} images={images} engines={current.engines} models={models} currentProgress={currentProgress}
+        latestRunByConfig={latestRunByConfig} samplePreview={samplePreview} onEdited={id =>
+          setSamplePreview(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => key !== id)))}
+        refineFilter={[refineModelFilter, setRefineModelFilter]} guardFilter={[refineGuardFilter, setRefineGuardFilter]} />
+      </BenchmarkSection>}
       <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")}>
         {queueContents}
       </BenchmarkSection>
@@ -811,6 +990,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </BenchmarkSection>
       </div>
     </div></div>
+    {taskDialogs}
     {report && <section className="game-benchmark-section" aria-label="数据集对照总结" style={{ maxHeight: "35vh", overflow: "auto" }}>
       <header className="game-benchmark-records-head">
         <h3>{report.title} · 对照总结</h3>
@@ -827,7 +1007,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         </tr>)}</tbody></table>
     </section>}
     <footer className="game-benchmark-footer">
-    <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>
+    {!taskView && <button type="button" className="unity-btn" disabled={!validRounds || serialized === savedQueue} onClick={() => { try { if (saveQueue()) showAppNotice("测试配置已保存"); } catch (error) { showAppNotice("测试配置保存失败：" + String(error), "error"); } }}>保存配置</button>}
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
     </footer>
   </main>;

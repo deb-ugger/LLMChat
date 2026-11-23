@@ -50,7 +50,8 @@ export function groupBenchmarkTasks(results: readonly BenchmarkResult[]) {
       (left.performance.beginTime || "").localeCompare(right.performance.beginTime || ""));
     const firstTime = runs[0].performance.beginTime || runs[0].performance.endedAt || "";
     const configs = new Set(runs.map(run => (run.performance.benchmark?.config as { id?: string } | undefined)?.id || run.label));
-    const plan = runs.find(run => run.performance.benchmark?.batchPlan)?.performance.benchmark?.batchPlan as BenchmarkBatchPlan | undefined;
+    const plan = runs.reduce<BenchmarkBatchPlan | undefined>((latest, run) =>
+      (run.performance.benchmark?.batchPlan as BenchmarkBatchPlan | undefined) ?? latest, undefined);
     const latestRuns = plan ? [...new Map(runs.map(run => [run.performance.benchmark?.batchIndex, run])).values()] : runs;
     const completed = latestRuns.filter(run => run.status === "完成" || run.status === "失败");
     const sampleRecord = latestRuns.find(run => run.performance.benchmark?.batchIndex === completed.length &&
@@ -248,7 +249,7 @@ export async function runGameTextBenchmarks(configs: BenchmarkConfig[], rounds: 
         clearGamePerformance(scope, [step], false);
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
-      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === 0 ? { configs, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
+      const batchPlan: BenchmarkBatchPlan | undefined = mosaic && batchIndex === resumeAt ? { configs, rounds, sampleSetPath, referenceSampleSetPath } : undefined;
       const metadata = { queueId, round, unobservedModels, sampleSetPath, referenceSampleSetPath, batchPlan, batchIndex: mosaic ? batchIndex : undefined,
         label: config.label, selected, config, translated: 0, failed: 0, status: "运行中",
         detail: undefined as string | undefined, summary: undefined as string | undefined, imageDetails: false };
