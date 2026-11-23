@@ -47,4 +47,9 @@ nlohmann::json restoreAndRemove(const std::filesystem::path& packageDir,
     const std::optional<std::filesystem::path>& gameRoot, const ApplyControl& control = {});
 std::optional<uint64_t> packageBytes(const std::filesystem::path& packageDir);
 
+nlohmann::json scanLegacy(RpgImageProject& project, const std::filesystem::path& gameRoot);
+nlohmann::json migrateLegacy(RpgImageProject& project, const std::filesystem::path& gameRoot,
+    const std::filesystem::path& outputDir, const nlohmann::json& entries, const Control& control = {});
+void validateLegacyEntries(const nlohmann::json& entries);
+
 } // namespace gameimageexport::transaction

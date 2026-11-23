@@ -2,6 +2,9 @@
 
 #ifdef _WIN32
 #include "GameImageExportIO.h"
+#include "RpgImageProject.h"
+
+#include <cstdio>
 
 #include <cstddef>
 #include <exception>
@@ -22,6 +25,7 @@ constexpr wchar_t receiptStage[] = L"receipts/.receipt.partial";
 constexpr wchar_t restoreIntent[] = L"receipts/restore-intent.json";
 constexpr wchar_t restoreStage[] = L"receipts/.restore-intent.partial";
 constexpr auto fingerprintAlgorithm = "sha256-anchors-and-targets-v1";
+constexpr auto legacyRule = "legacy-migration/1";
 constexpr auto maxPlanBytes = 64ull << 20;
 
 struct Digest {
@@ -136,6 +140,21 @@ std::string fingerprint(const Manifest& manifest) {
     return hash.finish();
 }
 
+bool imageKind(const std::string& kind) {
+    return kind == "translated" || kind == "mosaic" || kind == "composed";
+}
+
+void verifyLegacyProvenance(const Json& item, const Entry& file) {
+    const auto& source = item.at("sourceImage");
+    const auto id = source.at("id").get<std::string>();
+    const auto& layers = source.at("layers");
+    const auto expected = Json::array({{{"kind", file.kind}, {"confirmationId", "legacy-migration"},
+        {"pngSha256", file.after.sha}}});
+    if (id.size() > 16 || !hexString(id) || source.at("relativePath") != file.name ||
+        layers != expected || item.at("boxIds") != Json::array())
+        invalidManifest("旧补丁迁移记录与成品文件不符", file.name);
+}
+
 void verifyProvenance(const Json& item, const Entry& file) {
     const auto& kind = file.kind;
     const auto& source = item.at("sourceImage");
@@ -189,7 +208,15 @@ void verifyProvenance(const Json& item, const Entry& file) {
 Manifest parseManifest(const Json& json, bool checkProvenance) {
     try {
         if (!json.at("schemaVersion").is_number_integer() || json.at("schemaVersion") != 1) throw Error("UNSUPPORTED_SCHEMA", "成品清单版本不支持");
-        if (!json.at("composeRuleVersion").is_number_integer() || json.at("composeRuleVersion") != 1) throw Error("UNSUPPORTED_COMPOSE_RULE", "合成规则版本不支持");
+        const auto& rule = json.at("composeRuleVersion");
+        const bool legacy = rule == legacyRule;
+        if (!legacy && (!rule.is_number_integer() || rule != 1))
+            throw Error("UNSUPPORTED_COMPOSE_RULE", "合成规则版本不支持");
+        if (legacy) {
+            const auto& migration = json.at("migration");
+            if (migration.at("from") != "legacy-patch" || migration.at("scannedAt") != json.at("generatedAt"))
+                invalidManifest("旧补丁迁移来源或时间无效");
+        }
         const auto& baseline = json.at("baseline");
         const auto& marker = baseline.at("marker");
         const auto& files = json.at("files");
@@ -212,15 +239,15 @@ Manifest parseManifest(const Json& json, bool checkProvenance) {
             if (!seen.insert(path.native()).second)
                 throw Error("INVALID_PATH", "清单包含大小写别名或重复目标：" + name, name);
             auto kind = item.at("kind").get<std::string>();
-            if (kind != "translated" && kind != "mosaic" && kind != "composed")
-                invalidManifest("清单含不支持的成品图层", name);
+            if (!imageKind(kind)) invalidManifest("清单含不支持的成品图层", name);
             Entry file{std::move(name), std::move(path), std::move(kind), parseDigest(item.at("original"), maxImageBytes),
                 parseDigest(item, maxImageBytes)};
             if (file.before == file.after) invalidManifest("成品文件与原件完全相同", file.name);
             if (checkProvenance) {
                 if (engine == "wolf" && item.at("sourceImage").contains("archive"))
                     throw Error("WOLF_ARCHIVE_ENTRY_UNSUPPORTED", "清单目标来自 WOLF 封包：" + file.name, file.name);
-                verifyProvenance(item, file);
+                if (legacy) verifyLegacyProvenance(item, file);
+                else verifyProvenance(item, file);
             }
             result.files.push_back(std::move(file));
         }
@@ -443,6 +470,15 @@ Json fileRecords(const Manifest& manifest, const FileMask& applied, bool include
     return files;
 }
 
+Json makeReceipt(const Plan& plan, const Root& game, const FileMask& applied, bool layered) {
+    auto value = planHeader(plan, game);
+    value["files"] = fileRecords(plan.manifest, applied, layered, layered);
+    value["state"] = receiptState(applied);
+    if (plan.appliedMarker)
+        value["warning"] = {{"code", markerChangedCode}, {"message", markerChangedMessage}};
+    return value;
+}
+
 FileMask restoreScope(const Manifest& manifest, const Receipt& receipt, const RestoreKinds& kinds) {
     if (!kinds) return allFiles(manifest);
     if (kinds->empty()) throw Error("INVALID_KINDS", "kinds 不能为空，整包恢复请省略该字段");
@@ -533,12 +569,7 @@ struct Transaction {
     }
 
     Json receiptValue(const Plan& plan, const FileMask& applied, bool layered) const {
-        auto value = planHeader(plan, game);
-        value["files"] = fileRecords(plan.manifest, applied, layered, layered);
-        value["state"] = receiptState(applied);
-        if (plan.appliedMarker)
-            value["warning"] = {{"code", markerChangedCode}, {"message", markerChangedMessage}};
-        return value;
+        return makeReceipt(plan, game, applied, layered);
     }
 
     Json writeReceipt(const Plan& plan, const FileMask& applied, bool layered, bool replace,
@@ -1099,6 +1130,369 @@ std::optional<uint64_t> packageBytes(const std::filesystem::path& packageDir) {
     });
 }
 
+class LegacyMigration {
+    struct Marker {
+        Path path;
+        std::string kind;
+        Digest content;
+    };
+
+    struct Candidate {
+        std::string name, id, kind;
+        std::string state = "unsupported", detail;
+        Path path, backup;
+        Digest before{}, after{};
+        std::vector<Marker> markers;
+        const Json* row = nullptr;
+
+        Json value() const {
+            return {{"relativePath", name}, {"imageId", id}, {"kind", kind}, {"state", state}, {"detail", detail}};
+        }
+    };
+
+    static constexpr wchar_t projectDir[] = L"LLMChat-JSON/images";
+    const Root& game_;
+    const Engine engine_;
+    Json rows_ = Json::array();
+    std::set<std::string> retired_;
+    Handle baseline_;
+    std::string key_;
+
+    static bool validRevision(std::string_view value) {
+        return !value.empty() && value.size() <= 64 && value.find_first_not_of("0123456789-") == std::string_view::npos;
+    }
+
+    static void cancelled(const Control& control) {
+        if (control.cancelled && control.cancelled()) throw Error("CANCELLED", "已取消旧图片补丁迁移");
+    }
+
+    static void progress(const Control& control, std::string_view phase, size_t done, size_t count, std::string_view name = {}) {
+        cancelled(control);
+        if (control.progress) control.progress({phase, done, count, name});
+        cancelled(control);
+    }
+
+    static std::pair<std::string, std::string> utcTime() {
+        SYSTEMTIME utc{};
+        GetSystemTime(&utc);
+        char date[32]{}, suffix[32]{};
+        std::snprintf(date, sizeof(date), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+            unsigned(utc.wYear), unsigned(utc.wMonth), unsigned(utc.wDay), unsigned(utc.wHour),
+            unsigned(utc.wMinute), unsigned(utc.wSecond), unsigned(utc.wMilliseconds));
+        std::snprintf(suffix, sizeof(suffix), "%04u%02u%02uT%02u%02u%02u%03uZ",
+            unsigned(utc.wYear), unsigned(utc.wMonth), unsigned(utc.wDay), unsigned(utc.wHour),
+            unsigned(utc.wMinute), unsigned(utc.wSecond), unsigned(utc.wMilliseconds));
+        return {date, suffix};
+    }
+
+    std::string original(const Candidate& entry, const Handle& source) const {
+        auto pixels = read(source, game_.path / entry.backup, maxImageBytes);
+        const auto [width, height] = RpgImageProject::dimensions(pixels);
+        if (entry.row->at("width") != width || entry.row->at("height") != height)
+            throw Error("INPUT_STALE", "受管原件尺寸与图片索引不符", entry.name);
+        // The cache stores a decoded PNG. Restore needs the original on-disk format.
+        return RpgImageProject::imageBytes(*entry.row, std::move(pixels), key_, true);
+    }
+
+    static Candidate blocked(Candidate entry, std::string state, std::string detail) {
+        entry.state = std::move(state);
+        entry.detail = std::move(detail);
+        return entry;
+    }
+
+    std::optional<Candidate> examine(const Json& row) const {
+        Candidate entry;
+        entry.row = &row;
+        entry.name = row.at("file").get<std::string>();
+        entry.id = row.at("id").get<std::string>();
+        const auto revision = row.at("sourceHash").get<std::string>();
+        if (entry.id.size() > 16 || !hexString(entry.id) || !validRevision(revision))
+            throw Error("INVALID_LEGACY_INDEX", "旧图片索引中的编号或版本无效");
+        entry.backup = RpgImageProject::originalCache(game_.path, row).lexically_relative(game_.path);
+        const auto backup = openSource(game_.path, entry.backup, true);
+        const std::array<Path, 3> markPaths{
+            RpgImageProject::composedImage(game_.path, entry.id),
+            RpgImageProject::installedImage(game_.path, entry.id, false),
+            RpgImageProject::installedImage(game_.path, entry.id, true),
+        };
+        const std::array<const char*, 3> kinds{"composed", "translated", "mosaic"};
+        for (size_t i = 0; i < markPaths.size(); ++i) {
+            const auto path = markPaths[i].lexically_relative(game_.path);
+            if (const auto mark = openSource(game_.path, path, true)) {
+                const auto size = length(mark, markPaths[i]);
+                entry.markers.push_back({path, kinds[i],
+                    size <= maxImageBytes ? digest(mark, markPaths[i]) : Digest{size, {}}});
+            }
+        }
+        if (entry.markers.empty()) {
+            if (!backup || retired_.contains(entry.id)) return std::nullopt;
+            // A blocked, unmarked image has no identifiable patch kind.
+            entry.kind = "translated";
+            return blocked(std::move(entry), "unsupported", "缺少受管标记，无法确认来源");
+        }
+        entry.kind = entry.markers.front().kind;
+        try {
+            entry.path = relative(entry.name);
+            targetPath(game_.path, engine_, row, entry.path, entry.name);
+            if (row.value("sourceFile", "") != entry.name)
+                return blocked(std::move(entry), "unsupported", "图片索引未指向受支持的游戏文件");
+        } catch (const Error& error) {
+            return blocked(std::move(entry), "unsupported", error.what());
+        }
+        if (!backup) return blocked(std::move(entry), "missing-backup", "受管原件缺失，无法迁移");
+        auto current = openSource(game_.path, entry.path, true);
+        if (!current) return blocked(std::move(entry), "source-mismatch", "游戏图片已不存在");
+        const auto bytes = length(current, game_.path / entry.path);
+        if (!bytes || bytes > maxImageBytes)
+            return blocked(std::move(entry), "unsupported", "游戏图片为空或超出允许大小");
+        try {
+            const auto raw = original(entry, backup);
+            if (raw.size() > maxImageBytes)
+                return blocked(std::move(entry), "unsupported", "受管原件超出允许大小");
+            entry.before = {raw.size(), hash(raw)};
+        } catch (const std::runtime_error&) {
+            return blocked(std::move(entry), "unsupported", "受管原件不可用，无法验证原始内容");
+        }
+        entry.after = digest(current, game_.path / entry.path);
+        // Applied state comes only from comparing the game image with its original.
+        if (entry.after == entry.before)
+            return blocked(std::move(entry), "unsupported", "图片与受管原件一致，当前没有可迁移的补丁内容");
+        // Marker bytes establish ownership of the changed image; unrelated edits cannot be adopted.
+        if (entry.kind == "composed") {
+            if (entry.markers.front().content != entry.after)
+                return blocked(std::move(entry), "source-mismatch", "游戏图片内容已变化，无法确认属于旧合成补丁");
+        } else {
+            const auto owns = [&](const Marker& mark) { return mark.content == entry.after; };
+            if (std::count_if(entry.markers.begin(), entry.markers.end(), owns) != 1)
+                return blocked(std::move(entry), "source-mismatch", "游戏图片内容已变化或来源不唯一，无法确认所属旧补丁");
+            entry.kind = std::find_if(entry.markers.begin(), entry.markers.end(), owns)->kind;
+        }
+        return blocked(std::move(entry), "migratable", "已核实旧补丁内容和受管原件，可以迁移");
+    }
+
+    static void sourceChanged(const std::string& path) {
+        throw Error("LEGACY_SOURCE_CHANGED", "旧图片补丁已变化或无法迁移：" + path, path);
+    }
+
+public:
+    static std::unique_lock<std::recursive_mutex> lockProject(RpgImageProject& project) {
+        std::unique_lock lock(project.mutex_, std::try_to_lock);
+        if (!lock) throw Error("BUSY", "图片项目正在更新，请稍后重试");
+        return lock;
+    }
+
+    explicit LegacyMigration(const Root& game)
+        : game_(game), engine_(detectEngine(game.path)) {
+        const auto index = Path(projectDir) / "project.json";
+        if (!fileExists(game.path, index)) return;
+        const auto project = readJson(game.path, index, "INVALID_LEGACY_INDEX");
+        if (!project.contains("images") || !project.at("images").is_array())
+            throw Error("INVALID_LEGACY_INDEX", "旧图片索引缺少图片清单");
+        rows_ = project.at("images");
+        baseline_ = openSource(game.path, engine_.marker);
+        if (engine_.name != "wolf") {
+            try {
+                key_ = Json::parse(read(baseline_, game.path / engine_.marker)).value("encryptionKey", "");
+                baseline_ = openSource(game.path, engine_.marker);
+            } catch (const Json::exception&) {
+                throw Error("INVALID_LEGACY_INDEX", "无法读取游戏原图密钥");
+            }
+        }
+        for (const auto folder : {"installed", "mosaic-installed", "composed-installed"}) {
+            const auto path = Path(projectDir) / folder;
+            const auto pins = pinParents(game.path, path / "entry");
+            if (pins.empty()) continue;
+            const auto dir = game.path / path;
+            for (const auto& file : fs::directory_iterator(dir)) {
+                const auto name = utf8(file.path().filename());
+                const auto tag = name.find(".bin.migrated-");
+                if (tag != std::string::npos && tag <= 16 && hexString(name.substr(0, tag)))
+                    retired_.insert(name.substr(0, tag));
+            }
+        }
+    }
+
+    Json scan() const {
+        Json values = Json::array();
+        std::vector<Candidate> candidates;
+        for (const auto& row : rows_)
+            if (auto item = examine(row)) candidates.push_back(std::move(*item));
+        std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+        size_t count = 0;
+        for (const auto& item : candidates) {
+            count += item.state == "migratable";
+            values.push_back(item.value());
+        }
+        return {{"entries", std::move(values)}, {"totals", {{"migratable", count}, {"blocked", candidates.size() - count}}}};
+    }
+
+    Json migrate(const Root& output, const Json& requested, const Control& control) const;
+};
+
+Json LegacyMigration::migrate(const Root& output, const Json& requested, const Control& control) const {
+    progress(control, "snapshot", 0, requested.size());
+    const auto [timestamp, suffix] = utcTime();
+    std::map<std::string, const Json*> rows;
+    for (const auto& row : rows_) {
+        const auto name = row.at("file").get<std::string>();
+        if (!rows.emplace(name, &row).second)
+            throw Error("INVALID_LEGACY_INDEX", "旧图片索引包含重复路径", name);
+    }
+    std::vector<Candidate> selected;
+    std::set<std::string> ids;
+    for (const auto& item : requested) {
+        const auto name = item.at("relativePath").get<std::string>();
+        cancelled(control);
+        const auto row = rows.find(name);
+        if (row == rows.end()) sourceChanged(name);
+        auto entry = examine(*row->second);
+        if (!entry || entry->state != "migratable" || entry->kind != item.at("kind").get_ref<const std::string&>() || !ids.insert(entry->id).second)
+            sourceChanged(name);
+        selected.push_back(std::move(*entry));
+    }
+    std::sort(selected.begin(), selected.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+
+    const auto id = newId();
+    const auto transactionId = newId();
+    const auto stage = output.path / ("." + id + ".partial");
+    const auto target = output.path / ("legacy-" + suffix + "-" + id.substr(0, 8) + ".llmchat-images");
+    const auto anchor = digest(baseline_, game_.path / engine_.marker);
+    auto marker = fields(anchor);
+    marker["relativePath"] = key(engine_.marker);
+    Manifest manifest{id, engine_.name, {}, key(engine_.marker), engine_.marker, anchor, {}};
+    auto files = Json::array();
+
+    struct Rename {
+        Path oldName, newName;
+        Handle source;
+    };
+    std::vector<Rename> marks;
+    std::vector<Handle> resources;
+    size_t renamed = 0;
+    if (!CreateDirectoryW(stage.c_str(), nullptr))
+        winError("WRITE_FAILED", "无法创建旧补丁迁移暂存目录", stage, GetLastError());
+    try {
+        Root staging(stage);
+        for (size_t i = 0; i < selected.size(); ++i) {
+            const auto& entry = selected[i];
+            progress(control, "copy", i, selected.size(), entry.name);
+            auto current = openSource(game_.path, entry.path, true);
+            auto backup = openSource(game_.path, entry.backup, true);
+            if (!current || !backup) sourceChanged(entry.name);
+            const auto raw = original(entry, backup);
+            if (raw.size() != entry.before.bytes || hash(raw) != entry.before.sha) sourceChanged(entry.name);
+            resources.push_back(std::move(current));
+            resources.push_back(std::move(backup));
+            copy(game_.path, entry.path, stage, Path(payloadDir) / entry.path, entry.after, "LEGACY_SOURCE_CHANGED");
+            if (write(stage, Path(backupDir) / entry.path, raw) != entry.before.sha)
+                throw Error("WRITE_FAILED", "受管原件备份写入后校验失败", entry.name);
+
+            auto file = fields(entry.after);
+            file.update(Json{{"relativePath", entry.name}, {"kind", entry.kind}, {"original", fields(entry.before)},
+                {"boxIds", Json::array()}, {"sourceImage", {{"id", entry.id}, {"relativePath", entry.name},
+                    {"sourceHash", entry.row->at("sourceHash")}, {"width", entry.row->at("width")},
+                    {"height", entry.row->at("height")}, {"layers", Json::array({{{"kind", entry.kind},
+                        {"confirmationId", "legacy-migration"}, {"pngSha256", entry.after.sha}}})}}}});
+            files.push_back(std::move(file));
+            manifest.files.push_back({entry.name, entry.path, entry.kind, entry.before, entry.after});
+            for (const auto& mark : entry.markers) {
+                const auto pins = pinParents(game_.path, mark.path);
+                if (pins.empty()) sourceChanged(entry.name);
+                const auto oldName = game_.path / mark.path;
+                auto file = openNode(oldName, false, true, DELETE);
+                if (!file || length(file, oldName) != mark.content.bytes || digest(file, oldName) != mark.content)
+                    sourceChanged(entry.name);
+                auto newName = oldName;
+                newName += ".migrated-" + suffix;
+                marks.push_back({oldName, std::move(newName), std::move(file)});
+            }
+        }
+
+        auto data = Json{{"schemaVersion", 1}, {"packageId", id}, {"engine", engine_.name},
+            {"gameRootFingerprint", fingerprint(manifest)}, {"composeRuleVersion", legacyRule},
+            {"generatedAt", timestamp}, {"toolVersion", "legacy-migration"},
+            {"baseline", {{"algorithm", fingerprintAlgorithm}, {"marker", marker}}},
+            {"migration", {{"from", "legacy-patch"}, {"scannedAt", timestamp}}}, {"files", std::move(files)}};
+        auto manifestBytes = data.dump(2) + "\n";
+        if (manifestBytes.size() > maxMetadataBytes) throw Error("OUTPUT_TOO_LARGE", "成品清单超出允许大小");
+        const auto manifestSha = write(stage, manifestName, manifestBytes);
+        const auto planData = Json{{"schemaVersion", 1}, {"transactionId", transactionId},
+            {"gameRootId", game_.ids.back()}, {"packageRootId", staging.ids.back()}, {"manifest", data}}.dump(2) + "\n";
+        if (planData.size() > maxPlanBytes) throw Error("OUTPUT_TOO_LARGE", "备份计划超出允许大小");
+        const Plan plan{transactionId, parseManifest(data, true), write(stage, Path(backupDir) / planName, planData), std::nullopt};
+        writeAtomic(stage, receiptStage, receiptName, makeReceipt(plan, game_, allFiles(plan.manifest), true), false);
+        const auto bytes = packageBytes(stage);
+        Json result{{"packageId", id}, {"packagePath", key(target)}, {"manifestSha256", manifestSha},
+            {"files", selected.size()}, {"bytes", bytes.value()}};
+
+        staging.handles.pop_back();
+        const auto source = openNode(stage, true, false, DELETE);
+        progress(control, "publish", selected.size(), selected.size());
+        for (const auto& mark : marks) {
+            renameHandle(mark.source, mark.newName, false);
+            ++renamed;
+        }
+        renameHandle(source, target, false);
+        return result;
+    } catch (...) {
+        const auto original = std::current_exception();
+        std::string failedRollback;
+        while (renamed) {
+            const auto& mark = marks[--renamed];
+            try {
+                renameHandle(mark.source, mark.oldName, false);
+            } catch (const std::exception&) {
+                failedRollback = utf8(mark.newName);
+            }
+        }
+        try {
+            removeTree(stage);
+        } catch (const std::exception&) {
+            if (failedRollback.empty()) failedRollback = utf8(stage);
+        }
+        if (!failedRollback.empty())
+            throw Error("RECOVERY_REQUIRED", "旧补丁迁移回滚未能完成，请检查路径", failedRollback);
+        std::rethrow_exception(original);
+    }
+}
+
+void validateLegacyEntries(const Json& entries) {
+    if (!entries.is_array() || entries.empty() || entries.size() > 20000)
+        throw Error("INVALID_REQUEST", "请选择 1 至 20000 张旧补丁图片");
+    std::set<std::wstring, CaseLess> names;
+    for (const auto& entry : entries) {
+        if (!entry.is_object() || !entry.contains("relativePath") || !entry.at("relativePath").is_string() ||
+            !entry.contains("kind") || !entry.at("kind").is_string() || !imageKind(entry.at("kind").get<std::string>()))
+            throw Error("INVALID_REQUEST", "旧补丁条目需要有效的 relativePath 与 kind");
+        const auto name = entry.at("relativePath").get<std::string>();
+        if (!names.insert(relative(name).native()).second)
+            throw Error("INVALID_REQUEST", "旧补丁条目包含重复路径", name);
+    }
+}
+
+Json scanLegacy(RpgImageProject& project, const Path& gameRoot) {
+    return guard([&] {
+        const Root game(gameRoot);
+        const DirectoryLock gameLock(game.ids.back());
+        const auto projectLock = LegacyMigration::lockProject(project);
+        return LegacyMigration(game).scan();
+    });
+}
+
+Json migrateLegacy(RpgImageProject& project, const Path& gameRoot, const Path& outputDir,
+    const Json& entries, const Control& control) {
+    return guard([&] {
+        validateLegacyEntries(entries);
+        const Root game(gameRoot);
+        const Root output(outputDir);
+        separate(game, output);
+        const DirectoryLock gameLock(game.ids.back());
+        const DirectoryLock outputLock(output.ids.back());
+        const auto projectLock = LegacyMigration::lockProject(project);
+        return LegacyMigration(game).migrate(output, entries, control);
+    });
+}
+
 } // namespace gameimageexport::transaction
 
 #else
@@ -1117,6 +1511,10 @@ PackageStatus inspect(const std::filesystem::path&, const std::filesystem::path&
 void remove(const std::filesystem::path&) { unsupported(); }
 nlohmann::json restoreAndRemove(const std::filesystem::path&, const std::optional<std::filesystem::path>&, const ApplyControl&) { unsupported(); }
 std::optional<uint64_t> packageBytes(const std::filesystem::path&) { unsupported(); }
+nlohmann::json scanLegacy(RpgImageProject&, const std::filesystem::path&) { unsupported(); }
+nlohmann::json migrateLegacy(RpgImageProject&, const std::filesystem::path&, const std::filesystem::path&,
+    const nlohmann::json&, const Control&) { unsupported(); }
+void validateLegacyEntries(const nlohmann::json&) { unsupported(); }
 
 } // namespace gameimageexport::transaction
 
