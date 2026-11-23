@@ -453,7 +453,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       })}
     </div>}
     targetControls={<div className="game-benchmark-toolbar game-benchmark-target">
-      <label>测试内容<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
+      <label>{recordMode === "formal" ? "工作流" : "测试内容"}<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
         <option value="text">翻译文本</option>
         {imageSteps.length > 0 && <option value="images">图片翻译</option>}
         {props.mosaicSetup && <option value="mosaic">图片去码</option>}
@@ -655,7 +655,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
   const running = job.status === "运行中";
   const started = useMemo(() => new Set(job.startedConfigIds), [job.startedConfigIds]);
   const status = job.status === "已暂停" ? "已中止" : job.status;
-  const title = "正在查看" + (number ? "任务 Q" + number : "任务") + " 的配置";
+  const title = number ? `正在查看任务 Q${number} 的配置` : "正在查看任务配置";
   const template = configs[0] ?? parameters.configs[0];
   return <BenchmarkSection title="任务测试配置" className="game-benchmark-show-section">
     <div className="game-benchmark-show-head">
@@ -667,7 +667,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, setConfigs, model
         <button type="button" className="unity-btn" disabled={saving} onClick={onExit}>退出显示</button>
       </div>
     </div>
-    {running && <p className="hint">任务运行中，配置不可修改，可中止后编辑未开始的任务</p>}
+    {running && <p className="hint">任务运行中，配置不可修改。中止后可编辑未开始的配置。</p>}
     {job.status === "已暂停" && <p className="hint">可修改未开始的配置。已执行的配置保留，只读。</p>}
     <div className="game-benchmark-toolbar game-benchmark-show-parameters">
       <label>循环轮次 <input type="number" value={parameters.rounds} disabled /></label>

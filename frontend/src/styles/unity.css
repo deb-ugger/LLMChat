@@ -3009,7 +3009,7 @@ body.ocr-image-resizing * {
 .game-benchmark-queue-item > button { flex: none; white-space: nowrap; }
 .game-benchmark-queue-item > button:nth-child(2) { margin-inline-start: auto; }
 .game-benchmark-queue-title { display: flex; align-items: center; gap: var(--space-2); }
-.game-benchmark-queue-title > strong { min-width: 0; }
+.game-benchmark-queue-title > strong { min-width: 0; text-wrap: pretty; }
 .game-benchmark-queue-title > .game-flow-metric { flex: none; }
 .game-benchmark-record-task { min-width: 0; }
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
