@@ -15,7 +15,7 @@ function registrationSource(backend) {
     const registrars = new Map();
     for (const file of readdirSync(modules).filter(name => name.endsWith("Routes.cpp"))) {
         const source = readFileSync(resolve(modules, file), "utf8").replaceAll("\r\n", "\n");
-        for (const match of source.matchAll(/^\w+ (register\w+)\([^;]*?\)\n\{\n([^]*?)^\}/gm)) {
+        for (const match of source.matchAll(/^\w+ (register\w+)\([^;]*?\)[ \t]*(?:\n[ \t]*)?\{\n([^]*?)^\}/gm)) {
             assert.ok(!registrars.has(match[1]), "Duplicate registrar " + match[1]);
             registrars.set(match[1], match[2]);
         }

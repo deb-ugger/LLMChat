@@ -9,6 +9,7 @@ add_executable(llmchat-backend
     src/Config.cpp
     src/http/SystemRoutes.cpp
     src/http/FileRoutes.cpp
+    src/http/HttpTransport.cpp
     src/ConversationManager.cpp
     src/http/ConversationRoutes.cpp
     src/LlmClient.cpp
