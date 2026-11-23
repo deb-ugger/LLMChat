@@ -284,9 +284,33 @@
 .game-mosaic-workbench .unity-image-previews figure > .hint { margin: 8px; }
 .game-mosaic-workbench .game-mosaic-results-bar {
   grid-column: 1 / -1;
+  margin-block: 0;
+  padding-block: var(--space-1);
   border-bottom: 1px solid var(--border);
 }
 .game-mosaic-results-bar > strong { flex: 0 0 auto; min-width: 0; }
+
+/* 文件名后面接一句状态说明：占满这一行剩余宽度，超长省略，完整文案在 tooltip。 */
+.game-mosaic-detail-hint {
+  flex: 1 1 auto;
+  min-inline-size: 6ch;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .game-mosaic-version-picker {
   display: inline-flex;
   gap: 2px;

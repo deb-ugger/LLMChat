@@ -1080,6 +1080,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         header={active &&
           <div className="unity-image-actions">
             <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
+            {draftReason && <span className="game-mosaic-detail-hint" data-tooltip={draftReason}>{draftReason}</span>}
             <div className="unity-image-button-group">
               <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
                 onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
@@ -1097,7 +1098,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             </div>
           </div>
         }
-        notice={<>{draftReason && <p className="hint" role="status">{draftReason}</p>}
+        notice={<>{draftReason && <p className="visually-hidden" role="status">{draftReason}</p>}
            {active && !visible.includes(active) && <button type="button" className="unity-btn" onClick={() => {
              setImageFilters(allGameImageFilters);
              const target = imageStatus(active);
