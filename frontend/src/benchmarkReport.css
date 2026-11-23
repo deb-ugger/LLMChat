@@ -1,0 +1,136 @@
+.benchmark-report {
+  --benchmark-selected: light-dark(#2b65c8, #7ba7ff);
+  box-sizing: border-box;
+  min-inline-size: 0;
+  block-size: 100dvh;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  color: var(--text);
+  background: var(--bg-panel);
+}
+
+.benchmark-report-head,
+.benchmark-report-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.benchmark-report-head { justify-content: space-between; flex-wrap: wrap; }
+.benchmark-report-head h2 { margin: 0; font-size: var(--fs-dialog); }
+.benchmark-report-head p { margin: 4px 0 0; }
+.benchmark-report p { color: var(--text-muted); font-size: var(--fs-caption); }
+
+.benchmark-report-kpis,
+.benchmark-report-charts {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.benchmark-report-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.benchmark-report-kpis > div,
+.benchmark-report-charts > section {
+  min-inline-size: 0;
+  padding: var(--space-3);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.benchmark-report-kpis dt,
+.benchmark-report-kpis dd:last-child {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.benchmark-report-kpis dd { margin: 0; }
+.benchmark-report-kpis dd:nth-child(2) {
+  margin-block: 3px;
+  font-size: clamp(19px, 2.15vw, 30px);
+  font-weight: 650;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.benchmark-report-kpis dd:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.benchmark-report-kpis .is-best { color: var(--success); }
+.benchmark-report-kpis .is-worst { color: var(--danger); }
+
+.benchmark-report-table-section {
+  min-inline-size: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.benchmark-report-table-section > p { margin: 0; padding: var(--space-2) var(--space-3); }
+.benchmark-report-table { max-block-size: 46dvh; overflow: auto; }
+.benchmark-report-table table {
+  inline-size: 100%;
+  min-inline-size: 820px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.benchmark-report-table thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--bg-muted);
+}
+.benchmark-report-table th,
+.benchmark-report-table td {
+  padding: 7px var(--space-2);
+  border-block-end: 1px solid var(--border);
+  white-space: nowrap;
+  text-align: end;
+}
+.benchmark-report-table th { font-size: var(--fs-caption); font-weight: 600; }
+.benchmark-report-table th[scope="colgroup"] { text-align: center; }
+.benchmark-report-table th[rowspan],
+.benchmark-report-table td:first-child { text-align: start; padding-inline-start: var(--space-3); }
+.benchmark-report-table tbody tr { cursor: pointer; }
+.benchmark-report-table tbody tr[data-best] { background: color-mix(in srgb, var(--success) 12%, var(--bg-panel)); }
+.benchmark-report-table tbody tr[data-selected] td:first-child { box-shadow: inset 3px 0 var(--benchmark-selected); }
+.benchmark-report-table button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.benchmark-report-table button:focus-visible { outline: 2px solid var(--benchmark-selected); outline-offset: 2px; }
+.benchmark-report-table button span { color: var(--text-muted); }
+.benchmark-report-badge {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption);
+  line-height: 1.2;
+}
+.benchmark-report-badge.is-best { color: var(--success); }
+.benchmark-report-badge.is-current { color: var(--warning); }
+
+.benchmark-report-charts { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
+.benchmark-report-charts h3 { margin: 0; font-size: var(--fs-body); }
+.benchmark-report-charts header p { margin: 4px 0 var(--space-2); }
+.benchmark-report-chart { block-size: clamp(180px, 24dvh, 280px); }
+
+@media (max-width: 1200px) {
+  .benchmark-report-charts { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .benchmark-report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
