@@ -229,8 +229,11 @@
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }
 .game-mosaic-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.game-mosaic-stage > svg:not(.is-drawing) { pointer-events: none; }
-.game-mosaic-stage > svg.is-drawing { cursor: crosshair; touch-action: none; }
+.game-mosaic-stage > svg:not(.is-editing) { pointer-events: none; }
+.game-mosaic-stage > svg.is-editing { cursor: crosshair; touch-action: none; }
+.game-mosaic-mask { fill: color-mix(in srgb, var(--danger) 25%, transparent); stroke: var(--danger); stroke-width: 2; }
+.game-mosaic-mask.is-selected { fill: color-mix(in srgb, var(--accent) 40%, transparent); stroke: var(--accent); stroke-width: 3; }
+.game-mosaic-mask-selection { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
 .game-mosaic-progress, .game-mosaic-error { margin: 0; font-size: var(--fs-body); }
 .game-mosaic-progress { color: var(--text-muted); overflow-wrap: anywhere; }
 .game-mosaic-status-group.has-error > details > summary > span:first-child,

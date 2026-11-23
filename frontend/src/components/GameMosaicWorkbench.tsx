@@ -1038,7 +1038,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setQuery(""); setSceneFilter(false); setGroupPages({}); setActiveId("");
   };
   const redrawReason = testTitle ?? busyReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
-  const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已框选蒙版的待重绘图片" : undefined);
+  const batchReason = testTitle ?? busyReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已有蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile

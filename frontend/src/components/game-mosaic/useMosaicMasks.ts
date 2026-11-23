@@ -5,30 +5,48 @@ import type { UnityImage } from "../../unityOffline";
 import { resultFor } from "./mosaicBatchRunner";
 import type { MaskEdit, MaskUndoItem, MosaicMaskOptions } from "./mosaicWorkbenchTypes";
 
-function position(event: PointerEvent<SVGSVGElement>, image: UnityImage): [number, number] {
+type MaskTool = "add" | "select";
+type Point = [number, number];
+const emptySelection: ReadonlySet<MosaicBox> = new Set();
+
+function position(event: PointerEvent<SVGSVGElement>, image: UnityImage): Point {
   const box = event.currentTarget.getBoundingClientRect();
-  return [Math.max(0, Math.min(image.width, Math.round((event.clientX - box.left) * image.width / box.width))),
-    Math.max(0, Math.min(image.height, Math.round((event.clientY - box.top) * image.height / box.height)))];
+  return [Math.max(0, Math.min(image.width, (event.clientX - box.left) * image.width / box.width)),
+    Math.max(0, Math.min(image.height, (event.clientY - box.top) * image.height / box.height))];
 }
 
-function bounds(a: [number, number], b: [number, number]): MosaicBox {
+function bounds(a: Point, b: Point): MosaicBox {
   return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
+function overlaps(box: MosaicBox, area: MosaicBox) {
+  return Math.min(box[2], area[2]) > Math.max(box[0], area[0]) &&
+    Math.min(box[3], area[3]) > Math.max(box[1], area[1]);
 }
 
 export function useMosaicMasks({ gamePath, active, activeResult, members, usable, rows, getRows, candidates,
   hasStorage, blocked, actionsDisabled, commit }: MosaicMaskOptions) {
   const [maskUndo, setMaskUndo] = useState<MaskUndoItem[][]>([]);
-  const [drawing, setDrawing] = useState(false);
+  const [tool, setTool] = useState<MaskTool | null>(null);
   const [draft, setDraft] = useState<MosaicBox>();
-  const anchor = useRef<[number, number] | null>(null);
+  const [selection, setSelection] = useState(emptySelection);
+  const anchor = useRef<{ pointerId: number; point: Point } | null>(null);
   const clearUndo = useCallback(() => { setMaskUndo([]); }, []);
   useLayoutEffect(clearUndo, [clearUndo, gamePath, active?.id, active?.sourceHash]);
 
-  const resetDrawing = useCallback(() => {
+  const cancelDrag = useCallback(() => {
     anchor.current = null;
-    setDrawing(false); setDraft(undefined);
+    setDraft(undefined);
   }, []);
-  const activeBoxes = [...(activeResult?.boxes || []), ...(draft ? [draft] : [])];
+  const resetDrawing = useCallback(() => {
+    cancelDrag();
+    setTool(null);
+    setSelection(emptySelection);
+  }, [cancelDrag]);
+  useLayoutEffect(resetDrawing, [resetDrawing, gamePath, active?.id, active?.sourceHash]);
+
+  const activeBoxes = activeResult?.boxes ?? [];
+  const hasSelection = activeBoxes.some(box => selection.has(box));
   const maskCopyTargets = active ? members.filter(image => image.id !== active.id &&
     !resultFor(rows, image).boxes.length && Math.abs(image.width / image.height / (active.width / active.height) - 1) <= 0.04) : [];
 
@@ -51,6 +69,7 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
     }
     if (!undo.length) return;
     if (!commit({ rows: next, candidates: undo.map(({ id }) => ({ id })) })) return;
+    if (undo.some(({ id }) => id === active?.id)) setSelection(emptySelection);
     setMaskUndo(previous => [...previous, undo]);
   }
 
@@ -67,34 +86,61 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
     const matching = edits.filter(edit => liveSources.get(edit.id) === edit.source && current[edit.id]?.source === edit.source);
     for (const { id, mask } of matching) next[id] = { ...current[id], ...mask };
     if (!commit({ rows: matching.length ? next : undefined, candidates: matching })) return;
-    anchor.current = null;
-    setDraft(undefined);
+    cancelDrag();
+    setSelection(emptySelection);
     setMaskUndo(previous => previous.slice(0, -1));
   }
 
+  function toggleTool(next: MaskTool) {
+    cancelDrag();
+    setTool(current => current === next ? null : next);
+    setSelection(emptySelection);
+  }
+
+  function clear() {
+    if (!active) return;
+    const boxes = resultFor(getRows(), active).boxes;
+    editMask(active, hasSelection ? boxes.filter(box => !selection.has(box)) : []);
+  }
+
+  function cancelPointer(event: PointerEvent<SVGSVGElement>) {
+    if (anchor.current?.pointerId === event.pointerId) cancelDrag();
+  }
+
   return {
-    drawing, activeBoxes, clearUndo, resetDrawing, canUndo: maskUndo.length > 0, canCopy: maskCopyTargets.length > 0,
-    toggleDrawing: () => setDrawing(value => !value),
+    tool, draft, activeBoxes, selection, hasSelection, clearUndo, resetDrawing,
+    canUndo: maskUndo.length > 0, canCopy: maskCopyTargets.length > 0, toggleTool,
     deleteLast: () => { if (active && activeResult) editMask(active, activeResult.boxes.slice(0, -1)); },
-    clear: () => { if (active) editMask(active, []); },
+    clear,
     copy: () => {
       if (!active || !activeResult) return;
       editMasks(maskCopyTargets.map(image => ({ image, boxes: mapMosaicBoxes(activeResult.boxes, active, image) })));
     },
     undo: undoMaskEdit,
     onPointerDown: (event: PointerEvent<SVGSVGElement>) => {
-      if (!active || !drawing || actionsDisabled || event.button !== 0) return;
-      anchor.current = position(event, active); event.currentTarget.setPointerCapture(event.pointerId);
+      if (!active || !tool || actionsDisabled || event.button !== 0 || !event.isPrimary) return;
+      anchor.current = { pointerId: event.pointerId, point: position(event, active) };
+      event.currentTarget.setPointerCapture(event.pointerId);
     },
     onPointerMove: (event: PointerEvent<SVGSVGElement>) => {
-      if (active && anchor.current) setDraft(bounds(anchor.current, position(event, active)));
+      const start = anchor.current;
+      if (active && start?.pointerId === event.pointerId) setDraft(bounds(start.point, position(event, active)));
     },
     onPointerUp: (event: PointerEvent<SVGSVGElement>) => {
-      if (!active || !activeResult || !anchor.current) return;
-      const box = bounds(anchor.current, position(event, active));
-      anchor.current = null; setDraft(undefined);
-      if (!actionsDisabled && box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...activeResult.boxes, box]);
+      const start = anchor.current;
+      if (start?.pointerId !== event.pointerId) return;
+      cancelDrag();
+      if (!active || !tool || actionsDisabled || blocked()) return;
+      const area = bounds(start.point, position(event, active));
+      const boxes = resultFor(getRows(), active).boxes;
+      if (tool === "select") {
+        setSelection(new Set(boxes.filter(box => overlaps(box, area))));
+      } else {
+        const [left, top, right, bottom] = area;
+        const box: MosaicBox = [Math.round(left), Math.round(top), Math.round(right), Math.round(bottom)];
+        if (box[2] - box[0] >= 4 && box[3] - box[1] >= 4) editMask(active, [...boxes, box]);
+      }
     },
-    onPointerCancel: () => { anchor.current = null; setDraft(undefined); },
+    onPointerCancel: cancelPointer,
   };
 }
