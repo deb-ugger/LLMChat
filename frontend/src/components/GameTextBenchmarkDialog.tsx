@@ -747,11 +747,15 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [compareRuns, setCompareRuns] = useState<readonly BenchmarkCompareRun[] | null>(null);
   const [perfNow, setPerfNow] = useState<SystemPerformancePoint | null>(null);
   const [perfPoints, setPerfPoints] = useState<SystemPerformancePoint[]>([]);
-  const anyRunning = snapshot.jobs.some(job => job.status === "运行中");
+  const anyRunning = snapshot.jobs.some(job => job.status === "运行中") ||
+    snapshot.formalJobs.some(job => job.state === "running");
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let attempts = 0;
     const pull = async () => {
+      let hasHistory = false;
+      attempts++;
       try {
         const [now, history] = await Promise.all([
           fetchSystemPerformanceNow(),
@@ -759,16 +763,18 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         ]);
         if (cancelled) return;
         if (now) setPerfNow(now);
-        setPerfPoints(history);
+        if (history.length) setPerfPoints(history);
+        hasHistory = history.length > 1;
       } catch {
-        /* 后端未起时静默，性能条保持上一次读数 */
+        // Retain the last sample while the sidecar is unavailable.
+      } finally {
+        if (!cancelled && (anyRunning || (attempts < 3 && !hasHistory))) timer = window.setTimeout(pull, 3000);
       }
     };
     void pull();
-    if (anyRunning) timer = window.setInterval(pull, 3000);
     return () => {
       cancelled = true;
-      if (timer) window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
   }, [anyRunning]);
   const [reload, setReload] = useState(0);

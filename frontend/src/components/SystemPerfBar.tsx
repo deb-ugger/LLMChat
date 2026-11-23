@@ -2,7 +2,7 @@ import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { useEffect, useMemo, useRef, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { useChartColors } from "./chartTheme";
 import type { SystemPerformancePoint } from "../benchmark/systemPerformanceTypes";
 
@@ -20,7 +20,7 @@ const METRICS: { key: MetricKey; label: string }[] = [
 
 function formatValue(key: MetricKey, value: number | null): string {
   if (value == null || Number.isNaN(value)) return "—";
-  if (key === "network") {
+  if (key === "network" || key === "disk") {
     if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB/s`;
     if (value >= 1024) return `${(value / 1024).toFixed(0)} KB/s`;
     return `${value.toFixed(0)} B/s`;
@@ -62,6 +62,13 @@ function useTimeline(
           data: points.map((point, i) => [times[i], point.cpu]),
         },
         {
+          name: "内存",
+          type: "line",
+          showSymbol: false,
+          lineStyle: { width: 1, color: colors.mutedText },
+          data: points.map((point, i) => [times[i], point.memory]),
+        },
+        {
           name: "GPU",
           type: "line",
           showSymbol: false,
@@ -89,8 +96,7 @@ export function SystemPerfBar({
 }) {
   const colors = useChartColors();
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const series = useMemo(() => points.slice(-120), [points]);
-  useTimeline(chartRef, series, colors);
+  useTimeline(chartRef, points, colors);
   const hasData = METRICS.some(({ key }) => latest?.[key] != null);
 
   return (
@@ -98,7 +104,7 @@ export function SystemPerfBar({
       <span className="game-benchmark-sys-title">性能</span>
       {METRICS.map(({ key, label }) => {
         const value = latest?.[key] ?? null;
-        const peak = series.reduce<number | null>((max, point) => {
+        const peak = points.reduce<number | null>((max, point) => {
           const current = point[key];
           if (current == null) return max;
           return max == null || current > max ? current : max;
@@ -111,13 +117,13 @@ export function SystemPerfBar({
           </span>
         );
       })}
-      <span className="game-benchmark-syschart">
-        {hasData ? (
-          <span ref={chartRef} className="game-benchmark-syschart-canvas" aria-hidden="true" />
+      <div className="game-benchmark-syschart">
+        {hasData && points.length > 0 ? (
+          <div ref={chartRef} className="game-benchmark-syschart-canvas" role="img" aria-label="最近 30 分钟 CPU、内存和 GPU 趋势" />
         ) : (
           <span className="game-benchmark-syschart-empty">等待采样</span>
         )}
-      </span>
+      </div>
     </div>
   );
 }
