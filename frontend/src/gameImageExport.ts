@@ -143,6 +143,8 @@ export type GameImageExportGenerateResult = {
   skipped: number;
 };
 
+export type GameImageExportWarning = { code: string; message: string };
+
 export type GameImageExportReceipt = {
   schemaVersion: 1;
   packageId: string;
@@ -150,6 +152,7 @@ export type GameImageExportReceipt = {
   gameRootId: string;
   planSha256: string;
   state: GameImageExportReceiptState;
+  warning?: GameImageExportWarning;
   files: {
     kind?: GameImageExportKind;
     state?: "applied" | "restored";
@@ -170,7 +173,11 @@ export type GameImageExportReceiptStatus = {
 };
 
 export type GameImageExportApplyResult = GameImageExportReceipt & { state: "applied" };
-export type GameImageExportRestoreResult = GameImageExportReceipt & { state: "partiallyRestored" | "restored" };
+export type GameImageExportRestoreResult = Omit<GameImageExportReceipt, "warning"> & {
+  state: "partiallyRestored" | "restored";
+  // Legacy and interrupted restores can return a plain message instead of the receipt warning.
+  warning?: GameImageExportWarning | string;
+};
 
 export type GameImageExportFailure = {
   code: string;
@@ -208,6 +215,23 @@ export type GameImageExportOperationStatus<Result = GameImageExportResult> =
   | GameImageExportTerminalStatus<Result>;
 
 const BASE = "/api/game-image-exports";
+const receiptWarnings = new Map<string, GameImageExportWarning>();
+const warningListeners = new Set<() => void>();
+
+export const gameImageExportWarning = (packagePath: string) => receiptWarnings.get(packagePath);
+
+export function subscribeGameImageExportWarnings(listener: () => void) {
+  warningListeners.add(listener);
+  return () => { warningListeners.delete(listener); };
+}
+
+function publishReceiptWarning(packagePath: string, warning?: GameImageExportWarning) {
+  const previous = receiptWarnings.get(packagePath);
+  if (previous?.code === warning?.code && previous?.message === warning?.message) return;
+  if (warning) receiptWarnings.set(packagePath, warning);
+  else receiptWarnings.delete(packagePath);
+  for (const listener of warningListeners) listener();
+}
 
 async function request<Result>(path: string, init?: RequestInit): Promise<Result> {
   try {
@@ -249,12 +273,16 @@ export const gameImageExportApi = {
     post<GameImageExportQueued>("/apply", body, signal),
   restore: (body: GameImageExportRestoreRequest, signal?: AbortSignal) =>
     post<GameImageExportQueued>("/restore", body, signal),
-  queryReceipt: (body: GameImageExportReceiptLookup, signal?: AbortSignal) =>
-    post<GameImageExportReceiptStatus>("/receipts/query", body, signal),
+  queryReceipt: async (body: GameImageExportReceiptLookup, signal?: AbortSignal) => {
+    const status = await post<GameImageExportReceiptStatus>("/receipts/query", body, signal);
+    if (!signal?.aborted) publishReceiptWarning(body.packagePath, status.applied ? status.receipt.warning : undefined);
+    return status;
+  },
   cancel: (operationId: string, signal?: AbortSignal) =>
     post<GameImageExportCancelResult>(operationPath(operationId) + "/cancel", {}, signal),
   remove: async (packagePath: string, signal?: AbortSignal): Promise<void> => {
     await post<unknown>("/remove", { packagePath }, signal);
+    publishReceiptWarning(packagePath);
   },
 };
 
