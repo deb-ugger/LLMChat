@@ -189,6 +189,8 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   let pausedRunId: string | undefined;
   let imageSamples: ImageBenchmarkInput[] | undefined;
   let scoreFreeze: MosaicScoreFreeze | undefined;
+  let freezeForRestart: (() => Promise<void>) | undefined;
+  let refreshScoreFreeze = false;
   let updateAnnotatedImageSamples: ((configs: BenchmarkConfig[]) => void) | undefined;
   let createStepRunner: ((context: JobContext, report: (value: UnityProgress) => void) => BenchmarkStepRunner) | undefined;
   if (mosaic) {
@@ -217,13 +219,23 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     imageSamples = archive?.details.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
       annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
     if (step !== "mosaicRedraw") {
+      const referencePath = request.referenceSampleSetPath ?? request.sampleSetPath;
+      const freezeWithReference = async (reference: typeof annotated) => {
+        const lookup = mosaicTruthLookup(reference);
+        const scoringSamples = imageSamples!.map(item => ({
+          ...item, mosaicTruth: reference ? lookup(item) : item.mosaicTruth ?? null,
+        }));
+        scoreFreeze = await freezeMosaicInputs(scoringSamples);
+        imageSamples = scoringSamples;
+      };
       if (!archive) {
-        const reference = request.referenceSampleSetPath && request.referenceSampleSetPath !== request.sampleSetPath
-          ? await loadAnnotatedSampleSet(request.referenceSampleSetPath) : annotated;
-        const truth = mosaicTruthLookup(reference);
-        imageSamples = imageSamples.map(item => ({ ...item, mosaicTruth: truth(item) }));
+        await freezeWithReference(referencePath && referencePath !== request.sampleSetPath
+          ? await loadAnnotatedSampleSet(referencePath) : annotated);
+      } else if (imageSamples.every(item => item.mosaicTruth !== undefined)) {
+        scoreFreeze = await freezeMosaicInputs(imageSamples);
       }
-      if (imageSamples.every(item => item.mosaicTruth !== undefined)) scoreFreeze = await freezeMosaicInputs(imageSamples);
+      // Starting over keeps the archived images and seeds but freezes truth for the new run.
+      freezeForRestart = async () => freezeWithReference(referencePath ? await loadAnnotatedSampleSet(referencePath) : undefined);
     }
     createStepRunner = (context, report) => (config, settings, scope, record, runId, preceding) =>
       runMosaicBenchmark(step, sample, snapshot, context.signal, (image, signal) => {
@@ -304,7 +316,12 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     failures = failedSamples = runs = finishedSamples = unfinishedSamples = 0;
     failureDetail = undefined;
     archivedConfigElapsedMs = 0;
+    refreshScoreFreeze = true;
   }, run: async context => {
+    if (refreshScoreFreeze && freezeForRestart) {
+      await freezeForRestart();
+      refreshScoreFreeze = false;
+    }
     if (pausedRunId) await readMosaicCheckpoint?.(context.id, pausedRunId);
     context.signal.throwIfAborted();
     const sampleLabel = (sample: string) => sample.replace(/\s+/g, " ").trim().slice(0, 140);
