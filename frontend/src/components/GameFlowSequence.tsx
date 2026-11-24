@@ -13,6 +13,7 @@ import { benchmarkBlockingReason, isBenchmarkRunning, resumeBenchmarkJob, useBen
 export type GameFlowStep = {
   id: string;
   title: string;
+  groupedParameters?: boolean;
   summary?: string;
   models?: { role: string; id?: string }[];
   state: "done" | "current" | "waiting";
@@ -593,6 +594,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const elapsed = liveActivity?.elapsed ?? (measured.elapsedMs > 0 || measured.started !== undefined
           ? gameDuration(measured.elapsedMs) : undefined);
         return <li key={step.id} style={{ minInlineSize: 0 }}><GameFlowCard title={step.title} state={state} benchmark={displayedTest} current={current}
+          groupedParameters={step.groupedParameters} headerSummary={step.summary}
           disclosure={{ expanded, toggle: expanded ? () => expansion.setExpanded(expansionId(step), false) : openConfiguration }}
           onConfigure={openConfiguration}
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
@@ -604,7 +606,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           statusLine={liveActivity?.statusLine}
           parametersLocked={configurationLocked}
           runningParameters={step.runningParameters ?? (matchesActivity ? runningParameters : undefined)}
-          details={!testMetrics && (liveActivity?.details ?? (!Object.keys(measured.models).length && !configuredModels.length && step.summary &&
+          details={!testMetrics && (liveActivity?.details ?? (!step.groupedParameters && !Object.keys(measured.models).length && !configuredModels.length && step.summary &&
             <small className="game-flow-model-rates">{step.summary}</small>))}
           performance={(expanded || state === "running" || formalPaused || testMetrics) &&
             <GameFlowPerformance measured={measured} models={configuredModels} />}

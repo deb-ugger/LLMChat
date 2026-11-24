@@ -13,9 +13,9 @@ import { recognizeLocalGameImage } from "../gameImageRecognitionInput";
 import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { readRpgGameImageNames, translateNamedImageText, type ImageNameMemory } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
-import { GameFlowParameterGroup } from "./GameFlowCard";
+import { GameFlowNumberChip, GameFlowParameterGroup } from "./GameFlowCard";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
-import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
+import { gameAvailableModels, GameModelSelect, GameProcessingMethod, GameProcessingTabs, GameTranslationMethod } from "./GameTranslationTabs";
 import { logRuntimeError } from "../runtimeLog";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { registerAppCloseGuard } from "../appClose";
@@ -845,7 +845,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     { id: "recognize", title: "识字与定位", models: [{role:"recognize",id:stageModels.recognize}], summary: stageModels.recognize!==undefined ? "大模型识别" : OCR_MODE_OPTIONS.find(item => item.id === mode)?.title, state: !complete.filter || !complete.refine ? "waiting" : complete.recognize || !selected.length ? "done" : "current",
       run: !flowBusy && complete.filter && complete.refine && !complete.recognize && selected.length ? () => void runStage("recognize") : undefined,
       clear: !flowBusy && imageRecognitionAttempted ? () => void resetImages("recognize") : undefined },
-    { id: "translate", title: "翻译图片文字", models: translationKind === "engine" ? [] : [{role:"image",id:translationModel}], summary: translationKind === "engine" ? "翻译引擎" : translationModel.split("/").pop(), state: !recognitionReady ? "waiting" : textDone || reviewReady ? "done" : "current",
+    { id: "translate", title: "翻译图片文字", groupedParameters: true, models: translationKind === "engine" ? [] : [{role:"image",id:translationModel}], summary: translationKind === "engine" ? "翻译引擎" : translationModel.split("/").pop(), state: !recognitionReady ? "waiting" : textDone || reviewReady ? "done" : "current",
       stateLabel: reviewReady ? "初译结束，有待复核" : undefined,
       run: !flowBusy && recognitionReady && !textDone && !reviewReady ? () => void runStage("translate") : undefined,
       clear: !flowBusy && imageTranslationAttempted ? () => void resetImages("translate") : undefined },
@@ -920,34 +920,44 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const configLocked = useBenchmarkRunning() || clearing || !project || !!busy && (configured === operationStep.current || imageFlow.some(step => step.id === configured && step.state === "done"));
   const imageProcessingSettings = (step: "filter" | "recognize" | "render") => {
     const model = stageModels[step];
-    const label = step === "render" ? "译图排版" : step === "recognize" ? "图片识别" : "筛选方式";
+    const label = step === "render" ? "译图排版" : step === "recognize" ? "识别方式" : "筛选方式";
     const setModel = (value: string | undefined) => setStageModels(previous => {
       const next = { ...previous };
       if (value === undefined) delete next[step];
       else next[step] = value;
       return next;
     });
+    const method = {
+      label, localLabel: step === "render" ? "保留底图排版" : step === "filter" ? "本地筛选" : "本地 OCR",
+      disabled: configLocked, value: model !== undefined ? "llm" as const : "local" as const,
+      onChange: (value: "local" | "llm") => setModel(value === "llm" ? "" : undefined),
+    };
+    const modelField = model !== undefined && <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
+      label={step === "render" ? "断行排版模型" : "视觉模型"} value={model} models={models} disabled={configLocked} onChange={setModel} />;
+    const ocrMode = step === "recognize" && model === undefined && <label>{configured === "translate" ? "识别模式" : "图片识别"}<select value={mode} disabled={configLocked}
+      onChange={event => setMode(event.target.value as OcrMode)}>
+      {OCR_MODE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
+    </select></label>;
+    const setConfidence = (value: number) => setStageModels(previous => ({ ...previous, confidence: String(value) }));
     return {
       models: <div className="game-flow-parameter-group" role="group" aria-label={label}>
-        {configured === "translate" && <h6>{label}</h6>}
-        <GameProcessingTabs label={label}
-          localLabel={step === "render" ? "保留底图排版" : step === "filter" ? "本地筛选" : "本地 OCR"}
-          disabled={configLocked} value={model !== undefined ? "llm" : "local"}
-          onChange={value => setModel(value === "llm" ? "" : undefined)}>
-          {model !== undefined && <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
-            label={step === "render" ? "断行排版模型" : "视觉模型"}
-            value={model} models={models} disabled={configLocked} onChange={setModel} />}
-        </GameProcessingTabs>
+        <GameProcessingTabs {...method} label={step === "recognize" ? "图片识别" : label}>{modelField}</GameProcessingTabs>
       </div>,
+      method: <GameProcessingMethod {...method} />,
+      modelField,
+      ocrMode,
+      runtimeChips: step === "recognize" && <>
+        <GameFlowNumberChip label="翻译置信度阈值（%）" min={0} max={100} value={confidence} disabled={configLocked}
+          onChange={setConfidence} />
+        {model === undefined && <GameFlowNumberChip label="识别并发" ariaLabel="图片识别并发" choices={[1, 2, 3, 4, 6, 8]}
+          hint="分级快筛最多使用四个独立识别通道。" value={concurrency} disabled={configLocked} onChange={setConcurrency} />}
+      </>,
       runtime: <>
         {step === "recognize" && <>
           <label title="翻译置信度阈值（0-100）">置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence}
-            onChange={event => setStageModels(previous => ({ ...previous,
-              confidence: String(Math.min(100, Math.max(0, Number(event.target.value)))) }))} /></label>
+            onChange={event => setConfidence(Math.min(100, Math.max(0, Number(event.target.value))))} /></label>
           {model === undefined && <>
-            <label>图片识别<select value={mode} disabled={configLocked} onChange={event => setMode(event.target.value as OcrMode)}>
-              {OCR_MODE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
-            </select></label>
+            {ocrMode}
             <label>识别并发<select aria-label="图片识别并发" data-tooltip="分级快筛最多使用四个独立识别通道。"
               value={concurrency} disabled={configLocked} onChange={event => setConcurrency(Number(event.target.value))}>
               {[1, 2, 3, 4, 6, 8].map(value => <option key={value}>{value}</option>)}
@@ -961,7 +971,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
 ]} /></label>}
       </>,
       behavior: step === "recognize" && model !== undefined && <label className="unity-inline-check">
-        <input type="checkbox" checked={mode === "manga"} disabled={configLocked}
+        <input type="checkbox" role={configured === "translate" ? "switch" : undefined} checked={mode === "manga"} disabled={configLocked}
           onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排
       </label>,
       help: step === "render" && <p className="hint">
@@ -988,29 +998,29 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         remainingMs: stepProgress?.etaMs, details: progressState === "running" ? progressDetails : undefined },
       details: progressState !== "running" ? progressDetails : undefined }} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings game-flow-parameter-layout">
       {configured === "translate" && <>
-        <GameFlowParameterGroup kind="models">
-          <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => {
+        <GameFlowParameterGroup kind="scope" title="范围与方式">
+          <GameTranslationMethod kind={translationKind} disabled={configLocked} onChange={kind => {
             setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm");
-          }}>
-            {translationKind !== "engine" &&
-              <GameModelSelect label="翻译模型" promptKey="image" value={translationModel} disabled={configLocked}
-                models={models} onChange={setTranslationModel} />}
-            {translationKind==="engine"&&<UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={engineExpanded} onExpandedChange={setEngineExpanded} onChange={setEngines}/>}
-          </GameTranslationTabs>
-          {recognizeSettings.models}
-          {renderSettings.models}
-        </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="runtime">
+          }} />
           <label>原文语言<select aria-label="原文语言" value={source} disabled={configLocked || !!busy} onChange={e=>setSource(e.target.value)}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
           <label>目标语言<select aria-label="目标语言" value={target} disabled={configLocked || !!busy} onChange={e=>setTarget(e.target.value)}>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
-          {recognizeSettings.runtime}
+          {recognizeSettings.method}{recognizeSettings.ocrMode}{renderSettings.method}
+          {renderSettings.help}
         </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="behavior">
-          <label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={onlySourceLanguage} onChange={e=>setOnlySourceLanguage(e.target.checked)}/>仅翻源语言</label>
-          <label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={skipTargetLanguage} onChange={e=>setSkipTargetLanguage(e.target.checked)}/>跳过目标语言</label>
-          {recognizeSettings.behavior}
+        <GameFlowParameterGroup kind="models" title="模型">
+          {translationKind !== "engine" ? <GameModelSelect label="翻译模型" promptKey="image" value={translationModel}
+            disabled={configLocked} models={models} onChange={setTranslationModel} />
+          : <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={engineExpanded} onExpandedChange={setEngineExpanded} onChange={setEngines} />}
+          {recognizeSettings.modelField}{renderSettings.modelField}
         </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="help">{renderSettings.help}</GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="runtime" title="运行">
+          <div className="game-flow-chip-row">{recognizeSettings.runtimeChips}</div>
+          <div className="game-flow-chip-row">
+            <label><input type="checkbox" role="switch" disabled={configLocked || !!busy} checked={onlySourceLanguage} onChange={e=>setOnlySourceLanguage(e.target.checked)}/>仅翻源语言</label>
+            <label><input type="checkbox" role="switch" disabled={configLocked || !!busy} checked={skipTargetLanguage} onChange={e=>setSkipTargetLanguage(e.target.checked)}/>跳过目标语言</label>
+            {recognizeSettings.behavior}
+          </div>
+        </GameFlowParameterGroup>
       </>}
       {configured === "review" && <div className="unity-offline-fields"><GameModelSelect optional label="重译模型" promptKey="review" value={reviewModel} disabled={configLocked} models={models} onChange={setReviewModel}/></div>}
       {configured === "refine" && <div className="unity-offline-fields">

@@ -27,8 +27,8 @@ import { applyGameTestRoles, captureGameTestRoles, recommendedGameModels, type G
 import type { GameStepConfigurationCommit } from "./GameFlowSequence";
 import { formatFlowThroughput } from "../gameFlowMetrics";
 import { GameProgressBar, gameProgressLabels } from "./GameStepProgress";
-import { GameFlowParameterGroup, type GameFlowActivity } from "./GameFlowCard";
-import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
+import { GameFlowNumberChip, GameFlowParameterGroup, type GameFlowActivity } from "./GameFlowCard";
+import { gameAvailableModels, GameModelSelect, GameProcessingMethod, GameProcessingTabs, GameTranslationMethod } from "./GameTranslationTabs";
 import { prepareUnityImageSources, readUnitySourceImage } from "../unityImagePreview";
 import { useGameActionConfirm, logGameButton } from "./GameActionConfirm";
 import { defaultGameTextFilters, matchesGameTextFilters, limitGameText } from "./GameTextFilterMenu";
@@ -2130,7 +2130,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               stop: partRunning && imageTask.current === "recognize" ? () => stopPart("images") : undefined,
               stopDisabled: partStopping,
               runLabel: imagePartPaused ? "继续" : "开始", runDisabled: partActionDisabled, clear: canClearImageStep && imageRecognitionAttempted ? () => void restartStage(2, true) : undefined },
-            { id: "translate", title: "翻译图片文字", models: [{role:"image",id:translationKind === "engine" ? undefined : imageModel}], summary: imageModel.split("/").pop(),
+            { id: "translate", title: "翻译图片文字", groupedParameters: true, models: [{role:"image",id:translationKind === "engine" ? undefined : imageModel}], summary: picture.kind === "engine" ? "翻译引擎" : imageModel.split("/").pop(),
               state: !recognitionReady ? "waiting" : imageTextDone || imageReviewReady ? "done" : "current",
               run: recognitionReady && !imageTextDone && !imageReviewReady ? () => startTranslationPart("images", "translate") : undefined,
               stop: partRunning && imageTask.current === "translate" ? () => stopPart("images") : undefined,
@@ -2158,29 +2158,29 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               stop: partRunning && imageTask.current === "redraw" ? () => stopPart("images") : undefined,
               stopDisabled: partStopping, runDisabled: restoring || saving || !scanReady || !!busy },
           ] : [
-            { id: "screen", title: "筛选文本", models: [{role:"textScreen",id:textScreenModel}], summary: textScreenModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选", state: screenComplete ? "done" : "current", run: !screenComplete && selected.length ? () => void screenCurrentText() : undefined,
+            { id: "screen", title: "筛选文本", groupedParameters: true, models: [{role:"textScreen",id:textScreenModel}], summary: textScreenModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选", state: screenComplete ? "done" : "current", run: !screenComplete && selected.length ? () => void screenCurrentText() : undefined,
               stop: textScreening ? () => abort.current?.abort() : undefined, runLabel: textScreenPaused ? "继续" : "开始",
               stopDisabled: !!abort.current?.signal.aborted,
               runDisabled: restoring || saving || !scanReady || !!busy && !textScreening, clear: !busy && (textScreenStarted || screenComplete) ? () => void clearTextScreening() : undefined },
-            { id: "translate", title: "翻译正文",
-              models: translationKind === "engine" ? [] : [{role:"names",id:nameModel || llmModel},{role:"text",id:llmModel},{role:"dialogue",id:dialogueModel || llmModel},{role:"line",id:lineMode === "model" ? lineModel : undefined}], summary: llmModel.split("/").pop(), state: textReady ? "done" : screenComplete ? "current" : "waiting", run: screenComplete && !textReady ? () => startTranslationPart("text") : undefined,
+            { id: "translate", title: "翻译正文", groupedParameters: true,
+              models: translationKind === "engine" ? [] : [{role:"names",id:nameModel || llmModel},{role:"text",id:llmModel},{role:"dialogue",id:dialogueModel || llmModel},{role:"line",id:lineMode === "model" ? lineModel : undefined}], summary: translationKind === "engine" ? "翻译引擎" : llmModel.split("/").pop(), state: textReady ? "done" : screenComplete ? "current" : "waiting", run: screenComplete && !textReady ? () => startTranslationPart("text") : undefined,
               stop: partRunning ? () => stopPart("text") : undefined,
               stopDisabled: partStopping,
               runLabel: textPartPaused ? "继续" : "开始", runDisabled: partActionDisabled, clear: !busy && textCleanupAvailable ? () => void restartStage(2, true) : undefined },
           ],
   } : undefined;
-  const imageRecognitionModels = <div className="game-flow-parameter-group" role="group" aria-label="图片识别">
-    {flowConfig === "translate" && <h6>图片识别</h6>}
-    <GameProcessingTabs label="识别方式" localLabel="本地 OCR" disabled={flowConfigLocked}
-      value={imageVisionModel !== undefined ? "llm" : "local"} onChange={value => setImageVisionModel(value === "llm" ? "" : undefined)}>
-      {imageVisionModel !== undefined && <GameModelSelect label="视觉模型（需支持图片输入）" promptKey="recognize"
-        models={gameModels} value={imageVisionModel} disabled={flowConfigLocked} onChange={setImageVisionModel} />}
-    </GameProcessingTabs>
-  </div>;
-  const imageRecognitionRuntime = imageVisionModel === undefined && <>
-    <label>图片识别<select value={imageOcrMode} disabled={flowConfigLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>
+  const imageRecognitionMethod = {
+    label: "识别方式", localLabel: "本地 OCR", disabled: flowConfigLocked,
+    value: imageVisionModel !== undefined ? "llm" as const : "local" as const,
+    onChange: (value: "local" | "llm") => setImageVisionModel(value === "llm" ? "" : undefined),
+  };
+  const imageRecognitionModel = imageVisionModel !== undefined && <GameModelSelect label="视觉模型（需支持图片输入）" promptKey="recognize"
+    models={gameModels} value={imageVisionModel} disabled={flowConfigLocked} onChange={setImageVisionModel} />;
+  const imageOcrModeField = <label>{flowConfig === "translate" ? "识别模式" : "图片识别"}<select value={imageOcrMode} disabled={flowConfigLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>
       {OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}
-    </select></label>
+    </select></label>;
+  const imageRecognitionRuntime = imageVisionModel === undefined && <>
+    {imageOcrModeField}
     <label>识别并发<select aria-label="Unity 图片识别并发" value={imageConcurrency} disabled={flowConfigLocked}
       onChange={event => setImageConcurrency(Number(event.currentTarget.value))}>
       {[1, 2, 3, 4, 6, 8].map(value => <option key={value}>{value}</option>)}
@@ -2198,86 +2198,118 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     </label>
   </>;
   const imageRecognitionBehavior = imageVisionModel !== undefined && <label className="unity-inline-check">
-    <input type="checkbox" checked={imageOcrMode === "manga"} disabled={flowConfigLocked}
+    <input type="checkbox" role={flowConfig === "translate" ? "switch" : undefined} checked={imageOcrMode === "manga"} disabled={flowConfigLocked}
       onChange={event => setImageOcrMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排
   </label>;
   const imageRecognitionHelp = imageVisionModel === undefined && <p className="hint">可用底图优先按原像素恢复</p>;
-  const imageLayoutModels = <div className="game-flow-parameter-group" role="group" aria-label="译图排版">
-    {flowConfig === "translate" && <h6>译图排版</h6>}
-    <GameProcessingTabs label="译图排版" localLabel="保留底图排版" disabled={flowConfigLocked}
-      value={imageLayoutModel !== undefined ? "llm" : "local"} onChange={value => setImageLayoutModel(value === "llm" ? "" : undefined)}>
-      {imageLayoutModel !== undefined && <GameModelSelect label="断行排版模型" promptKey="layout" models={gameModels}
-        value={imageLayoutModel} disabled={flowConfigLocked} onChange={setImageLayoutModel} />}
-    </GameProcessingTabs>
-  </div>;
+  const imageLayoutMethod = {
+    label: "译图排版", localLabel: "保留底图排版", disabled: flowConfigLocked,
+    value: imageLayoutModel !== undefined ? "llm" as const : "local" as const,
+    onChange: (value: "local" | "llm") => setImageLayoutModel(value === "llm" ? "" : undefined),
+  };
+  const imageLayoutModelField = imageLayoutModel !== undefined && <GameModelSelect label="断行排版模型" promptKey="layout"
+    models={gameModels} value={imageLayoutModel} disabled={flowConfigLocked} onChange={setImageLayoutModel} />;
+  const flowTranslationKind = imagePart ? picture.kind : translationKind;
+  const targetLanguageField = <label>目标语言<select aria-label="目标语言" value={imagePart ? picture.target : target} disabled={flowConfigLocked}
+    onChange={event => {
+      if (imagePart) changePicture({ target: event.currentTarget.value });
+      else setTarget(event.currentTarget.value);
+      invalidatePatch();
+    }}>
+    {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
+  </select></label>;
+  const skipTargetSwitch = <label data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；共用汉字短词仍翻译。关闭后重做可强制翻译。">
+    <input type="checkbox" role="switch" checked={imagePart ? picture.skipTargetLanguage : skipTargetLanguage} disabled={sharedLanguageLocked}
+      onChange={event => imagePart ? changePicture({ skipTargetLanguage: event.currentTarget.checked }) : setSkipTargetLanguage(event.currentTarget.checked)} />跳过目标语言
+  </label>;
   const translationConfiguration = !mosaicPage && activeStep === 2 ? (
     <div className="unity-translation-settings game-flow-parameter-layout">
-          {!imagePart && flowConfig === "screen" && <GameProcessingTabs label="筛选方式" localLabel="本地筛选" value={textScreenModel === undefined ? "local" : "llm"}
-            disabled={flowConfigLocked} onChange={method => setTextScreenModel(method === "llm" ? "" : undefined)}>
-            <div className="unity-control-group"><div className="unity-group-fields unity-translation-fields">
-              {textScreenModel !== undefined && <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={gameModels} value={textScreenModel}
-                disabled={flowConfigLocked} onChange={setTextScreenModel} />}
-            <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={imagePart ? picture.onlySourceLanguage : onlySourceLanguage} disabled={sharedLanguageLocked} onChange={event => { imagePart ? changePicture({onlySourceLanguage:event.target.checked}) : setOnlySourceLanguage(event.target.checked); setPage(0); }} />仅翻译原语言</label></div><select value={imagePart ? picture.source : source} aria-label="原文语言" disabled={sharedLanguageLocked} onChange={e => { imagePart ? changePicture({source:e.target.value}) : setSource(e.target.value); setPage(0); }}><option value="auto">自动（主语言）</option>{sourceLanguages.map(language => <option key={language} value={language}>{unityLanguageLabel(language)}</option>)}<option value="all">全部语言</option></select></div>
-    <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={imagePart ? picture.skipTargetLanguage : skipTargetLanguage} disabled={sharedLanguageLocked} onChange={event => imagePart ? changePicture({skipTargetLanguage:event.target.checked}) : setSkipTargetLanguage(event.target.checked)} />跳过目标语言</label></div><select aria-label="目标语言" value={imagePart ? picture.target : target} disabled={flowConfigLocked} onChange={e => { imagePart ? changePicture({target:e.target.value}) : setTarget(e.target.value); invalidatePatch(); }}>{UNITY_LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}</select></div>
-            </div></div>
-          </GameProcessingTabs>}
+          {!imagePart && flowConfig === "screen" && <>
+            <GameFlowParameterGroup kind="scope" title="范围与方式">
+              <GameProcessingMethod label="筛选方式" localLabel="本地筛选" value={textScreenModel === undefined ? "local" : "llm"}
+                disabled={flowConfigLocked} onChange={method => setTextScreenModel(method === "llm" ? "" : undefined)} />
+              <label>原文语言<select aria-label="原文语言" value={source} disabled={sharedLanguageLocked}
+                onChange={event => { setSource(event.target.value); setPage(0); }}>
+                <option value="auto">自动（主语言）</option>
+                {sourceLanguages.map(language => <option key={language} value={language}>{unityLanguageLabel(language)}</option>)}
+                <option value="all">全部语言</option>
+              </select></label>
+              {targetLanguageField}
+            </GameFlowParameterGroup>
+            {textScreenModel !== undefined && <GameFlowParameterGroup kind="models" title="模型">
+              <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={gameModels} value={textScreenModel}
+                disabled={flowConfigLocked} onChange={setTextScreenModel} />
+            </GameFlowParameterGroup>}
+            <GameFlowParameterGroup kind="runtime" title="运行">
+              <div className="game-flow-chip-row">
+                <label data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。">
+                  <input type="checkbox" role="switch" checked={onlySourceLanguage} disabled={sharedLanguageLocked}
+                    onChange={event => { setOnlySourceLanguage(event.target.checked); setPage(0); }} />仅翻译原语言
+                </label>
+                {skipTargetSwitch}
+              </div>
+            </GameFlowParameterGroup>
+          </>}
           {flowConfig === "translate" && <>
-            <GameFlowParameterGroup kind="models">
-              <GameTranslationTabs kind={imagePart ? picture.kind : translationKind} disabled={flowConfigLocked} onChange={kind => {
+            <GameFlowParameterGroup kind="scope" title="范围与方式">
+              <GameTranslationMethod kind={flowTranslationKind} disabled={flowConfigLocked} onChange={kind => {
                 if (imagePart) { changePicture({ kind }); return; }
                 setTranslationKind(kind);
                 if (kind === "engine" && wrapMode === "natural") { setWrapMode("join"); setJoinLines(true); }
-              }}>
-            {(imagePart ? picture.kind : translationKind) !== "engine" && (imagePart
-              ? <>
-                  <GameModelSelect label="图片文字翻译模型" promptKey="image" models={gameModels} value={imageModel} disabled={flowConfigLocked} onChange={setImageModel} />
-                </>
-              : <>
-                <GameModelSelect label="常规文本模型" promptKey="text" models={gameModels} value={llmModel} disabled={flowConfigLocked} onChange={setLlmModel} />
-                <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={gameModels} value={dialogueModel} disabled={flowConfigLocked} onChange={setDialogueModel} />
-                <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={gameModels} value={nameModel} disabled={flowConfigLocked} onChange={setNameModel} />
-              </>)}
-                {(imagePart ? picture.kind : translationKind) === "engine" && <UnityEngineList choices={imagePart ? picture.engines : engineChoices} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={flowConfigLocked} expanded={engineListExpanded} onExpandedChange={setEngineListExpanded} onChange={imagePart ? engines=>changePicture({engines}) : updateEngineChoices} />}
-              </GameTranslationTabs>
-              {imagePart ? <>{imageRecognitionModels}{imageLayoutModels}</> : <>
-                {joinLines && wrapMode!=="natural" && lineMode === "model" && <GameModelSelect label="断行辅助模型" promptKey="line" value={lineModel||settings.model} models={gameModels} disabled={flowConfigLocked} onChange={value=>updateLineOptions(lineMode,value===settings.model?"":value)}/>}
-              </>}
-            </GameFlowParameterGroup>
-            <GameFlowParameterGroup kind="runtime">
+              }} />
               {imagePart && <label>原文语言<select aria-label="原文语言" value={picture.source} disabled={flowConfigLocked}
                 onChange={event => changePicture({ source: event.currentTarget.value })}>
                 <option value="auto">自动检测</option>
                 {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
                 <option value="all">全部语言</option>
               </select></label>}
-              <label>目标语言<select aria-label="目标语言" value={imagePart ? picture.target : target} disabled={flowConfigLocked}
-                onChange={event => {
-                  if (imagePart) changePicture({ target: event.currentTarget.value });
-                  else setTarget(event.currentTarget.value);
-                  invalidatePatch();
-                }}>
-                {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
-              </select></label>
-              {imagePart ? imageRecognitionRuntime : <>
+              {targetLanguageField}
+              {imagePart ? <>
+                <GameProcessingMethod {...imageRecognitionMethod} />
+                {imageVisionModel === undefined && imageOcrModeField}
+                <GameProcessingMethod {...imageLayoutMethod} />
+              </> : <>
                 <label>换行处理<UnityDescriptionSelect label="换行处理" value={wrapMode} choices={translationKind==="engine"?UNITY_WRAP_CHOICES.filter(choice=>choice.value!=="natural"):UNITY_WRAP_CHOICES} disabled={flowConfigLocked} onChange={value => { const enabled = value !== "keep"; setJoinLines(enabled);setWrapMode(value as GameWrapMode); const saved = checkpointRef.current; if (saved && !saved.finished && saved.step === 2 && !saved.layoutOnly) remember({ ...saved, joinLines: enabled,wrapMode:value as GameWrapMode }); }} /></label>
                 {joinLines && wrapMode!=="natural" && <label>断行方式<UnityDescriptionSelect label="断行方式" value={lineMode} choices={UNITY_LINE_CHOICES} disabled={flowConfigLocked} onChange={value => updateLineOptions(value as UnityLineMode, lineModel)} /></label>}
               </>}
             </GameFlowParameterGroup>
-            <GameFlowParameterGroup kind="behavior">
-              {imagePart && <label className="unity-inline-check"><input type="checkbox" checked={picture.onlySourceLanguage} disabled={sharedLanguageLocked}
-                onChange={event => changePicture({ onlySourceLanguage: event.currentTarget.checked })} />仅翻原语言</label>}
-              <label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；共用汉字短词仍翻译。关闭后重做可强制翻译。">
-                <input type="checkbox" checked={imagePart ? picture.skipTargetLanguage : skipTargetLanguage} disabled={sharedLanguageLocked}
-                  onChange={event => imagePart ? changePicture({ skipTargetLanguage: event.currentTarget.checked }) : setSkipTargetLanguage(event.currentTarget.checked)} />跳过目标语言
-              </label>
-              {(imagePart ? picture.kind : translationKind) !== "engine" && <label className="unity-inline-check" data-tooltip={GAME_CONTEXT_HINT}>
-                <input type="checkbox" checked={includeContext} disabled={flowConfigLocked} onChange={event => setIncludeContext(event.currentTarget.checked)} />附带上下文
-              </label>}
-              {imagePart && imageRecognitionBehavior}
+            <GameFlowParameterGroup kind="models" title="模型">
+              {flowTranslationKind === "engine"
+                ? <UnityEngineList choices={imagePart ? picture.engines : engineChoices} keys={parseEngineKeys(settings.translateEngineKeys)}
+                  disabled={flowConfigLocked} expanded={engineListExpanded} onExpandedChange={setEngineListExpanded}
+                  onChange={imagePart ? engines => changePicture({ engines }) : updateEngineChoices} />
+                : imagePart ? <GameModelSelect label="图片文字翻译模型" promptKey="image" models={gameModels} value={imageModel}
+                  disabled={flowConfigLocked} onChange={setImageModel} /> : <>
+                  <GameModelSelect label="常规文本模型" promptKey="text" models={gameModels} value={llmModel} disabled={flowConfigLocked} onChange={setLlmModel} />
+                  <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={gameModels} value={dialogueModel} disabled={flowConfigLocked} onChange={setDialogueModel} />
+                  <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={gameModels} value={nameModel} disabled={flowConfigLocked} onChange={setNameModel} />
+                </>}
+              {imagePart ? <>{imageRecognitionModel}{imageLayoutModelField}</>
+                : joinLines && wrapMode !== "natural" && lineMode === "model" && <GameModelSelect label="断行辅助模型" promptKey="line" value={lineModel || settings.model}
+                  models={gameModels} disabled={flowConfigLocked} onChange={value => updateLineOptions(lineMode, value === settings.model ? "" : value)} />}
+            </GameFlowParameterGroup>
+            <GameFlowParameterGroup kind="runtime" title="运行">
+              {imagePart && imageVisionModel === undefined && <div className="game-flow-chip-row">
+                <GameFlowNumberChip label="识别并发" ariaLabel="Unity 图片识别并发" choices={[1, 2, 3, 4, 6, 8]}
+                  value={imageConcurrency} disabled={flowConfigLocked} onChange={setImageConcurrency} />
+                <GameFlowNumberChip label="翻译置信度阈值（%）" ariaLabel="图片翻译置信度阈值"
+                  hint="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。"
+                  min={0} max={100} value={imageConfidenceThreshold} disabled={flowConfigLocked} onChange={setImageConfidenceThreshold} />
+              </div>}
+              <div className="game-flow-chip-row">
+                {imagePart && <label><input type="checkbox" role="switch" checked={picture.onlySourceLanguage} disabled={sharedLanguageLocked}
+                  onChange={event => changePicture({ onlySourceLanguage: event.currentTarget.checked })} />仅翻原语言</label>}
+                {skipTargetSwitch}
+                {flowTranslationKind !== "engine" && <label data-tooltip={GAME_CONTEXT_HINT}>
+                  <input type="checkbox" role="switch" checked={includeContext} disabled={flowConfigLocked}
+                    onChange={event => setIncludeContext(event.currentTarget.checked)} />附带上下文
+                </label>}
+                {imagePart && imageRecognitionBehavior}
+              </div>
+              {imagePart && imageRecognitionHelp}
             </GameFlowParameterGroup>
             <GameFlowParameterGroup kind="help">
-              {!connectionReady && <p className="unity-offline-error unity-group-note">{translationKind === "local" ? "请在通用设置添加本地模型，再选择翻译模型。" : translationKind === "llm" ? "所选模型尚未配置 API 地址，请前往通用设置配置。" : "请在下方列表中启用至少一个免 Key 或已配置凭证的引擎。"}</p>}
-              {imagePart && imageRecognitionHelp}
+              {!connectionReady && <p className="unity-offline-error unity-group-note">{translationKind === "local" ? "请在通用设置添加本地模型，再选择翻译模型。" : translationKind === "llm" ? "所选模型尚未配置 API 地址，请前往通用设置配置。" : "请在列表中启用至少一个免 Key 或已配置凭证的引擎。"}</p>}
             </GameFlowParameterGroup>
           </>}
           {imagePart && flowConfig === "review" && <div className="unity-offline-fields">
@@ -2316,12 +2348,12 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
               onChange={event => setImageScreeningOptions({ ...imageScreeningOptions, refine: { ...imageRefine, confidence: Math.max(0,Math.min(100,Number(event.currentTarget.value))) } })} /></label>}
           </div>}
           {imagePart && flowConfig === "recognize" && <>
-            <GameFlowParameterGroup kind="models">{imageRecognitionModels}</GameFlowParameterGroup>
+            <GameFlowParameterGroup kind="models"><GameProcessingTabs {...imageRecognitionMethod}>{imageRecognitionModel}</GameProcessingTabs></GameFlowParameterGroup>
             <GameFlowParameterGroup kind="runtime">{imageRecognitionRuntime}</GameFlowParameterGroup>
             <GameFlowParameterGroup kind="behavior">{imageRecognitionBehavior}</GameFlowParameterGroup>
             <GameFlowParameterGroup kind="help">{imageRecognitionHelp}</GameFlowParameterGroup>
           </>}
-          {imagePart && flowConfig === "render" && <GameFlowParameterGroup kind="models">{imageLayoutModels}</GameFlowParameterGroup>}
+          {imagePart && flowConfig === "render" && <GameFlowParameterGroup kind="models"><GameProcessingTabs {...imageLayoutMethod}>{imageLayoutModelField}</GameProcessingTabs></GameFlowParameterGroup>}
           {imagePart && flowConfig === "redraw" && <div className="unity-offline-fields">
             <label>模型工作流<select value={imageRedrawProfile} disabled={flowConfigLocked} onChange={event => setImageRedrawProfile(event.target.value as StyleRedrawProfileId)}>
               {Object.entries(styleRedrawLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}

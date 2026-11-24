@@ -87,36 +87,8 @@
 .game-mosaic-controls { padding: var(--space-2); }
 .game-mosaic-controls .game-flow-list > ol { gap: 8px; }
 .game-mosaic-controls .game-flow-item::after { display: none; }
-.game-mosaic-controls .game-flow-step { padding: var(--space-1) var(--space-3); }
-.game-mosaic-controls .game-flow-step .game-flow-row { min-height: 38px; }
-.game-mosaic-controls .game-flow-step .game-flow-actions { flex-wrap: nowrap; white-space: nowrap; }
-.game-mosaic-controls .game-flow-config { min-height: 0; padding: 2px var(--space-3); overflow: auto; }
 .game-mosaic-step-summary { display: grid; gap: var(--space-1); }
 .game-mosaic-step-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.game-mosaic-step-settings {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-}
-.game-mosaic-step-settings label {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  max-width: 100%;
-  min-height: var(--control-size);
-  font-size: var(--fs-body);
-  white-space: nowrap;
-}
-.game-mosaic-step-settings :is(select, input) { min-width: 0; }
-.game-mosaic-step-settings input[type="file"] {
-  box-sizing: border-box;
-  block-size: var(--control-size);
-  min-block-size: 0;
-  padding-block: var(--space-1);
-}
-.game-mosaic-step-settings input[type="number"] { inline-size: 6ch; }
 input.game-mosaic-threshold[type="number"] {
   box-sizing: border-box;
   inline-size: 8ch;

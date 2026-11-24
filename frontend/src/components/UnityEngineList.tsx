@@ -13,7 +13,7 @@ export function UnityEngineList({ choices, keys, disabled, expanded, onExpandedC
     {ordered.map(row => {
       const engine = getEngineInfo(row.id)!;
       return <div className="unity-engine-row" key={row.id}>
-        <label><input type="checkbox" checked={row.enabled} onChange={event => onChange(choices.map(item => item.id === row.id ? { ...item, enabled: event.target.checked } : item))} />{engine.label}</label>
+        <label><input type="checkbox" role="switch" checked={row.enabled} onChange={event => onChange(choices.map(item => item.id === row.id ? { ...item, enabled: event.target.checked } : item))} />{engine.label}</label>
         <span className={engineReady(keys, row.id) ? "hint" : "unity-offline-error"}>{!row.enabled ? "已禁用" : !engineReady(keys, row.id) ? "未配置，不参与调度" : engineRequiresKey(engine) ? "后备 · 可能计费" : "优先"}</span>
         <button type="button" className="unity-btn" aria-label={`删除${engine.label}`} onClick={() => onChange(choices.filter(item => item.id !== row.id))}>删除</button>
       </div>;

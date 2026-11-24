@@ -1,9 +1,9 @@
 import { MosaicScreeningFields } from "./MosaicScreeningFields";
-import type { CSSProperties, ReactNode } from "react";
+import { useRef, type CSSProperties, type ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
 import { mosaicModelLabels, mosaicRefineConcurrencyChoices, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
-import { GameFlowCard, GameFlowParameterGroup, useGameFlowExpansion } from "../GameFlowCard";
+import { GameFlowCard, GameFlowNumberChip, GameFlowParameterGroup, GameFlowParameterValue, useGameFlowExpansion } from "../GameFlowCard";
 import { GameFlowPerformance } from "../GameFlowSequence";
 import { gameProgressLabels } from "../GameStepProgress";
 import { ModelFilterSelect, type ModelFilter } from "../ModelFilterSelect";
@@ -79,6 +79,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
   const expansion = useGameFlowExpansion();
+  const detectorInput = useRef<HTMLInputElement>(null);
+  const refineSelection = "已勾选 " + refine.targetCount.toLocaleString() + " 张";
+  const redrawSelection = "本组已勾选 " + redraw.targetCount.toLocaleString() + " 张";
   const stage = { screen, refine, redraw };
   const order = ["screen", "refine", "redraw"] as const;
   const defaultStep = order.find(id => stage[id].status?.state === "running") ??
@@ -86,7 +89,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     order.find(id => stage[id].status?.state !== "done" && stage[id].status?.state !== "skipped" &&
       (id !== "refine" || preferences.refine !== false && refine.pendingCount > 0)) ??
     "redraw";
-  const stepCard = (id: MosaicStep, title: string, summary: string, actions: ReactNode, settings: ReactNode) => {
+  const stepCard = (id: MosaicStep, title: string, actions: ReactNode, settings: ReactNode) => {
     const status = stage[id].status;
     const state = status?.state || "pending";
     const running = state === "running";
@@ -115,19 +118,18 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       "成功 " + status.completed + " 张", "本轮失败 " + failed + " 张",
       unresolved > 0 ? "未解决 " + unresolved + " 张" + (retrying ? "（重试中）" : "（待处理）") : undefined,
     ].filter(Boolean).join(" · ") : undefined;
-    const information = id === "refine" ? [
-      { label: "手动复筛范围", value: "已勾选 " + refine.targetCount.toLocaleString() + " 张" },
-      ...(!benchmark && status?.prepared != null ? [{
-        label: "候选已准备",
-        value: status.prepared.toLocaleString() + "/" + status.total.toLocaleString() + " 张",
-      }] : []),
-    ] : id === "redraw" ? [{
-      label: "重绘范围",
-      value: redraw.paused
-        ? "上次选择 · 剩余 " + redraw.remainingCount.toLocaleString() + " 张"
-        : "本组已勾选 " + redraw.targetCount.toLocaleString() + " 张",
-    }] : undefined;
+    const device = status?.device;
+    const headerSummary = id === "screen" ? (
+      <span title={device?.reason}>{device && !screen.detectorFile
+        ? device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"
+        : screen.summary}</span>
+    ) : id === "refine" ? (
+      !benchmark && status?.prepared != null
+        ? "候选已准备 " + status.prepared.toLocaleString() + " / " + status.total.toLocaleString()
+        : refineSelection
+    ) : redrawSelection;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
+      groupedParameters headerSummary={headerSummary}
       disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
@@ -135,7 +137,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         completed: status?.completed, unit: "张", percent, remainingMs, successRate,
         configuration: running && status?.parameters?.length ? { current: 1, total: 1 } : undefined }}
       statusLine={statusLine}
-      information={information}
       resultLine={unresolved > 0 ? unresolved.toLocaleString() + " 张失败待处理" : undefined}
       foldedSummary={{
         failed: Math.max(failed, unresolved),
@@ -145,16 +146,14 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       runningParameters={status?.parameters} parametersLocked={busy || testing || parametersLocked}
       performance={expanded &&
         <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
-      details={!benchmark && <small className="game-flow-model-rates">
-        {id === "screen" && <span data-tooltip={status?.device?.reason}>{summary}{status?.device &&
-          (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}</span>}
+      details={!benchmark && (screeningMethodChanged || refineSummary || id !== "refine" && failed > 0) && <small className="game-flow-model-rates">
         {screeningMethodChanged && <span>其他筛选方式已有 {screen.otherDetectorCount} 张</span>}
         {refineSummary && <span className="game-flow-refine-summary">{refineSummary}</span>}
         {id !== "refine" && failed > 0 && <span>失败 {failed} 张</span>}
       </small>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={aborting} onClick={() => onStop(id)}>
         {aborting ? "正在中止" : "中止"}</button> : actions}
-      configuration={expanded && <div className="game-mosaic-step-settings game-flow-field-wide">{settings}</div>} /></li>;
+      configuration={expanded && settings} /></li>;
   };
   const screenRuntime = <>
         <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={busy} onChange={event => screen.changeScope(event.target.value as typeof scope)}>
@@ -164,71 +163,80 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           <option value="grid">{detectorLabels.grid}</option><option value="anime">{detectorLabels.anime}</option>
         </select></label>
   </>;
-  const screenConcurrency = <label>图片处理并发<select aria-label="图片处理并发" value={preferences.concurrency ?? 2} disabled={busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
-          {[1,2,4].map(value=><option key={value} value={value}>{value}</option>)}
-        </select></label>;
+  const screenConcurrency = <GameFlowNumberChip label="处理并发" ariaLabel="图片处理并发" choices={[1, 2, 4]}
+    value={preferences.concurrency ?? 2} disabled={busy} onChange={concurrency => changePreferences({ concurrency })} />;
   const screenAction = screen.screenedCount > 0 && screen.remainingCount > 0 &&
     <button type="button" className="unity-btn is-secondary" disabled={testing || actionsDisabled} title={testTitle}
           onClick={() => screen.start(true)}>重新筛选已勾选图片</button>;
-  const screenModelFile = <label>自定义定位 ONNX（可选）
-          <input type="file" accept=".onnx" disabled={busy} onChange={event => screen.chooseDetectorFile(event.target.files?.[0])} />
-          {screen.detectorFile && <button type="button" className="unity-btn" disabled={busy} onClick={screen.useBuiltInDetector}>使用内置模型</button>}
-        </label>;
+  const customDetector = <>
+    <label><input type="checkbox" role="switch" checked={!!screen.detectorFile} disabled={busy}
+      onChange={event => event.target.checked ? detectorInput.current?.click() : screen.useBuiltInDetector()} />自定义定位 ONNX</label>
+    <input ref={detectorInput} type="file" accept=".onnx" hidden disabled={busy} onChange={event => {
+      const file = event.target.files?.[0];
+      if (file) screen.chooseDetectorFile(file);
+      event.target.value = "";
+    }} />
+    {screen.detectorFile && <button type="button" className="unity-btn is-secondary" disabled={busy}
+      onClick={() => detectorInput.current?.click()}>更换模型文件</button>}
+  </>;
   return <div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
     <div className="game-flow-list"><ol>
-      {stepCard("screen", "筛选打码图片", screen.summary, <>
+      {stepCard("screen", "筛选打码图片", <>
         <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={testing || actionsDisabled || !screen.targetCount} title={testTitle}
           onClick={() => screen.start()}>{screen.action}</button>
         {screen.canClear && <button type="button" className="unity-btn game-flow-clear" disabled={actionsDisabled}
           onClick={() => void screen.clear()}>清理</button>}
       </>, detectorKind === "grid" ? <>
-        <GameFlowParameterGroup kind="runtime">{screenRuntime}<div className="game-flow-number-fields">{screenConcurrency}</div></GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="scope" title="范围与方式">{screenRuntime}</GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="runtime" title="运行"><div className="game-flow-chip-row">{screenConcurrency}</div></GameFlowParameterGroup>
         <GameFlowParameterGroup kind="actions">{screenAction}</GameFlowParameterGroup>
       </> : <MosaicScreeningFields value={preferences.screening} disabled={busy}
         onChange={screening => changePreferences({ screening })}
-        groups={{ runtime: screenRuntime, numbers: screenConcurrency, actions: screenAction, modelFile: screenModelFile }} />)}
-      {stepCard("refine","复筛打码图片",preferences.refineModel || "qwen3.5:latest", <>
+        groups={{ scope: screenRuntime, concurrency: screenConcurrency, actions: screenAction, customDetector }} />)}
+      {stepCard("refine","复筛打码图片", <>
         <button type="button" className="unity-btn game-flow-start" disabled={testing || actionsDisabled || !refine.targetCount} title={testTitle}
           onClick={()=>refine.start(!refine.pendingCount)}>{!refine.pendingCount&&refine.targetCount?"重新复筛":refine.reviewedCount||refine.wasStopped?"继续复筛":"开始复筛"}</button>
         {refine.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理复筛" disabled={actionsDisabled} onClick={() => void refine.clear()}>清理</button>}
       </>,<>
-        <GameFlowParameterGroup kind="models">
+        <GameFlowParameterGroup kind="models" title="模型">
           <div className="game-mosaic-model-field">
-            <span>候选区域推理模型</span>
+            <span>候选区域</span>
             <ModelFilterSelect label="候选区域推理模型" value={preferences.refineModel || "qwen3.5:latest"}
               models={[...new Set(["qwen3.5:latest",...reviewModels])]} disabled={busy}
               filter={refine.modelFilter} setFilter={refine.setModelFilter}
               onChange={model=>changePreferences({refineModel:model})} />
           </div>
           <div className="game-mosaic-model-field">
-            <span>纹理与漏检复核模型</span>
+            <span>纹理复核</span>
             <ModelFilterSelect label="纹理与漏检复核模型" value={preferences.refineGuardModel || "qwen3-vl:8b-instruct"}
               models={[...new Set(["qwen3-vl:8b-instruct",...reviewModels])]} disabled={busy}
               filter={refine.guardFilter} setFilter={refine.setGuardFilter}
               onChange={model=>changePreferences({refineGuardModel:model})} />
           </div>
         </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="runtime">
-          <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}>{mosaicRefineConcurrencyChoices.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
-        </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="behavior">
-          <label className="game-mosaic-checkbox"
-            data-tooltip="对未检出任何打码区域的图片，再用大模型整图扫一遍补查。命中率会提高，但每张都要过一次大模型，整批耗时可能翻倍。">
-            <input type="checkbox" checked={!!preferences.refineIncludeMissed} disabled={busy} onChange={e=>changePreferences({refineIncludeMissed:e.target.checked})}/>自动流程使用大模型补查未发现（耗时长）</label>
-          <label className="game-mosaic-checkbox"
-            data-tooltip="自动把初筛出的候选框送复核模型判断真假。关闭后只保留初筛结果，需要你在工作台里逐张确认。">
-            <input type="checkbox" checked={preferences.refine!==false} disabled={busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
+        <GameFlowParameterGroup kind="runtime" title="运行">
+          <div className="game-flow-chip-row">
+            <GameFlowNumberChip label="复筛并发" choices={mosaicRefineConcurrencyChoices} value={preferences.refineConcurrency ?? 1}
+              disabled={busy} onChange={refineConcurrency => changePreferences({ refineConcurrency })} />
+            <GameFlowParameterValue label="手动复筛范围" value={refineSelection} />
+          </div>
+          <div className="game-flow-chip-row">
+            <label data-tooltip="自动流程对未检出打码区域的图片再用大模型整图补查，可能增加整批耗时。">
+              <input type="checkbox" role="switch" checked={!!preferences.refineIncludeMissed} disabled={busy}
+                onChange={e => changePreferences({ refineIncludeMissed: e.target.checked })} />补查未发现</label>
+            <label data-tooltip="自动流程把初筛候选区域交给模型核对。关闭后可在工作台逐张确认。">
+              <input type="checkbox" role="switch" checked={preferences.refine !== false} disabled={busy}
+                onChange={e => changePreferences({ refine: e.target.checked })} />执行视觉复筛</label>
+          </div>
+          <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
         </GameFlowParameterGroup>
         <GameFlowParameterGroup kind="actions">
           {refine.reviewedCount > 0 && refine.pendingCount > 0 && <button type="button" className="unity-btn is-secondary"
             disabled={testing || actionsDisabled} onClick={() => refine.start(true)}>重新复筛已勾选图片</button>}
         </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="help">
-          <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
-        </GameFlowParameterGroup>
       </>)}
-      {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model], <>
+      {stepCard("redraw", "重绘打码区域", <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
           data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" : undefined)}
           onClick={redraw.start}>
@@ -237,18 +245,20 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>
-        <GameFlowParameterGroup kind="models">
-          <label>模型工作流<select aria-label="去码模型" data-param-width="mid" value={model} disabled={busy} onChange={event => {
+        <GameFlowParameterGroup kind="generation" title="生成">
+          <label className="game-flow-field-wide">工作流<select aria-label="去码模型工作流" value={model} disabled={busy} onChange={event => {
             const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: next === "turbo" ? 8 : 20 });
           }}>
             <option value="turbo">{mosaicModelLabels.turbo}</option><option value="2511">{mosaicModelLabels["2511"]}</option>
           </select></label>
-          {model === "2511" && <label>步数<input type="number" min={1} max={100} value={steps} disabled={busy}
-            onChange={event => changePreferences({ steps: Math.max(1, Math.min(100, Number(event.target.value) || 1)) })} /></label>}
-        </GameFlowParameterGroup>
-        <GameFlowParameterGroup kind="behavior">
-          <label className="game-mosaic-checkbox"><input type="checkbox" checked={protect} disabled={busy}
-            onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label>
+          <div className="game-flow-chip-row">
+            {model === "2511" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
+              onChange={steps => changePreferences({ steps })} />}
+            <GameFlowParameterValue label="重绘范围" value={redraw.paused
+              ? "上次选择 · 剩余 " + redraw.remainingCount.toLocaleString() + " 张" : redrawSelection} />
+          </div>
+          <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
+            onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label></div>
         </GameFlowParameterGroup>
       </>)}
     </ol></div>

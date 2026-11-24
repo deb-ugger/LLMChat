@@ -1,8 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BenchmarkState } from "../benchmark/benchmarkRunner";
 import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
 import { gameDuration } from "../gameModelPerformance";
 import { GameProgressBar } from "./GameStepProgress";
+import { showAppNotice } from "./AppNotice";
 
 export type GameFlowProgress = {
   sample?: string;
@@ -198,16 +199,76 @@ function useParameterFieldWidths(configured: boolean) {
   return fields;
 }
 
-export function GameFlowParameterGroup({ kind, children }: {
-  kind: "models" | "runtime" | "behavior" | "actions" | "help";
+export const GameFlowGroupedParameters = createContext(false);
+
+export function GameFlowParameterGroup({ kind, title, children }: {
+  kind: "models" | "scope" | "runtime" | "generation" | "behavior" | "actions" | "help";
+  title?: string;
   children: ReactNode;
 }) {
-  return <div className="game-flow-param-section" data-parameter-group={kind}>{children}</div>;
+  const heading = useId();
+  return <div className="game-flow-param-section" data-parameter-group={kind}
+    role={title ? "group" : undefined} aria-labelledby={title ? heading : undefined}>
+    {title ? <><h6 id={heading}>{title}</h6><div className="game-flow-group-fields">{children}</div></> : children}
+  </div>;
+}
+
+export function GameFlowParameterValue({ label, value }: { label: string; value: ReactNode }) {
+  return <span className="game-flow-chip">{label}<span className="game-flow-chip-value">{value}</span></span>;
+}
+
+export function GameFlowNumberChip({ label, value, onChange, disabled, choices, min, max, step = 1, hint, ariaLabel = label }: {
+  label: string; value: number; onChange: (value: number) => void; disabled?: boolean;
+  choices?: readonly number[]; min?: number; max?: number; step?: number; hint?: string; ariaLabel?: string;
+}) {
+  const list = useId();
+  const [editing, setEditing] = useState(false);
+  const editor = useRef<HTMLInputElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  const showEditor = editing && !disabled;
+  useLayoutEffect(() => {
+    if (showEditor) {
+      editor.current?.focus();
+      editor.current?.select();
+    } else if (returnFocus.current) {
+      returnFocus.current = false;
+      button.current?.focus();
+    }
+  }, [showEditor]);
+  const allowed = choices ? "可选值 " + choices.join("、") : undefined;
+  return <span className="game-flow-chip" data-tooltip={[hint, allowed].filter(Boolean).join("。") || undefined}>
+    {label}
+    {showEditor ? <>
+      <input ref={editor} type="number" className="game-flow-chip-value" aria-label={ariaLabel}
+        defaultValue={value} min={min} max={max} step={step} list={choices ? list : undefined}
+        onBlur={event => {
+          setEditing(false);
+          const input = event.currentTarget;
+          const next = input.valueAsNumber;
+          if (input.matches(":disabled") || next === value || !input.value && !input.validity.badInput) return;
+          if (input.validity.valid && (!choices || choices.includes(next))) onChange(next);
+          else showAppNotice(ariaLabel + (allowed ? "的" + allowed : "超出可用范围"), "error");
+        }}
+        onKeyDown={event => {
+          if (event.key !== "Enter" && event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          returnFocus.current = true;
+          if (event.key === "Escape") event.currentTarget.value = String(value);
+          event.currentTarget.blur();
+        }} />
+      {choices && <datalist id={list}>{choices.map(choice => <option key={choice} value={choice} />)}</datalist>}
+    </> : <button type="button" ref={button} className="game-flow-chip-value" aria-label={ariaLabel + " " + value}
+      disabled={disabled} onClick={() => setEditing(true)}>{value}</button>}
+  </span>;
 }
 
 type CardProps = GameFlowActivity & {
   title: string;
   current?: boolean;
+  groupedParameters?: boolean;
+  headerSummary?: ReactNode;
   benchmark?: BenchmarkState;
   performance?: ReactNode;
   onConfigure?: () => void;
@@ -230,7 +291,8 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 }
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
-  actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, information, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
+  actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, information, foldedSummary,
+  parametersLocked, saveConfiguration, disclosure, groupedParameters = false, headerSummary }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
@@ -239,7 +301,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const active = state === "running" || benchmarkActive;
   const locked = active || parametersLocked;
   const configured = expanded && !!configuration;
-  const parameterFields = useParameterFieldWidths(configured);
+  const parameterFields = useParameterFieldWidths(configured && !groupedParameters);
   const readOnlyParameters = !active && !configuration ? benchmark?.parameters ?? runningParameters : undefined;
   const infoRows = [...(information ?? []), ...(readOnlyParameters ?? [])];
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
@@ -301,7 +363,11 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
     { key: "round", text: active ? position : undefined },
   ].filter(row => row.text);
   const status = benchmark ? benchmark.state === "paused" ? "测试已暂停" : "测试中" : label;
-  return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}`} data-benchmark={benchmark?.state}>
+  const elapsedText = groupedParameters ? elapsedLabel ?? "—" : elapsedLabel;
+  const elapsedDisplay = elapsedText != null && <span className="game-flow-elapsed">
+    {(groupedParameters || expanded || active) && "已用 "}{elapsedText}</span>;
+  const actionDisplay = actions && <div className="game-flow-actions">{actions}</div>;
+  return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}${groupedParameters ? " has-grouped-parameters" : ""}`} data-benchmark={benchmark?.state}>
     <div className="game-flow-step">
       <header className={"game-flow-head" + (disclosure ? " is-collapsible" : "") + (expanded ? "" : " is-folded")}>
         {disclosure && <button type="button" className="game-flow-head-toggle" onClick={disclosure.toggle}
@@ -313,8 +379,10 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           style={{ background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
           onClick={onConfigure}>{title}</button> : <strong className="game-flow-title">{title}</strong>}
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
-        {elapsedLabel != null && <span className="game-flow-elapsed">{(expanded || active) && "已用 "}{elapsedLabel}</span>}
-        {actions && <div className="game-flow-actions">{actions}</div>}
+        {groupedParameters ? <>
+          {headerSummary && <span className="game-flow-header-summary">{headerSummary}</span>}
+          <div className="game-flow-header-operations">{elapsedDisplay}{actionDisplay}</div>
+        </> : <>{elapsedDisplay}{actionDisplay}</>}
       </header>
       {!expanded && summaryRows.length > 0 && <div className="game-flow-collapsed-summary">
         {summaryRows.map(({ key, text }, index) => <span key={key} className={"game-flow-folded-" + key}>
@@ -349,8 +417,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {(configured || !locked && onConfigure) && <section id={settingsId}
           className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured}>
           {configured && <fieldset className="game-flow-parameter-fields" disabled={locked}>
-            <div ref={parameterFields} className="game-flow-editable-fields">
-              {configuration}
+            <div ref={parameterFields} className={groupedParameters ? "game-flow-grouped-fields" : "game-flow-editable-fields"}>
+              <GameFlowGroupedParameters.Provider value={groupedParameters}>{configuration}</GameFlowGroupedParameters.Provider>
               {(configurationActions || saveConfiguration) && <GameFlowParameterGroup kind="actions">
                 {configurationActions}
                 {saveConfiguration && <>

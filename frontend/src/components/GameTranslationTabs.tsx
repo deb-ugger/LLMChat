@@ -1,4 +1,5 @@
 import { GameConcurrencyDraft } from "./GameFlowSequence";
+import { GameFlowGroupedParameters, GameFlowNumberChip } from "./GameFlowCard";
 import { modelConcurrency } from "../gameModelPerformance";
 import { recommendedGameModels } from "../gameModelPreset";
 import { ModelFilterSelect, readModelFilter } from "./ModelFilterSelect";
@@ -9,11 +10,19 @@ import type { Settings } from "../api";
 import type { GameTranslationKind } from "../unityTranslation";
 import { SearchableSelect } from "./SearchableSelect";
 
-export function GameTranslationTabs({ kind, disabled, onChange, children }: {
-  kind: GameTranslationKind; disabled: boolean; onChange: (kind: GameTranslationKind) => void; children: ReactNode;
+export function GameTranslationMethod({ kind, disabled, onChange }: {
+  kind: GameTranslationKind; disabled: boolean; onChange: (kind: GameTranslationKind) => void;
 }) {
-  return <GameMethodTabs label="翻译方式" localLabel="翻译引擎" model={kind !== "engine"} disabled={disabled}
-    onChange={model => onChange(model ? "llm" : "engine")}>{children}</GameMethodTabs>;
+  return <GameProcessingMethod label="翻译方式" localLabel="翻译引擎" value={kind !== "engine" ? "llm" : "local"}
+    disabled={disabled} onChange={value => onChange(value === "llm" ? "llm" : "engine")} />;
+}
+
+export function GameProcessingMethod({ label, localLabel, value, disabled, onChange }: {
+  label: string; localLabel: string; value: "local" | "llm"; disabled: boolean; onChange: (value: "local" | "llm") => void;
+}) {
+  return <label>{label}<select value={value} disabled={disabled} onChange={event => onChange(event.target.value === "llm" ? "llm" : "local")}>
+    <option value="local">{localLabel}</option><option value="llm">大模型</option>
+  </select></label>;
 }
 
 export function GameProcessingTabs({ label, localLabel, value, disabled, onChange, children }: {
@@ -59,6 +68,7 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
   const prompts = useGamePromptCatalog().filter(entry => entry.scene === promptKey);
   const context = useContext(GamePromptContext);
   const drafts = useContext(GameConcurrencyDraft);
+  const grouped = useContext(GameFlowGroupedParameters);
   const concurrency = drafts?.value(promptKey, value) ?? modelConcurrency(context?.scope || "game", promptKey, value);
   const promptId = context?.selection[promptKey] || "builtin:" + promptKey;
   useEffect(()=>{if(value||optional||disabled)return;const preset=recommendedGameModels(),candidate=promptKey==="recognize"||promptKey==="screen"?preset?.vision||models.find(model=>/^qwen3-vl:4b-instruct$/i.test(model)):promptKey==="review"?preset?.review:promptKey==="names"?preset?.names:promptKey==="dialogue"?preset?.dialogue:preset?.text;if(candidate&&models.includes(candidate))onChange(candidate);},[value,optional,disabled,models,promptKey,onChange]);
@@ -67,7 +77,7 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
     <div className="game-model-column">
       <div className="game-model-head">
         <span>{label}</span>
-        <label htmlFor={concurrencyId}>并发</label>
+        {!grouped && <label htmlFor={concurrencyId}>并发</label>}
       </div>
       <div className="game-model-controls">
         <div className="game-model-filter">
@@ -77,11 +87,15 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
             setFilter={filter => drafts?.updateFilter(promptKey, filter)}
             onChange={model => onChange(model === unset ? "" : model)} />
         </div>
-        <select id={concurrencyId} aria-label={label + "并发数"} data-tooltip="并发请求数（1–4）。使用 Ollama 时，修改后重启服务。"
+        {grouped ? <GameFlowNumberChip label="并发" ariaLabel={label + "并发数"}
+          choices={[1, 2, 3, 4]} value={concurrency} disabled={disabled || !value || !drafts}
+          hint="使用 Ollama 时，修改后重启服务。"
+          onChange={count => drafts?.update({ role: promptKey, model: value, count })} />
+        : <select id={concurrencyId} aria-label={label + "并发数"} data-tooltip="并发请求数（1–4）。使用 Ollama 时，修改后重启服务。"
           className="game-model-concurrency-control" disabled={disabled || !value || !drafts} value={concurrency}
           onChange={event => drafts?.update({ role: promptKey, model: value, count: Number(event.target.value) })}>
           {[1, 2, 3, 4].map(count => <option key={count} value={count}>{count}</option>)}
-        </select>
+        </select>}
       </div>
     </div>
     <label>提示词
