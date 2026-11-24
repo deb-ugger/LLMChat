@@ -20,6 +20,28 @@
   padding-block-start: var(--window-bar-height);
 }
 
+.window-bar-title {
+  display: flex;
+  align-items: center;
+  inline-size: fit-content;
+  max-inline-size: calc(100% - 3 * var(--window-control-width));
+  block-size: 100%;
+  padding-inline: var(--space-3);
+  color: var(--text);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.game-aux-shell {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  block-size: 100dvh;
+  padding-block-start: var(--window-bar-height);
+}
+
+.game-aux-content { flex: 1 1 auto; min-block-size: 0; overflow: auto; }
+
 .window-controls {
   position: fixed;
   top: 0;

@@ -3,5 +3,5 @@
   "identifier": "game-auxiliary",
   "description": "Permissions for the game help and test configuration windows",
   "windows": ["game-help", "game-configuration"],
-  "permissions": ["core:default", "core:window:allow-close", "allow-runtime-log"]
+  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-toggle-maximize", "allow-runtime-log"]
 }

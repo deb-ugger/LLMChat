@@ -7,7 +7,7 @@ import { initializeAppClose } from "../appClose";
 import { logRuntimeError } from "../runtimeLog";
 import { showAppNotice } from "./AppNotice";
 
-function DesktopWindowControls() {
+function DesktopWindowControls({ mainWindow }: { mainWindow: boolean }) {
   const [appWindow] = useState(getCurrentWindow);
   const [maximized, setMaximized] = useState(false);
 
@@ -39,7 +39,7 @@ function DesktopWindowControls() {
     setMaximized(await appWindow.isMaximized());
   };
   const close = async () => {
-    await initializeAppClose();
+    if (mainWindow) await initializeAppClose();
     await appWindow.close();
   };
   const buttons = [
@@ -71,14 +71,19 @@ export function positionWindowPopover(anchor: HTMLElement, panel: HTMLElement | 
   panel.style.setProperty("--window-popover-right", Math.max(8, width - bounds.right) + "px");
 }
 
-export function WindowControls({ actions }: { actions?: ReactNode }) {
-  const desktop = window.self === window.top && isTauri() && getCurrentWebview().label === "main";
-  if (!desktop && !actions) return null;
+export function WindowControls({ actions, title }: { actions?: ReactNode; title?: string }) {
+  const nativeWindow = window.self === window.top && isTauri();
+  const mainWindow = nativeWindow && getCurrentWebview().label === "main";
+  const desktop = mainWindow || nativeWindow && !!title;
+  if (!desktop && !actions && !title) return null;
+  const dragRegion = desktop ? "" : undefined;
   return <>
-    <div className="window-bar" data-tauri-drag-region={desktop ? "" : undefined} aria-hidden="true" />
+    <div className="window-bar" data-tauri-drag-region={dragRegion} aria-hidden={title ? undefined : true}>
+      {title && <span className="window-bar-title" data-tauri-drag-region={dragRegion}>{title}</span>}
+    </div>
     <div className="window-controls" role="group" aria-label="标题栏">
       {actions && <div className="window-actions" role="group" aria-label="应用快捷操作">{actions}</div>}
-      {desktop && <DesktopWindowControls />}
+      {desktop && <DesktopWindowControls mainWindow={mainWindow} />}
     </div>
   </>;
 }
