@@ -606,10 +606,10 @@
 .unity-image-item { display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: var(--radius-sm); }
 .unity-image-item + .unity-image-item { margin-block-start: 1px; }
 .unity-image-item:hover { background: var(--bg-hover); }
-.unity-image-item.is-selected { background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel)); }
+.unity-image-item.is-selected { background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); }
 .unity-image-item.is-selected .unity-image-row-heading > strong { font-weight: 600; }
-.unity-image-item:is(.is-added, :has(> input:checked)) { background: color-mix(in srgb, var(--accent) 7%, transparent); }
-.unity-image-item:is(.is-added, :has(> input:checked)).is-selected { background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel)); }
+.unity-image-item:is(.is-added, :has(> input:checked)) { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.unity-image-item:is(.is-added, :has(> input:checked)).is-selected { background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel)); box-shadow: none; }
 .unity-image-item > button { scroll-margin-block:38px 6px; }
 .unity-image-item > button { flex: 1; min-width: 0; text-align: left; padding: 3px 0; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
 .unity-image-item strong, .unity-image-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
