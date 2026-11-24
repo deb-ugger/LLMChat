@@ -975,7 +975,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     : configured === "recognize" ? recognizeSettings : configured === "render" ? renderSettings : null;
   const operationContent=<>
 
-    <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
+    <div className="unity-step-panel game-image-configuration"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
       { scope: "config", label: "原文语言", value: UNITY_LANGUAGES.find(language => language.value === source)?.label ?? "自动检测" },
       { scope: "config", label: "目标语言", value: UNITY_LANGUAGES.find(language => language.value === target)?.label ?? target },
       { scope: "config", label: "仅翻译原语言", value: onlySourceLanguage ? "开启" : "关闭" },
@@ -1026,9 +1026,11 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
             {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
           </select></label>
         </>}
-        {refineMethod === "llm" && <GameModelSelect label="视觉模型（需支持图片输入）" promptKey="refine"
-          value={refineModel || ""} models={models} disabled={configLocked}
-          onChange={value => setStageModels(previous => ({ ...previous, filterRefine: value }))} />}
+        {refineMethod === "llm" && <div className="game-flow-parameter-group" title="视觉模型需支持图片输入">
+          <GameModelSelect label="视觉模型" promptKey="refine"
+            value={refineModel || ""} models={models} disabled={configLocked}
+            onChange={value => setStageModels(previous => ({ ...previous, filterRefine: value }))} />
+        </div>}
         {refineMethod !== "off" && <label data-tooltip={refineMethod === "llm" ? refineThresholdHint : "仅用于本地复筛。低于阈值的识别文字留待复核。"}>复筛置信度（%）
           <input type="number" min={0} max={100} step={1} value={stageModels.refineConfidence ?? "50"} disabled={configLocked}
             onChange={event => {
