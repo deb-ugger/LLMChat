@@ -13,6 +13,7 @@ import { showAppNotice } from "./AppNotice";
 import { GamePageNumber } from "./GamePageNumber";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
+import { GameFlowParameterGroup } from "./GameFlowCard";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, recommendedGameModels, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
@@ -693,8 +694,12 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     for (const scene of ["text", "dialogue", "names"] as const) promptState.select(scene, prompt(scene));
   };
   const languageFields = <>
-    <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={options.onlySourceLanguage !== false} disabled={busy} onChange={event => setOptions({ ...options, onlySourceLanguage: event.target.checked })} />仅翻译原语言</label></div><select aria-label="原文语言" disabled={busy} value={options.source} onChange={event => { setOptions({ ...options, source: event.target.value }); }}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
-    <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；中日共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={options.skipTargetLanguage !== false} disabled={busy} onChange={event => { setOptions({ ...options, skipTargetLanguage: event.target.checked }); }} />跳过目标语言</label></div><select aria-label="目标语言" disabled={busy} value={options.target} onChange={event => { setOptions({ ...options, target: event.target.value }); }}>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
+    <label>原文语言<select aria-label="原文语言" disabled={busy} value={options.source} onChange={event => { setOptions({ ...options, source: event.target.value }); }}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
+    <label>目标语言<select aria-label="目标语言" disabled={busy} value={options.target} onChange={event => { setOptions({ ...options, target: event.target.value }); }}>{UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
+  </>;
+  const languageSwitches = <>
+    <label className="unity-inline-check" data-tooltip="仅翻译含原语言的内容；自动时使用检测到的主语言。"><input type="checkbox" checked={options.onlySourceLanguage !== false} disabled={busy} onChange={event => setOptions({ ...options, onlySourceLanguage: event.target.checked })} />仅翻译原语言</label>
+    <label className="unity-inline-check" data-tooltip="仅跳过能明确判断已符合目标语言的条目，原样保留；中日共用汉字短词仍翻译。关闭后重做可强制翻译。"><input type="checkbox" checked={options.skipTargetLanguage !== false} disabled={busy} onChange={event => { setOptions({ ...options, skipTargetLanguage: event.target.checked }); }} />跳过目标语言</label>
   </>;
   const progressState = loading || state === "clearing" || state === "screening" || running ? "running"
     : state === "screen-stopped" || state === "stopped" ? "stopped"
@@ -737,28 +742,39 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         runLabel: state === "stopped" || state === "error" ? "继续" : "开始",
         runDisabled: !running && (busy || options.kind !== "engine" && !models.includes(options.model)),
         clear: !busy && textCleanupAvailable ? () => void resetTranslation(true) : undefined },
-    ]}><div className="unity-translation-settings">
+    ]}><div className="unity-translation-settings game-flow-parameter-layout">
     {configured === "screen" && <GameProcessingTabs label="筛选方式" localLabel="本地筛选" value={options.screeningModel === undefined ? "local" : "llm"}
       disabled={configLocked} onChange={method => setOptions(current => ({ ...current, screeningModel: method === "llm" ? "" : undefined }))}>
-      <div className="unity-control-group"><div className="unity-group-fields unity-translation-fields">
+      <GameFlowParameterGroup kind="models">
         {options.screeningModel !== undefined && <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={models} value={options.screeningModel}
           disabled={configLocked} onChange={model => setOptions(current => ({ ...current, screeningModel: model }))} />}
-        {languageFields}
-      </div></div>
+      </GameFlowParameterGroup>
+      <GameFlowParameterGroup kind="runtime">{languageFields}</GameFlowParameterGroup>
+      <GameFlowParameterGroup kind="behavior">{languageSwitches}</GameFlowParameterGroup>
     </GameProcessingTabs>}
-    {configured === "translate" && <GameTranslationTabs kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
-    {configured === "translate" && options.kind !== "engine" && <>
+    {configured === "translate" && <>
+      <GameFlowParameterGroup kind="models">
+        <GameTranslationTabs kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })}>
+    {options.kind !== "engine" && <>
       <GameModelSelect label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={configLocked} onChange={model => setOptions({ ...options, model })} />
       <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={configLocked} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
       <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
     </>}
-    {languageFields}
-    </div>
-    {configured === "translate" && options.kind !== "engine" && <div className="unity-run-options"><label className="unity-inline-check" data-tooltip={GAME_CONTEXT_HINT + " 词典型工程仅有独立原文时，使用条目自身的语境。"}><input type="checkbox" checked={!!options.includeContext} disabled={configLocked} onChange={event => setOptions({ ...options, includeContext: event.target.checked })} />附带上下文</label></div>}
-    </div>{configured === "translate" && options.kind === "engine" && <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={expanded} onExpandedChange={setExpanded} onChange={setEngines} />}</GameTranslationTabs>}
-    {configured === "translate" && options.joinLines && wrapMode!=="natural" && <div className="unity-control-group"><label>断行方式<select value={options.lineMode || "local"} disabled={configLocked} onChange={e=>setOptions({...options,lineMode:e.target.value as GameTextOptions["lineMode"]})}><option value="local">本地智能断行</option><option value="ratio">按比例断行</option><option value="wtp">WtP 断句</option><option value="model">大模型断行</option></select></label>
-      {options.lineMode==="model" && <GameModelSelect label="断行辅助模型" promptKey="line" models={models} value={options.lineModel || settings.model} disabled={configLocked} onChange={lineModel=>setOptions({...options,lineModel})}/>}</div>}
-    {configured === "translate" && <div className="unity-control-group"><label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label></div>}
+
+          {options.kind === "engine" && <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={expanded} onExpandedChange={setExpanded} onChange={setEngines} />}
+        </GameTranslationTabs>
+        {options.joinLines && wrapMode !== "natural" && options.lineMode === "model" && <GameModelSelect label="断行辅助模型" promptKey="line" models={models} value={options.lineModel || settings.model} disabled={configLocked} onChange={lineModel=>setOptions({...options,lineModel})}/>}
+      </GameFlowParameterGroup>
+      <GameFlowParameterGroup kind="runtime">
+        {languageFields}
+        <label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label>
+        {options.joinLines && wrapMode !== "natural" && <label>断行方式<select value={options.lineMode || "local"} disabled={configLocked} onChange={e=>setOptions({...options,lineMode:e.target.value as GameTextOptions["lineMode"]})}><option value="local">本地智能断行</option><option value="ratio">按比例断行</option><option value="wtp">WtP 断句</option><option value="model">大模型断行</option></select></label>}
+      </GameFlowParameterGroup>
+      <GameFlowParameterGroup kind="behavior">
+        {languageSwitches}
+        {options.kind !== "engine" && <label className="unity-inline-check" data-tooltip={GAME_CONTEXT_HINT + " 词典型工程仅有独立原文时，使用条目自身的语境。"}><input type="checkbox" checked={!!options.includeContext} disabled={configLocked} onChange={event => setOptions({ ...options, includeContext: event.target.checked })} />附带上下文</label>}
+      </GameFlowParameterGroup>
+    </>}
     </div></GameFlowSequence></GamePromptContext.Provider>{batchResults && <div className="unity-step-batch">{batchResults}</div>}</div>
     </div>, controls)}
     {results && createPortal(<section hidden={!visible} ref={root} data-game-drop-zone="text" {...drop.handlers} className="unity-offline-workbench game-text-workbench"><div className="unity-offline-toolbar"><div className="unity-result-filters"><strong>文本与译文</strong><GameTextFileMenu kind="download" active={active&&visible} disabled={busy||!entries.length} options={[

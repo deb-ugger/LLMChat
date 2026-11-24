@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BenchmarkState } from "../benchmark/benchmarkRunner";
 import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
 import { gameDuration } from "../gameModelPerformance";
@@ -67,6 +67,121 @@ export function useGameFlowExpansion() {
   };
 }
 
+type ParameterControl = HTMLInputElement | HTMLSelectElement | HTMLButtonElement;
+const parameterControls = [
+  "input:not([type=checkbox], [type=radio], [type=file], [type=hidden])",
+  "select:not([hidden], .game-model-concurrency-control)",
+  ".unity-description-trigger",
+].join(", ");
+const parameterField = ".game-mosaic-model-field, .game-model-column, .unity-language-setting, label";
+
+function measureParameterText(text: string, style: CSSStyleDeclaration, measure: CanvasRenderingContext2D) {
+  measure.font = [style.fontStyle, style.fontWeight, style.fontSize, style.fontFamily].join(" ");
+  return measure.measureText(text).width;
+}
+
+function parameterValueWidth(control: ParameterControl, measure: CanvasRenderingContext2D) {
+  const caption = control.parentElement?.querySelector<HTMLElement>(":scope > .searchable-select-caption");
+  const text = control instanceof HTMLSelectElement ? control.selectedOptions[0]?.label
+    : control instanceof HTMLInputElement ? control.value || control.placeholder
+    : control.firstElementChild?.textContent;
+  if (!text) return 0;
+  const style = getComputedStyle(control);
+  const textStyle = caption ? getComputedStyle(caption) : style;
+  const textWidth = measureParameterText(text, textStyle, measure);
+  if (caption) {
+    return Math.ceil(textWidth + parseFloat(textStyle.insetInlineStart) + parseFloat(textStyle.insetInlineEnd));
+  }
+  const insets = [style.paddingInlineStart, style.paddingInlineEnd, style.borderInlineStartWidth, style.borderInlineEndWidth]
+    .reduce((sum, size) => sum + (parseFloat(size) || 0), 0);
+  const icon = control instanceof HTMLButtonElement ? (control.querySelector("svg")?.clientWidth ?? 0)
+    : control instanceof HTMLSelectElement ? 16 : 0;
+  const gap = icon ? parseFloat(style.columnGap) || 0 : 0;
+  return Math.ceil(textWidth + insets + icon + gap);
+}
+
+function parameterLabelWidth(field: HTMLElement, measure: CanvasRenderingContext2D) {
+  const label = field.querySelector<HTMLElement>(":scope > span, .game-model-head > span, .unity-language-heading > span");
+  const text = (label?.textContent ?? Array.from(field.childNodes)
+    .filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join("")).trim().replace(/\s+/g, " ");
+  const style = getComputedStyle(label ?? field);
+  return measureParameterText(text, style, measure);
+}
+
+function useParameterFieldWidths(configured: boolean) {
+  const fields = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const root = fields.current;
+    if (!configured || !root) return;
+    const measure = document.createElement("canvas").getContext("2d");
+    if (!measure) return;
+    let frame = 0;
+    const layout = () => {
+      const style = getComputedStyle(root);
+      const columns = style.gridTemplateColumns.split(" ").map(parseFloat);
+      const columnWidth = columns.length === 2 ? Math.min(...columns) : Infinity;
+      const fullWidth = root.clientWidth;
+      const minimum = parseFloat(style.getPropertyValue("--game-flow-control-min"));
+      const minLabel = parseFloat(style.getPropertyValue("--game-flow-label-width"));
+      const gap = parseFloat(style.getPropertyValue("--game-flow-field-gap"));
+      const widths = new Map<HTMLElement, { wide: boolean; stacked: boolean }>();
+      for (const control of root.querySelectorAll<ParameterControl>(parameterControls)) {
+        if (!control.offsetWidth || control.closest("[popover]")) continue;
+        const field = control.closest<HTMLElement>(parameterField);
+        if (!field || !root.contains(field) || getComputedStyle(field).display !== "grid") continue;
+        const region = control.closest<HTMLElement>(".model-filter-select") ?? control;
+        const concurrency = field.querySelector<HTMLElement>(".game-model-concurrency-control");
+        const tools = Math.max(0, region.offsetWidth - control.offsetWidth) + (concurrency ? concurrency.offsetWidth + gap : 0);
+        const required = Math.max(minLabel, parameterLabelWidth(field, measure)) + gap
+          + Math.max(minimum, parameterValueWidth(control, measure) + tools);
+        const open = control.getAttribute("aria-expanded") === "true";
+        const previous = widths.get(field);
+        widths.set(field, {
+          wide: !!previous?.wide || (open ? field.classList.contains("game-flow-param-wide") : required > columnWidth),
+          stacked: !!previous?.stacked || (open ? field.classList.contains("game-flow-param-stacked") : required > fullWidth),
+        });
+      }
+      for (const field of root.querySelectorAll<HTMLElement>(".game-flow-param-field")) {
+        if (!widths.has(field)) field.classList.remove("game-flow-param-field", "game-flow-param-wide", "game-flow-param-stacked");
+      }
+      for (const [field, width] of widths) {
+        field.classList.add("game-flow-param-field");
+        field.classList.toggle("game-flow-param-wide", width.wide);
+        field.classList.toggle("game-flow-param-stacked", width.stacked);
+      }
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(layout);
+    };
+    const resize = new ResizeObserver(schedule);
+    const changes = new MutationObserver(schedule);
+    resize.observe(root);
+    changes.observe(root, { subtree: true, childList: true, characterData: true, attributes: true,
+      attributeFilter: ["value", "placeholder", "aria-expanded"] });
+    root.addEventListener("input", schedule);
+    root.addEventListener("change", schedule);
+    document.fonts.addEventListener("loadingdone", schedule);
+    layout();
+    return () => {
+      resize.disconnect();
+      changes.disconnect();
+      root.removeEventListener("input", schedule);
+      root.removeEventListener("change", schedule);
+      document.fonts.removeEventListener("loadingdone", schedule);
+      cancelAnimationFrame(frame);
+    };
+  }, [configured]);
+  return fields;
+}
+
+export function GameFlowParameterGroup({ kind, children }: {
+  kind: "models" | "runtime" | "behavior" | "actions" | "help";
+  children: ReactNode;
+}) {
+  return <div className="game-flow-param-section" data-parameter-group={kind}>{children}</div>;
+}
+
 type CardProps = GameFlowActivity & {
   title: string;
   current?: boolean;
@@ -76,6 +191,7 @@ type CardProps = GameFlowActivity & {
   body?: ReactNode;
   resultLine?: string;
   configuration?: ReactNode;
+  configurationActions?: ReactNode;
   runningParameters?: readonly BenchmarkParameter[];
   foldedSummary?: { completed?: number; failed?: number; models?: readonly string[]; concurrency?: number };
   parametersLocked?: boolean;
@@ -90,7 +206,7 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 }
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
-  actions, onConfigure, body, resultLine, configuration, runningParameters, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
+  actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
@@ -99,6 +215,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const active = state === "running" || benchmarkActive;
   const locked = active || parametersLocked;
   const configured = expanded && !!configuration;
+  const parameterFields = useParameterFieldWidths(configured);
   const readOnlyParameters = !active && !configuration ? benchmark?.parameters ?? runningParameters : undefined;
   const showReadOnlyParameters = !!readOnlyParameters?.length;
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
@@ -205,12 +322,17 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {(configured || showReadOnlyParameters || !locked && onConfigure) && <section id={settingsId}
           className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured && !showReadOnlyParameters}>
           {configured && <fieldset className="game-flow-parameter-fields" disabled={locked}>
-            <div className="game-flow-editable-fields">{configuration}</div>
-            {saveConfiguration && <div className="game-flow-config-save">
-              <button type="button" className="unity-btn" disabled={saveConfiguration.saving} onClick={saveConfiguration.cancel}>取消</button>
-              <button type="button" className="unity-btn unity-btn-primary" disabled={saveConfiguration.disabled}
-                onClick={saveConfiguration.run}>{saveConfiguration.saving ? "保存中…" : "保存"}</button>
-            </div>}
+            <div ref={parameterFields} className="game-flow-editable-fields">
+              {configuration}
+              {(configurationActions || saveConfiguration) && <GameFlowParameterGroup kind="actions">
+                {configurationActions}
+                {saveConfiguration && <>
+                  <button type="button" className="unity-btn" disabled={saveConfiguration.saving} onClick={saveConfiguration.cancel}>取消</button>
+                  <button type="button" className="unity-btn unity-btn-primary" disabled={saveConfiguration.disabled}
+                    onClick={saveConfiguration.run}>{saveConfiguration.saving ? "保存中…" : "保存"}</button>
+                </>}
+              </GameFlowParameterGroup>}
+            </div>
           </fieldset>}
           {showReadOnlyParameters && <dl className="game-flow-parameter-list" aria-label="本次实际运行参数">
             {readOnlyParameters.map(({ label, value, scope }, index) =>

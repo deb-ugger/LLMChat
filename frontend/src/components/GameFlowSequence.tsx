@@ -378,7 +378,7 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
-export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision, runningParameters }: {
+export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision, runningParameters, configurationActions }: {
   configurationCommit?: RefObject<GameStepConfigurationCommit | null>;
   steps: GameFlowStep[];
   configured: string | null;
@@ -387,6 +387,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   testConfigurations?: GameTestConfigurationAccess;
   testConfigurationDisabled?: boolean;
   configurationRevision?: number;
+  configurationActions?: ReactNode;
   runningParameters?: BenchmarkParameter[];
   onSaveConfiguration?:()=>void|Promise<void>;
   configurationScope: string | null;
@@ -613,6 +614,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
             run: () => void withConfiguration(undefined, step.id, true),
             cancel: () => cancelConfiguration(step.id),
           } : undefined}
+          configurationActions={hasConfiguration ? configurationActions : undefined}
           configuration={hasConfiguration ? <div className="game-flow-field-wide game-flow-config-content">
             <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
           </div> : expanded && children && <button type="button" className="unity-btn game-flow-field-wide"

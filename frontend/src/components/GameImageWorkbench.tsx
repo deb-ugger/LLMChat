@@ -13,6 +13,7 @@ import { recognizeLocalGameImage } from "../gameImageRecognitionInput";
 import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { readRpgGameImageNames, translateNamedImageText, type ImageNameMemory } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
+import { GameFlowParameterGroup } from "./GameFlowCard";
 import { GameFlowSequence, type GameFlowStep, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { gameAvailableModels, GameModelSelect, GameProcessingTabs, GameTranslationTabs } from "./GameTranslationTabs";
 import { logRuntimeError } from "../runtimeLog";
@@ -926,22 +927,24 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       else next[step] = value;
       return next;
     });
-    return <div className="game-flow-parameter-group" role="group" aria-label={label}>
-      {configured === "translate" && <h6>{label}</h6>}
-      <GameProcessingTabs label={label}
-        localLabel={step === "render" ? "保留底图排版" : step === "filter" ? "本地筛选" : "本地 OCR"}
-        disabled={configLocked} value={model !== undefined ? "llm" : "local"}
-        onChange={value => setModel(value === "llm" ? "" : undefined)}>
-        {model !== undefined && <div className="unity-offline-fields">
-          <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
+    return {
+      models: <div className="game-flow-parameter-group" role="group" aria-label={label}>
+        {configured === "translate" && <h6>{label}</h6>}
+        <GameProcessingTabs label={label}
+          localLabel={step === "render" ? "保留底图排版" : step === "filter" ? "本地筛选" : "本地 OCR"}
+          disabled={configLocked} value={model !== undefined ? "llm" : "local"}
+          onChange={value => setModel(value === "llm" ? "" : undefined)}>
+          {model !== undefined && <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
             label={step === "render" ? "断行排版模型" : "视觉模型（需支持图片输入）"}
-            value={model} models={models} disabled={configLocked} onChange={setModel} />
-        </div>}
+            value={model} models={models} disabled={configLocked} onChange={setModel} />}
+        </GameProcessingTabs>
+      </div>,
+      runtime: <>
         {step === "recognize" && <>
           <label>翻译置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence}
             onChange={event => setStageModels(previous => ({ ...previous,
               confidence: String(Math.min(100, Math.max(0, Number(event.target.value)))) }))} /></label>
-          {model === undefined ? <>
+          {model === undefined && <>
             <label>图片识别<select value={mode} disabled={configLocked} onChange={event => setMode(event.target.value as OcrMode)}>
               {OCR_MODE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
             </select></label>
@@ -949,20 +952,27 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
               value={concurrency} disabled={configLocked} onChange={event => setConcurrency(Number(event.target.value))}>
               {[1, 2, 3, 4, 6, 8].map(value => <option key={value}>{value}</option>)}
             </select></label>
-          </> : <label className="unity-inline-check"><input type="checkbox" checked={mode === "manga"} disabled={configLocked}
-            onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
+          </>}
         </>}
-        {step === "filter" && model === undefined && <div className="unity-offline-fields">
-          <label>筛选策略<UnityDescriptionSelect label="筛选策略" value={strategy} disabled={configLocked}
-            onChange={value => setStrategy(value as typeof strategy)} choices={[
+        {step === "filter" && model === undefined && <label>筛选策略<UnityDescriptionSelect label="筛选策略" value={strategy}
+          disabled={configLocked} onChange={value => setStrategy(value as typeof strategy)} choices={[
 {value:"staged",label:"分级快速筛选",description:"先按资源目录跳过常规动画、角色和瓦片素材，再用快速模型检测文字；疑似文字使用更高分辨率复核。",warning:"可能跳过含有文字的素材；可手动改选，或改用完整范围筛选。"},
 {value:"full",label:"完整范围筛选",description:"逐张检测全部未完成图片，包括动画、角色和瓦片素材，使用更高分辨率的快速模型。",warning:"检测范围更广，耗时通常更长。"}
-]} /></label>
-        </div>}
-        {step === "render" && <p className="hint">{model !== undefined ? "模型规划译文断行，程序绘制到原文字区域。" : "纯色覆盖原文字区域后嵌入译文。"}</p>}
-      </GameProcessingTabs>
-    </div>;
+]} /></label>}
+      </>,
+      behavior: step === "recognize" && model !== undefined && <label className="unity-inline-check">
+        <input type="checkbox" checked={mode === "manga"} disabled={configLocked}
+          onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排
+      </label>,
+      help: step === "render" && <p className="hint">
+        {model !== undefined ? "模型规划译文断行，程序绘制到原文字区域。" : "纯色覆盖原文字区域后嵌入译文。"}
+      </p>,
+    };
   };
+  const recognizeSettings = imageProcessingSettings("recognize");
+  const renderSettings = imageProcessingSettings("render");
+  const processingSettings = configured === "filter" ? imageProcessingSettings("filter")
+    : configured === "recognize" ? recognizeSettings : configured === "render" ? renderSettings : null;
   const operationContent=<>
 
     <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
@@ -976,15 +986,32 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       progress: { current: redrawSummary ? undefined : progressCount, total: redrawSummary ? undefined : stepProgress?.total || undefined,
         count: redrawSummary?.count, percent: redrawSummary?.percent ?? (stepProgress?.total ? Math.floor(progressCount / stepProgress.total * 100) : undefined),
         remainingMs: stepProgress?.etaMs, details: progressState === "running" ? progressDetails : undefined },
-      details: progressState !== "running" ? progressDetails : undefined }} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings">
-      {configured === "translate" && <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => { setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm"); }}><div className="unity-control-group unity-translation-group"><div className="unity-group-fields unity-translation-fields">
-        {translationKind !== "engine" && <>
-          {configured === "translate" && <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked} models={models} onChange={setTranslationModel} />}
-        </>}
-        <div className="unity-language-setting"><div className="unity-language-heading"><span>原文语言</span><label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={onlySourceLanguage} onChange={e=>setOnlySourceLanguage(e.target.checked)}/>仅翻源语言</label></div><select aria-label="原文语言" value={source} disabled={configLocked || !!busy} onChange={e=>setSource(e.target.value)}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
-        <div className="unity-language-setting"><div className="unity-language-heading"><span>目标语言</span><label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={skipTargetLanguage} onChange={e=>setSkipTargetLanguage(e.target.checked)}/>跳过目标语言</label></div><select aria-label="目标语言" value={target} disabled={configLocked || !!busy} onChange={e=>setTarget(e.target.value)}>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></div>
-      </div></div>
-      {translationKind==="engine"&&<UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={engineExpanded} onExpandedChange={setEngineExpanded} onChange={setEngines}/>}</GameTranslationTabs>}
+      details: progressState !== "running" ? progressDetails : undefined }} steps={imageFlow} configured={configured} onConfigure={setConfigured} onRun={flowBusy || !project ? undefined : () => void handle?.current?.automatic(new AbortController().signal)}><div className="unity-translation-settings game-flow-parameter-layout">
+      {configured === "translate" && <>
+        <GameFlowParameterGroup kind="models">
+          <GameTranslationTabs kind={translationKind} disabled={configLocked} onChange={kind => {
+            setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm");
+          }}>
+            {translationKind !== "engine" &&
+              <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked}
+                models={models} onChange={setTranslationModel} />}
+            {translationKind==="engine"&&<UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={engineExpanded} onExpandedChange={setEngineExpanded} onChange={setEngines}/>}
+          </GameTranslationTabs>
+          {recognizeSettings.models}
+          {renderSettings.models}
+        </GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="runtime">
+          <label>原文语言<select aria-label="原文语言" value={source} disabled={configLocked || !!busy} onChange={e=>setSource(e.target.value)}><option value="auto">自动检测</option>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
+          <label>目标语言<select aria-label="目标语言" value={target} disabled={configLocked || !!busy} onChange={e=>setTarget(e.target.value)}>{UNITY_LANGUAGES.map(language=><option key={language.value} value={language.value}>{language.label}</option>)}</select></label>
+          {recognizeSettings.runtime}
+        </GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="behavior">
+          <label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={onlySourceLanguage} onChange={e=>setOnlySourceLanguage(e.target.checked)}/>仅翻源语言</label>
+          <label className="unity-inline-check"><input type="checkbox" disabled={configLocked || !!busy} checked={skipTargetLanguage} onChange={e=>setSkipTargetLanguage(e.target.checked)}/>跳过目标语言</label>
+          {recognizeSettings.behavior}
+        </GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="help">{renderSettings.help}</GameFlowParameterGroup>
+      </>}
       {configured === "review" && <div className="unity-offline-fields"><GameModelSelect optional label="校验失败重译模型（可选）" promptKey="review" value={reviewModel} disabled={configLocked} models={models} onChange={setReviewModel}/></div>}
       {configured === "refine" && <div className="unity-offline-fields">
         <label>复筛方式<select value={refineMethod} disabled={configLocked} onChange={event => setStageModels(previous => ({ ...previous, refineMethod: event.target.value }))}>
@@ -1011,9 +1038,12 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         </label>}
         <p className="hint">复筛「待复核」和「待正式识别」的图片。{refineMethod === "llm" && "只判断文字是否存在，先用 1024 尺寸，判断把握低时再以 1600 尺寸复查。"}</p>
       </div>}
-      {configured === "filter" && imageProcessingSettings("filter")}
-      {(configured === "recognize" || configured === "translate") && imageProcessingSettings("recognize")}
-      {(configured === "render" || configured === "translate") && imageProcessingSettings("render")}
+      {processingSettings && <>
+        <GameFlowParameterGroup kind="models">{processingSettings.models}</GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="runtime">{processingSettings.runtime}</GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="behavior">{processingSettings.behavior}</GameFlowParameterGroup>
+        <GameFlowParameterGroup kind="help">{processingSettings.help}</GameFlowParameterGroup>
+      </>}
       {configured === "redraw" && <div className="unity-offline-fields">
         <label>模型工作流<select value={redrawProfile} disabled={configLocked} onChange={event => setStageModels(previous => ({ ...previous, redraw: event.target.value }))}>
           {Object.entries(styleRedrawLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
