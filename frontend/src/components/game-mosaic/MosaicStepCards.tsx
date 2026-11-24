@@ -268,7 +268,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
             {model === "2511" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
               onChange={steps => changePreferences({ steps })} />}
           </div>
-          {!redraw.paused && redraw.skipped && <p className="hint">{redraw.skipped}</p>}
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
             onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label></div>
         </GameFlowParameterGroup>
