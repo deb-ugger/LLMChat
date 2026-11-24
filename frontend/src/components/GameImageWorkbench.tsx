@@ -935,13 +935,13 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
           disabled={configLocked} value={model !== undefined ? "llm" : "local"}
           onChange={value => setModel(value === "llm" ? "" : undefined)}>
           {model !== undefined && <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
-            label={step === "render" ? "断行排版模型" : "视觉模型（需支持图片输入）"}
+            label={step === "render" ? "断行排版模型" : "视觉模型"}
             value={model} models={models} disabled={configLocked} onChange={setModel} />}
         </GameProcessingTabs>
       </div>,
       runtime: <>
         {step === "recognize" && <>
-          <label>翻译置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence}
+          <label title="翻译置信度阈值（0-100）">置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence}
             onChange={event => setStageModels(previous => ({ ...previous,
               confidence: String(Math.min(100, Math.max(0, Number(event.target.value)))) }))} /></label>
           {model === undefined && <>
@@ -993,7 +993,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
             setTranslationKind(kind); setProvider(kind === "engine" ? "bing" : "llm");
           }}>
             {translationKind !== "engine" &&
-              <GameModelSelect label="图片文字翻译模型" promptKey="image" value={translationModel} disabled={configLocked}
+              <GameModelSelect label="翻译模型" promptKey="image" value={translationModel} disabled={configLocked}
                 models={models} onChange={setTranslationModel} />}
             {translationKind==="engine"&&<UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={engineExpanded} onExpandedChange={setEngineExpanded} onChange={setEngines}/>}
           </GameTranslationTabs>
@@ -1012,7 +1012,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         </GameFlowParameterGroup>
         <GameFlowParameterGroup kind="help">{renderSettings.help}</GameFlowParameterGroup>
       </>}
-      {configured === "review" && <div className="unity-offline-fields"><GameModelSelect optional label="校验失败重译模型（可选）" promptKey="review" value={reviewModel} disabled={configLocked} models={models} onChange={setReviewModel}/></div>}
+      {configured === "review" && <div className="unity-offline-fields"><GameModelSelect optional label="重译模型" promptKey="review" value={reviewModel} disabled={configLocked} models={models} onChange={setReviewModel}/></div>}
       {configured === "refine" && <div className="unity-offline-fields">
         <label>复筛方式<select value={refineMethod} disabled={configLocked} onChange={event => setStageModels(previous => ({ ...previous, refineMethod: event.target.value }))}>
           <option value="off">关闭</option><option value="local">本地筛选</option><option value="llm">大模型</option>
