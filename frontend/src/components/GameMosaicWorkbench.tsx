@@ -1219,14 +1219,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   async function cancelRedrawTask() {
-    if (redrawCancelRequested.current || (!pausedRedraw && !redrawTask.current) ||
-      (task.current && (!redrawTask.current || !task.current.signal.aborted))) return;
+    const running = redrawTask.current;
+    if (redrawCancelRequested.current || (!pausedRedraw && !running) || (task.current && !running)) return;
     redrawCancelRequested.current = true;
     setRedrawCancelling(true);
+    if (running) task.current?.abort();
     setProgress("正在取消重绘任务…", "redraw");
     try {
       await cancelRedrawPrompt();
-      await redrawTask.current;
+      await running;
       await storePendingRedraw(null);
       clearStepProgress("redraw");
       showAppNotice("已取消当前重绘任务");
@@ -1391,7 +1392,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
     {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle}
-      busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason} onStop={id => stopMosaicBatch(task.current, id, text => setProgress(text, id))} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
+      busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason}
+      onStop={id => id === "redraw" ? void cancelRedrawTask() : stopMosaicBatch(task.current, text => setProgress(text, id))}
+      preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
       testing={testing} parametersLocked={disabled} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
         screen: cardMeasurement("screen"), refine: cardMeasurement("refine"), redraw: cardMeasurement("redraw"),
       }} now={performance.now()} progress={progress} statusLineStep={statusLineStep} error={error}

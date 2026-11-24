@@ -12,5 +12,6 @@ commands.allow = [
   "read_redraw_workflow",
   "save_redraw_workflow",
   "submit_redraw_workflow",
-  "run_style_redraw"
+  "run_style_redraw",
+  "cancel_mosaic_redraw"
 ]

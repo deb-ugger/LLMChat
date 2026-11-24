@@ -5,7 +5,7 @@ import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
 import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicCandidate, MosaicBatchPorts, MosaicBatchStep, MosaicBatchWork,
   MosaicRedrawPorts, MosaicRedrawReference, MosaicRefinePlan, MosaicRefinePorts, MosaicReviewPlan, MosaicReviewPorts, MosaicScreenPlan,
-  MosaicScreenPorts, MosaicStep, MosaicStepUsage, RedrawPlan, RedrawStyle, RefineMovement, Result, Results, StepReport, StepRun } from "./mosaicWorkbenchTypes";
+  MosaicScreenPorts, MosaicStepUsage, RedrawPlan, RedrawStyle, RefineMovement, Result, Results, StepReport, StepRun } from "./mosaicWorkbenchTypes";
 
 export function sameReview(row: Result, scan: MosaicScan, key: string) {
   const boxes = removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes);
@@ -140,9 +140,9 @@ export async function runMosaicBatch(label: string, work: MosaicBatchWork, step:
   }
 }
 
-export function stopMosaicBatch(controller: AbortController | null, step: MosaicStep, setProgress: (message: string) => void) {
+export function stopMosaicBatch(controller: AbortController | null, setProgress: (message: string) => void) {
   controller?.abort();
-  setProgress(step === "redraw" ? "等待当前候选返回，随后暂停重绘" : "正在保存进度并停止后续任务");
+  setProgress("正在保存进度并停止后续任务");
 }
 
 export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSignal, report: (progress: StepReport) => void,

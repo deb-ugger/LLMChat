@@ -168,9 +168,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       </small>}
       actions={running ? <>
         <button type="button" className="unity-btn game-flow-start" disabled={aborting}
-          data-tooltip={id === "redraw" ? "等待当前候选生成后暂停。若采样被取消或中断，这张图下次从第 1 步开始。" : undefined}
+          data-tooltip={id === "redraw" ? "立即取消当前 ComfyUI 重绘并清除续跑记录。这张图下次从第 1 步重新生成。" : undefined}
           onClick={() => onStop(id)}>{aborting ? "正在中止" : "中止"}</button>
-        {id === "redraw" && aborting && cancelRedraw}
+        {id === "redraw" && aborting && !redraw.cancelling && cancelRedraw}
       </> : actions}
       configuration={expanded && settings} /></li>;
   };
