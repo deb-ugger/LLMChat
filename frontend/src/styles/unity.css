@@ -3770,8 +3770,20 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-progress-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:10px;color:var(--text-muted)}
 .game-flow-progress-meta > span{white-space:nowrap}
 .game-flow-progress-meta b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
-.game-flow-collapsed-summary{justify-content:flex-end;overflow:hidden;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
-.game-flow-collapsed-summary b{color:var(--text);font-variant-numeric:tabular-nums}
+.game-flow-head.is-folded{flex-wrap:nowrap;gap:4px 6px}
+.game-flow-head.is-folded > .game-flow-title{min-inline-size:2em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game-flow-head.is-folded > .game-flow-actions{min-inline-size:0;flex-wrap:nowrap;margin-inline-start:0}
+.game-flow-head.is-folded > .game-flow-actions > button{min-inline-size:0;padding-inline:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game-flow-folded-result{margin-inline-start:auto;min-inline-size:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:var(--fs-caption);color:var(--text-muted);font-variant-numeric:tabular-nums}
+.game-flow-folded-result b{color:var(--text)}
+.game-flow-collapsed-summary{display:flex;align-items:baseline;overflow:hidden;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
+.game-flow-collapsed-summary > span{display:flex;gap:2px;min-inline-size:0}
+.game-flow-collapsed-summary > span > span:first-child:not(.game-flow-folded-value){flex:none;white-space:pre}
+.game-flow-collapsed-summary .game-flow-folded-value{min-inline-size:0;overflow:hidden;text-overflow:ellipsis}
+.game-flow-folded-failure .game-flow-folded-value{color:var(--warning)}
+.game-flow-collapsed-summary > :not(.game-flow-folded-models){flex:none}
+.game-flow-collapsed-summary > .game-flow-folded-models{flex:0 1 auto}
 .game-flow-parameter-list{display:grid;gap:4px;margin:6px 0 0;font-size:var(--fs-caption)}
 .game-flow-parameter-list > div{display:grid;grid-template-columns:116px minmax(0,1fr);align-items:baseline;gap:10px}
 .game-flow-parameter-list dt{color:var(--text-muted);white-space:nowrap}
@@ -3795,6 +3807,8 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-title button{margin-inline-start:auto;font-size:9.5px;letter-spacing:0;padding:2px 9px;
   border-radius:5px;border:0;font-weight:600;cursor:pointer;background:var(--text);color:var(--bg)}
 .game-flow-editable-title button:disabled{opacity:.45;cursor:not-allowed}
+.game-flow-parameter-fields{min-inline-size:0;margin:0;padding:0;border:0}
+.game-flow-parameter-fields:disabled :is(input,select,textarea,button):disabled{opacity:.45;cursor:not-allowed}
 .game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}
 .game-flow-editable-fields > .game-flow-field-wide{grid-column:1 / -1}
 @container (max-width:492px){.game-flow-editable-fields{grid-template-columns:minmax(0,1fr)}}

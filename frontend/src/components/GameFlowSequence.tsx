@@ -536,11 +536,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     steps.at(-1);
   const expansionId = (step: GameFlowStep) => imageFlow && step.id === "translate" ? "imageTranslate" : step.id;
   const isExpanded = (step: GameFlowStep) => expansion.isExpanded(expansionId(step), step === defaultStep);
-  const editorStep = steps.find(step => step.id === configured && isExpanded(step)) ?? steps.find(isExpanded);
+  const expandedRun = steps.find(step => isExpanded(step) && (step.id === formalStep || benchmarkRunning && step.id === benchmarkStep));
+  const editorStep = expandedRun ?? steps.find(step => step.id === configured && isExpanded(step)) ?? steps.find(isExpanded);
   const editorId = editorStep?.id ?? null;
   useLayoutEffect(() => {
-    if (!configurationLocked && configured !== editorId) onConfigure(editorId);
-  }, [configurationLocked, configured, editorId, onConfigure]);
+    if (configured !== editorId) onConfigure(editorId);
+  }, [configured, editorId, onConfigure]);
   return <div className="game-flow">
     <div className="game-flow-list">
       {(onRun || actions || testConfigurations) && <div className="game-flow-run">
@@ -563,6 +564,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const chosen = testMetrics ? undefined : saved.scope === configurationScope ? saved.models[step.id] : step.models;
         const configuredModels = (chosen || []).flatMap(({ role, id }) => id
           ? [{ model: id, concurrency: modelConcurrency(promptScope, role, id) }] : []);
+        const modelRows = Object.values(measured.models);
         const statusLabel = matchesActivity && ["running", "error", "stopped"].includes(state) ? activity.label : undefined;
         const current = state === "running" || showingBenchmark || !benchmarkRunning && activity?.state !== "running" && state === "current";
         const runLabel = (state === "stopped" || state === "error") && (!step.runLabel || step.runLabel === "开始") ? "继续" : step.runLabel || "开始";
@@ -570,7 +572,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const expanded = isExpanded(step);
         const openConfiguration = () => {
           if (!expanded) expansion.setExpanded(expansionId(step), true);
-          if (!configurationLocked) onConfigure(step.id);
+          onConfigure(step.id);
         };
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && configured === step.id && !!children;
@@ -583,6 +585,9 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
           elapsed={elapsed}
           progress={{ ...liveActivity?.progress, unit: imageFlow ? "张" : "条" }}
+          foldedSummary={{ completed: measured.itemsDone, failed: measured.failures,
+            models: modelRows.length ? modelRows.map(model => model.model) : configuredModels.map(model => model.model),
+            concurrency: Math.max(0, ...(modelRows.length ? modelRows : configuredModels).map(model => model.concurrency)) }}
           statusLine={liveActivity?.statusLine}
           parametersLocked={configurationLocked}
           runningParameters={formalSnapshot?.step === step.id ? formalSnapshot.parameters : undefined}

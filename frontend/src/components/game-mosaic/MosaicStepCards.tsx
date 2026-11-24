@@ -98,6 +98,10 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     const elapsed = measured.taskId ? measured.elapsedMs : status?.elapsed ??
       (status?.started == null ? undefined : now - status.started);
     const expanded = expansion.isExpanded(benchmarkSteps[id], id === defaultStep);
+    const models = Object.values(measured.models);
+    const recordedModelNames = status?.parameters?.filter(parameter => parameter.label.endsWith("模型"))
+      .map(parameter => parameter.value);
+    const recordedLanes = status?.parameters?.find(parameter => parameter.label.endsWith("并发"))?.value;
     const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     const statusLine = !benchmark && statusLineStep === id ? progress : undefined;
     const sample = running && id === "refine" ? statusLine?.match(/^.+? · (.+) · (?:候选区域 \d+\/\d+|整图) · 等待模型返回$/)?.[1] : undefined;
@@ -118,6 +122,11 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         completed: status?.completed, unit: "张", percent, remainingMs, successRate,
         configuration: running && status?.parameters?.length ? { current: 1, total: 1 } : undefined }}
       statusLine={statusLine}
+      foldedSummary={{
+        failed: id === "refine" ? Math.max(failed, unresolvedRefineFailures) : failed,
+        models: recordedModelNames?.length ? recordedModelNames : models.map(model => model.model),
+        concurrency: Number(recordedLanes) || Math.max(0, ...models.map(model => model.concurrency)),
+      }}
       runningParameters={status?.parameters} parametersLocked={busy || testing || parametersLocked}
       performance={expanded &&
         <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
