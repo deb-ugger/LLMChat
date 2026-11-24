@@ -813,7 +813,7 @@ function BenchmarkTaskRunSummary({ run, queueId, step }: { run: BenchmarkResult;
       if (!active || !row) return;
       const score = stage === "mosaicRefine" && row.score.displayScore != null
         ? (row.score.provisional ? "暂定 " : "") + row.score.displayScore.toFixed(1) + " 分" : undefined;
-      setMetrics({ review, score, matches: row.expectedBoxes > 0 ? row.foundBoxes + "/" + row.expectedBoxes : undefined });
+      setMetrics({ review, score, matches: row.evaluatedBoxes > 0 ? row.foundBoxes + "/" + row.evaluatedBoxes : undefined });
     })().catch(() => { /* Optional archive metrics can be unavailable for older runs. */ });
     return () => { active = false; };
   }, [hasDetails, queueId, runId, run, stage, referencePath, reference]);
