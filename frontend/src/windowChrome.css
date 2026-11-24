@@ -41,6 +41,7 @@
 }
 
 .game-aux-content { flex: 1 1 auto; min-block-size: 0; overflow: auto; }
+.game-aux-content > .game-benchmark-page { block-size: 100%; }
 
 .window-controls {
   position: fixed;

@@ -500,7 +500,7 @@ fn open_game_window(webview: tauri::Webview, label: &str, title: &str, width: f6
         return Ok(false);
     }
     let profile = WEBVIEW_DIRECTORY.get().ok_or("窗口数据目录尚未初始化")?;
-    let auxiliary_chrome = matches!(label, GAME_HELP_WINDOW | GAME_CONFIGURATION_WINDOW | GAME_BENCHMARK_REVIEW_WINDOW);
+    let auxiliary_chrome = label != "main";
     let child = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
         .title(title)
         .decorations(!auxiliary_chrome)

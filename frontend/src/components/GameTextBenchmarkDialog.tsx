@@ -30,7 +30,7 @@ import { GameFlowPerformance } from "./GameFlowSequence";
 import { GameProgressBar } from "./GameStepProgress";
 import { showAppNotice } from "./AppNotice";
 import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
-import { positionWindowPopover } from "./WindowControls";
+import { AuxiliaryWindowChrome, positionWindowPopover } from "./WindowControls";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type BenchmarkSetup = Pick<BenchmarkInput, "scope" | "current" | "models" | "screenModel" | "initialPart"> & {
@@ -245,12 +245,14 @@ export function GameTextBenchmarkWindow() {
     };
   }, [close]);
   const closeWindow = () => void close();
-  return <RecordsAndTestsPage onClose={closeWindow} onBuildRunning={value => { building.current = value; }}
-    gameStatus={error || (!page ? "正在读取游戏测试记录…" : undefined)}
-    gameView={page?.setup && <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
-      requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
-      enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
-      control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />} />;
+  return <AuxiliaryWindowChrome title="测试队列">
+    <RecordsAndTestsPage onClose={closeWindow} onBuildRunning={value => { building.current = value; }}
+      gameStatus={error || (!page ? "正在读取游戏测试记录…" : undefined)}
+      gameView={page?.setup && <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
+        requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
+        enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
+        control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />} />
+  </AuxiliaryWindowChrome>;
 }
 
 

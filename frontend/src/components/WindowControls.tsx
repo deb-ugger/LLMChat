@@ -87,3 +87,10 @@ export function WindowControls({ actions, title }: { actions?: ReactNode; title?
     </div>
   </>;
 }
+
+export function AuxiliaryWindowChrome({ title, children }: { title: string; children: ReactNode }) {
+  return <div className="game-aux-shell">
+    <WindowControls title={title} />
+    <div className="game-aux-content">{children}</div>
+  </div>;
+}

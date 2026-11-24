@@ -8,7 +8,7 @@ import { showAppNotice } from "./AppNotice";
 import { GameTestConfigurations } from "./GameTestConfigurations";
 import { GameWorkflowHelpPage } from "./GameWorkflowHelp";
 import { BenchmarkReviewWindow } from "./RunComparePanel";
-import { WindowControls } from "./WindowControls";
+import { AuxiliaryWindowChrome } from "./WindowControls";
 
 const windowTitles: Record<GameAuxKind, string> = {
   help: "游戏翻译流程", configuration: "测试配置", "benchmark-review": "测试结果对照",
@@ -106,17 +106,14 @@ export function GameAuxiliaryWindow({ kind }: { kind: GameAuxKind }) {
   };
   const setup = page?.setup;
   const channel = page?.channel;
-  return <div className="game-aux-shell">
-    <WindowControls title={windowTitles[kind]} />
-    <div className="game-aux-content">
-      {!setup || !channel || error ? <main className="game-aux-loading">
-        <p role={error ? "alert" : "status"}>{error || "正在加载" + windowTitles[kind] + "…"}</p>
-        <button type="button" className="unity-btn" onClick={close}>关闭</button>
-      </main> : setup.kind === "help" ? <GameWorkflowHelpPage {...setup} onClose={close} />
-        : setup.kind === "benchmark-review" ? <BenchmarkReviewWindow key={setup.session} setup={setup} onClose={close} />
-        : <GameTestConfigurations key={setup.session} setup={setup}
-          capture={() => requestGameAux<GameTestConfiguration>(channel, { action: "capture", session: setup.session })}
-          onApply={row => requestGameAux<void>(channel, { action: "apply", session: setup.session, row }, 120000)} onClose={close} />}
-    </div>
-  </div>;
+  return <AuxiliaryWindowChrome title={windowTitles[kind]}>
+    {!setup || !channel || error ? <main className="game-aux-loading">
+      <p role={error ? "alert" : "status"}>{error || "正在加载" + windowTitles[kind] + "…"}</p>
+      <button type="button" className="unity-btn" onClick={close}>关闭</button>
+    </main> : setup.kind === "help" ? <GameWorkflowHelpPage {...setup} onClose={close} />
+      : setup.kind === "benchmark-review" ? <BenchmarkReviewWindow key={setup.session} setup={setup} onClose={close} />
+      : <GameTestConfigurations key={setup.session} setup={setup}
+        capture={() => requestGameAux<GameTestConfiguration>(channel, { action: "capture", session: setup.session })}
+        onApply={row => requestGameAux<void>(channel, { action: "apply", session: setup.session, row }, 120000)} onClose={close} />}
+  </AuxiliaryWindowChrome>;
 }
