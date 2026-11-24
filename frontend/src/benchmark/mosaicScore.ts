@@ -8,6 +8,14 @@ type ScoreInput = MosaicScoreCounts & {
 export type MosaicMetric = {
   label: string; weight: number; numerator: number; denominator: number; ratio: number | null; missing?: string;
 };
+export type MosaicRankingDetail = {
+  key: "freeze" | "timing" | "items" | "samples" | "complete" | "coverage" | "health" | "status";
+  label: string;
+  current: string;
+  required: string;
+  action: string;
+};
+const displayCoverage = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(1)}%`;
 const fraction = (n: number, d: number) => d > 0 ? n / d : null;
 const roundScore = (value: number) => Math.round(value * 10 + 1e-9) / 10;
 export const mosaicScoreTitle = (stage: MosaicScoreStage) => stage === "mosaicScreen" ? "初筛候选保留分" : "复筛综合分";
@@ -55,17 +63,61 @@ export function scoreMosaicRun(stage: MosaicScoreStage, row: ScoreInput) {
   if (!hasWallClock) rankingReasons.push("缺完整可比计时协议");
   if (effectiveWeight < 100) rankingReasons.push("评分缺项");
   if (score === null) rankingReasons.push(stage === "mosaicRefine" ? "没有已标注明确判定" : "没有可评的已确认标注");
-  if (row.confirmedPositive < 60 || row.confirmedNegative < 60) rankingReasons.push("已确认有码、无码各需至少 60 张不同原图");
+  const sampleShortage = row.confirmedPositive < 60 || row.confirmedNegative < 60;
+  const boxShortage = row.annotatedImages < 30 || row.expectedBoxes < 60;
+  const completeShortage = row.completePositiveImages < 30;
+  const lowCoverage = (positiveCoverage ?? 0) < .9 || (negativeCoverage ?? 0) < .9 || (boxCoverage ?? 0) < .9;
+  if (sampleShortage) rankingReasons.push("已确认有码、无码各需至少 60 张不同原图");
   if (stage === "mosaicRefine") {
-    if (row.annotatedImages < 30 || row.expectedBoxes < 60) rankingReasons.push("至少 30 张有码图有框且人工框至少 60 个");
-    if (row.completePositiveImages < 30) rankingReasons.push("至少 30 张有码图完整标框");
-    if ((positiveCoverage ?? 0) < .9 || (negativeCoverage ?? 0) < .9 || (boxCoverage ?? 0) < .9)
-      rankingReasons.push("正负类明确判定率和可评框覆盖均需达到 90%");
+    if (boxShortage) rankingReasons.push("至少 30 张有码图有框且人工框至少 60 个");
+    if (completeShortage) rankingReasons.push("至少 30 张有码图完整标框");
+    if (lowCoverage) rankingReasons.push("正负类明确判定率和可评框覆盖均需达到 90%");
   }
+  const details: MosaicRankingDetail[] = [];
+  if (!row.freeze) details.push({ key: "freeze", label: "冻结样本", current: "未绑定",
+    required: "绑定冻结样本与标注版本", action: "选择样本集后跑一轮新测试" });
+  if (!hasWallClock) details.push({ key: "timing", label: "计时协议",
+    current: row.timing === "segment-only" ? "仅记录续跑段" : row.timing === "reused-output" ? "复用了归档输出" : "无完整计时记录",
+    required: "整轮墙钟计时", action: "从头跑一轮新测试" });
+  if (effectiveWeight < 100 || score === null) {
+    const missing = [...new Set(items.flatMap(item => item.missing ? [item.missing] : []))];
+    details.push({ key: "items", label: "评分缺项", current: effectiveWeight < 100
+      ? `${effectiveWeight}/100（缺 ${100 - effectiveWeight} 分）` : "缺已标注明确判定",
+    required: stage === "mosaicScreen" ? "两项均可评分" : "六项均可评分，且有已标注明确判定",
+    action: missing.length ? `提供可评分数据（${missing.join("，")}）` : "取得已标注样本的明确判定" });
+  }
+  if (sampleShortage) {
+    const missing = [row.confirmedPositive < 60 ? `${60 - row.confirmedPositive} 张有码原图` : "",
+      row.confirmedNegative < 60 ? `${60 - row.confirmedNegative} 张无码原图` : ""].filter(Boolean);
+    details.push({ key: "samples", label: "样本规模", current: `有码 ${row.confirmedPositive} 张，无码 ${row.confirmedNegative} 张`,
+      required: "有码、无码各 ≥60 张不同原图", action: `人工确认至少 ${missing.join("和")}` });
+  }
+  if (stage === "mosaicRefine" && (boxShortage || completeShortage)) details.push({
+    key: "complete", label: "完整标注", current: `${row.completePositiveImages} 张完整标框，${row.annotatedImages} 张有框，共 ${row.expectedBoxes} 框`,
+    required: "至少 30 张有码图完整标框，人工框至少 60 个",
+    action: [completeShortage ? `把 ${30 - row.completePositiveImages} 张有码图标完并确认` : "",
+      row.expectedBoxes < 60 ? `标出 ${60 - row.expectedBoxes} 个缺少的人工框` : ""].filter(Boolean).join("，"),
+  });
+  if (stage === "mosaicRefine" && lowCoverage) {
+    const missing = [positiveCoverage, negativeCoverage, boxCoverage].flatMap((value, index) =>
+      (value ?? 0) < .9 ? [["有码", "无码", "人工框"][index]] : []);
+    details.push({ key: "coverage", label: "判定覆盖",
+      current: `有码 ${displayCoverage(positiveCoverage)}，无码 ${displayCoverage(negativeCoverage)}，框 ${displayCoverage(boxCoverage)}`,
+      required: "有码、无码明确判定率和可评框覆盖均 ≥90%",
+      action: negativeCoverage === null ? "人工确认无码样本并取得明确判定" : `为${missing.join("、")}取得更多明确有效结果` });
+  }
+  if (!healthy) details.push({ key: "health", label: "轮次健康",
+    current: [`${row.validRuns}/${row.samples} 张有有效结果`, row.missing ? `缺行 ${row.missing} 张` : "",
+      row.invalid ? `异常 ${row.invalid} 条` : "", ...row.issues.map(issue => issue.replaceAll("·", "，"))].filter(Boolean).join("，"),
+    required: "全部计划样本均有有效结果且归档完整", action: "修复无效或缺失的结果后重新完成测试" });
+  const anomaly = [row.status !== "完成" && !(row.status === "失败" && failedImages) ? row.status : "", failedImages > 0 ? `失败 ${failedImages} 次` : "",
+    row.skipped > 0 ? `跳过 ${row.skipped} 张` : ""].filter(Boolean);
+  if (anomaly.length) details.push({ key: "status", label: "运行状态", current: anomaly.join("，"),
+    required: "完成且无失败、跳过", action: "处理失败或跳过原因后重新执行" });
   const group = row.freeze ? JSON.stringify([stage, row.freeze.version, row.freeze.inputs, row.freeze.truth, row.timing]) : null;
   return {
     stage, items, score, displayScore: score === null ? null : roundScore(score), effectiveWeight,
-    provisional: effectiveWeight < 100 || !row.freeze, eligible: !rankingReasons.length, rankingReasons, group,
+    provisional: effectiveWeight < 100 || !row.freeze, eligible: !rankingReasons.length, rankingReasons, details, group,
     delivery, boxCoverage, positiveCoverage, negativeCoverage, speed, speedUnavailableReason,
     missRate: fraction(row.fn, row.evaluatedPositive),
     reviewRate: fraction(row.review, labelled),

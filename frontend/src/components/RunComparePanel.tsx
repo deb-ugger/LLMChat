@@ -2,9 +2,9 @@ import * as echarts from "echarts/core";
 import { BarChart, ScatterChart } from "echarts/charts";
 import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { downloadMosaicTaskReport, readMosaicComparisonRuns, scoreMosaicComparisonRuns, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
-import { groupBenchmarkTasks, readGameBenchmarkHistory, readGameFormalHistory } from "../gameTextBenchmark";
+import { groupBenchmarkTasks, readGameBenchmarkHistory, readGameFormalHistory, type BenchmarkConfig } from "../gameTextBenchmark";
 import { gameDuration } from "../gameModelPerformance";
 import { bestMosaicRuns, compareMosaicScores, mosaicScoreTitle } from "../benchmark/mosaicScore";
 import { pickRunReference, runReferenceKey, type GameBenchmarkReviewSetup } from "../gameAuxWindows";
@@ -265,7 +265,9 @@ const RunComparePanel = memo(function RunComparePanel({
 
   const [sort, setSort] = useState<{ key: "score" | "f1" | "seconds"; descending: boolean }>({ key: "score", descending: true });
   const [selectedRunId, setSelectedRunId] = useState<string>();
+  const [expandedRunId, setExpandedRunId] = useState<string>();
   const f1 = new Map(runs.map(run => [run.performance.taskId, summarizeRun(run).f1]));
+  const runConfigs = new Map(runs.map(run => [run.performance.taskId, run.performance.benchmark?.config as BenchmarkConfig | undefined]));
   const groups = new Map<string, number>();
   const rows = (report?.totals ?? []).map(row => {
     const groupKey = JSON.stringify([row.score.group, row.score.items.filter(item => item.missing).map(item => item.label)]);
@@ -278,10 +280,6 @@ const RunComparePanel = memo(function RunComparePanel({
   const rated = rows.filter(row => row.groupNumber === activeGroup && row.score.displayScore !== null)
     .sort((a, b) => (b.score.displayScore ?? -1) - (a.score.displayScore ?? -1));
   const highest = rated[0], lowest = rated.at(-1);
-  const current = runs.reduce<BenchmarkCompareRun | undefined>((latest, run) => {
-    const time = (item?: BenchmarkCompareRun) => item?.performance.endedAt || item?.performance.beginTime || "";
-    return time(run) >= time(latest) ? run : latest;
-  }, undefined);
   const totalMs = runs.reduce((sum, run) => sum + run.performance.elapsedMs, 0);
   const validSamples = rows.reduce((sum, row) => sum + row.confirmedPositive + row.confirmedNegative, 0);
   rows.sort((left, right) => {
@@ -309,12 +307,14 @@ const RunComparePanel = memo(function RunComparePanel({
   }));
   const sortState = (key: typeof sort.key) => sort.key === key ? (sort.descending ? "descending" : "ascending") : "none";
   const sortMark = (key: typeof sort.key) => sort.key === key ? (sort.descending ? "↓" : "↑") : "↕";
+  const qualityCols = screening ? 9 : 6;
+  const totalCols = 2 + qualityCols + (screening ? 0 : 4) + 2;
 
   return <main className="benchmark-report" aria-labelledby={titleId}>
     <header className="benchmark-report-head">
       <div>
         <h2 id={titleId}>{label}</h2>
-        <p>{[projectName, headerTime, `共 ${runs.length} 次运行`].filter(Boolean).join(" · ")}</p>
+        <p>{[projectName, headerTime, `共 ${runs.length} 次运行`].filter(Boolean).join("，")}</p>
       </div>
       <div className="benchmark-report-actions">
         {referenceActions}
@@ -332,58 +332,89 @@ const RunComparePanel = memo(function RunComparePanel({
       <div><dt>总用时</dt><dd>{gameDuration(totalMs)}</dd><dd>{runs.length} 次运行累计</dd></div>
     </dl>
     {report && <section className="benchmark-report-table-section" aria-label="数据集对照总结">
-      <p>{report.title} · 定位框按 IoU ≥ 0.5 做最大一对一匹配</p>
+      <p>{report.title}，定位框按 IoU ≥ 0.5 最大一对一匹配</p>
       <p id={titleId + "-f1"}>{screening ? "初筛按有码保留和无码剔除评分。" : "复筛按图级判定、框级匹配、复核与速度评分。交付覆盖采用固定人工框分母。"} 排名先比较漏选，再比较漏框。F1 为明确图级判定的参考值。</p>
       <div className="benchmark-report-table" tabIndex={0} role="region" aria-label="运行结果表" aria-describedby={titleId + "-f1"}>
         <table>
+          <colgroup span={1} /><colgroup span={qualityCols} />{!screening && <colgroup span={4} />}<colgroup span={2} /><colgroup span={1} />
           <thead>
-            <tr><th scope="col">配置</th>{groups.size > 1 && <th scope="col">样本组</th>}<th scope="col">轮次</th>
-              <th scope="col" className="benchmark-report-score" aria-sort={sortState("score")}><button type="button" title="按漏选、漏框、分数的顺序排名" onClick={() => sortBy("score")}>{scoreTitle} <span aria-hidden="true">{sortMark("score")}</span></button></th>
-              <th scope="col" className="benchmark-report-provisional">暂定与缺项</th>
-              {!screening && <th scope="col" className="benchmark-report-delivery">交付覆盖</th>}
-              <th scope="col" className="benchmark-report-ranking">最佳资格</th><th scope="col">运行状态</th>
+            <tr>
+              <th rowSpan={2} scope="col" className="benchmark-report-config">配置</th>
+              <th colSpan={qualityCols} scope="colgroup" className="benchmark-report-group is-quality">质量</th>
+              {!screening && <th colSpan={4} scope="colgroup" className="benchmark-report-group is-coverage benchmark-report-group-start">覆盖</th>}
+              <th colSpan={2} scope="colgroup" className="benchmark-report-group is-efficiency benchmark-report-group-start">效率</th>
+              <th rowSpan={2} scope="col" className="benchmark-report-ranking benchmark-report-group-start">资格</th>
+            </tr>
+            <tr>
+              <th scope="col" aria-sort={sortState("score")}><button type="button" title="按漏选、漏框、分数的顺序排名" onClick={() => sortBy("score")}>{screening ? "候选保留分" : "综合分"} <span aria-hidden="true">{sortMark("score")}</span></button></th>
               <th scope="col" aria-sort={sortState("f1")}><button type="button" onClick={() => sortBy("f1")}>图级 F1 <span aria-hidden="true">{sortMark("f1")}</span></button></th>
               {screening ? <><th scope="col">直接筛掉的有码</th><th scope="col">保留给下游的有码</th><th scope="col">移交的无码</th></>
                 : <><th scope="col">漏图</th><th scope="col">误报</th></>}
               <th scope="col">待复核</th><th scope="col">未确认判有码</th>
-              <th scope="col">匹配框 / 可评人工框</th><th scope="col">多余框</th>
-              {!screening && <th scope="col">明确判定率与可评框覆盖</th>}
-              <th scope="col">每百张秒数</th><th scope="col" aria-sort={sortState("seconds")}><button type="button" onClick={() => sortBy("seconds")}>用时 <span aria-hidden="true">{sortMark("seconds")}</span></button></th></tr>
+              <th scope="col" className={screening ? undefined : "benchmark-report-group-start"}>匹配框/可评框</th>
+              {!screening && <th scope="col">交付覆盖</th>}<th scope="col">多余框</th>
+              {!screening && <th scope="col" className="benchmark-report-ratio">判定率</th>}
+              <th scope="col" className="benchmark-report-group-start">每百张秒数</th>
+              <th scope="col" aria-sort={sortState("seconds")}><button type="button" onClick={() => sortBy("seconds")}>用时 <span aria-hidden="true">{sortMark("seconds")}</span></button></th>
+            </tr>
           </thead>
-          <tbody>{rows.map(row => <tr key={row.runId} data-best={winners.has(row.runId) || undefined}
-            data-selected={row.runId === activeRunId || undefined} onClick={() => setSelectedRunId(row.runId)}>
-            <td><button type="button" className="benchmark-report-select" aria-pressed={row.runId === activeRunId}>
-              {row.label}</button>
-              {winners.has(row.runId) && <span className="benchmark-report-badge is-best">最佳</span>}
-              {row.runId === current?.performance.taskId && <span className="benchmark-report-badge is-current">本次</span>}
+          <tbody>{rows.map(row => {
+            const config = runConfigs.get(row.runId)?.mosaic;
+            const concurrency = screening ? config?.concurrency : config?.refineConcurrency;
+            const hasConcurrency = concurrency !== undefined && Number.isInteger(concurrency) && concurrency > 0;
+            const label = hasConcurrency ? row.label.replace(/\s*[\u00b7，,]\s*并发\s+\d+\s*$/u, "") : row.label;
+            const isBest = winners.has(row.runId);
+            const expanded = expandedRunId === row.runId;
+            const reasonId = titleId + "-why-" + row.runId;
+            const anomalies = [
+              row.score.details.find(detail => detail.key === "status")?.current,
+              row.pending > 0 ? `待筛选 ${row.pending} 张` : "",
+              row.missing > 0 ? `缺行 ${row.missing} 张` : "",
+              row.invalid > 0 ? `异常 ${row.invalid} 条` : "",
+            ].filter(Boolean).join("，");
+            const anomalyDetails = [...row.issues, ...Object.entries(row.reasons).map(([reason, count]) => `${reason} × ${count}`)]
+              .join("，").replaceAll("·", "，");
+            return <Fragment key={row.runId}><tr data-best={isBest || undefined}
+              data-selected={row.runId === activeRunId || undefined} onClick={() => setSelectedRunId(row.runId)}>
+            <td className="benchmark-report-config">
+              <button type="button" className="benchmark-report-select" aria-pressed={row.runId === activeRunId} title={label}>{label}</button>
+              <small>第 {row.round} 轮{hasConcurrency ? `，并发 ${concurrency}` : ""}
+                {groups.size > 1 ? `，第 ${row.groupNumber} 组` : ""}</small>
+              {(anomalies || anomalyDetails) && <small className="benchmark-report-anomaly" data-tooltip={anomalyDetails || undefined}
+                tabIndex={anomalyDetails ? 0 : undefined}>{anomalies || "运行异常"}</small>}
             </td>
-            {groups.size > 1 && <td>{row.groupNumber}</td>}<td>{row.round}</td>
-            <td className="benchmark-report-score">{scoreValue(row)}<details className="benchmark-report-score-details">
+            <td className="benchmark-report-score"><b>{row.score.displayScore?.toFixed(1) ?? "—"}</b>
+              <i>{row.score.provisional && "暂定 "}{row.score.effectiveWeight}/100</i><details className="benchmark-report-score-details">
               <summary>分项</summary><ul>{row.score.items.map(item => <li key={item.label}>
-                {item.label} · {item.ratio === null ? item.missing : `${Number(item.numerator.toFixed(2))} / ${Number(item.denominator.toFixed(2))} · ${(item.ratio * item.weight).toFixed(2)} / ${item.weight} 分`}
+                {item.label} {item.ratio === null ? item.missing : `${Number(item.numerator.toFixed(2))}/${Number(item.denominator.toFixed(2))}，得 ${(item.ratio * item.weight).toFixed(2)}/${item.weight} 分`}
               </li>)}</ul>
             </details></td>
-            <td className="benchmark-report-provisional">{row.score.effectiveWeight}/100
-              {row.score.items.filter(item => item.missing).map(item => <div key={item.label}>{item.label}：{item.missing}</div>)}
-              {!row.freeze && <div>缺冻结样本或标注版本</div>}
-            </td>
-            {!screening && <td className="benchmark-report-delivery">{row.expectedBoxes ? `${row.foundBoxes} / ${row.expectedBoxes} · ${percent(row.score.delivery)}` : "—"}</td>}
-            <td className="benchmark-report-ranking">{winners.has(row.runId) ? "最佳" : row.score.eligible ? "合格" :
-              <details><summary>不参与</summary>{row.score.rankingReasons.join(" · ")}</details>}</td>
-            <td className="benchmark-report-run-status">{row.status}
-              {(row.failed > 0 || row.skipped > 0 || row.pending > 0 || row.missing > 0 || row.invalid > 0 || row.issues.length > 0) &&
-                <details><summary>{`失败 ${row.failed} · 跳过 ${row.skipped} · 待筛选 ${row.pending} · 缺行 ${row.missing} · 异常 ${row.invalid}`}</summary>
-                  {[...row.issues, ...Object.entries(row.reasons).map(([reason, count]) => `${reason} × ${count}`)].join(" · ")}
-                </details>}
-            </td>
             <td>{percent(row.f1)}</td><td>{row.fn}</td>
             {screening ? <><td>{row.evaluatedPositive - row.fn}</td><td>{row.fp + row.reviewNegative}</td></> : <td>{row.fp}</td>}
-            <td>{row.review}</td><td>{row.unlabelledPositive}</td><td>{row.foundBoxes} / {row.evaluatedBoxes}</td><td>{row.extraBoxes}</td>
-            {!screening && <td>有码 {percent(row.score.positiveCoverage)} · 无码 {percent(row.score.negativeCoverage)} · 框 {percent(row.score.boxCoverage)}</td>}
-            <td data-tooltip={row.score.speedUnavailableReason} tabIndex={row.score.speedUnavailableReason ? 0 : undefined}>
+            <td>{row.review}</td><td>{row.unlabelledPositive}</td>
+            <td className={screening ? undefined : "benchmark-report-group-start"}>{row.foundBoxes} / {row.evaluatedBoxes}</td>
+            {!screening && <td title={row.expectedBoxes ? `${row.foundBoxes}/${row.expectedBoxes} 框` : undefined}>{percent(row.score.delivery)}</td>}
+            <td>{row.extraBoxes}</td>
+            {!screening && <td className="benchmark-report-ratio"><span>有码 {percent(row.score.positiveCoverage)}</span>
+              {row.score.negativeCoverage !== null && <span>无码 {percent(row.score.negativeCoverage)}</span>}
+              <span>框 {percent(row.score.boxCoverage)}</span>
+            </td>}
+            <td className="benchmark-report-group-start" data-tooltip={row.score.speedUnavailableReason} tabIndex={row.score.speedUnavailableReason ? 0 : undefined}>
               {row.score.speed?.toFixed(1) ?? "—"}
             </td><td>{gameDuration(row.elapsedMs)}</td>
-          </tr>)}</tbody>
+            <td className="benchmark-report-ranking benchmark-report-group-start">
+              {row.score.eligible ? <span className={`benchmark-report-badge${isBest ? " is-best" : ""}`}>{isBest ? "最佳" : "合格"}</span> :
+                <button type="button" className="benchmark-report-badge" aria-expanded={expanded} aria-controls={expanded ? reasonId : undefined}
+                  aria-label={`${label}的资格，不参与`} onClick={() => setExpandedRunId(expanded ? undefined : row.runId)}>不参与</button>}
+            </td>
+          </tr>{expanded && <tr className="benchmark-report-why" id={reasonId}><td colSpan={totalCols}>
+            <p>不参与排名，{row.score.details.length} 项未达标</p>
+            <ul>{row.score.details.map(detail => <li key={detail.key}>
+              <b>{detail.label}</b><span>当前 {detail.current}</span>
+              <span>要求 {detail.required}</span><span>补 {detail.action}</span>
+            </li>)}</ul>
+          </td></tr>}</Fragment>;
+          })}</tbody>
         </table>
       </div>
     </section>}
