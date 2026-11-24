@@ -814,8 +814,10 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
   }, [config?.id, index]);
   const runStateOf = (id: string): "running" | "done" | "failed" | "stopped" | "idle" => {
     if (currentProgress?.configId === id && !completed?.has(id)) return "running";
-    const run = latestRunByConfig?.get(id)?.run as { failed?: number } | undefined;
-    if (run) return (run.failed ?? 0) > 0 ? "failed" : "done";
+    const run = latestRunByConfig?.get(id)?.run;
+    if (run?.status === "已中止" || run?.status === "已暂停") return "stopped";
+    if (run) return run.status === "失败" || run.failed > 0 ? "failed" : "done";
+    if (completed?.has(id)) return "done";
     if (started?.has(id)) return "stopped";
     return "idle";
   };

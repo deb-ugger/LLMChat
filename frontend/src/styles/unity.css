@@ -2945,7 +2945,7 @@ body.ocr-image-resizing * {
 .game-benchmark-scope > .game-benchmark-toolbar > label:focus-within { border-color: var(--accent); }
 .game-benchmark-scope-static > b { color: var(--text); font-weight: 500; }
 .game-benchmark-task-head, .game-benchmark-task-actions, .game-benchmark-task-manage {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 6px;
 }
 .game-benchmark-task-head { flex-wrap: wrap; justify-content: space-between; }
 .game-benchmark-task-actions { min-inline-size: 0; }
@@ -3090,6 +3090,7 @@ body.ocr-image-resizing * {
   line-height: 1;
   cursor: pointer;
 }
+.game-benchmark-rounds:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .game-benchmark-rounds button:hover:not(:disabled) { background: var(--bg-hover); }
 .game-benchmark-rounds button:disabled { opacity: .45; cursor: not-allowed; }
 .game-benchmark-rounds input {
@@ -3100,7 +3101,9 @@ body.ocr-image-resizing * {
   background: var(--bg-panel);
   color: var(--text);
   text-align: center;
-  font: 600 var(--fs-body)/1 inherit;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   -moz-appearance: textfield;
   appearance: textfield;
@@ -3155,7 +3158,8 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-config-resizer:focus-visible { outline: none; }
 /* 列表栏宽度足够时自动露出状态文字（容器查询，拖动即时生效） */
-.game-benchmark-config-list { container-type: inline-size; }
+.game-benchmark-config-list { container-type: inline-size; --config-running-tone: #3265b6; }
+:root[data-theme="ink"] .game-benchmark-config-list { --config-running-tone: #7aa7f0; }
 .game-benchmark-config-list {
   min-block-size: 0;
   overflow: auto;
@@ -3163,7 +3167,6 @@ body.ocr-image-resizing * {
   padding: 0;
   list-style: none;
   background: var(--bg-app);
-  border-inline-end: 1px solid var(--border);
 }
 .game-benchmark-config-list button {
   display: flex;
@@ -3191,11 +3194,13 @@ body.ocr-image-resizing * {
   border-radius: 1px;
   background: transparent;
 }
-.game-benchmark-config-list li[data-run="done"]::before { background: var(--success); }
-.game-benchmark-config-list li[data-run="failed"]::before { background: var(--danger); }
-.game-benchmark-config-list li[data-run="stopped"]::before { background: var(--warning); }
-.game-benchmark-config-list li[data-run="running"]::before { background: var(--workflow-tone-current, var(--accent)); }
+.game-benchmark-config-list li[data-run="done"] { --config-state-tone: var(--success); }
+.game-benchmark-config-list li[data-run="failed"] { --config-state-tone: var(--danger); }
+.game-benchmark-config-list li[data-run="stopped"] { --config-state-tone: var(--warning); }
+.game-benchmark-config-list li[data-run="running"] { --config-state-tone: var(--config-running-tone); }
+.game-benchmark-config-list li::before { background: var(--config-state-tone, transparent); }
 .game-benchmark-config-state {
+  color: var(--config-state-tone, var(--text-muted));
   display: none;
   flex: none;
   font-size: var(--fs-caption);
@@ -3205,11 +3210,9 @@ body.ocr-image-resizing * {
 @container (min-inline-size: 300px) {
   .game-benchmark-config-state { display: inline; }
 }
-.game-benchmark-config-list li[data-run="done"] .game-benchmark-config-state { color: var(--success); }
-.game-benchmark-config-list li[data-run="failed"] .game-benchmark-config-state { color: var(--danger); }
-.game-benchmark-config-list li[data-run="stopped"] .game-benchmark-config-state { color: var(--warning); }
-.game-benchmark-config-list li[data-run="running"] .game-benchmark-config-state { color: var(--workflow-tone-current, var(--accent)); }
-.game-benchmark-config-list li[data-run="idle"] .game-benchmark-config-state { color: var(--text-muted); }
+.game-benchmark-config-list button[aria-pressed="true"] > .game-benchmark-config-state {
+  color: color-mix(in srgb, var(--config-state-tone, var(--text-muted)) 88%, var(--text));
+}
 .game-benchmark-config-list button:hover { background: var(--bg-hover); }
 .game-benchmark-config-list button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .game-benchmark-config-list button[aria-pressed="true"] { background: var(--accent-soft); border-inline-start-color: var(--accent); }
@@ -3245,6 +3248,8 @@ body.ocr-image-resizing * {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.game-benchmark-editor .game-benchmark-item-fields label.game-benchmark-switch { display: inline-flex; justify-self: start; }
+.game-benchmark-switch:has(input:disabled) { cursor: not-allowed; }
 .game-benchmark-editor .game-mosaic-model-field > span { min-inline-size: 0; white-space: normal; overflow-wrap: anywhere; }
 .game-benchmark-editor .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
   inline-size: 100%; min-inline-size: 0; max-inline-size: 100%;
