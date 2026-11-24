@@ -64,6 +64,36 @@
 
 7. 对话中断、失败或用户取消时，也必须在结束前释放已经取得的锁。长任务应使用 `renew` 续期。
 
+## 提交与合并（必须遵守）
+
+改动必须落到 `main`。停在分支上等于没做——用户打开程序看不到任何效果，而且事后很难发现（曾发生：统计页改版提交在 `dsh/visual` 上，两天后用户仍看到旧界面）。
+
+1. **默认直接在 main 上提交**。确需独立分支（并行多会话、实验性改动）时，提交后立刻把这一笔带回来，不要攒着：
+
+   ```bash
+   git cherry-pick <sha>
+   ```
+
+2. **提交前自检，不通过不许报「完成」**：
+
+   ```bash
+   git rev-list --count main..HEAD          # 必须为 0
+   git merge-base --is-ancestor <sha> main && echo "已在 main"
+   ```
+
+3. **多 worktree 场景收工前扫一遍**，确认没有遗留分支：
+
+   ```bash
+   git worktree list
+   for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do
+     n=$(git rev-list --count main.."$b"); [ "$n" != "0" ] && echo "$b 领先 main $n 笔"
+   done
+   ```
+
+4. **worktree 的 `.git` 失效时**（在该目录执行 `git status` 报 not a git repository）：立即报告，并把该目录的改动复制或 `cherry-pick` 回 main；不要继续在失效目录里提交，也不要假定那些改动已经进 main。
+
+5. **交付时必须写明**：提交 sha、是否已在 main（附 `git merge-base --is-ancestor` 的结果），以及是否有未提交的工作区改动。
+
 ## 构建与便携版全局锁
 
 后端、前端、Tauri 和 `dist-portable` 构建只能由一个对话执行。构建前申请全局锁；全局锁存在时，其他对话不得修改任何源码或开始构建：
