@@ -74,6 +74,7 @@ type CardProps = GameFlowActivity & {
   performance?: ReactNode;
   onConfigure?: () => void;
   body?: ReactNode;
+  resultLine?: string;
   configuration?: ReactNode;
   runningParameters?: readonly BenchmarkParameter[];
   foldedSummary?: { completed?: number; failed?: number; models?: readonly string[]; concurrency?: number };
@@ -89,7 +90,7 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 }
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
-  actions, onConfigure, body, configuration, runningParameters, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
+  actions, onConfigure, body, resultLine, configuration, runningParameters, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
@@ -127,7 +128,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const elapsedLabel = benchmark ? gameDuration(configElapsed ?? benchmark.elapsedMs) : elapsed;
   const completed = summaryProgress?.completed ?? (benchmark ? undefined : foldedSummary?.completed) ?? summaryProgress?.current;
   const unit = progress?.unit ?? "项";
-  const cardStateLine = statusLine || benchmark?.detail;
+  const cardStateLine = active ? statusLine || (benchmarkActive ? benchmark.detail : undefined)
+    : state === "done" ? resultLine : undefined;
   const progressConfig = activeProgress?.configuration;
   const successRate = activeProgress?.successRate;
   const remainingMs = activeProgress?.remainingMs;

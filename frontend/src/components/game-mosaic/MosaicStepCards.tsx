@@ -109,9 +109,11 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     const remainingMs = running && status?.processed && batchElapsed != null && batchElapsed > 0 && processed != null
       ? batchElapsed / status.processed * Math.max(0, status.total - processed) : undefined;
     const successRate = id === "refine" && status && status.total > 0 ? 100 * status.completed / status.total : undefined;
+    const unresolved = id === "refine" ? unresolvedRefineFailures : 0;
+    const retrying = running && retryCount > 0;
     const refineSummary = id === "refine" && status && state !== "pending" ? [
       "成功 " + status.completed + " 张", "本轮失败 " + failed + " 张",
-      "未解决 " + unresolvedRefineFailures + " 张" + (retryCount > 0 ? "（重试中）" : ""),
+      unresolved > 0 ? "未解决 " + unresolved + " 张" + (retrying ? "（重试中）" : "（待处理）") : undefined,
       status.prepared === undefined ? undefined : "候选已准备 " + status.prepared + "/" + status.total + " 张",
     ].filter(Boolean).join(" · ") : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
@@ -122,8 +124,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         completed: status?.completed, unit: "张", percent, remainingMs, successRate,
         configuration: running && status?.parameters?.length ? { current: 1, total: 1 } : undefined }}
       statusLine={statusLine}
+      resultLine={unresolved > 0 ? unresolved.toLocaleString() + " 张失败待处理" : undefined}
       foldedSummary={{
-        failed: id === "refine" ? Math.max(failed, unresolvedRefineFailures) : failed,
+        failed: Math.max(failed, unresolved),
         models: recordedModelNames?.length ? recordedModelNames : models.map(model => model.model),
         concurrency: Number(recordedLanes) || Math.max(0, ...models.map(model => model.concurrency)),
       }}

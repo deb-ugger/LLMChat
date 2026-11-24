@@ -3936,9 +3936,11 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-parameter-list dt{color:var(--text-muted);white-space:nowrap}
 .game-flow-parameter-list dd{margin:0;overflow-wrap:anywhere}
 .game-flow-model-rates > .game-flow-refine-summary{inline-size:100%;min-inline-size:0;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.game-flow-model-rates:has(> .game-flow-refine-summary) + .game-flow-performance{margin-block-start:4px}
 .game-flow-state-line{display:flex;align-items:flex-start;gap:8px;margin-block-start:10px;padding-block-start:8px;
   border-block-start:1px solid var(--border);font-size:var(--fs-caption);color:var(--text-muted);overflow-wrap:anywhere}
 .game-flow-state-line > span:first-child{flex:none;inline-size:6px;block-size:6px;margin-block-start:.45em;border-radius:50%;background:var(--flow-color)}
+.game-flow-state-line:not([data-active]) > span:first-child{background:var(--warning)}
 @keyframes game-flow-state-pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--flow-color) 28%,transparent)}}
 @media (prefers-reduced-motion:no-preference){.game-flow-state-line[data-active="true"] > span:first-child{animation:game-flow-state-pulse 1.6s ease-in-out infinite}}
 
