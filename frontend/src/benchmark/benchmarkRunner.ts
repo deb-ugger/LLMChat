@@ -6,6 +6,7 @@ import { annotatedMosaicSamples, annotatedTextSamples, loadAnnotatedSampleSet } 
 import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { registerAppCloseGuard } from "../appClose";
+import { logRuntimeError } from "../runtimeLog";
 import { imageBenchmarkRows, imageBenchmarkSteps, runGameImageSample, type ImageBenchmarkSetup, type ImageBenchmarkStep, type ImageBenchmarkWorkload } from "../gameImageBenchmark";
 import { beginGameStep, clearGamePerformance, finishGameStep, flushGamePerformanceArchive, gameDuration, stepPerformance } from "../gameModelPerformance";
 import { archivedMosaicSamples, captureMosaicBenchmark, mosaicBenchmarkSteps, readEmbeddedBenchmarkImage, runMosaicBenchmark, type MosaicBenchmarkStep, type MosaicBenchmarkWorkload } from "../gameMosaicBenchmark";
@@ -72,6 +73,7 @@ export type BenchmarkJob = {
   startedTime?: string;
   status: "待开始" | "等待" | "运行中" | "已暂停" | "完成" | "失败";
   resumeSamples?: boolean;
+  needsProject?: boolean;
   round: number;
   startedConfigIds: readonly string[];
   completedConfigIds: readonly string[];
@@ -109,9 +111,18 @@ type JobContext = {
   report: (patch: ProgressPatch, configTiming?: "start" | "stop" | "complete") => void;
 };
 type Prepared = { count: number; scope: string; runScope: string; restored?: number; run: (context: JobContext) => Promise<number>;
+  textSampleIds?: readonly string[]; checkpointId: () => string | undefined;
   cleanup: (jobId: string) => void; restart: (jobId: string) => void;
   updatePlan: (plan: BenchmarkRoundPlan, started: boolean) => void };
-type QueuedJob = BenchmarkJob & { request: BenchmarkRequest; prepare?: () => Promise<Prepared>; prepared?: Prepared; onMessage?: BenchmarkInput["onMessage"] };
+type SavedPausedTask = {
+  job: BenchmarkJob;
+  request: BenchmarkRequest;
+  runScope?: string;
+  textSampleIds?: readonly string[];
+  checkpointId?: string;
+};
+type QueuedJob = BenchmarkJob & { request: BenchmarkRequest; prepare?: () => Promise<Prepared>; prepared?: Prepared;
+  recovery?: SavedPausedTask; onMessage?: BenchmarkInput["onMessage"] };
 
 function initialImageRows(workload: ImageBenchmarkWorkload) {
   return (workload.project?.images || []).map(clearGameImageRefinement).filter(image => image.selected);
@@ -155,7 +166,8 @@ export function canEditBenchmarkTask(job: BenchmarkJob) {
 }
 
 async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queuedDuringFormal = false,
-  archive?: { details: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[]; configElapsedMs: number }): Promise<Prepared> {
+  archive?: { details?: ImageBenchmarkDetails; reuse: boolean; completed: BenchmarkResult[]; configElapsedMs: number;
+    textSampleIds?: readonly string[] }): Promise<Prepared> {
   const { step, rounds } = request;
   let configs = structuredClone(request.configs.filter(config => config.enabled !== false));
   let roundConfigs = request.roundConfigs;
@@ -184,6 +196,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     { preserveDuplicates: useAllAnnotated, includeUnannotated: useAllAnnotated, verifyContent: mosaic }) : undefined;
   const workload: Parameters<typeof runGameTextBenchmarks>[2] = { entries: [], selectedIds: new Set() };
   let count: number;
+  let textSampleIds: readonly string[] | undefined;
   let recoveredResults: ReturnType<typeof archivedMosaicSamples>["recovered"] | undefined;
   let readMosaicCheckpoint: ((jobId: string, runId: string) => Promise<void>) | undefined;
   let pausedRunId: string | undefined;
@@ -201,13 +214,14 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
         ? [[image.id,image.annotation.mosaic.boxes]] : [])) : {},
     } : structuredClone(captureMosaicBenchmark(imageSource.getWorkload(), displayScope,step === "mosaicRefine",queuedDuringFormal));
     const eligible = annotated ? useAllAnnotated ? annotated.images : annotatedMosaicSamples(annotated, step) : mosaicBenchmarkRows(step, snapshot, mosaicSelection);
-    const recovered = archive && archivedMosaicSamples(annotated ? annotated.images : snapshot.selected, archive.details);
+    const recovered = archive?.details && archivedMosaicSamples(annotated ? annotated.images :
+      snapshot.project?.images ?? snapshot.selected, archive.details);
     const sample = recovered?.images ?? selectSamples(eligible);
     recoveredResults = archive?.reuse ? recovered?.recovered : undefined;
     readMosaicCheckpoint = async (jobId, runId) => {
       recoveredResults = archivedMosaicSamples(sample, await readImageBenchmarkDetails(jobId, runId)).recovered;
     };
-    if (archive) {
+    if (archive?.details) {
       snapshot.boxes = Object.fromEntries(archive.details.samples.flatMap(item =>
         item.boxes?.length ? [[item.id, item.boxes] as const] : []));
       snapshot.categories = Object.fromEntries(archive.details.samples.map(item => [item.id, item.category]));
@@ -216,7 +230,7 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
     if (!sample.length) throw new Error(annotated ? "样本集中没有符合该去码步骤的已标注图片" : step === "mosaicRedraw" ? "请先在去码页准备测试蒙版" : "没有可测试的去码图片，请检查勾选或调整样本范围");
     count = sample.length;
     const checked = new Set(snapshot.checked);
-    imageSamples = archive?.details.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
+    imageSamples = archive?.details?.samples ?? sample.map(image => benchmarkImageInput(image, snapshot.categories?.[image.id] || "标注样本",
       annotated ? true : checked.has(image.id), snapshot.boxes[image.id]));
     if (step !== "mosaicRedraw") {
       const referencePath = request.referenceSampleSetPath ?? request.sampleSetPath;
@@ -256,10 +270,11 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       if (!images.length) throw new Error(annotated ? "样本集中没有符合该步骤及目标语言的已标注图片" : "所勾选的图片没有符合当前步骤的样本");
       return images;
     };
-    let sample = chooseImages(configs);
+    let sample = archive?.details ? archivedMosaicSamples(annotated ? annotated.images :
+      snapshot.project?.images ?? snapshot.selected, archive.details).images : chooseImages(configs);
     count = sample.length;
-    imageSamples = sample.map(image => benchmarkImageInput(image));
-    if (annotated) updateAnnotatedImageSamples = items => {
+    imageSamples = archive?.details?.samples ?? sample.map(image => benchmarkImageInput(image));
+    if (annotated && !archive?.details) updateAnnotatedImageSamples = items => {
       sample = chooseImages(items);
       count = sample.length;
       imageSamples = sample.map(image => benchmarkImageInput(image));
@@ -269,7 +284,15 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
       report, sample => context.report({ sample }), annotated, record);
   } else {
     const text = structuredClone(input.getWorkload());
-    text.selected = selectSamples(text.selected);
+    if (archive?.textSampleIds) {
+      const byId = new Map(text.entries.map(entry => [entry.id, entry]));
+      text.selected = archive.textSampleIds.map(id => {
+        const entry = byId.get(id);
+        if (!entry) throw new Error("部分原测试文本已移除，无法继续此任务");
+        return entry;
+      });
+    } else text.selected = selectSamples(text.selected);
+    textSampleIds = text.selected.map(entry => entry.id);
     if (!text.selected.length) throw new Error("请先勾选要测试的文本");
     count = text.selected.length;
     workload.entries = text.entries;
@@ -297,12 +320,13 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
   let finishedSamples = archive?.completed.reduce((total, result) => total + Math.min(count, result.translated + result.failed), 0) ?? 0;
   let unfinishedSamples = recoveredResults?.size ?? 0;
   const prepared: Prepared = { count: count * configs.length * rounds, scope: displayScope, runScope,
-    restored: finishedSamples + unfinishedSamples, updatePlan: (plan, started) => {
+    restored: finishedSamples + unfinishedSamples, textSampleIds, checkpointId: () => pausedRunId, updatePlan: (plan, started) => {
       if (!started) updateAnnotatedImageSamples?.(plan.configs);
       configs = plan.configs;
       roundConfigs = plan.roundConfigs;
       prepared.count = count * configs.length * rounds;
     }, cleanup: jobId => {
+    if (step === "mosaicRefine" && pausedRunId) clearMosaicReviews("benchmark:" + pausedRunId);
     const meter = stepPerformance(runScope, step);
     if (meter.benchmark?.queueId === jobId) {
       if (step === "mosaicRefine" && meter.taskId) clearMosaicReviews("benchmark:" + meter.taskId);
@@ -400,6 +424,56 @@ async function prepareJob(input: BenchmarkInput, request: BenchmarkRequest, queu
 }
 
 const jobs: QueuedJob[] = [];
+const pausedTasksKey = "llmchat-benchmark-paused-tasks";
+const savedPausedTasks = new Map<string, SavedPausedTask>();
+let pausedTasksLoaded = false;
+
+function writePausedTasks() {
+  try { localStorage.setItem(pausedTasksKey, JSON.stringify([...savedPausedTasks.values()])); }
+  catch (error) { logRuntimeError("benchmark-queue-save", error); }
+}
+
+function savePausedTask(job: QueuedJob) {
+  const { prepared, prepare, onMessage, recovery, request, ...view } = job;
+  const previous = savedPausedTasks.get(job.id);
+  savedPausedTasks.set(job.id, {
+    job: { ...view, status: "已暂停" },
+    request,
+    runScope: prepared?.runScope ?? previous?.runScope,
+    textSampleIds: prepared?.textSampleIds ?? previous?.textSampleIds,
+    checkpointId: prepared?.checkpointId() ?? previous?.checkpointId,
+  });
+  writePausedTasks();
+}
+
+function forgetPausedTask(id: string) {
+  if (savedPausedTasks.delete(id)) writePausedTasks();
+}
+
+function loadPausedTasks() {
+  if (pausedTasksLoaded) return;
+  pausedTasksLoaded = true;
+  try {
+    const saved = JSON.parse(localStorage.getItem(pausedTasksKey) || "[]") as SavedPausedTask[];
+    for (const item of saved) {
+      if (savedPausedTasks.has(item.job.id)) continue;
+      savedPausedTasks.set(item.job.id, item);
+      jobs.push({ ...item.job, request: item.request, status: "已暂停", needsProject: true, recovery: item });
+    }
+  } catch (error) { logRuntimeError("benchmark-queue-read", error); }
+  if (jobs.length) publish();
+}
+
+function parkPausedJobs() {
+  const ready = jobs.filter(job => job.status !== "已暂停");
+  const paused = jobs.filter(job => job.status === "已暂停");
+  jobs.splice(0, jobs.length, ...ready, ...paused);
+}
+
+function appendReadyJobs(items: QueuedJob[]) {
+  const paused = jobs.findIndex(job => job.status === "已暂停");
+  jobs.splice(paused < 0 ? jobs.length : paused, 0, ...items);
+}
 const listeners = new Set<() => void>();
 let snapshot = emptyBenchmarkSnapshot;
 let progress: BenchmarkState | null = null;
@@ -471,7 +545,7 @@ function publish() {
     : progress;
   snapshot = {
     version: snapshot.version + 1,
-    jobs: jobs.map(({ prepared, prepare, onMessage, request, ...job }) => ({
+    jobs: jobs.map(({ prepared, prepare, onMessage, request, recovery, ...job }) => ({
       ...job, progress: job.status === "运行中" ? visibleProgress ?? undefined : job.progress,
     })),
     running, stopping: !!controller?.signal.aborted, formalBusy: formalWorkflows.size > 0, formalJobs: [...formalWorkflows.values()], historyRevision, blockedTaskId,
@@ -497,6 +571,7 @@ function requestQueuePause(reason: string) {
     else if (job.id === blockedTaskId) job.status = "待开始";
   }
   blockedTaskId = undefined;
+  parkPausedJobs();
   controller?.abort(reason);
   publish();
 }
@@ -535,6 +610,7 @@ async function runJobs() {
     publish();
     const timer = window.setInterval(publish, 1000);
     let failed = false, waitForFormal = false, finished = false;
+    const restoring = !!job.recovery && !job.prepared;
     try {
       job.prepared ??= await job.prepare?.();
       abort.signal.throwIfAborted();
@@ -573,7 +649,7 @@ async function runJobs() {
       progress = { ...progress, phase: "finish", detail };
       job.onMessage?.(job.label + " · " + detail, abort.signal.aborted ? "info" : "error");
     } finally {
-      const paused = !finished && abort.signal.aborted;
+      const paused = !finished && (abort.signal.aborted || restoring && !job.prepared);
       progress = { ...progress, configElapsedMs: currentConfigElapsedMs(progress) };
       configStartedAt = undefined;
       try {
@@ -590,8 +666,15 @@ async function runJobs() {
             job.completedConfigIds.length === configsForRound(job.request, job.round).length) setJobRound(job, job.round + 1);
         if (job.status === "失败") job.failure = progress.detail || "测试任务失败";
         const index = jobs.indexOf(job);
-        if (paused && index > 0) jobs.unshift(...jobs.splice(index, 1));
-        else if (job.status === "完成" && showingTaskId !== job.id && !paused && !waitForFormal && (!failed || progress.total > 0)) jobs.splice(index, 1);
+        if (paused) {
+          if (index >= 0) jobs.push(...jobs.splice(index, 1));
+          savePausedTask(job);
+        } else if (!waitForFormal) {
+          const checkpoint = savedPausedTasks.get(job.id)?.checkpointId;
+          if (job.step === "mosaicRefine" && checkpoint) clearMosaicReviews("benchmark:" + checkpoint);
+          forgetPausedTask(job.id);
+          if (job.status === "完成" && showingTaskId !== job.id) jobs.splice(index, 1);
+        }
         publish();
       }
     }
@@ -611,13 +694,10 @@ function pumpQueue() {
 }
 
 function scheduleJob(job: QueuedJob) {
-  const head = jobs[0];
-  if (controller?.signal.aborted || (head?.status === "已暂停" && job !== head)) return false;
-  if (head?.status !== "已暂停") {
-    jobs.splice(jobs.indexOf(job), 1);
-    const firstWaiting = jobs.findIndex(item => item.status === "等待" || item.status === "待开始");
-    jobs.splice(firstWaiting < 0 ? jobs.length : firstWaiting, 0, job);
-  }
+  if (controller?.signal.aborted || job.needsProject) return false;
+  jobs.splice(jobs.indexOf(job), 1);
+  const firstPending = jobs.findIndex(item => item.status === "等待" || item.status === "待开始" || item.status === "已暂停");
+  jobs.splice(firstPending < 0 ? jobs.length : firstPending, 0, job);
   job.status = "等待";
   running = true;
   publish();
@@ -626,8 +706,8 @@ function scheduleJob(job: QueuedJob) {
 }
 
 export function resumeBenchmarkJob(jobId: string): boolean {
-  const job = jobs[0];
-  return job?.id === jobId && job.status === "已暂停" && scheduleJob(job);
+  const job = jobs.find(item => item.id === jobId && item.status === "已暂停");
+  return !!job && scheduleJob(job);
 }
 
 type ArchivedTask = ReturnType<typeof groupBenchmarkTasks>[number];
@@ -683,6 +763,38 @@ async function createQueuedJob(input: BenchmarkInput, request: BenchmarkRequest)
       resumeSamples: isMosaicBenchmarkStep(request.step) };
     if (deferred) job.prepare = () => prepareJob(input, job.request, true);
     return job;
+}
+
+async function prepareSavedTask(input: BenchmarkInput, job: QueuedJob, saved: SavedPausedTask) {
+  if (!saved.runScope) return prepareJob(input, job.request);
+  const history = (await readGameBenchmarkHistory(saved.runScope, job.step))
+    .filter(run => run.performance.benchmark?.queueId === job.id);
+  if (!history.length && (saved.job.progress?.current ?? 0) > 0) throw new Error("找不到此任务的测试断点");
+
+  const positions = new Map<number, BenchmarkResult>();
+  for (const run of history) {
+    const id = (run.performance.benchmark?.config as BenchmarkConfig | undefined)?.id;
+    const index = configsForRound(job.request, run.round).findIndex(config => config.id === id);
+    if (index < 0) continue;
+    const slot = (run.round - 1) * job.request.configs.length + index;
+    if (!positions.has(slot)) positions.set(slot, run);
+  }
+  const completed: BenchmarkResult[] = [];
+  for (;;) {
+    const run = positions.get(completed.length);
+    if (!run || run.status !== "完成" && run.status !== "失败") break;
+    completed.push(run);
+  }
+  const checkpoint = positions.get(completed.length);
+  const sampleRun = checkpoint?.performance.benchmark?.imageDetails ? checkpoint :
+    completed.find(run => run.performance.benchmark?.imageDetails);
+  const details = sampleRun?.performance.taskId
+    ? await readImageBenchmarkDetails(job.id, sampleRun.performance.taskId) : undefined;
+  return prepareJob(input, job.request, false, {
+    details, reuse: !!sampleRun && sampleRun === checkpoint && isMosaicBenchmarkStep(job.step),
+    completed, configElapsedMs: isMosaicBenchmarkStep(job.step) ? saved.job.progress?.configElapsedMs ?? 0 : 0,
+    textSampleIds: saved.textSampleIds,
+  });
 }
 
 function closeShownTask(id = showingTaskId) {
@@ -744,21 +856,33 @@ function saveTaskConfigs(job: QueuedJob, round: number, draft: BenchmarkConfig[]
     job.progress = { ...job.progress, total, configCount: plan.configs.length,
       percent: total ? Math.floor(100 * job.progress.current / total) : null };
   }
+  if (savedPausedTasks.has(job.id)) savePausedTask(job);
 }
 
 export const benchmarkRunner = {
+  bindProject(input: BenchmarkInput) {
+    loadPausedTasks();
+    let changed = false;
+    for (const job of jobs) {
+      if (!job.recovery || job.prepared || job.status !== "已暂停" || job.requestScope !== input.scope) continue;
+      job.prepare = () => job.recovery ? prepareSavedTask(input, job, job.recovery) : prepareJob(input, job.request);
+      job.onMessage = input.onMessage;
+      if (job.needsProject) { job.needsProject = false; changed = true; }
+    }
+    if (changed) publish();
+  },
   async enqueue(input: BenchmarkInput, request: BenchmarkRequest | BenchmarkRequest[]) {
     if (!Array.isArray(request)) {
       const job = await createQueuedJob(input, request);
-      jobs.push(job);
+      appendReadyJobs([job]);
       if (!request.priority || !scheduleJob(job)) { publish(); pumpQueue(); }
       return job.id;
     }
     if (!request.length) throw new Error("配置单没有测试任务");
     const imported = await Promise.all(request.map(item => createQueuedJob(input, item)));
-    const runNext = running || request[0].priority && !controller?.signal.aborted && jobs[0]?.status !== "已暂停";
+    const runNext = running || request[0].priority && !controller?.signal.aborted;
     imported.forEach(job => { job.status = runNext ? "等待" : "待开始"; });
-    jobs.push(...imported);
+    appendReadyJobs(imported);
     if (runNext) running = true;
     publish();
     pumpQueue();
@@ -766,6 +890,7 @@ export const benchmarkRunner = {
   },
   async continueArchivedBatch(input: BenchmarkInput, { queueId, step }: ArchivedBenchmarkRef) {
     if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持归档续跑");
+    this.bindProject(input);
     const findJob = () => jobs.find(job => job.id === queueId);
     const existing = findJob();
     if (existing) {
@@ -778,15 +903,13 @@ export const benchmarkRunner = {
     const job = await prepareArchivedJob(input, step, task, history);
     if (!findJob()) {
       job.status = "待开始";
-      jobs.push(job);
+      appendReadyJobs([job]);
       if (!scheduleJob(job)) publish();
     }
   },
   startQueue(): string | null {
     const active = jobs.find(job => job.status === "运行中");
     if (active) return active.id;
-    if (jobs[0]?.status === "已暂停") return null;
-
     const pending = jobs.filter(job => job.status === "待开始" || job.status === "等待");
     if (!pending.length) return null;
     pending.forEach(job => { job.status = "等待"; });
@@ -847,7 +970,7 @@ export const benchmarkRunner = {
       const next = jobs.find(eligible);
       if (!next) throw new Error("队列中没有其他待开始的任务");
       jobs.splice(jobs.indexOf(job), 1);
-      jobs.push(job);
+      appendReadyJobs([job]);
       next.status = "等待";
     }
     blockedTaskId = undefined;
@@ -865,8 +988,11 @@ export const benchmarkRunner = {
   },
   restart(id: string) {
     const job = jobs.find(item => item.id === id && item.status === "已暂停");
-    if (!job) return;
+    if (!job || job.needsProject || controller?.signal.aborted) return;
     job.prepared?.restart(job.id);
+    if (job.step === "mosaicRefine" && job.recovery?.checkpointId) clearMosaicReviews("benchmark:" + job.recovery.checkpointId);
+    forgetPausedTask(job.id);
+    job.recovery = undefined;
     job.id = crypto.randomUUID();
     job.progress = undefined;
     job.startedTime = undefined;
@@ -878,8 +1004,12 @@ export const benchmarkRunner = {
     const index = jobs.findIndex(job => job.id === id && job.status !== "运行中");
     if (index < 0) return;
     const [job] = jobs.splice(index, 1);
+    const checkpoint = savedPausedTasks.get(id)?.checkpointId;
+    forgetPausedTask(id);
+    if (!job.prepared && job.step === "mosaicRefine" && checkpoint) clearMosaicReviews("benchmark:" + checkpoint);
+    if (isMosaicBenchmarkStep(job.step)) localStorage.removeItem(savedRoundPlanKey(id));
     publish();
-    await cleanupJob(job.status === "已暂停" ? job : undefined);
+    await cleanupJob(job.status === "已暂停" || checkpoint ? job : undefined);
     pumpQueue();
   },
   snapshot: () => snapshot,
@@ -904,6 +1034,7 @@ export function usePausedBenchmarkProgress(scope: string, steps: readonly Benchm
 }
 
 export function attachBenchmarkRunner() {
+  loadPausedTasks();
   let disposed = false, unregister: (() => void) | undefined;
   void registerAppCloseGuard(async () => {
     await pauseQueue("退出应用时中止此任务", true);

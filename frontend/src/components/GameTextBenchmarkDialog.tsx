@@ -54,6 +54,7 @@ const setupFor = (input: BenchmarkInput): BenchmarkSetup => ({
 });
 const openEvent = "llmchat-open-game-benchmark";
 export function openGameTextBenchmark(input?: BenchmarkInput) {
+  if (input) benchmarkRunner.bindProject(input);
   window.dispatchEvent(new CustomEvent(openEvent, { detail: input }));
 }
 
@@ -148,7 +149,8 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, browser = fals
 function LocalGameBenchmark({ input }: { input?: BenchmarkInput }) {
   const snapshot = useSyncExternalStore(benchmarkRunner.subscribe, benchmarkRunner.snapshot);
   const setup = useMemo(() => input && setupFor(input), [input]);
-  if (!input || !setup) return <StandaloneBenchmarkHistory snapshot={snapshot} />;
+  if (!input || !setup) return <StandaloneBenchmarkHistory snapshot={snapshot}
+    control={async (kind, data) => controlQueue(kind, data)} />;
   return <GameBenchmarkPage {...setup} snapshot={snapshot}
     requestSelection={async () => input.getWorkload().selected}
     enqueue={async request => benchmarkRunner.enqueue(input, request)}
@@ -284,7 +286,8 @@ export function GameTextBenchmarkWindow() {
         enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
         control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />
         : (page || error
-          ? <StandaloneBenchmarkHistory snapshot={snapshot} setupError={error} />
+          ? <StandaloneBenchmarkHistory snapshot={snapshot} setupError={error}
+            control={page && ((kind, data) => requestBenchmarkWindow(page.channel, kind, data))} />
           : <p className="game-benchmark-module-status hint" role="status">正在打开记录与测试…</p>)} />
   </AuxiliaryWindowChrome>;
 }
@@ -507,6 +510,73 @@ function archivedBenchmarkStep(step?: string): Target | undefined {
 
 const filename = (path: string) => path.split(/[\\/]/).pop() || path;
 
+function BenchmarkQueueContents({ snapshot, onControl, onShow, showingTaskId, taskAction }: {
+  snapshot: BenchmarkSnapshot; onControl?: BenchmarkPageInput["control"]; onShow?: (id: string) => void | Promise<void>;
+  showingTaskId?: string; taskAction?: boolean;
+}) {
+  const { jobs, running, stopping, formalBusy, formalJobs } = snapshot;
+  const queue = jobs.filter(job => job.status !== "完成");
+  const control = (kind: BenchmarkQueueCommand, id: string) =>
+    void onControl?.(kind, id).catch(error => showAppNotice(String(error), "error"));
+  return <div className="game-benchmark-results">
+      {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
+      {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
+        <div><strong>{job.state === "unfinished" ? "正式任务未完成" : "正式任务"} · {job.label}</strong>
+          <div className="hint">{job.game}{job.total ? " · " + (job.completed ?? 0) + "/" + job.total : ""}</div>
+          {job.detail && job.detail !== job.label && <div className="hint" title={job.detail}>{job.detail}</div>}
+        </div>
+      </div>)}
+      {queue.map((job, index) => {
+        const progress = job.progress;
+        const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
+        const detailProgress = job.status === "运行中" || job.status === "已暂停" ? progress : undefined;
+        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
+          <div className="game-benchmark-queue-copy">
+            <div className="game-benchmark-queue-title">
+              <span role="img" aria-label={statusLabel} title={statusLabel} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
+                background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
+                  job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
+              <strong role={job.status === "运行中" ? "status" : undefined} title={progress?.label}>{job.label}</strong>
+              {progress?.percent != null && <span className="game-flow-metric game-benchmark-queue-percent" style={{ marginInlineStart: "auto" }}>
+                {progress.percent}%
+              </span>}
+            </div>
+            <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
+              {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
+              {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
+              {!detailProgress && <div className="hint" title={progress?.detail}>
+                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (snapshot.blockedTaskId === job.id ? "等待保存配置" : !running ? "队列已暂停" : formalBusy ? formalBlockingReason : "等待前一任务") :
+                  job.status === "失败" ? job.failure || progress?.detail : progress &&
+                  <>{statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
+                    {progress.failed > 0 && " · 失败 " + progress.failed}</>}
+              </div>}
+              {job.status === "已暂停" && <div className="hint" title={job.needsProject ? job.requestScope : undefined}>{job.needsProject
+                ? "打开原游戏工程后可继续" : progress?.detail ||
+                  (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
+            </div>
+          </div>
+          {onShow && <button type="button" className="unity-btn game-benchmark-show-open" aria-pressed={showingTaskId === job.id}
+            disabled={taskAction} onClick={() => onShow(job.id)}>显示</button>}
+          {job.status === "运行中" &&
+            <button type="button" className="unity-btn" disabled={stopping || !onControl} onClick={() => control("benchmark-stop", job.id)}>中止任务</button>}
+          {(job.status === "待开始" || job.status === "已暂停") &&
+            <button type="button" className="unity-btn" data-tooltip={job.needsProject ? "打开原游戏工程后可继续"
+              : job.status === "已暂停" ? "从已保存的进度继续" : undefined}
+              disabled={stopping || taskAction || job.needsProject || !onControl} onClick={() => control("benchmark-start", job.id)}>
+              {job.status === "已暂停" ? "继续任务" : "开始任务"}</button>}
+          {job.status === "已暂停" &&
+            <button type="button" className="unity-btn" disabled={showingTaskId === job.id || job.needsProject || stopping || !onControl} data-tooltip="新建任务，从零重跑"
+              onClick={() => control("benchmark-restart", job.id)}>从头运行</button>}
+          {job.status !== "运行中" && <button type="button" className="unity-btn" disabled={showingTaskId === job.id || !onControl}
+            data-tooltip={showingTaskId === job.id ? "请先退出显示" : "移出队列，保留测试记录"}
+            onClick={() => control("benchmark-remove", job.id)}>移除</button>}
+          {detailProgress && <BenchmarkQueueDetails progress={detailProgress} position={index + 1}
+            unit={job.step === "screen" || job.step === "translate" ? "条" : "张"} />}
+        </div>;
+      })}
+    </div>;
+}
+
 function GameBenchmarkPage(props: BenchmarkPageInput) {
   const imageSteps = Object.keys(props.imageSetup?.steps || {}) as ImageBenchmarkStep[];
   const viewKey = "llmchat-benchmark-view:" + props.scope + ":";
@@ -526,11 +596,9 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
     initialMosaicStep, Object.keys(mosaicBenchmarkSteps) as MosaicBenchmarkStep[]);
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
-  const { jobs, running, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
+  const { jobs, historyRevision } = props.snapshot;
   const archive = useBenchmarkArchive(historyRevision);
   const queue = jobs.filter(job => job.status !== "完成");
-  const control = (kind: BenchmarkQueueCommand, id: string) =>
-    void props.control(kind, id).catch(error => showAppNotice(String(error), "error"));
   const [taskDraft, setTaskDraft] = useState<{ id: string; parameters: BenchmarkTaskConfig; configs: BenchmarkConfig[] }>();
   const [taskAction, setTaskAction] = useState(false);
   const actionRef = useRef(false);
@@ -667,63 +735,8 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   return <GameTextBenchmarkDialog key={step} {...props} step={step} draft={drafts.current[step]}
     onDraft={draft => { drafts.current[step] = draft; }} archive={archive}
     recordMode={recordMode} onRecordModeChange={setRecordMode} taskView={taskView} taskDialogs={taskDialogs}
-    queueContents={<div className="game-benchmark-results">
-      {!queue.length && !formalJobs.length && <p className="hint">暂无正在运行或排队的任务。</p>}
-      {formalJobs.map(job => <div key={job.id} className="game-benchmark-queue-item" data-status={job.state === "running" ? "运行中" : "等待"} role="status">
-        <div><strong>{job.state === "unfinished" ? "正式任务未完成" : "正式任务"} · {job.label}</strong>
-          <div className="hint">{job.game}{job.total ? " · " + (job.completed ?? 0) + "/" + job.total : ""}</div>
-          {job.detail && job.detail !== job.label && <div className="hint" title={job.detail}>{job.detail}</div>}
-        </div>
-      </div>)}
-      {queue.map((job, index) => {
-        const progress = job.progress;
-        const heldByPausedTask = jobs[0]?.status === "已暂停" && jobs[0].id !== job.id;
-        const statusLabel = job.status === "已暂停" ? "已中止" : job.status;
-        const detailProgress = job.status === "运行中" || job.status === "已暂停" ? progress : undefined;
-        return <div key={job.id} className="game-benchmark-queue-item" data-status={job.status}>
-          <div className="game-benchmark-queue-copy">
-            <div className="game-benchmark-queue-title">
-              <span role="img" aria-label={statusLabel} title={statusLabel} style={{ flex: "0 0 8px", height: 8, borderRadius: "50%",
-                background: job.status === "运行中" ? "#3265b6" : job.status === "完成" ? "var(--success)" :
-                  job.status === "失败" ? "var(--danger)" : "var(--text-muted)" }} />
-              <strong role={job.status === "运行中" ? "status" : undefined} title={progress?.label}>{job.label}</strong>
-              {progress?.percent != null && <span className="game-flow-metric game-benchmark-queue-percent" style={{ marginInlineStart: "auto" }}>
-                {progress.percent}%
-              </span>}
-            </div>
-            <div style={{ marginInlineStart: "calc(8px + var(--space-2))" }}>
-              {stopping && job.status === "运行中" && <div>正在中止并保存…</div>}
-              {job.status === "运行中" && progress?.phase === "execute" && <div className="hint">{progress.label}</div>}
-              {!detailProgress && <div className="hint" title={progress?.detail}>
-                {job.status === "待开始" ? statusLabel : job.status === "等待" ? (props.snapshot.blockedTaskId === job.id ? "等待保存配置" : !running ? "队列已暂停" : formalBusy ? formalBlockingReason : "等待前一任务") :
-                  job.status === "失败" ? job.failure || progress?.detail : progress &&
-                  <>{statusLabel} · {progress.current}/{progress.total} · {gameDuration(progress.elapsedMs)}
-                    {progress.failed > 0 && " · 失败 " + progress.failed}</>}
-              </div>}
-              {job.status === "已暂停" && <div className="hint">{progress?.detail ||
-                (job.resumeSamples ? "继续时复用已有样本结果" : "继续时从暂停的配置重新计时")}</div>}
-            </div>
-          </div>
-          <button type="button" className="unity-btn game-benchmark-show-open" aria-pressed={showingTaskId === job.id}
-            disabled={taskAction} onClick={() => showTask(job.id)}>显示</button>
-          {job.status === "运行中" &&
-            <button type="button" className="unity-btn" disabled={stopping} onClick={() => control("benchmark-stop", job.id)}>中止任务</button>}
-          {(job.status === "待开始" || job.status === "已暂停") &&
-            <button type="button" className="unity-btn" data-tooltip={heldByPausedTask ? "请先处理队首已中止的任务"
-              : job.status === "已暂停" ? "从已保存的进度继续" : undefined}
-              disabled={stopping || taskAction || heldByPausedTask} onClick={() => control("benchmark-start", job.id)}>
-              {job.status === "已暂停" ? "继续任务" : "开始任务"}</button>}
-          {job.status === "已暂停" &&
-            <button type="button" className="unity-btn" disabled={showingTaskId === job.id} data-tooltip="新建任务，从零重跑"
-              onClick={() => control("benchmark-restart", job.id)}>从头运行</button>}
-          {job.status !== "运行中" && <button type="button" className="unity-btn" disabled={showingTaskId === job.id}
-            data-tooltip={showingTaskId === job.id ? "请先退出显示" : "移出队列，保留测试记录"}
-            onClick={() => control("benchmark-remove", job.id)}>移除</button>}
-          {detailProgress && <BenchmarkQueueDetails progress={detailProgress} position={index + 1}
-            unit={job.step === "screen" || job.step === "translate" ? "条" : "张"} />}
-        </div>;
-      })}
-    </div>}
+    queueContents={<BenchmarkQueueContents snapshot={props.snapshot} onControl={props.control}
+      showingTaskId={showingTaskId} taskAction={taskAction} onShow={showTask} />}
     targetControls={<div className="game-benchmark-toolbar game-benchmark-target">
       <label>内容<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
         <option value="text">翻译文本</option>
@@ -993,7 +1006,9 @@ function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfi
   </BenchmarkSection>;
 }
 
-function StandaloneBenchmarkHistory({ snapshot, setupError }: { snapshot: BenchmarkSnapshot; setupError?: string }) {
+function StandaloneBenchmarkHistory({ snapshot, setupError, control }: {
+  snapshot: BenchmarkSnapshot; setupError?: string; control?: BenchmarkPageInput["control"];
+}) {
   const archive = useBenchmarkArchive(snapshot.historyRevision);
   const headerTools = useContext(BenchmarkHeader);
   const [recordMode, setRecordMode] = useRememberedBenchmarkChoice(recordModeKey, "test", ["test", "formal"]);
@@ -1001,6 +1016,10 @@ function StandaloneBenchmarkHistory({ snapshot, setupError }: { snapshot: Benchm
     {headerTools && createPortal(<RunRecordTabs mode={recordMode} onChange={setRecordMode} />, headerTools)}
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {setupError && <p className="unity-offline-error" role="alert">{setupError}</p>}
+      {recordMode === "test" && snapshot.jobs.some(job => job.status !== "完成") &&
+        <BenchmarkSection title="当前任务队列" className="game-benchmark-queue">
+          <BenchmarkQueueContents snapshot={snapshot} onControl={control} />
+        </BenchmarkSection>}
       <BenchmarkRunRecords key={recordMode} archive={archive} snapshot={snapshot} formal={recordMode === "formal"} />
     </div></div>
   </section>;
@@ -1309,8 +1328,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     JSON.stringify({ configs: items, rounds: totalRounds, sampleLimit, sampleSetPath: sampleSetMode ? sampleSetPath || undefined : undefined });
   const serialized = serializeConfigs(configs);
   const running = snapshot.running || snapshot.stopping;
-  const queueStartIssue = snapshot.jobs[0]?.status === "已暂停" ? "请先继续已中止的任务"
-    : snapshot.jobs.some(job => job.status === "待开始" || job.status === "等待") ? undefined : "请先将任务加入队列";
+  const queueStartIssue = snapshot.jobs.some(job => job.status === "待开始" || job.status === "等待")
+    ? undefined : "队列中没有待开始的任务";
   const controlQueueAction = (command: "benchmark-start-queue" | "benchmark-pause-queue") =>
     void control(command).catch(error => showAppNotice(String(error), "error"));
   const currentProgress = snapshot.jobs.find(job => job.status === "运行中" && job.requestScope === textScope && job.step === step)?.progress;

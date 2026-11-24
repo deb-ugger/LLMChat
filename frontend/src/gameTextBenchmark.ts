@@ -262,7 +262,7 @@ export async function runGameTextBenchmarks(baseConfigs: BenchmarkConfig[], roun
       const former = saved.benchmark?.queueId === queueId && saved.benchmark.round === round &&
         (saved.benchmark.config as Pick<BenchmarkConfig, "id"> | undefined)?.id === config.id ? saved.benchmark : undefined;
       if (saved.taskId && !former) {
-        if (step === "mosaicRefine") clearMosaicReviews("benchmark:" + saved.taskId);
+        if (step === "mosaicRefine" && saved.benchmark?.status !== "已暂停") clearMosaicReviews("benchmark:" + saved.taskId);
         clearGamePerformance(scope, [step], false);
       }
       const batchIndex = (round - 1) * configs.length + firstConfig + offset;
