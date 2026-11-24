@@ -26,7 +26,7 @@ import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
 import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/MosaicOriginalGallery";
 import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
-  mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
+  mosaicRedrawReferences, mosaicRedrawStyle, mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
@@ -376,7 +376,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const draftCandidates = useMemo(() => editedCandidates(candidates, draftRows, drafts), [candidates, draftRows, drafts]);
   const group = active && (committedResult?.group || active.id);
   const members = group ? imageGroup.get(group) || [] : [];
-  const reference = members.find(image => resultFor(rows, image).reference && resultFor(rows, image).saved);
+  const redrawReferences = useMemo(() => mosaicRedrawReferences(usable, rows), [usable, rows]);
+  const reference = group ? redrawReferences.get(group) : undefined;
   const draftReference = members.find(image => resultFor(draftRows, image).reference && resultFor(draftRows, image).saved);
   const actionsDisabled = !!busy || disabled;
   const masks = useMosaicMasks({ gamePath, active, activeResult, members, usable, rows: draftRows, candidates: draftCandidates,
@@ -828,12 +829,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (resume && !canResumeMosaicRedraw(plan, usable, rows, protect)) {
       pendingRedraw.current = null;
       setStepRuns(previous => ({ ...previous, redraw: undefined }));
-      setError("原图、蒙版或文字保护范围已变更，请按当前选择重绘");
+      setError("原图、蒙版、文字保护范围或画风分组已变更，请按当前选择重绘");
       return;
     }
     const summary = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
     const total = plan.targets.length;
     const initial = plan.targets.filter(target => !target.pending.size).length;
+    const references = new Map(plan.targets.flatMap(({ style }) =>
+      style.reference ? [[style.reference.id, style.reference.name] as const] : []));
+    const groupCount = new Set(plan.targets.map(({ style }) => style.group)).size;
     void run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
       read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress: text => setProgress(text, "redraw"), setError,
       setPending: next => { pendingRedraw.current = next; },
@@ -850,22 +854,29 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         scope: "config", label: mosaicModelLabels[engine], value: mosaicRedrawStepCount(plan, engine) + " 步",
       })),
       { scope: "config", label: "保护已识别文字", value: protect ? "开启" : "关闭" },
-      ...(plan.reference ? [{ scope: "config" as const, label: "画风参考", value: plan.reference.name }] : []),
+      ...(references.size ? [{ scope: "config" as const, label: "画风参考",
+        value: groupCount === 1 ? references.values().next().value! : "按组使用 " + references.size + " 张参考图" }] : []),
     ], resume });
   }
+  function canRedrawImage(row: Result) {
+    return preferences.refine === false || !!row.saved || !!row.manualBoxes || isReviewed(row);
+  }
+
   function generate(targets: UnityImage[], models: MosaicModel[]) {
     const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
     if (!usableTargets.length) return;
-    if (preferences.refine !== false && usableTargets.some(image => {
-      const row = resultFor(rows,image);
-      return !row.saved && !row.manualBoxes && !isReviewed(row);
-    })) {
+    if (usableTargets.some(image => !canRedrawImage(resultFor(rows, image)))) {
       setError("请先完成视觉复筛，再重绘所选图片");
       return;
     }
-    const seed = parseInt((group || "ab").replace(/[^a-f0-9]/gi, "").slice(-8) || "1", 16);
-    startRedraw({ targets: usableTargets.map(image => ({ image, boxes: resultFor(rows,image).boxes,
-      keep: keepText(image,protect), pending: new Set(models) })), models, steps, seed, reference });
+    const groups = new Map<string, RedrawPlan["targets"]>();
+    for (const image of usableTargets) {
+      const style = mosaicRedrawStyle(image, rows, redrawReferences);
+      const batch = groups.get(style.group) ?? [];
+      batch.push({ image, boxes: resultFor(rows, image).boxes, keep: keepText(image, protect), pending: new Set(models), style });
+      groups.set(style.group, batch);
+    }
+    startRedraw({ targets: [...groups.values()].flat(), models, steps });
   }
 
   function redrawCurrent(models: MosaicModel[]) {
@@ -972,7 +983,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     formalMosaicRun?.completed, formalMosaicRun?.total,
     !busy && !!formalMosaicStep, busy ? progress :
       formalMosaicRun?.state === "error" ? "失败待重试" : "已中止，等待继续");
-  const redrawGroup = selected.filter(image => image.id !== reference?.id && resultFor(rows, image).boxes.length);
+  const listRedraw: UnityImage[] = [];
+  let noMask = 0, awaitingReview = 0, referenceCount = 0;
+  for (const image of visible) {
+    const row = resultFor(rows, image);
+    if (!row.checked) continue;
+    if (redrawReferences.get(row.group || image.id)?.id === image.id) referenceCount++;
+    else if (!row.boxes.length) noMask++;
+    else if (!canRedrawImage(row)) awaitingReview++;
+    else listRedraw.push(image);
+  }
+  const redrawGroup = selected.filter(image => image.id !== reference?.id &&
+    resultFor(rows, image).boxes.length && canRedrawImage(resultFor(rows, image)));
+  const redrawSkipped = [
+    noMask && noMask + " 张缺蒙版", awaitingReview && awaitingReview + " 张待复筛", referenceCount && referenceCount + " 张参考图",
+  ].filter(Boolean).join(" · ");
   const benchmarkProgress = useBenchmarkProgress(gamePath);
   const testing = useBenchmarkRunning();
   const testTitle = testing ? benchmarkBlockingReason : undefined;
@@ -1141,7 +1166,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setQuery(""); setGroupPages({}); setActiveId("");
   };
   const redrawReason = testTitle ?? busyReason ?? draftReason ?? (!activeSaved && !activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
-  const batchReason = testTitle ?? busyReason ?? draftReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已有蒙版的待重绘图片" : undefined);
+  const redrawBlocked = testTitle ?? busyReason ?? draftReason;
+  const batchReason = redrawBlocked ?? (!pausedRedraw && !listRedraw.length ? redrawSkipped || "先勾选已有蒙版的图片" : undefined);
+  const groupRedrawReason = redrawBlocked ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
@@ -1176,9 +1203,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         setModelFilter: setRefineModelFilter, guardFilter: refineGuardFilter, setGuardFilter: setRefineGuardFilter,
         start: refine, clear: clearRefine,
       }} redraw={{
-        status: stepRuns.redraw, targetCount: redrawGroup.length, remainingCount: redrawRemaining, paused: !!pausedRedraw,
-        canClear: canClearRedraw, batchReason,
-        start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(redrawGroup, [model]), clear: clearRedraw,
+        status: stepRuns.redraw, targetCount: listRedraw.length, groupTargetCount: redrawGroup.length,
+        remainingCount: redrawRemaining, paused: !!pausedRedraw, skipped: redrawSkipped, canClear: canClearRedraw,
+        batchReason, groupReason: groupRedrawReason,
+        start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model]),
+        startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
     <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, imageFilters, failuresOnly }}
       onImageFiltersChange={(filters: GameImageFilters) => {

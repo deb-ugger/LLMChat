@@ -5,7 +5,7 @@ import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
 import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicBatchPorts, MosaicBatchStep, MosaicBatchWork,
   MosaicRedrawPorts, MosaicRefinePlan, MosaicRefinePorts, MosaicReviewPlan, MosaicReviewPorts, MosaicScreenPlan,
-  MosaicScreenPorts, MosaicStep, MosaicStepUsage, RedrawPlan, RefineMovement, Result, Results, StepReport, StepRun } from "./mosaicWorkbenchTypes";
+  MosaicScreenPorts, MosaicStep, MosaicStepUsage, RedrawPlan, RedrawStyle, RefineMovement, Result, Results, StepReport, StepRun } from "./mosaicWorkbenchTypes";
 
 export function sameReview(row: Result, scan: MosaicScan, key: string) {
   const boxes = removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes);
@@ -337,13 +337,33 @@ export async function runMosaicRefine(plan: MosaicRefinePlan, signal: AbortSigna
   return !result.failed;
 }
 
+export function mosaicRedrawReferences(images: readonly UnityImage[], rows: Results) {
+  const references = new Map<string, UnityImage>();
+  for (const image of images) {
+    const row = resultFor(rows, image);
+    const group = row.group || image.id;
+    if (row.saved && row.reference && !references.has(group)) references.set(group, image);
+  }
+  return references;
+}
+
+export function mosaicRedrawStyle(image: UnityImage, rows: Results, references: ReadonlyMap<string, UnityImage>): RedrawStyle {
+  const group = resultFor(rows, image).group || image.id;
+  const seed = parseInt(group.replace(/[^a-f0-9]/gi, "").slice(-8) || "1", 16);
+  return { group, seed, reference: references.get(group) };
+}
+
 export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityImage[], rows: Results, protect: boolean) {
   const current = new Map(usable.map(image => [image.id, image]));
-  return plan.targets.every(({image,boxes,keep}) => {
+  const references = mosaicRedrawReferences(usable, rows);
+  return plan.targets.every(({ image, boxes, keep, style }) => {
     const latest = current.get(image.id);
-    return latest?.sourceHash === image.sourceHash &&
-      JSON.stringify(resultFor(rows,latest).boxes) === JSON.stringify(boxes) &&
-      JSON.stringify(keepText(latest,protect)) === JSON.stringify(keep);
+    if (latest?.sourceHash !== image.sourceHash) return false;
+    const latestStyle = mosaicRedrawStyle(latest, rows, references);
+    return latestStyle.group === style.group && latestStyle.reference?.id === style.reference?.id &&
+      latestStyle.reference?.sourceHash === style.reference?.sourceHash &&
+      JSON.stringify(resultFor(rows, latest).boxes) === JSON.stringify(boxes) &&
+      JSON.stringify(keepText(latest, protect)) === JSON.stringify(keep);
   });
 }
 
@@ -358,7 +378,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   let completed = initial;
 
   setPending(plan);
-  if (plan.reference && !plan.referenceBlob) plan.referenceBlob = await readSaved(plan.reference, signal);
+  const referenceCache = new Map<string, Promise<Blob>>();
   const cache = new Map<string, { blob: Blob; seconds: number }>();
   const failures = new Set<string>();
   const reportFailure = (image: UnityImage, detail: string) => {
@@ -367,25 +387,35 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
     update(image, { redrawError: detail });
     report({ completed, processed: completed - initial + failures.size, failed: failures.size });
   };
-  for (const { image, boxes, keep, pending } of plan.targets) {
+  for (const { image, boxes, keep, pending, style } of plan.targets) {
     if (!pending.size) continue;
     signal.throwIfAborted();
     try {
       const original = await read(image, signal);
       const input = await mosaicInputKey(original, boxes);
+      const referenceImage = style.reference?.id === image.id ? undefined : style.reference;
+      const referenceKey = referenceImage && JSON.stringify([referenceImage.id, referenceImage.sourceHash]);
+      let reference: Blob | undefined;
+      if (referenceImage && referenceKey) {
+        let loading = referenceCache.get(referenceKey);
+        if (!loading) {
+          loading = readSaved(referenceImage, signal);
+          referenceCache.set(referenceKey, loading);
+        }
+        reference = await loading;
+      }
       for (const engine of pending) {
         signal.throwIfAborted();
         const title = image.name + " · " + mosaicModelLabels[engine];
         setProgress(title);
         const stepCount = mosaicRedrawStepCount(plan, engine);
-        const reference = image.id === plan.reference?.id ? undefined : plan.referenceBlob;
-        const key = JSON.stringify([engine, stepCount, input, keep, !!reference]);
+        const key = JSON.stringify([engine, stepCount, input, keep, style.seed, referenceKey]);
         let outcome = cache.get(key);
         if (!outcome) {
           const start = performance.now();
           try {
             const blob = await usage!.measure(mosaicModelLabels[engine], 1, () => redrawMosaic({
-              source: original, boxes, keep, model: engine, steps: stepCount, seed: plan.seed, signal, reference,
+              source: original, boxes, keep, model: engine, steps: stepCount, seed: style.seed, signal, reference,
               keepResultOnStop: true, timingScope: usage?.scope,
               progress: detail => setProgress(title + " · " + detail),
             }));

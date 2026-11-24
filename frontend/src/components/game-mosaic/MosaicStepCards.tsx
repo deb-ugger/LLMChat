@@ -62,11 +62,15 @@ type Props = {
   redraw: {
     status?: StepRun;
     targetCount: number;
+    groupTargetCount: number;
+    skipped: string;
     remainingCount: number;
     paused: boolean;
     canClear: boolean;
     batchReason?: string;
+    groupReason?: string;
     start: () => void;
+    startGroup: () => void;
     clear: () => Promise<void>;
   };
   unresolvedRefineFailures: number;
@@ -81,7 +85,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const expansion = useGameFlowExpansion();
   const detectorInput = useRef<HTMLInputElement>(null);
   const refineSelection = "已勾选 " + refine.targetCount.toLocaleString() + " 张";
-  const redrawSelection = "本组已勾选 " + redraw.targetCount.toLocaleString() + " 张";
+  const redrawSelection = "当前列表可重绘 " + redraw.targetCount.toLocaleString() + " 张";
   const stage = { screen, refine, redraw };
   const order = ["screen", "refine", "redraw"] as const;
   const defaultStep = order.find(id => stage[id].status?.state === "running") ??
@@ -238,10 +242,15 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       </>)}
       {stepCard("redraw", "重绘打码区域", <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
-          data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" : undefined)}
+          data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" :
+            ["重绘当前列表中已勾选且已就绪的图片", redraw.skipped].filter(Boolean).join("\n"))}
           onClick={redraw.start}>
-          {redraw.paused ? "继续重绘 · 剩余 " + redraw.remainingCount : "重绘本组所选 · " + redraw.targetCount} 张
+          {redraw.paused ? "继续重绘 · 剩余 " + redraw.remainingCount : "重绘列表已勾选 · " + redraw.targetCount} 张
         </button>
+        {!redraw.paused && <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
+          data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
+          重绘本组所选 · {redraw.groupTargetCount} 张
+        </button>}
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>
@@ -257,6 +266,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
             <GameFlowParameterValue label="重绘范围" value={redraw.paused
               ? "上次选择 · 剩余 " + redraw.remainingCount.toLocaleString() + " 张" : redrawSelection} />
           </div>
+          {!redraw.paused && redraw.skipped && <p className="hint">{redraw.skipped}</p>}
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
             onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label></div>
         </GameFlowParameterGroup>

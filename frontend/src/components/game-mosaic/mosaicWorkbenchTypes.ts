@@ -24,13 +24,11 @@ export type MaskUndoItem = {
   mask: Pick<Result, "boxes" | "manualBoxes" | "review" | "redrawError" | "saved" | "reference" | "checked">;
   candidate?: MosaicCandidate;
 };
+export type RedrawStyle = { group: string; seed: number; reference?: UnityImage };
 export type RedrawPlan = {
-  targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel> }[];
+  targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel>; style: RedrawStyle }[];
   models: MosaicModel[];
   steps: number;
-  seed: number;
-  reference?: UnityImage;
-  referenceBlob?: Blob;
 };
 export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 export type MosaicStep = "screen" | "refine" | "redraw";
