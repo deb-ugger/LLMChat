@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useImperativeHandle, useLayoutEff
 import { createPortal } from "react-dom";
 import { mosaicStatusLabels, type MosaicStatus } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
+import { getFixedMenuPoint } from "../../viewportLayout";
 import { GameImageListPagination } from "../GameImageBrowserLayout";
 import { SearchHighlight } from "../SearchHighlight";
 import type { MosaicWorkbenchProps } from "./mosaicWorkbenchTypes";
@@ -70,6 +71,8 @@ type Props = {
   disabled: boolean;
   onPreview: (id: string) => void;
   onCheck: (images: readonly UnityImage[], checked: boolean) => void;
+  hasDraft: (image: UnityImage) => boolean;
+  onDiscard: (image: UnityImage) => void;
 };
 
 function arrowDestination(index: number, key: string, length: number): number | undefined {
@@ -89,8 +92,10 @@ function arrowDestination(index: number, key: string, length: number): number | 
 export const MosaicOriginalSelectionTarget = createContext<HTMLDivElement | null>(null);
 
 export function MosaicOriginalGallery({ images, navigationRef, activeId, page, onPage, selectedIds, setSelectedIds,
-  query, read, checked, status, draftChanges, disabled, onPreview, onCheck }: Props) {
+  query, read, checked, status, draftChanges, disabled, onPreview, onCheck, hasDraft, onDiscard }: Props) {
   const [focusId, setFocusId] = useState<string>();
+  const [menu, setMenu] = useState<{ id: string; sourceHash: string; x: number; y: number }>();
+  const menuRef = useRef<HTMLDivElement>(null);
   const gallery = useRef<HTMLElement>(null);
   const grid = useRef<HTMLUListElement>(null);
   const selectionTarget = useContext(MosaicOriginalSelectionTarget);
@@ -108,7 +113,28 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
     setFocusId(undefined);
   }, [focusId, currentPage]);
 
+  const menuImage = menu && visible.find(image => image.id === menu.id && image.sourceHash === menu.sourceHash);
+  useEffect(() => {
+    if (!menuImage) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setMenu(undefined);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMenu(undefined);
+      setFocusId(menuImage.id);
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [menuImage]);
+
   function changePage(next: number) {
+    setMenu(undefined);
     onPage(next);
     if (grid.current) grid.current.scrollTop = 0;
   }
@@ -191,6 +217,14 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
               onChange={event => onCheck([image], event.target.checked)} />
           </label>
           <button type="button" className={"game-mosaic-original-tile" + (change.checked ? " is-mosaic-check-draft" : "")}
+            onContextMenu={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              const x = event.clientX || event.clientY ? event.clientX : rect.left;
+              const y = event.clientX || event.clientY ? event.clientY : rect.bottom;
+              setMenu({ id: image.id, sourceHash: image.sourceHash, ...getFixedMenuPoint(x, y, 166, 55) });
+            }}
             data-mosaic-gallery-tile={image.id}
             aria-pressed={selectedIds.has(image.id)} aria-current={image.id === activeId || undefined}
             data-tooltip={image.file + "\n" + image.width + " × " + image.height + " · " + label}
@@ -206,5 +240,13 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
       {!visible.length && <li className="hint game-mosaic-original-empty">没有符合筛选条件的图片。</li>}
     </ul>
     <GameImageListPagination label="原图分页" page={currentPage} pages={pages} onPage={changePage} />
+    {menu && menuImage && createPortal(<div ref={menuRef} className="unity-gallery-menu" role="menu"
+      aria-label={"图片操作 " + menuImage.name} style={{ left: menu.x, top: menu.y }}>
+      <button type="button" role="menuitem" disabled={disabled || !hasDraft(menuImage)} onClick={() => {
+        setMenu(undefined);
+        onDiscard(menuImage);
+        setFocusId(menuImage.id);
+      }}>撤销改动</button>
+    </div>, document.body)}
   </section>;
 }

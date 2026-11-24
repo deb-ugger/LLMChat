@@ -58,8 +58,11 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
   const [transformed, setTransformed] = useState<ReadonlyMap<MosaicBox, MosaicBox>>();
   const [selection, setSelection] = useState(emptySelection);
   const gesture = useRef<MaskGesture | null>(null);
-  const clearUndo = useCallback(() => { setMaskUndo([]); }, []);
-  useLayoutEffect(clearUndo, [clearUndo, gamePath, active?.id, active?.sourceHash]);
+  const clearUndo = useCallback((imageId?: string) => {
+    setMaskUndo(history => imageId === undefined ? [] : history
+      .map(edits => edits.filter(edit => edit.id !== imageId)).filter(edits => edits.length));
+  }, []);
+  useLayoutEffect(() => clearUndo(), [clearUndo, gamePath, active?.id, active?.sourceHash]);
 
   const cancelDrag = useCallback(() => {
     gesture.current = null;

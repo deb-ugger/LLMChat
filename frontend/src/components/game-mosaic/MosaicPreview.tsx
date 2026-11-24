@@ -158,7 +158,7 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, repla
 
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
-  getViewerNeighbors, onViewerImage, onRedraw, onApprove, header, notice, footer }: MosaicPreviewProps) {
+  getViewerNeighbors, onViewerImage, onRedraw, onApprove, header, resultActions, notice, footer }: MosaicPreviewProps) {
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
@@ -301,6 +301,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
               {index === 0 ? "A" : "B"}
             </button>)}
           </div>}
+          {resultActions}
         </div>
         <GameImagePreviewFrame keyboardPane caption={<>
           <span data-tooltip="拖动图片可平移。编辑蒙版时，按住空格拖动或用鼠标中键拖动。">原图</span>

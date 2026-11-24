@@ -32,7 +32,8 @@ import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
 import { confirmationBoxes, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
-import { applyMosaicDrafts, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, notifyMosaicAdoptionChanged, registerMosaicRows, stageMosaicEdits,
+import { applyMosaicDrafts, discardMosaicDraft, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, notifyMosaicAdoptionChanged,
+  registerMosaicRows, saveMosaicDrafts, stageMosaicEdits,
   useMosaicDrafts, type MosaicDraftSaved } from "./game-mosaic/mosaicDrafts";
 import type { ImagePreview, MosaicMaskCommit, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
   MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
@@ -613,6 +614,23 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return { checked: edit.patch.checked !== undefined, mask: edit.patch.boxes !== undefined };
   }
 
+  async function saveImageDraft(image: UnityImage) {
+    if (actionsDisabled || task.current || isBenchmarkRunning()) return;
+    if (storage) { await storage.saveDraftChanges(image.id); return; }
+    try {
+      if (saveMosaicDrafts(gamePath, image.id)) showAppNotice("已保存当前图片改动");
+    } catch (error) {
+      showAppNotice(error instanceof Error ? error.message : "无法保存图片改动", "error");
+    }
+  }
+
+  function discardImageDraft(image: UnityImage) {
+    if (actionsDisabled || task.current || isBenchmarkRunning() || !discardMosaicDraft(gamePath, image.id)) return;
+    masks.clearUndo(image.id);
+    if (isPreviewing(image)) masks.resetDrawing();
+    showAppNotice("已撤销这张图片的未保存改动");
+  }
+
   function setMosaicChecked(images: readonly UnityImage[], checked: boolean) {
     const current = latestRows.current;
     const pending = mosaicDraftsOf(gamePath);
@@ -1176,7 +1194,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id} navigationRef={galleryNavigation}
           page={galleryPage} onPage={setGalleryPage} selectedIds={gallerySelectedIds} setSelectedIds={setGallerySelectedIds}
           query={needle} read={read} status={imageStatus} checked={image => resultFor(draftRows, image).checked}
-          draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked} />}
+          draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked}
+          hasDraft={image => drafts.has(image.id)} onDiscard={discardImageDraft} />}
       actionsDisabled={actionsDisabled} getRow={image => resultFor(draftRows, image)} draftChanges={draftChanges} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
       isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked}
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
@@ -1187,6 +1206,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
         onRedraw={redrawCurrent}
         onApprove={blob => { if (active) approve(active, blob); }}
+        resultActions={active && <div className="unity-image-button-group game-mosaic-current-file-actions">
+          <button type="button" className="unity-btn is-secondary" aria-label="撤销当前图片改动"
+            disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => discardImageDraft(active)}>撤销改动</button>
+          <button type="button" className="unity-btn unity-btn-primary"
+            disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => void saveImageDraft(active)}>保存当前图片</button>
+        </div>}
         header={active &&
           <div className="unity-image-actions">
             <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>

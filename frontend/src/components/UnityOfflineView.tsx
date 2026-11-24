@@ -1183,12 +1183,14 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     invalidatePatch();
   }
 
-  async function saveMosaicUserChanges() {
-    if (!hasMosaicDrafts(root)) return;
+  async function saveMosaicUserChanges(imageId?: string) {
+    const drafts = mosaicDraftsOf(root);
+    if (imageId === undefined ? !drafts.size : !drafts.has(imageId)) return;
     setSaving(true);
     try {
       const removeFromPatch: string[] = [];
-      for (const [id, draft] of mosaicDraftsOf(root)) {
+      for (const [id, draft] of drafts) {
+        if (imageId !== undefined && id !== imageId) continue;
         if (!draft.base.saved || draft.patch.saved !== false) continue;
         const entry = mosaicIndex?.[id];
         if (!entry) continue;
@@ -1197,7 +1199,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (entry.included) removeFromPatch.push(id);
       }
       if (removeFromPatch.length) await selectMosaicCandidates(removeFromPatch, false);
-      if (saveMosaicDrafts(root)) showAppNotice("已保存图片去码修改");
+      if (saveMosaicDrafts(root, imageId)) showAppNotice(imageId === undefined ? "已保存图片去码修改" : "已保存当前图片改动");
     } catch (cause) {
       showAppNotice(cause instanceof Error ? cause.message : "无法保存图片去码修改", "error");
     } finally {
@@ -1207,6 +1209,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
 
   const mosaicStorage = mosaicIndex && {
     index: mosaicIndex,
+    saveDraftChanges: (imageId: string) => saveMosaicUserChanges(imageId),
     savedDrafts: mosaicStatus?.root === root ? mosaicStatus.savedDrafts : undefined,
     consumeSavedDrafts: () => setMosaicStatus(value => value?.root === root && value.savedDrafts === mosaicStatus?.savedDrafts
       ? { ...value, savedDrafts: undefined } : value),

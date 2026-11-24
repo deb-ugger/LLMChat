@@ -326,6 +326,7 @@ input.game-mosaic-threshold[type="number"] {
   border-bottom: 1px solid var(--border);
 }
 .game-mosaic-results-bar > strong { flex: 0 0 auto; min-width: 0; }
+.game-mosaic-current-file-actions { margin-inline-start: auto; }
 
 /* 文件名后面接一句状态说明：占满这一行剩余宽度，超长省略，完整文案在 tooltip。 */
 .game-mosaic-detail-hint {

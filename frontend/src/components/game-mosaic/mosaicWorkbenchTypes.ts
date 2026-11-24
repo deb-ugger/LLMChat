@@ -59,6 +59,7 @@ type MosaicStorage = {
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
   save: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<void>;
   select: (images: UnityImage[], include: boolean, signal: AbortSignal) => Promise<void>;
+  saveDraftChanges: (imageId: string) => Promise<void>;
 };
 export type MosaicWorkbenchProps = {
   settings?: Settings; gamePath: string; images: readonly UnityImage[]; backupMode?: string; storage?: MosaicStorage;
@@ -259,6 +260,7 @@ export type MosaicPreviewProps = {
   onRedraw: (models: MosaicModel[]) => void;
   onApprove: (blob: Blob) => void;
   header: ReactNode;
+  resultActions: ReactNode;
   notice: ReactNode;
   footer: ReactNode;
 };

@@ -72,9 +72,20 @@ export function applyMosaicDrafts(rows: Results, drafts: Drafts): Results {
   return next;
 }
 
+export function discardMosaicDraft(root: string, imageId: string) {
+  const current = mosaicDraftsOf(root);
+  if (!current.has(imageId)) return false;
+  const remaining = new Map(current);
+  remaining.delete(imageId);
+  publishDrafts(root, remaining);
+  return true;
+}
+
 export type MosaicDraftSaved = { root: string; changes: Results; drafts: Drafts };
-export function saveMosaicDrafts(root: string) {
-  const drafts = mosaicDraftsOf(root);
+export function saveMosaicDrafts(root: string, imageId?: string) {
+  const current = mosaicDraftsOf(root);
+  const draft = imageId === undefined ? undefined : current.get(imageId);
+  const drafts = imageId === undefined ? current : draft ? new Map([[imageId, draft]]) : emptyDrafts;
   if (!drafts.size) return false;
   const stored = currentRows.get(root)?.() ?? readMosaicRows<Result>(root);
   const changes: Results = {};
@@ -91,7 +102,9 @@ export function saveMosaicDrafts(root: string) {
   }
   writeMosaicRowEdits(root, changes);
   window.dispatchEvent(new CustomEvent<MosaicDraftSaved>(mosaicDraftSavedEvent, { detail: { root, changes, drafts } }));
-  publishDrafts(root, emptyDrafts);
+  const remaining = new Map(mosaicDraftsOf(root));
+  for (const [id, saved] of drafts) if (remaining.get(id) === saved) remaining.delete(id);
+  publishDrafts(root, remaining);
   notifyMosaicAdoptionChanged(root, [...drafts].flatMap(([id, draft]) => draft.base.saved && changes[id].saved === false ? [id] : []));
   return true;
 }
