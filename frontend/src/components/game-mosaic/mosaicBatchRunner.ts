@@ -366,15 +366,45 @@ export function mosaicRedrawStyle(image: UnityImage, rows: Results, references: 
   return { group, seed, reference: references.get(group) };
 }
 
+function createMosaicReferenceReader(readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal) {
+  const cache = new Map<string, Promise<Blob>>();
+  return (reference: UnityImage) => {
+    const key = JSON.stringify([reference.id, reference.sourceHash]);
+    let loading = cache.get(key);
+    if (!loading) {
+      loading = readSaved(reference, signal).catch(error => {
+        signal.throwIfAborted();
+        throw new Error("读取画风参考失败 · " + reference.name + " · " + (error instanceof Error ? error.message : String(error)));
+      });
+      cache.set(key, loading);
+    }
+    return loading;
+  };
+}
+
+export function automaticMosaicRedrawStyle(usable: readonly UnityImage[], rows: Results,
+  readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal) {
+  const references = mosaicRedrawReferences(usable, rows);
+  const readReference = createMosaicReferenceReader(readSaved, signal);
+  return async (image: UnityImage): Promise<{ seed: number; reference?: Blob }> => {
+    const style = mosaicRedrawStyle(image, rows, references);
+    if (!style.reference || style.reference.id === image.id) return { seed: 1 };
+    return { seed: style.seed, reference: await readReference(style.reference) };
+  };
+}
+
 export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityImage[], rows: Results, protect: boolean) {
   const current = new Map(usable.map(image => [image.id, image]));
   const references = mosaicRedrawReferences(usable, rows);
+  const targetIds = new Set(plan.targets.map(target => target.image.id));
   return plan.targets.every(({ image, boxes, keep, style }) => {
     const latest = current.get(image.id);
     if (latest?.sourceHash !== image.sourceHash) return false;
     const latestStyle = mosaicRedrawStyle(latest, rows, references);
-    return latestStyle.group === style.group && latestStyle.reference?.id === style.reference?.id &&
-      latestStyle.reference?.sourceHash === style.reference?.sourceHash &&
+    const generated = plan.generatedReferences?.get(style.group);
+    const referenceUnchanged = generated ? targetIds.has(generated.anchorId)
+      : latestStyle.reference?.id === style.reference?.id && latestStyle.reference?.sourceHash === style.reference?.sourceHash;
+    return latestStyle.group === style.group && referenceUnchanged &&
       JSON.stringify(resultFor(rows, latest).boxes) === JSON.stringify(boxes) &&
       JSON.stringify(keepText(latest, protect)) === JSON.stringify(keep);
   });
@@ -391,9 +421,10 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   let completed = initial;
 
   setPending(plan);
-  const referenceCache = new Map<string, Promise<Blob>>();
+  const readReference = createMosaicReferenceReader(readSaved, signal);
   const cache = new Map<string, { blob: Blob; seconds: number }>();
   const failures = new Set<string>();
+  let waitingForReference = 0;
   const reportFailure = (image: UnityImage, detail: string) => {
     failures.add(image.id);
     usage?.recordImage?.(image.id, mosaicRunImageOutcome(undefined, false, detail));
@@ -403,23 +434,24 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   for (const { image, boxes, keep, pending, style } of plan.targets) {
     if (!pending.size) continue;
     signal.throwIfAborted();
+    const generated = plan.generatedReferences?.get(style.group);
+    const isAnchor = generated?.anchorId === image.id;
+    if (generated && !isAnchor && !generated.blob) {
+      waitingForReference++;
+      continue;
+    }
     try {
       const original = await read(image, signal);
       const input = await mosaicInputKey(original, boxes);
-      const referenceImage = style.reference?.id === image.id ? undefined : style.reference;
-      const referenceKey = referenceImage && JSON.stringify([referenceImage.id, referenceImage.sourceHash]);
-      let reference: Blob | undefined;
-      if (referenceImage && referenceKey) {
-        let loading = referenceCache.get(referenceKey);
-        if (!loading) {
-          loading = readSaved(referenceImage, signal);
-          referenceCache.set(referenceKey, loading);
-        }
-        reference = await loading;
-      }
+      const referenceImage = !generated && style.reference?.id !== image.id ? style.reference : undefined;
+      const referenceKey = generated ? ["generated", style.group, generated.anchorId, isAnchor]
+        : referenceImage && [referenceImage.id, referenceImage.sourceHash];
+      const reference = generated ? (isAnchor ? undefined : generated.blob)
+        : referenceImage ? await readReference(referenceImage) : undefined;
       for (const engine of pending) {
         signal.throwIfAborted();
-        const title = image.name + " · " + mosaicModelLabels[engine];
+        const title = image.name + " · " + mosaicModelLabels[engine] +
+          (generated ? (isAnchor ? " · 生成本组参考" : " · 按本组参考重绘") : "");
         setProgress(title);
         const stepCount = mosaicRedrawStepCount(plan, engine);
         const key = JSON.stringify([engine, stepCount, input, keep, style.seed, referenceKey]);
@@ -442,6 +474,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
           }
         } else recordGameCacheHit(usage?.scope);
         const { blob, seconds } = outcome;
+        if (generated && isAnchor) generated.blob = blob;
         onCandidate(image, engine, blob, seconds);
         pending.delete(engine);
         if (!pending.size) {
@@ -458,13 +491,16 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   }
   if (completed === total) setPending(null);
   setProgress("");
-  if (failures.size) setError(failures.size + " 张重绘失败，详情见「处理失败」分组");
+  if (failures.size || waitingForReference) setError([
+    failures.size ? failures.size + " 张重绘失败，详情见「处理失败」分组" : "",
+    waitingForReference ? waitingForReference + " 张等待本组首图，继续重绘时会先重试首图" : "",
+  ].filter(Boolean).join(" · "));
   return completed === total;
 }
 
 export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: AbortSignal, ports: MosaicAutomaticPorts) {
   const { selected, scoped, usable, rows, detectorKey, protect, refine, model, steps, timingScope } = plan;
-  const { read, performReviews, openDetector, savedMosaicScan, redrawMosaic, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews } = ports;
+  const { read, readSaved, performReviews, openDetector, savedMosaicScan, redrawMosaic, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews } = ports;
 
   const ids = new Set(selected.map(image => image.id));
   const existing = await ports.readExisting(signal);
@@ -483,6 +519,7 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
   }
   let detector: Awaited<ReturnType<typeof openDetector>> | undefined;
   const rescreened = new Set<string>();
+  const redrawStyle = automaticMosaicRedrawStyle(usable, rows, readSaved, signal);
   try {
     for (const [index, image] of unscreened.entries()) {
       signal.throwIfAborted();
@@ -516,7 +553,9 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
       const boxes = removeContainedMosaicBoxes(scan.boxes);
       if (!boxes.length) continue;
       try {
-        const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep: keepText(image, protect), model, steps, seed: 1, signal, timingScope, progress: setProgress });
+        const style = await redrawStyle(image);
+        const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep: keepText(image, protect), model, steps,
+          ...style, signal, timingScope, progress: setProgress });
         await measureGameAsync(timingScope, "saveMs", async () =>
           ports.writeCandidate(image, rendered, signal));
       } catch (error) {

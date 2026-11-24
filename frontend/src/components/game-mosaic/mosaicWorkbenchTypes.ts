@@ -35,6 +35,7 @@ export type RedrawPlan = {
   models: MosaicModel[];
   steps: number;
   referenceGuide?: boolean;
+  generatedReferences?: Map<string, { anchorId: string; blob?: Blob }>;
 };
 export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 export type MosaicStep = "screen" | "refine" | "redraw";
@@ -209,6 +210,7 @@ export type MosaicAutomaticPlan = {
 
 export type MosaicAutomaticPorts = {
   read: MosaicRead;
+  readSaved: MosaicRead;
   performReviews: PerformMosaicReviews;
   openDetector: (signal: AbortSignal, timingScope: string) => ReturnType<typeof openDeploymentDetector>;
   savedMosaicScan: typeof savedMosaicScan;

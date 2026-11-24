@@ -63,15 +63,18 @@ type Props = {
     status?: StepRun;
     targetCount: number;
     groupTargetCount: number;
+    automaticTargetCount: number;
     skipped: string;
     remainingCount: number;
     paused: boolean;
     canClear: boolean;
     batchReason?: string;
     groupReason?: string;
+    automaticReason?: string;
     referenceFlow?: { detail: string; label?: string; reason?: string; run?: () => void };
     start: () => void;
     startGroup: () => void;
+    startAutomatic: () => void;
     clear: () => Promise<void>;
   };
   unresolvedRefineFailures: number;
@@ -248,10 +251,15 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           onClick={redraw.start}>
           {redraw.paused ? "继续重绘 · 剩余 " + redraw.remainingCount : "重绘列表已勾选 · " + redraw.targetCount} 张
         </button>
-        {!redraw.paused && <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
-          data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
-          重绘本组所选 · {redraw.groupTargetCount} 张
-        </button>}
+        {!redraw.paused && <>
+          <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
+            data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
+            重绘本组所选 · {redraw.groupTargetCount} 张
+          </button>
+          <button type="button" className="unity-btn is-secondary" disabled={!!redraw.automaticReason}
+            data-tooltip={redraw.automaticReason ?? "当前列表中每组首张无参考重绘，再用该候选重绘同组选中图片"}
+            onClick={redraw.startAutomatic}>自动按组重绘 · {redraw.automaticTargetCount} 张</button>
+        </>}
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>

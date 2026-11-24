@@ -1,6 +1,7 @@
 import { hasMosaicDrafts, mosaicDraftsOf, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
+import { automaticMosaicRedrawStyle } from "./game-mosaic/mosaicBatchRunner";
 import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
@@ -1207,16 +1208,18 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }
   }
 
+  async function readSavedMosaicImage(image: UnityImage, signal: AbortSignal, path = mosaicRequest.path) {
+    const result = await unityRun<{ data: string }>("mosaic-preview", { root, path, imageId: image.id }, undefined, signal);
+    return new Blob([Uint8Array.from(atob(result.data), c => c.charCodeAt(0))], { type: "image/png" });
+  }
+
   const mosaicStorage = mosaicIndex && {
     index: mosaicIndex,
     saveDraftChanges: (imageId: string) => saveMosaicUserChanges(imageId),
     savedDrafts: mosaicStatus?.root === root ? mosaicStatus.savedDrafts : undefined,
     consumeSavedDrafts: () => setMosaicStatus(value => value?.root === root && value.savedDrafts === mosaicStatus?.savedDrafts
       ? { ...value, savedDrafts: undefined } : value),
-    read: async (image: UnityImage, signal: AbortSignal) => {
-      const result = await unityRun<{ data: string }>("mosaic-preview", { ...mosaicRequest, imageId: image.id }, undefined, signal);
-      return new Blob([Uint8Array.from(atob(result.data), c => c.charCodeAt(0))], { type: "image/png" });
-    },
+    read: readSavedMosaicImage,
     save: async (image: UnityImage, blob: Blob, signal: AbortSignal) => {
       const result = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save",
         { ...mosaicRequest, imageId: image.id, imageSourceHash: image.sourceHash, imageData: await imageBase64(blob) }, undefined, signal);
@@ -1778,6 +1781,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }
     let detector: Awaited<ReturnType<typeof openDeploymentDetector>> | undefined;
     const savedDrafts = new Set<string>();
+    const redrawStyle = automaticMosaicRedrawStyle(usable, rows, (image, signal) => readSavedMosaicImage(image, signal, current.folder), signal);
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();
@@ -1807,7 +1811,9 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         if (!boxes.length) continue;
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
         try {
-          const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep, model: preferences.model, steps: preferences.steps, seed: 1, signal, timingScope: scope,
+          const style = await redrawStyle(image);
+          const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep, model: preferences.model,
+            steps: preferences.steps, ...style, signal, timingScope: scope,
             progress: detail => report({ completed: index, total: images.length, detail }) });
           const imageData = await imageBase64(rendered);
           const saved = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {

@@ -552,7 +552,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       automatic: signal => measureDeploymentStage(gamePath, "mosaic", () => runAutomaticMosaic({
         selected, scoped, usable, rows, detectorKey, protect, refine: preferences.refine, model, steps, timingScope: deploymentMetricScope(gamePath, "mosaic"),
       }, signal, {
-        read, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
+        read, readSaved, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
         savedMosaicScan, redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
         readExisting: signal => readSavedMosaicSources(gamePath, signal),
         writeCandidate: saveCandidate,
@@ -832,7 +832,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       setError("原图、蒙版、文字保护范围或画风分组已变更，请按当前选择重绘");
       return;
     }
-    const summary = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
+    const models = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
+    const summary = plan.generatedReferences ? "自动按组重绘 · " + models : models;
     const total = plan.targets.length;
     const initial = plan.targets.filter(target => !target.pending.size).length;
     const references = new Map(plan.targets.flatMap(({ style }) =>
@@ -857,15 +858,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         scope: "config", label: mosaicModelLabels[engine], value: mosaicRedrawStepCount(plan, engine) + " 步",
       })),
       { scope: "config", label: "保护已识别文字", value: protect ? "开启" : "关闭" },
-      ...(references.size ? [{ scope: "config" as const, label: "画风参考",
-        value: groupCount === 1 ? references.values().next().value! : "按组使用 " + references.size + " 张参考图" }] : []),
+      ...(plan.generatedReferences ? [{ scope: "config" as const, label: "画风参考", value: "每组首张无参考重绘" }]
+        : references.size ? [{ scope: "config" as const, label: "画风参考",
+          value: groupCount === 1 ? references.values().next().value! : "按组使用 " + references.size + " 张参考图" }] : []),
     ], resume });
   }
   function canRedrawImage(row: Result) {
     return preferences.refine === false || !!row.saved || !!row.manualBoxes || isReviewed(row);
   }
 
-  function generate(targets: UnityImage[], models: MosaicModel[], referenceGuide = false) {
+  function generate(targets: UnityImage[], models: MosaicModel[], mode: "regular" | "reference" | "automatic" = "regular") {
     const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
     if (!usableTargets.length) return;
     if (usableTargets.some(image => !canRedrawImage(resultFor(rows, image)))) {
@@ -875,12 +877,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const groups = new Map<string, RedrawPlan["targets"]>();
     for (const image of usableTargets) {
       const style = mosaicRedrawStyle(image, rows, redrawReferences);
-      if (referenceGuide) style.reference = undefined;
+      if (mode !== "regular") style.reference = undefined;
       const batch = groups.get(style.group) ?? [];
       batch.push({ image, boxes: resultFor(rows, image).boxes, keep: keepText(image, protect), pending: new Set(models), style });
       groups.set(style.group, batch);
     }
-    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide });
+    const generatedReferences = mode === "automatic" ? new Map([...groups].map(([group, batch]) =>
+      [group, { anchorId: batch[0].image.id }])) : undefined;
+    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide: mode === "reference", generatedReferences });
   }
 
   function redrawCurrent(models: MosaicModel[]) {
@@ -1005,15 +1009,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     formalMosaicRun?.completed, formalMosaicRun?.total,
     !busy && !!formalMosaicStep, busy ? progress :
       formalMosaicRun?.state === "error" ? "失败待重试" : "已中止，等待继续");
-  const listRedraw: UnityImage[] = [];
+  const listRedraw: UnityImage[] = [], automaticRedraw: UnityImage[] = [];
   let noMask = 0, awaitingReview = 0, referenceCount = 0;
   for (const image of visible) {
     const row = resultFor(rows, image);
     if (!row.checked) continue;
-    if (redrawReferences.get(row.group || image.id)?.id === image.id) referenceCount++;
-    else if (!row.boxes.length) noMask++;
-    else if (!canRedrawImage(row)) awaitingReview++;
-    else listRedraw.push(image);
+    const isReference = redrawReferences.get(row.group || image.id)?.id === image.id;
+    if (isReference) referenceCount++;
+    if (!row.boxes.length) { if (!isReference) noMask++; continue; }
+    if (!canRedrawImage(row)) { if (!isReference) awaitingReview++; continue; }
+    automaticRedraw.push(image);
+    if (!isReference) listRedraw.push(image);
   }
   const redrawGroup = selected.filter(image => image.id !== reference?.id &&
     resultFor(rows, image).boxes.length && canRedrawImage(resultFor(rows, image)));
@@ -1191,6 +1197,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const redrawBlocked = testTitle ?? busyReason ?? draftReason;
   const batchReason = redrawBlocked ?? (!pausedRedraw && !listRedraw.length ? redrawSkipped || "先勾选已有蒙版的图片" : undefined);
   const groupRedrawReason = redrawBlocked ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
+  const automaticRedrawReason = redrawBlocked ?? (!automaticRedraw.length ? "当前列表没有可重绘的已勾选图片" : undefined);
   const guidedCandidate = active ? draftCandidates[active.id] : undefined;
   const guideModel = guidedCandidate?.revision === active?.sourceHash && guidedCandidate?.referenceGuide?.group === group
     ? guidedCandidate?.referenceGuide?.model : undefined;
@@ -1214,12 +1221,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       detail: "请检查右侧候选，满意后点「采用为本组参考」。",
       label: "重新生成参考候选",
       reason: guideCandidateReason,
-      run: () => generate([active], [model], true),
+      run: () => generate([active], [model], "reference"),
     } : {
       detail: "先用当前图片生成无参考候选，确认后再重绘本组其他图片。",
       label: "生成无参考候选",
       reason: guideCandidateReason,
-      run: () => generate([active], [model], true),
+      run: () => generate([active], [model], "reference"),
     };
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
@@ -1256,10 +1263,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         start: refine, clear: clearRefine,
       }} redraw={{
         status: stepRuns.redraw, targetCount: listRedraw.length, groupTargetCount: redrawGroup.length,
-        remainingCount: redrawRemaining, paused: !!pausedRedraw, skipped: redrawSkipped, canClear: canClearRedraw,
-        batchReason, groupReason: groupRedrawReason, referenceFlow,
+        automaticTargetCount: automaticRedraw.length, remainingCount: redrawRemaining, paused: !!pausedRedraw,
+        skipped: redrawSkipped, canClear: canClearRedraw,
+        batchReason, groupReason: groupRedrawReason, automaticReason: automaticRedrawReason, referenceFlow,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model]),
-        startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
+        startGroup: () => generate(redrawGroup, [model]),
+        startAutomatic: () => generate(automaticRedraw, [model], "automatic"), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
     <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, imageFilters, failuresOnly }}
       onImageFiltersChange={(filters: GameImageFilters) => {
