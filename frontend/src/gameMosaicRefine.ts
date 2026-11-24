@@ -171,15 +171,43 @@ async function sha256(bytes: BufferSource) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+class MosaicReviewFormatError extends Error {}
+
+function isMosaicReviewFormatError(error: unknown) {
+  return error instanceof MosaicReviewFormatError ||
+    (error instanceof Error && "code" in error && error.code === "GAME_MODEL_INVALID_JSON");
+}
+
 function parseRegionReview(value: unknown): RegionReview {
   const result = value as Partial<RegionReview> | null;
-  if (typeof result?.pixelation !== "boolean" || typeof result.confidence !== "number" ||
-      // Some constrained decoders emit 1.000000000000001 for the upper boundary.
-      !Number.isFinite(result.confidence) || result.confidence < -1e-12 || result.confidence > 1 + 1e-12 ||
-      !Array.isArray(result.boxes) || result.boxes.length > 3 || !result.boxes.every(box =>
-        Array.isArray(box) && box.length === 4 && box.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000)))
-    throw new Error("复筛模型未返回有效的判断、置信度和坐标数组");
-  return { pixelation: result.pixelation, confidence: Math.max(0, Math.min(1, result.confidence)), boxes: result.boxes };
+  if (typeof result?.pixelation !== "boolean")
+    throw new MosaicReviewFormatError("遮挡判断必须是布尔值");
+  if (typeof result.confidence !== "number" || !Number.isFinite(result.confidence) ||
+      result.confidence < -1e-12 || result.confidence > 1 + 1e-12)
+    throw new MosaicReviewFormatError("置信度必须是 0 到 1 的数字");
+  if (!Array.isArray(result.boxes) || result.boxes.length > 3)
+    throw new MosaicReviewFormatError("坐标必须是最多包含 3 个框的数组");
+  const boxes = result.boxes.map((box, i): MosaicBox => {
+    // Constrained decoders can emit floating point noise around numeric boundaries.
+    if (!Array.isArray(box) || box.length !== 4 || box.some(v =>
+      typeof v !== "number" || !Number.isFinite(v) || v < -1e-9 || v > 1000 + 1e-9))
+      throw new MosaicReviewFormatError("第 " + (i + 1) + " 个框必须包含 4 个 0 到 1000 的坐标");
+    return box.map(v => Math.max(0, Math.min(1000, v))) as MosaicBox;
+  });
+  return { pixelation: result.pixelation, confidence: Math.max(0, Math.min(1, result.confidence)), boxes };
+}
+
+async function requestMosaicReviewWithCorrection(prompt: string, signal: AbortSignal,
+  request: (text: string, correcting: boolean) => Promise<unknown>): Promise<RegionReview> {
+  try {
+    return parseRegionReview(await request(prompt, false));
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!isMosaicReviewFormatError(error)) throw error;
+  }
+  const correction = "\n请重新判断并严格返回一个 JSON 对象。pixelation 必须是布尔值，confidence 必须是 0 到 1 的数字，" +
+    "boxes 必须是数组，每个框恰有 4 个 0 到 1000 的数字。无码或无法定位时使用空数组 []。";
+  return parseRegionReview(await request(prompt + correction, true));
 }
 
 function localizedReviewBoxes(values: MosaicBox[], area: MosaicBox, content: MosaicBox, pixels: ImageData, candidate?: MosaicBox): MosaicBox[] {
@@ -309,7 +337,8 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
     Math.min(x, box[0]), Math.min(y, box[1]), Math.max(right, box[2]), Math.max(bottom, box[3]),
   ], boxes[0]);
   const area = expand(focus.length ? enclosing(focus) : bounds, pixels.width, pixels.height);
-  const inspect = async (view: MosaicBox, candidates: MosaicBox[], detail: string) => {
+  type ReviewedView = { response: RegionReview; boxes: MosaicBox[] };
+  const inspect = async (view: MosaicBox, candidates: MosaicBox[], detail: string): Promise<ReviewedView | { formatError: string }> => {
     signal.throwIfAborted();
     const { crop, content, normalize } = mosaicReviewView(canvas, view);
     const instruction = candidates.length
@@ -318,16 +347,23 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
     const prompt = instruction + "只报告有直接像素证据的人为马赛克或不透明遮挡条。自然纹理、轮廓线、高光和透明背景都不算遮挡。" +
       '只返回 JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}。' +
       "最多返回3个贴合遮挡的框，坐标按整张输入（含填充）归一化为0到1000。无法定位时返回空框。";
-    const response = await request(prompt, crop.toDataURL("image/png"), detail);
-    const boxes = response.pixelation ? localizedReviewBoxes(response.boxes, view, content, pixels) : [];
-    return { response, boxes };
+    try {
+      const response = await request(prompt, crop.toDataURL("image/png"), detail);
+      const boxes = response.pixelation ? localizedReviewBoxes(response.boxes, view, content, pixels) : [];
+      return { response, boxes };
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!isMosaicReviewFormatError(error)) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      return { formatError: "模型修正后回复仍无效，请人工复核 · " + reason };
+    }
   };
 
   const confirmed: MosaicBox[] = [];
   const uncertain: MosaicBox[] = [...deferred];
   const supports = (a: MosaicBox, b: MosaicBox) => intersect(a, b) >= .5;
   const hasConfirmation = (box: MosaicBox) => confirmed.some(other => supports(other, box));
-  const record = ({ response, boxes }: Awaited<ReturnType<typeof inspect>>, candidates: MosaicBox[]) => {
+  const record = ({ response, boxes }: ReviewedView, candidates: MosaicBox[]) => {
     for (const box of boxes) {
       const supported = strong.some(candidate => candidates.includes(candidate) && supports(candidate, box));
       appendBoxes(response.confidence >= reviewConfidence && supported ? confirmed : uncertain, [box]);
@@ -335,7 +371,10 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
   };
 
   const first = await inspect(area, focus, focus.length ? "合并复核 · " + focus.length + " 个候选" : "整图复核");
+  if ("formatError" in first)
+    return { boxes: [], signature, reviewBoxes: removeContainedMosaicBoxes(regions), review: first.formatError };
   record(first, focus);
+  let formatError: string | undefined;
 
   // A closer crop can resolve a strong box lost in a wide, multi-candidate view.
   const retry = first.response.pixelation && focus.find(box => strong.includes(box) && !hasConfirmation(box));
@@ -343,10 +382,14 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
     const closer = expand(retry, pixels.width, pixels.height);
     if (areaSize(closer) < areaSize(area) * .7) {
       const second = await inspect(closer, [retry], "局部补定位");
-      record(second, [retry]);
-      if (hasConfirmation(retry)) {
-        const weak = uncertain.filter(box => !supports(box, retry));
-        uncertain.splice(0, uncertain.length, ...weak);
+      if ("formatError" in second) {
+        formatError = second.formatError;
+      } else {
+        record(second, [retry]);
+        if (hasConfirmation(retry)) {
+          const weak = uncertain.filter(box => !supports(box, retry));
+          uncertain.splice(0, uncertain.length, ...weak);
+        }
       }
     }
   }
@@ -357,11 +400,11 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
       if (!hasConfirmation(box)) appendBoxes(uncertain, [box]);
     }
   }
-  const review = missingLocation || uncertain.some(box => !hasConfirmation(box)) ||
+  const review = formatError || missingLocation || uncertain.some(box => !hasConfirmation(box)) ||
     (!focus.length && !!proposed.review && first.response.confidence < reviewConfidence);
   const boxes = removeContainedMosaicBoxes(confirmed);
   return review ? { boxes, signature, reviewBoxes: removeContainedMosaicBoxes([...confirmed, ...uncertain]),
-    review: "复筛证据不足或候选区域存在分歧，请人工复核" } : { boxes, signature };
+    review: formatError || "复筛证据不足或候选区域存在分歧，请人工复核" } : { boxes, signature };
 }
 
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {
@@ -529,8 +572,11 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
                 options.onProgress?.(results.size, model + " · " + image.name + " · " + detail + " · 等待模型返回");
                 pending = prepareRequest().then(() => {
                   signal.throwIfAborted();
-                  return options.request(model, prompt, crop, signal, lanes);
-                }).then(parseRegionReview);
+                  return requestMosaicReviewWithCorrection(prompt, signal, (text, correcting) => {
+                    if (correcting) options.onProgress?.(results.size, model + " · " + image.name + " · 正在重试回复格式");
+                    return options.request(model, text, crop, signal, lanes);
+                  });
+                });
                 requests.set(id, pending);
               }
               const response = await pending;

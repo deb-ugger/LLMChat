@@ -231,6 +231,11 @@ export function finishFormalGameStep(scope: string, step: string, summary: Forma
   const meter = records(scope)[step];
   if (!meter) return;
   meter.formalRun = summary;
+  if (summary.imageDetails && summary.completed !== undefined && summary.failed !== undefined) {
+    // Resumed image runs replace prior outcomes for the same image in the archive.
+    meter.itemsDone = summary.completed + summary.failed;
+    meter.failures = summary.failed;
+  }
   if (summary.status === "完成") completeGameStep(scope, step);
   else archivePausedGameStep(scope, step);
 }
