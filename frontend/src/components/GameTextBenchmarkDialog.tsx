@@ -782,7 +782,15 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
 function BenchmarkTaskRunSummary({ run, queueId, step }: { run: BenchmarkResult; queueId: string; step: Target }) {
   const { taskId: runId, endedAt, elapsedMs, scope, benchmark } = run.performance;
   const [metrics, setMetrics] = useState<{ review?: number; score?: string; matches?: string }>({});
-  const reference = readViewPreference(runReferenceKey(queueId));
+  const referenceKey = runReferenceKey(queueId);
+  const [reference, setReference] = useState(() => readViewPreference(referenceKey));
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === referenceKey || event.key === null) setReference(readViewPreference(referenceKey));
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, [referenceKey]);
   const archivedReference = benchmark?.referenceSampleSetPath ?? benchmark?.sampleSetPath;
   const referencePath = reference || (typeof archivedReference === "string" ? archivedReference : undefined);
   const stage = step === "mosaicScreen" || step === "mosaicRefine" ? step : undefined;
@@ -818,20 +826,21 @@ function BenchmarkTaskRunSummary({ run, queueId, step }: { run: BenchmarkResult;
     ["待复核", metrics.review ?? archivedReview ?? "—"], ["复筛综合分", metrics.score ?? "—"],
     ["匹配框", metrics.matches ?? "—"],
   ];
+  const rowStyle: React.CSSProperties = { display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "var(--space-2) var(--space-4)" };
   return <section className="game-benchmark-run-summary" aria-label="配置运行结果"
-    style={{ gridTemplateColumns: "minmax(0, 1fr)", cursor: "auto", borderBlockStart: "1px solid var(--border)", paddingBlockStart: "var(--space-3)" }}>
-    <header className="game-benchmark-run-summary-head game-benchmark-toolbar">
+    style={{ gridTemplateColumns: "minmax(0, 1fr)", cursor: "auto", borderBlockStart: "1px solid var(--border)", padding: "var(--space-3)" }}>
+    <header className="game-benchmark-run-summary-head" style={rowStyle}>
       <strong className="game-benchmark-run-badge" data-tone={failed ? "failure" : "complete"}>{failed ? "失败" : "已完成"}</strong>
       <span>结束 {endedAt ? <time dateTime={endedAt}>{new Date(endedAt).toLocaleString("zh-CN", { hour12: false })}</time> : "—"}</span>
       <span>用时 {gameDuration(elapsedMs)}</span>
     </header>
-    <dl className="game-benchmark-run-summary-stats game-benchmark-toolbar" style={{ margin: 0, gap: "var(--space-2) var(--space-4)" }}>
+    <dl className="game-benchmark-run-summary-stats" style={{ ...rowStyle, margin: 0 }}>
       {stats.map(([label, value]) => <div key={label} className="game-benchmark-run-summary-stat">
         <dt className="hint">{label}</dt>
         <dd style={{ margin: 0, fontVariantNumeric: "tabular-nums" }}><strong>{value}</strong></dd>
       </div>)}
     </dl>
-    <footer className="game-benchmark-run-summary-foot game-benchmark-toolbar">
+    <footer className="game-benchmark-run-summary-foot">
       <button type="button" className="unity-btn" onClick={() => void openBenchmarkReview({
         kind: "benchmark-review", queueId, scope, step, label: benchmarkTargetLabel(step), itemUnit,
       }).catch(error => showAppNotice(String(error), "error"))}>查看对照</button>
