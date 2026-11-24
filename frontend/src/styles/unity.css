@@ -4194,3 +4194,16 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   border-block-start: 1px solid var(--border);
 }
 .game-flow-editable-fields [data-parameter-group="help"] { margin-block-start: 2px; }
+
+/* 并发下拉不再被压成一条缝（应用于所有含 .game-model-concurrency-control 的卡） */
+.game-flow-editable-fields .game-model-concurrency-control :is(select, .searchable-select, .searchable-select-input) {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+/* 配置卡底部按钮所在行：统一用发丝线与参数区分开 */
+.game-flow-editable-fields > div:last-child:has(> .unity-btn),
+.game-flow-editable-fields .game-flow-param-section[data-parameter-group="actions"] {
+  margin-block-start: 6px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
+}
