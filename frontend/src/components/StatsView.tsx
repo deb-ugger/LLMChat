@@ -34,6 +34,56 @@ type RangePreset =
 const STATS_FILTERS_KEY = "llmchat-stats-filters";
 const DETAIL_PAGE_SIZE = 100;
 
+/** 千分位整数，KPI 与明细共用一个口径。 */
+function intText(value: number): string {
+  return Math.round(value || 0).toLocaleString("zh-CN");
+}
+
+/**
+ * 大数用「万 / 亿」收口：五位以上的 Token 数在 KPI 里读不出来，
+ * 明细表仍按精确值显示。
+ */
+function metricText(value: number): { text: string; unit: string } {
+  const n = value || 0;
+  const abs = Math.abs(n);
+  if (abs >= 1e8) return { text: (n / 1e8).toFixed(2), unit: "亿" };
+  if (abs >= 1e4) return { text: (n / 1e4).toFixed(1), unit: "万" };
+  return { text: intText(n), unit: "" };
+}
+
+function MetricValue({ value, suffix, compact }: {
+  value: number;
+  suffix?: string;
+  compact?: boolean;
+}) {
+  const { text, unit } = compact ? metricText(value) : { text: intText(value), unit: "" };
+  return (
+    <span className="stats-kpi-value">
+      {text}
+      {unit && <em>{unit}</em>}
+      {suffix && <em>{suffix}</em>}
+    </span>
+  );
+}
+
+function MetricPart({ label, value, tone, compact }: {
+  label: string;
+  value: number;
+  tone?: "ok" | "fail" | "supplement";
+  compact?: boolean;
+}) {
+  const { text, unit } = compact ? metricText(value) : { text: intText(value), unit: "" };
+  return (
+    <span className={`stats-kpi-part${tone ? ` is-${tone}` : ""}`}>
+      <span className="stats-kpi-part-label">{label}</span>
+      <span className="stats-kpi-part-value">
+        {text}
+        {unit && <em>{unit}</em>}
+      </span>
+    </span>
+  );
+}
+
 type StatsFiltersState = {
   rangePreset: RangePreset;
   customFrom: string;
@@ -540,7 +590,7 @@ function TokenTotalCell({
   }, [open]);
 
   return (
-    <td className="stats-tokens-cell">
+    <td className="stats-tokens-cell stats-col-tokens">
       <span
         ref={triggerRef}
         className="stats-tokens-trigger stats-mono"
@@ -826,15 +876,36 @@ export function StatsView({ active = true }: { active?: boolean }) {
     [detailEvents],
   );
 
+  // 整列都是同一个值的列对读者没有信息量，直接收起；收起后不再占宽度。
+  const detailView = useMemo(() => {
+    const rows = sortedEvents;
+    const hasBand = rows.some((ev) => ev.pricingBand === "idle" || ev.pricingBand === "peak");
+    const hasChars = rows.some((ev) => (ev.sourceChars ?? 0) > 0);
+    const hasRemark = rows.some((ev) => eventRemark(ev) !== "—");
+    const sameDay = rows.length > 0 && rows.every((ev) => ev.date === rows[0].date);
+    return {
+      hasBand,
+      hasChars,
+      hasRemark,
+      sameDay,
+      columns: 7 + (hasChars ? 1 : 0) + (hasRemark ? 1 : 0),
+      collapsed: [
+        hasBand ? null : "时段",
+        hasChars ? null : "原文长度",
+        hasRemark ? null : "备注",
+      ].filter((item): item is string => Boolean(item)),
+    };
+  }, [sortedEvents]);
+
   return (
     <div className="stats-page" aria-hidden={!active}>
       <header className="stats-header">
-        <div>
-          <h1 className="stats-title">用量统计</h1>
-          <p className="stats-sub">
-            记录模型与翻译引擎的请求次数、Token 用量和费用。
-          </p>
-        </div>
+        <h1 className="stats-title">用量统计</h1>
+        <p className="stats-sub">
+          {range.from || "未选时间"}
+          {range.to && range.to !== range.from ? ` → ${range.to}` : ""}
+          {summary.length > 0 ? ` · ${summary.length} 个模型` : ""}
+        </p>
         <div className="stats-header-actions">
           <button
             type="button"
@@ -945,127 +1016,38 @@ export function StatsView({ active = true }: { active?: boolean }) {
 
       <div className="stats-kpis">
         <div className="stats-kpi">
-          <div className="stats-kpi-line">
-            <span className="stats-kpi-part is-main">
-              <span className="stats-kpi-part-label">请求</span>
-              <span className="stats-kpi-part-value">{totals.requests}</span>
-            </span>
-            <span className="stats-kpi-eq" aria-hidden="true">
-              =
-            </span>
-            <span className="stats-kpi-brace-group">
-              <span className="stats-kpi-brace" aria-hidden="true">
-                <svg viewBox="0 0 18 64" width="14" height="48">
-                  <path
-                    d="M14 2 C7 2 5 12 5 18 C5 26 2 29 2 32 C2 35 5 38 5 46 C5 52 7 62 14 62"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-              <span className="stats-kpi-parts">
-                <span className="stats-kpi-part is-ok">
-                  <span className="stats-kpi-part-label">成功</span>
-                  <span className="stats-kpi-part-value">{totals.ok}</span>
-                </span>
-                <span className="stats-kpi-part is-fail">
-                  <span className="stats-kpi-part-label">失败</span>
-                  <span className="stats-kpi-part-value">{totals.fail}</span>
-                </span>
-                <span className="stats-kpi-part is-supplement">
-                  <span className="stats-kpi-part-label">补充</span>
-                  <span className="stats-kpi-part-value">{totals.supplement}</span>
-                </span>
-              </span>
-              <span className="stats-kpi-brace" aria-hidden="true">
-                <svg viewBox="0 0 18 64" width="14" height="48">
-                  <path
-                    d="M4 2 C11 2 13 12 13 18 C13 26 16 29 16 32 C16 35 13 38 13 46 C13 52 11 62 4 62"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </span>
+          <span className="stats-kpi-label">请求</span>
+          <MetricValue value={totals.requests} suffix="次" />
+          <div className="stats-kpi-parts">
+            <MetricPart label="成功" value={totals.ok} tone="ok" />
+            <MetricPart label="失败" value={totals.fail} tone="fail" />
+            <MetricPart label="补充" value={totals.supplement} tone="supplement" />
           </div>
         </div>
         <div className="stats-kpi">
-          <div className="stats-kpi-line">
-            <span className="stats-kpi-part is-main">
-              <span className="stats-kpi-part-label">合计</span>
-              <span className="stats-kpi-part-value">{totals.tokens}</span>
-            </span>
-            <span className="stats-kpi-eq" aria-hidden="true">
-              =
-            </span>
-            <span className="stats-kpi-brace-group">
-              <span className="stats-kpi-brace" aria-hidden="true">
-                <svg viewBox="0 0 18 64" width="14" height="48">
-                  <path
-                    d="M14 2 C7 2 5 12 5 18 C5 26 2 29 2 32 C2 35 5 38 5 46 C5 52 7 62 14 62"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-              <span className="stats-kpi-parts is-token">
-                <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">缓存读</span>
-                  <span className="stats-kpi-part-value">
-                    {totals.cacheRead}
-                  </span>
-                </span>
-                <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">缓存写</span>
-                  <span className="stats-kpi-part-value">
-                    {totals.cacheWrite}
-                  </span>
-                </span>
-                <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">输入</span>
-                  <span className="stats-kpi-part-value">{totals.input}</span>
-                </span>
-                <span className="stats-kpi-part">
-                  <span className="stats-kpi-part-label">输出</span>
-                  <span className="stats-kpi-part-value">{totals.output}</span>
-                </span>
-              </span>
-              <span className="stats-kpi-brace" aria-hidden="true">
-                <svg viewBox="0 0 18 64" width="14" height="48">
-                  <path
-                    d="M4 2 C11 2 13 12 13 18 C13 26 16 29 16 32 C16 35 13 38 13 46 C13 52 11 62 4 62"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </span>
+          <span className="stats-kpi-label">Token 合计</span>
+          <MetricValue value={totals.tokens} compact />
+          <div className="stats-kpi-parts">
+            <MetricPart label="输入" value={totals.input} compact />
+            <MetricPart label="输出" value={totals.output} compact />
+            <MetricPart label="缓存读" value={totals.cacheRead} compact />
+            <MetricPart label="缓存写" value={totals.cacheWrite} compact />
           </div>
         </div>
         <div className="stats-kpi">
-          <span className="stats-kpi-label">
-            费用 ({currency === "USD" ? "$" : "¥"})
-          </span>
-          <span className="stats-kpi-value">
-            {formatMoney(totals.cost, currency)}
-          </span>
+          <span className="stats-kpi-label">费用（{currency === "USD" ? "$" : "¥"}）</span>
+          <span className="stats-kpi-value">{formatMoney(totals.cost, currency)}</span>
+          <div className="stats-kpi-parts">
+            <span className="stats-kpi-note">按 {currency} 计价，不做汇率换算</span>
+          </div>
         </div>
       </div>
 
       <section className="stats-panel stats-panel-charts">
         <div className="stats-chart-toolbar">
+          {!selectedActor && (
+            <h2 className="stats-section-title stats-chart-title">用量趋势</h2>
+          )}
           {selectedActor && (
             <div className="stats-chart-drill-head">
               <button
@@ -1128,53 +1110,40 @@ export function StatsView({ active = true }: { active?: boolean }) {
       <section className="stats-panel stats-table-wrap">
         <div className="stats-detail-header">
           <h2 className="stats-section-title">明细</h2>
-          <div className="stats-pagination" aria-label="明细分页">
-            <span>
-              {detailsLoading ? "加载中… · " : ""}共 {detailTotal.toLocaleString("zh-CN")} 条
-              {detailPages > 0 ? ` · 第 ${detailPage} / ${detailPages} 页` : ""}
+          {detailView.collapsed.length > 0 && (
+            <span className="stats-detail-hint">
+              已收起全空列：{detailView.collapsed.join(" / ")}
             </span>
-            <div className="stats-pagination-actions">
-              <button
-                type="button"
-                className="stats-btn"
-                disabled={detailsLoading || detailPage <= 1}
-                onClick={() => setDetailPage((page) => Math.max(1, page - 1))}
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                className="stats-btn"
-                disabled={detailsLoading || detailPages <= 0 || detailPage >= detailPages}
-                onClick={() =>
-                  setDetailPage((page) => Math.min(detailPages, page + 1))
-                }
-              >
-                下一页
-              </button>
-            </div>
-          </div>
+          )}
         </div>
         <div className="stats-table-scroll">
           <table className="stats-table">
             <thead>
               <tr>
-                <th>日期时间</th>
-                <th>功能</th>
-                <th>通道</th>
-                <th>引擎 / 模型</th>
-                <th>结果</th>
-                <th>时段</th>
-                <th>Tokens</th>
-                <th>费用</th>
-                <th data-tooltip="请求原文的字符数（免费引擎可参考用量）">原文长度</th>
-                <th>备注</th>
+                <th className="stats-col-time">时间</th>
+                <th className="stats-col-feature">功能</th>
+                <th className="stats-col-channel">通道</th>
+                <th className="stats-col-model">引擎 / 模型</th>
+                <th className="stats-col-result">结果</th>
+                <th className="stats-col-tokens">Tokens</th>
+                <th className="stats-col-cost">费用</th>
+                {detailView.hasChars && (
+                  <th
+                    className="stats-col-chars"
+                    data-tooltip="请求原文的字符数（免费引擎可参考用量）"
+                  >
+                    原文长度
+                  </th>
+                )}
+                {detailView.hasRemark && (
+                  <th className="stats-col-remark">备注</th>
+                )}
               </tr>
             </thead>
             <tbody>
               {sortedEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="stats-td-empty">
+                  <td colSpan={detailView.columns} className="stats-td-empty">
                     <EmptyState size="sm" title="暂无明细" />
                   </td>
                 </tr>
@@ -1206,15 +1175,33 @@ export function StatsView({ active = true }: { active?: boolean }) {
                   const supplement = isSupplementEvent(ev);
                   return (
                     <tr key={ev.id}>
-                      <td>
+                      <td className="stats-col-time">
                         <span className="stats-mono">
-                          {ev.date} {ev.time}
+                          {detailView.sameDay ? (
+                            ev.time
+                          ) : (
+                            <>
+                              <span className="stats-cell-date">{ev.date}</span>
+                              {ev.time}
+                            </>
+                          )}
                         </span>
+                        {detailView.hasBand && (
+                          <span
+                            className={
+                              "stats-band-tag is-" + (ev.pricingBand || "none")
+                            }
+                          >
+                            {bandLabel(ev.pricingBand)}
+                          </span>
+                        )}
                       </td>
-                      <td>{FEATURE_LABEL[ev.feature] ?? ev.feature}</td>
-                      <td data-tooltip={ev.apiHost || undefined}>{eventChannelLabel(ev)}</td>
-                      <td data-tooltip={ev.channel === "llm" && ev.model !== target ? ev.model : undefined}>{target}</td>
-                      <td>
+                      <td className="stats-col-feature" data-tooltip={FEATURE_LABEL[ev.feature] ?? ev.feature}>
+                        {FEATURE_LABEL[ev.feature] ?? ev.feature}
+                      </td>
+                      <td className="stats-col-channel" data-tooltip={ev.apiHost || undefined}>{eventChannelLabel(ev)}</td>
+                      <td className="stats-col-model" data-tooltip={ev.channel === "llm" && ev.model !== target ? ev.model : undefined}>{target}</td>
+                      <td className="stats-col-result">
                         <span
                           className={
                             supplement
@@ -1227,16 +1214,6 @@ export function StatsView({ active = true }: { active?: boolean }) {
                           {supplement ? "补充" : ev.ok ? "成功" : "失败"}
                         </span>
                       </td>
-                      <td>
-                        <span
-                          className={
-                            "stats-band-label is-" +
-                            (ev.pricingBand || "none")
-                          }
-                        >
-                          {bandLabel(ev.pricingBand)}
-                        </span>
-                      </td>
                       <TokenTotalCell
                         cacheRead={cacheR}
                         cacheWrite={cacheW}
@@ -1244,22 +1221,55 @@ export function StatsView({ active = true }: { active?: boolean }) {
                         output={output}
                         total={ev.totalTokens ?? 0}
                       />
-                      <td className="stats-mono">
+                      <td className="stats-col-cost stats-mono">
                         {formatMoney(ev.cost ?? 0, currency)}
                       </td>
-                      <td className="stats-mono">{ev.sourceChars ?? 0}</td>
-                      <td
-                        className="stats-reason"
-                        data-tooltip={remark === "—" ? undefined : remark}
-                      >
-                        <span className="stats-reason-text">{remark}</span>
-                      </td>
+                      {detailView.hasChars && (
+                        <td className="stats-col-chars stats-mono">
+                          {ev.sourceChars ?? 0}
+                        </td>
+                      )}
+                      {detailView.hasRemark && (
+                        <td
+                          className="stats-col-remark stats-reason"
+                          data-tooltip={remark === "—" ? undefined : remark}
+                        >
+                          <span className="stats-reason-text">{remark}</span>
+                        </td>
+                      )}
                     </tr>
                   );
                 })
               )}
             </tbody>
           </table>
+        </div>
+        <div className="stats-table-footer">
+          <span className="stats-pagination">
+            {detailsLoading ? "加载中… · " : ""}共{" "}
+            {detailTotal.toLocaleString("zh-CN")} 条
+            {detailPages > 0 ? ` · 第 ${detailPage} / ${detailPages} 页` : ""}
+          </span>
+          <div className="stats-pagination-actions">
+            <button
+              type="button"
+              className="stats-btn"
+              disabled={detailsLoading || detailPage <= 1}
+              onClick={() => setDetailPage((page) => Math.max(1, page - 1))}
+            >
+              上一页
+            </button>
+            <button
+              type="button"
+              className="stats-btn"
+              disabled={detailsLoading || detailPages <= 0 || detailPage >= detailPages}
+              onClick={() =>
+                setDetailPage((page) => Math.min(detailPages, page + 1))
+              }
+            >
+              下一页
+            </button>
+          </div>
         </div>
       </section>
     </div>
