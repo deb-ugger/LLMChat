@@ -69,6 +69,7 @@ type Props = {
     canClear: boolean;
     batchReason?: string;
     groupReason?: string;
+    referenceFlow?: { detail: string; label?: string; reason?: string; run?: () => void };
     start: () => void;
     startGroup: () => void;
     clear: () => Promise<void>;
@@ -270,6 +271,12 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
             onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label></div>
         </GameFlowParameterGroup>
+        {redraw.referenceFlow && <GameFlowParameterGroup kind="generation" title="本组参考重绘">
+          <p className="hint">{redraw.referenceFlow.detail}</p>
+          {redraw.referenceFlow.label && <button type="button" className="unity-btn is-secondary"
+            disabled={!!redraw.referenceFlow.reason} data-tooltip={redraw.referenceFlow.reason}
+            onClick={redraw.referenceFlow.run}>{redraw.referenceFlow.label}</button>}
+        </GameFlowParameterGroup>}
       </>)}
     </ol></div>
     {(progress && !statusLineStep || error) && <div className="game-flow-progress">

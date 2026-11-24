@@ -135,12 +135,13 @@ function MaskResizeControls({ box }: { box: MosaicBox }) {
   </g>;
 }
 
-function MosaicResultVersion({ version, letter, imageName, disabledReason, replacing, onApprove, onOpen }: {
+function MosaicResultVersion({ version, letter, imageName, disabledReason, replacing, asReference, onApprove, onOpen }: {
   version: ResultVersion; letter?: string; imageName: string;
-  disabledReason?: string; replacing: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
+  disabledReason?: string; replacing: boolean; asReference: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
 }) {
   const url = useImageBlobUrl(version.blob);
   const modelName = mosaicModelLabels[version.id];
+  const adoptLabel = asReference ? "采用为本组参考" : replacing ? "替换已采用图" : "采用此版";
   return <div className="game-mosaic-result-version">
     <GameImagePreviewFrame keyboardPane aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined} caption={<>
       <span>{letter && `${letter} · `}{modelName}</span>
@@ -150,15 +151,15 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, repla
         <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
       </div>}
     </GameImagePreviewFrame>
-    <button type="button" className="unity-btn" aria-label={(replacing ? "替换已采用图：" : "采用候选：") + modelName}
+    <button type="button" className="unity-btn" aria-label={adoptLabel + " · " + modelName}
       disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
-      onClick={() => onApprove(version.blob)}>{replacing ? "替换已采用图" : "采用此版"}</button>
+      onClick={() => onApprove(version.blob)}>{adoptLabel}</button>
   </div>;
 }
 
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
-  getViewerNeighbors, onViewerImage, onRedraw, onApprove, header, resultActions, notice, footer }: MosaicPreviewProps) {
+  getViewerNeighbors, onViewerImage, onRedraw, onApprove, referenceCandidate, header, resultActions, notice, footer }: MosaicPreviewProps) {
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
@@ -359,7 +360,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
           <MosaicResultVersion key={version.id} version={version}
             letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
-            imageName={active.name} replacing={activeSaved} disabledReason={busyReason} onApprove={onApprove}
+            imageName={active.name} replacing={activeSaved} asReference={version.blob === referenceCandidate}
+            disabledReason={busyReason} onApprove={onApprove}
             onOpen={editing ? undefined : () => openPreview(version.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
       </div>

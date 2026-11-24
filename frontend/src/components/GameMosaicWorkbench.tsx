@@ -25,7 +25,7 @@ import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
 import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/MosaicOriginalGallery";
-import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
+import { assignMosaicRedrawReference, canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   mosaicRedrawReferences, mosaicRedrawStyle, mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
@@ -844,7 +844,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onCandidate: (image, engine, blob, seconds) => {
         setCandidates(previous => {
           const current = previous[image.id]?.revision === image.sourceHash ? previous[image.id] : undefined;
-          return { ...previous, [image.id]: { revision: image.sourceHash,
+          const referenceGuide = plan.referenceGuide
+            ? { group: plan.targets[0].style.group, model: engine }
+            : current?.referenceGuide?.model === engine ? undefined : current?.referenceGuide;
+          return { ...previous, [image.id]: { revision: image.sourceHash, referenceGuide,
             values: { ...current?.values, [engine]: blob }, seconds: { ...current?.seconds, [engine]: seconds } } };
         });
         if (isPreviewing(image)) setPreferredResult(engine);
@@ -862,7 +865,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return preferences.refine === false || !!row.saved || !!row.manualBoxes || isReviewed(row);
   }
 
-  function generate(targets: UnityImage[], models: MosaicModel[]) {
+  function generate(targets: UnityImage[], models: MosaicModel[], referenceGuide = false) {
     const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
     if (!usableTargets.length) return;
     if (usableTargets.some(image => !canRedrawImage(resultFor(rows, image)))) {
@@ -872,11 +875,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const groups = new Map<string, RedrawPlan["targets"]>();
     for (const image of usableTargets) {
       const style = mosaicRedrawStyle(image, rows, redrawReferences);
+      if (referenceGuide) style.reference = undefined;
       const batch = groups.get(style.group) ?? [];
       batch.push({ image, boxes: resultFor(rows, image).boxes, keep: keepText(image, protect), pending: new Set(models), style });
       groups.set(style.group, batch);
     }
-    startRedraw({ targets: [...groups.values()].flat(), models, steps });
+    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide });
   }
 
   function redrawCurrent(models: MosaicModel[]) {
@@ -893,17 +897,35 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     generate([active], models);
   }
 
-  function approve(image: UnityImage, blob: Blob) {
-    void run("保存已采用去码图", async signal => {
+  function saveGroupReference(image: UnityImage) {
+    if (task.current || actionsDisabled || isBenchmarkRunning() || waitForDraftSave()) return;
+    try {
+      replaceRows(assignMosaicRedrawReference(latestRows.current, usable, image));
+      showAppNotice("已设为本组画风参考");
+    } catch (error) {
+      showAppNotice(error instanceof Error ? error.message : "无法保存画风参考", "error");
+    }
+  }
+
+  function approve(image: UnityImage, blob: Blob, asReference = false) {
+    void run(asReference ? "采用为本组参考" : "保存已采用去码图", async signal => {
       if (storage) await storage.save(image, blob, signal);
       else await saveCandidate(image, blob, signal);
       masks.clearUndo();
-      update(image, { saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
+      const adopted = { saved: true, checked: true, discardedHash: undefined, redrawError: undefined };
+      if (asReference) {
+        const current = latestRows.current;
+        const next = { ...current, [image.id]: { ...resultFor(current, image), ...adopted } };
+        replaceRows(assignMosaicRedrawReference(next, usable, image));
+      } else {
+        update(image, adopted);
+      }
       if (isPreviewing(image)) {
         setApproved({ id: image.id, revision: image.sourceHash, blob });
         setPreferredResult("saved");
       }
-      setProgress("已保存 · " + image.name);
+      setProgress((asReference ? "本组参考图 · " : "已保存 · ") + image.name);
+      if (asReference) showAppNotice("已采用并设为本组画风参考");
     });
   }
 
@@ -1169,6 +1191,36 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const redrawBlocked = testTitle ?? busyReason ?? draftReason;
   const batchReason = redrawBlocked ?? (!pausedRedraw && !listRedraw.length ? redrawSkipped || "先勾选已有蒙版的图片" : undefined);
   const groupRedrawReason = redrawBlocked ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
+  const guidedCandidate = active ? draftCandidates[active.id] : undefined;
+  const guideModel = guidedCandidate?.revision === active?.sourceHash && guidedCandidate?.referenceGuide?.group === group
+    ? guidedCandidate?.referenceGuide?.model : undefined;
+  const referenceCandidate = !reference && guideModel ? guidedCandidate?.values[guideModel] : undefined;
+  const guideRemaining = redrawGroup.filter(image => (reference || image.id !== active?.id) && !resultFor(rows, image).saved);
+  const guideReason = redrawBlocked ?? (pausedRedraw ? "请先继续或清理上一次重绘任务" : undefined);
+  const guideCandidateReason = guideReason ?? (!activeResult?.boxes.length ? "请先为当前图片保存蒙版"
+    : active && !canRedrawImage(resultFor(rows, active)) ? "请先完成当前图片的视觉复筛" : undefined);
+  const referenceFlow = !active || members.length < 2 ? undefined
+    : reference ? {
+      detail: "参考图：" + reference.name + " · 剩余可重绘 " + guideRemaining.length + " 张",
+      label: "按参考重绘本组剩余 · " + guideRemaining.length + " 张",
+      reason: guideReason ?? (!guideRemaining.length ? "请勾选本组其他已就绪的图片" : undefined),
+      run: () => generate(guideRemaining, [model]),
+    } : activeSaved ? {
+      detail: "当前图片已采用，可以直接设为本组参考。",
+      label: "设为参考并保存",
+      reason: guideReason,
+      run: () => saveGroupReference(active),
+    } : referenceCandidate ? {
+      detail: "请检查右侧候选，满意后点「采用为本组参考」。",
+      label: "重新生成参考候选",
+      reason: guideCandidateReason,
+      run: () => generate([active], [model], true),
+    } : {
+      detail: "先用当前图片生成无参考候选，确认后再重绘本组其他图片。",
+      label: "生成无参考候选",
+      reason: guideCandidateReason,
+      run: () => generate([active], [model], true),
+    };
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
@@ -1205,7 +1257,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       }} redraw={{
         status: stepRuns.redraw, targetCount: listRedraw.length, groupTargetCount: redrawGroup.length,
         remainingCount: redrawRemaining, paused: !!pausedRedraw, skipped: redrawSkipped, canClear: canClearRedraw,
-        batchReason, groupReason: groupRedrawReason,
+        batchReason, groupReason: groupRedrawReason, referenceFlow,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model]),
         startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
@@ -1234,7 +1286,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         getViewerNeighbors={getViewerNeighbors} onViewerImage={selectViewerImage}
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
         onRedraw={redrawCurrent}
-        onApprove={blob => { if (active) approve(active, blob); }}
+        onApprove={blob => { if (active) approve(active, blob, blob === referenceCandidate); }}
+        referenceCandidate={referenceCandidate}
         resultActions={active && <div className="unity-image-button-group game-mosaic-current-file-actions">
           <button type="button" className="unity-btn is-secondary" aria-label="撤销当前图片改动"
             disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => discardImageDraft(active)}>撤销改动</button>

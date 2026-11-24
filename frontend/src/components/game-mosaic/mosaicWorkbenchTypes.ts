@@ -16,7 +16,12 @@ export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnap
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 export type Results = Record<string, Result>;
 type Candidates = Partial<Record<MosaicModel, Blob>>;
-export type MosaicCandidate = { revision: string; values: Candidates; seconds: Partial<Record<MosaicModel, number>> };
+export type MosaicCandidate = {
+  revision: string;
+  values: Candidates;
+  seconds: Partial<Record<MosaicModel, number>>;
+  referenceGuide?: { group: string; model: MosaicModel };
+};
 export type MaskEdit = { image: UnityImage; boxes: MosaicBox[] };
 export type MaskUndoItem = {
   id: string;
@@ -29,6 +34,7 @@ export type RedrawPlan = {
   targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel>; style: RedrawStyle }[];
   models: MosaicModel[];
   steps: number;
+  referenceGuide?: boolean;
 };
 export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 export type MosaicStep = "screen" | "refine" | "redraw";
@@ -257,6 +263,7 @@ export type MosaicPreviewProps = {
   onViewerImage: (image: UnityImage) => void;
   onRedraw: (models: MosaicModel[]) => void;
   onApprove: (blob: Blob) => void;
+  referenceCandidate?: Blob;
   header: ReactNode;
   resultActions: ReactNode;
   notice: ReactNode;

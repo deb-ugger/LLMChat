@@ -337,6 +337,19 @@ export async function runMosaicRefine(plan: MosaicRefinePlan, signal: AbortSigna
   return !result.failed;
 }
 
+export function assignMosaicRedrawReference(rows: Results, images: readonly UnityImage[], reference: UnityImage) {
+  const chosen = resultFor(rows, reference);
+  if (!chosen.saved) throw new Error("请先采用去码图，再设为画风参考");
+  const group = chosen.group || reference.id;
+  const next = { ...rows };
+  for (const image of images) {
+    const row = resultFor(rows, image);
+    if ((row.group || image.id) !== group) continue;
+    next[image.id] = { ...row, group, manualGroup: true, reference: image.id === reference.id };
+  }
+  return next;
+}
+
 export function mosaicRedrawReferences(images: readonly UnityImage[], rows: Results) {
   const references = new Map<string, UnityImage>();
   for (const image of images) {
