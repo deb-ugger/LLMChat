@@ -1,7 +1,32 @@
 import type { MosaicBox } from "./gameMosaic";
 import type { MosaicLocalModels } from "./gameMosaicCandidateInputs";
 
+export const mosaicScreenZoomPolicy = "mosaic-screen-v4";
+const presenceProbeMargin = 0.15;
+
+export function mosaicPresenceProbes(bounds: MosaicBox, presenceScore: number, threshold: number, hasWeakBoxes: boolean): MosaicBox[] {
+  const [x, y, right, bottom] = bounds;
+  const w = right - x, h = bottom - y;
+  if (Math.min(w, h) < 96 || (!hasWeakBoxes && presenceScore < Math.max(.05, threshold - presenceProbeMargin))) return [];
+  const wide = Math.ceil(w * .6), high = Math.ceil(h * .6);
+  return [[x, y, right, y + high], [x, bottom - high, right, bottom],
+    [x, y, x + wide, bottom], [right - wide, y, right, bottom]];
+}
+
+export function mosaicPresenceProbeEvidence(scores: readonly number[], wholeScore: number, threshold: number, hasBoxes: boolean) {
+  const boundary = 0.10;
+  const strongest = Math.max(0, ...scores);
+  return {
+    positive: scores.length > 0 && strongest >= threshold + boundary,
+    clear: scores.length === 4 && !hasBoxes && wholeScore < threshold + boundary && strongest < Math.max(.05, threshold - boundary),
+  };
+}
+
 export type MosaicScreening = { localZoom: boolean; modelConcurrency?: number; presenceThreshold: number; boxThreshold: number; localModels?: MosaicLocalModels };
+export function usesMosaicPresenceProbes(options?: Partial<MosaicScreening>) {
+  return !!options?.localZoom && !options.localModels?.eva;
+}
+
 export const defaultMosaicScreening: Readonly<MosaicScreening> = {
   localZoom: false, presenceThreshold: 0.47, boxThreshold: 0.25,
 };

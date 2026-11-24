@@ -68,7 +68,7 @@ export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: s
     return { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes };
 }
 
-export const mosaicReviewPolicy = "visual-review-v6";
+export const mosaicReviewPolicy = "visual-review-v7";
 
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
   return JSON.stringify([mosaicReviewPolicy, settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
@@ -395,16 +395,19 @@ async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: 
   }
 
   const missingLocation = first.response.pixelation && !first.boxes.length && !confirmed.length;
+  const unverifiedNegative = !!proposed.review && !first.response.pixelation &&
+    (regions.length > 0 || !proposed.localClear || first.response.boxes.length > 0 || first.response.confidence < reviewConfidence);
   for (const box of focus) {
-    if (strong.includes(box) || first.response.pixelation || first.response.confidence < reviewConfidence) {
+    if (unverifiedNegative || strong.includes(box) || first.response.pixelation || first.response.confidence < reviewConfidence) {
       if (!hasConfirmation(box)) appendBoxes(uncertain, [box]);
     }
   }
-  const review = formatError || missingLocation || uncertain.some(box => !hasConfirmation(box)) ||
+  const review = formatError || unverifiedNegative || missingLocation || uncertain.some(box => !hasConfirmation(box)) ||
     (!focus.length && !!proposed.review && first.response.confidence < reviewConfidence);
   const boxes = removeContainedMosaicBoxes(confirmed);
   return review ? { boxes, signature, reviewBoxes: removeContainedMosaicBoxes([...confirmed, ...uncertain]),
-    review: formatError || "复筛证据不足或候选区域存在分歧，请人工复核" } : { boxes, signature };
+    review: formatError || (unverifiedNegative ? "初筛有疑点，复筛否定缺少足够的局部证据，请人工复核"
+      : "复筛证据不足或候选区域存在分歧，请人工复核") } : { boxes, signature };
 }
 
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {
@@ -510,7 +513,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           }
           const seed = mosaicReviewSeed(initialScreening(image));
           const proposal = seed?.review
-            ? { ...seed, reviewBoxes: scan.boxes.length ? scan.boxes : scan.reviewBoxes }
+            ? { ...seed, localClear: scan.localClear, reviewBoxes: scan.boxes.length ? scan.boxes : scan.reviewBoxes }
             : scan;
           const record = { source: image.sourceHash, hash, scan: { ...proposal, signature: [] } };
           savedProposals[image.id] = record;

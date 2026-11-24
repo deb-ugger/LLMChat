@@ -276,7 +276,7 @@ const RunComparePanel = memo(function RunComparePanel({
   const activeRunId = selectedRunId ?? rows.find(row => row.groupNumber === 1 && winners.has(row.runId))?.runId ?? rows[0]?.runId;
   const activeGroup = rows.find(row => row.runId === activeRunId)?.groupNumber ?? 1;
   const rated = rows.filter(row => row.groupNumber === activeGroup && row.score.displayScore !== null)
-    .sort((a, b) => compareMosaicScores(a.score, b.score));
+    .sort((a, b) => (b.score.displayScore ?? -1) - (a.score.displayScore ?? -1));
   const highest = rated[0], lowest = rated.at(-1);
   const current = runs.reduce<BenchmarkCompareRun | undefined>((latest, run) => {
     const time = (item?: BenchmarkCompareRun) => item?.performance.endedAt || item?.performance.beginTime || "";
@@ -333,12 +333,12 @@ const RunComparePanel = memo(function RunComparePanel({
     </dl>
     {report && <section className="benchmark-report-table-section" aria-label="数据集对照总结">
       <p>{report.title} · 定位框按 IoU ≥ 0.5 做最大一对一匹配</p>
-      <p id={titleId + "-f1"}>{screening ? "初筛按有码保留和无码剔除评分。" : "复筛按图级判定、框级匹配、复核与速度评分。交付覆盖采用固定人工框分母。"} F1 为明确图级判定的参考值。</p>
+      <p id={titleId + "-f1"}>{screening ? "初筛按有码保留和无码剔除评分。" : "复筛按图级判定、框级匹配、复核与速度评分。交付覆盖采用固定人工框分母。"} 排名先比较漏选，再比较漏框。F1 为明确图级判定的参考值。</p>
       <div className="benchmark-report-table" tabIndex={0} role="region" aria-label="运行结果表" aria-describedby={titleId + "-f1"}>
         <table>
           <thead>
             <tr><th scope="col">配置</th>{groups.size > 1 && <th scope="col">样本组</th>}<th scope="col">轮次</th>
-              <th scope="col" className="benchmark-report-score" aria-sort={sortState("score")}><button type="button" onClick={() => sortBy("score")}>{scoreTitle} <span aria-hidden="true">{sortMark("score")}</span></button></th>
+              <th scope="col" className="benchmark-report-score" aria-sort={sortState("score")}><button type="button" title="按漏选、漏框、分数的顺序排名" onClick={() => sortBy("score")}>{scoreTitle} <span aria-hidden="true">{sortMark("score")}</span></button></th>
               <th scope="col" className="benchmark-report-provisional">暂定与缺项</th>
               {!screening && <th scope="col" className="benchmark-report-delivery">交付覆盖</th>}
               <th scope="col" className="benchmark-report-ranking">最佳资格</th><th scope="col">运行状态</th>

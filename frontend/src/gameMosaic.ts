@@ -1,7 +1,7 @@
 import { scanMosaicPixels } from "./gameMosaicGrid";
 import { validateMosaicLocalModels } from "./gameMosaicCandidateInputs";
 import { openMosaicDetectorPool } from "./gameMosaicDetectorPool";
-import { defaultMosaicScreening, normalizeMosaicScreening, type MosaicScreening } from "./gameMosaicScreening";
+import { defaultMosaicScreening, mosaicScreenZoomPolicy, normalizeMosaicScreening, usesMosaicPresenceProbes, type MosaicScreening } from "./gameMosaicScreening";
 export { scanMosaicPixels } from "./gameMosaicGrid";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { runtimeAssetBase } from "./runtimeAssets";
@@ -13,7 +13,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -88,7 +88,7 @@ export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File,
   if (!screening.localModels && !screening.localZoom && screening.presenceThreshold === 0.47 && screening.boxThreshold === 0.25)
     return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : "anime-2d-presence-v2";
   const model = file ? [file.name, file.size, file.lastModified] : "anime-640";
-  return JSON.stringify(["mosaic-screen-v3", model, screening]);
+  return JSON.stringify([usesMosaicPresenceProbes(screening) ? mosaicScreenZoomPolicy : "mosaic-screen-v3", model, screening]);
 }
 
 export function matchesMosaicDetectorKey(recorded: string | undefined, current: string) {

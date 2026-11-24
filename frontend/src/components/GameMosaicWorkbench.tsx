@@ -308,10 +308,18 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const groups = new Map<MosaicStatus, UnityImage[]>();
     for (const status of mosaicStatusOrder) {
       const images = grouped.get(status);
-      if (images?.length) groups.set(status, images);
+      if (!images?.length) continue;
+      if (status === "review") {
+        const priority = (image: UnityImage) => {
+          const row = resultFor(rows, image);
+          return row.boxes.length ? (mosaicInitialScreening(row).boxes.length ? 0 : 1) : 2;
+        };
+        images.sort((a, b) => priority(a) - priority(b));
+      }
+      groups.set(status, images);
     }
     return { groups, ordered: [...groups].filter(([id]) => !collapsed[id]).flatMap(([id, images]) => images.map(image => ({ id, image }))) };
-  }, [visible, imageStatus, collapsed]);
+  }, [visible, imageStatus, rows, collapsed]);
   const refineChanges = useMemo(() => {
     const changes = new Map<MosaicStatus, { added: number; removed: number }>();
     for (const image of currentScope) {
@@ -750,19 +758,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   for (const image of currentScope) {
     const row = resultFor(rows, image);
     const initial = mosaicInitialScreening(row);
-    if (row.checked) screenTargets.push(image);
+    const needsScreening = row.checked || (initial.scanned && !row.manualChecked && !row.saved && !row.manualBoxes && !row.manualStatus);
+    if (needsScreening) screenTargets.push(image);
     if (initial.scanned && !initial.reason && matchesMosaicDetectorKey(initial.detector, detectorKey)) {
       screenedCount++;
       continue;
     }
     if (initial.scanned && !initial.reason) otherDetectorCount++;
     if (initial.reason) hasScreenFailure = true;
-    if (row.checked) remaining.push(image);
+    if (needsScreening) remaining.push(image);
   }
   const screenTotal = screenedCount + remaining.length;
 
-  function screen(restart = remaining.length === 0 || (screenedCount === 0 && otherDetectorCount > 0)) {
-    const targets = restart ? screenTargets : remaining;
+  function screen(checkedOnly = false) {
+    const restart = checkedOnly || remaining.length === 0 || (screenedCount === 0 && otherDetectorCount > 0);
+    const targets = checkedOnly ? screenTargets.filter(image => resultFor(rows, image).checked) : restart ? screenTargets : remaining;
     if (!targets.length) return;
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;

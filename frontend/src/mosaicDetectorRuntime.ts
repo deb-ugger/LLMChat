@@ -1,5 +1,5 @@
 import { scanMosaicPixels, sceneSignature } from "./gameMosaicGrid";
-import { normalizeMosaicScreening, mosaicZoomRegions, mergeMosaicDetections, mosaicBoxOverlap as overlap,
+import { normalizeMosaicScreening, mosaicZoomRegions, mosaicPresenceProbes, mosaicPresenceProbeEvidence, usesMosaicPresenceProbes, mergeMosaicDetections, mosaicBoxOverlap as overlap,
   type MosaicScreening, type MosaicDetection } from "./gameMosaicScreening";
 import { validateMosaicLocalModels, evaCensorIndexes, evaPixels, mrcnnPixels, mrcnnAnchors, mrcnnMetadata, mrcnnDetections, mrcnnResize } from "./gameMosaicCandidateInputs";
 import type { MosaicBox, MosaicScan, MosaicDevice } from "./gameMosaic";
@@ -306,6 +306,11 @@ export async function createMosaicDetectorRuntime(options: MosaicDetectorInit & 
     }
     const candidates = detections.map(item => item.box);
     const boxes = detections.filter(item => item.score >= boxThreshold).map(item => item.box);
+    const probes = options.initialScreening && usesMosaicPresenceProbes(screening) && !boxes.length
+      ? mosaicPresenceProbes(bounds, presenceScore, presenceThreshold, candidates.length > 0) : [];
+    const scores: number[] = [];
+    for (const probe of probes) scores.push(await classify(original, probe));
+    const localEvidence = mosaicPresenceProbeEvidence(scores, presenceScore, presenceThreshold, candidates.length > 0);
     const onOriginal = ([x0, y0, x1, y1]: MosaicBox): MosaicBox => [x0 + x, y0 + y, x1 + x, y1 + y];
     const classifierPositive = presenceScore >= presenceThreshold;
     let reviewBoxes = candidates;
@@ -320,9 +325,10 @@ export async function createMosaicDetectorRuntime(options: MosaicDetectorInit & 
           if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
       }
     }
-    return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore, presenceThreshold,
-      review: boxes.length && presenceScore<presenceThreshold ? "图片分类与区域定位模型存在分歧，请复核"
-        : !boxes.length && (reviewBoxes.length || presenceScore>=presenceThreshold)
+    return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore, presenceThreshold, localClear: localEvidence.clear,
+      review: boxes.length && !classifierPositive ? "图片分类与区域定位模型存在分歧，请复核"
+        : !boxes.length && localEvidence.positive ? "局部补查提示疑似遮挡，请复筛"
+        : !boxes.length && (reviewBoxes.length || classifierPositive)
           ? reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : "图片分类提示疑似遮挡，定位模型尚未给出区域"
           : undefined };
   };

@@ -78,9 +78,10 @@ export type MosaicRunScore = ReturnType<typeof scoreMosaicRun>;
 export function compareMosaicScores(a: MosaicRunScore, b: MosaicRunScore) {
   const primary = (b.displayScore ?? -1) - (a.displayScore ?? -1);
   const misses = (a.missRate ?? 1) - (b.missRate ?? 1);
-  if (primary || misses) return primary || misses;
+  const boxes = (b.delivery ?? 0) - (a.delivery ?? 0);
+  if (misses || boxes || primary) return misses || boxes || primary;
   if (a.stage === "mosaicScreen") return (a.negativeRetainedRate ?? 1) - (b.negativeRetainedRate ?? 1);
-  return (b.delivery ?? 0) - (a.delivery ?? 0) || (a.reviewRate ?? 1) - (b.reviewRate ?? 1) ||
+  return (a.reviewRate ?? 1) - (b.reviewRate ?? 1) ||
     (a.speed ?? Number.MAX_VALUE) - (b.speed ?? Number.MAX_VALUE);
 }
 

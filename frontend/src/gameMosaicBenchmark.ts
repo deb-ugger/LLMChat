@@ -4,6 +4,7 @@ import { mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./bench
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { mosaicReviewPolicy, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
+import { mosaicScreenZoomPolicy, usesMosaicPresenceProbes } from "./gameMosaicScreening";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { prepareMosaicReviewModel, requestGameModelJson } from "./gameModelRequest";
 import { gameStepSelections, measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
@@ -137,8 +138,11 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
   return async (config, settings, scope, record?: RecordImageBenchmarkOutcome, runId?: string, preceding?: ReadonlyMap<string, ImageBenchmarkOutcome>) => {
     const sources = new Map(images.map(image => [image.id, image.sourceHash]));
     const isReview = step === "mosaicRefine";
+    const options = config.mosaic!;
+    const screenPolicy = step === "mosaicScreen" && options.detector === "anime" && usesMosaicPresenceProbes(options.screening) ? mosaicScreenZoomPolicy : undefined;
     const saveResult = (id: string, outcome: ImageBenchmarkOutcome) => {
-      const row = { sampleId: id, sourceHash: sources.get(id), ...outcome, ...(isReview && { mosaicReviewPolicy }) };
+      const row = { sampleId: id, sourceHash: sources.get(id), ...outcome,
+        ...(isReview && { mosaicReviewPolicy }), ...(screenPolicy && { mosaicScreenPolicy: screenPolicy }) };
       record?.(id, row);
     };
     const recordScan = (image: UnityImage, scan: MosaicScan) => saveResult(image.id, {
@@ -147,9 +151,9 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       })],
       boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes, checked: !!scan.boxes.length && !scan.review, reason: scan.review,
     });
-    const options = config.mosaic!;
     const restored = new Map([...(recovered ?? []), ...(isReview ? [] : preceding ?? [])]
-      .filter(([, outcome]) => !isReview || outcome.mosaicReviewPolicy === mosaicReviewPolicy));
+      .filter(([, outcome]) => (!isReview || outcome.mosaicReviewPolicy === mosaicReviewPolicy) &&
+        (!screenPolicy || outcome.mosaicScreenPolicy === screenPolicy)));
     for (const [id, result] of restored) saveResult(id, result);
     const prior = restored.size;
     const pending = prior ? images.filter(image => !restored.has(image.id)) : images;
