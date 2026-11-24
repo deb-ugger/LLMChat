@@ -253,7 +253,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const lastReview = useRef<MosaicReviewSession | null>(null);
   const [refineRetries, setRefineRetries] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [, refreshElapsed] = useState(0);
-  const [progress, setProgress] = useState("");
+  const [{ text: progress, step: statusLineStep }, setStatusLine] = useState<{ text: string; step?: MosaicStep }>({ text: "" });
+  const setProgress = useCallback((text: string, step?: MosaicStep) => setStatusLine({ text, step }), []);
   const [error, setError] = useState("");
   const [source, setSource] = useState<ImagePreview>();
   const [approved, setApproved] = useState<ImagePreview>();
@@ -653,7 +654,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       setProgressStep, setStepRuns,
       setRunning: label => {
         masks.resetDrawing();
-        setBusy(label); setProgress(label); setError("");
+        setBusy(label); setProgress(label, step?.id); setError("");
       },
       beginUsage: (step, refresh) => {
         const samples = step.targets?.map(image => {
@@ -663,7 +664,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         }) ?? [];
         return beginMosaicStepUsage(gamePath, step.id, !!step.resume, refresh, { ...step, samples });
       },
-      setProgress, setError,
+      setProgress: text => setProgress(text, step?.id), setError,
       finish: () => {
         task.current = null; setBusy("");
         onBusy?.(false);
@@ -718,7 +719,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         read, prepareSources, refineBatch: refineMosaicBatch, readMosaicReviews, setRows, setRefineRetries,
         beginUsage: resume => beginMosaicStepUsage(gamePath, "refine", resume),
         gameStepSelections,
-        prepareRequest: (model, lanes) => prepareMosaicReviewModel(configuration, model, lanes, signal, detail => setProgress(detail)),
+        prepareRequest: (model, lanes) => prepareMosaicReviewModel(configuration, model, lanes, signal, detail => setProgress(detail, automatic ? undefined : "refine")),
         request: (model, prompt, image, signal, selection) =>
           requestGameModelJson(configuration, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
       });
@@ -730,7 +731,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     void run("复筛打码图片", (signal, report, usage) => runMosaicRefine({
       targets, rows, restart, initial, previousReview, checkedReviewScope, reviewSessionKey,
     }, signal, report, usage, {
-      replaceRows, clearReviews, resetRedraw, performReviews, setProgress, setError,
+      replaceRows, clearReviews, resetRedraw, performReviews, setProgress: text => setProgress(text, "refine"), setError,
       trackReview: session => { lastReview.current = session; },
     }), {id:"refine",targets,total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       parameters: formatMosaicParameters("mosaicRefine", {
@@ -765,7 +766,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       modelName: detectorKind !== "grid" && detectorFile ? detectorFile.name : detectorLabels[detectorKind],
       concurrency: preferences.concurrency, screening: preferences.screening,
     }, signal, report, usage, {
-      replaceRows, setRows, clearReviews, resetRedraw, read, prepareSources, loadMosaicDetector, createMosaicGridScanner, setProgress,
+      replaceRows, setRows, clearReviews, resetRedraw, read, prepareSources, loadMosaicDetector, createMosaicGridScanner, setProgress: text => setProgress(text, "screen"),
       onDevice: device => setStepRuns(previous => previous.screen ? { ...previous, screen: { ...previous.screen, device } } : previous),
     }), { id: "screen", targets, total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind],
       parameters: [
@@ -801,7 +802,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const total = plan.targets.length;
     const initial = plan.targets.filter(target => !target.pending.size).length;
     void run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
-      read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress, setError,
+      read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress: text => setProgress(text, "redraw"), setError,
       setPending: next => { pendingRedraw.current = next; },
       onCandidate: (image, engine, blob, seconds) => {
         setCandidates(previous => {
@@ -1119,10 +1120,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   return <section className="unity-offline-workbench unity-image-workbench game-mosaic-workbench" aria-label="图片去码" hidden={!paneVisible} style={hiddenStyle}>
     {confirmation.dialog}
     {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle}
-      busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason} onStop={id => stopMosaicBatch(task.current, id, setProgress)} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
+      busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason} onStop={id => stopMosaicBatch(task.current, id, text => setProgress(text, id))} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
       testing={testing} parametersLocked={disabled} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
         screen: cardMeasurement("screen"), refine: cardMeasurement("refine"), redraw: cardMeasurement("redraw"),
-      }} now={performance.now()} progress={progress} error={error}
+      }} now={performance.now()} progress={progress} statusLineStep={statusLineStep} error={error}
       screen={{
         status: screenStatus, summary: screenSummary, action: screenAction, targetCount: screenTargets.length, screenedCount,
         remainingCount: remaining.length, otherDetectorCount, canClear, detectorFile,

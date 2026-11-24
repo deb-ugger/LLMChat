@@ -27,6 +27,7 @@ type Props = {
   measurements: Record<MosaicStep, { formalMeasurement: StepPerformance; measured: StepPerformance }>;
   now: number;
   progress: string;
+  statusLineStep?: MosaicStep;
   error: string;
   screen: {
     status: StepRun;
@@ -74,7 +75,7 @@ type Props = {
 
 export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, actionsDisabled,
   onStop, preferences, changePreferences, detectorLabels, reviewModels, testing, parametersLocked, testTitle, benchmarkProgress,
-  measurements, now, progress, error, screen, refine, redraw, unresolvedRefineFailures, retryCount }: Props) {
+  measurements, now, progress, statusLineStep, error, screen, refine, redraw, unresolvedRefineFailures, retryCount }: Props) {
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
   const expansion = useGameFlowExpansion();
@@ -98,11 +99,25 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       (status?.started == null ? undefined : now - status.started);
     const expanded = expansion.isExpanded(benchmarkSteps[id], id === defaultStep);
     const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
+    const statusLine = !benchmark && statusLineStep === id ? progress : undefined;
+    const sample = running && id === "refine" ? statusLine?.match(/^.+? · (.+) · (?:候选区域 \d+\/\d+|整图) · 等待模型返回$/)?.[1] : undefined;
+    const batchElapsed = status?.batchElapsed ?? (status?.batchStarted == null ? undefined : now - status.batchStarted);
+    const remainingMs = running && status?.processed && batchElapsed != null && batchElapsed > 0 && processed != null
+      ? batchElapsed / status.processed * Math.max(0, status.total - processed) : undefined;
+    const successRate = id === "refine" && status && status.total > 0 ? 100 * status.completed / status.total : undefined;
+    const refineSummary = id === "refine" && status && state !== "pending" ? [
+      "成功 " + status.completed + " 张", "本轮失败 " + failed + " 张",
+      "未解决 " + unresolvedRefineFailures + " 张" + (retryCount > 0 ? "（重试中）" : ""),
+      status.prepared === undefined ? undefined : "候选已准备 " + status.prepared + "/" + status.total + " 张",
+    ].filter(Boolean).join(" · ") : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
       disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
-      progress={{ current: processed, total: status?.total || undefined, percent }}
+      progress={{ sample, current: processed, total: status?.total || undefined,
+        completed: status?.completed, unit: "张", percent, remainingMs, successRate,
+        configuration: running && status?.parameters?.length ? { current: 1, total: 1 } : undefined }}
+      statusLine={statusLine}
       runningParameters={status?.parameters} parametersLocked={busy || testing || parametersLocked}
       performance={expanded &&
         <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
@@ -110,12 +125,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         {id === "screen" && <span data-tooltip={status?.device?.reason}>{summary}{status?.device &&
           (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}</span>}
         {screeningMethodChanged && <span>其他筛选方式已有 {screen.otherDetectorCount} 张</span>}
-        {status && id === "refine" && (failed > 0 || unresolvedRefineFailures > 0) && <span>
-          成功 {status.completed} 张 · 本轮失败 {failed} 张 · 未解决的复筛失败 {unresolvedRefineFailures} 张
-          {retryCount > 0 && <>（{retryCount} 张重试中）</>}
-        </span>}
-        {status && id === "refine" && status.prepared !== undefined && status.prepared > (processed ?? 0) &&
-          <span>候选已准备 {status.prepared} / {status.total} 张</span>}
+        {refineSummary && <span className="game-flow-refine-summary">{refineSummary}</span>}
         {id !== "refine" && failed > 0 && <span>失败 {failed} 张</span>}
       </small>}
       actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={aborting} onClick={() => onStop(id)}>
@@ -195,8 +205,8 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label>
       </>)}
     </ol></div>
-    {(progress || error) && <div className="game-flow-progress">
-      {progress && <p className="game-mosaic-progress" role="status">{progress}</p>}
+    {(progress && !statusLineStep || error) && <div className="game-flow-progress">
+      {progress && !statusLineStep && <p className="game-mosaic-progress" role="status">{progress}</p>}
       {error && <p className="game-mosaic-error" role="alert">{error}</p>}
     </div>}
   </div>;

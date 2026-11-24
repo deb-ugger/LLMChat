@@ -201,7 +201,7 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
   const duration = segments.reduce((total, segment) => total + segment.ms, 0);
   if (!rows.length && !segments.length) return null;
   return <section className="game-step-metrics-group is-performance game-flow-performance" aria-label="性能">
-    <h4 className="game-step-metrics-label">{rows.length ? "模型性能" : "性能"} <small>只读</small></h4>
+    <h4 className="game-step-metrics-label">{rows.length ? "模型性能" : "性能"}</h4>
     {rows.length > 0 && <>
       <div className="game-benchmark-compare-table game-flow-performance-wide">
         <table style={{ tableLayout: "fixed" }}>
@@ -582,7 +582,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           onConfigure={openConfiguration}
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
           elapsed={elapsed}
-          progress={liveActivity?.progress}
+          progress={{ ...liveActivity?.progress, unit: imageFlow ? "张" : "条" }}
+          statusLine={liveActivity?.statusLine}
           parametersLocked={configurationLocked}
           runningParameters={formalSnapshot?.step === step.id ? formalSnapshot.parameters : undefined}
           details={!testMetrics && (liveActivity?.details ?? (!Object.keys(measured.models).length && !configuredModels.length && step.summary &&

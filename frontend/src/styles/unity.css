@@ -3767,9 +3767,21 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   background:color-mix(in srgb,var(--border-strong) 55%,transparent)}
 .game-flow-progress-bar>i{display:block;block-size:100%;border-radius:3px;
   background:linear-gradient(90deg,color-mix(in srgb,var(--flow-color) 65%,#8f7cf0),var(--flow-color));transition:inline-size .4s}
-.game-flow-progress-meta{display:flex;align-items:baseline;gap:10px;font-size:10px;color:var(--text-muted)}
+.game-flow-progress-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:10px;color:var(--text-muted)}
+.game-flow-progress-meta > span{white-space:nowrap}
 .game-flow-progress-meta b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
-.game-flow-eta{margin-inline-start:auto}
+.game-flow-collapsed-summary{justify-content:flex-end;overflow:hidden;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
+.game-flow-collapsed-summary b{color:var(--text);font-variant-numeric:tabular-nums}
+.game-flow-parameter-list{display:grid;gap:4px;margin:6px 0 0;font-size:var(--fs-caption)}
+.game-flow-parameter-list > div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:baseline;gap:8px}
+.game-flow-parameter-list dt{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.game-flow-parameter-list dd{margin:0;overflow-wrap:anywhere}
+.game-flow-model-rates > .game-flow-refine-summary{inline-size:100%;min-inline-size:0;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.game-flow-state-line{display:flex;align-items:flex-start;gap:8px;margin-block-start:10px;padding-block-start:8px;
+  border-block-start:1px solid var(--border);font-size:var(--fs-caption);color:var(--text-muted);overflow-wrap:anywhere}
+.game-flow-state-line > span:first-child{flex:none;inline-size:6px;block-size:6px;margin-block-start:.45em;border-radius:50%;background:var(--flow-color)}
+@keyframes game-flow-state-pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--flow-color) 28%,transparent)}}
+@media (prefers-reduced-motion:no-preference){.game-flow-state-line[data-active="true"] > span:first-child{animation:game-flow-state-pulse 1.6s ease-in-out infinite}}
 
 /* 可改区：暖色底，与上面的只读数据区分开 */
 .game-flow-editable{margin-block-start:10px;padding:9px 10px;border-radius:9px;

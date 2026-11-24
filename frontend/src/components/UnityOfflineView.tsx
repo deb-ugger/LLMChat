@@ -1640,6 +1640,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     elapsed: elapsed > 0 || elapsedOrigin !== undefined ? <WorkflowElapsed elapsed={elapsed} origin={elapsedOrigin} /> : undefined,
     actions: cardActions,
     progress: {
+      unit: activeStep === 2 ? imagePart ? "张" : "条" : "个",
       sample: scanResource?.[1],
       current: !redrawSummary && showProgressCount && visibleGeneration?.total ? visibleGeneration.completed : undefined,
       total: !redrawSummary && showProgressCount ? visibleGeneration?.total || undefined : undefined,

@@ -8,6 +8,10 @@ export type GameFlowProgress = {
   sample?: string;
   current?: number;
   total?: number;
+  completed?: number;
+  unit?: string;
+  configuration?: { current: number; total: number };
+  successRate?: number;
   count?: string;
   percent?: number | null;
   remainingMs?: number;
@@ -21,6 +25,7 @@ export type GameFlowActivity = {
   actions?: ReactNode;
   progress?: GameFlowProgress;
   details?: ReactNode;
+  statusLine?: string;
 };
 
 const expandedStorageKey = "llmchat.flow.expanded";
@@ -82,7 +87,7 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
   return <GameFlowCard {...props} disclosure={{ expanded, toggle: () => expansion.setExpanded(stepId, !expanded) }} />;
 }
 
-export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, performance,
+export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
   actions, onConfigure, body, configuration, runningParameters, parametersLocked, saveConfiguration, disclosure }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
@@ -97,25 +102,42 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
     benchmark.configIndex != null && benchmark.configCount != null
     ? `第 ${benchmark.round}/${benchmark.rounds} 轮 · 配置 ${benchmark.configIndex}/${benchmark.configCount}` : undefined;
+  const configCurrent = benchmark?.sampleCurrent;
+  const configTotal = benchmark?.sampleTotal;
+  const configElapsed = benchmark?.configElapsedMs;
+  const configCounts = configCurrent != null && configTotal != null;
+  const failures = benchmark?.performance?.failures;
+  const successful = configCurrent != null && failures != null ? Math.max(0, configCurrent - failures) : undefined;
   const activeProgress: GameFlowProgress | undefined = benchmark ? {
     sample: benchmark.sample,
-    current: benchmark.current,
-    total: benchmark.total,
-    percent: benchmark.percent,
-    remainingMs: benchmark.current > 0 && benchmark.elapsedMs > 0
-      ? benchmark.elapsedMs / benchmark.current * Math.max(0, benchmark.total - benchmark.current) : undefined,
+    current: configCounts ? configCurrent : undefined,
+    total: configCounts ? configTotal : undefined,
+    completed: successful,
+    percent: configCounts && configTotal > 0 ? 100 * configCurrent / configTotal : undefined,
+    configuration: benchmark.configIndex != null && benchmark.configCount != null
+      ? { current: benchmark.configIndex, total: benchmark.configCount } : undefined,
+    successRate: successful != null && configTotal != null && configTotal > 0 ? 100 * successful / configTotal : undefined,
+    remainingMs: configCurrent != null && configCurrent > 0 && configTotal != null && configElapsed != null && configElapsed > 0
+      ? configElapsed / configCurrent * Math.max(0, configTotal - configCurrent) : undefined,
     details: progress?.details,
   } : state === "running" ? progress ?? {} : undefined;
   const percent = activeProgress?.percent == null ? undefined : Math.min(100, Math.max(0, activeProgress.percent));
-  const configSamples = benchmark?.sampleCurrent != null && benchmark.sampleTotal ? benchmark.sampleTotal : undefined;
-  const configPercent = configSamples ? Math.min(100, Math.max(0, Math.round((benchmark?.sampleCurrent ?? 0) / configSamples * 100))) : undefined;
   const summaryProgress = activeProgress ?? progress;
   const summaryValue = summaryProgress?.percent ?? (summaryProgress?.current != null &&
     summaryProgress.total != null && summaryProgress.total > 0 ? 100 * summaryProgress.current / summaryProgress.total : undefined);
   const summaryPercent = !benchmark && state === "done" ? 100 : summaryValue != null && Number.isFinite(summaryValue)
     ? Math.round(Math.min(100, Math.max(0, summaryValue))) : state === "pending" || state === "waiting" ? 0 : undefined;
   const sample = summaryProgress?.sample;
-  const elapsedLabel = benchmark ? gameDuration(benchmark.elapsedMs) : elapsed;
+  const elapsedLabel = benchmark ? gameDuration(configElapsed ?? benchmark.elapsedMs) : elapsed;
+  const completed = summaryProgress?.completed ?? summaryProgress?.current;
+  const foldedCount = completed != null
+    ? completed.toLocaleString() + " " + (progress?.unit ?? "项")
+    : state === "done" && elapsedLabel != null ? "已完成" : undefined;
+  const cardStateLine = statusLine || benchmark?.detail;
+  const progressConfig = activeProgress?.configuration;
+  const successRate = activeProgress?.successRate;
+  const remainingMs = activeProgress?.remainingMs;
+  const hasCounts = activeProgress?.current != null && activeProgress.total != null;
   const status = benchmark ? benchmark.state === "paused" ? "测试已暂停" : "测试中" : label;
   return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}`} data-benchmark={benchmark?.state}>
     <div className="game-flow-step">
@@ -130,45 +152,43 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           onClick={onConfigure}>{title}</button> : <strong className="game-flow-title">{title}</strong>}
         {position && <span className="game-flow-position">{position}</span>}
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
-        {elapsedLabel != null && <span className="game-flow-elapsed">已用 {elapsedLabel}</span>}
+        {expanded && elapsedLabel != null && <span className="game-flow-elapsed">已用 {elapsedLabel}</span>}
         {actions && <div className="game-flow-actions">{actions}</div>}
       </header>
-      {!expanded && <div className="game-flow-progress-main"
-        style={{ fontSize: "var(--fs-caption)", color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden" }}>
-        <span>{summaryPercent === undefined ? "进度 —" : `${summaryPercent}%`}</span>
+      {!expanded && <div className="game-flow-progress-main game-flow-collapsed-summary">
         {sample && <span className="game-flow-sample" title={sample}>{sample}</span>}
+        <span>{foldedCount != null || elapsedLabel != null ? <>
+          {foldedCount && <b>{foldedCount}</b>}{foldedCount && elapsedLabel != null && " · "}{elapsedLabel}
+        </> : summaryPercent === undefined ? "进度 —" : summaryPercent + "%"}</span>
       </div>}
       <div id={detailsId} hidden={!expanded}>
         {activeProgress && <div className="game-flow-progress">
-          <div className="game-flow-progress-main">
+          {(activeProgress.sample || hasCounts || activeProgress.count) && <div className="game-flow-progress-main">
             {activeProgress.sample && <span className="game-flow-sample" data-tooltip={activeProgress.sample}>{activeProgress.sample}</span>}
-            {benchmark?.sampleCurrent != null && configSamples != null
-              ? <span className="game-flow-progress-count">{benchmark.sampleCurrent.toLocaleString()} <small>/ {configSamples.toLocaleString()}</small></span>
-              : activeProgress.current != null && activeProgress.total != null
-                ? <span className="game-flow-progress-count">{activeProgress.current.toLocaleString()} <small>/ {activeProgress.total.toLocaleString()}</small></span>
-                : activeProgress.count && <span className="game-flow-progress-count">{activeProgress.count}</span>}
-          </div>
-          {configPercent === undefined && percent === undefined ? <GameProgressBar label={title + "进度"} /> :
+            {activeProgress.current != null && activeProgress.total != null
+              ? <span className="game-flow-progress-count">{activeProgress.current.toLocaleString()} <small>/ {activeProgress.total.toLocaleString()}</small></span>
+              : activeProgress.count && <span className="game-flow-progress-count">{activeProgress.count}</span>}
+          </div>}
+          {percent === undefined ? <GameProgressBar label={title + "进度"} /> :
             <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
-              aria-valuemin={0} aria-valuemax={100} aria-valuenow={configPercent ?? percent}><i style={{ inlineSize: (configPercent ?? percent) + "%" }} /></div>}
-          {(benchmark?.sampleCurrent != null && benchmark.sampleTotal != null || activeProgress.remainingMs !== undefined) &&
-            <div className="game-flow-progress-meta">
-              {configSamples != null && benchmark?.sampleCurrent != null &&
-                <span>本配置进度 <b>{configPercent}%</b></span>}
-              {activeProgress.remainingMs !== undefined && <span className="game-flow-eta">预计剩余 <b>{gameDuration(activeProgress.remainingMs)}</b></span>}
-            </div>}
-          {activeProgress.details}
+              aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ inlineSize: percent + "%" }} /></div>}
+          {(progressConfig || successRate != null || remainingMs != null) && <div className="game-flow-progress-meta">
+            {progressConfig && <span>本配置 <b>{progressConfig.current}/{progressConfig.total}</b></span>}
+            {successRate != null && <span data-tooltip="已成功样本占本配置样本总数的比例。">成功率 <b>{successRate.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b></span>}
+            {remainingMs != null && <span>预计剩余 <b>{gameDuration(remainingMs)}</b></span>}
+          </div>}
         </div>}
+        {activeProgress?.details}
         {details}
         {performance}
         {body}
         {showActualParameters && <section id={settingsId} className="game-step-metrics-group game-flow-performance" role="region"
           aria-label={title + "运行参数"}>
-          <h5 className="game-step-metrics-label">运行参数 <small>只读</small></h5>
-          {actualParameters?.length ? <div className="game-benchmark-running-params">
+          <h5 className="game-step-metrics-label">运行参数</h5>
+          {actualParameters?.length ? <dl className="game-flow-parameter-list">
             {actualParameters.map(({ label, value, scope }, index) =>
-              <span className="kv" key={scope + ":" + label + ":" + index}><span>{label}</span><b data-tooltip={value}>{value}</b></span>)}
-          </div> : <p className="hint">{benchmarkActive && benchmark.phase === "prepare" ? "正在准备本配置参数…" : "暂无本次运行参数"}</p>}
+              <div key={scope + ":" + label + ":" + index}><dt title={label}>{label}</dt><dd>{value}</dd></div>)}
+          </dl> : <p className="hint">{benchmarkActive && benchmark.phase === "prepare" ? "正在准备本配置参数…" : "暂无本次运行参数"}</p>}
         </section>}
         {!locked && (onConfigure || configuration) && <section id={settingsId} className="game-flow-editable" role="region"
           aria-label={`${title}运行参数`} hidden={!configured}>
@@ -178,6 +198,9 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           </h5>
           <div className="game-flow-editable-fields">{configuration}</div>
         </section>}
+        {cardStateLine && <div className="game-flow-state-line" role="status" data-active={active || undefined}>
+          <span aria-hidden="true" /><span>{cardStateLine}</span>
+        </div>}
       </div>
     </div>
   </article>;
