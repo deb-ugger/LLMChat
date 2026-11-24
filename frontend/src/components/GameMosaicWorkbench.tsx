@@ -700,15 +700,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const isReviewed = (row: Result) => matchesMosaicReviewKey(row.refined, reviewKey) && !row.refineQuickExcluded && !row.refineError;
   const checkedReviewScope: UnityImage[] = [];
   const pendingReview: UnityImage[] = [];
-  let reviewedCount = 0;
+  let reviewedCount = 0, hasOlderReviews = false;
   for (const image of currentScope) {
     const row = resultFor(rows,image);
     if ((!row.scanned && !row.refined && !row.refineError) || row.saved || row.manualBoxes) continue;
-    if (row.checked) checkedReviewScope.push(image);
+    const olderReview = !!row.refined && !matchesMosaicReviewKey(row.refined, reviewKey);
+    const selectedForReview = row.checked || (olderReview && !row.manualChecked && !!row.beforeRefine?.checked);
+    if (selectedForReview) checkedReviewScope.push(image);
     if (isReviewed(row)) {
       if (row.checked || row.beforeRefine?.checked && !row.manualChecked ||
           previousReview?.images.get(image.id) === image.sourceHash) reviewedCount++;
-    } else if (row.checked) pendingReview.push(image);
+    } else if (selectedForReview) {
+      pendingReview.push(image);
+      if (olderReview) hasOlderReviews = true;
+    }
   }
   const reviewTotal = reviewedCount + pendingReview.length;
   async function performReviews(targets: readonly UnityImage[], signal: AbortSignal, report?: (completed: number, detail: string) => void,
@@ -736,7 +741,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }), {id:"refine",targets,total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       parameters: formatMosaicParameters("mosaicRefine", {
         ...preferences, refineConcurrency: Math.min(targets.length, mosaicRefineConcurrency(preferences.refineConcurrency)),
-      }), resume: !restart});
+      }), resume: !restart && (!hasOlderReviews || reviewedCount > 0)});
   }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const screenTargets: UnityImage[] = [];

@@ -11,6 +11,7 @@ export type ImageBenchmarkInput = {
 export type ImageBenchmarkOutcome = {
   category: string; boxes?: MosaicBox[]; checked?: boolean; reason?: string;
   status?: "完成" | "失败" | "跳过";
+  mosaicReviewPolicy?: string;
   regions?: { box: MosaicBox; text: string; translation?: string; reason?: string }[];
 };
 export type RecordImageBenchmarkOutcome = (id: string, outcome: ImageBenchmarkOutcome) => void;

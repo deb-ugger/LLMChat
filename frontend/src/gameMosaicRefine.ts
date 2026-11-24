@@ -1,6 +1,6 @@
-import { loadMosaicDetector, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, mosaicRefineConcurrency, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
+import { loadMosaicDetector, scanMosaic, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, mosaicRefineConcurrency, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
-import { mosaicInitialScreening, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "./gameMosaicStatus";
+import { mosaicInitialScreening, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot, type MosaicScreeningSnapshot } from "./gameMosaicStatus";
 import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
 
 export type MosaicReviewRequest = (model: string, prompt: string, image: string, signal: AbortSignal, lanes: number) => Promise<unknown>;
@@ -68,24 +68,29 @@ export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: s
     return { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes };
 }
 
+export const mosaicReviewPolicy = "visual-review-v6";
+
 export function mosaicReviewKey(settings: MosaicSettings, file?: File) {
-  return JSON.stringify(["visual-review-v5", settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
+  return JSON.stringify([mosaicReviewPolicy, settings.refineModel || "qwen3.5:latest", settings.refineGuardModel || "qwen3-vl:8b-instruct",
     file ? [file.name,file.size,file.lastModified] : "anime-640"]);
-}
-function formerMosaicReviewKey(key: string) {
-  return key.startsWith('["visual-review-v5",') ? key.replace('"visual-review-v5"', '"visual-review-v4"') : undefined;
 }
 
 export function matchesMosaicReviewKey(recorded: string | undefined, key: string) {
-  return !!recorded && (recorded === key || recorded === formerMosaicReviewKey(key));
+  return recorded === key;
+}
+
+export function mosaicReviewSeed(initial?: MosaicScreeningSnapshot): MosaicScan | undefined {
+  if (!initial?.scanned || initial.reason) return;
+  const boxes = [...initial.boxes].sort(([x, y, r, b], [xx, yy, rr, bb]) => x - xx || y - yy || r - rr || b - bb);
+  return initial.review
+    ? { boxes: [], review: initial.review, reviewBoxes: boxes, signature: [] }
+    : { boxes, signature: [] };
 }
 
 function readReviewCheckpoint(root: string, key: string): ReviewCheckpoint {
   const value = localStorage.getItem(checkpointPath(root));
   const saved = value ? JSON.parse(value) as ReviewCheckpoint : undefined;
-  const checkpoint = saved?.key === key ? saved : {
-    key, images: matchesMosaicReviewKey(saved?.key, key) ? saved!.images : {},
-  };
+  const checkpoint = saved?.key === key ? saved : { key, images: {} };
   // A checkpoint can be replaced when the review configuration changes.
   // Workbench results keep their original configuration and source identity.
   if (!root.startsWith("benchmark:")) {
@@ -156,38 +161,6 @@ async function imageCanvas(blob: Blob) {
   try {context.drawImage(bitmap,0,0);} finally {bitmap.close();}
   return {canvas,pixels:context.getImageData(0,0,canvas.width,canvas.height)};
 }
-function png(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error("无法准备复筛区域")),"image/png"));
-}
-
-async function proposals(blob: Blob, detector: Awaited<ReturnType<typeof loadMosaicDetector>>, signal: AbortSignal): Promise<MosaicScan> {
-  const result=await detector.scan(blob);
-  const {canvas,pixels}=await imageCanvas(blob),bounds=foreground(pixels);
-  if (!bounds) return result;
-  const regions: MosaicBox[]=[];
-  const area=(bounds[2]-bounds[0])*(bounds[3]-bounds[1]);
-  if (area<canvas.width*canvas.height*.5) regions.push(expand(bounds,canvas.width,canvas.height));
-  else if (!result.boxes.length && Math.max(canvas.width,canvas.height)>320) {
-    const side=Math.min(Math.min(canvas.width,canvas.height),Math.ceil(Math.max(canvas.width,canvas.height)*.6));
-    for (const x of new Set([0,canvas.width-side])) for (const y of new Set([0,canvas.height-side]))
-      regions.push([x,y,x+side,y+side]);
-  }
-  let presenceScore=result.presenceScore || 0;
-  const boxes=[...result.boxes],modelBoxes=[...(result.modelBoxes || [])],reviewBoxes=[...(result.reviewBoxes || [])];
-  for (const [left,top,right,bottom] of regions) {
-    signal.throwIfAborted();
-    const crop=document.createElement("canvas");crop.width=right-left;crop.height=bottom-top;
-    const context=crop.getContext("2d");
-    if (!context) throw new Error("无法准备局部放大复筛");
-    context.drawImage(canvas,left,top,crop.width,crop.height,0,0,crop.width,crop.height);
-    const local=await detector.scan(await png(crop));
-    presenceScore=Math.max(presenceScore,local.presenceScore || 0);
-    const mapped=(values: MosaicBox[] = [])=>values.map(([x0,y0,x1,y1]):MosaicBox=>[left+x0,top+y0,left+x1,top+y1]);
-    appendBoxes(boxes,mapped(local.boxes));appendBoxes(modelBoxes,mapped(local.modelBoxes));appendBoxes(reviewBoxes,mapped(local.reviewBoxes));
-  }
-  return {...result,boxes,modelBoxes,reviewBoxes,presenceScore,review:!boxes.length&&(reviewBoxes.length||presenceScore>=mosaicPresenceThreshold)?"候选区域需要视觉模型复筛确认":undefined};
-}
-
 const reviewSize = 512;
 const reviewConfidence = 0.85;
 type RegionReview = { pixelation: boolean; confidence: number; boxes: MosaicBox[] };
@@ -233,6 +206,27 @@ function localizedReviewBoxes(values: MosaicBox[], area: MosaicBox, content: Mos
   return boxes;
 }
 
+function mosaicReviewView(canvas: HTMLCanvasElement, area: MosaicBox) {
+  const crop = document.createElement("canvas");
+  crop.width = reviewSize;
+  crop.height = reviewSize;
+  const context = crop.getContext("2d");
+  if (!context) throw new Error("无法准备视觉复筛图片");
+  const areaWidth = area[2] - area[0], areaHeight = area[3] - area[1];
+  const scale = Math.min(reviewSize / areaWidth, reviewSize / areaHeight);
+  const width = Math.max(1, Math.round(areaWidth * scale)), height = Math.max(1, Math.round(areaHeight * scale));
+  const left = Math.floor((reviewSize - width) / 2), top = Math.floor((reviewSize - height) / 2);
+  context.fillStyle = "#727272";
+  context.fillRect(0, 0, reviewSize, reviewSize);
+  context.imageSmoothingEnabled = false;
+  context.drawImage(canvas, area[0], area[1], areaWidth, areaHeight, left, top, width, height);
+  const content: MosaicBox = [left, top, left + width, top + height];
+  const normalize = (box: MosaicBox) => box.map((coordinate, i) => Math.round(
+    (i % 2 ? top + (coordinate - area[1]) * height / areaHeight : left + (coordinate - area[0]) * width / areaWidth) * 1000 / reviewSize
+  ));
+  return { crop, content, normalize };
+}
+
 async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal,
   request: (prompt: string, image: string, position: number, total: number, local: boolean) => Promise<RegionReview>): Promise<MosaicScan> {
   const {canvas,pixels}=await imageCanvas(blob),bounds=foreground(pixels);
@@ -249,17 +243,8 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal
   for (const [index, candidate] of views.entries()) {
     signal.throwIfAborted();
     const area=expand(candidate || bounds,canvas.width,canvas.height);
-    const crop=document.createElement("canvas");crop.width=reviewSize;crop.height=reviewSize;
-    const context=crop.getContext("2d");if (!context) throw new Error("无法准备视觉复筛图片");
-    const areaWidth = area[2] - area[0], areaHeight = area[3] - area[1];
-    const scale = Math.min(reviewSize / areaWidth, reviewSize / areaHeight);
-    const width = Math.max(1, Math.round(areaWidth * scale)), height = Math.max(1, Math.round(areaHeight * scale));
-    const left = Math.floor((reviewSize - width) / 2), top = Math.floor((reviewSize - height) / 2);
-    context.fillStyle="#727272";context.fillRect(0,0,reviewSize,reviewSize);context.imageSmoothingEnabled=false;
-    context.drawImage(canvas,area[0],area[1],areaWidth,areaHeight,left,top,width,height);
-    const region = candidate?.map((coordinate, i) => Math.round(
-      (i % 2 ? top + (coordinate - area[1]) * height / areaHeight : left + (coordinate - area[0]) * width / areaWidth) * 1000 / reviewSize
-    ));
+    const { crop, content, normalize } = mosaicReviewView(canvas, area);
+    const region = candidate && normalize(candidate);
     const prompt = (region ? `只判断所给候选框 [${region.join(",")}] 内是否有遮挡，框外像素只供参考。` : "检查图中是否有遮挡。") +
       '识别人为叠加的成片马赛克或不透明遮挡条。自然纹理、轮廓线、高光、透明背景和灰色填充不是遮挡。' +
       '只返回 JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}。坐标按整张输入图（含填充）归一化到0到1000。' +
@@ -283,7 +268,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal
       }
       continue;
     }
-    const boxes = localizedReviewBoxes(response.boxes, area, [left, top, left + width, top + height], pixels, candidate);
+    const boxes = localizedReviewBoxes(response.boxes, area, content, pixels, candidate);
     if (!boxes.length) {
       if (candidate) uncertain.push(candidate);
       else unlocalizedReview = "视觉模型判为疑似遮挡，但未给出有效区域，请人工检查";
@@ -304,12 +289,88 @@ export async function reviewMosaicScreen(source: Blob, initial: MosaicScan, sign
   return visual.boxes.length || visual.review ? visual : initial;
 }
 
+async function reviewMosaicCandidates(blob: Blob, proposed: MosaicScan, signal: AbortSignal,
+  request: (prompt: string, image: string, detail: string) => Promise<RegionReview>): Promise<MosaicScan> {
+  const { canvas, pixels } = await imageCanvas(blob);
+  const bounds = foreground(pixels);
+  const signature = proposed.signature;
+  if (!bounds) return { boxes: [], signature };
+
+  // Only an initial positive with a localized detector box supplies independent confirmation.
+  const strong = proposed.review ? [] : removeContainedMosaicBoxes(proposed.boxes);
+  const regions: MosaicBox[] = [];
+  appendBoxes(regions, strong);
+  appendBoxes(regions, proposed.boxes);
+  appendBoxes(regions, proposed.reviewBoxes ?? []);
+  const focus = regions.slice(0, 3);
+  const deferred = regions.slice(focus.length);
+  const areaSize = ([x, y, right, bottom]: MosaicBox) => (right - x) * (bottom - y);
+  const enclosing = (boxes: MosaicBox[]): MosaicBox => boxes.reduce(([x, y, right, bottom], box) => [
+    Math.min(x, box[0]), Math.min(y, box[1]), Math.max(right, box[2]), Math.max(bottom, box[3]),
+  ], boxes[0]);
+  const area = expand(focus.length ? enclosing(focus) : bounds, pixels.width, pixels.height);
+  const inspect = async (view: MosaicBox, candidates: MosaicBox[], detail: string) => {
+    signal.throwIfAborted();
+    const { crop, content, normalize } = mosaicReviewView(canvas, view);
+    const instruction = candidates.length
+      ? "逐一核对以下候选区域，框外仅供参考：" + JSON.stringify(candidates.map(normalize)) + "。"
+      : "检查图中是否有遮挡。";
+    const prompt = instruction + "只报告有直接像素证据的人为马赛克或不透明遮挡条。自然纹理、轮廓线、高光和透明背景都不算遮挡。" +
+      '只返回 JSON {"pixelation":true或false,"boxes":[[x0,y0,x1,y1]],"confidence":0到1}。' +
+      "最多返回3个贴合遮挡的框，坐标按整张输入（含填充）归一化为0到1000。无法定位时返回空框。";
+    const response = await request(prompt, crop.toDataURL("image/png"), detail);
+    const boxes = response.pixelation ? localizedReviewBoxes(response.boxes, view, content, pixels) : [];
+    return { response, boxes };
+  };
+
+  const confirmed: MosaicBox[] = [];
+  const uncertain: MosaicBox[] = [...deferred];
+  const supports = (a: MosaicBox, b: MosaicBox) => intersect(a, b) >= .5;
+  const hasConfirmation = (box: MosaicBox) => confirmed.some(other => supports(other, box));
+  const record = ({ response, boxes }: Awaited<ReturnType<typeof inspect>>, candidates: MosaicBox[]) => {
+    for (const box of boxes) {
+      const supported = strong.some(candidate => candidates.includes(candidate) && supports(candidate, box));
+      appendBoxes(response.confidence >= reviewConfidence && supported ? confirmed : uncertain, [box]);
+    }
+  };
+
+  const first = await inspect(area, focus, focus.length ? "合并复核 · " + focus.length + " 个候选" : "整图复核");
+  record(first, focus);
+
+  // A closer crop can resolve a strong box lost in a wide, multi-candidate view.
+  const retry = first.response.pixelation && focus.find(box => strong.includes(box) && !hasConfirmation(box));
+  if (retry) {
+    const closer = expand(retry, pixels.width, pixels.height);
+    if (areaSize(closer) < areaSize(area) * .7) {
+      const second = await inspect(closer, [retry], "局部补定位");
+      record(second, [retry]);
+      if (hasConfirmation(retry)) {
+        const weak = uncertain.filter(box => !supports(box, retry));
+        uncertain.splice(0, uncertain.length, ...weak);
+      }
+    }
+  }
+
+  const missingLocation = first.response.pixelation && !first.boxes.length && !confirmed.length;
+  for (const box of focus) {
+    if (strong.includes(box) || first.response.pixelation || first.response.confidence < reviewConfidence) {
+      if (!hasConfirmation(box)) appendBoxes(uncertain, [box]);
+    }
+  }
+  const review = missingLocation || uncertain.some(box => !hasConfirmation(box)) ||
+    (!focus.length && !!proposed.review && first.response.confidence < reviewConfidence);
+  const boxes = removeContainedMosaicBoxes(confirmed);
+  return review ? { boxes, signature, reviewBoxes: removeContainedMosaicBoxes([...confirmed, ...uncertain]),
+    review: "复筛证据不足或候选区域存在分歧，请人工复核" } : { boxes, signature };
+}
+
 export async function refineMosaicBatch(images: readonly UnityImage[], options: {
   root: string; settings: MosaicSettings; signal: AbortSignal; modelFile?: File;
   read: (image:UnityImage,signal:AbortSignal)=>Promise<Blob>;
   prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<Record<string, string>>;
   request: MosaicReviewRequest; restart?: boolean; timingScope?: string;
   prepareRequest?: (model: string, lanes: number) => Promise<void>;
+  initialScreening?: (image: UnityImage) => MosaicScreeningSnapshot | undefined;
   onResult?: (image:UnityImage,scan:MosaicScan)=>void; onError?: (image:UnityImage,error:string)=>void;
   onProgress?: (completed:number,detail:string)=>void;
   onPreparation?: (prepared: number, total: number) => void;
@@ -319,7 +380,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const checkpoint = readReviewCheckpoint(options.root, key);
   const savedProposals = checkpoint.proposals ??= {};
   const regionPrefix = regionCheckpointPrefix(options.root);
-  const partialKey = JSON.stringify([key, "required-boxes-v1"]);
+  const partialKey = key;
   const saveCheckpoint = () => measureGameWork(options.timingScope, "saveMs", () =>
     localStorage.setItem(checkpointPath(options.root), JSON.stringify(checkpoint)));
   if (options.restart) {
@@ -339,6 +400,11 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const proposalCache = new Map<string, MosaicScan>();
   const errors = new Map<string, string>();
   const remaining: UnityImage[] = [];
+  const projectRows = options.initialScreening ? undefined : readMosaicRows(options.root);
+  const initialScreening = options.initialScreening ?? ((image: UnityImage) => {
+    const row = projectRows?.[image.id];
+    return row?.source === image.sourceHash ? mosaicInitialScreening(row) : undefined;
+  });
   for (const image of images) {
     const scan = completedReview(image);
     if (scan) {
@@ -347,8 +413,17 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
       continue;
     }
     const record = savedProposals[image.id];
-    if (record?.source === image.sourceHash) prepared.set(image.id, record);
-    else remaining.push(image);
+    if (record?.source === image.sourceHash) {
+      prepared.set(image.id, record);
+    } else {
+      const scan = mosaicReviewSeed(initialScreening(image));
+      if (scan && (!scan.review || scan.reviewBoxes?.length)) {
+        prepared.set(image.id, { source: image.sourceHash, hash: image.sourceHash, scan });
+        recordGameCacheHit(options.timingScope);
+      } else {
+        remaining.push(image);
+      }
+    }
   }
   let preparedThisRun = 0, unsaved = 0, failed = 0;
   const reportPreparation = () => {
@@ -380,13 +455,21 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
           const hash = await sha256(await blob.arrayBuffer());
           let scan = proposalCache.get(hash);
           if (!scan) {
-            detector ??= await loadMosaicDetector(options.modelFile, { signal, timingScope: options.timingScope });
-            const loaded = detector;
-            scan = await measureGameAsync(options.timingScope, "processingMs", () => proposals(blob, loaded, signal));
+            if (settings.detector === "grid") {
+              scan = await measureGameAsync(options.timingScope, "detectorMs", () => scanMosaic(blob));
+            } else {
+              detector ??= await loadMosaicDetector(options.modelFile, { signal, timingScope: options.timingScope,
+                initialScreening: true, screening: settings.screening, maxConcurrency: 1 });
+              scan = await detector.scan(blob);
+            }
             proposalCache.set(hash, scan);
             if (proposalCache.size > 64) proposalCache.delete(proposalCache.keys().next().value!);
           }
-          const record = { source: image.sourceHash, hash, scan: { ...scan, signature: [] } };
+          const seed = mosaicReviewSeed(initialScreening(image));
+          const proposal = seed?.review
+            ? { ...seed, reviewBoxes: scan.boxes.length ? scan.boxes : scan.reviewBoxes }
+            : scan;
+          const record = { source: image.sourceHash, hash, scan: { ...proposal, signature: [] } };
           savedProposals[image.id] = record;
           prepared.set(image.id, record);
           unsaved++;
@@ -421,7 +504,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   const groups=new Map<string,UnityImage[]>();
   for(const image of images) {
     if (results.has(image.id)) continue;
-    const learned=prepared.get(image.id)?.scan.boxes.length;
+    const proposed = prepared.get(image.id)?.scan;
+    const learned = !proposed?.review && proposed?.boxes.length;
     const model=learned ? settings.refineModel || "qwen3.5:latest" : settings.refineGuardModel || "qwen3-vl:8b-instruct";
     const group=groups.get(model);
     if(group)group.push(image);else groups.set(model,[image]);
@@ -435,15 +519,14 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
         const hasCandidates = !!(proposed.boxes.length || proposed.modelBoxes?.length || proposed.reviewBoxes?.length || proposed.review);
         const scan = !fullReview && !hasCandidates
           ? { boxes: [], signature: proposed.signature, quickExcluded: true }
-          : await reviewImage(await measureGameAsync(options.timingScope, "processingMs", () => options.read(image, signal)),
-            proposed, signal, async (prompt, crop, position, total, local) => {
+          : await reviewMosaicCandidates(await measureGameAsync(options.timingScope, "processingMs", () => options.read(image, signal)),
+            proposed, signal, async (prompt, crop, detail) => {
               const id = await sha256(new TextEncoder().encode(JSON.stringify([model, prompt, crop])));
               signal.throwIfAborted();
               let pending = requests.get(id);
               const reused = !!pending;
               if (!pending) {
-                const region = local ? "候选区域 " + position + "/" + total : "整图";
-                options.onProgress?.(results.size, model + " · " + image.name + " · " + region + " · 等待模型返回");
+                options.onProgress?.(results.size, model + " · " + image.name + " · " + detail + " · 等待模型返回");
                 pending = prepareRequest().then(() => {
                   signal.throwIfAborted();
                   return options.request(model, prompt, crop, signal, lanes);

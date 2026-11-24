@@ -1,10 +1,9 @@
 import type { ImageBenchmarkDetails, ImageBenchmarkInput, ImageBenchmarkOutcome, RecordImageBenchmarkOutcome } from "./benchmark/imageBenchmarkHistory";
 import { countMosaicResults } from "./benchmark/mosaicScoreCounts";
-import { orderedMosaicBoxes } from "./benchmark/mosaicScoreInputs";
 import { mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./benchmark/mosaicScore";
 import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
-import { mosaicReviewKey, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
+import { mosaicReviewPolicy, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { prepareMosaicReviewModel, requestGameModelJson } from "./gameModelRequest";
 import { gameStepSelections, measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
@@ -131,38 +130,15 @@ export function mosaicBenchmarkScoreSummary(stage: MosaicScoreStage, samples: re
     (score.speed === null ? "" : " · 每百张 " + score.speed.toFixed(1) + " 秒");
 }
 
-function seedRefineProposals(root: string, pending: readonly UnityImage[], workload: MosaicBenchmarkWorkload, options: MosaicSettings) {
-  // The review engine reads per-run proposals from the same checkpoint on resume.
-  const path = "llmchat-game-mosaic-refine:" + root;
-  const key = mosaicReviewKey(options, workload.modelFile);
-  const saved = JSON.parse(localStorage.getItem(path) || "null") as
-    { key: string; images: Record<string, { source: string }>; proposals?: Record<string, { source: string; hash: string; scan: MosaicScan }> } | null;
-  if (saved && saved.key !== key) return;
-  const checkpoint: NonNullable<typeof saved> = saved ?? { key, images: {} };
-  const proposals = checkpoint.proposals ??= {};
-  let changed = false;
-  for (const image of pending) {
-    const category = workload.categories?.[image.id];
-    if (category !== mosaicStatusLabels.candidate && category !== mosaicStatusLabels.review && category !== mosaicStatusLabels.clear) continue;
-    if (checkpoint.images[image.id]?.source === image.sourceHash || proposals[image.id]?.source === image.sourceHash) continue;
-    const boxes = orderedMosaicBoxes(workload.boxes[image.id]);
-    const scan = category === mosaicStatusLabels.review
-      ? { boxes: [], review: mosaicStatusLabels.review, reviewBoxes: boxes, signature: [] }
-      : { boxes, signature: [] };
-    proposals[image.id] = { source: image.sourceHash, hash: image.sourceHash, scan };
-    changed = true;
-  }
-  if (changed) localStorage.setItem(path, JSON.stringify(checkpoint));
-}
-
 export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage[], workload: MosaicBenchmarkWorkload,
   signal: AbortSignal, read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>,
   onProgress: (value: UnityProgress) => void, annotated?: AnnotatedSampleSet,
   recovered?: ReadonlyMap<string, ImageBenchmarkOutcome>): BenchmarkStepRunner {
   return async (config, settings, scope, record?: RecordImageBenchmarkOutcome, runId?: string, preceding?: ReadonlyMap<string, ImageBenchmarkOutcome>) => {
     const sources = new Map(images.map(image => [image.id, image.sourceHash]));
+    const isReview = step === "mosaicRefine";
     const saveResult = (id: string, outcome: ImageBenchmarkOutcome) => {
-      const row = { sampleId: id, sourceHash: sources.get(id), ...outcome };
+      const row = { sampleId: id, sourceHash: sources.get(id), ...outcome, ...(isReview && { mosaicReviewPolicy }) };
       record?.(id, row);
     };
     const recordScan = (image: UnityImage, scan: MosaicScan) => saveResult(image.id, {
@@ -172,7 +148,8 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes, checked: !!scan.boxes.length && !scan.review, reason: scan.review,
     });
     const options = config.mosaic!;
-    const restored = new Map([...(recovered ?? []), ...(step === "mosaicRefine" ? [] : preceding ?? [])]);
+    const restored = new Map([...(recovered ?? []), ...(isReview ? [] : preceding ?? [])]
+      .filter(([, outcome]) => !isReview || outcome.mosaicReviewPolicy === mosaicReviewPolicy));
     for (const [id, result] of restored) saveResult(id, result);
     const prior = restored.size;
     const pending = prior ? images.filter(image => !restored.has(image.id)) : images;
@@ -181,11 +158,16 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       if (!runId) throw new Error("缺少复筛测试编号");
       // Use the same isolated review checkpoint when a paused configuration resumes.
       const root = "benchmark:" + runId;
-      if (!annotated) seedRefineProposals(root, pending, workload, options);
       const selections = gameStepSelections(scope, step);
       let completed = prior;
       const result = await refineMosaicBatch(pending, {
         root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
+        initialScreening: image => {
+          if (annotated) return;
+          const category = workload.categories?.[image.id];
+          if (category === mosaicStatusLabels.candidate || category === mosaicStatusLabels.clear || category === mosaicStatusLabels.review)
+            return { scanned: true, boxes: workload.boxes[image.id] ?? [], review: category === mosaicStatusLabels.review ? category : undefined };
+        },
         prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal,
           detail => onProgress({ completed, total: images.length, detail })),
         request: (model, prompt, image, signal, lanes) => requestGameModelJson(settings, model, prompt, signal, image,
