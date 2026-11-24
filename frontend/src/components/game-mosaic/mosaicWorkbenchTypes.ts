@@ -267,6 +267,7 @@ export type MosaicPreviewProps = {
   getViewerNeighbors: () => { previous?: UnityImage; next?: UnityImage };
   onViewerImage: (image: UnityImage) => void;
   onRedraw: (models: MosaicModel[]) => void;
+  onOpenComfy: (original: Blob) => Promise<void>;
   onApprove: (blob: Blob) => void;
   referenceCandidate?: Blob;
   header: ReactNode;

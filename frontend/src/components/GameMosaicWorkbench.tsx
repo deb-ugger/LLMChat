@@ -11,7 +11,7 @@ import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffe
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishFormalGameStep, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type FormalRunSummary, type StepPerformance } from "../gameModelPerformance";
-import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicModel } from "../gameMosaic";
+import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, openMosaicComfyWorkflowEvent, prepareMosaicComfyWorkflow, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
@@ -993,6 +993,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     generate([active], models);
   }
 
+  async function openCurrentInComfy(source: Blob) {
+    if (!active || !activeResult) return;
+    try {
+      const { seed, reference } = mosaicRedrawStyle(active, rows, redrawReferences);
+      const workflow = await prepareMosaicComfyWorkflow({
+        name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed,
+        reference: reference && await readSaved(reference, new AbortController().signal),
+      });
+      window.dispatchEvent(new CustomEvent(openMosaicComfyWorkflowEvent, { detail: workflow }));
+    } catch (error) {
+      showAppNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
   function saveGroupReference(image: UnityImage) {
     if (task.current || actionsDisabled || isBenchmarkRunning() || waitForDraftSave()) return;
     try {
@@ -1385,7 +1399,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks}
         getViewerNeighbors={getViewerNeighbors} onViewerImage={selectViewerImage}
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
-        onRedraw={redrawCurrent}
+        onRedraw={redrawCurrent} onOpenComfy={openCurrentInComfy}
         onApprove={blob => { if (active) approve(active, blob, blob === referenceCandidate); }}
         referenceCandidate={referenceCandidate}
         resultActions={active && <div className="unity-image-button-group game-mosaic-current-file-actions">

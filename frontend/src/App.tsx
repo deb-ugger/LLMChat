@@ -17,6 +17,7 @@ import {
 import { DeferredPanel } from "./components/DeferredPanel";
 import { isTauri } from "@tauri-apps/api/core";
 import { lastUnityGameDir } from "./unityLastGame";
+import { openMosaicComfyWorkflowEvent, type MosaicComfyWorkflow } from "./gameMosaic";
 import { ChatView } from "./components/ChatView";
 const StyleRedraw = lazy(() => import("./components/StyleRedraw"));
 const ImageOcrView = lazy(() => import("./components/ImageOcrView").then(module => ({ default: module.ImageOcrView })));
@@ -90,6 +91,7 @@ export default function App() {
   useEffect(attachBenchmarkRunner, []);
   const [savedView] = useState(loadAppView);
   const [page, setPage] = useState<Page>(savedView?.page ?? "chat");
+  const [mosaicWorkflow, setMosaicWorkflow] = useState<MosaicComfyWorkflow>();
   const helpReturnPage = useRef<ModulePage>(savedView?.helpReturnPage ?? "chat");
   const [outputExpanded, setOutputExpanded] = useState(savedView?.outputExpanded ?? false);
   const startupInteracted = useRef(false);
@@ -133,6 +135,15 @@ export default function App() {
     return () => { cancelled = true; };
   }, [backendReady, savedView]);
   const ocrIncomingSeq = useRef(0);
+  useEffect(() => {
+    const open = (event: Event) => {
+      startupInteracted.current = true;
+      setMosaicWorkflow((event as CustomEvent<MosaicComfyWorkflow>).detail);
+      setPage("redraw");
+    };
+    window.addEventListener(openMosaicComfyWorkflowEvent, open);
+    return () => window.removeEventListener(openMosaicComfyWorkflowEvent, open);
+  }, []);
   useEffect(()=>{const text=()=>setPage("text"),image=()=>setPage("image");window.addEventListener("llmchat-open-game-text",text);window.addEventListener("llmchat-open-game-image",image);return()=>{window.removeEventListener("llmchat-open-game-text",text);window.removeEventListener("llmchat-open-game-image",image);};},[]);
 
 
@@ -556,7 +567,8 @@ export default function App() {
         <PagePanel feature="text" active={page === "text"}><TextTranslateView settings={settings} active={page === "text"} onLanguageChange={async (field, code) => {
             await saveSettingsPatch({ [field === "source" ? "textTranslateSource" : "textTranslateTarget"]: code });
           }} /></PagePanel>
-        <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw active={page === "redraw"} /></PagePanel>
+        <PagePanel feature="redraw" active={page === "redraw"}><StyleRedraw active={page === "redraw"}
+          mosaicWorkflow={mosaicWorkflow} /></PagePanel>
         <PagePanel feature="speech" active={page === "speech"}><SpeechView active={page === "speech"} /></PagePanel>
         <PagePanel feature="unity" active={page === "unity"}><UnityTranslateView
             active={page === "unity"}

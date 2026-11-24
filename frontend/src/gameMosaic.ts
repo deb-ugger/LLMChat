@@ -200,6 +200,18 @@ async function encoded(blob: Blob) {
 }
 
 type Weights = { model: string; clip: string; vae: string };
+type MosaicRedrawInput = {
+  source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
+};
+export type MosaicComfyWorkflow = { id: string; name: string; graph: Record<string, unknown> };
+export const openMosaicComfyWorkflowEvent = "llmchat-open-mosaic-comfy-workflow";
+
+async function mosaicRedrawDirectory() {
+  const directory = localStorage.getItem("llmchat-comfy-directory") || (await invoke<string[]>("find_redraw_directories"))[0];
+  if (!directory) throw new Error("请先在 AI 风格重绘中配置 ComfyUI");
+  return directory;
+}
+
 async function mosaicWeights(directory: string, model: MosaicModel) {
   const fields = ["model", "clip", "vae"] as const;
   let saved: Partial<Weights> = {};
@@ -216,14 +228,24 @@ async function mosaicWeights(directory: string, model: MosaicModel) {
   return profile;
 }
 
-export async function redrawMosaic(input: {
-  source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
+export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { name: string }): Promise<MosaicComfyWorkflow> {
+  if (!isTauri()) throw new Error("移动到 ComfyUI 需要桌面端");
+  const directory = await mosaicRedrawDirectory();
+  const weights = await mosaicWeights(directory, input.model);
+  const graph = await invoke<MosaicComfyWorkflow["graph"]>("run_style_redraw", {
+    directory, steps: input.steps, mode: "mosaic-workflow", image: await encoded(input.source), progress: new Channel<string>(),
+    regions: input.boxes.map(box => ({ box })),
+    profile: { ...weights, kind: input.model, referenceImage: input.reference && await encoded(input.reference),
+      keep: input.keep, seed: input.seed, name: input.name },
+  });
+  return { id: crypto.randomUUID(), name: input.name + " - " + mosaicModelLabels[input.model] + ".json", graph };
+}
+
+export async function redrawMosaic(input: MosaicRedrawInput & {
   signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean; benchmark?: boolean; timingScope?: string; promptId?: string;
 }) {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
-  const saved = localStorage.getItem("llmchat-comfy-directory");
-  const directory = saved || (await invoke<string[]>("find_redraw_directories"))[0];
-  if (!directory) throw new Error("请先在 AI 风格重绘中配置 ComfyUI");
+  const directory = await mosaicRedrawDirectory();
   const image = await encoded(input.source);
   const referenceImage = input.reference && await encoded(input.reference);
   input.signal.throwIfAborted();

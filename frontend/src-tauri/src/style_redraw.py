@@ -189,6 +189,12 @@ async def upload_image(session, reference, kind="temp", filename=None, subfolder
     return name
 
 
+def workflow_input_name(name):
+    stem = Path(str(name)).stem[:120]
+    stem = "".join(c if c not in '<>:"/\\|?*' and ord(c) >= 32 else "_" for c in stem).strip(" .")
+    return f"llmchat-{stem}.png" if stem else None
+
+
 def refine_transparent_lettering(draft, layer, protected):
     result = np.array(draft)
     model = np.asarray(layer, dtype=np.float32)
@@ -450,6 +456,72 @@ def match_mosaic_colors(crop, restored, generation, samples):
     return Image.fromarray(matched)
 
 
+def mosaic_workflow(source_name, reference_name, mask_name, steps, profile):
+    prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
+              "Preserve the pose, composition, outline, palette and the existing illustration style. "
+              "Match the colors, shading and brightness immediately around the repaired area in image 1. "
+              "Keep everything outside the mask unchanged.")
+    if mask_name is None:
+        prompt = prompt.replace("within the masked area of image 1", "in image 1").replace(
+            "outside the mask", "away from the pixelation")
+    if reference_name:
+        prompt += " Use image 2 for style and retain the local colors of image 1."
+    graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
+    if mask_name is not None:
+        sampler = graph["13"]["inputs"]
+        graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+        graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
+        graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler["latent_image"], "mask": ["18", 0]}}
+        sampler["latent_image"] = ["19", 0]
+    return graph
+
+
+def mosaic_reference_crop(reference, original, bounds):
+    with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as image:
+        ref_bounds = tuple(round(value * (image.width / original.width if index % 2 == 0 else image.height / original.height))
+                           for index, value in enumerate(bounds))
+        return image.crop(ref_bounds).convert("RGB")
+
+
+async def prepare_mosaic_workflow(original, data, steps):
+    profile = data["profile"]
+    if profile["kind"] not in ("2511", "turbo"):
+        raise ValueError("请选择可用的去码重绘模型")
+    masked = bool(data["regions"])
+    if masked:
+        bounds, crop, generation, blend, _ = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
+    else:
+        bounds = (0, 0, original.width, original.height)
+    reference = profile.get("referenceImage")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        await ready(session, Path(data["directory"]))
+        async def upload(image, filename=None):
+            return await upload_image(session, image, "input", filename, "llmchat-mosaic")
+
+        source_name = await upload(original, workflow_input_name(profile.get("name", "")))
+        mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
+        reference_name = await upload(mosaic_reference_crop(reference, original, bounds)) if reference else None
+        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile)
+        if masked:
+            left, top, _, _ = bounds
+            graph["20"] = {"class_type": "ImageCrop", "inputs": {
+                "image": ["4", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
+            image_input = "images.image_1" if profile["kind"] == "turbo" else "image"
+            graph["5"]["inputs"][image_input] = ["20", 0]
+            graph["21"] = {"class_type": "ImageScale", "inputs": {"image": ["14", 0], "upscale_method": "lanczos",
+                "width": crop.width, "height": crop.height, "crop": "disabled"}}
+            graph["22"] = {"class_type": "LoadImage", "inputs": {"image": await upload(blend)}}
+            graph["23"] = {"class_type": "ImageToMask", "inputs": {"image": ["22", 0], "channel": "red"}}
+            graph["24"] = {"class_type": "ImageCompositeMasked", "inputs": {
+                "destination": ["4", 0], "source": ["21", 0], "mask": ["23", 0], "x": left, "y": top, "resize_source": False}}
+            graph["15"]["inputs"]["images"] = ["24", 0]
+        if original.getchannel("A").getextrema() != (255, 255):
+            graph["25"] = {"class_type": "JoinImageWithAlpha", "inputs": {
+                "image": graph["15"]["inputs"]["images"], "alpha": ["4", 1]}}
+            graph["15"]["inputs"]["images"] = ["25", 0]
+        return graph
+
+
 async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in ("2511", "turbo"):
@@ -470,23 +542,8 @@ async def repair_mosaic(original, data, steps, workflow_times):
                 mask_name = await upload_image(session, noise_mask, subfolder=subfolder)
                 reference_name = None
                 if reference:
-                    with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
-                        ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
-                                           for index, value in enumerate(bounds))
-                        reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
-                prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
-                          "Preserve the pose, composition, outline, palette and the existing illustration style. "
-                          "Match the colors, shading and brightness immediately around the repaired area in image 1. "
-                          "Keep everything outside the mask unchanged.")
-                if reference_name:
-                    prompt += " Use image 2 for style and retain the local colors of image 1."
-                graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
-                sampler = graph["13"]["inputs"]
-                latent_key = "latent_image"
-                graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
-                graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
-                graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
-                sampler[latent_key] = ["19", 0]
+                    reference_name = await upload_image(session, mosaic_reference_crop(reference, original, bounds), subfolder=subfolder)
+                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile)
                 if subfolder:
                     graph["15"] = {"class_type": "SaveImage", "inputs": {
                         "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
@@ -1528,13 +1585,14 @@ async def run(data):
     with Image.open(io.BytesIO(base64.b64decode(data["image"], validate=True))) as source:
         original = source.convert("RGBA")
     if data["mode"] == "workflow-input":
-        stem = Path(str(data["profile"].get("name", ""))).stem[:120]
-        stem = "".join(c if c not in '<>:"/\\|?*' and ord(c) >= 32 else "_" for c in stem).strip(" .")
-        filename = f"llmchat-{stem}.png" if stem else None
+        filename = workflow_input_name(data["profile"].get("name", ""))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
             await ready(session, Path(data["directory"]))
             name = await upload_image(session, original, "input", filename)
         emit("result", {"name": name})
+        return
+    if data["mode"] == "mosaic-workflow":
+        emit("result", await prepare_mosaic_workflow(original, data, steps))
         return
     workflow_times = []
     if data["mode"] == "mosaic":

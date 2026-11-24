@@ -159,13 +159,14 @@ function MosaicResultVersion({ version, selector, imageName, disabledReason, rep
 
 export function MosaicPreview({ active, activeResult, visibleCount, paneVisible, activeSaved, candidate, source, approved,
   preferredResult, setPreferredResult, masks, actionsDisabled, busyReason, redrawReason, testTitle, model,
-  getViewerNeighbors, onViewerImage, onRedraw, onApprove, referenceCandidate, header, resultActions, notice, footer }: MosaicPreviewProps) {
+  getViewerNeighbors, onViewerImage, onRedraw, onOpenComfy, onApprove, referenceCandidate, header, resultActions, notice, footer }: MosaicPreviewProps) {
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
   const deselectMask = () => masks.selectBox(undefined, false);
   const previews = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<{ showResult: boolean; version?: string } | null>(null);
+  const [openingComfy, setOpeningComfy] = useState(false);
 
   const result = active && candidate?.revision === active.sourceHash ? candidate : undefined;
   const versions = result?.versions ?? [];
@@ -274,6 +275,13 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
           <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason}
             data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 为当前图生成一版候选", redrawReason || testTitle].filter(Boolean).join("\n")}
             onClick={() => onRedraw([model])}>根据当前工作流生成</button>
+          <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled || !original?.blob || openingComfy}
+            data-tooltip="在 AI 风格重绘的 ComfyUI 编辑器中打开当前原图和工作流"
+            onClick={() => {
+              if (!original?.blob) return;
+              setOpeningComfy(true);
+              void onOpenComfy(original.blob).finally(() => setOpeningComfy(false));
+            }}>{openingComfy ? "正在移入 ComfyUI…" : "移动到 ComfyUI"}</button>
           {resultActions}
         </div>
         <GameImagePreviewFrame keyboardPane caption={<>

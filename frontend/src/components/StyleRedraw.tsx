@@ -9,6 +9,7 @@ import { SearchableSelect } from "./SearchableSelect";
 import { ComfyWorkflowEditor } from "./ComfyWorkflowEditor";
 import { api } from "../api";
 import { savedVisualRedrawParameters, type ComfyRedrawParameters } from "../comfySavedWorkflow";
+import type { MosaicComfyWorkflow } from "../gameMosaic";
 import { loadStyleRedrawProfiles as savedProfiles, styleRedrawDirectoryKey as directoryKey, styleRedrawProfilesKey as profilesKey,
   styleRedrawLabels as labels, type StyleRedrawProfile as Profile, type StyleRedrawProfileId as ProfileId } from "../gameImagePlacement";
 import "../styleRedraw.css";
@@ -569,7 +570,9 @@ function Editor({ active, game, onBusy }: { active: boolean; game?: GameInput; o
   </section>;
 }
 
-function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: GameInput; onBusy?: (busy: boolean) => void }) {
+function RedrawWorkspace({ active, game, onBusy, mosaicWorkflow }: {
+  active: boolean; game?: GameInput; onBusy?: (busy: boolean) => void; mosaicWorkflow?: MosaicComfyWorkflow;
+}) {
   const [view, setView] = useState<"native" | "embedded">("native");
   const [visited, setVisited] = useState(false);
   const [target, setTarget] = useState<WebTarget>(() => localStorage.getItem(openPreferenceKey) === "browser" ? "browser" : "embedded");
@@ -581,13 +584,20 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
   const [surfaceError, setSurfaceError] = useState("");
   const editorHost = useRef<HTMLDivElement>(null);
   const surfaceQueue = useRef<Promise<void>>(Promise.resolve());
+  const importedWorkflow = useRef<string>(undefined);
   const gameSurface = !!game;
   const starting = useRef(false);
-  const syncEditor = (bounds: EditorBounds | null, close = false) => {
-    const next = surfaceQueue.current.then(() => invoke<void>("sync_redraw_editor", { game: gameSurface, bounds, close }));
+  const syncEditor = (bounds: EditorBounds | null, close = false, workflow?: MosaicComfyWorkflow) => {
+    const next = surfaceQueue.current.then(() => invoke<void>("sync_redraw_editor",
+      { game: gameSurface, bounds, close, workflow }));
     surfaceQueue.current = next.catch(() => {});
     return next;
   };
+  useLayoutEffect(() => {
+    if (!mosaicWorkflow) return;
+    setVisited(true);
+    setView("embedded");
+  }, [mosaicWorkflow]);
   useLayoutEffect(() => {
     const host = editorHost.current;
     if (!active || view !== "embedded" || menuVisible || !host) return;
@@ -601,9 +611,14 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
       const key = JSON.stringify(bounds);
       if (key === previous) return;
       previous = key;
-      void syncEditor(bounds).then(() => {
+      const workflow = bounds && mosaicWorkflow?.id !== importedWorkflow.current ? mosaicWorkflow : undefined;
+      if (workflow) importedWorkflow.current = workflow.id;
+      void syncEditor(bounds, false, workflow).then(() => {
         if (current) setSurfaceError("");
-      }).catch(error => { if (current) setSurfaceError(String(error)); });
+      }).catch(error => {
+        if (workflow && importedWorkflow.current === workflow.id) importedWorkflow.current = undefined;
+        if (current) setSurfaceError(String(error));
+      });
     };
     const schedule = () => { if (frame == null) frame = requestAnimationFrame(measure); };
     const observer = new ResizeObserver(schedule);
@@ -619,7 +634,7 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
       if (frame != null) cancelAnimationFrame(frame);
       void syncEditor(null).catch(() => {});
     };
-  }, [active, view, gameSurface, menuVisible]);
+  }, [active, view, gameSurface, menuVisible, mosaicWorkflow]);
   useEffect(() => {
     if (!visited) return;
     return () => { void syncEditor(null, true).catch(() => {}); };
@@ -682,7 +697,9 @@ function RedrawWorkspace({ active, game, onBusy }: { active: boolean; game?: Gam
   </div>;
 }
 
-export default function StyleRedraw({ active = true }: { active?: boolean }) { return <RedrawWorkspace active={active} />; }
+export default function StyleRedraw({ active = true, mosaicWorkflow }: { active?: boolean; mosaicWorkflow?: MosaicComfyWorkflow }) {
+  return <RedrawWorkspace active={active} mosaicWorkflow={mosaicWorkflow} />;
+}
 
 function RedrawDialog({ game, close }: { game: GameInput; close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);

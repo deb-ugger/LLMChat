@@ -47,7 +47,7 @@ fn is_comfy_origin(url: &tauri::Url) -> bool {
 }
 
 #[tauri::command]
-pub async fn sync_redraw_editor(app: tauri::AppHandle, game: bool, bounds: Option<RedrawEditorBounds>, close: bool) -> Result<(), String> {
+pub async fn sync_redraw_editor(app: tauri::AppHandle, game: bool, bounds: Option<RedrawEditorBounds>, close: bool, workflow: Option<Value>) -> Result<(), String> {
     let label = if game { "comfy-redraw-game" } else { "comfy-redraw-main" };
     let current = app.get_webview(label);
     if close {
@@ -74,15 +74,21 @@ pub async fn sync_redraw_editor(app: tauri::AppHandle, game: bool, bounds: Optio
     }
     let position = tauri::LogicalPosition::new(left, top);
     let size = tauri::LogicalSize::new(width, height);
+    let import = workflow.map(|workflow| format!(
+        "globalThis.__llmchatWorkflowImport = JSON.parse({});\n{}",
+        json!(workflow.to_string()), include_str!("style_redraw_import.js")));
     if let Some(view) = current {
         view.set_bounds(tauri::Rect { position: position.into(), size: size.into() }).map_err(|e| e.to_string())?;
-        return view.show().map_err(|e| e.to_string());
+        view.show().map_err(|e| e.to_string())?;
+        if let Some(script) = import { view.eval(script).map_err(|e| e.to_string())?; }
+        return Ok(());
     }
     let url = COMFY_URL.parse().map_err(|_| "ComfyUI 地址无效")?;
     let builder = tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::External(url))
         .disable_drag_drop_handler()
         .on_navigation(is_comfy_origin)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+    let builder = if let Some(script) = import { builder.initialization_script(script) } else { builder };
     window.add_child(builder, position, size)
         .map(|_| ()).map_err(|e| format!("无法嵌入 ComfyUI 编辑器：{e}"))
 }
