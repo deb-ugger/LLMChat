@@ -331,7 +331,9 @@ const RunComparePanel = memo(function RunComparePanel({
             {screening ? <><td>{row.evaluatedPositive - row.fn}</td><td>{row.fp + row.reviewNegative}</td></> : <td>{row.fp}</td>}
             <td>{row.review}</td><td>{row.unlabelledPositive}</td><td>{row.foundBoxes} / {row.evaluatedBoxes}</td><td>{row.extraBoxes}</td>
             {!screening && <td>有码 {percent(row.score.positiveCoverage)} · 无码 {percent(row.score.negativeCoverage)} · 框 {percent(row.score.boxCoverage)}</td>}
-            <td>{row.score.speed?.toFixed(1) ?? "—"}</td><td>{gameDuration(row.elapsedMs)}</td>
+            <td data-tooltip={row.score.speedUnavailableReason} tabIndex={row.score.speedUnavailableReason ? 0 : undefined}>
+              {row.score.speed?.toFixed(1) ?? "—"}
+            </td><td>{gameDuration(row.elapsedMs)}</td>
           </tr>)}</tbody>
         </table>
       </div>

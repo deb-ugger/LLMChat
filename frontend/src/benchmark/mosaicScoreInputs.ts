@@ -22,6 +22,11 @@ export function mosaicBoxCoverage(truth: MosaicTruth) {
   return truth.boxCoverage ?? (truth.partialBoxes === true ? "partial" : "unknown");
 }
 
+function canonicalMosaicTruth(truth: MosaicTruth): MosaicTruth {
+  const coverage = mosaicBoxCoverage(truth);
+  return { state: truth.state, boxes: orderedMosaicBoxes(truth.boxes), boxCoverage: coverage === "unknown" ? undefined : coverage };
+}
+
 export function mosaicTruthLookup(dataset?: AnnotatedSampleSet) {
   const byHash = new Map(dataset?.images.map(image => [image.sourceHash, image]));
   const byProject = new Map(dataset?.images.filter(image => image.projectImageId && image.projectSourceHash)
@@ -31,9 +36,7 @@ export function mosaicTruthLookup(dataset?: AnnotatedSampleSet) {
     if (!image) return null;
     if (image.width !== sample.width || image.height !== sample.height) throw new Error("标注样本尺寸与归档不一致：" + sample.file);
     const truth = image.annotation.mosaic;
-    if (!truth) return null;
-    const coverage = mosaicBoxCoverage(truth);
-    return { state: truth.state, boxes: orderedMosaicBoxes(truth.boxes), boxCoverage: coverage === "unknown" ? undefined : coverage };
+    return truth ? canonicalMosaicTruth(truth) : null;
   };
 }
 
@@ -44,7 +47,8 @@ export async function freezeMosaicInputs(samples: readonly ImageBenchmarkInput[]
   const inputs = [], truths = [];
   for (const sample of samples) {
     const seed = [sample.width, sample.height, sample.category, sample.checked, orderedMosaicBoxes(sample.boxes)];
-    const truth = sample.mosaicTruth;
+    // Preserve the v1 field order used when freezing, even after native JSON round trips.
+    const truth = sample.mosaicTruth ? canonicalMosaicTruth(sample.mosaicTruth) : sample.mosaicTruth;
     const manifest = JSON.stringify([seed, truth]);
     const previous = originals.get(sample.sourceHash);
     if (previous !== undefined && previous !== manifest) throw new Error("同一原图的标注或初筛种子冲突：" + sample.file);

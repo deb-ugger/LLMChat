@@ -18,6 +18,11 @@ export function scoreMosaicRun(stage: MosaicScoreStage, row: ScoreInput) {
   const hasWallClock = row.timing === mosaicWallClock;
   const speed = healthy && hasWallClock && Number.isFinite(row.elapsedMs) && row.elapsedMs > 0
     ? row.elapsedMs / (10 * row.validRuns) : null;
+  const failedImages = Math.max(row.runFailures, row.failed);
+  const speedUnavailableReason = speed !== null ? undefined : row.issues[0] ||
+    (failedImages > 0 ? "有 " + failedImages + " 张图片处理失败" : !healthy ? "本轮未完整成功" :
+      row.timing === "segment-only" ? "仅有续跑段计时" : row.timing === "reused-output" ? "复用归档输出" :
+        !hasWallClock ? "缺完整计时标记" : "用时无效");
   const labelled = row.evaluatedPositive + row.evaluatedNegative;
   const definite = row.tp + row.tn + row.fp + row.fn;
   const delivery = fraction(row.foundBoxes, row.expectedBoxes);
@@ -25,7 +30,7 @@ export function scoreMosaicRun(stage: MosaicScoreStage, row: ScoreInput) {
   const positiveCoverage = fraction(row.tp + row.fn, row.confirmedPositive);
   const negativeCoverage = fraction(row.tn + row.fp, row.confirmedNegative);
   const items: MosaicMetric[] = [];
-  const metric = (label: string, weight: number, numerator: number, denominator: number, reason: string) => {
+  const metric = (label: string, weight: number, numerator: number, denominator: number, reason?: string) => {
     const ratio = fraction(numerator, denominator);
     items.push({ label, weight, numerator, denominator, ratio, missing: ratio === null ? reason : undefined });
   };
@@ -39,9 +44,7 @@ export function scoreMosaicRun(stage: MosaicScoreStage, row: ScoreInput) {
     metric("少多框", 8, row.completeMatchedBoxes, row.completePredictedBoxes,
       row.completeEvaluatedImages ? "完整标注子集没有自动输出框" : "缺可评的完整标注");
     metric("少人工复核", 12, labelled - row.review, labelled, "缺可评的已确认标注");
-    metric("速度", 3, speed === null ? 0 : Math.min(100, speed), speed ?? 0, !healthy ? "轮次未健康完成" :
-      row.timing === "segment-only" ? "仅有续跑段计时" : row.timing === "reused-output" ? "复用归档输出" :
-        !hasWallClock ? "计时协议不明" : "用时无效");
+    metric("速度", 3, speed === null ? 0 : Math.min(100, speed), speed ?? 0, speedUnavailableReason);
   }
   const effectiveWeight = items.reduce((sum, item) => sum + (item.ratio === null ? 0 : item.weight), 0);
   const score = effectiveWeight && (stage === "mosaicScreen" || definite)
@@ -63,7 +66,7 @@ export function scoreMosaicRun(stage: MosaicScoreStage, row: ScoreInput) {
   return {
     stage, items, score, displayScore: score === null ? null : roundScore(score), effectiveWeight,
     provisional: effectiveWeight < 100 || !row.freeze, eligible: !rankingReasons.length, rankingReasons, group,
-    delivery, boxCoverage, positiveCoverage, negativeCoverage, speed,
+    delivery, boxCoverage, positiveCoverage, negativeCoverage, speed, speedUnavailableReason,
     missRate: fraction(row.fn, row.evaluatedPositive),
     reviewRate: fraction(row.review, labelled),
     negativeRetainedRate: fraction(row.fp + row.reviewNegative, row.evaluatedNegative),
