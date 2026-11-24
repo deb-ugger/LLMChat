@@ -5,6 +5,7 @@ import { mosaicProcessingError, mosaicStatusLabels, type MosaicStatus } from "..
 import type { UnityImage } from "../../unityOffline";
 import { GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImageSplit, type GameImageFilters } from "../GameImageBrowserLayout";
 import { SearchHighlight } from "../SearchHighlight";
+import { MosaicImageBadges } from "./MosaicImageBadges";
 import { MosaicOriginalSelectionTarget } from "./MosaicOriginalGallery";
 import type { MosaicGroupMenu, RefineMovement, Result } from "./mosaicWorkbenchTypes";
 
@@ -37,6 +38,7 @@ type Props = {
   onBrowsePreviewKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   actionsDisabled: boolean;
   getRow: (image: UnityImage) => Result;
+  isAdopted: (image: UnityImage) => boolean;
   draftChanges: (image: UnityImage) => { checked: boolean; mask: boolean };
   imageStatus: (image: UnityImage) => MosaicStatus;
   refineMovementFor: (row: Result) => RefineMovement | undefined;
@@ -52,7 +54,7 @@ type Props = {
 
 export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
-  listView, setListView, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
+  listView, setListView, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, isAdopted, draftChanges, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
   const { query, needle, scope, imageFilters, failuresOnly } = filters;
   const browseOriginals = listView === "browse";
@@ -190,20 +192,25 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                 const row = getRow(image);
                 const edited = draftChanges(image);
                 const state = imageStatus(image);
-                const status = mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
+                const status = state === "confirmed" ? "" : mosaicStatusLabels[state] + (state === "candidate" || state === "refinedCandidate" ? ` · ${row.boxes.length} 区域` : "");
                 const movement = refineMovementFor(row);
                 const change = movement && movement.from !== movement.to
-                  ? " · 复筛 " + mosaicStatusLabels[movement.from] + " → " + mosaicStatusLabels[movement.to] : "";
+                  ? "复筛 " + mosaicStatusLabels[movement.from] + " → " + mosaicStatusLabels[movement.to] : "";
                 const failure = mosaicProcessingError(row);
                 const retrying = !!row.refineError && isRefineRetrying(image);
-                const detail = `${image.width} × ${image.height} · ${retrying ? "重试中 · 上次" + failure : row.manualStatus ? [status, failure].filter(Boolean).join(" · ") : failure || status + change}`;
+                const details = retrying ? ["重试中 · 上次" + failure] : row.manualStatus ? [status, failure]
+                  : failure ? [failure] : [status, change];
+                const detail = [`${image.width} × ${image.height}`, ...details].filter(Boolean).join(" · ");
                 return <li key={image.id} data-mosaic-item={image.id} className={`unity-image-item${image.id === active?.id ? " is-selected" : ""}${state === "failed" ? " has-error" : ""}${edited.checked ? " is-mosaic-check-draft" : ""}`}>
                   <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={actionsDisabled}
                     onChange={event => setMosaicChecked([image], event.target.checked)} />
                   <button type="button" data-mosaic-row={image.id} aria-current={image.id === active?.id || undefined} data-tooltip={image.file + "\n" + detail}
                     onClick={() => selectPreview(image.id)}
                     onContextMenu={event => openGroupMenu(event, row.group)}>
-                    <strong><SearchHighlight text={image.name} query={needle} /></strong>
+                    <span className="game-mosaic-image-heading">
+                      <strong><SearchHighlight text={image.name} query={needle} /></strong>
+                      <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
+                    </span>
                     <small>{detail}</small>
                     {edited.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
                   </button>

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { mosaicModelLabels, type MosaicBox } from "../../gameMosaic";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
 import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageView, type GameImageViews } from "../GameImageViewer";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
+
+const redrawModels = Object.keys(mosaicModelLabels) as MosaicModel[];
 
 function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
   width: number; editing: boolean; onBackground: () => void; children: ReactNode;
@@ -165,6 +167,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const canSelectMask = !actionsDisabled && tool !== "add";
   const deselectMask = () => masks.selectBox(undefined, false);
   const previews = useRef<HTMLDivElement>(null);
+  const redrawMenuId = useId();
+  const redrawMenu = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<{ showResult: boolean; version?: string } | null>(null);
   const [openingComfy, setOpeningComfy] = useState(false);
 
@@ -270,11 +274,20 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <div className="unity-image-actions game-mosaic-results-bar">
           <strong>去码结果</strong>
-          {activeSaved && <button type="button" className="unity-btn" disabled={!!redrawReason} data-tooltip={redrawReason}
-            onClick={() => onRedraw([model])}>重新绘制</button>}
-          <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason}
-            data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 为当前图生成一版候选", redrawReason || testTitle].filter(Boolean).join("\n")}
-            onClick={() => onRedraw([model])}>根据当前工作流生成</button>
+          <div key={active.id} className="game-mosaic-redraw-split" role="group" aria-label="重绘当前图">
+            <button type="button" className="unity-btn" disabled={!!redrawReason}
+              data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 为当前图生成一版候选", redrawReason || testTitle].filter(Boolean).join("\n")}
+              onClick={() => onRedraw([model])}>重绘</button>
+            <button type="button" className="unity-btn" aria-label="选择重绘工作流"
+              disabled={!!redrawReason} data-tooltip={redrawReason} popoverTarget={redrawMenuId}>▾</button>
+            {!redrawReason && <div id={redrawMenuId} ref={redrawMenu} popover="auto" role="group" aria-label="重绘工作流"
+              className="unity-description-menu game-mosaic-redraw-menu">
+              {redrawModels.map(workflow => <button key={workflow} type="button" className="unity-description-option" onClick={() => {
+                redrawMenu.current?.hidePopover();
+                onRedraw([workflow]);
+              }}>{mosaicModelLabels[workflow]}</button>)}
+            </div>}
+          </div>
           <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled || !original?.blob || openingComfy}
             data-tooltip="在 AI 风格重绘的 ComfyUI 编辑器中打开当前原图和工作流"
             onClick={() => {

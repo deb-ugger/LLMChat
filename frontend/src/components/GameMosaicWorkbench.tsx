@@ -25,6 +25,7 @@ import { SearchHighlight } from "./SearchHighlight";
 import { UnityDescriptionSelect } from "./UnityDescriptionSelect";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicGroupCollapsed, mosaicGroupPageSize, type MosaicListGroup, type MosaicListView } from "./game-mosaic/MosaicGroupTree";
+import { MosaicImageBadges } from "./game-mosaic/MosaicImageBadges";
 import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/MosaicOriginalGallery";
 import { assignMosaicRedrawReference, canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   existingMosaicRedrawReferences, mosaicRedrawReferences, mosaicRedrawStyle, mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
@@ -511,6 +512,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const saved = selected.filter(image => resultFor(rows, image).saved);
   const included = saved.filter(image => storage?.index[image.id]?.included);
   const activeSaved = !!committedResult?.saved;
+  const activeIsReference = !!active && draftReference?.id === active.id;
   const withdrawalStaged = activeSaved && activeResult?.saved === false;
   const confirmationNotice = useImageConfirmationNotice(gamePath, active, "mosaic", activeSaved && !storage && !busy);
   const counts = useMemo(() => visible.reduce((total, image) => {
@@ -1377,6 +1379,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       run: () => generate([active], [model], "reference"),
     };
   if (deploymentHandle && !paneVisible) return null;
+  const getRow = (image: UnityImage) => resultFor(draftRows, image);
+  const isAdopted = (image: UnityImage) => !!resultFor(rows, image).saved;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
   const screenSummary = detectorKind !== "grid" && detectorFile
     ? "自定义检测 · " + detectorFile.name : detectorLabels[detectorKind];
@@ -1430,10 +1434,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       onBrowsePreviewKeyDown={event => galleryNavigation.current?.(event)}
       originalGallery={<MosaicOriginalGallery images={visible} activeId={active?.id} navigationRef={galleryNavigation}
           page={galleryPage} onPage={setGalleryPage} selectedIds={gallerySelectedIds} setSelectedIds={setGallerySelectedIds}
-          query={needle} read={read} status={imageStatus} checked={image => resultFor(draftRows, image).checked}
+          query={needle} read={read} status={imageStatus} getRow={getRow} isAdopted={isAdopted}
           draftChanges={draftChanges} disabled={actionsDisabled} onPreview={selectPreview} onCheck={setMosaicChecked}
           hasDraft={image => drafts.has(image.id)} onDiscard={discardImageDraft} />}
-      actionsDisabled={actionsDisabled} getRow={image => resultFor(draftRows, image)} draftChanges={draftChanges} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
+      actionsDisabled={actionsDisabled} getRow={getRow} isAdopted={isAdopted} draftChanges={draftChanges} imageStatus={imageStatus} refineMovementFor={refineMovementFor}
       isRefineRetrying={isRefineRetrying} selectPreview={selectPreview} setMosaicChecked={setMosaicChecked}
       groupMenu={groupMenu} openGroupMenu={openGroupMenu} closeGroupMenu={closeGroupMenu} deleteGroup={deleteGroup}>
       <MosaicPreview active={active} activeResult={activeResult} visibleCount={visible.length} paneVisible={paneVisible}
@@ -1451,8 +1455,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
             disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => void saveImageDraft(active)}>保存当前图片</button>
         </div>}
         header={active &&
-          <div className="unity-image-actions">
-            <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
+          <div className="unity-image-actions game-mosaic-detail-header">
+            <div className="game-mosaic-image-heading">
+              <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
+              <MosaicImageBadges adopted={activeSaved} reference={activeIsReference} />
+            </div>
             {draftReason && <span className="game-mosaic-detail-hint" data-tooltip={draftReason}>{draftReason}</span>}
             <div className="unity-image-button-group">
               <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
@@ -1465,11 +1472,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                   ]}
                   onChange={moveToStatus} />
               </div>
-              <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || draftReference?.id === active.id} onClick={() => stageImageEdits(members, image => ({ reference: image.id === active.id, group, manualGroup: true }))}>{draftReference?.id === active.id ? "本组参考图" : "用作本组画风参考"}</button>
+              <button type="button" className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，才能设为本组基准"}
+                disabled={actionsDisabled || !activeSaved || activeIsReference}
+                onClick={() => stageImageEdits(members, image => ({ reference: image.id === active.id, group, manualGroup: true }))}>
+                {activeIsReference ? "已是本组基准" : activeSaved ? "设置为本组基准" : "需要先采用一版"}
+              </button>
               {activeSaved && <button type="button" className="unity-btn" disabled={actionsDisabled || testing}
                 data-tooltip={withdrawalStaged ? "取消尚未保存的撤回" : "保存后撤回采用，并从下次生成的补丁中移除"}
                 onClick={toggleAdoptionWithdrawal}>{withdrawalStaged ? "取消撤回" : "撤回采用"}</button>}
-              {draftReference && <span>参考图 {draftReference.name}</span>}
+              {draftReference && !activeIsReference && <span>参考图 {draftReference.name}</span>}
             </div>
           </div>
         }

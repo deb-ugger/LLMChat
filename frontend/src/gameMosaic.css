@@ -178,6 +178,7 @@ input.game-mosaic-threshold[type="number"] {
   padding: var(--space-1);
   list-style: none;
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 128px), 1fr));
   gap: var(--space-1);
   align-content: start;
 }
@@ -219,13 +220,52 @@ input.game-mosaic-threshold[type="number"] {
   font-size: var(--fs-caption);
   font-weight: 700;
 }
-.game-mosaic-original-tile > :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
+.game-mosaic-original-tile > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
 .game-mosaic-original-tile > small { color: var(--text-muted); }
+.game-mosaic-original-tile .game-mosaic-image-heading { font-size: var(--fs-caption); }
 .game-mosaic-original-tile > .game-mosaic-original-status { white-space: normal; overflow-wrap: anywhere; }
 .game-mosaic-original-thumbnail { display: grid; place-items: center; aspect-ratio: 4 / 3; overflow: hidden; background: var(--bg-muted); font-size: var(--fs-caption); color: var(--text-muted); }
 .game-mosaic-original-thumbnail > canvas { inline-size: 100%; block-size: 100%; object-fit: contain; }
 .game-mosaic-status-group > details > ul { list-style: none; margin: 0; padding: 0; }
 .game-mosaic-status-group > details > summary { min-height: 30px; }
+.game-mosaic-image-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+.game-mosaic-workbench .game-mosaic-image-heading > strong {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-mosaic-image-badge {
+  flex: none;
+  padding: 1px 3px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.game-mosaic-image-badge.is-adopted {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-panel));
+}
+.game-mosaic-image-badge.is-reference {
+  color: var(--accent-ink);
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+}
+.game-mosaic-workbench .unity-image-item .game-mosaic-image-heading > strong {
+  font-size: var(--fs-body);
+  line-height: 1.35;
+}
+.game-mosaic-workbench .unity-image-actions.game-mosaic-detail-header { flex-wrap: wrap; }
+.game-mosaic-detail-header > .game-mosaic-image-heading { flex: 1 1 auto; }
 .game-mosaic-workbench .unity-image-detail {
   display: flex;
   flex-direction: column;
@@ -323,6 +363,25 @@ input.game-mosaic-threshold[type="number"] {
 }
 .game-mosaic-results-bar > strong { flex: 0 0 auto; min-width: 0; }
 .game-mosaic-current-file-actions { margin-inline-start: auto; }
+.game-mosaic-redraw-split { display: inline-flex; flex: none; }
+.game-mosaic-workbench .game-mosaic-redraw-split > .unity-btn:first-child {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+.game-mosaic-workbench .game-mosaic-redraw-split > .unity-btn:nth-child(2) {
+  padding-inline: var(--space-2);
+  border-inline-start: 0;
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+.game-mosaic-redraw-split > .unity-btn:focus-visible { z-index: 1; }
+.game-mosaic-redraw-split:has(> :popover-open) > .unity-btn:nth-child(2) { background: var(--bg-hover); }
+.game-mosaic-redraw-menu {
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-inline, flip-block, flip-inline flip-block;
+  justify-self: start;
+  margin-block: var(--space-1);
+}
 
 /* 文件名后面接一句状态说明：占满这一行剩余宽度，超长省略，完整文案在 tooltip。 */
 .game-mosaic-detail-hint {

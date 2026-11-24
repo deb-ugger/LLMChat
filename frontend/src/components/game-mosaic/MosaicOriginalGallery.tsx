@@ -5,7 +5,8 @@ import type { UnityImage } from "../../unityOffline";
 import { getFixedMenuPoint } from "../../viewportLayout";
 import { GameImageListPagination } from "../GameImageBrowserLayout";
 import { SearchHighlight } from "../SearchHighlight";
-import type { MosaicWorkbenchProps } from "./mosaicWorkbenchTypes";
+import { MosaicImageBadges } from "./MosaicImageBadges";
+import type { MosaicWorkbenchProps, Result } from "./mosaicWorkbenchTypes";
 
 function MosaicOriginalThumbnail({ image, read }: { image: UnityImage; read: MosaicWorkbenchProps["read"] }) {
   const thumbnail = useRef<HTMLCanvasElement>(null);
@@ -52,7 +53,6 @@ function MosaicOriginalThumbnail({ image, read }: { image: UnityImage; read: Mos
   </span>;
 }
 
-const galleryColumns = 6;
 export const mosaicGalleryPageSize = 24;
 
 type Props = {
@@ -65,7 +65,8 @@ type Props = {
   setSelectedIds: Dispatch<SetStateAction<Set<string>>>;
   query: string;
   read: MosaicWorkbenchProps["read"];
-  checked: (image: UnityImage) => boolean;
+  getRow: (image: UnityImage) => Result;
+  isAdopted: (image: UnityImage) => boolean;
   status: (image: UnityImage) => MosaicStatus;
   draftChanges: (image: UnityImage) => { checked: boolean; mask: boolean };
   disabled: boolean;
@@ -75,16 +76,16 @@ type Props = {
   onDiscard: (image: UnityImage) => void;
 };
 
-function arrowDestination(index: number, key: string, length: number): number | undefined {
+function arrowDestination(index: number, key: string, length: number, columns: number): number | undefined {
   if (!length) return;
   if (index < 0) return 0;
-  const column = index % galleryColumns;
+  const column = index % columns;
   switch (key) {
     case "ArrowLeft": return (index + length - 1) % length;
     case "ArrowRight": return index + 1;
-    case "ArrowUp": return index >= galleryColumns ? index - galleryColumns
-      : column + Math.floor((length - 1 - column) / galleryColumns) * galleryColumns;
-    case "ArrowDown": return index + galleryColumns < length ? index + galleryColumns : column;
+    case "ArrowUp": return index >= columns ? index - columns
+      : column + Math.floor((length - 1 - column) / columns) * columns;
+    case "ArrowDown": return index + columns < length ? index + columns : column;
     default: return undefined;
   }
 }
@@ -92,7 +93,7 @@ function arrowDestination(index: number, key: string, length: number): number | 
 export const MosaicOriginalSelectionTarget = createContext<HTMLDivElement | null>(null);
 
 export function MosaicOriginalGallery({ images, navigationRef, activeId, page, onPage, selectedIds, setSelectedIds,
-  query, read, checked, status, draftChanges, disabled, onPreview, onCheck, hasDraft, onDiscard }: Props) {
+  query, read, getRow, isAdopted, status, draftChanges, disabled, onPreview, onCheck, hasDraft, onDiscard }: Props) {
   const [focusId, setFocusId] = useState<string>();
   const [menu, setMenu] = useState<{ id: string; sourceHash: string; x: number; y: number }>();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -178,7 +179,8 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
       nextImage = images[nextPage * mosaicGalleryPageSize];
       changePage(nextPage);
     } else {
-      const next = arrowDestination(index, event.key, visible.length);
+      const columns = getComputedStyle(grid.current!).gridTemplateColumns.split(" ").length;
+      const next = arrowDestination(index, event.key, visible.length, columns);
       if (next === undefined) return;
       nextImage = visible[next];
     }
@@ -207,13 +209,15 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
 
   return <section ref={gallery} className="game-mosaic-original-browser" aria-label="原图批量浏览" tabIndex={0} onKeyDown={navigateGallery}>
     {selection && (selectionTarget ? createPortal(selection, selectionTarget) : selection)}
-    <ul ref={grid} className="game-mosaic-original-grid" style={{ gridTemplateColumns: `repeat(${galleryColumns}, minmax(0, 1fr))` }}>
+    <ul ref={grid} className="game-mosaic-original-grid">
       {visible.map(image => {
+        const row = getRow(image);
         const change = draftChanges(image);
-        const label = mosaicStatusLabels[status(image)];
+        const state = status(image);
+        const label = mosaicStatusLabels[state];
         return <li key={image.id} data-mosaic-gallery-item={image.id}>
           <label className="game-mosaic-original-check">
-            <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={checked(image)} disabled={disabled}
+            <input type="checkbox" aria-label={"勾选去码 " + image.name} checked={row.checked} disabled={disabled}
               onChange={event => onCheck([image], event.target.checked)} />
           </label>
           <button type="button" className={"game-mosaic-original-tile" + (change.checked ? " is-mosaic-check-draft" : "")}
@@ -230,9 +234,12 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
             data-tooltip={image.file + "\n" + image.width + " × " + image.height + " · " + label}
             onClick={event => selectImage(image.id, event.ctrlKey || event.metaKey)}>
             <MosaicOriginalThumbnail image={image} read={read} />
-            <strong><SearchHighlight text={image.name} query={query} /></strong>
+            <span className="game-mosaic-image-heading">
+              <strong><SearchHighlight text={image.name} query={query} /></strong>
+              <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
+            </span>
             <small>{image.width} × {image.height}</small>
-            <small className="game-mosaic-original-status">{label}</small>
+            {state !== "confirmed" && <small className="game-mosaic-original-status">{label}</small>}
             {change.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
           </button>
         </li>;
