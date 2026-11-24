@@ -4543,10 +4543,11 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-progress .game-flow-progress-count small{color:var(--text-muted);opacity:.75;font-weight:400}
 
 /* 数字 chip 的编辑框：原生 spinner 在深色底上看不见数 */
-.game-flow-chip-value{inline-size:4.4em;min-inline-size:48px;block-size:24px;padding:0 6px;border-radius:5px;
+input.game-flow-chip-value[type="number"]{inline-size:4.4em;min-inline-size:48px;block-size:24px;padding:0 6px;border-radius:5px;
   border:1px solid var(--border-strong,#3d4136);background:#1c1d18;color:var(--text);
   font:600 12.5px/22px var(--mono,monospace);text-align:center;font-variant-numeric:tabular-nums;
   appearance:textfield;-moz-appearance:textfield}
-.game-flow-chip-value:focus{outline:none;border-color:var(--flow-color,#8f7cf0)}
-.game-flow-chip-value::-webkit-outer-spin-button,.game-flow-chip-value::-webkit-inner-spin-button{
+input.game-flow-chip-value[type="number"]:focus{outline:none;border-color:var(--flow-color,#8f7cf0)}
+input.game-flow-chip-value::-webkit-outer-spin-button,.game-flow-chip-value::-webkit-inner-spin-button{
   appearance:none;-webkit-appearance:none;margin:0}
+.game-flow-progress-track > .unity-progress-track{flex:1 1 auto;min-inline-size:0}
