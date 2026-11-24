@@ -111,27 +111,19 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const status = benchmark ? benchmark.state === "paused" ? "测试已暂停" : "测试中" : label;
   return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}`} data-benchmark={benchmark?.state}>
     <div className="game-flow-step">
-      <header className="game-flow-head">
+      <header className={"game-flow-head" + (disclosure ? " is-collapsible" : "")}>
+        {disclosure && <button type="button" className="game-flow-head-toggle" onClick={disclosure.toggle}
+          aria-label={(expanded ? "折叠" : "展开") + title + "详情"} aria-expanded={expanded} aria-controls={detailsId}
+          data-tooltip={expanded ? "折叠详情" : "展开详情"} />}
         <span className="game-flow-dot" aria-hidden="true" />
-        {onConfigure ? <button type="button" className="game-flow-title" aria-expanded={configured}
+        {!disclosure && onConfigure ? <button type="button" className="game-flow-title" aria-expanded={configured}
           aria-controls={settingsId} aria-describedby={statusId}
           style={{ background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
           onClick={onConfigure}>{title}</button> : <strong className="game-flow-title">{title}</strong>}
         {position && <span className="game-flow-position">{position}</span>}
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
         {elapsedLabel != null && <span className="game-flow-elapsed">已用 {elapsedLabel}</span>}
-        {(actions || disclosure) && <div className="game-flow-actions">
-          {actions}
-          {disclosure && <button type="button" className="unity-btn" onClick={disclosure.toggle}
-            aria-label={`${expanded ? "收起" : "展开"}${title}`} aria-expanded={expanded} aria-controls={detailsId}
-            style={{ inlineSize: 24, blockSize: 24, minInlineSize: 24, minBlockSize: 24, padding: 0,
-              flex: "none", display: "grid", placeItems: "center", boxSizing: "border-box" }}>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d={expanded ? "m4 10 4-4 4 4" : "m4 6 4 4 4-4"} stroke="currentColor"
-                strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>}
-        </div>}
+        {actions && <div className="game-flow-actions">{actions}</div>}
       </header>
       {!expanded && <div className="game-flow-progress-main"
         style={{ fontSize: "var(--fs-caption)", color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden" }}>

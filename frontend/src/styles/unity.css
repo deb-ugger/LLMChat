@@ -3749,7 +3749,14 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-benchmark-formal-metrics > span > strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ---------- 步骤卡三段式：卡头 / 进度 / 只读性能 / 可改参数 ---------- */
-.game-flow-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:1px 2px 7px}
+.game-flow-head{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:1px 2px 7px}
+.game-flow-head > .game-flow-head-toggle {
+  position:absolute; inset:0; z-index:0; width:100%; height:100%; margin:0; padding:0;
+  min-width:0; min-height:0; border:0; border-radius:var(--radius-sm); background:transparent;
+  color:inherit; cursor:pointer;
+}
+.game-flow-head.is-collapsible > :not(.game-flow-head-toggle, .game-flow-actions) { pointer-events:none; }
+.game-flow-head-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .game-flow-dot{inline-size:7px;block-size:7px;border-radius:50%;background:var(--flow-color);flex:none}
 .game-flow-title{font-size:13.5px;font-weight:600;color:var(--text);min-inline-size:0;overflow-wrap:anywhere}
 .game-flow-position{font-size:9.5px;color:var(--text-muted);border:1px solid var(--border-strong);border-radius:20px;padding:0 7px;line-height:1.75;white-space:nowrap}
