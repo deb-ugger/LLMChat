@@ -47,8 +47,8 @@
   /* 状态色沿用项目原有语义：完成=绿、进行中=蓝、等待=橙黄、过期=深橙、错误=红。 */
   --workflow-tone-complete: var(--success);
   --workflow-tone-current: #3265b6;
-  --workflow-tone-pending: #b9762a;
-  --workflow-tone-outdated: #966515;
+  --workflow-tone-pending: #9c5f18;
+  --workflow-tone-outdated: #7b5310;
   --workflow-tone-optional-update: #346483;
   --workflow-tone-error: var(--danger);
   box-sizing: border-box;
@@ -63,6 +63,16 @@
   overflow: hidden auto;
   scrollbar-width: none;
 }
+:root[data-theme="ink"] .game-workflow-steps {
+  /* 深色主题把状态色整体提亮，否则深蓝/深橙落在深底上几乎看不见。 */
+  --workflow-tone-complete: #6dbc83;
+  --workflow-tone-current: #7aa7f0;
+  --workflow-tone-pending: #e0a35e;
+  --workflow-tone-outdated: #d4b26a;
+  --workflow-tone-optional-update: #6fb6de;
+  --workflow-tone-error: #e18171;
+}
+
 .game-workflow-node { display: flex; flex: none; flex-direction: column; align-items: center; min-inline-size: 0; }
 .game-workflow-node:not(:last-child) { flex: 1 0 auto; }
 .game-workflow-node.complete { --step-tone: var(--workflow-tone-complete); }
@@ -247,7 +257,7 @@
   line-height: 1.2;
   text-align: center;
   white-space: normal;
-  color: color-mix(in oklab, var(--marker-tone) 80%, var(--text));
+  color: color-mix(in oklab, var(--marker-tone) 85%, var(--text));
   background: transparent;
 }
 .game-workflow-node .unity-step-tab:hover:not(.is-selected) {
