@@ -114,6 +114,10 @@ export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Par
       add("筛选并发", mosaic.concurrency ?? 2);
       if (mosaic.detector !== "grid") {
         const screening = normalizeMosaicScreening(mosaic.screening);
+        add("分类模型", screening.localModels?.eva ? "WD EVA02-Large" : "MobileNetV3");
+        add("定位模型", screening.localModels?.mrcnn ? "Censor Mask R-CNN" : "YOLO11m");
+        if (screening.localModels?.eva) { add("分类模型文件", screening.localModels.eva.modelPath); add("分类标签文件", screening.localModels.eva.labelsPath); }
+        if (screening.localModels?.mrcnn) add("定位模型文件", screening.localModels.mrcnn.modelPath);
         add("分类阈值", screening.presenceThreshold);
         add("定位阈值", screening.boxThreshold);
         add("疑难图片局部放大", switchLabel(screening.localZoom));

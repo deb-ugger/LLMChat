@@ -1,6 +1,7 @@
 import type { MosaicBox } from "./gameMosaic";
+import type { MosaicLocalModels } from "./gameMosaicCandidateInputs";
 
-export type MosaicScreening = { localZoom: boolean; presenceThreshold: number; boxThreshold: number };
+export type MosaicScreening = { localZoom: boolean; presenceThreshold: number; boxThreshold: number; localModels?: MosaicLocalModels };
 export const defaultMosaicScreening: Readonly<MosaicScreening> = {
   localZoom: false, presenceThreshold: 0.47, boxThreshold: 0.25,
 };
@@ -8,6 +9,9 @@ export function normalizeMosaicScreening(value?: Partial<MosaicScreening>): Mosa
   const threshold = (value: number | undefined, fallback: number) =>
     typeof value === "number" && Number.isFinite(value) && value >= 0.05 && value <= 0.95 ? value : fallback;
   return {
+    ...((value?.localModels?.eva || value?.localModels?.mrcnn) && { localModels: {
+      ...(value.localModels.eva && { eva: value.localModels.eva }), ...(value.localModels.mrcnn && { mrcnn: value.localModels.mrcnn }),
+    } }),
     localZoom: value?.localZoom ?? defaultMosaicScreening.localZoom,
     presenceThreshold: threshold(value?.presenceThreshold, defaultMosaicScreening.presenceThreshold),
     boxThreshold: threshold(value?.boxThreshold, defaultMosaicScreening.boxThreshold),

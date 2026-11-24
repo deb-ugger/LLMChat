@@ -1,4 +1,5 @@
 import { scanMosaicPixels, sceneSignature } from "./gameMosaicGrid";
+import { validateMosaicLocalModels, evaCensorIndexes, evaPixels, mrcnnPixels, mrcnnAnchors, mrcnnMetadata, mrcnnDetections, mrcnnResize } from "./gameMosaicCandidateInputs";
 import { defaultMosaicScreening, normalizeMosaicScreening, mosaicZoomRegions, mergeMosaicDetections,
   mosaicBoxOverlap as overlap, type MosaicScreening, type MosaicDetection } from "./gameMosaicScreening";
 export { scanMosaicPixels } from "./gameMosaicGrid";
@@ -77,7 +78,7 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
 export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File, options?: Partial<MosaicScreening>) {
   if (kind === "grid") return "grid-v2";
   const screening = normalizeMosaicScreening(options);
-  if (!screening.localZoom && screening.presenceThreshold === 0.47 && screening.boxThreshold === 0.25)
+  if (!screening.localModels && !screening.localZoom && screening.presenceThreshold === 0.47 && screening.boxThreshold === 0.25)
     return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : "anime-2d-presence-v2";
   const model = file ? [file.name, file.size, file.lastModified] : "anime-640";
   return JSON.stringify(["mosaic-screen-v3", model, screening]);
@@ -183,12 +184,27 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   const screening = normalizeMosaicScreening(options.screening);
   const presenceThreshold = options.initialScreening ? screening.presenceThreshold : mosaicPresenceThreshold;
   const boxThreshold = options.initialScreening ? screening.boxThreshold : threshold;
+  const localModels = options.initialScreening ? screening.localModels : undefined;
+  validateMosaicLocalModels(localModels);
+  if (localModels?.mrcnn && model) throw new Error("Mask R-CNN 与自定义 YOLO 定位模型不能同时使用");
+  const localBytes = async (path: string) => {
+    signal?.throwIfAborted();
+    const bytes = await (await import("./localDocFile")).readFileBytes(path);
+    signal?.throwIfAborted();
+    return bytes;
+  };
   const readModel = async (name: string) => {
     const response=await fetch(new URL("./mosaic-detector/"+name,assets),{signal});
     if(!response.ok)throw new Error("检测模型资源读取失败："+name);
     return response.arrayBuffer();
   };
-  const [bytes,presenceBytes]=await Promise.all([model?model.arrayBuffer():readModel("model.onnx"),readModel("presence.onnx")]);
+  const [bytes, presenceBytes, labelsBytes] = await Promise.all([
+    localModels?.mrcnn ? localBytes(localModels.mrcnn.modelPath) : model ? model.arrayBuffer() : readModel("model.onnx"),
+    localModels?.eva ? localBytes(localModels.eva.modelPath) : readModel("presence.onnx"),
+    localModels?.eva ? localBytes(localModels.eva.labelsPath) : undefined,
+  ]);
+  const evaLabels = labelsBytes ? evaCensorIndexes(new TextDecoder().decode(labelsBytes)) : undefined;
+  const anchors = localModels?.mrcnn ? mrcnnAnchors() : undefined;
   const create = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(bytes, { executionProviders: [provider] });
   const createPresence = (provider: "webgpu" | "wasm") => ort.InferenceSession.create(presenceBytes, { executionProviders: [provider] });
   let session: Awaited<ReturnType<typeof create>> | undefined;
@@ -230,10 +246,14 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   const input = session.inputMetadata[0];
   const output = session.outputMetadata.find(item => item.isTensor && item.shape.length === 3);
   const shape = input?.isTensor ? input.shape : [];
-  const size = shape[2];
-  const channels = output?.isTensor ? output.shape[1] : undefined;
-  if (shape.length !== 4 || shape[0] !== 1 || shape[1] !== 3 || typeof size !== "number" ||
-      size < 256 || size > 1024 || size !== shape[3] || typeof channels !== "number" || ![37, 38].includes(channels) || !output) {
+  const size = localModels?.mrcnn ? 1024 : shape[2];
+  const channels = localModels?.mrcnn ? 38 : output?.isTensor ? output.shape[1] : undefined;
+  if (localModels?.mrcnn && (shape.join(",") !== "1,1024,1024,3" || session.inputNames.length !== 3 ||
+      !output?.isTensor || output.shape[2] !== 6)) {
+    await release(); throw new Error("请选择 hent-AI 三输入 Mask R-CNN ONNX 模型");
+  }
+  if ((!localModels?.mrcnn && (shape.length !== 4 || shape[0] !== 1 || shape[1] !== 3 || typeof size !== "number" ||
+      size < 256 || size > 1024 || size !== shape[3])) || typeof size !== "number" || typeof channels !== "number" || ![37, 38].includes(channels) || !output) {
     await release();
     throw new Error("请选择固定方形输入、未内置 NMS 的 YOLO11 分割 ONNX");
   }
@@ -243,9 +263,10 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   if (!context) { await release(); throw new Error("无法读取检测模型输入像素"); }
   onDevice?.(device);
   const outputName = output.name;
-  const runSession = (active: NonNullable<typeof session>, feeds: InstanceType<typeof ort.Tensor>, output: string) =>
-    measureGameAsync(timingScope, "detectorMs", () => active.run({ [active.inputNames[0]]: feeds }, [output]));
-  const runInference = async (feeds: InstanceType<typeof ort.Tensor>) => {
+  type Feeds = Record<string, InstanceType<typeof ort.Tensor>>;
+  const runSession = (active: NonNullable<typeof session>, feeds: Feeds, output: string) =>
+    measureGameAsync(timingScope, "detectorMs", () => active.run(feeds, [output]));
+  const runInference = async (feeds: Feeds) => {
     signal?.throwIfAborted();
     if (!session) throw new Error("检测会话已关闭");
     try {
@@ -261,7 +282,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
     }
   };
   let inferenceQueue: Promise<unknown> = Promise.resolve();
-  const infer = (feeds: InstanceType<typeof ort.Tensor>) => {
+  const infer = (feeds: Feeds) => {
     const pending = inferenceQueue.then(() => runInference(feeds));
     inferenceQueue = pending.catch(() => {});
     return pending;
@@ -269,32 +290,41 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   const runPresence=async(feeds:InstanceType<typeof ort.Tensor>)=>{
     signal?.throwIfAborted();
     if(!presenceSession)throw new Error("分类检测会话已关闭");
-    try {return await runSession(presenceSession, feeds, presenceSession.outputNames[0]);}
+    try {return await runSession(presenceSession, { [presenceSession.inputNames[0]]: feeds }, presenceSession.outputNames[0]);}
     catch(cause){
       if(device.kind==="cpu")throw cause;
       signal?.throwIfAborted();await release();
       session=await openCpu("WebGPU 分类推理失败："+String(cause));
       signal?.throwIfAborted();onDevice?.(device);
-      return runSession(presenceSession!, feeds, presenceSession!.outputNames[0]);
+      return runSession(presenceSession!, { [presenceSession!.inputNames[0]]: feeds }, presenceSession!.outputNames[0]);
     }
   };
   const classify=async(original:HTMLCanvasElement, [x, y, right, bottom]: MosaicBox)=>{
-    const canvas=document.createElement("canvas");canvas.width=384;canvas.height=384;
+    const resolution = evaLabels ? 448 : 384;
+    const canvas=document.createElement("canvas");canvas.width=resolution;canvas.height=resolution;
     const ctx=canvas.getContext("2d",{willReadFrequently:true});
     if(!ctx)throw new Error("无法读取分类模型输入");
-    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,384,384);ctx.drawImage(original,x,y,right-x,bottom-y,0,0,384,384);
-    const pixels=ctx.getImageData(0,0,384,384).data,plane=384*384,values=new Float32Array(plane*3);
-    for(let i=0;i<plane;i++){
+    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,resolution,resolution);
+    if (evaLabels) {
+      const scale = Math.min(resolution / (right - x), resolution / (bottom - y));
+      const w = Math.round((right - x) * scale), h = Math.round((bottom - y) * scale);
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(original,x,y,right-x,bottom-y,Math.floor((resolution-w)/2),Math.floor((resolution-h)/2),w,h);
+    } else ctx.drawImage(original,x,y,right-x,bottom-y,0,0,384,384);
+    const pixels=ctx.getImageData(0,0,resolution,resolution).data,plane=resolution*resolution,values=evaLabels ? evaPixels(pixels) : new Float32Array(plane*3);
+    for(let i=0;!evaLabels&&i<plane;i++){
       values[i]=(pixels[i*4]/255-.5)*2;values[i+plane]=(pixels[i*4+1]/255-.5)*2;values[i+plane*2]=(pixels[i*4+2]/255-.5)*2;
     }
-    const feeds=new ort.Tensor("float32",values,[1,3,384,384]);
+    const feeds=new ort.Tensor("float32",values,evaLabels ? [1,448,448,3] : [1,3,384,384]);
     let tensors:Awaited<ReturnType<typeof runPresence>>|undefined;
     try {
       const pending=inferenceQueue.then(()=>runPresence(feeds));inferenceQueue=pending.catch(()=>{});
       tensors=await pending;
       const result=Object.values(tensors)[0].data;
-      if(!(result instanceof Float32Array)||result.length!==4||!Number.isFinite(result[0]))throw new Error("分类模型输出格式无效");
-      return result[0];
+      if (!(result instanceof Float32Array) || result.length !== (evaLabels?.count ?? 4)) throw new Error("分类模型输出格式无效");
+      const score = evaLabels ? Math.max(...evaLabels.indexes.map(index => result[index])) : result[0];
+      if (!Number.isFinite(score) || score < 0 || score > 1) throw new Error("分类模型置信度无效");
+      return score;
     }finally{feeds.dispose();for(const tensor of Object.values(tensors||{}))tensor.dispose();}
   };
   const scanImage = async (blob: Blob): Promise<MosaicScan> => {
@@ -327,29 +357,37 @@ export async function loadMosaicDetector(model: File | undefined, options: {
     const detect = async ([x, y, right, bottom]: MosaicBox): Promise<MosaicDetection[]> => {
       signal?.throwIfAborted();
       const viewWidth = right - x, viewHeight = bottom - y;
-      const scale = Math.min(size / viewWidth, size / viewHeight);
-      const width = Math.max(1, Math.round(scale * viewWidth)), height = Math.max(1, Math.round(scale * viewHeight));
-      const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
-      context.fillStyle = "#727272";
+      const layout = localModels?.mrcnn ? mrcnnResize(viewWidth, viewHeight) : undefined;
+      const scale = layout?.scale ?? Math.min(size / viewWidth, size / viewHeight);
+      const width = layout?.width ?? Math.max(1, Math.round(scale * viewWidth)), height = layout?.height ?? Math.max(1, Math.round(scale * viewHeight));
+      const left = layout?.left ?? Math.floor((size - width) / 2), top = layout?.top ?? Math.floor((size - height) / 2);
+      context.fillStyle = localModels?.mrcnn ? "#000000" : "#727272";
       context.fillRect(0, 0, size, size);
       context.drawImage(original, x, y, viewWidth, viewHeight, left, top, width, height);
       const { data } = context.getImageData(0, 0, size, size);
       const plane = size * size;
-      const values = new Float32Array(3 * plane);
-      for (let index = 0; index < plane; index++) {
+      const values = localModels?.mrcnn ? mrcnnPixels(data) : new Float32Array(3 * plane);
+      for (let index = 0; !localModels?.mrcnn && index < plane; index++) {
         values[index] = data[4 * index] / 255;
         values[index + plane] = data[4 * index + 1] / 255;
         values[index + 2 * plane] = data[4 * index + 2] / 255;
       }
-      const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
+      const feeds = new ort.Tensor("float32", values, localModels?.mrcnn ? [1, size, size, 3] : [1, 3, size, size]);
+      const geometry = { bounds: [x, y, right, bottom] as MosaicBox, left, top, width, height, scale };
+      const meta = anchors ? new ort.Tensor("float32", mrcnnMetadata(geometry), [1, 15]) : undefined;
+      const anchorTensor = anchors ? new ort.Tensor("float32", anchors, [1, 261888, 4]) : undefined;
       let tensors: Awaited<ReturnType<typeof infer>> | undefined;
       try {
-        tensors = await infer(feeds);
+        tensors = await infer(meta && anchorTensor ? {
+          "input_image:0": feeds, "input_image_meta:0": meta, "input_anchors:0": anchorTensor,
+        } : { [session!.inputNames[0]]: feeds });
         const result = tensors[outputName], data = result.data;
         if (!(data instanceof Float32Array)) throw new Error("请选择输出为 FP32 的检测 ONNX");
-        const geometry = { left, top, scaleX: width / viewWidth, scaleY: height / viewHeight, width: viewWidth, height: viewHeight };
+        if (localModels?.mrcnn)
+          return mrcnnDetections(data, result.dims, geometry).filter(item => mosaicVisibleBox(full, item.box));
+        const yoloGeometry = { left, top, scaleX: width / viewWidth, scaleY: height / viewHeight, width: viewWidth, height: viewHeight };
         const detections: MosaicDetection[] = [];
-        mosaicBoxes(data, result.dims, channels - 36, geometry, (relative, score) => {
+        mosaicBoxes(data, result.dims, channels - 36, yoloGeometry, (relative, score) => {
           const box: MosaicBox = [relative[0] + x, relative[1] + y, relative[2] + x, relative[3] + y];
           if (!mosaicVisibleBox(full, box)) return false;
           detections.push({ box, score });
@@ -357,7 +395,7 @@ export async function loadMosaicDetector(model: File | undefined, options: {
         }, 0.05);
         return detections;
       } finally {
-        feeds.dispose();
+        feeds.dispose(); meta?.dispose(); anchorTensor?.dispose();
         for (const value of Object.values(tensors || {})) value.dispose();
       }
     };

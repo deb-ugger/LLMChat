@@ -3,6 +3,7 @@ import type { BenchmarkInput, BenchmarkRequest } from "./benchmarkRunner";
 import type { MosaicSettings } from "../gameMosaic";
 import { normalizeMosaicScreening, type MosaicScreening } from "../gameMosaicScreening";
 import type { BenchmarkConfig } from "../gameTextBenchmark";
+import { validateMosaicLocalModels } from "../gameMosaicCandidateInputs";
 
 type Source = "dataset-all" | "project-initial-snapshot";
 type ConfigRow = {
@@ -17,8 +18,9 @@ export function readMosaicTaskPlan(raw: string, scope: string, current: Benchmar
     version?: number; dataset?: string;
     tasks?: { step?: "mosaicScreen" | "mosaicRefine"; source?: Source; rounds?: number; configs?: ConfigRow[] }[];
   } | null;
-  if ((file?.version !== 1 && file?.version !== 2) || !Array.isArray(file.tasks) || file.tasks.length < 1 || file.tasks.length > 24)
-    throw new Error("配置单须为版本 1 或 2，并包含 1 至 24 个测试任务");
+  if ((file?.version !== 1 && file?.version !== 2 && file?.version !== 3) || !Array.isArray(file.tasks) || file.tasks.length < 1 || file.tasks.length > 24)
+    throw new Error("配置单须为版本 1、2 或 3，并包含 1 至 24 个测试任务");
+  const version = file.version;
   const dataset = typeof file.dataset === "string" ? file.dataset.trim() : "";
   if (!dataset || !/[\\/]manifest\.json$/i.test(dataset))
     throw new Error("配置单须提供数据集 manifest.json 的路径");
@@ -46,12 +48,14 @@ export function readMosaicTaskPlan(raw: string, scope: string, current: Benchmar
       const detector = config.detector ?? "anime";
       if (detector !== "anime" && detector !== "grid") throw new Error("初筛检测器无效");
       const screening = config.screening;
-      if (file.version === 2 && screen && screening === undefined) throw new Error("版本 2 的初筛配置须明确提供 screening 参数");
+      if (version >= 2 && screen && screening === undefined) throw new Error("版本 2 及以上的初筛配置须明确提供 screening 参数");
       if (screening !== undefined && (!screening || typeof screening !== "object" || Array.isArray(screening) ||
           (screening.localZoom !== undefined && typeof screening.localZoom !== "boolean") ||
           [screening.presenceThreshold, screening.boxThreshold].some(value => value !== undefined &&
             (typeof value !== "number" || !Number.isFinite(value) || value < 0.05 || value > 0.95))))
         throw new Error("初筛阈值须为 0.05 至 0.95，局部放大须为布尔值");
+      validateMosaicLocalModels(screening?.localModels);
+      if (screening?.localModels && (version < 3 || detector !== "anime")) throw new Error("本地 ONNX 模型需要版本 3 的分类＋定位配置");
       const settings = { ...mosaic, detector, screening: normalizeMosaicScreening(screening ?? mosaic.screening), selection: screen ? "all" as const : "checked" as const, sampleLimit: 0 };
       return {
         ...defaults, id: crypto.randomUUID(), label: config.name.trim(), enabled: true,
