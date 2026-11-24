@@ -4164,3 +4164,33 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 /* 显示视图里没有“排序/移除”，已完成的配置也不再显示底部那行状态 */
 .game-benchmark-show-section .game-benchmark-editor-order { display: none; }
 .game-benchmark-show-section .game-benchmark-editor[data-run="done"] .game-benchmark-editor-foot { display: none; }
+
+/* 图片翻译步骤配置表：统一栅格与留白 */
+.game-flow-editable-fields { --game-flow-label-width: 110px; }
+.game-flow-editable-fields .game-translation-tabs { margin-inline: 0; margin-block: 2px 8px; }
+/* 该模式没有额外参数时整块收起，不留空白 */
+.game-flow-editable-fields .game-translation-page:empty { display: none; }
+.game-flow-editable-fields .game-flow-param-section:first-child { padding-block-start: 0; border-block-start: 0; }
+.game-flow-editable-fields .unity-inline-check { margin-block-start: 2px; }
+/* 模型 + 并发：并发固定 60px，不再挤成一条缝 */
+.game-flow-editable-fields .game-model-column { grid-template-columns: minmax(var(--game-flow-label-width), max-content) minmax(0, 1fr) 60px; }
+.game-flow-editable-fields .game-model-controls > .game-model-concurrency-control { inline-size: 60px; min-inline-size: 60px; padding-inline: 6px; }
+.game-flow-editable-fields .game-flow-param-stacked.game-model-column { grid-template-columns: minmax(0, 1fr) 60px; }
+/* 数值项：标签固定列宽，输入 88px */
+.game-flow-editable-fields :is(.game-translation-page, .game-flow-param-section, .unity-translation-settings)
+  > label:has(> input[type=number]) { grid-template-columns: minmax(var(--game-flow-label-width), max-content) 88px; }
+.game-flow-editable-fields :is(.game-translation-page, .game-flow-param-section) > label > input[type=number] { inline-size: 88px; min-inline-size: 88px; }
+/* 性能块与参数区之间留白，表格数字对齐 */
+.game-flow-editable-fields .game-flow-performance { margin-block-end: 14px; }
+.game-flow-editable-fields .game-flow-performance-wide :is(th, td) { font-variant-numeric: tabular-nums; }
+.game-flow-editable-fields .game-flow-performance-wide table { table-layout: fixed; }
+.game-flow-editable-fields .game-flow-performance-wide th:first-child { inline-size: 44%; }
+.game-flow-editable-fields .game-flow-performance-wide td { text-align: end; }
+.game-flow-editable-fields .game-flow-performance-wide thead th:not(:first-child) { text-align: end; }
+/* 底部动作区：一条发丝线收口 */
+.game-flow-editable-fields [data-parameter-group="actions"] {
+  margin-block-start: 6px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
+}
+.game-flow-editable-fields [data-parameter-group="help"] { margin-block-start: 2px; }
