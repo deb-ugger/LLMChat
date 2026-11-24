@@ -150,6 +150,7 @@ export type MosaicReviewPorts = {
   setRefineRetries: (change: ReadonlyMap<string, string> | ((previous: ReadonlyMap<string, string>) => ReadonlyMap<string, string>)) => void;
   beginUsage: (resume: boolean) => MosaicStepUsage;
   gameStepSelections: typeof gameStepSelections;
+  prepareRequest: NonNullable<Parameters<typeof refineMosaicBatch>[1]["prepareRequest"]>;
   request: (model: string, prompt: string, image: string, signal: AbortSignal, selection?: object) => Promise<unknown>;
 };
 

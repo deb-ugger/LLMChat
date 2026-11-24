@@ -2,7 +2,7 @@ import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mo
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
-import { requestGameModelJson } from "../gameModelRequest";
+import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
 import { rememberRecentGameFailures } from "../unityLastGame";
@@ -1723,6 +1723,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     const reviews = preferences.refine !== false ? await refineMosaicBatch(images.filter(image => !savedRow(image)?.manualBoxes), {
       root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile,read:readMosaicSource,prepare:prepareMosaicSources,
       timingScope: scope,
+      prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal, (detail, level) => logAction(detail, level, "图片去码")),
       request:(model,prompt,image,signal,lanes)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection:selections(lanes)}),
       onResult: image => {
         if (savedRow(image)?.refineError || savedRow(image)?.reason)

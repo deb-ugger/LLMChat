@@ -233,7 +233,7 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
 export async function performMosaicReviews(plan: MosaicReviewPlan, signal: AbortSignal,
   report: ((completed: number, detail: string) => void) | undefined, ports: MosaicReviewPorts) {
   const { targets, rows, gamePath, preferences, reviewKey, detectorFile, restart, automatic, metrics, deploymentScope } = plan;
-  const { read, prepareSources, refineBatch, readMosaicReviews, setRows, setRefineRetries, gameStepSelections, request } = ports;
+  const { read, prepareSources, refineBatch, readMosaicReviews, setRows, setRefineRetries, gameStepSelections, prepareRequest, request } = ports;
   const reviewSettings = automatic ? { ...preferences, refineScope: preferences.refineIncludeMissed ? "all" as const : "suspected" as const } : preferences;
   const cached = automatic && !restart ? readMosaicReviews(gamePath,reviewKey) : undefined;
   const isCached = (image: UnityImage) => {
@@ -244,9 +244,8 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
     ? ports.beginUsage(!restart) : undefined;
   const usage = metrics?.usage ?? ownedUsage;
   let processed = 0, failures = 0;
-  const requestConcurrency = metrics?.usage && Math.min(targets.length, Math.max(1, Math.min(2, reviewSettings.refineConcurrency ?? 1)));
   const timingScope = deploymentScope ?? usage?.scope;
-  const selections = timingScope && gameStepSelections(timingScope, deploymentScope ? "mosaic" : "refine", requestConcurrency);
+  const selections = timingScope && gameStepSelections(timingScope, deploymentScope ? "mosaic" : "refine");
   const retries = new Map((restart ? [] : targets).filter(image => !!resultFor(rows, image).refineError)
     .map(image => [image.id, image.sourceHash]));
   if (retries.size) setRefineRetries(retries);
@@ -261,7 +260,7 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
   let succeeded = false;
   try {
     const result = await refineBatch(targets, {
-      root: gamePath, settings: reviewSettings, signal, modelFile: detectorFile, read, prepare: prepareSources, restart, timingScope,
+      root: gamePath, settings: reviewSettings, signal, modelFile: detectorFile, read, prepare: prepareSources, restart, timingScope, prepareRequest,
       request: (model, prompt, image, signal, lanes) => request(model, prompt, image, signal, selections ? selections(lanes) : undefined)
         .finally(() => usage?.refresh()),
       onResult: (image, scan) => {

@@ -6,8 +6,8 @@ import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { mosaicReviewKey, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
 import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
-import { requestGameModelJson } from "./gameModelRequest";
-import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
+import { prepareMosaicReviewModel, requestGameModelJson } from "./gameModelRequest";
+import { gameStepSelections, measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import type { AnnotatedSampleSet } from "./benchmark/imageSampleSet";
 import type { ImageBenchmarkWorkload } from "./gameImageBenchmark";
 import type { BenchmarkConfig, BenchmarkStepRunner } from "./gameTextBenchmark";
@@ -182,12 +182,15 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
       // Use the same isolated review checkpoint when a paused configuration resumes.
       const root = "benchmark:" + runId;
       if (!annotated) seedRefineProposals(root, pending, workload, options);
-      const selection = { ...config.prompts };
-      rememberBenchmarkExecution(selection, scope, step, options.refineConcurrency ?? 1);
+      const selections = gameStepSelections(scope, step);
+      let completed = prior;
       const result = await refineMosaicBatch(pending, {
-        root, settings: { ...options, refineScope: "all" }, maxConcurrentRequests: 4, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
-        request: (model, prompt, image, signal) => requestGameModelJson(settings, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
-        onResult: recordScan,
+        root, settings: { ...options, refineScope: "all" }, signal, modelFile: workload.modelFile, read: readSample, timingScope: scope,
+        prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal,
+          detail => onProgress({ completed, total: images.length, detail })),
+        request: (model, prompt, image, signal, lanes) => requestGameModelJson(settings, model, prompt, signal, image,
+          "game-images", undefined, { role: "mosaic", selection: selections(lanes) }),
+        onResult: (image, scan) => { completed++; recordScan(image, scan); },
         onError: (image, reason) => saveResult(image.id,{ category:mosaicStatusLabels.failed,status:"失败",reason }),
         onProgress: (completed, detail) => onProgress({ completed: prior + completed, total: images.length, detail }),
       });

@@ -118,14 +118,13 @@ const benchmarkExecutions = new WeakMap<object, Execution>();
 export function rememberBenchmarkExecution(selection: object, scope: string, step: string, lanes: number) {
   benchmarkExecutions.set(selection, { performanceScope: scope, performanceStep: step, llmConcurrency: lanes });
 }
-export function gameStepSelections(scope: string, step: string, llmConcurrency?: number) {
+export function gameStepSelections(scope: string, step: string) {
   const selections = new Map<number, object>();
   return (lanes: number) => {
     let selection = selections.get(lanes);
     if (!selection) {
       selection = {};
-      // Report worker lanes without changing the request scheduler's existing limit.
-      benchmarkExecutions.set(selection, { performanceScope: scope, performanceStep: step, performanceConcurrency: lanes, llmConcurrency });
+      benchmarkExecutions.set(selection, { performanceScope: scope, performanceStep: step, performanceConcurrency: lanes, llmConcurrency: lanes });
       selections.set(lanes, selection);
     }
     return selection;

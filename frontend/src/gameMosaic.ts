@@ -54,6 +54,12 @@ export type MosaicSettings = {
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
 export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const mosaicRefineConcurrencyChoices = [1, 2, 4];
+
+export function mosaicRefineConcurrency(value?: number) {
+  return value !== undefined && mosaicRefineConcurrencyChoices.includes(value) ? value : 1;
+}
+
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
@@ -65,6 +71,7 @@ export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "de
   return { ...defaultMosaicSettings, ...value, detector: value?.detector === "grid" ? "grid" : "anime",
     screening: normalizeMosaicScreening(value?.screening),
     concurrency: legacy ? 2 : value?.concurrency ?? 2,
+    refineConcurrency: mosaicRefineConcurrency(value?.refineConcurrency),
     refineScope: "selected" };
 }
 export function readMosaicSettings(root: string): MosaicSettings {

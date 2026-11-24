@@ -76,13 +76,17 @@ export async function prepareGameOllamaModels(connections: Array<{ connection: M
   }
 }
 
-export async function prepareGameOllamaParallel(connection: ModelConnection, lanes: number, signal: AbortSignal, report: OllamaOutput) {
+export async function prepareGameOllamaParallel(connection: ModelConnection, lanes: number, signal: AbortSignal, report: OllamaOutput, options?: { keepExternalService?: boolean }) {
   if (!isTauri()) return;
   const address = ollamaAddress(connection);
   if (!address) return;
   signal.throwIfAborted();
   const status = await invoke<OllamaRuntime>("ollama_runtime_status", address);
   if (status.running && (lanes === 1 || status.parallel !== null && status.parallel >= lanes)) return;
+  if (status.running && status.parallel === null && options?.keepExternalService) {
+    report("正在使用外部启动的 Ollama，实际并行数取决于该服务的配置。", "info");
+    return;
+  }
   if (status.running) {
     report(`正在自动调整 Ollama 服务并发为 ${lanes}，服务将重启，当前连接到该服务的请求会中断。`, "info");
     showAppNotice("正在自动调整 Ollama 服务并发");

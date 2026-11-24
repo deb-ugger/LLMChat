@@ -1,4 +1,4 @@
-import { loadMosaicDetector, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
+import { loadMosaicDetector, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, mosaicRefineConcurrency, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
 import { mosaicInitialScreening, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "./gameMosaicStatus";
 import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
@@ -308,7 +308,8 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   root: string; settings: MosaicSettings; signal: AbortSignal; modelFile?: File;
   read: (image:UnityImage,signal:AbortSignal)=>Promise<Blob>;
   prepare?: (images:readonly UnityImage[],signal:AbortSignal)=>Promise<Record<string, string>>;
-  request: MosaicReviewRequest; restart?: boolean; timingScope?: string; maxConcurrentRequests?: number;
+  request: MosaicReviewRequest; restart?: boolean; timingScope?: string;
+  prepareRequest?: (model: string, lanes: number) => Promise<void>;
   onResult?: (image:UnityImage,scan:MosaicScan)=>void; onError?: (image:UnityImage,error:string)=>void;
   onProgress?: (completed:number,detail:string)=>void;
   onPreparation?: (prepared: number, total: number) => void;
@@ -425,7 +426,7 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
     const group=groups.get(model);
     if(group)group.push(image);else groups.set(model,[image]);
   }
-  const lane=async(model:string,batch:UnityImage[],lanes:number)=>{
+  const lane=async(model:string,batch:UnityImage[],lanes:number,prepareRequest:()=>Promise<void>)=>{
     while(cursor<batch.length) {
       signal.throwIfAborted();const image=batch[cursor++];
       try {
@@ -443,7 +444,10 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
               if (!pending) {
                 const region = local ? "候选区域 " + position + "/" + total : "整图";
                 options.onProgress?.(results.size, model + " · " + image.name + " · " + region + " · 等待模型返回");
-                pending = options.request(model, prompt, crop, signal, lanes).then(parseRegionReview);
+                pending = prepareRequest().then(() => {
+                  signal.throwIfAborted();
+                  return options.request(model, prompt, crop, signal, lanes);
+                }).then(parseRegionReview);
                 requests.set(id, pending);
               }
               const response = await pending;
@@ -473,8 +477,10 @@ export async function refineMosaicBatch(images: readonly UnityImage[], options: 
   };
   for(const [model,batch] of groups) {
     cursor=0;
-    const lanes=Math.min(batch.length,Math.max(1,Math.min(options.maxConcurrentRequests ?? 2,settings.refineConcurrency ?? 1)));
-    const settled=await Promise.allSettled(Array.from({length:lanes},()=>lane(model,batch,lanes)));
+    const lanes = Math.min(batch.length, mosaicRefineConcurrency(settings.refineConcurrency));
+    let ready: Promise<void> | undefined;
+    const prepareRequest = () => ready ??= Promise.resolve().then(() => options.prepareRequest?.(model, lanes));
+    const settled = await Promise.allSettled(Array.from({ length: lanes }, () => lane(model, batch, lanes, prepareRequest)));
     for(const item of settled)if(item.status==="rejected")throw item.reason;
   }
   return {results,failed};

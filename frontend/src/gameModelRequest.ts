@@ -1,9 +1,15 @@
 import { gameModelExecution, type ModelServiceTiming } from "./gameModelPerformance";
 import { loadLlmRuntime, runModelRequest } from "./llmRuntime";
-import { withGameOllama, gameOllamaNative, type OllamaOutput } from "./gameOllama";
+import { withGameOllama, gameOllamaNative, prepareGameOllamaParallel, type OllamaOutput } from "./gameOllama";
 import { API_BASE, type Settings } from "./api";
 import { resolveFeatureLlm, loadLocalModelProfiles } from "./modelPresets";
 import { ollamaRequestContext } from "./ollamaContext";
+
+export async function prepareMosaicReviewModel(settings: Settings, model: string, lanes: number, signal: AbortSignal, report: OllamaOutput) {
+  if (lanes <= 2 || !loadLocalModelProfiles()[model]) return;
+  const connection = { ...resolveFeatureLlm(settings, model), localModel: true };
+  await prepareGameOllamaParallel(connection, lanes, signal, report, { keepExternalService: true });
+}
 
 export async function requestGameModelJson(settings: Settings, model: string, prompt: string, signal: AbortSignal, image?: string, endpoint: "game-images" | "game-text" = "game-images", report?: OllamaOutput, execution?: { selection?: object; role: string; imageClassification?: boolean; groupedImageOcr?: boolean }): Promise<unknown> {
   if (!model) throw new Error("请选择处理模型");

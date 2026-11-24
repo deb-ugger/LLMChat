@@ -2,14 +2,14 @@ import { formatMosaicParameters, type BenchmarkParameter } from "../benchmark/be
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
 import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
-import { requestGameModelJson } from "../gameModelRequest";
+import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
-import { readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicModel } from "../gameMosaic";
+import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
@@ -678,6 +678,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         read, prepareSources, refineBatch: refineMosaicBatch, readMosaicReviews, setRows, setRefineRetries,
         beginUsage: resume => beginMosaicStepUsage(gamePath, "refine", resume),
         gameStepSelections,
+        prepareRequest: (model, lanes) => prepareMosaicReviewModel(configuration, model, lanes, signal, detail => setProgress(detail)),
         request: (model, prompt, image, signal, selection) =>
           requestGameModelJson(configuration, model, prompt, signal, image, "game-images", undefined, { role: "mosaic", selection }),
       });
@@ -693,7 +694,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       trackReview: session => { lastReview.current = session; },
     }), {id:"refine",total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       parameters: formatMosaicParameters("mosaicRefine", {
-        ...preferences, refineConcurrency: Math.min(targets.length, Math.max(1, Math.min(2, preferences.refineConcurrency ?? 1))),
+        ...preferences, refineConcurrency: Math.min(targets.length, mosaicRefineConcurrency(preferences.refineConcurrency)),
       }), resume: !restart});
   }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);

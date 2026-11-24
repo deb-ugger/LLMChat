@@ -9,7 +9,7 @@ import { openBenchmarkReview } from "../gameAuxWindows";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
-import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
+import { mosaicRefineConcurrencyChoices, readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
@@ -812,7 +812,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
                 onChange={model => changeMosaic(config.id, { refineGuardModel: model })} />
             </div>
             <label>并发<select value={config.mosaic.refineConcurrency ?? 1} onChange={event => changeMosaic(config.id, { refineConcurrency: Number(event.target.value) })}>
-              <option>1</option><option>2</option><option>4</option>
+              {mosaicRefineConcurrencyChoices.map(value => <option key={value} value={value}>{value}</option>)}
             </select></label>
           </>}
           {mosaicStep === "mosaicRedraw" && <>
