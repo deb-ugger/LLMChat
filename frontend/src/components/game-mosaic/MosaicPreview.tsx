@@ -92,7 +92,7 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
       event.stopPropagation();
       event.currentTarget.closest("figure")?.focus({ preventScroll: true });
       pan.current = { pointer: event.pointerId, clientX: event.clientX, clientY: event.clientY,
-        x: view.x, y: view.y, clearOnClick: !moveOnly && !editing };
+        x: view.x, y: view.y, clearOnClick: !moveOnly };
       event.currentTarget.setPointerCapture(event.pointerId);
       setPanning(true);
     }}
@@ -162,6 +162,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const { tool, draft, transformed, resizeTarget, activeBoxes, selection, hasSelection } = masks;
   const editing = tool !== null;
   const canSelectMask = !actionsDisabled && tool !== "add";
+  const deselectMask = () => masks.selectBox(undefined, false);
   const previews = useRef<HTMLDivElement>(null);
   const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
   const [viewer, setViewer] = useState<{ showResult: boolean; version?: "saved" | MosaicModel } | null>(null);
@@ -315,10 +316,13 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             </button>)}
           </div>}
         </>} className="game-mosaic-original-frame" aria-label="原图编辑区"
+          onClick={event => {
+            if (!(event.target as Element).closest(".game-mosaic-image-area, button")) deselectMask();
+          }}
           onKeyDown={onImageToolKey} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
           <div className="game-mosaic-original-viewport">
             {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}
-              onBackground={() => masks.selectBox(undefined, false)}>
+              onBackground={deselectMask}>
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
               <svg viewBox={`0 0 ${active.width} ${active.height}`} className={editing ? "is-editing" : undefined}
                 aria-label="去码蒙版" onPointerDown={masks.onPointerDown} onPointerMove={masks.onPointerMove}
