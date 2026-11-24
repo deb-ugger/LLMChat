@@ -1,7 +1,7 @@
 import type { MosaicBox } from "./gameMosaic";
 import type { MosaicLocalModels } from "./gameMosaicCandidateInputs";
 
-export type MosaicScreening = { localZoom: boolean; presenceThreshold: number; boxThreshold: number; localModels?: MosaicLocalModels };
+export type MosaicScreening = { localZoom: boolean; modelConcurrency?: number; presenceThreshold: number; boxThreshold: number; localModels?: MosaicLocalModels };
 export const defaultMosaicScreening: Readonly<MosaicScreening> = {
   localZoom: false, presenceThreshold: 0.47, boxThreshold: 0.25,
 };
@@ -12,6 +12,7 @@ export function normalizeMosaicScreening(value?: Partial<MosaicScreening>): Mosa
     ...((value?.localModels?.eva || value?.localModels?.mrcnn) && { localModels: {
       ...(value.localModels.eva && { eva: value.localModels.eva }), ...(value.localModels.mrcnn && { mrcnn: value.localModels.mrcnn }),
     } }),
+    modelConcurrency: [1, 2, 4].includes(value?.modelConcurrency ?? 1) ? value?.modelConcurrency ?? 1 : 1,
     localZoom: value?.localZoom ?? defaultMosaicScreening.localZoom,
     presenceThreshold: threshold(value?.presenceThreshold, defaultMosaicScreening.presenceThreshold),
     boxThreshold: threshold(value?.boxThreshold, defaultMosaicScreening.boxThreshold),

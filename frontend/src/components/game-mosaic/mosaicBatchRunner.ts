@@ -155,7 +155,7 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
   resetRedraw(ids);
   const lanes = Math.min(targets.length, Math.max(1, Math.min(4, concurrency ?? 2)));
   const detector = detectorKind !== "grid" ? await loadMosaicDetector(detectorFile, {
-    initialScreening: true, screening: plan.screening,
+    initialScreening: true, screening: plan.screening, maxConcurrency: lanes,
     signal, timingScope: usage?.scope,
     onDevice,
   }) : undefined;

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 struct UsageEvent {
     std::string id;
@@ -46,6 +47,7 @@ constexpr int kUsageTokensUnknown = -1;
 struct ModelActivity {
     double tokensPerSecond = 0;
     size_t modelCount = 0;
+    size_t modelInstanceCount = 0;
 };
 
 class SqliteUsageDb;
@@ -119,6 +121,7 @@ private:
     };
     std::mutex activityMutex_;
     std::deque<ModelCompletion> recentCompletions_;
+    std::unordered_map<std::string, std::string> activeModelRequests_;
     void pruneModelActivity(ActivityClock::time_point now);
 
     nlohmann::json toJson(const UsageEvent& ev) const;

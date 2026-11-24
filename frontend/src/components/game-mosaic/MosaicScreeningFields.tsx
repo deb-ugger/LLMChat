@@ -8,6 +8,11 @@ export function MosaicScreeningFields({ value, disabled, onChange }: {
     if (Number.isFinite(number) && number >= 0.05 && number <= 0.95) onChange({ ...current, [key]: number });
   };
   return <>
+    <label>ONNX 推理路数<select disabled={disabled} value={current.modelConcurrency ?? 1}
+      onChange={event => onChange({ ...current, modelConcurrency: Number(event.target.value) })}>
+      {[1, 2, 4].map(count => <option key={count} value={count}>{count}</option>)}
+    </select></label>
+    <small className="hint">每路使用独立工作线程、模型会话和输入画布；多开会增加内存、显存占用。实际路数不超过图片处理并发。</small>
     <label>分类模型<select disabled={disabled} value={current.localModels?.eva ? "eva" : "builtin"}
       onChange={event => onChange({ ...current, localModels: { ...current.localModels,
         eva: event.target.value === "eva" ? { modelPath: "", labelsPath: "" } : undefined } })}>

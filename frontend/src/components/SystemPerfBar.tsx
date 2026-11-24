@@ -6,7 +6,7 @@ import { fetchSystemPerformanceHistory, fetchSystemPerformanceNow } from "../sys
  * 底部系统性能条。
  *
  * 收起态（38px）：性能⌄ │ CPU 56°C 12% ▁▂▃ │ 内存 72% ▁▂▃ │ 磁盘 9.4MB/s 62% ▁▂▃ │
- *               网络 477KB/s ▁▂▃ │ GPU 84°C 88% ▁▂▃ │ 模型服务 2模型 53.0tok/s ▁▂▃
+ *               网络 477KB/s ▁▂▃ │ GPU 84°C 88% ▁▂▃ │ 模型服务 2路调用 53.0tok/s ▁▂▃
  * 展开态：向上浮起随内容定高的面板，7 张卡片（CPU / 内存 / 磁盘 / 网络 / GPU / CPU 温度 / 模型服务）。
  *
  * 取不到的字段（温度、磁盘占用率、tok/s、模型数量）显示「—」，不参与取档，
@@ -161,7 +161,7 @@ export function SystemPerfBar() {
     const disk = formatRate(latest?.disk ?? null);
     const network = formatRate(latest?.network ?? null);
     const tok = formatTokPerSecond(latest?.tokensPerSecond ?? null);
-    const modelCount = latest?.modelCount ?? null;
+    const modelCount = latest?.modelInstanceCount ?? null;
     const gpuTemperature = formatTemp(latest?.gpuTempC ?? null);
     return [
       {
@@ -219,7 +219,7 @@ export function SystemPerfBar() {
         key: "service",
         tone: "service",
         label: "模型服务",
-        secondary: modelCount == null ? "—" : `${modelCount} 模型`,
+        secondary: modelCount == null ? "—" : `${modelCount} 路调用`,
         value: tok.value,
         unit: tok.unit,
         level: null,
@@ -260,7 +260,7 @@ export function SystemPerfBar() {
         {metrics.map(metric => {
           const path = sparkPath(metric.series, metric.max);
           return (
-            <span className={`sys-metric tone-${metric.tone}${metric.level ? ` is-${metric.level}` : ""}`} key={metric.key}>
+            <span className={`sys-metric tone-${metric.tone}${metric.level ? ` is-${metric.level}` : ""}`} key={metric.key} data-tooltip={metric.key === "service" ? "正在进行的大模型服务调用数；同一模型并发调用分别计数。ONNX 推理路数在初筛配置中单独设置。" : undefined}>
               <span className="sys-metric-text">
                 <span className="sys-metric-key">{metric.label}</span>
                 {metric.secondary ? (

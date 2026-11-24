@@ -300,7 +300,7 @@ function stopMeter(meter: StepPerformance) {
   delete meter.started;
 }
 
-export function startGameTiming(context: string | Partial<Execution> | undefined, category: GameTimingCategory): () => void {
+export function startGameTiming(context: string | Partial<Execution> | undefined, category: GameTimingCategory): (durationMs?: number) => void {
   const meter = typeof context === "string"
     ? Object.values(records(context)).find(step => step.started !== undefined)
     : context && requestMeter(context);
@@ -312,13 +312,13 @@ export function startGameTiming(context: string | Partial<Execution> | undefined
   windows.set(category, interval);
   interval.count++;
   let finished = false;
-  return () => {
+  return (durationMs?: number) => {
     if (finished) return;
     finished = true;
     if (timingWindows.get(meter) !== windows || meter.started === undefined || meter.endedAt) return;
     const now = performance.now();
     const totals = meter.timing ??= {};
-    totals[category] = (totals[category] || 0) + now - started;
+    totals[category] = (totals[category] || 0) + (durationMs ?? now - started);
     if (--interval.count === 0) {
       windows.delete(category);
       const wallTiming = meter.wallTiming ??= {};

@@ -23,6 +23,8 @@ export type SystemPerformancePoint = {
   tokensPerSecond?: number | null;
   /** 当前有请求的模型数量 */
   modelCount?: number | null;
+  /** 正在调用的模型实例数；同一模型的并发请求分别计数。 */
+  modelInstanceCount?: number | null;
 };
 
 export type SystemPerformanceSource = "formal" | "benchmark";

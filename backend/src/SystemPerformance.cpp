@@ -94,6 +94,7 @@ Json pointJson(const Point* point, const char* timeKey, std::string_view metric 
     result["tempSource"] = temperature.source ? Json(temperature.source) : Json(nullptr);
     result["tokensPerSecond"] = activity ? Json(activity->tokensPerSecond) : Json(nullptr);
     result["modelCount"] = activity ? Json(activity->modelCount) : Json(nullptr);
+    result["modelInstanceCount"] = activity ? Json(activity->modelInstanceCount) : Json(nullptr);
     return result;
 }
 
@@ -411,6 +412,7 @@ public:
             const auto activity = usage_.recentModelActivity();
             result["tokensPerSecond"] = activity.tokensPerSecond;
             result["modelCount"] = activity.modelCount;
+            result["modelInstanceCount"] = activity.modelInstanceCount;
             return result;
         }
         return pointJson(&samples_.back(), "sampledAt");

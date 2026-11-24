@@ -792,7 +792,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
               <option value="">关闭</option>{[...new Set([config.mosaic.screenVisionModel, ...models])].filter((model): model is string => !!model).map(model =>
                 <option key={model} value={model}>{model}</option>)}
             </select></label>
-            <label>并发<select value={config.mosaic.concurrency ?? 2} onChange={event => changeMosaic(config.id, { concurrency: Number(event.target.value) })}>
+            <label>图片处理并发<select value={config.mosaic.concurrency ?? 2} onChange={event => changeMosaic(config.id, { concurrency: Number(event.target.value) })}>
               {[1, 2, 4].map(value => <option key={value}>{value}</option>)}
             </select></label>
           </>}

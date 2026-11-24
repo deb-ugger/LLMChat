@@ -210,7 +210,7 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"高召回初筛（分类＋定位）"}]} change={detector=>updateMosaic({detector})}/>
           {mosaic.detector !== "grid" && <MosaicScreeningFields value={mosaic.screening} disabled={working}
             onChange={screening => updateMosaic({ screening })} />}
-          <Count label="筛选并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
+          <Count label="图片处理并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
           <Flag label="自动流程执行视觉复筛" value={mosaic.refine!==false} change={refine=>updateMosaic({refine})}/>
           <Flag label="自动流程使用大模型补查未发现" value={!!mosaic.refineIncludeMissed} change={refineIncludeMissed=>updateMosaic({refineIncludeMissed})}/>
           <Select label="候选区域推理模型" value={mosaic.refineModel || "qwen3.5:latest"} choices={[...new Set(["qwen3.5:latest",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineModel=>updateMosaic({refineModel})}/>

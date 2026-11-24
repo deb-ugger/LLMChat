@@ -20,6 +20,8 @@ type RawSample = {
   tempSource?: "lhm" | "acpi" | null;
   tokensPerSecond?: number | null;
   modelCount?: number | null;
+  /** 正在调用的模型实例数；同一模型的并发请求分别计数。 */
+  modelInstanceCount?: number | null;
 };
 
 function percentOfMemory(memory: RawMemory): number | null {
@@ -60,6 +62,7 @@ function toPoint(raw: RawSample, at: number | null | undefined): SystemPerforman
     tempSource: raw.tempSource ?? null,
     tokensPerSecond: raw.tokensPerSecond ?? null,
     modelCount: raw.modelCount ?? null,
+    modelInstanceCount: raw.modelInstanceCount ?? null,
   };
 }
 

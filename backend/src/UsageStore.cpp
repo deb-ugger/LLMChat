@@ -270,23 +270,24 @@ void UsageStore::markPending(UsageEvent& ev)
     ev.errorMessage =
         "请求未完成（等待响应时程序已退出），Token 消耗未知";
     append(ev);
+    if (ev.channel == "llm" && !ev.model.empty() && ev.requestType.empty()) {
+        std::lock_guard lock(activityMutex_);
+        activeModelRequests_[ev.id] = ev.model;
+    }
 }
 
 void UsageStore::finalize(const UsageEvent& ev)
 {
-    if (ev.channel == "llm" && !ev.model.empty() && ev.requestType.empty())
-    {
-        try
-        {
-            std::lock_guard lock(activityMutex_);
+    try {
+        std::lock_guard lock(activityMutex_);
+        activeModelRequests_.erase(ev.id);
+        if (ev.channel == "llm" && !ev.model.empty() && ev.requestType.empty()) {
             const auto now = ActivityClock::now();
             pruneModelActivity(now);
             recentCompletions_.push_back({now, ev.model, std::max(0, ev.completionTokens)});
         }
-        catch (...)
-        {
-            // Real-time counters must not interfere with completion or persistence.
-        }
+    } catch (...) {
+        // Activity counters must not interfere with usage persistence.
     }
     append(ev);
 }
@@ -308,7 +309,7 @@ ModelActivity UsageStore::recentModelActivity()
         tokens += completion.completionTokens;
         models.insert(completion.model);
     }
-    return {static_cast<double>(tokens) / modelWindow.count(), models.size()};
+    return {static_cast<double>(tokens) / modelWindow.count(), models.size(), activeModelRequests_.size()};
 }
 
 void UsageStore::clear()

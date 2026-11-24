@@ -135,7 +135,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         <label>筛选范围<select aria-label="筛选范围" value={scope} disabled={busy} onChange={event => screen.changeScope(event.target.value as typeof scope)}>
           <option value="scenes">场景图片</option><option value="all">全部图片</option>
         </select></label>
-        <label>筛选并发<select aria-label="去码筛选并发" value={preferences.concurrency ?? 2} disabled={busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
+        <label>图片处理并发<select aria-label="图片处理并发" value={preferences.concurrency ?? 2} disabled={busy} onChange={event=>changePreferences({concurrency:Number(event.target.value)})}>
           {[1,2,4].map(value=><option key={value} value={value}>{value}</option>)}
         </select></label>
         <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>

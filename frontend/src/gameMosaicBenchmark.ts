@@ -210,7 +210,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
     }
     if (prior) onProgress({ completed, total: images.length, detail: "已恢复 " + prior + " 张样本结果" });
     const detector = pending.length && step === "mosaicScreen" && options.detector !== "grid"
-      ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope, initialScreening: true, screening: options.screening }) : undefined;
+      ? await loadMosaicDetector(workload.modelFile, { signal, timingScope: scope, initialScreening: true, screening: options.screening, maxConcurrency: Math.min(pending.length, options.concurrency ?? 2) }) : undefined;
     const screenModel = step === "mosaicScreen" ? options.screenVisionModel : undefined;
     const selection = { ...config.prompts };
     if (screenModel) rememberBenchmarkExecution(selection, scope, step, Math.max(1, Math.min(4, options.concurrency ?? 2)));

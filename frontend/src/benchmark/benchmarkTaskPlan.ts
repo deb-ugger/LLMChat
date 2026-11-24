@@ -18,8 +18,8 @@ export function readMosaicTaskPlan(raw: string, scope: string, current: Benchmar
     version?: number; dataset?: string;
     tasks?: { step?: "mosaicScreen" | "mosaicRefine"; source?: Source; rounds?: number; configs?: ConfigRow[] }[];
   } | null;
-  if ((file?.version !== 1 && file?.version !== 2 && file?.version !== 3) || !Array.isArray(file.tasks) || file.tasks.length < 1 || file.tasks.length > 24)
-    throw new Error("配置单须为版本 1、2 或 3，并包含 1 至 24 个测试任务");
+  if ((file?.version !== 1 && file?.version !== 2 && file?.version !== 3 && file?.version !== 4) || !Array.isArray(file.tasks) || file.tasks.length < 1 || file.tasks.length > 24)
+    throw new Error("配置单须为版本 1 至 4，并包含 1 至 24 个测试任务");
   const version = file.version;
   const dataset = typeof file.dataset === "string" ? file.dataset.trim() : "";
   if (!dataset || !/[\\/]manifest\.json$/i.test(dataset))
@@ -51,9 +51,11 @@ export function readMosaicTaskPlan(raw: string, scope: string, current: Benchmar
       if (version >= 2 && screen && screening === undefined) throw new Error("版本 2 及以上的初筛配置须明确提供 screening 参数");
       if (screening !== undefined && (!screening || typeof screening !== "object" || Array.isArray(screening) ||
           (screening.localZoom !== undefined && typeof screening.localZoom !== "boolean") ||
+          (screening.modelConcurrency !== undefined && ![1, 2, 4].includes(screening.modelConcurrency)) ||
           [screening.presenceThreshold, screening.boxThreshold].some(value => value !== undefined &&
             (typeof value !== "number" || !Number.isFinite(value) || value < 0.05 || value > 0.95))))
-        throw new Error("初筛阈值须为 0.05 至 0.95，局部放大须为布尔值");
+        throw new Error("初筛阈值须为 0.05 至 0.95，ONNX 推理路数须为 1、2 或 4，局部放大须为布尔值");
+      if (version >= 4 && screen && screening?.modelConcurrency === undefined) throw new Error("版本 4 的初筛配置须明确提供 ONNX 推理路数");
       validateMosaicLocalModels(screening?.localModels);
       if (screening?.localModels && (version < 3 || detector !== "anime")) throw new Error("本地 ONNX 模型需要版本 3 的分类＋定位配置");
       const settings = { ...mosaic, detector, screening: normalizeMosaicScreening(screening ?? mosaic.screening), selection: screen ? "all" as const : "checked" as const, sampleLimit: 0 };

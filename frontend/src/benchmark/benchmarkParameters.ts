@@ -111,9 +111,10 @@ export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Par
       add("自动执行视觉复筛", switchLabel(mosaic.refine !== false));
     } else if (step === "mosaicScreen") {
       add("筛选方式", mosaic.detector === "grid" ? "方格规则" : "分类＋定位");
-      add("筛选并发", mosaic.concurrency ?? 2);
+      add("图片处理并发", mosaic.concurrency ?? 2);
       if (mosaic.detector !== "grid") {
         const screening = normalizeMosaicScreening(mosaic.screening);
+        add("ONNX 推理路数", Math.min(mosaic.concurrency ?? 2, screening.modelConcurrency ?? 1));
         add("分类模型", screening.localModels?.eva ? "WD EVA02-Large" : "MobileNetV3");
         add("定位模型", screening.localModels?.mrcnn ? "Censor Mask R-CNN" : "YOLO11m");
         if (screening.localModels?.eva) { add("分类模型文件", screening.localModels.eva.modelPath); add("分类标签文件", screening.localModels.eva.labelsPath); }
