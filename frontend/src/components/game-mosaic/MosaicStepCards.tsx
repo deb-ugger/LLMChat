@@ -62,8 +62,8 @@ type Props = {
   redraw: {
     status?: StepRun;
     targetCount: number;
-    groupTargetCount: number;
-    skipped: string;
+    groupTargetCount?: number;
+    skipped?: string;
     remainingCount: number;
     paused: boolean;
     canClear: boolean;
@@ -71,7 +71,7 @@ type Props = {
     groupReason?: string;
     referenceFlow?: { detail: string; label?: string; reason?: string; run?: () => void };
     start: () => void;
-    startGroup: () => void;
+    startGroup?: () => void;
     clear: () => Promise<void>;
   };
   unresolvedRefineFailures: number;
@@ -86,7 +86,12 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const expansion = useGameFlowExpansion();
   const detectorInput = useRef<HTMLInputElement>(null);
   const refineSelection = "已勾选 " + refine.targetCount.toLocaleString() + " 张";
-  const redrawSelection = "当前列表可重绘 " + redraw.targetCount.toLocaleString() + " 张";
+  const hasGroupAction = redraw.startGroup !== undefined && redraw.groupTargetCount !== undefined;
+  const redrawSelection = (hasGroupAction ? "当前列表可重绘 " : "本组已勾选 ") + redraw.targetCount.toLocaleString() + " 张";
+  const redrawStartLabel = redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount
+    : (hasGroupAction ? "重绘已勾选 · " : "重绘本组所选 · ") + redraw.targetCount;
+  const redrawStartHint = redraw.paused ? "按上一次重绘的图片及配置继续"
+    : hasGroupAction ? "按图片组重绘已勾选图片，规则见下方「重绘规则」" : "重绘当前画风组内已勾选的图片";
   const stage = { screen, refine, redraw };
   const order = ["screen", "refine", "redraw"] as const;
   const defaultStep = order.find(id => stage[id].status?.state === "running") ??
@@ -243,11 +248,11 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       </>)}
       {stepCard("redraw", "重绘打码区域", <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
-          data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" : "按图片组重绘已勾选图片，规则见下方「重绘规则」")}
+          data-tooltip={redraw.batchReason ?? redrawStartHint}
           onClick={redraw.start}>
-          {redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount : "重绘已勾选 · " + redraw.targetCount}
+          {redrawStartLabel}
         </button>
-        {!redraw.paused && <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
+        {!redraw.paused && hasGroupAction && <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
           data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
           本组 · {redraw.groupTargetCount}
         </button>}
