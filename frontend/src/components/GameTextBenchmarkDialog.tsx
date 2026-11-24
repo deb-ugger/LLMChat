@@ -4,6 +4,8 @@ import { allBenchmarkRecordStatuses, BenchmarkRecordStatusFilter, BenchmarkRecor
 import { BuildSpeedTest } from "./BuildSpeedTest";
 import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
+import { scoreMosaicComparisonRuns } from "../benchmark/benchmarkMosaicReport";
+import { mosaicStatusLabels } from "../gameMosaicStatus";
 import { readMosaicTaskPlan } from "../benchmark/benchmarkTaskPlan";
 import { openBenchmarkReview, pickRunReference, runReferenceKey } from "../gameAuxWindows";
 import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../benchmark/formalRunHistory";
@@ -503,6 +505,22 @@ function useBenchmarkArchive(historyRevision: number, formal = false, enabled = 
   return { records, loading, error, refresh: () => setReload(value => value + 1) };
 }
 
+function latestBenchmarkRunsByConfig(history: readonly BenchmarkResult[]) {
+  const latest = new Map<string, { run: BenchmarkResult; finishedAt: number }>();
+  for (const run of history) {
+    if (run.performance.benchmark?.continuedFrom) continue;
+    const config = run.performance.benchmark?.config as { id?: unknown } | undefined;
+    const id = config?.id;
+    if (typeof id !== "string" || !id) continue;
+    const finishedAt = Date.parse(run.performance.endedAt || run.performance.beginTime || "") || 0;
+    const previous = latest.get(id);
+    if (!previous || finishedAt > previous.finishedAt || finishedAt === previous.finishedAt && run.round > previous.run.round) {
+      latest.set(id, { run, finishedAt });
+    }
+  }
+  return latest;
+}
+
 function archivedBenchmarkStep(step?: string): Target | undefined {
   return step && (step === "screen" || step === "translate" ||
     Object.hasOwn(mosaicBenchmarkSteps, step) || Object.hasOwn(imageBenchmarkSteps, step)) ? step as Target : undefined;
@@ -608,6 +626,12 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const showingTaskId = taskDraft?.id;
   const shownJob = showingTaskId ? jobs.find(job => job.id === showingTaskId) : undefined;
   const viewIsCurrent = !!shownJob && shownJob.round === taskDraft?.parameters.round;
+  const shownRound = shownJob?.round;
+  const shownStep = shownJob?.step;
+  const taskRuns = useMemo(() => latestBenchmarkRunsByConfig(archive.records.filter(run =>
+    !!showingTaskId && run.performance.benchmark?.queueId === showingTaskId && run.performance.step === shownStep &&
+    run.round === shownRound && (run.status === "完成" || run.status === "失败"))),
+    [archive.records, showingTaskId, shownStep, shownRound]);
   const changes = useMemo(() => taskDraft && shownJob &&
     benchmarkRoundChanges(shownJob.step, taskDraft.configs, taskDraft.parameters.configs, taskDraft.parameters.earlier),
     [taskDraft, shownJob?.step]);
@@ -719,7 +743,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
   const taskView = shownJob && taskDraft && (viewIsCurrent && changes
     ? <BenchmarkTaskView key={shownJob.id + ":" + shownJob.round} job={shownJob} number={queue.indexOf(shownJob) + 1}
         parameters={taskDraft.parameters} configs={taskDraft.configs} changes={changes} setConfigs={setTaskConfigs} models={props.models}
-        saving={taskAction} canSave={canSave} onSave={saveTask} onExit={exitTask} />
+        latestRunByConfig={taskRuns} saving={taskAction} canSave={canSave} onSave={saveTask} onExit={exitTask} />
     : <BenchmarkSection title="任务测试配置"><p className="hint" role="status">正在读取第 {shownJob.round} 轮配置…</p></BenchmarkSection>);
   const taskDialogs = <>
     {discard.dialog}
@@ -755,13 +779,73 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
 }
 
 
+function BenchmarkTaskRunSummary({ run, queueId, step }: { run: BenchmarkResult; queueId: string; step: Target }) {
+  const { taskId: runId, endedAt, elapsedMs, scope, benchmark } = run.performance;
+  const [metrics, setMetrics] = useState<{ review?: number; score?: string; matches?: string }>({});
+  const reference = readViewPreference(runReferenceKey(queueId));
+  const archivedReference = benchmark?.referenceSampleSetPath ?? benchmark?.sampleSetPath;
+  const referencePath = reference || (typeof archivedReference === "string" ? archivedReference : undefined);
+  const stage = step === "mosaicScreen" || step === "mosaicRefine" ? step : undefined;
+  const hasDetails = benchmark?.imageDetails === true;
+
+  useEffect(() => {
+    if (!hasDetails || !runId) return;
+    let active = true;
+    setMetrics({});
+    void (async () => {
+      const details = await readImageBenchmarkDetails(queueId, runId);
+      if (!active) return;
+      const outcomes = Object.values(details.results);
+      const review = outcomes.length ? outcomes.filter(outcome => outcome.category === mosaicStatusLabels.review &&
+        outcome.status !== "失败" && outcome.status !== "跳过").length : undefined;
+      setMetrics({ review });
+      if (!stage) return;
+      const report = await scoreMosaicComparisonRuns([{ run, runId, details }], referencePath, stage, !!reference);
+      const row = report.totals[0];
+      if (!active || !row) return;
+      const score = stage === "mosaicRefine" && row.score.displayScore != null
+        ? (row.score.provisional ? "暂定 " : "") + row.score.displayScore.toFixed(1) + " 分" : undefined;
+      setMetrics({ review, score, matches: row.expectedBoxes > 0 ? row.foundBoxes + "/" + row.expectedBoxes : undefined });
+    })().catch(() => { /* Optional archive metrics can be unavailable for older runs. */ });
+    return () => { active = false; };
+  }, [hasDetails, queueId, runId, run, stage, referencePath, reference]);
+
+  const archivedReview = /(?:^| · )待(?:人工)?复核 (\d+) 张/.exec(run.summary || "")?.[1];
+  const failed = run.status === "失败" || run.failed > 0;
+  const itemUnit = step === "screen" || step === "translate" ? "条" : "张";
+  const stats = [
+    ["样本", run.selected], ["成功", run.translated], ["失败", run.failed],
+    ["待复核", metrics.review ?? archivedReview ?? "—"], ["复筛综合分", metrics.score ?? "—"],
+    ["匹配框", metrics.matches ?? "—"],
+  ];
+  return <section className="game-benchmark-run-summary" aria-label="配置运行结果"
+    style={{ gridTemplateColumns: "minmax(0, 1fr)", cursor: "auto", borderBlockStart: "1px solid var(--border)", paddingBlockStart: "var(--space-3)" }}>
+    <header className="game-benchmark-run-summary-head game-benchmark-toolbar">
+      <strong className="game-benchmark-run-badge" data-tone={failed ? "failure" : "complete"}>{failed ? "失败" : "已完成"}</strong>
+      <span>结束 {endedAt ? <time dateTime={endedAt}>{new Date(endedAt).toLocaleString("zh-CN", { hour12: false })}</time> : "—"}</span>
+      <span>用时 {gameDuration(elapsedMs)}</span>
+    </header>
+    <dl className="game-benchmark-run-summary-stats game-benchmark-toolbar" style={{ margin: 0, gap: "var(--space-2) var(--space-4)" }}>
+      {stats.map(([label, value]) => <div key={label} className="game-benchmark-run-summary-stat">
+        <dt className="hint">{label}</dt>
+        <dd style={{ margin: 0, fontVariantNumeric: "tabular-nums" }}><strong>{value}</strong></dd>
+      </div>)}
+    </dl>
+    <footer className="game-benchmark-run-summary-foot game-benchmark-toolbar">
+      <button type="button" className="unity-btn" onClick={() => void openBenchmarkReview({
+        kind: "benchmark-review", queueId, scope, step, label: benchmarkTargetLabel(step), itemUnit,
+      }).catch(error => showAppNotice(String(error), "error"))}>查看对照</button>
+    </footer>
+  </section>;
+}
+
 function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, completed, changes, fixedSlots, expanded, toggleConfig,
-  images, engines, models, currentProgress, latestRunByConfig, samplePreview, onEdited, refineFilter, guardFilter }: {
+  images, engines, models, currentProgress, latestRunByConfig, resultQueueId, samplePreview, onEdited, refineFilter, guardFilter }: {
   step: Target; configs: BenchmarkConfig[]; setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>;
   readOnly: boolean; started?: ReadonlySet<string>; completed?: ReadonlySet<string>;
   changes?: ReturnType<typeof benchmarkRoundChanges>; fixedSlots?: boolean; expanded: ReadonlySet<string>; toggleConfig: (id: string, open: boolean) => void;
   images?: ImageBenchmarkSetup; engines?: BenchmarkConfig["engines"]; models: string[]; currentProgress?: BenchmarkJob["progress"];
-  latestRunByConfig?: ReadonlyMap<string, { run: BenchmarkResult }>; samplePreview?: Record<string, BenchmarkSample>;
+  latestRunByConfig?: ReadonlyMap<string, { run: BenchmarkResult }>; resultQueueId?: string; samplePreview?: Record<string, BenchmarkSample>;
   onEdited?: (id: string) => void;
   refineFilter: ReturnType<typeof usePersistedModelFilter>; guardFilter: ReturnType<typeof usePersistedModelFilter>;
 }) {
@@ -985,6 +1069,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
           {config.models.dialogue.id && config.models.dialogue.id !== config.models.text.id && samplePreview?.[config.id].dialogue === 0 &&
             <strong> · 此样本测不到专用对白模型</strong>}
         </p>}
+        {resultQueueId && lastRun && <BenchmarkTaskRunSummary key={lastRun.performance.taskId} run={lastRun} queueId={resultQueueId} step={step} />}
         <footer className="game-benchmark-editor-foot">
           {started && <span>{finished ? "已执行" : activeProgress ? "运行中" : alreadyStarted ? "已开始" : "未开始"}</span>}
           {differs && <span className="game-benchmark-difference-label">跨轮差异</span>}
@@ -1007,9 +1092,10 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
   </div>;
 }
 
-function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfigs, models, saving, canSave, onSave, onExit }: {
+function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfigs, models, latestRunByConfig, saving, canSave, onSave, onExit }: {
   job: BenchmarkJob; number: number; parameters: BenchmarkTaskConfig; configs: BenchmarkConfig[];
   setConfigs: Dispatch<SetStateAction<BenchmarkConfig[]>>; models: string[]; saving: boolean; canSave: boolean; changes: ReturnType<typeof benchmarkRoundChanges>;
+  latestRunByConfig: ReadonlyMap<string, { run: BenchmarkResult }>;
   onSave: () => void; onExit: () => void;
 }) {
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
@@ -1051,7 +1137,7 @@ function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfi
         if (previous.has(id) === open) return previous;
         return open ? new Set([id]) : new Set();
       })} models={models} currentProgress={running && job.progress?.round === job.round ? job.progress : undefined}
-      refineFilter={refineFilter} guardFilter={guardFilter} />
+      latestRunByConfig={latestRunByConfig} resultQueueId={job.id} refineFilter={refineFilter} guardFilter={guardFilter} />
   </BenchmarkSection>;
 }
 
@@ -1465,21 +1551,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     } finally { setAdding(false); }
   };
 
-  const latestRunByConfig = useMemo(() => {
-    const latest = new Map<string, { run: BenchmarkResult; finishedAt: number }>();
-    for (const run of history) {
-      if (run.performance.scope !== runScope || run.performance.step !== step || run.performance.benchmark?.continuedFrom) continue;
-      const config = run.performance.benchmark?.config as { id?: unknown } | undefined;
-      const id = config?.id;
-      if (typeof id !== "string" || !id) continue;
-      const finishedAt = Date.parse(run.performance.endedAt || run.performance.beginTime || "") || 0;
-      const previous = latest.get(id);
-      if (!previous || finishedAt > previous.finishedAt || finishedAt === previous.finishedAt && run.round > previous.run.round) {
-        latest.set(id, { run, finishedAt });
-      }
-    }
-    return latest;
-  }, [history, runScope, step]);
+  const latestRunByConfig = useMemo(() => latestBenchmarkRunsByConfig(history.filter(run =>
+    run.performance.scope === runScope && run.performance.step === step)), [history, runScope, step]);
   const scopeDescription = sampleSetMode ? "使用独立样本集，同一任务的所有配置使用同一批样本。"
     : mosaicStep === "mosaicRefine" || imageStep === "refine" ? "复筛测试优先使用正式复筛前的初筛快照。"
     : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。"
