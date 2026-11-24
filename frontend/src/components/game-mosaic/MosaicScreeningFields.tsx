@@ -4,7 +4,7 @@ import { GameFlowParameterGroup } from "../GameFlowCard";
 
 export function MosaicScreeningFields({ value, disabled, onChange, groups }: {
   value?: Partial<MosaicScreening>; disabled?: boolean; onChange: (value: MosaicScreening) => void;
-  groups?: { runtime: ReactNode; modelFile: ReactNode; actions: ReactNode };
+  groups?: { runtime: ReactNode; numbers: ReactNode; modelFile: ReactNode; actions: ReactNode };
 }) {
   const current = normalizeMosaicScreening(value);
   const threshold = (key: "presenceThreshold" | "boxThreshold", number: number) => {
@@ -48,7 +48,10 @@ export function MosaicScreeningFields({ value, disabled, onChange, groups }: {
   if (!groups) return <>{concurrency}{help}{models}{thresholds}{behavior}</>;
   return <>
     <GameFlowParameterGroup kind="models">{models}{groups.modelFile}</GameFlowParameterGroup>
-    <GameFlowParameterGroup kind="runtime">{groups.runtime}{concurrency}{thresholds}</GameFlowParameterGroup>
+    <GameFlowParameterGroup kind="runtime">
+      {groups.runtime}
+      <div className="game-flow-number-fields">{thresholds}{groups.numbers}{concurrency}</div>
+    </GameFlowParameterGroup>
     <GameFlowParameterGroup kind="behavior">{behavior}</GameFlowParameterGroup>
     <GameFlowParameterGroup kind="actions">{groups.actions}</GameFlowParameterGroup>
     <GameFlowParameterGroup kind="help">{help}</GameFlowParameterGroup>

@@ -67,20 +67,20 @@ export function useGameFlowExpansion() {
   };
 }
 
-type ParameterControl = HTMLInputElement | HTMLSelectElement | HTMLButtonElement | HTMLOutputElement;
+type ParameterControl = HTMLInputElement | HTMLSelectElement | HTMLButtonElement;
 type ParameterWidth = "narrow" | "mid" | "wide";
 const parameterControls = [
   "input:not([type=checkbox], [type=radio], [type=file], [type=hidden])",
   "select:not([hidden], .game-model-concurrency-control)",
-  ".unity-description-trigger", ".game-flow-range-field > output",
+  ".unity-description-trigger",
 ].join(", ");
-const parameterField = ".game-mosaic-model-field, .game-model-column, .game-flow-range-field, .unity-language-setting, label";
+const parameterField = ".game-mosaic-model-field, .game-model-column, .unity-language-setting, label";
 
 function parameterWidthClass(control: ParameterControl, field: HTMLElement): ParameterWidth {
   if (control instanceof HTMLInputElement) return control.type === "number" ? "narrow" : "wide";
   if (control instanceof HTMLSelectElement && control.options.length &&
     [...control.options].every(option => /^\d+$/.test(option.value))) return "narrow";
-  return field.closest('[data-parameter-group="models"]') ? "wide" : "mid";
+  return control.dataset.paramWidth === "mid" || !field.closest('[data-parameter-group="models"]') ? "mid" : "wide";
 }
 
 function measureParameterText(text: string, style: CSSStyleDeclaration, measure: CanvasRenderingContext2D) {
@@ -92,7 +92,7 @@ function parameterValueWidth(control: ParameterControl, measure: CanvasRendering
   const caption = control.parentElement?.querySelector<HTMLElement>(":scope > .searchable-select-caption");
   const text = control instanceof HTMLSelectElement ? control.selectedOptions[0]?.label
     : control instanceof HTMLInputElement ? control.value || control.placeholder
-    : control instanceof HTMLOutputElement ? control.textContent : control.firstElementChild?.textContent;
+    : control.firstElementChild?.textContent;
   if (!text) return 0;
   const style = getComputedStyle(control);
   const textStyle = caption ? getComputedStyle(caption) : style;
@@ -134,6 +134,7 @@ function useParameterFieldWidths(configured: boolean) {
         mid: parseFloat(style.getPropertyValue("--game-flow-mid-width")),
         wide: parseFloat(style.getPropertyValue("--game-flow-control-min")),
       };
+      const numberInputWidth = parseFloat(style.getPropertyValue("--game-flow-number-input-width"));
       const minLabel = parseFloat(style.getPropertyValue("--game-flow-label-width"));
       const gap = parseFloat(style.getPropertyValue("--game-flow-field-gap"));
       const visibleFields = new Set<HTMLElement>();
@@ -148,12 +149,12 @@ function useParameterFieldWidths(configured: boolean) {
         const region = control.closest<HTMLElement>(".model-filter-select") ?? control;
         const concurrency = field.querySelector<HTMLElement>(".game-model-concurrency-control");
         const tools = Math.max(0, region.offsetWidth - control.offsetWidth) + (concurrency ? concurrency.offsetWidth + gap : 0);
-        const label = Math.ceil(Math.max(minLabel, parameterLabelWidth(field, measure)));
         const measured = parameterValueWidth(control, measure);
         const preferredTier = parameterWidthClass(control, field);
-        const tier = preferredTier === "narrow" && measured > 88 || preferredTier === "mid" && measured > 160
-          ? "wide" : preferredTier;
-        const controlWidth = Math.max(preferred[tier], measured) + tools;
+        const targetWidth = control instanceof HTMLInputElement && control.type === "number" ? numberInputWidth : preferred[preferredTier];
+        const tier = preferredTier !== "wide" && measured > targetWidth ? "wide" : preferredTier;
+        const label = Math.ceil(Math.max(tier === "narrow" ? 0 : minLabel, parameterLabelWidth(field, measure)));
+        const controlWidth = Math.max(tier === preferredTier ? targetWidth : preferred.wide, measured) + tools;
         widths.set(field, { tier, control: controlWidth, required: label + gap + controlWidth });
       }
       for (const field of root.querySelectorAll<HTMLElement>(".game-flow-param-field")) {
@@ -215,6 +216,7 @@ type CardProps = GameFlowActivity & {
   configuration?: ReactNode;
   configurationActions?: ReactNode;
   runningParameters?: readonly BenchmarkParameter[];
+  information?: readonly { label: string; value: ReactNode }[];
   foldedSummary?: { completed?: number; failed?: number; models?: readonly string[]; concurrency?: number };
   parametersLocked?: boolean;
   saveConfiguration?: { run: () => void; cancel: () => void; disabled: boolean; saving?: boolean };
@@ -228,7 +230,7 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 }
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
-  actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
+  actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, information, foldedSummary, parametersLocked, saveConfiguration, disclosure }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
@@ -239,7 +241,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const configured = expanded && !!configuration;
   const parameterFields = useParameterFieldWidths(configured);
   const readOnlyParameters = !active && !configuration ? benchmark?.parameters ?? runningParameters : undefined;
-  const showReadOnlyParameters = !!readOnlyParameters?.length;
+  const infoRows = [...(information ?? []), ...(readOnlyParameters ?? [])];
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
     benchmark.configIndex != null && benchmark.configCount != null
     ? `第 ${benchmark.round}/${benchmark.rounds} 轮 · 配置 ${benchmark.configIndex}/${benchmark.configCount}` : undefined;
@@ -321,6 +323,9 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         </span>)}
       </div>}
       <div id={detailsId} hidden={!expanded}>
+        {infoRows.length > 0 && <dl className="game-flow-card-info" aria-label="步骤信息">
+          {infoRows.map(({ label, value }, index) => <div key={label + index}><dt>{label}</dt><dd>{value}</dd></div>)}
+        </dl>}
         {activeProgress && <div className="game-flow-progress">
           {(activeProgress.sample || hasCounts || activeProgress.count) && <div className="game-flow-progress-main">
             {activeProgress.sample && <span className="game-flow-sample" data-tooltip={activeProgress.sample}>{activeProgress.sample}</span>}
@@ -341,8 +346,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {details}
         {performance}
         {body}
-        {(configured || showReadOnlyParameters || !locked && onConfigure) && <section id={settingsId}
-          className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured && !showReadOnlyParameters}>
+        {(configured || !locked && onConfigure) && <section id={settingsId}
+          className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured}>
           {configured && <fieldset className="game-flow-parameter-fields" disabled={locked}>
             <div ref={parameterFields} className="game-flow-editable-fields">
               {configuration}
@@ -356,10 +361,6 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
               </GameFlowParameterGroup>}
             </div>
           </fieldset>}
-          {showReadOnlyParameters && <dl className="game-flow-parameter-list" aria-label="本次实际运行参数">
-            {readOnlyParameters.map(({ label, value, scope }, index) =>
-              <div key={scope + ":" + label + ":" + index}><dt title={label}>{label}</dt><dd>{value}</dd></div>)}
-          </dl>}
         </section>}
         {cardStateLine && <div className="game-flow-state-line" role="status" data-active={active || undefined}>
           <span aria-hidden="true" /><span>{cardStateLine}</span>

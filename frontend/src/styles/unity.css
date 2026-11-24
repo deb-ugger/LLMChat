@@ -3934,10 +3934,12 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-folded-failure .game-flow-folded-value{color:var(--warning)}
 .game-flow-collapsed-summary > :not(.game-flow-folded-models){flex:none}
 .game-flow-collapsed-summary > .game-flow-folded-models{flex:0 1 auto}
-.game-flow-parameter-list{display:grid;gap:4px;margin:6px 0 0;font-size:var(--fs-caption)}
-.game-flow-parameter-list > div{display:grid;grid-template-columns:116px minmax(0,1fr);align-items:baseline;gap:10px}
-.game-flow-parameter-list dt{color:var(--text-muted);white-space:nowrap}
-.game-flow-parameter-list dd{margin:0;overflow-wrap:anywhere}
+.game-flow-card-info{
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 16px;margin:0 0 6px;font-size:var(--fs-caption)
+}
+.game-flow-card-info > div{display:flex;align-items:baseline;gap:6px;min-inline-size:0}
+.game-flow-card-info dt{color:var(--text-muted);white-space:nowrap}
+.game-flow-card-info dd{margin:0;color:var(--text);overflow-wrap:anywhere}
 .game-flow-model-rates > .game-flow-refine-summary{inline-size:100%;min-inline-size:0;text-align:start;white-space:normal;overflow-wrap:anywhere}
 .game-flow-model-rates:has(> .game-flow-refine-summary) + .game-flow-performance{margin-block-start:4px}
 .game-flow-state-line{display:flex;align-items:flex-start;gap:8px;margin-block-start:10px;padding-block-start:8px;
@@ -3951,7 +3953,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   margin-block-start:10px;padding:10px 10px 0;border-block-start:1px solid var(--border);
   container:game-flow-parameters / inline-size;
   --game-flow-label-width:120px;--game-flow-field-gap:8px;--game-flow-control-min:168px;
-  --game-flow-narrow-width:80px;--game-flow-mid-width:152px;
+  --game-flow-narrow-width:78px;--game-flow-number-input-width:64px;--game-flow-mid-width:150px;
   --game-flow-disabled-text:color-mix(in srgb,var(--text-muted) 90%,var(--text))
 }
 .game-flow-parameter-fields{min-inline-size:0;margin:0;padding:0;border:0}
@@ -3997,24 +3999,20 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields .game-flow-parameter-group > h6{
   grid-column:1 / -1;margin:4px 0 0;font-size:var(--fs-caption);font-weight:600;color:var(--text-muted)
 }
-.game-flow-editable-fields :is(.game-mosaic-step-settings,.unity-group-fields,.unity-offline-fields,.unity-translation-settings,
-  .game-translation-page,.game-model-prompt-row,.game-flow-param-section:not([data-parameter-group="behavior"]))
+.game-flow-editable .game-flow-editable-fields :where(.game-mosaic-step-settings,.unity-group-fields,.unity-offline-fields,.unity-translation-settings,
+  .game-translation-page,.game-model-prompt-row,.game-flow-number-fields,.game-flow-param-section:not([data-parameter-group="behavior"]))
   > label:has(> :is(input,select,textarea,.searchable-select,.unity-description-select)),
-.game-flow-editable-fields :is(.game-mosaic-model-field,.game-flow-range-field,.unity-language-setting){
+.game-flow-editable-fields :is(.game-mosaic-model-field,.unity-language-setting){
   display:grid;grid-template-columns:minmax(var(--game-flow-label-width),max-content) minmax(0,1fr);align-items:center;
   gap:var(--game-flow-field-gap);min-inline-size:0;grid-column:auto;text-align:end;white-space:nowrap;
   font-size:var(--fs-caption)
 }
-.game-flow-editable-fields :is(.game-mosaic-model-field,.game-flow-range-field) > span{
+.game-flow-editable-fields .game-mosaic-model-field > span{
   min-inline-size:0;white-space:nowrap;color:var(--text-muted)
 }
 .game-flow-editable-fields label > :is(select,input:not([type=checkbox],[type=radio]),textarea,.searchable-select,.unity-description-select),
 .game-flow-editable-fields .unity-language-setting > select{
   min-inline-size:0;inline-size:100%;max-inline-size:none;box-sizing:border-box;text-align:start
-}
-.game-flow-editable-fields .game-flow-range-field > output{
-  display:flex;align-items:center;block-size:var(--control-size);box-sizing:border-box;padding-inline:9px;text-align:start;
-  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-panel);color:var(--text-muted)
 }
 .game-flow-editable .game-flow-editable-fields :is(select,input:not([type=checkbox],[type=radio]),.unity-description-trigger){
   block-size:var(--control-size);min-block-size:var(--control-size);box-sizing:border-box
@@ -4052,34 +4050,33 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields .game-model-controls > .game-model-concurrency-control{
   grid-column:3;grid-row:1;inline-size:100%;min-inline-size:0;padding-inline:5px
 }
-.game-flow-editable-fields .game-flow-param-field.game-flow-param-wide{grid-column:1 / -1}
-.game-flow-editable-fields .game-flow-param-field.game-flow-param-stacked{
+.game-flow-editable .game-flow-editable-fields .game-flow-param-field.game-flow-param-wide{grid-column:1 / -1}
+.game-flow-editable .game-flow-editable-fields .game-flow-param-field.game-flow-param-stacked{
   grid-template-columns:minmax(0,1fr);text-align:start
 }
-.game-flow-editable-fields .game-flow-param-stacked.game-model-column{grid-template-columns:minmax(0,1fr) var(--game-flow-narrow-width)}
+.game-flow-editable .game-flow-editable-fields .game-flow-param-stacked.game-model-column{grid-template-columns:minmax(0,1fr) var(--game-flow-narrow-width)}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-head > span{grid-column:1 / -1;text-align:start}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-filter{grid-column:1;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-controls > .game-model-concurrency-control{grid-column:2;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked.unity-language-setting > select{grid-column:1;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked.unity-language-setting .unity-inline-check{grid-column:1;grid-row:3}
-.game-flow-editable .game-flow-editable-fields :is(
-  .game-flow-param-section[data-parameter-group="models"],
-  .game-flow-param-section[data-parameter-group="runtime"],
-  .game-model-prompt-row
-){display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 12px}
-.game-flow-editable-fields .game-flow-param-section:is([data-parameter-group="models"],[data-parameter-group="runtime"]){
-  > :not(.game-flow-param-field){flex:0 0 100%;min-inline-size:0}
+.game-flow-editable .game-flow-editable-fields :is(.game-model-prompt-row,.game-flow-number-fields){
+  display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 12px
+}
+.game-flow-number-fields{grid-column:1 / -1;min-inline-size:0}
+.game-flow-editable .game-flow-editable-fields .game-flow-param-field[data-param-width="narrow"]:not(.game-flow-param-stacked){
+  grid-template-columns:max-content minmax(0,1fr)
 }
 .game-flow-editable-fields .game-flow-param-field{
   flex:0 0 min(100%,var(--game-flow-field-width));max-inline-size:100%
 }
 .game-flow-editable-fields .game-flow-param-field[data-param-width="wide"]{flex-grow:1}
-.game-flow-editable-fields .game-flow-param-field[data-param-width="wide"] > :is(select,input,textarea,output,.searchable-select,.unity-description-select,.model-filter-select),
+.game-flow-editable-fields .game-flow-param-field[data-param-width="wide"] > :is(select,input,textarea,.searchable-select,.unity-description-select,.model-filter-select),
 .game-flow-editable-fields .game-flow-param-field[data-param-width="wide"] .game-model-filter{
   min-inline-size:min(var(--game-flow-control-min),100%)
 }
 .game-flow-editable-fields .game-flow-param-field:is([data-param-width="narrow"],[data-param-width="mid"])
-  > :is(select,input,textarea,output,.searchable-select,.unity-description-select){
+  > :is(select,input,textarea,.searchable-select,.unity-description-select){
   inline-size:min(var(--game-flow-field-control-width),100%);justify-self:start
 }
 .game-flow-editable .game-flow-editable-fields .game-flow-param-field :is(select,input[type=number],.unity-description-trigger){
@@ -4091,11 +4088,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields .game-flow-param-field .searchable-select-caption-title{flex-shrink:0;max-inline-size:100%}
 @container game-flow-parameters (width < 520px){
   .game-flow-editable-fields{grid-template-columns:minmax(0,1fr)}
-  .game-flow-editable .game-flow-editable-fields :is(
-    .game-flow-param-section[data-parameter-group="models"],
-    .game-flow-param-section[data-parameter-group="runtime"],
-    .game-model-prompt-row
-  ){display:grid;grid-template-columns:minmax(0,1fr)}
+  .game-flow-editable .game-flow-editable-fields .game-model-prompt-row{display:grid;grid-template-columns:minmax(0,1fr)}
 }
 
 /* ---------- 帮助页（左目录 + 一步一卡） ---------- */
