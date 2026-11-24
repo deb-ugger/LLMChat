@@ -776,6 +776,33 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
   const index = configs.findIndex(config => expanded.has(config.id));
   const config = configs[index];
   const list = useRef<HTMLUListElement>(null);
+  const [listWidth, setListWidth] = useState(() => {
+    const saved = Number(window.localStorage.getItem("llmchat-benchmark-config-list-w"));
+    return Number.isFinite(saved) && saved >= 200 && saved <= 460 ? saved : 248;
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("llmchat-benchmark-config-list-w", String(listWidth)); } catch { /* 忽略存储失败 */ }
+  }, [listWidth]);
+  const listDrag = useRef<{ x: number; width: number } | null>(null);
+  const resizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    listDrag.current = { x: event.clientX, width: listWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const resizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = listDrag.current;
+    if (!drag) return;
+    setListWidth(Math.min(460, Math.max(200, drag.width + event.clientX - drag.x)));
+  };
+  const resizeEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    listDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resizeKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home") return;
+    event.preventDefault();
+    if (event.key === "Home") { setListWidth(248); return; }
+    setListWidth(width => Math.min(460, Math.max(200, width + (event.key === "ArrowLeft" ? -16 : 16))));
+  };
   useLayoutEffect(() => {
     const scroller = list.current;
     const selected = scroller?.querySelector<HTMLElement>('[aria-pressed="true"]');
@@ -785,6 +812,14 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
     if (row.top < bounds.top) scroller.scrollTop -= bounds.top - row.top;
     else if (row.bottom > bounds.bottom) scroller.scrollTop += row.bottom - bounds.bottom;
   }, [config?.id, index]);
+  const runStateOf = (id: string): "running" | "done" | "failed" | "stopped" | "idle" => {
+    if (currentProgress?.configId === id && !completed?.has(id)) return "running";
+    const run = latestRunByConfig?.get(id)?.run as { failed?: number } | undefined;
+    if (run) return (run.failed ?? 0) > 0 ? "failed" : "done";
+    if (started?.has(id)) return "stopped";
+    return "idle";
+  };
+  const runStateText = { running: "运行中", done: "已完成", failed: "失败", stopped: "已中止", idle: "未运行" } as const;
   const lastRun = config && latestRunByConfig?.get(config.id)?.run;
   const alreadyStarted = !!config && (started?.has(config.id) ?? false);
   const locked = readOnly || alreadyStarted;
@@ -792,22 +827,32 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
   const modified = config && changes?.changed.has(config.id);
   const differs = config && changes?.different.has(config.id);
   const activeProgress = config && !finished && currentProgress?.configId === config.id ? currentProgress : undefined;
-  return <div className="game-benchmark-config-layout">
+  return <div className="game-benchmark-config-layout" style={{ "--config-list-w": listWidth + "px" } as React.CSSProperties}>
     <ul ref={list} className="game-benchmark-config-list" aria-label="测试配置列表">
       {configs.map((item, itemIndex) => {
         const name = item.label || "配置 " + (itemIndex + 1);
-        return <li key={item.id}><button type="button" aria-pressed={item.id === config?.id}
-          title={name} onClick={() => toggleConfig(item.id, item.id !== config?.id)}>
+        const state = runStateOf(item.id);
+        return <li key={item.id} data-run={state}><button type="button" aria-pressed={item.id === config?.id}
+          title={name + " · " + runStateText[state]} onClick={() => toggleConfig(item.id, item.id !== config?.id)}>
           <span className="game-benchmark-item-badge">Q{itemIndex + 1}</span>
           <span className="game-benchmark-config-name">{name}</span>
+          <span className="game-benchmark-config-state">{runStateText[state]}</span>
         </button></li>;
       })}
     </ul>
+    <div className="game-benchmark-config-resizer" role="separator" aria-orientation="vertical" tabIndex={0}
+      aria-label="拖动调整配置列表宽度" aria-valuenow={listWidth} aria-valuemin={200} aria-valuemax={460}
+      onPointerDown={resizeStart} onPointerMove={resizeMove} onPointerUp={resizeEnd} onPointerCancel={resizeEnd}
+      onKeyDown={resizeKey} onDoubleClick={() => setListWidth(248)} />
     {config ? <div className="game-benchmark-editor">
         <fieldset key={config.id + (locked ? ":read" : ":edit")} disabled={locked} className="game-benchmark-item-fields">
         <div className="game-benchmark-editor-head">
-          <label>启用<input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false} disabled={fixedSlots}
-            onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} /></label>
+          <label className="game-benchmark-switch">
+            <input type="checkbox" role="switch" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false} disabled={fixedSlots}
+              onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} />
+            <span className="game-benchmark-switch-track" aria-hidden="true" />
+            <span>启用</span>
+          </label>
           <label className="game-benchmark-editor-name">名称
             <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label}
               onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
@@ -1481,6 +1526,15 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
         <header className="game-benchmark-task-head">
           <div className="game-benchmark-task-actions">
             <h3 id={taskTitleId}>测试任务 <small>· {configs.length} 组</small></h3>
+            <div className="game-benchmark-rounds" role="group" aria-label="循环轮次">
+              <span>循环轮次</span>
+              <button type="button" aria-label="减少轮次" disabled={adding || Number(rounds) <= 1}
+                onClick={() => setRounds(String(Math.max(1, Number(rounds) - 1)))}>−</button>
+              <input type="number" min={1} max={100} step={1} value={rounds} disabled={adding} aria-label="循环轮次"
+                onChange={event => setRounds(event.target.value)} />
+              <button type="button" aria-label="增加轮次" disabled={adding || Number(rounds) >= 100}
+                onClick={() => setRounds(String(Math.min(100, Number(rounds) + 1)))}>+</button>
+            </div>
             <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue}
               onClick={() => void start(true)}>立即开始</button>
             <button type="button" className="unity-btn is-primary" disabled={!!issue || adding} title={issue}
@@ -1501,9 +1555,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
             {taskMenu}
           </div>
         </header>
-        <div className="game-benchmark-toolbar">
-          <label>循环轮次 <input type="number" min={1} max={100} step={1} value={rounds} disabled={adding} onChange={event => setRounds(event.target.value)} /></label>
-        </div>
       <BenchmarkConfigCards step={step} configs={configs} setConfigs={setConfigs} readOnly={adding} expanded={expanded}
         toggleConfig={toggleConfig} images={images} engines={current.engines} models={models} currentProgress={currentProgress}
         latestRunByConfig={latestRunByConfig} samplePreview={samplePreview} onEdited={id =>
