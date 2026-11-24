@@ -798,7 +798,10 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const readyToLaunch = !imageExport || !canApplyText && !pendingImagePackage;
   const installState = exportState.needsRecovery ? "需恢复" : exportState.partiallyRestored || exportState.used && !exportState.applied && patch.installed ? "部分恢复"
     : patch.installed || exportState.applied || !imageExport && (artifacts.images?.applied || artifacts.mosaic?.applied) ? "已应用" : "未安装";
-  const deploymentProgress = readProgress(["inspect", "embed", "apply", "uninstall-text", "cleanup-text"]);
+  const imageInstallState = imageExport
+    ? exportState.applied ? "已应用" : exportState.needsRecovery ? "需恢复" : exportState.path ? "待应用" : "未应用"
+    : artifacts.images?.applied || artifacts.mosaic?.applied ? "已应用" : "未应用";
+  const deploymentProgress = readProgress(["inspect", "embed", "apply", "uninstall-text", "cleanup-text", "runtime"]);
   const productRunning = deploymentRunning || deploymentProgress?.running || imageBusy && imageWorkflow.stage === "restore";
   const productState = productRunning ? "running" : deployment?.state === "error" ? "error"
     : deployment?.state === "stopped" ? "stopped" : deploymentProgress?.state === "error" || deploymentProgress?.state === "stopped"
@@ -810,103 +813,107 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       elapsed={deploymentProgress?.elapsed} progress={{
         current: packageProgress?.completed, total: packageProgress?.total,
         percent: packageProgress?.percent, sample: packageProgress?.detail ?? phaseStatus,
-      }} actions={packageProgress && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}
+      }} actions={<>
+        {packageProgress && !deploymentRunning && <button className="unity-btn" onClick={() => void requestBackendStop()}>中止</button>}
+        <button type="button" className="unity-btn unity-btn-primary" disabled={busy || !game.supported || !readyToLaunch} onClick={() => void launchGame()}>{launching ? "正在启动…" : "启动游戏"}</button>
+        {canUseTextResources && <label className="dpl-launch-toggle"><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
+          const value = event.target.checked;
+          setLaunchAfterApply(value);
+          localStorage.setItem(launchPreference, String(value));
+        }} />应用后启动</label>}
+      </>}
       performance={<GameFlowPerformance measured={imageBusy && imageWorkflow.stage === "restore"
         ? stepPerformance(deploymentMetricScope(game.path, "applyImages"), "applyImages") : deploymentProgress?.measurement} />}
-      body={<div className="dpl dpl-grid embed-product-grid">
-        {canUseTextResources && <section className="dpl-panel">
-          <div className="dpl-panel-head"><h3>文本补丁</h3><span>{textInfo.changed}</span></div>
-          <dl className="dpl-stats dpl-stats-stack">
-            <div><dt>已改条目</dt><dd>{textInfo.sourcePath ? textInfo.changed : "—"}</dd></div>
-            <div><dt>字符集 / 缺字</dt><dd>—</dd></div>
-            <div><dt>替换字体</dt><dd>{runtimeDictionary && fontPath.trim() ? <span className="dpl-hint" title={fontPath}>已选择</span> : "—"}</dd></div>
-          </dl>
-          <p className="dpl-hint">{canApplyText ? "文本补丁已生成，尚未应用。"
-            : patch.installed ? "文本补丁已安装。" : patch.legacy ? "发现旧版文本补丁。" : "尚未生成文本补丁。"}</p>
-          <div className="dpl-panel-foot"><button type="button" className="unity-btn unity-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button></div>
-        </section>}
-        {imageProject && <section className="dpl-panel">
-          <div className="dpl-panel-head"><h3>图片补丁</h3><span>{imageWorkflow.valid}</span></div>
-          <dl className="dpl-stats dpl-stats-stack">
-            <div><dt>可用译图</dt><dd>{imageWorkflow.loaded ? imageWorkflow.valid : "—"}</dd></div>
-            <div><dt>图片总数</dt><dd>{imageWorkflow.count ?? "—"}</dd></div>
-            <div><dt>已译比例</dt><dd>{imageWorkflow.loaded && imageWorkflow.count ? (imageWorkflow.valid / imageWorkflow.count * 100).toFixed(1) + "%" : "—"}</dd></div>
-          </dl>
-          <p className="dpl-hint">{imageWorkflow.valid
-            ? imageExport ? `确认后将通过成品包写入 ${imageWorkflow.valid} 张译图。` : `应用时将写入 ${imageWorkflow.valid} 张译图。`
-            : "译图尚未生成，可在「图片翻译」中处理。"}</p>
-          <div className="dpl-panel-foot"><button type="button" className="unity-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button></div>
-        </section>}
-        {selfMosaic && <section className="dpl-panel">
-          <div className="dpl-panel-head"><h3>去码补丁</h3><span>{mosaicHandle.current?.selectedIds().length ?? 0}</span></div>
-          <dl className="dpl-stats dpl-stats-stack">
-            <div><dt>已选去码图</dt><dd>{mosaicHandle.current ? imageExport ? packageMosaicIds.length : mosaicHandle.current.selectedIds().length : "—"}</dd></div>
-            <div><dt>覆盖区域</dt><dd>—</dd></div>
-          </dl>
-          <p className="dpl-hint">{imageExport ? "已确认的去码图随成品包一起应用。" : "纳入的去码图随补丁一起应用。"}</p>
-          <div className="dpl-panel-foot"><button type="button" className="unity-btn" data-tooltip={!imageExport && mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>{imageExport ? "查看去码图" : "生成去码图"}</button></div>
-        </section>}
-        <section className="dpl-panel dpl-panel-apply" aria-label="应用到游戏">
-          <div className="dpl-panel-head">
-            <h4>应用到游戏</h4>
-            <span className={`dpl-tag${installState === "已应用" ? " is-ok" : ""}`}>{installState}</span>
+      body={<div className={"embed-product-grid" + (canUseTextResources && (imageProject || selfMosaic) ? "" : " is-single")}>
+        {canUseTextResources && <section className="dpl-block" aria-label="文本">
+          <div className="dpl-block-head">
+            <h3>文本</h3>
+            <span className={"dpl-tag" + (patch.installed ? " is-ok" : "")}>{patchStatus}</span>
+            {runtimeDictionary && <span className="dpl-block-hint">data/*.json</span>}
           </div>
-          <div className="dpl-path" title={game.path}>{game.path || "尚未选择游戏目录"}</div>
-          {imageExport && <>
-            <LegacyImagePatchSection legacy={exportPackage.legacy} state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
-            <ImageExportPackageSection state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
-          </>}
-          {canUseTextResources && <div className="dpl-plan">
-            <p>文本与字体</p>
-            <div className="dpl-actions">
-              <button type="button" className="dpl-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>
-              <IconAction name="refresh" caption="检测补丁" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => {
-                if (imageExport) exportPackage.actions.scanLegacy();
-                void loadPatch(true);
-              }} />
-              <IconAction name="rollback" caption="卸载文本" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
-              <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
+          <div className="dpl-block-body">
+            <p className="dpl-line">译文 <b>{textInfo.sourcePath ? textInfo.changed : "—"}</b> 条<span className="dpl-sep">·</span>缺字 <b>—</b><span className="dpl-sep">·</span>字体 <b>{runtimeDictionary && fontPath.trim() ? "已选择" : "未设置"}</b></p>
+            <div className="dpl-row">
+              <span className="dpl-row-label">写入数据</span>
+              <span className="dpl-row-state">{canApplyText ? "已生成，未应用" : patch.installed ? "已安装" : patch.legacy ? "旧版补丁" : "待生成"}</span>
+              <span className="dpl-row-actions">
+                <button type="button" className="dpl-btn dpl-btn-primary" data-tooltip="保存当前编辑并检查译文后生成补丁" disabled={testing || busy || !canGenerate} title={testTitle} onClick={generateTextPatch}>生成补丁</button>
+                <button type="button" className="dpl-btn" data-tooltip="写入文本补丁前请先关闭游戏" disabled={!canWritePatch || !canApplyText} title={testTitle} onClick={() => void applyTextPatch()}>{patch.installed ? "更新文本补丁" : "应用文本补丁"}</button>
+                <IconAction name="refresh" caption="检测" label="检测已安装补丁及文件改动" disabled={busy} onClick={() => {
+                  if (imageExport) exportPackage.actions.scanLegacy();
+                  void loadPatch(true);
+                }} />
+                <IconAction name="rollback" caption="卸载" label="卸载文本补丁并恢复安装前资源" hint={testTitle} disabled={testing || busy || !patch.installed || !!patch.conflicts.length} onClick={() => void start("uninstall-text")} />
+                <IconAction name="stop" caption="清理" label="清理已卸载文本补丁的安装原件和关联工作目录，保留用户备份" hint={testTitle} disabled={testing || busy || patch.installed || !patch.managed} onClick={() => void start("cleanup-text")} />
+              </span>
             </div>
-            <p className="dpl-hint">{patchStatus}{patch.conflicts.length ? "，请先处理文件冲突。" : ""}</p>
-          </div>}
-          {!imageExport && imageProject && <div className="dpl-plan">
-            <p>图片补丁</p>
-            <div className="dpl-actions">
-              <button type="button" className="dpl-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>
-              {selfMosaic && <button type="button" className="dpl-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length || artifacts.mosaic.stale} title={testTitle} data-tooltip={artifacts.mosaic?.stale ? "去码结果已更新，请重新生成去码补丁" : undefined} onClick={() => void applyMosaic()}>应用去码图</button>}
-              <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
-                if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
-                setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
-              }))} />
-              {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
+            {runtimeDictionary && <div className="dpl-row">
+              <span className="dpl-row-label">运行时插件</span>
+              <span className="dpl-row-state">不写游戏数据</span>
+              <span className="dpl-row-actions dpl-row-font">
+                <input aria-label="中文字体" title={fontPath || undefined} value={fontPath} placeholder="可选 TTF / OTF，留空用游戏原字体" disabled={busy} onChange={event => setFontPath(event.target.value)} />
+                <IconAction name="json" label="选择中文字体，随本地翻译插件加载" disabled={busy} onClick={() => void pickFont()} />
+                <IconAction name="apply" caption="安装插件" label="安装或更新本地 JSON 翻译插件" hint={testTitle} disabled={!canWritePatch || !file} onClick={() => void start("runtime")} />
+              </span>
+            </div>}
+            {progress(["embed", "apply", "uninstall-text", "cleanup-text", "runtime"])}
+          </div>
+          <div className="dpl-block-foot">
+            <span className="dpl-hint">{canApplyText ? "文本补丁已生成，尚未应用。" : patch.installed ? "文本补丁已安装。" : patch.legacy ? "发现旧版文本补丁。" : "尚未生成文本补丁。"}{patch.conflicts.length ? "请先处理文件冲突。" : ""}</span>
+          </div>
+        </section>}
+        {(imageProject || selfMosaic) && <section className="dpl-block" aria-label="图片">
+          <div className="dpl-block-head">
+            <h3>图片</h3>
+            <span className={"dpl-tag" + (imageInstallState === "已应用" ? " is-ok" : "")}>{imageInstallState}</span>
+            {imageExport && <span className="dpl-block-hint">img/pictures</span>}
+          </div>
+          <div className="dpl-block-body">
+            <div className="dpl-figs">
+              <div><span>译图</span><b>{imageWorkflow.loaded ? imageWorkflow.valid : "—"}<small> / {imageWorkflow.count ?? "—"}</small></b></div>
+              <div><span>去码图</span><b>{mosaicHandle.current ? (imageExport ? packageMosaicIds.length : mosaicHandle.current.selectedIds().length) : "—"}</b></div>
+              <div><span>已确认</span><b>{imageExport ? exportState.confirmed ?? 0 : imageWorkflow.valid}</b></div>
             </div>
+            {imageExport ? <>
+              <div className="dpl-row">
+                <span className="dpl-row-label">图片源</span>
+                <span className="dpl-row-state">{imageWorkflow.valid ? "译图已生成" : "尚未生成译图"}</span>
+                <span className="dpl-row-actions">
+                  <button type="button" className="dpl-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button>
+                  {selfMosaic && <button type="button" className="dpl-btn" data-tooltip="打开图片去码以重绘并确认候选" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>查看去码图</button>}
+                </span>
+              </div>
+              <LegacyImagePatchSection legacy={exportPackage.legacy} state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
+              <ImageExportPackageSection state={exportState} actions={exportPackage.actions} locked={exportLocked || exportBusy} />
+            </> : <div className="dpl-row">
+              <span className="dpl-row-label">写入图片</span>
+              <span className="dpl-row-state">{artifacts.images?.applied ? "已应用" : imageWorkflow.valid ? "待应用" : "无译图"}</span>
+              <span className="dpl-row-actions">
+                <button type="button" className="dpl-btn" disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateImages}>生成译图</button>
+                <button type="button" className="dpl-btn dpl-btn-primary" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>
+                {selfMosaic && <button type="button" className="dpl-btn" data-tooltip={!imageExport && mosaicComplete ? "准备已确认的去码图" : "打开图片去码以重绘并确认候选"} disabled={testing || busy || !imageWorkflow.loaded} title={testTitle} onClick={generateMosaic}>{imageExport ? "查看去码图" : "生成去码图"}</button>}
+                {selfMosaic && <button type="button" className="dpl-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length || artifacts.mosaic.stale} title={testTitle} data-tooltip={artifacts.mosaic?.stale ? "去码结果已更新，请重新生成去码补丁" : undefined} onClick={() => void applyMosaic()}>应用去码图</button>}
+                <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
+                  if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
+                  setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
+                }))} />
+                {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
+              </span>
+            </div>}
+            {thirdPartyMosaic && <div className="dpl-row">
+              <span className="dpl-row-label">第三方去码</span>
+              <span className="dpl-row-state">独立检测</span>
+              <span className="dpl-row-actions"><GameMosaicPatchButton gamePath={game.path} disabled={busy} /></span>
+            </div>}
             {artifacts.mosaic?.stale && <p className="dpl-hint" role="status">去码结果已更新，请重新生成去码补丁。</p>}
-            {artifacts.mosaic?.path && <button type="button" className="dpl-btn" onClick={() => void api.revealPath(artifacts.mosaic!.path!)}>去码补丁目录</button>}
-          </div>}
-          {thirdPartyMosaic && <div className="dpl-mosaic"><span>第三方去码补丁</span><GameMosaicPatchButton gamePath={game.path} disabled={busy} /></div>}
-          {phaseStatus && <p className={deployment?.state === "error" ? "dpl-hint is-warning" : "dpl-hint"} role="status">{phaseStatus}</p>}
-          {deploymentRunning && automatic !== "running" && <button className="dpl-btn" type="button" onClick={stopDeployment}>中止</button>}
-          <div className="embed-deploy-launch">
-            <button type="button" className="dpl-btn dpl-btn-primary" disabled={busy || !game.supported || !readyToLaunch} onClick={() => void launchGame()}>{launching ? "正在启动…" : "启动游戏"}</button>
-            {canUseTextResources && <label><input type="checkbox" checked={launchAfterApply} disabled={busy} onChange={event => {
-              const value = event.target.checked;
-              setLaunchAfterApply(value);
-              localStorage.setItem(launchPreference, String(value));
-            }} />应用后启动</label>}
+            {artifacts.mosaic?.path && <p className="dpl-hint"><button type="button" className="dpl-inline-link" onClick={() => void api.revealPath(artifacts.mosaic!.path!)}>打开去码补丁目录</button></p>}
+            {phaseStatus && <p className={deployment?.state === "error" ? "dpl-hint is-warning" : "dpl-hint"} role="status">{phaseStatus}</p>}
+            {progress(["applyImages", "applyMosaic", "uninstallImages"])}
           </div>
-        </section></div>} /></div>
+        </section>}
+      </div>} /></div>
+    <div className="embed-deploy-path" title={game.path}>{game.path || "尚未选择游戏目录"}</div>
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
-    {runtimeDictionary && <details className="embed-runtime-options" data-section="runtime" open={status.action === "runtime" ? true : undefined}>
-      <summary>运行时加载译文</summary>
-      <div className="embed-form-row">
-        <label className="embed-field embed-inline-field"><span>中文字体</span><div className="json-embedding-path">
-          <input aria-label="中文字体" value={fontPath} placeholder="可选 TTF / OTF" disabled={busy} onChange={event => setFontPath(event.target.value)} />
-          <IconAction name="json" label="选择中文字体，随本地翻译插件加载" disabled={busy} onClick={() => void pickFont()} />
-        </div></label>
-        <IconAction name="apply" caption="安装插件" label="安装或更新本地 JSON 翻译插件" hint={testTitle} disabled={!canWritePatch || !file} onClick={() => void start("runtime")} />
-      </div>
-      {progress(["runtime"])}
-    </details>}
   </div>;
 
   const scanProgress = readProgress(["extract"], { step: "1", title: "扫描资源",

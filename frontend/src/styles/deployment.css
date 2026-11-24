@@ -441,3 +441,139 @@
 .embed-unity-workspace .is-deployment .engine-result-slot[hidden] { display: none; }
 .dpl-grid { flex: 0 0 auto; }
 .dpl-foot { flex: 0 0 auto; }
+
+/* ── 生成与应用：两块式布局（文本 / 图片） ─────────────── */
+.embed-product-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: var(--space-3);
+  align-items: stretch;
+}
+@media (max-width: 1100px) {
+  .embed-product-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.embed-product-grid.is-single { grid-template-columns: minmax(0, 1fr); }
+.dpl-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+.dpl-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.dpl-block-head h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.dpl-block-hint {
+  margin-left: auto;
+  font: var(--fs-caption) var(--mono);
+  color: var(--text-muted);
+  opacity: .75;
+}
+.dpl-block-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.dpl-block-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding: 9px var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.dpl-line {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+.dpl-line b { font: 600 var(--fs-caption) var(--mono); color: var(--text); }
+.dpl-sep { margin: 0 6px; opacity: .5; }
+.dpl-figs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: 9px var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken, color-mix(in srgb, var(--bg-app) 60%, var(--bg-panel)));
+}
+.dpl-figs > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dpl-figs span { font-size: 11px; color: var(--text-muted); }
+.dpl-figs b {
+  font: 600 clamp(16px, 1.15vw, 19px)/1.25 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.dpl-figs b small { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.dpl-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.dpl-row-label { flex: none; width: 76px; font-size: var(--fs-caption); color: var(--text-muted); }
+.dpl-row-state { font-size: var(--fs-caption); color: var(--text-muted); opacity: .9; }
+.dpl-row-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.dpl-row-font { flex: 1 1 auto; }
+.dpl-row-font input {
+  min-width: 0;
+  flex: 1 1 120px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+  color: var(--text);
+  font: var(--fs-caption) var(--mono);
+}
+.dpl-block .dpl-plan { margin: 0; padding: 0; border: 0; }
+.dpl-block .dpl-plan > p:first-child {
+  margin: 0 0 2px;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.dpl-block .dpl-plan .dpl-stats-stack {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.dpl-block .dpl-plan .dpl-stats dd { font: 600 var(--fs-body) var(--mono); }
+.dpl-block .dpl-actions { gap: 6px; }
+.dpl-block .dpl-actions .dpl-btn-primary { flex: 0 0 auto; }
+.dpl-block .dpl-actions > span { flex: 1 1 100%; color: var(--text-muted); font-size: var(--fs-caption); }
+.dpl-inline-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--text-muted);
+  font: var(--fs-caption) var(--font);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.dpl-launch-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); color: var(--text-muted); }
+.embed-deploy-path {
+  margin: 0 0 var(--panel-gap);
+  padding: 7px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font: var(--fs-caption) var(--mono);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.embed-deploy-maintenance { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-3); }
