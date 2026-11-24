@@ -51,7 +51,7 @@ function movedBoxes(start: Extract<MaskGesture, {kind: "move"}>, end: Point, ima
 }
 
 export function useMosaicMasks({ gamePath, active, activeResult, members, usable, rows, getRows, candidates,
-  hasStorage, blocked, actionsDisabled, commit }: MosaicMaskOptions) {
+  blocked, actionsDisabled, commit }: MosaicMaskOptions) {
   const [maskUndo, setMaskUndo] = useState<MaskUndoItem[][]>([]);
   const [tool, setTool] = useState<MaskTool | null>(null);
   const [draft, setDraft] = useState<MosaicBox>();
@@ -89,7 +89,7 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
       const row = resultFor(current, image);
       if (boxes.length === row.boxes.length && boxes.every((box, index) => box.every((value, edge) => value === row.boxes[index][edge]))) continue;
       next[image.id] = { ...row, boxes, manualBoxes: true, review: undefined, redrawError: undefined,
-        saved: hasStorage ? row.saved : false, reference: false, checked: boxes.length > 0 };
+        reference: row.saved ? row.reference : false, checked: row.saved ? row.checked : boxes.length > 0 };
       const previousCandidate = candidates[image.id];
       undo.push({ id: image.id, source: image.sourceHash,
         mask: { boxes: row.boxes, manualBoxes: row.manualBoxes, review: row.review, redrawError: row.redrawError,

@@ -230,7 +230,6 @@ export type MosaicMaskOptions = {
   rows: Results;
   getRows: () => Results;
   candidates: Record<string, MosaicCandidate>;
-  hasStorage: boolean;
   blocked: () => boolean;
   actionsDisabled: boolean;
   commit: (edits: MosaicMaskCommit) => boolean;

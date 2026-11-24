@@ -1,4 +1,4 @@
-import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
+import { hasMosaicDrafts, mosaicDraftsOf, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
@@ -1176,6 +1176,35 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     return prepareUnityImageSources(current, images, signal);
   }, []);
   const mosaicRequest = { root, path: project?.folder || "" };
+  async function selectMosaicCandidates(selectedIds: string[], include: boolean, signal?: AbortSignal) {
+    const result = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-select",
+      { ...mosaicRequest, selectedIds, includeMosaic: include }, undefined, signal);
+    setMosaicStatus({ root, candidates: result.candidates });
+    invalidatePatch();
+  }
+
+  async function saveMosaicUserChanges() {
+    if (!hasMosaicDrafts(root)) return;
+    setSaving(true);
+    try {
+      const removeFromPatch: string[] = [];
+      for (const [id, draft] of mosaicDraftsOf(root)) {
+        if (!draft.base.saved || draft.patch.saved !== false) continue;
+        const entry = mosaicIndex?.[id];
+        if (!entry) continue;
+        if (entry.source !== draft.base.source || entry.hash !== draft.patch.discardedHash)
+          throw new Error("采用结果已更新，请取消撤回后重新操作");
+        if (entry.included) removeFromPatch.push(id);
+      }
+      if (removeFromPatch.length) await selectMosaicCandidates(removeFromPatch, false);
+      if (saveMosaicDrafts(root)) showAppNotice("已保存图片去码修改");
+    } catch (cause) {
+      showAppNotice(cause instanceof Error ? cause.message : "无法保存图片去码修改", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const mosaicStorage = mosaicIndex && {
     index: mosaicIndex,
     savedDrafts: mosaicStatus?.root === root ? mosaicStatus.savedDrafts : undefined,
@@ -1191,12 +1220,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setMosaicStatus({ root, candidates: result.candidates });
       if (result.candidates[image.id]?.included) invalidatePatch();
     },
-    select: async (images: UnityImage[], include: boolean, signal: AbortSignal) => {
-      const result = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-select",
-        { ...mosaicRequest, selectedIds: images.map(image => image.id), includeMosaic: include }, undefined, signal);
-      setMosaicStatus({ root, candidates: result.candidates });
-      invalidatePatch();
-    },
+    select: (images: UnityImage[], include: boolean, signal: AbortSignal) =>
+      selectMosaicCandidates(images.map(image => image.id), include, signal),
   };
   const openFolder = async (path: string) => {
     setActionError("");
@@ -2238,9 +2263,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         saveDisabled: !project || (!dirty && !mosaicDirty) || saving || !!busy || restoring || !!importPreview,
         save: () => void (async () => {
           if (dirty && !await saveUserChanges()) return;
-          try {
-            if (saveMosaicDrafts(root)) showAppNotice("已保存图片去码修改");
-          } catch (cause) { showAppNotice(cause instanceof Error ? cause.message : "无法保存图片去码修改", "error"); }
+          await saveMosaicUserChanges();
         })(),
       } : undefined}
       mosaic={mosaicMounted ? { controlsRef: setMosaicControls, scanReady,

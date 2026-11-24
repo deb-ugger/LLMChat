@@ -1,4 +1,4 @@
-import { hasMosaicDrafts, saveMosaicDrafts, useHasMosaicDrafts } from "./game-mosaic/mosaicDrafts";
+import { hasMosaicDrafts, mosaicAdoptionChangedEvent, saveMosaicDrafts, useHasMosaicDrafts, type MosaicAdoptionChange } from "./game-mosaic/mosaicDrafts";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { writeOutput, type OutputLevel } from "../appOutput";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
@@ -105,7 +105,7 @@ const backendStepLabels: Record<string, string> = {
   "uninstall-text": "卸载文本补丁", "cleanup-text": "清理文本补丁",
 };
 
-type ImageArtifact = { ids: string[]; applied: boolean; patchId?: string; path?: string };
+type ImageArtifact = { ids: string[]; applied: boolean; patchId?: string; path?: string; stale?: boolean };
 type DeploymentArtifacts = {
   text?: { path: string; applied: boolean };
   images?: ImageArtifact;
@@ -148,6 +148,17 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
     catch { return {}; }
   });
   useEffect(() => { localStorage.setItem(artifactsKey, JSON.stringify(artifacts)); }, [artifactsKey, artifacts]);
+  useEffect(() => {
+    const onAdoptionChanged = (event: Event) => {
+      const { root, imageIds } = (event as CustomEvent<MosaicAdoptionChange>).detail;
+      if (root !== game.path) return;
+      setArtifacts(previous => previous.mosaic && !previous.mosaic.stale &&
+        imageIds.some(id => previous.mosaic?.ids.includes(id))
+        ? { ...previous, mosaic: { ...previous.mosaic, stale: true } } : previous);
+    };
+    window.addEventListener(mosaicAdoptionChangedEvent, onAdoptionChanged);
+    return () => window.removeEventListener(mosaicAdoptionChangedEvent, onAdoptionChanged);
+  }, [game.path]);
   const [controlsTarget,setControlsTarget]=useState<HTMLDivElement|null>(null),[resultsTarget,setResultsTarget]=useState<HTMLDivElement|null>(null);
   const [imageScanRequest,setImageScanRequest]=useState(0);
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
@@ -666,6 +677,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   });
   const applyMosaic = async (undo = false) => {
     if (hasMosaicDrafts(game.path)) { showAppNotice("请先点击右上角保存去码修改"); return; }
+    if (!undo && artifacts.mosaic?.stale) { showAppNotice("去码结果已更新，请重新生成去码补丁"); return; }
     const ids = artifacts.mosaic?.ids ?? (undo ? mosaicHandle.current?.selectedIds() : undefined);
     if (!ids?.length || !await confirm(`请关闭游戏后继续。将处理 ${ids.length} 张去码图。`, {
       title: undo ? "卸载去码图" : "应用去码图",
@@ -861,13 +873,14 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
             <p>图片补丁</p>
             <div className="dpl-actions">
               <button type="button" className="dpl-btn" data-tooltip="写入译图前请先关闭游戏" disabled={!canWritePatch || !imageWorkflow.valid} title={testTitle} onClick={applyImages}>应用译图</button>
-              {selfMosaic && <button type="button" className="dpl-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length} title={testTitle} onClick={() => void applyMosaic()}>应用去码图</button>}
+              {selfMosaic && <button type="button" className="dpl-btn" disabled={!canWritePatch || !artifacts.mosaic?.ids.length || artifacts.mosaic.stale} title={testTitle} data-tooltip={artifacts.mosaic?.stale ? "去码结果已更新，请重新生成去码补丁" : undefined} onClick={() => void applyMosaic()}>应用去码图</button>}
               <IconAction name="rollback" caption="卸载译图" label="卸载译图并保留已应用的去码图" hint={testTitle} disabled={testing || busy || !imageWorkflow.loaded} onClick={() => void runDeployment("manual", step => step("uninstallImages", async () => {
                 if (!await imageHandle.current?.uninstall()) throw new Error("译图卸载未完成");
                 setArtifacts(previous => previous.images ? { ...previous, images: { ...previous.images, applied: false } } : previous);
               }))} />
               {selfMosaic && <IconAction name="rollback" caption="卸载去码图" label="卸载去码图并保留已应用的译图" hint={testTitle} disabled={testing || busy || !artifacts.mosaic?.applied && !mosaicComplete} onClick={() => void applyMosaic(true)} />}
             </div>
+            {artifacts.mosaic?.stale && <p className="dpl-hint" role="status">去码结果已更新，请重新生成去码补丁。</p>}
             {artifacts.mosaic?.path && <button type="button" className="dpl-btn" onClick={() => void api.revealPath(artifacts.mosaic!.path!)}>去码补丁目录</button>}
           </div>}
           {thirdPartyMosaic && <div className="dpl-mosaic"><span>第三方去码补丁</span><GameMosaicPatchButton gamePath={game.path} disabled={busy} /></div>}
@@ -970,7 +983,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   if (!mosaicBusy && (mosaicComplete || imageWorkflow.loaded && imageWorkflow.count === 0)) completed.push("mosaic");
   const appliedIds = (artifact: ImageArtifact | undefined, ids: string[]) => {
     if (!artifact) return !ids.length;
-    if (!artifact.applied || artifact.ids.length !== ids.length) return false;
+    if (!artifact.applied || artifact.stale || artifact.ids.length !== ids.length) return false;
     const applied = new Set(artifact.ids);
     return ids.every(id => applied.has(id));
   };

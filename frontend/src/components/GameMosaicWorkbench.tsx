@@ -30,7 +30,7 @@ import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
 import { confirmationBoxes, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
-import { applyMosaicDrafts, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, registerMosaicRows, stageMosaicEdits,
+import { applyMosaicDrafts, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, notifyMosaicAdoptionChanged, registerMosaicRows, stageMosaicEdits,
   useMosaicDrafts, type MosaicDraftSaved } from "./game-mosaic/mosaicDrafts";
 import type { ImagePreview, MosaicMaskCommit, MosaicCandidate, MosaicGroupMenu, MosaicStep, MosaicWorkbenchProps as Props, RedrawPlan,
   MosaicBatchStep, MosaicBatchWork, MosaicReviewMetrics, MosaicReviewSession, MosaicStepUsage, Result, Results, StepRun } from "./game-mosaic/mosaicWorkbenchTypes";
@@ -346,7 +346,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const draftReference = members.find(image => resultFor(draftRows, image).reference && resultFor(draftRows, image).saved);
   const actionsDisabled = !!busy || disabled;
   const masks = useMosaicMasks({ gamePath, active, activeResult, members, usable, rows: draftRows, candidates: draftCandidates,
-    getRows: () => applyMosaicDrafts(latestRows.current, mosaicDraftsOf(gamePath)), hasStorage: !!storage, blocked: () => !!task.current || disabled,
+    getRows: () => applyMosaicDrafts(latestRows.current, mosaicDraftsOf(gamePath)), blocked: () => !!task.current || disabled,
     actionsDisabled, commit: commitMaskEdits });
 
   function selectPreview(id: string) {
@@ -390,6 +390,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const saved = selected.filter(image => resultFor(rows, image).saved);
   const included = saved.filter(image => storage?.index[image.id]?.included);
   const activeSaved = !!committedResult?.saved;
+  const withdrawalStaged = activeSaved && activeResult?.saved === false;
   const confirmationNotice = useImageConfirmationNotice(gamePath, active, "mosaic", activeSaved && !storage && !busy);
   const counts = useMemo(() => visible.reduce((total, image) => {
     const row = resultFor(rows, image);
@@ -466,6 +467,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const metadata = renderedMosaics.current.get(blob);
     if (!metadata && supportsGameImageConfirmation(image)) throw new Error("候选缺少重绘框，请重新生成后采用");
     await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
+    notifyMosaicAdoptionChanged(gamePath, [image.id]);
     if (metadata) {
       await saveGameImageConfirmation(gamePath, image, blob, {
         layer: "mosaic", groupId: resultFor(rows, image).group ?? null, modelId: metadata.model, maskMode: "boxes",
@@ -594,10 +596,18 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function moveToStatus(value: string) {
-    if (!active || !activeResult || activeSaved || actionsDisabled) return;
+    if (!active || !activeResult || activeResult.saved || actionsDisabled || isBenchmarkRunning()) return;
     const manualStatus = mosaicManualStatuses.find(status => status === value);
     if (!manualStatus && value !== "auto") return;
     stageImageEdits([active], () => ({ manualStatus }));
+  }
+
+  function toggleAdoptionWithdrawal() {
+    if (!active || !committedResult?.saved || actionsDisabled || isBenchmarkRunning()) return;
+    const hash = storage?.index[active.id]?.hash ?? active.sourceHash;
+    stageImageEdits([active], () => withdrawalStaged
+      ? { saved: true, reference: committedResult.reference, discardedHash: committedResult.discardedHash }
+      : { saved: false, reference: false, discardedHash: hash });
   }
 
   function waitForDraftSave() {
@@ -791,6 +801,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const seed = parseInt((group || "ab").replace(/[^a-f0-9]/gi, "").slice(-8) || "1", 16);
     startRedraw({ targets: usableTargets.map(image => ({ image, boxes: resultFor(rows,image).boxes,
       keep: keepText(image,protect), pending: new Set(models) })), models, steps, seed, reference });
+  }
+
+  function redrawCurrent(models: MosaicModel[]) {
+    if (!active || actionsDisabled || isBenchmarkRunning() || waitForDraftSave()) return;
+    if (!activeResult?.boxes.length) {
+      if (source?.id !== active.id || source.revision !== active.sourceHash || !source.blob) {
+        showAppNotice("请等待原图读取完成");
+        return;
+      }
+      if (masks.tool !== "add") masks.toggleTool("add");
+      showAppNotice("请在原图框选要重绘的区域，保存蒙版后再开始重绘");
+      return;
+    }
+    generate([active], models);
   }
 
   function approve(image: UnityImage, blob: Blob) {
@@ -1051,7 +1075,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setCollapsed(previous => ({ ...previous, failed: false }));
     setQuery(""); setGroupPages({}); setActiveId("");
   };
-  const redrawReason = testTitle ?? busyReason ?? draftReason ?? (!activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
+  const redrawReason = testTitle ?? busyReason ?? draftReason ?? (!activeSaved && !activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = testTitle ?? busyReason ?? draftReason ?? (!pausedRedraw && !redrawGroup.length ? "先勾选本组中已有蒙版的待重绘图片" : undefined);
   if (deploymentHandle && !paneVisible) return null;
   const hiddenStyle = paneVisible ? undefined : { display: "none" };
@@ -1114,7 +1138,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         preferredResult={preferredResult} setPreferredResult={setPreferredResult} masks={masks}
         getViewerNeighbors={getViewerNeighbors} onViewerImage={selectViewerImage}
         actionsDisabled={actionsDisabled} busyReason={busyReason ?? draftReason} redrawReason={redrawReason} testTitle={testTitle} model={model}
-        onRedraw={models => { if (active) generate([active], models); }}
+        onRedraw={redrawCurrent}
         onApprove={blob => { if (active) approve(active, blob); }}
         header={active &&
           <div className="unity-image-actions">
@@ -1124,7 +1148,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
               <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
                 onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
               <div className="game-mosaic-group-picker">
-                <UnityDescriptionSelect label="移动到处理分组…" value={activeResult?.manualStatus ?? ""} menuWidth={188} disabled={actionsDisabled || activeSaved}
+                <UnityDescriptionSelect label="移动到处理分组…" value={activeResult?.manualStatus ?? ""} menuWidth={188} disabled={actionsDisabled || testing || !!activeResult?.saved}
                   choices={[
                     ...mosaicStatusChoices(),
                     ...(activeResult?.manualStatus ? [{ value: "auto", label: "恢复自动分组" }] : []),
@@ -1132,6 +1156,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
                   onChange={moveToStatus} />
               </div>
               <button className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，即可将结果用作组内画风参考"} disabled={actionsDisabled || !activeSaved || draftReference?.id === active.id} onClick={() => stageImageEdits(members, image => ({ reference: image.id === active.id, group, manualGroup: true }))}>{draftReference?.id === active.id ? "本组参考图" : "用作本组画风参考"}</button>
+              {activeSaved && <button type="button" className="unity-btn" disabled={actionsDisabled || testing}
+                data-tooltip={withdrawalStaged ? "取消尚未保存的撤回" : "保存后撤回采用，并从下次生成的补丁中移除"}
+                onClick={toggleAdoptionWithdrawal}>{withdrawalStaged ? "取消撤回" : "撤回采用"}</button>}
               {draftReference && <span>参考图 {draftReference.name}</span>}
             </div>
           </div>

@@ -19,6 +19,12 @@ const subscribe = (listener: () => void) => {
 };
 
 export const mosaicDraftSavedEvent = "llmchat-mosaic-draft-saved";
+export const mosaicAdoptionChangedEvent = "llmchat-mosaic-adoption-changed";
+export type MosaicAdoptionChange = { root: string; imageIds: readonly string[] };
+
+export function notifyMosaicAdoptionChanged(root: string, imageIds: readonly string[]) {
+  if (imageIds.length) window.dispatchEvent(new CustomEvent<MosaicAdoptionChange>(mosaicAdoptionChangedEvent, { detail: { root, imageIds } }));
+}
 export const mosaicDraftsOf = (root: string) => projects.get(root) ?? emptyDrafts;
 export const hasMosaicDrafts = (root: string) => mosaicDraftsOf(root).size > 0;
 export const useMosaicDrafts = (root: string) => useSyncExternalStore(subscribe, () => mosaicDraftsOf(root));
@@ -76,10 +82,16 @@ export function saveMosaicDrafts(root: string) {
     const row = stored[id];
     if (row?.source !== base.source && row?.source !== storedSource)
       throw new Error("原图已更新，无法保存上一版的去码修改");
-    changes[id] = { ...(row?.source === base.source ? row : base), ...patch };
+    const next = { ...(row?.source === base.source ? row : base), ...patch };
+    if (base.saved && next.saved === false) {
+      next.checked = false;
+      next.manualChecked = true;
+    }
+    changes[id] = next;
   }
   writeMosaicRowEdits(root, changes);
   window.dispatchEvent(new CustomEvent<MosaicDraftSaved>(mosaicDraftSavedEvent, { detail: { root, changes, drafts } }));
   publishDrafts(root, emptyDrafts);
+  notifyMosaicAdoptionChanged(root, [...drafts].flatMap(([id, draft]) => draft.base.saved && changes[id].saved === false ? [id] : []));
   return true;
 }

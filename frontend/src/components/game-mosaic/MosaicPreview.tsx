@@ -80,9 +80,9 @@ function MaskResizeControls({ box }: { box: MosaicBox }) {
   </g>;
 }
 
-function MosaicResultVersion({ version, letter, imageName, disabledReason, onApprove, onOpen }: {
+function MosaicResultVersion({ version, letter, imageName, disabledReason, replacing, onApprove, onOpen }: {
   version: ResultVersion; letter?: string; imageName: string;
-  disabledReason?: string; onApprove: (blob: Blob) => void; onOpen?: () => void;
+  disabledReason?: string; replacing: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
 }) {
   const url = useImageBlobUrl(version.blob);
   const modelName = mosaicModelLabels[version.id];
@@ -95,9 +95,9 @@ function MosaicResultVersion({ version, letter, imageName, disabledReason, onApp
         <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
       </div>}
     </GameImagePreviewFrame>
-    <button type="button" className="unity-btn" aria-label={`采用 ${modelName} 候选`}
+    <button type="button" className="unity-btn" aria-label={(replacing ? "替换已采用图：" : "采用候选：") + modelName}
       disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
-      onClick={() => onApprove(version.blob)}>采用此版</button>
+      onClick={() => onApprove(version.blob)}>{replacing ? "替换已采用图" : "采用此版"}</button>
   </div>;
 }
 
@@ -225,6 +225,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <div className="unity-image-actions game-mosaic-results-bar">
           <strong>去码结果</strong>
+          {activeSaved && <button type="button" className="unity-btn" disabled={!!redrawReason} data-tooltip={redrawReason}
+            onClick={() => onRedraw([model])}>重新绘制</button>}
           {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
             setPreferredResult(showSaved ? preferredVersion.id : "saved");
           }}>{showSaved ? "查看候选" : "查看已采用去码图"}</button>}
@@ -297,7 +299,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
           <MosaicResultVersion key={version.id} version={version}
             letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
-            imageName={active.name} disabledReason={busyReason} onApprove={onApprove}
+            imageName={active.name} replacing={activeSaved} disabledReason={busyReason} onApprove={onApprove}
             onOpen={editing ? undefined : () => openPreview(version.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
       </div>
