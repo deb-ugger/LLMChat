@@ -78,7 +78,7 @@ function arrowDestination(index: number, key: string, length: number): number | 
   const column = index % galleryColumns;
   switch (key) {
     case "ArrowLeft": return (index + length - 1) % length;
-    case "ArrowRight": return (index + 1) % length;
+    case "ArrowRight": return index + 1;
     case "ArrowUp": return index >= galleryColumns ? index - galleryColumns
       : column + Math.floor((length - 1 - column) / galleryColumns) * galleryColumns;
     case "ArrowDown": return index + galleryColumns < length ? index + galleryColumns : column;
@@ -145,6 +145,11 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
       const start = nextPage * mosaicGalleryPageSize;
       const last = Math.min(start + mosaicGalleryPageSize, images.length) - 1;
       nextImage = images[Math.min(start + Math.max(0, index), last)];
+      changePage(nextPage);
+    } else if (event.key === "ArrowRight" && index === visible.length - 1) {
+      const nextPage = currentPage + 1;
+      if (nextPage >= pages) return;
+      nextImage = images[nextPage * mosaicGalleryPageSize];
       changePage(nextPage);
     } else {
       const next = arrowDestination(index, event.key, visible.length);
