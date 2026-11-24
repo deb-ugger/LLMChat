@@ -139,6 +139,14 @@ async function mosaicResponse(response: Response) {
   return response;
 }
 
+async function readSavedMosaicSources(gamePath: string, signal: AbortSignal): Promise<Record<string, string>> {
+  const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-status", {
+    method: "POST", signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gamePath }),
+  }));
+  const { candidates } = await response.json() as { candidates: Record<string, string> };
+  return candidates;
+}
+
 export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, storage, read, prepareSources, controls, visible: paneVisible = true, disabled = false, onBusy, deploymentHandle, packageOnly = false, onDeploymentSelectionChange }: Props & { packageOnly?: boolean; onDeploymentSelectionChange?: (ids: string[]) => void }) {
   const task = useRef<AbortController | null>(null);
   const onCompletionChange = useContext(GameMosaicCompletionContext);
@@ -477,10 +485,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   useEffect(() => {
     if (!deploymentHandle || !hasImages) return;
     const controller = new AbortController();
-    void fetch(API_BASE + "/api/game-images/mosaic-status", {
-      method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gamePath }),
-    }).then(mosaicResponse).then(response => response.json() as Promise<{ candidates: Record<string, string> }>).then(({ candidates }) => {
+    void readSavedMosaicSources(gamePath, controller.signal).then(candidates => {
       if (controller.signal.aborted) return;
       setRows(previous => {
         const next = { ...previous };
@@ -512,13 +517,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       }, signal, {
         read, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
         savedMosaicScan, redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
-        readExisting: async signal => {
-          const status = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-status", {
-            method: "POST", signal, headers: { "Content-Type":"application/json" }, body: JSON.stringify({ gamePath })
-          }));
-          const { candidates } = await status.json() as { candidates: Record<string, string> };
-          return candidates;
-        },
+        readExisting: signal => readSavedMosaicSources(gamePath, signal),
         writeCandidate: saveCandidate,
       })),
       prepare: async (signal, imageIds = selected.map(image => image.id)) => {
@@ -863,7 +862,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     Object.values(rows).some(row => !row.saved && (row.refined || row.refineError || row.beforeRefine));
   const canClearRedraw = canClearStep(stepRuns.redraw?.state) || Object.keys(candidates).length > 0 ||
     Object.values(rows).some(row => !!row.redrawError);
-  const canClear = canClearStep(screenStatus.state) || canClearRefine || canClearRedraw;
+  const canClear = canClearStep(screenStatus.state) || canClearRefine || canClearRedraw ||
+    usable.some(image => resultFor(rows, image).saved && !storage?.index[image.id]?.included);
   const pausedRedraw = (stepRuns.redraw?.state === "stopped" || stepRuns.redraw?.state === "error") ? pendingRedraw.current : null;
   const redrawRemaining = pausedRedraw?.targets.filter(target => target.pending.size).length ?? 0;
   const reviewCheckpoint = resumableMosaicMetrics(gamePath, "refine", true);
@@ -982,10 +982,23 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     })) return;
     if (task.current) return;
 
+    if (deploymentHandle && !storage) {
+      await run("正在清理图片去码任务", async signal => {
+        const cached = await readSavedMosaicSources(gamePath, signal);
+        signal.throwIfAborted();
+        resetTask(cached);
+      });
+    } else {
+      resetTask({});
+    }
+  }
+
+  function resetTask(cached: Readonly<Record<string, string>>) {
     const next: Results = {};
     for (const image of usable) {
       const entry = storage?.index[image.id];
-      if (!storage && resultFor(rows, image).saved) {
+      const row = resultFor(latestRows.current, image);
+      if (!storage && (row.saved || row.discardedHash === image.sourceHash || cached[image.id] === image.sourceHash)) {
         next[image.id] = { ...defaultResult(image), discardedHash: image.sourceHash };
         continue;
       }
