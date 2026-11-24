@@ -4223,30 +4223,6 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 }
 .game-flow-editable-fields [data-parameter-group="help"] { margin-block-start: 2px; }
 
-.game-image-configuration .game-flow-editable-fields {
-  --game-flow-narrow-width: 88px;
-}
-.game-image-configuration .game-flow-editable .game-flow-editable-fields label.game-flow-param-field,
-.game-image-configuration .game-flow-editable-fields .game-model-head > span {
-  text-align: start;
-}
-.game-image-configuration .game-flow-editable-fields .game-flow-param-field:not(.game-model-column, .game-flow-param-stacked) {
-  grid-template-columns: var(--game-flow-label-width) minmax(0, 1fr);
-}
-.game-image-configuration .game-flow-editable-fields .game-model-column:not(.game-flow-param-stacked) {
-  grid-template-columns: var(--game-flow-label-width) minmax(0, 1fr) 60px;
-}
-.game-image-configuration .game-flow-editable-fields .game-model-column.game-flow-param-stacked {
-  grid-template-columns: minmax(0, 1fr) 60px;
-}
-.game-image-configuration .game-flow-editable-fields .game-model-controls > .game-model-concurrency-control {
-  min-inline-size: 0;
-  inline-size: 100%;
-}
-.game-image-configuration .game-flow-editable-fields .game-flow-param-field > input[type=number] {
-  inline-size: min(88px, 100%);
-  min-inline-size: 0;
-}
 .game-image-configuration .game-flow-editable-fields [data-parameter-group="help"] {
   order: 1;
 }
