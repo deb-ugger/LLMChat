@@ -79,7 +79,7 @@ type CardProps = GameFlowActivity & {
   runningParameters?: readonly BenchmarkParameter[];
   foldedSummary?: { completed?: number; failed?: number; models?: readonly string[]; concurrency?: number };
   parametersLocked?: boolean;
-  saveConfiguration?: { run: () => void; disabled: boolean; saving?: boolean };
+  saveConfiguration?: { run: () => void; cancel: () => void; disabled: boolean; saving?: boolean };
   disclosure?: { expanded: boolean; toggle: () => void };
 };
 
@@ -204,13 +204,13 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {body}
         {(configured || showReadOnlyParameters || !locked && onConfigure) && <section id={settingsId}
           className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured && !showReadOnlyParameters}>
-          <h5 className="game-flow-editable-title">运行参数
-            {configured && <span className="game-flow-tag">{locked ? "运行中，不可改" : "可改"}</span>}
-            {configured && saveConfiguration && <button type="button" disabled={locked || saveConfiguration.disabled}
-              onClick={saveConfiguration.run}>{saveConfiguration.saving ? "保存中…" : "保存"}</button>}
-          </h5>
           {configured && <fieldset className="game-flow-parameter-fields" disabled={locked}>
             <div className="game-flow-editable-fields">{configuration}</div>
+            {saveConfiguration && <div className="game-flow-config-save">
+              <button type="button" className="unity-btn" disabled={saveConfiguration.saving} onClick={saveConfiguration.cancel}>取消</button>
+              <button type="button" className="unity-btn unity-btn-primary" disabled={saveConfiguration.disabled}
+                onClick={saveConfiguration.run}>{saveConfiguration.saving ? "保存中…" : "保存"}</button>
+            </div>}
           </fieldset>}
           {showReadOnlyParameters && <dl className="game-flow-parameter-list" aria-label="本次实际运行参数">
             {readOnlyParameters.map(({ label, value, scope }, index) =>

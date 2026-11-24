@@ -611,13 +611,10 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
             disabled: savingConfiguration || configurationLocked || !configurationSteps(step.id).some(changed),
             saving: savingConfiguration,
             run: () => void withConfiguration(undefined, step.id, true),
+            cancel: () => cancelConfiguration(step.id),
           } : undefined}
           configuration={hasConfiguration ? <div className="game-flow-field-wide game-flow-config-content">
             <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
-            {onSaveConfiguration && <div className="game-flow-config-save">
-              <button type="button" className="unity-btn" disabled={savingConfiguration || configurationLocked}
-                onClick={() => cancelConfiguration(step.id)}>取消</button>
-            </div>}
           </div> : expanded && children && <button type="button" className="unity-btn game-flow-field-wide"
             onClick={openConfiguration}>编辑本步参数</button>} /></li>;
       })}</ol>

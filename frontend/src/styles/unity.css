@@ -2498,7 +2498,6 @@ body.ocr-image-resizing * {
 .model-filter-bulk button { flex:1;padding:7px 10px;border:1px solid var(--border,#dcd6c6);border-radius:var(--radius-md);background:var(--panel,var(--bg-panel));color:var(--accent,#1b1a16);cursor:pointer; }
 .model-filter-vendors { display:grid;gap:10px;border-top:1px solid var(--border,#dcd6c6);padding-top:10px; }
 .model-filter-trigger:hover { filter:brightness(.8); }
-.game-flow-config-save { display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3);margin-top:14px; }
 
 .game-prompt-pool { container-type: inline-size; }
 .game-prompt-pool > h2 { margin: 0 0 14px; }
@@ -3939,22 +3938,13 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 @keyframes game-flow-state-pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--flow-color) 28%,transparent)}}
 @media (prefers-reduced-motion:no-preference){.game-flow-state-line[data-active="true"] > span:first-child{animation:game-flow-state-pulse 1.6s ease-in-out infinite}}
 
-/* 可改区：暖色底，与上面的只读数据区分开 */
-.game-flow-editable{margin-block-start:10px;padding:9px 10px;border-radius:9px;
-  border:1px solid color-mix(in srgb,#d9a44b 26%,var(--border));
-  background:color-mix(in srgb,#d9a44b 5%,var(--bg-panel));container:game-flow-parameters / inline-size;
-  --game-flow-label-width:78px;--game-flow-field-gap:8px}
-.game-flow-editable-title{display:flex;align-items:center;gap:6px;margin:0 0 8px;font-size:9.5px;
-  letter-spacing:1.1px;font-weight:600;color:var(--warning)}
-.game-flow-tag{font-size:8.5px;letter-spacing:0;padding:0 4px;border-radius:4px;color:var(--warning);
-  border:1px solid color-mix(in srgb,#d9a44b 40%,transparent);
-  background:color-mix(in srgb,#d9a44b 12%,transparent)}
-.game-flow-editable-title button{margin-inline-start:auto;font-size:9.5px;letter-spacing:0;padding:2px 9px;
-  border-radius:5px;border:0;font-weight:600;cursor:pointer;background:var(--text);color:var(--bg)}
-.game-flow-editable-title button:disabled{opacity:.45;cursor:not-allowed}
-.game-flow-editable:has(> .game-flow-parameter-fields:disabled) .game-flow-editable-title > button:disabled{
-  opacity:1;background:var(--bg-muted);color:var(--text);box-shadow:inset 0 0 0 1px var(--border-strong)
+.game-flow-editable{
+  margin-block-start:10px;padding:10px 10px 0;border-block-start:1px solid var(--border);
+  container:game-flow-parameters / inline-size;
+  --game-flow-label-width:120px;--game-flow-field-gap:8px;
+  --game-flow-disabled-text:color-mix(in srgb,var(--text-muted) 90%,var(--text))
 }
+.game-flow-config-save{display:flex;justify-content:flex-end;gap:var(--space-2);margin-block-start:8px}
 .game-flow-parameter-fields{min-inline-size:0;margin:0;padding:0;border:0}
 .game-flow-editable .game-flow-parameter-fields:disabled :is(input,select,textarea,button):disabled{
   opacity:1;cursor:not-allowed;filter:none
@@ -3963,15 +3953,16 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   background:var(--bg-muted);border-color:var(--border-strong)
 }
 .game-flow-editable .game-flow-parameter-fields:disabled :is(input:not(:has(+ .searchable-select-caption)),select,textarea,button):disabled,
-.game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{color:var(--text)}
+.game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{color:var(--game-flow-disabled-text)}
 .game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{opacity:1}
-.game-flow-editable .game-flow-parameter-fields:disabled :is(input,textarea):disabled::placeholder{color:var(--text-muted);opacity:1}
-.game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:8px 12px}
+.game-flow-editable .game-flow-parameter-fields:disabled input:is([type=checkbox],[type=radio]):disabled{opacity:.65}
+.game-flow-editable .game-flow-parameter-fields:disabled :is(input,textarea):disabled::placeholder{color:var(--game-flow-disabled-text);opacity:1}
+.game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:8px 12px}
 .game-flow-editable-fields :is(.game-flow-field-wide,.game-translation-tabs,.unity-engine-pool){grid-column:1 / -1}
 .game-flow-editable-fields :is(.game-mosaic-step-settings,.game-flow-config-content,.unity-run-options){display:contents}
 .game-flow-editable .game-flow-editable-fields :is(.unity-translation-settings,.unity-control-group,.unity-group-fields,.unity-offline-fields,
   .game-flow-parameter-group,.game-translation-page,.game-model-prompt-row){
-  display:grid;grid-template-columns:subgrid;grid-column:1 / -1;align-items:center;gap:inherit;min-inline-size:0
+  display:grid;grid-template-columns:subgrid;grid-column:1 / -1;align-items:start;gap:inherit;min-inline-size:0
 }
 .game-flow-editable .game-flow-editable-fields :is(.unity-translation-settings,.game-translation-page,.unity-control-group,.unity-offline-fields){
   padding:0;margin:0;border:0
@@ -3982,20 +3973,23 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields :is(.game-mosaic-step-settings,.unity-group-fields,.unity-offline-fields,.unity-translation-settings,
   .game-translation-page,.game-model-prompt-row) > label:has(> :is(input,select,textarea,.searchable-select,.unity-description-select)),
 .game-flow-editable-fields :is(.game-mosaic-model-field,.game-flow-range-field,.unity-language-setting){
-  display:grid;grid-template-columns:var(--game-flow-label-width) minmax(0,1fr);align-items:center;
-  gap:var(--game-flow-field-gap);min-inline-size:0;grid-column:auto;text-align:end;white-space:normal;
-  overflow-wrap:anywhere;font-size:var(--fs-caption)
+  display:grid;grid-template-columns:minmax(var(--game-flow-label-width),max-content) minmax(0,1fr);align-items:center;
+  gap:var(--game-flow-field-gap);min-inline-size:0;grid-column:auto;text-align:end;white-space:nowrap;
+  font-size:var(--fs-caption)
 }
 .game-flow-editable-fields :is(.game-mosaic-model-field,.game-flow-range-field) > span{
-  min-inline-size:0;white-space:normal;color:var(--text-muted)
+  min-inline-size:0;white-space:nowrap;color:var(--text-muted)
 }
 .game-flow-editable-fields label > :is(select,input:not([type=checkbox],[type=radio]),textarea,.searchable-select,.unity-description-select),
 .game-flow-editable-fields .unity-language-setting > select{
   min-inline-size:0;inline-size:100%;max-inline-size:none;box-sizing:border-box;text-align:start
 }
 .game-flow-editable-fields .game-flow-range-field > output{
-  display:flex;align-items:center;min-block-size:var(--control-size);padding-inline:9px;text-align:start;
+  display:flex;align-items:center;block-size:var(--control-size);box-sizing:border-box;padding-inline:9px;text-align:start;
   border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-panel);color:var(--text-muted)
+}
+.game-flow-editable .game-flow-editable-fields :is(select,input:not([type=checkbox],[type=radio]),.unity-description-trigger){
+  block-size:var(--control-size);min-block-size:var(--control-size);box-sizing:border-box
 }
 .game-flow-editable-fields .unity-language-heading{display:contents}
 .game-flow-editable-fields .unity-language-heading > span{grid-column:1;grid-row:1}
@@ -4014,16 +4008,17 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields :is(.hint,.unity-group-note){
   grid-column:1 / -1;order:1;margin:0
 }
-.game-flow-editable-fields .game-mosaic-step-settings > button:not(.model-filter-trigger),
-.game-flow-editable-fields .game-flow-config-save{grid-column:1 / -1;justify-self:end}
-.game-flow-editable-fields .game-flow-config-save{order:2;margin:0}
+.game-flow-editable-fields .game-mosaic-step-settings > button:not(.model-filter-trigger){
+  grid-column:1 / -1;justify-self:end
+}
+.game-flow-editable-fields .game-flow-parameter-action{order:2}
 .game-flow-editable-fields .game-model-column{
-  display:grid;grid-template-columns:var(--game-flow-label-width) minmax(0,1fr) 46px;
+  display:grid;grid-template-columns:minmax(var(--game-flow-label-width),max-content) minmax(0,1fr) 46px;
   align-items:center;gap:var(--game-flow-field-gap);min-inline-size:0
 }
 .game-flow-editable-fields :is(.game-model-head,.game-model-controls){display:contents}
 .game-flow-editable-fields .game-model-head > span{
-  grid-column:1;grid-row:1;text-align:end;overflow-wrap:anywhere;font-size:var(--fs-caption)
+  grid-column:1;grid-row:1;text-align:end;white-space:nowrap;font-size:var(--fs-caption)
 }
 .game-flow-editable-fields .game-model-head > label{display:none}
 .game-flow-editable-fields .game-model-filter{grid-column:2;grid-row:1}

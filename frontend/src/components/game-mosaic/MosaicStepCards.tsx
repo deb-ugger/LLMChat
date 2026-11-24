@@ -176,8 +176,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         {refine.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理复筛" disabled={actionsDisabled} onClick={() => void refine.clear()}>清理</button>}
       </>,<>
-        {refine.reviewedCount > 0 && refine.pendingCount > 0 && <button type="button" className="unity-btn is-secondary"
-          disabled={testing || actionsDisabled} onClick={() => refine.start(true)}>重新复筛已勾选图片</button>}
         <div className="game-mosaic-model-field">
           <span>候选区域推理模型</span>
           <ModelFilterSelect label="候选区域推理模型" value={preferences.refineModel || "qwen3.5:latest"}
@@ -192,11 +190,13 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
             filter={refine.guardFilter} setFilter={refine.setGuardFilter}
             onChange={model=>changePreferences({refineGuardModel:model})} />
         </div>
-        <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
         <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}>{mosaicRefineConcurrencyChoices.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
         <div className="game-flow-range-field"><span>手动复筛范围</span><output>已勾选 {refine.targetCount} 张</output></div>
         <label className="game-mosaic-checkbox"><input type="checkbox" checked={!!preferences.refineIncludeMissed} disabled={busy} onChange={e=>changePreferences({refineIncludeMissed:e.target.checked})}/>自动流程使用大模型补查未发现（耗时长）</label>
         <label className="game-mosaic-checkbox"><input type="checkbox" checked={preferences.refine!==false} disabled={busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
+        <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
+        {refine.reviewedCount > 0 && refine.pendingCount > 0 && <button type="button" className="unity-btn is-secondary game-flow-parameter-action"
+          disabled={testing || actionsDisabled} onClick={() => refine.start(true)}>重新复筛已勾选图片</button>}
       </>)}
       {stepCard("redraw", "重绘打码区域", mosaicModelLabels[model], <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
