@@ -220,14 +220,72 @@ async def render(session, crop, draft, translation, steps, label, profile, workf
         return extract(output, matte, crop.size)
 
 
-async def run_image_graph(session, graph, output_id, label, workflow_times, prompt_ids=None):
+async def read_graph_history(session, prompt_id):
+    return (await request(session, "GET", "/history/" + prompt_id)).get(prompt_id)
+
+
+async def graph_history_image(session, record, output_id, workflow_times, allow_missing=False):
+    if record.get("status", {}).get("status_str") == "error":
+        raise RuntimeError(str(record["status"].get("messages", []))[-1200:])
+    image = record["outputs"][output_id]["images"][0]
+    params = {key: image[key] for key in ("filename", "subfolder", "type")}
+    if allow_missing:
+        async with session.get(BASE + "/view", params=params, allow_redirects=False) as response:
+            if response.status == 404:
+                return None
+            response.raise_for_status()
+            raw = await response.read()
+    else:
+        raw = await request(session, "GET", "/view", params=params)
+    start = end = None
+    for message in record.get("status", {}).get("messages") or []:
+        if not isinstance(message, list) or len(message) != 2 or not isinstance(message[1], dict):
+            continue
+        event, details = message
+        if event == "execution_start":
+            start = details.get("timestamp")
+        elif event == "execution_success":
+            end = details.get("timestamp")
+    if isinstance(start, int) and isinstance(end, int) and end >= start:
+        workflow_times.append(end - start)
+    return raw
+
+
+async def recover_image_graph(session, prompt_id, output_id, label, workflow_times):
+    if not prompt_id:
+        return None, None
+    deadline = time.monotonic() + 3600
+    waiting = False
+    while time.monotonic() < deadline:
+        record = await read_graph_history(session, prompt_id)
+        if record and record.get("status", {}).get("status_str") == "success":
+            return await graph_history_image(session, record, output_id, workflow_times, allow_missing=True), record
+        queue = await request(session, "GET", "/queue")
+        jobs = [*queue["queue_running"], *queue["queue_pending"]]
+        if not any(job[1] == prompt_id for job in jobs):
+            latest = await read_graph_history(session, prompt_id)
+            if latest and latest.get("status", {}).get("status_str") == "success":
+                return await graph_history_image(session, latest, output_id, workflow_times, allow_missing=True), latest
+            return None, latest or record
+        if not waiting:
+            emit("status", f"{label} · 正在接回 ComfyUI 中的任务")
+            waiting = True
+        await asyncio.sleep(1)
+    raise TimeoutError("等待 ComfyUI 恢复任务超时")
+
+
+async def run_image_graph(session, graph, output_id, label, workflow_times, prompt_ids=None,
+                          resume_id=None, old_history=None):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
         raise ValueError("请选择工作流的图像输出节点 ID")
     client = uuid.uuid4().hex
     async with session.ws_connect(BASE + "/ws", params={"clientId": client}) as ws:
-        job = await request(session, "POST", "/prompt", json={"client_id": client, "prompt": graph})
+        payload = {"client_id": client, "prompt": graph}
+        if resume_id:
+            payload["prompt_id"] = resume_id
+        job = await request(session, "POST", "/prompt", json=payload)
         pid = job["prompt_id"]
         if prompt_ids is not None:
             prompt_ids.append(pid)
@@ -255,24 +313,9 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
                     raise RuntimeError("ComfyUI 任务已中止")
                 if event["type"] not in ("execution_success", "executing") or data.get("node") is not None:
                     continue
-            record = (await request(session, "GET", "/history/" + pid)).get(pid)
-            if not record:
-                continue
-            if record.get("status", {}).get("status_str") == "error":
-                raise RuntimeError(str(record["status"].get("messages", []))[-1200:])
-            start = end = None
-            for message in record.get("status", {}).get("messages") or []:
-                if not isinstance(message, list) or len(message) != 2 or not isinstance(message[1], dict):
-                    continue
-                event, details = message
-                if event == "execution_start":
-                    start = details.get("timestamp")
-                elif event == "execution_success":
-                    end = details.get("timestamp")
-            if isinstance(start, int) and isinstance(end, int) and end >= start:
-                workflow_times.append(end - start)
-            image = record["outputs"][output_id]["images"][0]
-            return await request(session, "GET", "/view", params={k: image[k] for k in ("filename", "subfolder", "type")})
+            record = await read_graph_history(session, pid)
+            if record and record != old_history:
+                return await graph_history_image(session, record, output_id, workflow_times)
         raise TimeoutError("等待 ComfyUI 结果超时")
 
 
@@ -385,30 +428,34 @@ async def repair_mosaic(original, data, steps, workflow_times):
         root = Path(data["directory"])
         argv = await ready(session, root)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
-            source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
-            mask_name = await upload_image(session, source_mask.convert("RGB"), subfolder=subfolder)
-            reference_name = None
-            if reference:
-                with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
-                    ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
-                                       for index, value in enumerate(bounds))
-                    reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
-            prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
-                      "Preserve the pose, composition, outline, palette and the existing illustration style. "
-                      "Keep everything outside the mask unchanged.")
-            if reference_name:
-                prompt += " Use image 2 as a visual style reference."
-            graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
-            sampler = graph["13"]["inputs"]
-            latent_key = "latent_image"
-            graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
-            graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
-            graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
-            sampler[latent_key] = ["19", 0]
-            if subfolder:
-                graph["15"] = {"class_type": "SaveImage", "inputs": {
-                    "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
-            raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids)
+            resume_id = profile.get("promptId")
+            raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times)
+            if raw is None:
+                source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
+                mask_name = await upload_image(session, source_mask.convert("RGB"), subfolder=subfolder)
+                reference_name = None
+                if reference:
+                    with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
+                        ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
+                                           for index, value in enumerate(bounds))
+                        reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
+                prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
+                          "Preserve the pose, composition, outline, palette and the existing illustration style. "
+                          "Keep everything outside the mask unchanged.")
+                if reference_name:
+                    prompt += " Use image 2 as a visual style reference."
+                graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
+                sampler = graph["13"]["inputs"]
+                latent_key = "latent_image"
+                graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+                graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
+                graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler[latent_key], "mask": ["18", 0]}}
+                sampler[latent_key] = ["19", 0]
+                if subfolder:
+                    graph["15"] = {"class_type": "SaveImage", "inputs": {
+                        "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
+                raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids,
+                                            resume_id=resume_id, old_history=old_history)
     with Image.open(io.BytesIO(raw)) as output:
         restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
     restored.putalpha(crop.getchannel("A"))

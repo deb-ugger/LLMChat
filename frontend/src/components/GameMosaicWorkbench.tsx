@@ -15,6 +15,7 @@ import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearG
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
+import { registerAppCloseGuard } from "../appClose";
 import { useGameActionConfirm } from "./GameActionConfirm";
 import { usePersistedModelFilter } from "./ModelFilterSelect";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkProgress, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
@@ -30,6 +31,8 @@ import { assignMosaicRedrawReference, canResumeMosaicRedraw, clearReviewResult, 
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
+import { clearMosaicRedrawArchive, readMosaicRedrawArchive, restoreMosaicRedrawPlan,
+  writeMosaicRedrawCandidates, writeMosaicRedrawPlan } from "./game-mosaic/mosaicRedrawArchive";
 import { confirmationBoxes, saveGameImageConfirmation, supportsGameImageConfirmation, useImageConfirmationNotice } from "../gameImageConfirmation";
 import { useMosaicMasks } from "./game-mosaic/useMosaicMasks";
 import { applyMosaicDrafts, discardMosaicDraft, hasMosaicDrafts, mosaicDraftSavedEvent, mosaicDraftsOf, notifyMosaicAdoptionChanged,
@@ -260,8 +263,54 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [error, setError] = useState("");
   const [source, setSource] = useState<ImagePreview>();
   const [approved, setApproved] = useState<ImagePreview>();
-  const [candidates, setCandidates] = useState<Record<string, MosaicCandidate>>({});
-  const [preferredResult, setPreferredResult] = useState<"saved" | MosaicModel>();
+  const [candidates, setCandidateRows] = useState<Record<string, MosaicCandidate>>({});
+  const candidateRows = useRef(candidates);
+  const updateCandidates = useCallback((next: Record<string, MosaicCandidate>) => {
+    candidateRows.current = next;
+    setCandidateRows(next);
+  }, []);
+  const [preferredResult, setPreferredResult] = useState<string>();
+  const [archiveState, setArchiveState] = useState<{ gamePath: string; error?: string }>();
+  const archiveReason = archiveState?.gamePath === gamePath ? archiveState.error : "正在读取重绘记录";
+  const archiveWrites = useRef(Promise.resolve());
+  const enqueueArchiveWrite = useCallback((write: () => Promise<void>) => {
+    const next = archiveWrites.current.then(write);
+    archiveWrites.current = next.catch(() => {});
+    return next;
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let unregister: (() => void) | undefined;
+    void registerAppCloseGuard(async () => {
+      await archiveWrites.current;
+      return true;
+    }).then(remove => { if (active) unregister = remove; else remove(); }).catch(console.error);
+    return () => { active = false; unregister?.(); };
+  }, []);
+  const reportArchiveError = (error: unknown) => showAppNotice("无法保存重绘记录：" + String(error), "error");
+  const storePendingRedraw = async (plan: RedrawPlan | null) => {
+    await enqueueArchiveWrite(() => writeMosaicRedrawPlan(gamePath, plan));
+    pendingRedraw.current = plan;
+  };
+  useEffect(() => {
+    let active = true;
+    pendingRedraw.current = null;
+    updateCandidates({});
+    void readMosaicRedrawArchive(gamePath).then(archive => {
+      if (!active) return;
+      updateCandidates(archive.candidates);
+      const plan = restoreMosaicRedrawPlan(archive.plan, archive.candidates);
+      pendingRedraw.current = plan;
+      setStepRuns(previous => ({ ...previous, redraw: plan ? {
+        state: "stopped", total: plan.targets.length, completed: plan.targets.filter(target => !target.pending.size).length,
+        summary: plan.models.map(model => mosaicModelLabels[model]).join("、"),
+      } : undefined }));
+      setArchiveState({ gamePath });
+    }).catch(error => {
+      if (active) setArchiveState({ gamePath, error: "无法读取重绘记录：" + String(error) });
+    });
+    return () => { active = false; };
+  }, [gamePath, updateCandidates]);
   const confirmation = useGameActionConfirm(() => {});
   const usable = useMemo(() => images.filter(image => image.sourceFile && image.width > 0 && image.height > 0)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })), [images]);
@@ -380,11 +429,18 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       latestRows.current = nextRows;
       writtenRows.current = nextRows;
       setRows(nextRows);
-      setCandidates(previous => editedCandidates(previous, nextRows, drafts));
+      const previous = candidateRows.current;
+      const nextCandidates = editedCandidates(previous, nextRows, drafts);
+      if (nextCandidates !== previous) {
+        const changed = [...drafts.keys()].flatMap(id =>
+          previous[id] === nextCandidates[id] ? [] : [[id, nextCandidates[id]] as const]);
+        updateCandidates(nextCandidates);
+        void enqueueArchiveWrite(() => writeMosaicRedrawCandidates(gamePath, changed)).catch(reportArchiveError);
+      }
     };
     window.addEventListener(mosaicDraftSavedEvent, onSave);
     return () => window.removeEventListener(mosaicDraftSavedEvent, onSave);
-  }, [gamePath, imageStatus, currentScope, imageFilters, storage?.index]);
+  }, [gamePath, imageStatus, currentScope, imageFilters, storage?.index, enqueueArchiveWrite, updateCandidates]);
 
   const isPreviewing = (image: UnityImage) => previewedImage.current?.id === image.id && previewedImage.current.sourceHash === image.sourceHash;
   const activeResult = active && resultFor(draftRows, active);
@@ -506,9 +562,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       Object.keys(candidates).some(id => ids.has(id));
     if (redraw) {
       const targets = redraw.targets.filter(({ image }) => !ids.has(image.id));
-      pendingRedraw.current = targets.length ? { ...redraw, targets } : null;
+      const next = targets.length ? { ...redraw, targets } : null;
+      pendingRedraw.current = next;
+      void enqueueArchiveWrite(() => writeMosaicRedrawPlan(gamePath, next)).catch(reportArchiveError);
     }
-    setCandidates(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !ids.has(id))));
+    const previous = candidateRows.current;
+    const removed = [...ids].filter(id => !!previous[id]).map(id => [id, undefined] as const);
+    if (removed.length) {
+      updateCandidates(Object.fromEntries(Object.entries(previous).filter(([id]) => !ids.has(id))));
+      void enqueueArchiveWrite(() => writeMosaicRedrawCandidates(gamePath, removed)).catch(reportArchiveError);
+    }
     if (active && ids.has(active.id)) setPreferredResult(undefined);
     return affected && !pendingRedraw.current && !Object.keys(candidates).some(id => !ids.has(id));
   }
@@ -525,7 +588,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
 
   const saveCandidate = async (image: UnityImage, blob: Blob, signal: AbortSignal) => {
-    const metadata = renderedMosaics.current.get(blob);
+    const metadata = renderedMosaics.current.get(blob) ?? candidateRows.current[image.id]?.versions.find(version => version.blob === blob);
     if (!metadata && supportsGameImageConfirmation(image)) throw new Error("候选缺少重绘框，请重新生成后采用");
     await mosaicResponse(await fetch(candidatePath(image), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob, signal }));
     notifyMosaicAdoptionChanged(gamePath, [image.id]);
@@ -852,11 +915,17 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function startRedraw(plan: RedrawPlan, resume = false) {
+    if (archiveReason) { showAppNotice(archiveReason); return; }
     if (resume && !canResumeMosaicRedraw(plan, usable, rows, protect)) {
       pendingRedraw.current = null;
+      void enqueueArchiveWrite(() => writeMosaicRedrawPlan(gamePath, null)).catch(reportArchiveError);
       setStepRuns(previous => ({ ...previous, redraw: undefined }));
       setError("原图、蒙版、文字保护范围或画风分组已变更，请按当前选择重绘");
       return;
+    }
+    for (const target of plan.targets) {
+      target.promptIds ??= {};
+      for (const engine of target.pending) target.promptIds[engine] ??= crypto.randomUUID();
     }
     const models = plan.models.map(engine => mosaicModelLabels[engine]).join("、");
     const summary = plan.groupReferences ? "自动按组重绘 · " + models : models;
@@ -867,17 +936,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const groupCount = new Set(plan.targets.map(({ style }) => style.group)).size;
     void run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
       read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress: text => setProgress(text, "redraw"), setError,
-      setPending: next => { pendingRedraw.current = next; },
-      onCandidate: (image, engine, blob, seconds) => {
-        setCandidates(previous => {
-          const current = previous[image.id]?.revision === image.sourceHash ? previous[image.id] : undefined;
-          const referenceGuide = plan.referenceGuide
-            ? { group: plan.targets[0].style.group, model: engine }
-            : current?.referenceGuide?.model === engine ? undefined : current?.referenceGuide;
-          return { ...previous, [image.id]: { revision: image.sourceHash, referenceGuide,
-            values: { ...current?.values, [engine]: blob }, seconds: { ...current?.seconds, [engine]: seconds } } };
-        });
-        if (isPreviewing(image)) setPreferredResult(engine);
+      setPending: storePendingRedraw,
+      onCandidate: async (image, version) => {
+        const current = candidateRows.current[image.id];
+        const versions = current?.revision === image.sourceHash ? current.versions : [];
+        const candidate = { revision: image.sourceHash, versions: [...versions.filter(item => item.id !== version.id), version] };
+        await enqueueArchiveWrite(() => writeMosaicRedrawCandidates(gamePath, [[image.id, candidate]]));
+        updateCandidates({ ...candidateRows.current, [image.id]: candidate });
+        if (isPreviewing(image)) setPreferredResult(version.id);
       },
     }), { id: "redraw", targets: plan.targets.map(target => target.image), total, completed: initial, summary, parameters: [
       ...plan.models.map((engine): BenchmarkParameter => ({
@@ -914,7 +980,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   function redrawCurrent(models: MosaicModel[]) {
-    if (!active || actionsDisabled || isBenchmarkRunning() || waitForDraftSave()) return;
+    if (!active || actionsDisabled || archiveReason || pendingRedraw.current || isBenchmarkRunning() || waitForDraftSave()) return;
     if (!activeResult?.boxes.length) {
       if (source?.id !== active.id || source.revision !== active.sourceHash || !source.blob) {
         showAppNotice("请等待原图读取完成");
@@ -1126,10 +1192,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
     const next = Object.fromEntries(Object.entries(rows).map(([id, row]) =>
       [id, row.redrawError ? { ...row, redrawError: undefined } : row]));
-    try { replaceRows(next); }
-    catch { showAppNotice("无法保存图片去码筛选记录", "error"); return; }
+    try {
+      await enqueueArchiveWrite(() => clearMosaicRedrawArchive(gamePath));
+      replaceRows(next);
+    } catch (error) { reportArchiveError(error); return; }
     pendingRedraw.current = null;
-    setCandidates({});
+    updateCandidates({});
     setPreferredResult(undefined);
     clearStepProgress("redraw");
     showAppNotice("已清理重绘");
@@ -1152,14 +1220,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       await run("正在清理图片去码任务", async signal => {
         const cached = await readSavedMosaicSources(gamePath, signal);
         signal.throwIfAborted();
-        resetTask(cached);
+        await resetTask(cached);
       });
     } else {
-      resetTask({});
+      await resetTask({});
     }
   }
 
-  function resetTask(cached: Readonly<Record<string, string>>) {
+  async function resetTask(cached: Readonly<Record<string, string>>) {
     const next: Results = {};
     for (const image of usable) {
       const entry = storage?.index[image.id];
@@ -1174,8 +1242,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       next[image.id] = entry.included ? { ...defaultResult(image), saved: true }
         : { ...defaultResult(image), discardedHash: entry.hash };
     }
-    try { replaceRows(next); }
-    catch { showAppNotice("无法保存图片去码筛选记录", "error"); return; }
+    try {
+      await enqueueArchiveWrite(() => clearMosaicRedrawArchive(gamePath));
+      replaceRows(next);
+    } catch (error) { reportArchiveError(error); return; }
     clearMosaicReviews(gamePath);
     lastScreen.current = null;
     lastReview.current = null;
@@ -1191,7 +1261,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setGroupPages({});
     setImageFilters(allGameImageFilters);
     setApproved(undefined);
-    setCandidates({});
+    updateCandidates({});
     setPreferredResult(undefined);
     masks.resetDrawing();
     showAppNotice("已清理图片去码任务");
@@ -1217,16 +1287,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     setCollapsed(previous => ({ ...previous, failed: false }));
     setQuery(""); setGroupPages({}); setActiveId("");
   };
-  const redrawReason = testTitle ?? busyReason ?? draftReason ?? (!activeSaved && !activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
-  const redrawBlocked = testTitle ?? busyReason ?? draftReason;
+  const redrawBlocked = testTitle ?? busyReason ?? draftReason ?? archiveReason;
+  const pendingRedrawReason = pausedRedraw ? "请先继续或清理上一次重绘任务" : undefined;
+  const redrawReason = redrawBlocked ?? pendingRedrawReason ?? (!activeSaved && !activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = redrawBlocked ?? (!pausedRedraw && !listRedraw.length ? redrawSkipped || "先勾选已有蒙版的图片" : undefined);
-  const groupRedrawReason = redrawBlocked ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
+  const groupRedrawReason = redrawBlocked ?? pendingRedrawReason ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
   const guidedCandidate = active ? draftCandidates[active.id] : undefined;
-  const guideModel = guidedCandidate?.revision === active?.sourceHash && guidedCandidate?.referenceGuide?.group === group
-    ? guidedCandidate?.referenceGuide?.model : undefined;
-  const referenceCandidate = !reference && guideModel ? guidedCandidate?.values[guideModel] : undefined;
+  const referenceCandidate = !reference && guidedCandidate?.revision === active?.sourceHash
+    ? guidedCandidate?.versions.filter(version => !!version.referenceGroup && version.referenceGroup === group).at(-1)?.blob : undefined;
   const guideRemaining = redrawGroup.filter(image => (reference || image.id !== active?.id) && !resultFor(rows, image).saved);
-  const guideReason = redrawBlocked ?? (pausedRedraw ? "请先继续或清理上一次重绘任务" : undefined);
+  const guideReason = redrawBlocked ?? pendingRedrawReason;
   const guideCandidateReason = guideReason ?? (!activeResult?.boxes.length ? "请先为当前图片保存蒙版"
     : active && !canRedrawImage(resultFor(rows, active)) ? "请先完成当前图片的视觉复筛" : undefined);
   const referenceFlow = !active || members.length < 2 ? undefined

@@ -404,7 +404,7 @@ export function existingMosaicRedrawReferences(images: readonly UnityImage[], ro
     const confirmed = row.manualStatus === "refinedCandidate" ||
       (!row.manualStatus && (row.manualBoxes || mosaicScreeningStatus(row) === "refinedCandidate"));
     const blob = confirmed && candidate?.revision === image.sourceHash
-      ? candidate.values[model] ?? candidate.values[model === "turbo" ? "2511" : "turbo"] : undefined;
+      ? (candidate.versions.filter(version => version.model === model).at(-1) ?? candidate.versions.at(-1))?.blob : undefined;
     if (!row.saved && !blob) continue;
     const reuse: MosaicRedrawReference = row.saved
       ? { image, source: "adopted", boxes: row.boxes }
@@ -449,7 +449,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   const total = plan.targets.length;
   let completed = initial;
 
-  setPending(plan);
+  await setPending(plan);
   const readReference = createMosaicReferenceReader(readSaved, signal);
   const cache = new Map<string, { blob: Blob; seconds: number }>();
   const failures = new Set<string>();
@@ -460,7 +460,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
     update(image, { redrawError: detail });
     report({ completed, processed: completed - initial + failures.size, failed: failures.size });
   };
-  for (const { image, boxes, keep, pending, style } of plan.targets) {
+  for (const { image, boxes, keep, pending, style, promptIds } of plan.targets) {
     if (!pending.size) continue;
     signal.throwIfAborted();
     const automatic = plan.groupReferences?.get(style.group);
@@ -484,13 +484,14 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
         setProgress(title);
         const stepCount = mosaicRedrawStepCount(plan, engine);
         const key = JSON.stringify([engine, stepCount, input, keep, style.seed, referenceKey]);
+        const promptId = promptIds?.[engine];
         let outcome = cache.get(key);
         if (!outcome) {
           const start = performance.now();
           try {
             const blob = await usage!.measure(mosaicModelLabels[engine], 1, () => redrawMosaic({
               source: original, boxes, keep, model: engine, steps: stepCount, seed: style.seed, signal, reference,
-              keepResultOnStop: true, timingScope: usage?.scope,
+              keepResultOnStop: true, promptId, timingScope: usage?.scope,
               progress: detail => setProgress(title + " · " + detail),
             }));
             usage!.refresh();
@@ -503,8 +504,9 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
           }
         } else recordGameCacheHit(usage?.scope);
         const { blob, seconds } = outcome;
+        await onCandidate(image, { id: promptId ?? crypto.randomUUID(), model: engine, blob, seconds,
+          boxes, keep, referenceGroup: plan.referenceGuide ? style.group : undefined });
         if (isAnchor) automatic.blob = blob;
-        onCandidate(image, engine, blob, seconds);
         pending.delete(engine);
         if (!pending.size) {
           completed++;
@@ -518,7 +520,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
       reportFailure(image, cause instanceof Error ? cause.message : String(cause));
     }
   }
-  if (completed === total) setPending(null);
+  if (completed === total) await setPending(null);
   setProgress("");
   if (failures.size || waitingForReference) setError([
     failures.size ? failures.size + " 张重绘失败，详情见「处理失败」分组" : "",

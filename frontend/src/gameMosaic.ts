@@ -218,7 +218,7 @@ async function mosaicWeights(directory: string, model: MosaicModel) {
 
 export async function redrawMosaic(input: {
   source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
-  signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean; benchmark?: boolean; timingScope?: string;
+  signal: AbortSignal; progress: (detail: string) => void; keepResultOnStop?: boolean; benchmark?: boolean; timingScope?: string; promptId?: string;
 }) {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
   const saved = localStorage.getItem("llmchat-comfy-directory");
@@ -234,7 +234,8 @@ export async function redrawMosaic(input: {
   const result = await invoke<{ image: string; workflowMs?: number }>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic", image, progress,
     regions: input.boxes.map(box => ({ box })),
-    profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark },
+    profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
+      promptId: input.promptId },
   });
   recordGameWorkflowTiming(input.timingScope, result.workflowMs);
   if (!input.keepResultOnStop) input.signal.throwIfAborted();

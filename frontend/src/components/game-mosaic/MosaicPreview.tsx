@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { mosaicModelLabels, type MosaicBox } from "../../gameMosaic";
 import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageView, type GameImageViews } from "../GameImageViewer";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
@@ -135,17 +135,17 @@ function MaskResizeControls({ box }: { box: MosaicBox }) {
   </g>;
 }
 
-function MosaicResultVersion({ version, letter, imageName, disabledReason, replacing, asReference, onApprove, onOpen }: {
-  version: ResultVersion; letter?: string; imageName: string;
+function MosaicResultVersion({ version, selector, imageName, disabledReason, replacing, asReference, onApprove, onOpen }: {
+  version: ResultVersion; selector?: ReactNode; imageName: string;
   disabledReason?: string; replacing: boolean; asReference: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
 }) {
   const url = useImageBlobUrl(version.blob);
-  const modelName = mosaicModelLabels[version.id];
+  const modelName = mosaicModelLabels[version.model];
   const adoptLabel = asReference ? "采用为本组参考" : replacing ? "替换已采用图" : "采用此版";
   return <div className="game-mosaic-result-version">
     <GameImagePreviewFrame keyboardPane aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined} caption={<>
-      <span>{letter && `${letter} · `}{modelName}</span>
-      {version.seconds != null && <small>{version.seconds.toFixed(1)} 秒</small>}
+      <span>{modelName}</span>
+      <span className="game-mosaic-result-tools"><small>{version.seconds.toFixed(1)} 秒</small>{selector}</span>
     </>} fallback={<p className="hint">正在读取图片…</p>}>
       {url && <div className="unity-image-stage">
         <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
@@ -165,29 +165,29 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const canSelectMask = !actionsDisabled && tool !== "add";
   const deselectMask = () => masks.selectBox(undefined, false);
   const previews = useRef<HTMLDivElement>(null);
-  const [previewAreaWidth, setPreviewAreaWidth] = useState(0);
-  const [viewer, setViewer] = useState<{ showResult: boolean; version?: "saved" | MosaicModel } | null>(null);
+  const [viewer, setViewer] = useState<{ showResult: boolean; version?: string } | null>(null);
 
   const result = active && candidate?.revision === active.sourceHash ? candidate : undefined;
-  const versions: ResultVersion[] = (["turbo", "2511"] as const).flatMap(id => {
-    const blob = result?.values[id];
-    return blob ? [{ id, blob, seconds: result?.seconds[id] }] : [];
-  });
-  const preferredVersion = versions.find(version => version.id === preferredResult) ?? versions[0];
+  const versions = result?.versions ?? [];
+  const preferredVersion = versions.find(version => version.id === preferredResult) ?? versions.at(-1);
   const showSaved = activeSaved && (preferredResult === "saved" || !preferredVersion);
-  const comparing = versions.length === 2 && !showSaved;
-  // Leave room for three 560px images, their frames and the two gaps between them.
-  const sideBySide = comparing && previewAreaWidth >= 3 * 560 + 62 * document.documentElement.currentCSSZoom;
+  const versionPicker = versions.length + Number(activeSaved) > 1 && <select aria-label="切换去码结果"
+    value={showSaved ? "saved" : preferredVersion?.id} onChange={event => setPreferredResult(event.currentTarget.value)}>
+    {activeSaved && <option value="saved">已采用去码图</option>}
+    {versions.map((version, index) => <option key={version.id} value={version.id}>
+      候选 {index + 1} · {mosaicModelLabels[version.model]}
+    </option>)}
+  </select>;
   const original = source && source.id === active?.id && source.revision === active.sourceHash ? source : undefined;
   const confirmed = approved && approved.id === active?.id && approved.revision === active.sourceHash ? approved : undefined;
   const originalUrl = useImageBlobUrl(original?.blob);
   const savedUrl = useImageBlobUrl(showSaved ? confirmed?.blob : undefined);
-  const openPreview = (id: "original" | "saved" | MosaicModel) => {
+  const openPreview = (id: string) => {
     if (editing || !active) return;
     setViewer(id === "original" ? { showResult: false } : { showResult: true, version: id });
   };
 
-  function previewViews(image: NonNullable<typeof active>, version?: "saved" | MosaicModel): GameImageViews {
+  function previewViews(image: NonNullable<typeof active>, version?: string): GameImageViews {
     const dimensions = { width: image.width, height: image.height };
     const makeView = (label: string, blob?: Blob, error?: string): GameImageView => ({
       ...dimensions, label, src: blob, error,
@@ -196,7 +196,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
     const saved = activeSaved && (version === "saved" || !version && showSaved);
     const best = versions.find(item => item.id === version) ?? preferredVersion;
     if (saved) return [originalView, makeView("已采用去码图", confirmed?.blob, confirmed?.error)];
-    return best ? [originalView, makeView("去码结果 · " + mosaicModelLabels[best.id], best.blob)] : [originalView];
+    return best ? [originalView, makeView("去码结果 · " + mosaicModelLabels[best.model], best.blob)] : [originalView];
   }
 
   const { previous: previousImage, next: nextImage } = viewer ? getViewerNeighbors() : {};
@@ -210,15 +210,6 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
     previews.current?.querySelector<HTMLElement>(".game-mosaic-original-frame")?.focus({ preventScroll: true });
   }
 
-  useLayoutEffect(() => {
-    const element = previews.current;
-    if (!element) return;
-    const updateWidth = () => setPreviewAreaWidth(element.getBoundingClientRect().width);
-    updateWidth();
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [active]);
   useEffect(() => { if (!paneVisible) setViewer(null); }, [paneVisible]);
 
   const imageTools = active && activeResult ? [
@@ -274,31 +265,15 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
       {header}
       {notice}
       <div ref={previews} data-image-preview-dragging={draft || transformed ? "" : undefined}
-        className={`unity-image-previews${sideBySide ? " is-mosaic-comparison" : ""}`}
+        className="unity-image-previews"
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <div className="unity-image-actions game-mosaic-results-bar">
           <strong>去码结果</strong>
           {activeSaved && <button type="button" className="unity-btn" disabled={!!redrawReason} data-tooltip={redrawReason}
             onClick={() => onRedraw([model])}>重新绘制</button>}
-          {activeSaved && preferredVersion && <button type="button" className="unity-btn" onClick={() => {
-            setPreferredResult(showSaved ? preferredVersion.id : "saved");
-          }}>{showSaved ? "查看候选" : "查看已采用去码图"}</button>}
-          <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason} title={testTitle} data-tooltip={redrawReason}
-            onClick={() => onRedraw(["turbo", "2511"])}>两种模型各生成一版</button>
-          {comparing && !sideBySide && <div className="game-mosaic-version-picker" role="group" aria-label="切换去码候选"
-            onKeyDown={event => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-              event.preventDefault();
-              const index = event.key === "ArrowLeft" ? 0 : 1;
-              setPreferredResult(versions[index].id);
-              event.currentTarget.querySelectorAll("button")[index].focus();
-            }}>
-            {versions.map((version, index) => <button key={version.id} type="button" className="unity-btn"
-              aria-label={`${index === 0 ? "A" : "B"} · ${mosaicModelLabels[version.id]}`}
-              aria-pressed={version.id === preferredVersion.id} onClick={() => setPreferredResult(version.id)}>
-              {index === 0 ? "A" : "B"}
-            </button>)}
-          </div>}
+          <button type="button" className="unity-btn is-secondary" disabled={!!redrawReason}
+            data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 为当前图生成一版候选", redrawReason || testTitle].filter(Boolean).join("\n")}
+            onClick={() => onRedraw([model])}>根据当前工作流生成</button>
           {resultActions}
         </div>
         <GameImagePreviewFrame keyboardPane caption={<>
@@ -348,17 +323,16 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             {imageToolbar}
           </div>
         </GameImagePreviewFrame>
-        {showSaved ? <GameImagePreviewFrame keyboardPane caption="已采用去码图" aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
+        {showSaved ? <GameImagePreviewFrame keyboardPane caption={<><span>已采用去码图</span><span className="game-mosaic-result-tools">{versionPicker}</span></>} aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
           ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
           {savedUrl && <div className="unity-image-stage">
             <img src={savedUrl} alt={`${active.name} 已采用去码图`} draggable={false} />
           </div>}
-        </GameImagePreviewFrame> : preferredVersion ? (sideBySide ? versions : [preferredVersion]).map(version =>
-          <MosaicResultVersion key={version.id} version={version}
-            letter={comparing ? version.id === "turbo" ? "A" : "B" : undefined}
-            imageName={active.name} replacing={activeSaved} asReference={version.blob === referenceCandidate}
+        </GameImagePreviewFrame> : preferredVersion ? (
+          <MosaicResultVersion key={preferredVersion.id} version={preferredVersion} selector={versionPicker}
+            imageName={active.name} replacing={activeSaved} asReference={preferredVersion.blob === referenceCandidate}
             disabledReason={busyReason} onApprove={onApprove}
-            onOpen={editing ? undefined : () => openPreview(version.id)} />
+            onOpen={editing ? undefined : () => openPreview(preferredVersion.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
       </div>
       {footer}

@@ -15,13 +15,7 @@ export type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefo
 export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean; manualStatus?: MosaicManualStatus;
   scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
 export type Results = Record<string, Result>;
-type Candidates = Partial<Record<MosaicModel, Blob>>;
-export type MosaicCandidate = {
-  revision: string;
-  values: Candidates;
-  seconds: Partial<Record<MosaicModel, number>>;
-  referenceGuide?: { group: string; model: MosaicModel };
-};
+export type MosaicCandidate = { revision: string; versions: ResultVersion[] };
 export type MaskEdit = { image: UnityImage; boxes: MosaicBox[] };
 export type MaskUndoItem = {
   id: string;
@@ -37,13 +31,16 @@ export type MosaicRedrawReference = {
   blob?: Blob;
 };
 export type RedrawPlan = {
-  targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel>; style: RedrawStyle }[];
+  targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel>; style: RedrawStyle;
+    promptIds?: Partial<Record<MosaicModel, string>> }[];
   models: MosaicModel[];
   steps: number;
   referenceGuide?: boolean;
   groupReferences?: ReadonlyMap<string, MosaicRedrawReference>;
 };
-export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
+export type ResultVersion = {
+  id: string; model: MosaicModel; blob: Blob; seconds: number; boxes: MosaicBox[]; keep: MosaicBox[]; referenceGroup?: string;
+};
 export type MosaicStep = "screen" | "refine" | "redraw";
 export type StepRun = {
   state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number;
@@ -197,8 +194,8 @@ export type MosaicRedrawPorts = {
   update: MosaicUpdateRow;
   setProgress: (message: string) => void;
   setError: (message: string) => void;
-  setPending: (plan: RedrawPlan | null) => void;
-  onCandidate: (image: UnityImage, model: MosaicModel, blob: Blob, seconds: number) => void;
+  setPending: (plan: RedrawPlan | null) => Promise<void>;
+  onCandidate: (image: UnityImage, version: ResultVersion) => Promise<void>;
 };
 
 export type MosaicAutomaticPlan = {
@@ -259,8 +256,8 @@ export type MosaicPreviewProps = {
   candidate?: MosaicCandidate;
   source?: ImagePreview;
   approved?: ImagePreview;
-  preferredResult?: "saved" | MosaicModel;
-  setPreferredResult: (version: "saved" | MosaicModel) => void;
+  preferredResult?: string;
+  setPreferredResult: (version: string) => void;
   masks: ReturnType<typeof useMosaicMasks>;
   actionsDisabled: boolean;
   busyReason?: string;

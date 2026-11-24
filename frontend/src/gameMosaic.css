@@ -243,10 +243,6 @@ input.game-mosaic-threshold[type="number"] {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.game-mosaic-workbench .unity-image-previews.is-mosaic-comparison {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .game-mosaic-workbench .unity-image-previews figure {
   display: flex;
   flex-direction: column;
@@ -349,14 +345,8 @@ input.game-mosaic-threshold[type="number"] {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.game-mosaic-version-picker {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-muted);
-}
-.game-mosaic-version-picker > button { min-width: 32px; }
+.game-mosaic-result-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; margin-inline-start: auto; }
+.game-mosaic-result-tools select { min-width: 0; max-width: min(100%, 32ch); }
 .game-mosaic-result-version { display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: end; min-width: 0; min-height: 0; gap: 6px; }
 .game-mosaic-result-version > figure { width: 100%; box-sizing: border-box; }
 .game-mosaic-group-picker .unity-description-trigger { height: 30px; padding: 3px 7px; }
