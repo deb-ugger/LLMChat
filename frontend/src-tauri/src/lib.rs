@@ -324,8 +324,51 @@ fn runtime_log(kind: &str, message: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|error| error.to_string())?;
     writeln!(file, "{}", serde_json::json!({ "time": timestamp, "pid": std::process::id(), "kind": kind.chars().take(80).collect::<String>(), "message": message.chars().take(8000).collect::<String>() })).map_err(|error| error.to_string())
 }
+#[cfg(windows)]
+fn onnx_memory_snapshot() -> String {
+    #[repr(C)]
+    #[derive(Default)]
+    struct PerformanceInformation {
+        size: u32,
+        commit_total: usize,
+        commit_limit: usize,
+        commit_peak: usize,
+        physical_total: usize,
+        physical_available: usize,
+        system_cache: usize,
+        kernel_total: usize,
+        kernel_paged: usize,
+        kernel_nonpaged: usize,
+        page_size: usize,
+        handle_count: u32,
+        process_count: u32,
+        thread_count: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn K32GetPerformanceInfo(info: *mut PerformanceInformation, length: u32) -> i32;
+    }
+
+    let size = std::mem::size_of::<PerformanceInformation>() as u32;
+    let mut info = PerformanceInformation { size, ..Default::default() };
+    if unsafe { K32GetPerformanceInfo(&mut info, size) } == 0 {
+        return format!("memory_snapshot_error={}", std::io::Error::last_os_error());
+    }
+
+    let bytes = |pages: usize| pages as u64 * info.page_size as u64;
+    format!("physical_available_bytes={}; physical_total_bytes={}; commit_used_bytes={}; commit_limit_bytes={}",
+        bytes(info.physical_available), bytes(info.physical_total), bytes(info.commit_total), bytes(info.commit_limit))
+}
+
 #[tauri::command]
-fn write_runtime_log(kind: String, message: String) -> Result<(), String> { runtime_log(&kind, &message) }
+fn write_runtime_log(kind: String, message: String) -> Result<(), String> {
+    #[cfg(windows)]
+    if kind == "onnx-transfer" {
+        return runtime_log(&kind, &format!("{message}; {}", onnx_memory_snapshot()));
+    }
+    runtime_log(&kind, &message)
+}
 #[tauri::command]
 async fn append_game_performance(record: serde_json::Value) -> Result<(), String> {
     let directory = LOG_DIRECTORY.get().ok_or("日志目录尚未初始化")?;
@@ -631,16 +674,39 @@ fn write_atomic_export(
     Ok(())
 }
 
-/// Read raw bytes from an absolute path chosen via the open dialog.
+#[derive(serde::Deserialize)]
+struct FileReadRange {
+    offset: u64,
+    length: usize,
+}
+
+fn read_file_range(path: &str, range: FileReadRange) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind, Read, Seek, SeekFrom};
+
+    const MAX_CHUNK: usize = 16 * 1024 * 1024;
+    if range.length == 0 || range.length > MAX_CHUNK {
+        return Err(Error::new(ErrorKind::InvalidInput, "文件读取分块大小无效"));
+    }
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(range.offset))?;
+    let mut bytes = vec![0; range.length];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Read raw bytes from a path chosen via the open dialog.
 #[tauri::command]
-async fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+async fn read_file_bytes(path: String, range: Option<FileReadRange>) -> Result<tauri::ipc::Response, String> {
     if path.trim().is_empty() {
         return Err("路径为空".to_string());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read(&path).map(tauri::ipc::Response::new)
-            .map_err(|e| format!("读取文件失败: {e}"))
-    }).await.map_err(|e| e.to_string())?
+        let bytes = match range {
+            Some(range) => read_file_range(&path, range),
+            None => std::fs::read(&path),
+        };
+        bytes.map(tauri::ipc::Response::new).map_err(|error| format!("读取文件失败: {error}"))
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

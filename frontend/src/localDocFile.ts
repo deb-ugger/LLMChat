@@ -1,5 +1,6 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { redactRuntimeMessage } from "./runtimeLog";
 
 export type DocKind = "pdf" | "epub";
 
@@ -55,7 +56,39 @@ export async function pickDocumentPath(
 }
 
 export async function readFileBytes(path: string): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("read_file_bytes", { path });
+  if (extOf(path) !== "onnx") return invoke<ArrayBuffer>("read_file_bytes", { path });
+
+  const { size, lastModified } = await fileStat(path);
+  const modelName = baseName(path);
+  const started = performance.now();
+  let offset = 0;
+  const record = (phase: string, error = "") => invoke<void>("write_runtime_log", {
+    kind: "onnx-transfer", message: redactRuntimeMessage(
+      `phase=${phase}; model=${modelName}; bytes=${size}; transferred_bytes=${offset}; elapsed_ms=${Math.round(performance.now() - started)}${error}`,
+    ),
+  }).catch(cause => console.warn("ONNX 诊断日志写入失败", cause));
+
+  await record("begin");
+  try {
+    const chunkSize = 16 * 1024 * 1024;
+    // Large responses can require a single, much larger allocation in WebView2 IPC.
+    const output = new Uint8Array(size);
+    if (size === 0) await invoke<ArrayBuffer>("read_file_bytes", { path });
+    while (offset < size) {
+      const length = Math.min(chunkSize, size - offset);
+      const part = new Uint8Array(await invoke<ArrayBuffer>("read_file_bytes", { path, range: { offset, length } }));
+      if (part.byteLength !== length) throw new Error(`模型文件分块长度不符（偏移 ${offset}）`);
+      output.set(part, offset);
+      offset += length;
+    }
+    const current = await fileStat(path);
+    if (current.size !== size || current.lastModified !== lastModified) throw new Error("读取过程中模型文件已变动");
+    await record("ready");
+    return output.buffer;
+  } catch (cause) {
+    await record("failed", `; error=${cause instanceof Error ? cause.message : String(cause)}`);
+    throw cause;
+  }
 }
 
 export async function fileStat(
