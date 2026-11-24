@@ -21,7 +21,7 @@ function runSummary(run: StepPerformance) {
   };
 }
 
-export function FormalRunRecords({ scope, step }: { scope: string; step: string }) {
+export function FormalRunRecords({ scope, step }: { scope?: string; step?: string }) {
   const [runs, setRuns] = useState<StepPerformance[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -61,13 +61,14 @@ export function FormalRunRecords({ scope, step }: { scope: string; step: string 
       {loading ? <p className="hint" role="status">正在读取正式运行记录…</p> : null}
       {error ? <p className="unity-offline-error" role="alert">{error}</p> : null}
       {!loading && !error && runs.length === 0 ? (
-        <p className="hint">当前步骤暂无正式运行记录。工作流中实际执行过的步骤会在这里归档。</p>
+        <p className="hint">{step ? "当前步骤暂无正式运行记录。" : "暂无正式运行记录。"}</p>
       ) : null}
       {runs.length > 0 ? (
         <ol className="game-benchmark-formal-list">
           {runs.map((run, index) => {
             const summary = runSummary(run);
             const endedAt = run.endedAt || run.beginTime;
+            const context = !scope ? [run.scope, run.step].filter(Boolean).join(" / ") : undefined;
             return (
               <li key={`${run.taskId ?? index}-${endedAt ?? ""}`} className="game-benchmark-formal-item">
                 <div className="game-benchmark-formal-row">
@@ -81,6 +82,7 @@ export function FormalRunRecords({ scope, step }: { scope: string; step: string 
                     <span>Token <strong>{summary.tokens}</strong></span>
                   </span>
                 </div>
+                {context && <p className="hint game-benchmark-formal-models" title={context}>{context}</p>}
                 {run.itemsDone != null && <p className="hint">已处理 {run.itemsDone}
                   {!!run.failures && ` · 失败 ${run.failures}`}
                 </p>}

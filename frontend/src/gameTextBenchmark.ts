@@ -97,7 +97,7 @@ export async function readGameBenchmarkHistory(scope?: string, step?: string): P
 }
 
 /** 正式运行记录：只取正式（非测试队列）归档，用于「运行记录 → 正式运行」。 */
-export async function readGameFormalHistory(scope: string, step: string): Promise<StepPerformance[]> {
+export async function readGameFormalHistory(scope?: string, step?: string): Promise<StepPerformance[]> {
   await flushGamePerformanceArchive();
   const records = isTauri()
     ? await invoke<StepPerformance[]>("read_game_performance", { scope, step, kind: "formal" })

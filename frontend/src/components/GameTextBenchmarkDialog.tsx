@@ -78,12 +78,47 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
 }
 
 const BenchmarkHeader = createContext<HTMLDivElement | null>(null);
+const recordModeKey = "llmchat-benchmark-record-mode";
 
-function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, browser = false }: {
-  gameView?: ReactNode; gameStatus?: string; onClose: () => void;
+function readViewPreference(key: string) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeViewPreference(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* The current window still keeps the choice. */ }
+}
+
+function useRememberedBenchmarkChoice<T extends string>(key: string, fallback: T, allowed: readonly T[]): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    const saved = readViewPreference(key);
+    return allowed.find(item => item === saved) ?? fallback;
+  });
+  return [value, next => {
+    setValue(next);
+    writeViewPreference(key, next);
+  }];
+}
+
+type BenchmarkSampleView = { sampleLimit?: number; sampleSetPath?: string; useSampleSet?: boolean; selection?: "checked" | "all" };
+
+function readBenchmarkSampleView(key: string): BenchmarkSampleView {
+  try {
+    const value = JSON.parse(readViewPreference(key) ?? "{}");
+    if (!value || typeof value !== "object") return {};
+    return {
+      sampleLimit: Number.isSafeInteger(value.sampleLimit) && value.sampleLimit >= 0 ? value.sampleLimit : undefined,
+      sampleSetPath: typeof value.sampleSetPath === "string" ? value.sampleSetPath : undefined,
+      useSampleSet: typeof value.useSampleSet === "boolean" ? value.useSampleSet : undefined,
+      selection: value.selection === "checked" || value.selection === "all" ? value.selection : undefined,
+    };
+  } catch { return {}; }
+}
+
+function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, browser = false }: {
+  gameView: ReactNode; onClose: () => void;
   onBuildRunning?: (running: boolean) => void; browser?: boolean;
 }) {
-  const [module, setModule] = useState<"game" | "build">("game");
+  const [module, setModule] = useRememberedBenchmarkChoice("llmchat-benchmark-module", "game", ["game", "build"]);
   const [headerTools, setHeaderTools] = useState<HTMLDivElement | null>(null);
   const tabId = useId();
   const page = <main className={"game-benchmark-page" + (browser ? " game-benchmark-browser-fallback" : "")}>
@@ -94,13 +129,13 @@ function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, br
         <button type="button" role="tab" id={tabId + "-build"} aria-controls={tabId + "-build-panel"}
           aria-selected={module === "build"} onClick={() => setModule("build")}>构建测速</button>
       </div>
-      {gameView && <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game"} />}
+      <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game"} />
       {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
     </header>
     <div className="game-benchmark-module" id={tabId + "-game-panel"} role="tabpanel"
       aria-labelledby={tabId + "-game"} hidden={module !== "game"}>
       <BenchmarkHeader.Provider value={headerTools}>
-        {gameView ?? <p className="game-benchmark-module-status hint" role="status">{gameStatus || "请先打开游戏翻译工程。"}</p>}
+        {gameView}
       </BenchmarkHeader.Provider>
     </div>
     <div className="game-benchmark-module" id={tabId + "-build-panel"} role="tabpanel"
@@ -111,9 +146,10 @@ function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, br
   return browser ? createPortal(page, document.body) : page;
 }
 
-function LocalGameBenchmark({ input }: { input: BenchmarkInput }) {
+function LocalGameBenchmark({ input }: { input?: BenchmarkInput }) {
   const snapshot = useSyncExternalStore(benchmarkRunner.subscribe, benchmarkRunner.snapshot);
-  const setup = useMemo(() => setupFor(input), [input]);
+  const setup = useMemo(() => input && setupFor(input), [input]);
+  if (!input || !setup) return <StandaloneBenchmarkHistory snapshot={snapshot} />;
   return <GameBenchmarkPage {...setup} snapshot={snapshot}
     requestSelection={async () => input.getWorkload().selected}
     enqueue={async request => benchmarkRunner.enqueue(input, request)}
@@ -124,18 +160,11 @@ export function GameTextBenchmarkHost() {
   const [local, setLocal] = useState<{ input?: BenchmarkInput }>();
   useEffect(() => {
     let active: BenchmarkInput | undefined;
-    const restore = (input: BenchmarkInput) => {
-      const isCurrent = () => active === input;
-      void benchmarkRunner.restoreLatestArchivedBatch(input, isCurrent).catch(error => {
-        if (isCurrent()) showAppNotice("恢复中止的测试失败：" + String(error), "error");
-      });
-    };
     if (!isTauri()) {
       const open = (event: Event) => {
         const input = (event as CustomEvent<BenchmarkInput | null>).detail;
         active = input ?? active;
         setLocal({ input: active });
-        if (input) restore(input);
       };
       window.addEventListener(openEvent, open);
       return () => { active = undefined; window.removeEventListener(openEvent, open); };
@@ -151,7 +180,6 @@ export function GameTextBenchmarkHost() {
       opening = invoke<boolean>("open_game_benchmark_window").then(created => {
         if (active !== input) return;
         if (!created) channel.postMessage({ type: "refresh-setup", setup: input && setupFor(input), snapshot: benchmarkRunner.snapshot() });
-        if (requested) restore(requested);
       }).catch(error => {
         active = previous;
         showAppNotice("打开测试队列失败：" + String(error), "error");
@@ -190,7 +218,7 @@ export function GameTextBenchmarkHost() {
   const close = () => void benchmarkRunner.cleanup().then(() => setLocal(undefined))
     .catch(error => showAppNotice(String(error), "error"));
   return <RecordsAndTestsPage browser onClose={close}
-    gameView={local.input && <LocalGameBenchmark key={local.input.scope} input={local.input} />} />;
+    gameView={<LocalGameBenchmark key={local.input?.scope} input={local.input} />} />;
 }
 
 export function GameTextBenchmarkWindow() {
@@ -250,11 +278,13 @@ export function GameTextBenchmarkWindow() {
   const closeWindow = () => void close();
   return <AuxiliaryWindowChrome title="测试队列">
     <RecordsAndTestsPage onClose={closeWindow} onBuildRunning={value => { building.current = value; }}
-      gameStatus={error || (!page ? "正在读取游戏测试记录…" : undefined)}
-      gameView={page?.setup && <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
+      gameView={page?.setup ? <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
         requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
         enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
-        control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />} />
+        control={(kind, id) => requestBenchmarkWindow(page.channel, kind, id)} />
+        : (page || error
+          ? <StandaloneBenchmarkHistory snapshot={snapshot} setupError={error} />
+          : <p className="game-benchmark-module-status hint" role="status">正在打开记录与测试…</p>)} />
   </AuxiliaryWindowChrome>;
 }
 
@@ -475,21 +505,21 @@ const filename = (path: string) => path.split(/[\\/]/).pop() || path;
 
 function GameBenchmarkPage(props: BenchmarkPageInput) {
   const imageSteps = Object.keys(props.imageSetup?.steps || {}) as ImageBenchmarkStep[];
-  const [part, setPart] = useState<"text" | "images" | "mosaic">(
-    props.initialPart === "mosaic" && props.mosaicSetup ? "mosaic" : props.initialPart === "images" && imageSteps.length ? "images" : "text");
-  const [recordMode, setRecordMode] = useState<RunRecordMode>("test");
-  const [textStep, setTextStep] = useState<"translate" | "screen">("translate");
-  const [imageStep, setImageStep] = useState<ImageBenchmarkStep>(imageSteps[0] || "recognize");
-  const mosaicStepKey = "llmchat-game-benchmark-mosaic-step:" + props.scope;
-  const [mosaicStep, setMosaicStep] = useState<MosaicBenchmarkStep>(() => {
-    const queued = props.snapshot.jobs.find(job => job.requestScope === props.scope &&
-      (job.status === "运行中" || job.status === "已暂停") && isMosaicStep(job.step));
-    if (queued && isMosaicStep(queued.step)) return queued.step;
-    const saved = localStorage.getItem(mosaicStepKey);
-    if (saved && Object.hasOwn(mosaicBenchmarkSteps, saved)) return saved as MosaicBenchmarkStep;
-    return props.snapshot.formalJobs.some(job => job.label === "复筛打码图片") ? "mosaicRefine" : "mosaicScreen";
-  });
-  useEffect(() => { localStorage.setItem(mosaicStepKey, mosaicStep); }, [mosaicStepKey, mosaicStep]);
+  const viewKey = "llmchat-benchmark-view:" + props.scope + ":";
+  const availableParts: Array<"text" | "images" | "mosaic"> = ["text"];
+  if (imageSteps.length) availableParts.push("images");
+  if (props.mosaicSetup) availableParts.push("mosaic");
+  const initialPart = props.initialPart && availableParts.includes(props.initialPart) ? props.initialPart : "text";
+  const [part, setPart] = useRememberedBenchmarkChoice(viewKey + "part", initialPart, availableParts);
+  const [recordMode, setRecordMode] = useRememberedBenchmarkChoice(recordModeKey, "test", ["test", "formal"]);
+  const [textStep, setTextStep] = useRememberedBenchmarkChoice(viewKey + "text", "translate", ["translate", "screen"]);
+  const [imageStep, setImageStep] = useRememberedBenchmarkChoice(viewKey + "images", imageSteps[0] || "recognize", imageSteps);
+  const queuedMosaic = props.snapshot.jobs.find(job => job.requestScope === props.scope &&
+    (job.status === "运行中" || job.status === "已暂停") && isMosaicStep(job.step))?.step;
+  const initialMosaicStep = queuedMosaic && isMosaicStep(queuedMosaic) ? queuedMosaic :
+    props.snapshot.formalJobs.some(job => job.label === "复筛打码图片") ? "mosaicRefine" : "mosaicScreen";
+  const [mosaicStep, setMosaicStep] = useRememberedBenchmarkChoice("llmchat-game-benchmark-mosaic-step:" + props.scope,
+    initialMosaicStep, Object.keys(mosaicBenchmarkSteps) as MosaicBenchmarkStep[]);
   const drafts = useRef<Partial<Record<Target, QueueDraft>>>({});
   const step = part === "text" ? textStep : part === "mosaic" ? mosaicStep : imageStep;
   const { jobs, running, stopping, formalBusy, formalJobs, historyRevision } = props.snapshot;
@@ -959,6 +989,202 @@ function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfi
   </BenchmarkSection>;
 }
 
+function StandaloneBenchmarkHistory({ snapshot, setupError }: { snapshot: BenchmarkSnapshot; setupError?: string }) {
+  const archive = useBenchmarkArchive(snapshot.historyRevision);
+  const headerTools = useContext(BenchmarkHeader);
+  const [recordMode, setRecordMode] = useRememberedBenchmarkChoice(recordModeKey, "test", ["test", "formal"]);
+  return <section className="game-benchmark-game">
+    {headerTools && createPortal(<RunRecordTabs mode={recordMode} onChange={setRecordMode} />, headerTools)}
+    <div className="game-benchmark-scroll"><div className="game-text-benchmark">
+      {setupError && <p className="unity-offline-error" role="alert">{setupError}</p>}
+      {recordMode === "test" ? <BenchmarkTestRecords archive={archive} snapshot={snapshot} /> : <FormalRunRecords />}
+    </div></div>
+  </section>;
+}
+
+function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
+  archive: ReturnType<typeof useBenchmarkArchive>; snapshot: BenchmarkSnapshot; projectScope?: string;
+  onContinue?: (reference: ArchivedBenchmarkRef) => Promise<unknown>;
+}) {
+  const { records: history, loading: historyLoading, error: historyError, refresh: refreshHistory } = archive;
+  const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
+  const [recordStep, setRecordStep] = useState<BenchmarkRecordStep>();
+  const [recordStatus, setRecordStatus] = useState(allBenchmarkRecordStatuses);
+  const [recordRange, setRecordRange] = useState<"1" | "7" | "30" | "all">("7");
+  const recordToday = new Date();
+  const dayStart = new Date(recordToday.getFullYear(), recordToday.getMonth(), recordToday.getDate()).getTime();
+  const filteredTasks = useMemo(() => {
+    const firstDay = new Date(dayStart);
+    const nextDay = new Date(dayStart);
+    if (recordRange !== "all") firstDay.setDate(firstDay.getDate() - (Number(recordRange) - 1));
+    nextDay.setDate(nextDay.getDate() + 1);
+    return tasks.filter(task => {
+      if (!matchesBenchmarkRecordStep(recordStep, archivedBenchmarkStep(task.runs[0]?.performance.step))) return false;
+      if (recordRange !== "all") {
+        const time = Date.parse(task.firstTime);
+        if (!(time >= firstDay.getTime() && time < nextDay.getTime())) return false;
+      }
+      return matchesBenchmarkRecordStatus(task, recordStatus);
+    });
+  }, [tasks, recordStep, recordStatus, recordRange, dayStart]);
+  const taskDays = useMemo(() => {
+    const days = new Map<string, { date: Date | null; records: typeof tasks }>();
+    for (const task of [...filteredTasks].sort((left, right) => (Date.parse(right.firstTime) || 0) - (Date.parse(left.firstTime) || 0))) {
+      const date = new Date(task.firstTime);
+      const day = Number.isNaN(date.getTime()) ? null : date;
+      const key = day ? day.toDateString() : "";
+      let group = days.get(key);
+      if (!group) { group = { date: day, records: [] }; days.set(key, group); }
+      group.records.push(task);
+    }
+    return days;
+  }, [filteredTasks]);
+  const recordYesterday = new Date(recordToday);
+  recordYesterday.setDate(recordYesterday.getDate() - 1);
+  const [restoringRun, setRestoringRun] = useState<string>();
+  const continueBatch = async (reference: ArchivedBenchmarkRef) => {
+    if (!onContinue) return;
+    setRestoringRun(reference.queueId);
+    try { await onContinue(reference); }
+    catch (error) { showAppNotice(String(error), "error"); }
+    finally { setRestoringRun(undefined); }
+  };
+  return <BenchmarkSection title="测试记录" className="game-benchmark-records game-benchmark-results" action={
+   <button type="button" className="unity-btn" disabled={historyLoading} onClick={refreshHistory}>刷新</button>}>
+   <div className="game-benchmark-record-filters" role="group" aria-label="测试记录筛选">
+     <BenchmarkRecordStepFilter value={recordStep} onChange={setRecordStep} />
+     <BenchmarkRecordStatusFilter value={recordStatus} onChange={setRecordStatus} />
+     <select aria-label="时间范围" value={recordRange} onChange={event => setRecordRange(event.target.value as typeof recordRange)}>
+       <option value="1">今天</option><option value="7">近 7 天</option>
+       <option value="30">近 30 天</option><option value="all">全部</option>
+     </select>
+     <output aria-live="polite">{filteredTasks.length} 条</output>
+   </div>
+   <div className="game-benchmark-history-results" tabIndex={0} aria-label="测试记录列表" role="region">
+   {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
+   {historyError && <p className="unity-offline-error" role="alert">{historyError}</p>}
+   {!historyLoading && !historyError && !filteredTasks.length && <p className="hint">{tasks.length ? "没有符合筛选条件的测试记录。" : "暂无测试记录。"}</p>}
+   {[...taskDays].map(([day, { date, records }]) => <section className="game-benchmark-record-day" key={day}>
+     <h4>{date
+       ? `${day === recordToday.toDateString() ? "今天 · " : day === recordYesterday.toDateString() ? "昨天 · " : date.getFullYear() !== recordToday.getFullYear() ? date.getFullYear() + "/" : ""}${date.getMonth() + 1}/${date.getDate()}`
+       : "日期未记录"}</h4>
+   {records.map(task => {
+     const first = task.runs[0];
+     const { scope: archivedScope, step: archivedStep, benchmark: metadata } = first.performance;
+     const taskStep = archivedBenchmarkStep(archivedStep);
+     const mosaicTask = !!taskStep && isMosaicStep(taskStep);
+     const content = mosaicTask ? "图片去码" : taskStep === "screen" || taskStep === "translate" ? "文本翻译" : "图片翻译";
+     const taskLabel = taskStep ? content + " · " + benchmarkTargetLabel(taskStep) : "未记录步骤";
+     const projectPath = archivedScope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
+     const reference = metadata?.referenceSampleSetPath ?? metadata?.sampleSetPath;
+     const referencePath = typeof reference === "string" ? reference : undefined;
+     const inputSet = typeof metadata?.sampleSetPath === "string" ? metadata.sampleSetPath : undefined;
+     const config = metadata?.config as BenchmarkConfig | undefined;
+     const sampleUnit = taskStep === "screen" || taskStep === "translate" ? "条" : "张";
+     const sampleScope = inputSet ? filename(inputSet.replace(/[\\/]manifest\.json$/i, "")) :
+       taskStep === "mosaicRefine" ? "工程初筛快照" :
+       mosaicTask && config?.mosaic?.selection === "all" ? "工程全部可用图片" :
+       sampleUnit === "条" ? "工程已勾选文本" : "工程已勾选图片";
+     const sampleLimit = typeof metadata?.sampleLimit === "number" ? metadata.sampleLimit : undefined;
+     const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) : sampleScope;
+     const referenceDetails = [referencePath, referencePath !== inputSet ? sampleScope : undefined,
+       sampleLimit === undefined ? undefined : sampleLimit > 0 ? "样本上限 " + sampleLimit + " " + sampleUnit : "样本不限"]
+       .filter(Boolean).join("\n");
+     const total = task.planned ? task.rounds * task.configs : task.runs.length;
+     const incomplete = task.stopped > 0 || task.completed < total;
+     const tone = task.failed ? "failure" : incomplete ? "incomplete" : "complete";
+     const stoppedLabel = task.runs.some(run => run.status === "已中止") ? "已中止" : "已暂停";
+     const status = task.failed ? `含 ${task.failed} 项失败` : incomplete
+       ? task.stopped ? stoppedLabel : "未完成" : "全部完成";
+     const canCompare = task.runs.length > 1 ||
+       (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && typeof reference === "string";
+     const openComparison = () => {
+       void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
+         scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit })
+         .catch(error => showAppNotice(String(error), "error"));
+     };
+     return <details key={task.id} className={`game-benchmark-record-task is-${tone}`}>
+     <summary>
+       <span className="game-benchmark-record-main">
+         <strong>{taskStep ? benchmarkTargetLabel(taskStep) : "未记录步骤"}</strong>
+         <span className="game-benchmark-record-tags">
+           <span className="game-benchmark-record-status">{status}</span>
+           <span>{task.rounds} 轮</span>
+           <span>{task.configs} 个配置</span>
+           <span>{first.selected} {sampleUnit}</span>
+         </span>
+       </span>
+       <span className="game-benchmark-record-result">
+         <strong>{task.completed}/{total}</strong>
+         <span className="game-benchmark-record-meta">
+           {date && <time dateTime={task.firstTime}>{new Date(task.firstTime).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })}</time>}
+           {canCompare ? <span className="game-benchmark-record-compare">
+             {date && " · "}<button type="button" onClick={event => { event.preventDefault(); openComparison(); }}>打开对照</button>
+           </span> : <span>{date && " · "}{incomplete ? "已停止" : "查看记录"}</span>}
+         </span>
+       </span>
+     </summary>
+     <div className="game-benchmark-record-runs">
+     <dl className="game-benchmark-record-context">
+       <div><dt>步骤</dt><dd title={taskLabel}>{taskStep ? benchmarkTargetLabel(taskStep) : taskLabel}</dd></div>
+       <div><dt>工程</dt><dd title={projectPath}>{projectPath ? filename(projectPath) : "未记录"}</dd></div>
+       <div><dt>对照集</dt><dd title={referenceDetails || referenceName}>{referenceName}</dd></div>
+     </dl>
+     {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>测试结果对照（{task.runs.length} 项）</button>}
+      {taskStep && isMosaicStep(taskStep) && task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
+        (onContinue && projectScope && archivedScope === projectScope + ":benchmark:mosaic"
+          ? <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
+              onClick={() => void continueBatch({ queueId: task.id, step: taskStep })}>继续此任务</button>
+          : <p className="hint">打开对应的游戏工程后可继续此任务。</p>)}
+     {mosaicTask && task.stopped > 0 && !task.planned &&
+       <p className="hint">此记录缺少原批次配置，无法从记录续跑。</p>}
+     {task.runs.map((result, index) => {
+       const runConfig = result.performance.benchmark?.config as BenchmarkConfig | undefined;
+       const parameters = taskStep && runConfig?.models?.text && runConfig.prompts
+         ? formatBenchmarkParameters(taskStep, runConfig, { rounds: task.rounds, sampleLimit: 0, annotated: !!inputSet })
+           .filter(parameter => parameter.scope === "config")
+         : [];
+       const failed = result.status === "失败" || result.failed > 0;
+       const observed = Object.values(result.performance.models);
+       const refine = taskStep === "mosaicRefine";
+       const configuredModels = refine ? [runConfig?.mosaic?.refineModel, runConfig?.mosaic?.refineGuardModel]
+         : Object.values(runConfig?.models ?? {}).map(model => model.id);
+       const configuredNames = configuredModels.filter(Boolean);
+       const modelNames = (configuredNames.length ? (refine ? configuredNames : [...new Set(configuredNames)])
+         : [...new Set(observed.map(model => model.model))]).map(id => id?.split("/").at(-1));
+       const concurrency = [...new Set(parameters.filter(parameter => parameter.label.endsWith("并发")).map(parameter => parameter.value))];
+       const lanes = concurrency.length ? concurrency : [...new Set(observed.map(model => model.concurrency))];
+       const modelLabel = modelNames.join(refine ? " → " : "、") || result.label;
+       const tone = failed ? "failure" : result.status === "完成" ? "complete" : "incomplete";
+       return <details key={result.performance.taskId || index} className={failed ? "has-failure" : undefined}>
+         <summary className="game-benchmark-run-summary">
+           <span className="game-benchmark-run-model" title={result.label}>
+             <strong>#{index + 1} {modelLabel}</strong><small>第 {result.round} 轮</small>
+           </span>
+           <span className="game-benchmark-run-columns">
+             <span>{lanes.length > 0 && <><small>并发</small><b>{lanes.join(" / ")}</b></>}</span>
+             <span><small>耗时</small><b>{gameDuration(result.performance.elapsedMs)}</b></span>
+             <span><small>完成数</small><b>{result.translated}/{result.selected}</b></span>
+             <span><b className="game-benchmark-run-badge" data-tone={tone}>{result.status}</b>
+               {result.failed > 0 && <small>{result.failed} {sampleUnit}失败</small>}</span>
+           </span>
+         </summary>
+         <BenchmarkDetailRows rows={parameters} fixedLabels />
+         {result.detail && <p>{result.detail}</p>}
+         <BenchmarkRunMeasurements result={result} />
+         <RunPerformanceDetails run={result.performance} source="benchmark" />
+         {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
+         {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
+           <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
+       </details>;
+     })}
+     </div>
+   </details>})}
+   </section>)}
+   </div>
+ </BenchmarkSection>;
+}
+
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
   requestSelection, imageSetup, mosaicSetup, mosaicRoot, imageCounts, mosaicCounts, selectedCount, models, snapshot, control, queueContents, archive, recordMode, onRecordModeChange, taskView, taskDialogs }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
@@ -995,23 +1221,30 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [saved] = useState<{ configs?: BenchmarkConfig[]; rounds?: number; sampleSetPath?: string; sampleLimit?: number }>(() => {
     try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
   });
-  const [configs, setConfigs] = useState(() => draft?.configs || saved.configs || [capture(1)]);
+  const sampleViewKey = key + ":sample-view";
+  const [rememberedSamples] = useState(() => readBenchmarkSampleView(sampleViewKey));
+  const [configs, setConfigs] = useState(() => {
+    if (draft?.configs) return draft.configs;
+    const initial = saved.configs || [capture(1)];
+    const selection = rememberedSamples.selection;
+    return selection ? initial.map(config => config.mosaic ? { ...config, mosaic: { ...config.mosaic, selection } } : config) : initial;
+  });
   const [rounds, setRounds] = useState(draft?.rounds || String(saved.rounds || 1));
-  const [sampleLimit, setSampleLimit] = useState(draft?.sampleLimit ?? saved.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0);
+  const [sampleLimit, setSampleLimit] = useState(draft?.sampleLimit ?? rememberedSamples.sampleLimit ?? saved.sampleLimit ?? configs[0]?.mosaic?.sampleLimit ?? 0);
   const sampleSetKey = "llmchat-annotated-image-samples:" + textScope;
-  const [sampleSetPath,setSampleSetPath] = useState(() => draft?.sampleSetPath || saved.sampleSetPath || localStorage.getItem(sampleSetKey) || "");
-  const [useSampleSet,setUseSampleSet] = useState(() => draft?.useSampleSet ?? !!saved.sampleSetPath);
+  const [sampleSetPath,setSampleSetPath] = useState(() => draft?.sampleSetPath ?? rememberedSamples.sampleSetPath ?? saved.sampleSetPath ?? readViewPreference(sampleSetKey) ?? "");
+  const [useSampleSet,setUseSampleSet] = useState(() => draft?.useSampleSet ?? rememberedSamples.useSampleSet ?? !!saved.sampleSetPath);
   const [browseSampleSet,setBrowseSampleSet] = useState(false);
   const sampleSetMode = !!(imageStep || mosaicStep) && useSampleSet;
   const chooseSampleSet = (path: string) => {
     setSampleSetPath(path);
-    localStorage.setItem(sampleSetKey,path);
+    writeViewPreference(sampleSetKey, path);
     setUseSampleSet(true);
   };
   const [savedQueue, setSavedQueue] = useState(() =>
     saved.configs ? JSON.stringify({ configs: saved.configs, rounds: saved.rounds || 1, sampleLimit: saved.sampleLimit, sampleSetPath: saved.sampleSetPath }) : "");
   const [expanded, setExpanded] = useState(() => new Set(configs[0] ? [configs[0].id] : []));
-  const { records: history, loading: historyLoading, error: historyError, refresh: refreshHistory } = archive;
+  const { records: history } = archive;
   const [samplePreview, setSamplePreview] = useState<Record<string, BenchmarkSample>>({});
   const [checking, setChecking] = useState(false);
   const [selectionCount, setSelectionCount] = useState(selectedCount);
@@ -1096,6 +1329,10 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     }
   };
   const sampleSettings = configs[0]?.mosaic;
+  const sampleSelection = sampleSettings?.selection;
+  useEffect(() => {
+    writeViewPreference(sampleViewKey, JSON.stringify({ sampleLimit, sampleSetPath, useSampleSet, selection: sampleSelection }));
+  }, [sampleViewKey, sampleLimit, sampleSetPath, useSampleSet, sampleSelection]);
   const changeSample = (patch: Pick<Partial<NonNullable<BenchmarkConfig["mosaic"]>>, "selection">) =>
     setConfigs(previous => previous.map(config => config.mosaic ? { ...config, mosaic: { ...config.mosaic, ...patch } } : config));
   const toggleConfig = (id: string, open: boolean) => setExpanded(previous => {
@@ -1123,47 +1360,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     } finally { setAdding(false); }
   };
 
-  const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
-  const [recordStep, setRecordStep] = useState<BenchmarkRecordStep>();
-  const [recordStatus, setRecordStatus] = useState(allBenchmarkRecordStatuses);
-  const [recordRange, setRecordRange] = useState<"1" | "7" | "30" | "all">("7");
-  const recordToday = new Date();
-  const dayStart = new Date(recordToday.getFullYear(), recordToday.getMonth(), recordToday.getDate()).getTime();
-  const filteredTasks = useMemo(() => {
-    const firstDay = new Date(dayStart);
-    const nextDay = new Date(dayStart);
-    if (recordRange !== "all") firstDay.setDate(firstDay.getDate() - (Number(recordRange) - 1));
-    nextDay.setDate(nextDay.getDate() + 1);
-    return tasks.filter(task => {
-      if (!matchesBenchmarkRecordStep(recordStep, archivedBenchmarkStep(task.runs[0]?.performance.step))) return false;
-      if (recordRange !== "all") {
-        const time = Date.parse(task.firstTime);
-        if (!(time >= firstDay.getTime() && time < nextDay.getTime())) return false;
-      }
-      return matchesBenchmarkRecordStatus(task, recordStatus);
-    });
-  }, [tasks, recordStep, recordStatus, recordRange, dayStart]);
-  const taskDays = useMemo(() => {
-    const days = new Map<string, { date: Date | null; records: typeof tasks }>();
-    for (const task of [...filteredTasks].sort((left, right) => (Date.parse(right.firstTime) || 0) - (Date.parse(left.firstTime) || 0))) {
-      const date = new Date(task.firstTime);
-      const day = Number.isNaN(date.getTime()) ? null : date;
-      const key = day ? day.toDateString() : "";
-      let group = days.get(key);
-      if (!group) { group = { date: day, records: [] }; days.set(key, group); }
-      group.records.push(task);
-    }
-    return days;
-  }, [filteredTasks]);
-  const recordYesterday = new Date(recordToday);
-  recordYesterday.setDate(recordYesterday.getDate() - 1);
-  const [restoringRun, setRestoringRun] = useState<string>();
-  const continueBatch = async (reference: ArchivedBenchmarkRef) => {
-    setRestoringRun(reference.queueId);
-    try { await control("benchmark-continue-batch", reference); }
-    catch (error) { showAppNotice(String(error), "error"); }
-    finally { setRestoringRun(undefined); }
-  };
   const latestRunByConfig = useMemo(() => {
     const latest = new Map<string, { run: BenchmarkResult; finishedAt: number }>();
     for (const run of history) {
@@ -1281,139 +1477,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")}>
         {queueContents}
       </BenchmarkSection>
-      <BenchmarkSection title="测试记录" className="game-benchmark-records game-benchmark-results" action={
-        <button type="button" className="unity-btn" disabled={historyLoading} onClick={refreshHistory}>刷新</button>}>
-        <div className="game-benchmark-record-filters" role="group" aria-label="测试记录筛选">
-          <BenchmarkRecordStepFilter value={recordStep} onChange={setRecordStep} />
-          <BenchmarkRecordStatusFilter value={recordStatus} onChange={setRecordStatus} />
-          <select aria-label="时间范围" value={recordRange} onChange={event => setRecordRange(event.target.value as typeof recordRange)}>
-            <option value="1">今天</option><option value="7">近 7 天</option>
-            <option value="30">近 30 天</option><option value="all">全部</option>
-          </select>
-          <output aria-live="polite">{filteredTasks.length} 条</output>
-        </div>
-        <div className="game-benchmark-history-results" tabIndex={0} aria-label="测试记录列表" role="region">
-        {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
-        {historyError && <p className="unity-offline-error" role="alert">{historyError}</p>}
-        {!historyLoading && !historyError && !filteredTasks.length && <p className="hint">{tasks.length ? "没有符合筛选条件的测试记录。" : "暂无测试记录。"}</p>}
-        {[...taskDays].map(([day, { date, records }]) => <section className="game-benchmark-record-day" key={day}>
-          <h4>{date
-            ? `${day === recordToday.toDateString() ? "今天 · " : day === recordYesterday.toDateString() ? "昨天 · " : date.getFullYear() !== recordToday.getFullYear() ? date.getFullYear() + "/" : ""}${date.getMonth() + 1}/${date.getDate()}`
-            : "日期未记录"}</h4>
-        {records.map(task => {
-          const first = task.runs[0];
-          const { scope: archivedScope, step: archivedStep, benchmark: metadata } = first.performance;
-          const taskStep = archivedBenchmarkStep(archivedStep);
-          const mosaicTask = !!taskStep && isMosaicStep(taskStep);
-          const content = mosaicTask ? "图片去码" : taskStep === "screen" || taskStep === "translate" ? "文本翻译" : "图片翻译";
-          const taskLabel = taskStep ? content + " · " + benchmarkTargetLabel(taskStep) : "未记录步骤";
-          const projectPath = archivedScope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
-          const reference = metadata?.referenceSampleSetPath ?? metadata?.sampleSetPath;
-          const referencePath = typeof reference === "string" ? reference : undefined;
-          const inputSet = typeof metadata?.sampleSetPath === "string" ? metadata.sampleSetPath : undefined;
-          const config = metadata?.config as BenchmarkConfig | undefined;
-          const sampleUnit = taskStep === "screen" || taskStep === "translate" ? "条" : "张";
-          const sampleScope = inputSet ? filename(inputSet.replace(/[\\/]manifest\.json$/i, "")) :
-            taskStep === "mosaicRefine" ? "工程初筛快照" :
-            mosaicTask && config?.mosaic?.selection === "all" ? "工程全部可用图片" :
-            sampleUnit === "条" ? "工程已勾选文本" : "工程已勾选图片";
-          const sampleLimit = typeof metadata?.sampleLimit === "number" ? metadata.sampleLimit : undefined;
-          const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) : sampleScope;
-          const referenceDetails = [referencePath, referencePath !== inputSet ? sampleScope : undefined,
-            sampleLimit === undefined ? undefined : sampleLimit > 0 ? "样本上限 " + sampleLimit + " " + sampleUnit : "样本不限"]
-            .filter(Boolean).join("\n");
-          const total = task.planned ? task.rounds * task.configs : task.runs.length;
-          const incomplete = task.stopped > 0 || task.completed < total;
-          const tone = task.failed ? "failure" : incomplete ? "incomplete" : "complete";
-          const stoppedLabel = task.runs.some(run => run.status === "已中止") ? "已中止" : "已暂停";
-          const status = task.failed ? `含 ${task.failed} 项失败` : incomplete
-            ? task.stopped ? stoppedLabel : "未完成" : "全部完成";
-          const canCompare = task.runs.length > 1 ||
-            (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && typeof reference === "string";
-          const openComparison = () => {
-            void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
-              scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit })
-              .catch(error => showAppNotice(String(error), "error"));
-          };
-          return <details key={task.id} className={`game-benchmark-record-task is-${tone}`}>
-          <summary>
-            <span className="game-benchmark-record-main">
-              <strong>{taskStep ? benchmarkTargetLabel(taskStep) : "未记录步骤"}</strong>
-              <span className="game-benchmark-record-tags">
-                <span className="game-benchmark-record-status">{status}</span>
-                <span>{task.rounds} 轮</span>
-                <span>{task.configs} 个配置</span>
-                <span>{first.selected} {sampleUnit}</span>
-              </span>
-            </span>
-            <span className="game-benchmark-record-result">
-              <strong>{task.completed}/{total}</strong>
-              <span className="game-benchmark-record-meta">
-                {date && <time dateTime={task.firstTime}>{new Date(task.firstTime).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })}</time>}
-                {canCompare ? <span className="game-benchmark-record-compare">
-                  {date && " · "}<button type="button" onClick={event => { event.preventDefault(); openComparison(); }}>打开对照</button>
-                </span> : <span>{date && " · "}{incomplete ? "已停止" : "查看记录"}</span>}
-              </span>
-            </span>
-          </summary>
-          <div className="game-benchmark-record-runs">
-          <dl className="game-benchmark-record-context">
-            <div><dt>步骤</dt><dd title={taskLabel}>{taskStep ? benchmarkTargetLabel(taskStep) : taskLabel}</dd></div>
-            <div><dt>工程</dt><dd title={projectPath}>{projectPath ? filename(projectPath) : "未记录"}</dd></div>
-            <div><dt>对照集</dt><dd title={referenceDetails || referenceName}>{referenceName}</dd></div>
-          </dl>
-          {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>测试结果对照（{task.runs.length} 项）</button>}
-          {taskStep && isMosaicStep(taskStep) && archivedScope === textScope + ":benchmark:mosaic" &&
-            task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
-            <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
-              onClick={() => void continueBatch({ queueId: task.id, step: taskStep })}>继续此任务</button>}
-          {mosaicTask && task.stopped > 0 && !task.planned &&
-            <p className="hint">此记录缺少原批次配置，无法从记录续跑。</p>}
-          {task.runs.map((result, index) => {
-            const runConfig = result.performance.benchmark?.config as BenchmarkConfig | undefined;
-            const parameters = taskStep && runConfig?.models?.text && runConfig.prompts
-              ? formatBenchmarkParameters(taskStep, runConfig, { rounds: task.rounds, sampleLimit: 0, annotated: !!inputSet })
-                .filter(parameter => parameter.scope === "config")
-              : [];
-            const failed = result.status === "失败" || result.failed > 0;
-            const observed = Object.values(result.performance.models);
-            const refine = taskStep === "mosaicRefine";
-            const configuredModels = refine ? [runConfig?.mosaic?.refineModel, runConfig?.mosaic?.refineGuardModel]
-              : Object.values(runConfig?.models ?? {}).map(model => model.id);
-            const configuredNames = configuredModels.filter(Boolean);
-            const modelNames = (configuredNames.length ? (refine ? configuredNames : [...new Set(configuredNames)])
-              : [...new Set(observed.map(model => model.model))]).map(id => id?.split("/").at(-1));
-            const concurrency = [...new Set(parameters.filter(parameter => parameter.label.endsWith("并发")).map(parameter => parameter.value))];
-            const lanes = concurrency.length ? concurrency : [...new Set(observed.map(model => model.concurrency))];
-            const modelLabel = modelNames.join(refine ? " → " : "、") || result.label;
-            const tone = failed ? "failure" : result.status === "完成" ? "complete" : "incomplete";
-            return <details key={result.performance.taskId || index} className={failed ? "has-failure" : undefined}>
-              <summary className="game-benchmark-run-summary">
-                <span className="game-benchmark-run-model" title={result.label}>
-                  <strong>#{index + 1} {modelLabel}</strong><small>第 {result.round} 轮</small>
-                </span>
-                <span className="game-benchmark-run-columns">
-                  <span>{lanes.length > 0 && <><small>并发</small><b>{lanes.join(" / ")}</b></>}</span>
-                  <span><small>耗时</small><b>{gameDuration(result.performance.elapsedMs)}</b></span>
-                  <span><small>完成数</small><b>{result.translated}/{result.selected}</b></span>
-                  <span><b className="game-benchmark-run-badge" data-tone={tone}>{result.status}</b>
-                    {result.failed > 0 && <small>{result.failed} {sampleUnit}失败</small>}</span>
-                </span>
-              </summary>
-              <BenchmarkDetailRows rows={parameters} fixedLabels />
-              {result.detail && <p>{result.detail}</p>}
-              <BenchmarkRunMeasurements result={result} />
-              <RunPerformanceDetails run={result.performance} source="benchmark" />
-              {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
-              {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
-                <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
-            </details>;
-          })}
-          </div>
-        </details>})}
-        </section>)}
-        </div>
-      </BenchmarkSection>
+      <BenchmarkTestRecords archive={archive} snapshot={snapshot} projectScope={textScope}
+         onContinue={reference => control("benchmark-continue-batch", reference)} />
       </div>
       </> : <>
         <FormalRunRecords scope={formalScope} step={formalStep} />

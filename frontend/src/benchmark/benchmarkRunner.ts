@@ -764,32 +764,6 @@ export const benchmarkRunner = {
     pumpQueue();
     return imported.map(job => job.id);
   },
-  async restoreLatestArchivedBatch(input: BenchmarkInput, isCurrent: () => boolean) {
-    const canRestore = () => isCurrent() && !running && !executing &&
-      !jobs.some(job => job.status === "已暂停" || job.status === "运行中");
-    if (!input.mosaicRoot || !input.images || !canRestore()) return;
-    const candidates = (await Promise.all((Object.keys(mosaicBenchmarkSteps) as MosaicBenchmarkStep[]).map(async step => {
-      const history = await readGameBenchmarkHistory(input.scope + ":benchmark:mosaic", step);
-      return groupBenchmarkTasks(history).filter(task => task.continuation).map(task => ({
-        step, task, history, lastActivity: task.runs.reduce((latest, run) =>
-          Math.max(latest, Date.parse(run.performance.endedAt || run.performance.beginTime || "") || 0), 0),
-      }));
-    }))).flat().sort((left, right) => right.lastActivity - left.lastActivity);
-    let firstError: unknown;
-    for (const { step, task, history } of candidates) {
-      if (!canRestore()) return;
-      if (jobs.some(job => job.id === task.id)) continue;
-      try {
-        const restored = await prepareArchivedJob(input, step, task, history);
-        if (!canRestore()) return;
-        if (jobs.some(job => job.id === restored.id)) continue;
-        jobs.unshift(restored);
-        publish();
-        return;
-      } catch (error) { firstError ??= error; }
-    }
-    if (firstError && canRestore()) throw firstError;
-  },
   async continueArchivedBatch(input: BenchmarkInput, { queueId, step }: ArchivedBenchmarkRef) {
     if (!isMosaicBenchmarkStep(step)) throw new Error("该测试步骤不支持归档续跑");
     const findJob = () => jobs.find(job => job.id === queueId);
@@ -901,7 +875,24 @@ export const benchmarkRunner = {
     await cleanupJob(job.status === "已暂停" ? job : undefined);
     pumpQueue();
   },
-  cleanup: () => pauseQueue("关闭测试窗口时中止此任务", true),
+  async cleanup() {
+    await pauseQueue("关闭测试窗口时中止此任务", true);
+    if (!jobs.some(job => job.status === "已暂停" && isMosaicBenchmarkStep(job.step))) return;
+    try {
+      const recoverable = new Set(groupBenchmarkTasks(await readGameBenchmarkHistory())
+        .filter(record => record.continuation).map(record => record.id));
+      let changed = false;
+      for (let index = jobs.length - 1; index >= 0; index--) {
+        if (jobs[index].status !== "已暂停" || !isMosaicBenchmarkStep(jobs[index].step) || !recoverable.has(jobs[index].id)) continue;
+        jobs.splice(index, 1);
+        changed = true;
+      }
+      if (changed) publish();
+    } catch (error) {
+      // Keep the in-memory checkpoint if its archive cannot be verified.
+      console.error(error);
+    }
+  },
   snapshot: () => snapshot,
   subscribe(listener: () => void) {
     listeners.add(listener);
