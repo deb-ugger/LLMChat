@@ -119,7 +119,7 @@
   mask-image: linear-gradient(to bottom, #000 0 36%, transparent 36% 64%, #000 64% 100%);
   opacity: .55;
 }
-.game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, rgba(226, 150, 70, .62) 0 3px, transparent 3px 7px); }
+.game-workflow-connector.is-unlinked { --track-rail: repeating-linear-gradient(to bottom, var(--warning) 0 3px, transparent 3px 7px); }
 
 /* 两端都完成的段：轨道本体变实心绿，光带走完就不再亮。 */
 .game-workflow-connector.is-done:not(.is-skipped, .is-gap, .is-unlinked) {
@@ -287,18 +287,18 @@
   position: absolute;
   inset-block-start: 4px;
   inset-inline-start: calc(50% + var(--workflow-marker-size) / 2 + 3px);
-  background: #e2964a;
-  box-shadow: 0 0 0 3px rgba(226, 150, 70, .16);
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 16%, transparent);
 }
 .game-workflow-node.complete .unity-step-tab:not(.is-selected) .game-workflow-marker::after {
   inline-size: 7px;
   block-size: 7px;
 }
 .game-workflow-node.pending .unity-step-tab:not(.is-selected) .game-workflow-marker {
-  border-color: color-mix(in srgb, var(--marker-tone) 55%, transparent);
+  border-color: color-mix(in srgb, var(--marker-tone) 82%, transparent);
 }
 .game-workflow-node.pending .unity-step-tab:not(.is-selected) .game-workflow-marker::after {
-  background: color-mix(in srgb, var(--marker-tone) 70%, transparent);
+  background: color-mix(in srgb, var(--marker-tone) 82%, transparent);
 }
 .game-workflow-node .unity-step-tab.is-selected::before {
   content: "";
@@ -314,7 +314,7 @@
   background: var(--marker-tone);
   border-color: var(--marker-tone);
 }
-.game-workflow-node .unity-step-tab.is-selected .game-workflow-marker::after { background: #fff; }
+.game-workflow-node .unity-step-tab.is-selected .game-workflow-marker::after { background: var(--bg-app); }
 .game-workflow-node .unity-step-tab.is-selected .game-workflow-label {
   color: var(--marker-tone);
   font-weight: 800;

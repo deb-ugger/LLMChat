@@ -2216,7 +2216,7 @@ body.ocr-image-resizing * {
   /* 轨道那边的状态色定义在 .game-workflow-steps 上，卡片继承不到，这里补一份同值回退。 */
   --workflow-tone-complete: var(--success, #57b574);
   --workflow-tone-current: #3265b6;
-  --workflow-tone-pending: #b9762a;
+  --workflow-tone-pending: #9c5f18;
   --workflow-tone-error: var(--danger, #d0564a);
   --flow-color: var(--workflow-tone-pending);
   padding-inline-start: 10px;
@@ -2225,6 +2225,10 @@ body.ocr-image-resizing * {
   position: relative;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+}
+:root[data-theme="ink"] .game-flow-item {
+  --workflow-tone-current: #7aa7f0;
+  --workflow-tone-pending: #e0a35e;
 }
 .game-flow-item.is-done { --flow-color: var(--workflow-tone-complete); }
 .game-flow-item.is-current { --flow-color: var(--workflow-tone-current); }
@@ -3093,12 +3097,16 @@ body.ocr-image-resizing * {
   .game-benchmark-config-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 130px) minmax(0, 1fr); }
   .game-benchmark-config-list { border-inline-end: 0; border-block-end: 1px solid var(--border); }
 }
-.game-benchmark-queue { border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 30%, var(--border)); background: var(--bg-panel); }
-.game-benchmark-queue.is-active { border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 46%, var(--border)); background: var(--bg-panel); }
+.game-benchmark-queue {
+  --queue-outline: color-mix(in srgb, var(--benchmark-run-tone) 64%, var(--text));
+  border-color: var(--queue-outline);
+  background: var(--bg-panel);
+}
+.game-benchmark-queue.is-active { border-color: var(--queue-outline); background: var(--bg-panel); }
 .game-benchmark-queue > .game-benchmark-records-head {
   margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0;
   padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 34%, var(--border));
+  border-block-end: 1px solid var(--queue-outline);
   border-start-start-radius: inherit;
   border-start-end-radius: inherit;
   background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 13%, var(--bg-panel));
@@ -3110,7 +3118,7 @@ body.ocr-image-resizing * {
   inline-size: 6px;
   block-size: 6px;
   border-radius: 50%;
-  background: var(--benchmark-run-tone);
+  background: var(--queue-outline);
 }
 .game-benchmark-records {
   border-color: color-mix(in srgb, var(--border) 64%, transparent);
