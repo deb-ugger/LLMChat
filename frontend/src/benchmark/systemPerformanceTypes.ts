@@ -9,6 +9,12 @@ export type SystemPerformancePoint = {
   disk: number | null;
   /** 以太网收发速率合计，字节/秒 */
   network: number | null;
+  memoryUsedBytes?: number | null;
+  memoryAvailableBytes?: number | null;
+  diskReadBytesPerSec?: number | null;
+  diskWriteBytesPerSec?: number | null;
+  networkReceiveBytesPerSec?: number | null;
+  networkSendBytesPerSec?: number | null;
   /** GPU 引擎占用率，0–100 */
   gpu: number | null;
   /** 磁盘占用率（% Disk Time），0–100；取不到为 null */
