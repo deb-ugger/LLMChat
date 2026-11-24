@@ -1,4 +1,5 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type Ref, type SetStateAction } from "react";
+import { createContext, useContext, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type Ref, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { mosaicStatusLabels, type MosaicStatus } from "../../gameMosaicStatus";
 import type { UnityImage } from "../../unityOffline";
 import { GameImageListPagination } from "../GameImageBrowserLayout";
@@ -85,10 +86,14 @@ function arrowDestination(index: number, key: string, length: number): number | 
   }
 }
 
+export const MosaicOriginalSelectionTarget = createContext<HTMLDivElement | null>(null);
+
 export function MosaicOriginalGallery({ images, navigationRef, activeId, page, onPage, selectedIds, setSelectedIds,
   query, read, checked, status, draftChanges, disabled, onPreview, onCheck }: Props) {
   const [focusId, setFocusId] = useState<string>();
+  const gallery = useRef<HTMLElement>(null);
   const grid = useRef<HTMLUListElement>(null);
+  const selectionTarget = useContext(MosaicOriginalSelectionTarget);
   const pages = Math.max(1, Math.ceil(images.length / mosaicGalleryPageSize));
   const currentPage = Math.min(page, pages - 1);
   const visible = images.slice(currentPage * mosaicGalleryPageSize, (currentPage + 1) * mosaicGalleryPageSize);
@@ -153,18 +158,24 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
 
   useImperativeHandle(navigationRef, () => navigateGallery);
 
-  return <section className="game-mosaic-original-browser" aria-label="原图批量浏览" tabIndex={0} onKeyDown={navigateGallery}>
-    <div className="game-mosaic-original-browser-controls">
-      <div className="game-mosaic-original-selection">
-        <span role="status">选中 {chosen.length} 张</span>
-        <button type="button" className="unity-btn" disabled={!visible.length}
-          onClick={selectPage}>全选本页</button>
-        <button type="button" className="unity-btn" disabled={disabled || !chosen.length}
-          onClick={() => onCheck(chosen, true)}>批量勾选</button>
-        <button type="button" className="unity-btn" disabled={disabled || !chosen.length}
-          onClick={() => onCheck(chosen, false)}>批量取消勾选</button>
-      </div>
+  const selection = chosen.length > 0 && <div className="game-mosaic-original-selection" role="group" aria-label="已选图片操作">
+    <span role="status">选中 {chosen.length} 张</span>
+    <div className="game-mosaic-original-selection-actions">
+      <button type="button" className="unity-btn" disabled={disabled}
+        onClick={() => onCheck(chosen, true)}>勾选</button>
+      <button type="button" className="unity-btn" disabled={disabled}
+        onClick={() => onCheck(chosen, false)}>取消勾选</button>
+      <button type="button" className="unity-btn game-mosaic-selection-text" disabled={!visible.length}
+        onClick={selectPage}>全选本页</button>
+      <button type="button" className="unity-btn game-mosaic-selection-text" onClick={() => {
+        setSelectedIds(new Set());
+        gallery.current?.focus({ preventScroll: true });
+      }}>清空选择</button>
     </div>
+  </div>;
+
+  return <section ref={gallery} className="game-mosaic-original-browser" aria-label="原图批量浏览" tabIndex={0} onKeyDown={navigateGallery}>
+    {selection && (selectionTarget ? createPortal(selection, selectionTarget) : selection)}
     <ul ref={grid} className="game-mosaic-original-grid" style={{ gridTemplateColumns: `repeat(${galleryColumns}, minmax(0, 1fr))` }}>
       {visible.map(image => {
         const change = draftChanges(image);

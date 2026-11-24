@@ -5,6 +5,7 @@ import { mosaicProcessingError, mosaicStatusLabels, type MosaicStatus } from "..
 import type { UnityImage } from "../../unityOffline";
 import { GameImageFilter, GameImageFilterOptions, GameImageListPagination, GameImageSplit, type GameImageFilters } from "../GameImageBrowserLayout";
 import { SearchHighlight } from "../SearchHighlight";
+import { MosaicOriginalSelectionTarget } from "./MosaicOriginalGallery";
 import type { MosaicGroupMenu, RefineMovement, Result } from "./mosaicWorkbenchTypes";
 
 export const mosaicStatusPageSize = 40;
@@ -51,6 +52,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
   const { query, needle, scope, imageFilters, failuresOnly } = filters;
   const listRef = useRef<HTMLUListElement>(null);
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
+  const [selectionTarget, setSelectionTarget] = useState<HTMLDivElement | null>(null);
   const groupMenuRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -131,26 +133,30 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
     setKeyboardTarget(id);
   }
 
+  const statistics = `${counts.visible.toLocaleString("zh-CN")} 张图片 · 已勾选 ${counts.checked.toLocaleString("zh-CN")} · 已采用去码图 ${counts.saved.toLocaleString("zh-CN")}`;
   return <>
-    <div className="unity-offline-toolbar unity-image-toolbar">
-      <GameImageFilter menuRef={filterMenu}>
-        <GameImageFilterOptions filters={imageFilters} onChange={onImageFiltersChange} doneHint="已采用去码图，含已纳入补丁的图片" />
-      </GameImageFilter>
-      <span className="unity-image-statistics">{counts.visible} 张图片 · 已勾选 {counts.checked} 张 · 已采用去码图 {counts.saved} 张</span>
-      {(counts.failed > 0 || failuresOnly) && <button type="button" className="unity-btn game-mosaic-failed-filter"
-        aria-pressed={failuresOnly} onClick={onToggleFailureFilter}>处理失败 · {counts.failed} 张</button>}
-      <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query}
-        onChange={event => onQueryChange(event.target.value)} />
+    <div className="game-mosaic-list-toolbar">
+      <div className="game-mosaic-list-header">
+        <GameImageFilter menuRef={filterMenu}>
+          <GameImageFilterOptions filters={imageFilters} onChange={onImageFiltersChange} doneHint="已采用去码图，含已纳入补丁的图片" />
+        </GameImageFilter>
+        <span className="game-mosaic-list-statistics" data-tooltip={statistics}>{statistics}</span>
+        {(counts.failed > 0 || failuresOnly) && <button type="button" className="unity-btn game-mosaic-failed-filter"
+          aria-pressed={failuresOnly} onClick={onToggleFailureFilter}>处理失败 · {counts.failed} 张</button>}
+        <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query}
+          onChange={event => onQueryChange(event.target.value)} />
+        <div className="game-mosaic-list-views" role="group" aria-label="左侧图片列表视图">
+          <button type="button" aria-pressed={!browseOriginals} onClick={() => setBrowseOriginals(false)}>分组</button>
+          <button type="button" aria-pressed={browseOriginals} onClick={() => setBrowseOriginals(true)}
+            data-tooltip="浏览原图缩略图；Ctrl 或 Command 点击多选">浏览</button>
+        </div>
+      </div>
+      <div className="game-mosaic-selection-slot" ref={setSelectionTarget} />
     </div>
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={browseOriginals ? undefined : navigateList}
       onPreviewKeyDown={browseOriginals ? onBrowsePreviewKeyDown : navigateList}
-      list={<>
-        <div className="game-mosaic-list-views" role="group" aria-label="左侧图片列表视图">
-          <button type="button" className="unity-btn" aria-pressed={!browseOriginals} onClick={() => setBrowseOriginals(false)}>分组</button>
-          <button type="button" className="unity-btn" aria-pressed={browseOriginals} onClick={() => setBrowseOriginals(true)}
-            data-tooltip="浏览原图缩略图；Ctrl 或 Command 点击多选">浏览</button>
-        </div>
-        {browseOriginals ? originalGallery : <ul ref={listRef}>{[...groups].map(([id, items]) => {
+      list={browseOriginals ? <MosaicOriginalSelectionTarget.Provider value={selectionTarget}>{originalGallery}</MosaicOriginalSelectionTarget.Provider>
+        : <ul ref={listRef}>{[...groups].map(([id, items]) => {
           if (!items.length) return null;
           const label = mosaicStatusLabels[id];
           const pages = Math.ceil(items.length / mosaicStatusPageSize);
@@ -197,8 +203,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
             })}</ul>
             {!collapsed[id] && <GameImageListPagination label={label+"列表分页"} page={page} pages={pages} onPage={page => setGroupPages(previous => ({...previous,[id]:page}))}/>}
             </details></li>;
-        })}</ul>}
-      </>}>
+        })}</ul>}>
       {children}
     </GameImageSplit>
     {groupMenu && createPortal(<div ref={groupMenuRef} className="unity-gallery-menu" role="menu" aria-label="独立组操作"
