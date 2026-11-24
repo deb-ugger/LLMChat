@@ -2785,26 +2785,12 @@ body.ocr-image-resizing * {
   background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 6%, var(--panel, #15130f));
   animation: game-benchmark-breathe 1.8s ease-in-out infinite;
 }
-/* 正在跑的那一条任务：整块（标题行 + 展开后的全部字段）一起呼吸。 */
-.game-benchmark-item.is-running {
-  border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 62%, var(--border, #2a2721));
-  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 16%, var(--panel, #15130f));
-  animation: game-benchmark-breathe 1.6s ease-in-out infinite;
-}
-.game-benchmark-item.is-running > summary { color: var(--text); }
-/* 展开后的控件与分隔线跟着染色，否则整块只有外框是蓝的、里面还是原底色。 */
-.game-benchmark-item.is-running .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
-  background: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 7%, var(--panel, #15130f));
-  border-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 26%, var(--border, #2a2721));
-}
-.game-benchmark-item.is-running .game-benchmark-item-fields > .game-benchmark-toolbar { border-top-color: color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 22%, var(--border, #2a2721)); }
 @keyframes game-benchmark-breathe {
   0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 24%, transparent), 0 0 8px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 14%, transparent); }
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 40%, transparent), 0 0 20px color-mix(in srgb, var(--benchmark-run-tone, #a855f7) 32%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .game-benchmark-section.is-active,
-  .game-benchmark-item.is-running { animation: none; }
+  .game-benchmark-section.is-active { animation: none; }
 }
 /* 运行中任务的参数摘要：队列里一条、步骤卡里一条，共用同一套标记。 */
 .game-benchmark-running-params { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:6px; }
@@ -2822,19 +2808,37 @@ body.ocr-image-resizing * {
   padding: 14px clamp(var(--space-3), 3vw, 26px);
   background: var(--panel, var(--bg-panel)); border-bottom: 1px solid var(--border, #dcd6c6);
 }
-.game-benchmark-page-header { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.game-benchmark-page-header h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
-.game-benchmark-page-header p { margin: 0; }
+.game-benchmark-page-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-block-size: 42px;
+  padding-block: 5px;
+}
+.game-benchmark-page-header h2 { margin: 0; font-size: var(--fs-section); font-weight: 600; white-space: nowrap; }
+.game-benchmark-header-tools { display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-inline-size: 0; }
+.game-benchmark-header-tools[hidden] { display: none; }
+.game-benchmark-header-tools .game-benchmark-modes { margin-inline-start: 0; }
+.game-benchmark-header-tools > .unity-btn, .game-benchmark-task-actions > .unity-btn {
+  box-sizing: border-box;
+  min-block-size: 28px;
+  block-size: 28px;
+  padding-block: 0;
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+@media (max-width: 1280px) {
+  .game-benchmark-header-tools { order: 1; flex-basis: 100%; justify-content: flex-start; }
+}
+.game-benchmark-browser-fallback .game-benchmark-header-tools { order: 1; flex-basis: 100%; justify-content: flex-start; }
 .game-benchmark-module { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .game-benchmark-module[hidden] { display: none; }
 .game-benchmark-module > .app-help-view { height: auto; }
 .game-benchmark-module-status { flex: 1; margin: var(--page-inset); }
-.game-benchmark-game {
-  display: grid; grid-template-rows: auto minmax(0, 1fr);
-  flex: 1; min-height: 0; min-width: 0;
-}
-.game-benchmark-game > .game-benchmark-page-header { padding-block: 8px; }
-.game-benchmark-scroll { min-height: 0; overflow: auto; }
+.game-benchmark-game { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.game-benchmark-scroll { flex: 1; min-height: 0; overflow: auto; }
 .game-text-benchmark { display: grid; gap: var(--space-3); max-width: var(--content-max); padding: var(--page-inset); margin-inline: auto; }
 .game-text-benchmark .hint { margin: 0; max-inline-size: 76ch; }
 .game-benchmark-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -2846,36 +2850,6 @@ body.ocr-image-resizing * {
 .game-benchmark-toolbar input[type="number"] { width: 74px; }
 .game-benchmark-toolbar input:not([type="number"], [type="checkbox"]) { flex: 1 1 130px; }
 .game-benchmark-close { margin-inline-start: auto; }
-.game-benchmark-item { min-width: 0; background: var(--panel, var(--bg-panel)); border: 1px solid var(--border, #dcd6c6); border-radius: var(--radius-lg); }
-.game-benchmark-item { position: relative; padding-inline-start: 12px; }
-.game-benchmark-item::before { content: ""; position: absolute; inset-block: 9px; inset-inline-start: 0; inline-size: 2px; border-radius: 2px; background: var(--line, rgba(255,255,255,.14)); }
-.game-benchmark-item.has-run::before { background: var(--success, #57b574); }
-.game-benchmark-item.is-running::before { inline-size: 3px; background: var(--benchmark-run-tone, #a855f7); }
-.game-benchmark-item > summary { display: flex; align-items: center; gap: 8px; }
-.game-benchmark-item > summary > .game-benchmark-item-badge { flex: none; margin-inline-start: 0; display: inline-grid; place-items: center; min-inline-size: 22px; block-size: 20px; border-radius: 6px; background: rgba(255,255,255,.07); color: var(--text-muted, #a09c8f); font-size: 11px; letter-spacing: .02em; }
-.game-benchmark-item > summary > .game-benchmark-item-main { display: flex; align-items: center; flex: 1 1 auto; gap: 8px; min-inline-size: 0; margin-inline-start: 0; color: var(--text); }
-.game-benchmark-item-main > strong, .game-benchmark-item-model { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.game-benchmark-item-model { color: var(--text-muted); }
-.game-benchmark-item > summary > .game-benchmark-item-score { margin-inline-start: auto; font-size: 12px; color: var(--text-muted, #a09c8f); white-space: nowrap; }
-.game-benchmark-item-main > .game-benchmark-item-live-dot {
-  flex: 0 0 7px;
-  block-size: 7px;
-  margin-inline-start: 0;
-  border-radius: 50%;
-  background: var(--benchmark-run-tone, #a855f7);
-  animation: game-benchmark-pulse 1.6s ease-in-out infinite;
-}
-@keyframes game-benchmark-pulse { 50% { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) {
-  .game-benchmark-item-main > .game-benchmark-item-live-dot { animation: none; }
-}
-.game-benchmark-item > summary > .game-benchmark-item-score.is-live {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-.game-benchmark-item > summary { cursor: pointer; padding: 10px var(--space-3); overflow-wrap: anywhere; }
-.game-benchmark-item[open] > summary { border-bottom: 1px solid var(--border, #dcd6c6); }
-.game-benchmark-item > summary > span { margin-inline-start: 12px; color: var(--text-muted, #6a675c); }
 .game-benchmark-item-fields { display: grid; max-inline-size: 1120px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px 16px; margin: 2px 0 2px 38px; padding: 10px 12px 12px; min-width: 0; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--bg-panel) 55%, #000); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--border, #2a2721) 60%, transparent); }
 .game-benchmark-item-fields > .game-benchmark-toolbar, .game-benchmark-item-fields > .game-benchmark-model { grid-column: 1 / -1; }
 @media (max-width: 720px) { .game-benchmark-item-fields { grid-template-columns: minmax(0, 1fr); } }
@@ -2930,30 +2904,21 @@ body.ocr-image-resizing * {
 
 
 /* ============ 测试队列：顶部运行条 + 三栏 ============ */
-.game-benchmark-runbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  min-block-size: 42px;
-  padding: 3px 4px;
-  border-block-end: 1px solid var(--line, var(--border));
-}
 .game-benchmark-scope {
   display: flex;
-  flex: 1 1 auto;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 4px;
   min-inline-size: 0;
 }
-.game-benchmark-scope > .game-benchmark-toolbar { margin: 0; gap: 4px 8px; min-inline-size: 0; }
+.game-benchmark-scope > .game-benchmark-toolbar { margin: 0; gap: 4px; min-inline-size: 0; }
 .game-benchmark-scope > .game-benchmark-toolbar > :is(label, .game-benchmark-scope-static) {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-block-size: 26px;
-  padding-inline: 8px 6px;
+  gap: 4px;
+  block-size: 26px;
+  padding-inline: 7px 5px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--bg-panel);
@@ -2963,64 +2928,119 @@ body.ocr-image-resizing * {
 }
 .game-benchmark-scope > .game-benchmark-toolbar > label > :is(select, input) {
   min-inline-size: 0;
-  min-block-size: 0;
+  max-inline-size: 18ch;
   block-size: 24px;
-  padding-block: 0;
+  min-block-size: 0;
+  padding: 0 2px;
   border: 0;
-  border-radius: var(--radius-pill);
   background-color: transparent;
   color: var(--text);
   font-size: inherit;
 }
-.game-benchmark-scope > .game-benchmark-toolbar > label > input[type="number"] { inline-size: 55px; padding-inline: 4px; }
+.game-benchmark-scope > .game-benchmark-toolbar > label > input[type="number"] { inline-size: 46px; }
 .game-benchmark-scope > .game-benchmark-toolbar > label:focus-within { border-color: var(--accent); }
 .game-benchmark-scope-static > b { color: var(--text); font-weight: 500; }
-.game-benchmark-scope .hint { color: var(--text-muted); font-size: var(--fs-caption); }
-.game-benchmark-task-actions {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  max-inline-size: 100%;
-  margin-inline-start: auto;
-  gap: var(--space-2);
+.game-benchmark-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.game-benchmark-header-divider { flex: none; inline-size: 1px; block-size: 20px; background: var(--border-strong); }
+.game-benchmark-more {
+  --window-popover-width: 160px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
 }
-.game-benchmark-task-actions > [role="status"]:empty { display: none; }
+.game-benchmark-more:popover-open { display: grid; gap: 4px; }
+.game-benchmark-more button { justify-content: start; text-align: start; }
+
 .game-benchmark-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.15fr);
   gap: 12px;
   align-items: start;
 }
 .game-benchmark-columns > .game-benchmark-section { min-width: 0; grid-template-columns: minmax(0, 1fr); }
-
-.game-benchmark-config { padding: 0; border: 0; background: transparent; }
-.game-benchmark-config > .game-benchmark-item {
-  padding-inline-start: 0;
-  border: 0;
-  border-block-end: 1px solid var(--line, var(--border));
-  border-radius: 0;
-  background: transparent;
-  animation: none;
-}
-:root[data-theme="ink"] .game-benchmark-config > .game-benchmark-item { border-block-end-color: #171b21; }
-.game-benchmark-config > .game-benchmark-item::before { content: none; }
-.game-benchmark-config > .game-benchmark-item > summary {
+.game-benchmark-config-layout {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
-  padding-inline: 4px;
-}
-.game-benchmark-config > .game-benchmark-item > summary > .game-benchmark-item-badge {
+  grid-template-columns: 186px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-block-size: 270px;
+  max-block-size: max(270px, min(66dvh, 680px));
   min-inline-size: 0;
-  justify-self: start;
-  padding-inline: 4px;
-  background: var(--bg-hover);
-}
-.game-benchmark-config .game-benchmark-item-live-dot { background: var(--text-muted); }
-.game-benchmark-config > .game-benchmark-item.is-running .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
   background: var(--bg-panel);
-  border-color: var(--border);
+}
+.game-benchmark-config-list {
+  min-block-size: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--bg-app);
+  border-inline-end: 1px solid var(--border);
+}
+.game-benchmark-config-list button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  inline-size: 100%;
+  min-block-size: 34px;
+  padding: 4px 8px;
+  text-align: start;
+  border: 0;
+  border-inline-start: 2px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.game-benchmark-config-list button:hover { background: var(--bg-hover); }
+.game-benchmark-config-list button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.game-benchmark-config-list button[aria-pressed="true"] { background: var(--accent-soft); border-inline-start-color: var(--accent); }
+.game-benchmark-config-list .game-benchmark-item-badge { flex: none; min-inline-size: 3ch; color: var(--text-muted); font: var(--fs-caption) var(--mono); }
+.game-benchmark-config-name { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-benchmark-editor { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-inline-size: 0; min-block-size: 0; }
+.game-benchmark-editor .game-benchmark-item-fields {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  max-inline-size: none;
+  min-block-size: 0;
+  overflow: auto;
+  margin: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.game-benchmark-editor-head, .game-benchmark-editor-order { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.game-benchmark-editor-head { padding-block-end: 8px; border-bottom: 1px solid var(--border); }
+.game-benchmark-editor-head label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.game-benchmark-editor-name { flex: 1 1 110px; min-inline-size: 0; }
+.game-benchmark-editor-name input { flex: 1 1 auto; min-inline-size: 0; }
+.game-benchmark-editor-order { margin-inline-start: auto; }
+.game-benchmark-editor-order > button { white-space: nowrap; }
+.game-benchmark-editor .game-benchmark-toolbar > label { min-inline-size: 0; }
+.game-benchmark-editor .game-benchmark-toolbar :is(input:not([type="checkbox"]), select) { min-inline-size: 0; max-inline-size: 100%; }
+.game-benchmark-editor-empty { place-self: center; padding: var(--space-3); text-align: center; }
+.game-benchmark-editor-foot {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  padding: 7px var(--space-3);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+.game-benchmark-editor-foot > span:last-child { margin-inline-start: auto; }
+.game-benchmark-editor-foot .game-benchmark-draft-label { color: var(--warning); }
+@media (max-width: 600px) {
+  .game-benchmark-config-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 130px) minmax(0, 1fr); }
+  .game-benchmark-config-list { border-inline-end: 0; border-block-end: 1px solid var(--border); }
+  .game-benchmark-editor .game-benchmark-model { grid-template-columns: minmax(0, 1fr) 64px; }
+  .game-benchmark-editor .game-benchmark-model label:nth-child(3) { grid-column: 1 / -1; }
 }
 .game-benchmark-queue { border-color: #3a2d52; background: var(--bg-panel); }
 .game-benchmark-queue.is-active { border-color: #3a2d52; background: var(--bg-panel); }
@@ -3187,7 +3207,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-benchmark-browser-fallback .game-benchmark-columns { grid-template-columns: minmax(0, 1fr); }
 @media (1100px <= width < 1400px) {
   .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns {
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
     grid-template-rows: auto 1fr;
   }
   .game-benchmark-page:not(.game-benchmark-browser-fallback) .game-benchmark-columns > :first-child { grid-row: 1 / 3; }
@@ -3604,7 +3624,6 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 }
 
 /* 正式运行列表：一行一条，时间在前、指标在后。 */
-.game-benchmark-formal-target > .game-benchmark-target { margin: 0; }
 .game-benchmark-formal-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .game-benchmark-formal-item { display: grid; gap: var(--space-1); padding: var(--space-2) 0; border-top: 1px solid var(--border); }
 .game-benchmark-formal-item:first-child { border-top: 0; }

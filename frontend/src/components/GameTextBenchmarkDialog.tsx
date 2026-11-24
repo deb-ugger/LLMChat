@@ -8,7 +8,7 @@ import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import { readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -30,6 +30,7 @@ import { GameFlowPerformance } from "./GameFlowSequence";
 import { GameProgressBar } from "./GameStepProgress";
 import { showAppNotice } from "./AppNotice";
 import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
+import { positionWindowPopover } from "./WindowControls";
 
 const roleLabels = { text: "正文", dialogue: "对白", names: "术语" };
 type BenchmarkSetup = Pick<BenchmarkInput, "scope" | "current" | "models" | "screenModel" | "initialPart"> & {
@@ -73,11 +74,14 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
   if (kind === "benchmark-cleanup") return benchmarkRunner.cleanup();
 }
 
+const BenchmarkHeader = createContext<HTMLDivElement | null>(null);
+
 function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, browser = false }: {
   gameView?: ReactNode; gameStatus?: string; onClose: () => void;
   onBuildRunning?: (running: boolean) => void; browser?: boolean;
 }) {
   const [module, setModule] = useState<"game" | "build">("game");
+  const [headerTools, setHeaderTools] = useState<HTMLDivElement | null>(null);
   const tabId = useId();
   const page = <main className={"game-benchmark-page" + (browser ? " game-benchmark-browser-fallback" : "")}>
     <header className="game-benchmark-page-header"><h2>记录与测试</h2>
@@ -87,11 +91,14 @@ function RecordsAndTestsPage({ gameView, gameStatus, onClose, onBuildRunning, br
         <button type="button" role="tab" id={tabId + "-build"} aria-controls={tabId + "-build-panel"}
           aria-selected={module === "build"} onClick={() => setModule("build")}>构建测速</button>
       </div>
+      {gameView && <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game"} />}
       {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
     </header>
     <div className="game-benchmark-module" id={tabId + "-game-panel"} role="tabpanel"
       aria-labelledby={tabId + "-game"} hidden={module !== "game"}>
-      {gameView ?? <p className="game-benchmark-module-status hint" role="status">{gameStatus || "请先打开游戏翻译工程。"}</p>}
+      <BenchmarkHeader.Provider value={headerTools}>
+        {gameView ?? <p className="game-benchmark-module-status hint" role="status">{gameStatus || "请先打开游戏翻译工程。"}</p>}
+      </BenchmarkHeader.Provider>
     </div>
     <div className="game-benchmark-module" id={tabId + "-build-panel"} role="tabpanel"
       aria-labelledby={tabId + "-build"} hidden={module !== "build"}>
@@ -679,7 +686,7 @@ function GameBenchmarkPage(props: BenchmarkPageInput) {
       })}
     </div>}
     targetControls={<div className="game-benchmark-toolbar game-benchmark-target">
-      <label>{recordMode === "formal" ? "工作流" : "测试内容"}<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
+      <label>内容<select value={part} onChange={event => setPart(event.target.value as typeof part)}>
         <option value="text">翻译文本</option>
         {imageSteps.length > 0 && <option value="images">图片翻译</option>}
         {props.mosaicSetup && <option value="mosaic">图片去码</option>}
@@ -728,44 +735,53 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
     [next[index], next[other]] = [next[other], next[index]];
     return next;
   });
-  return configs.map((config, index) => {
-        const lastRun = latestRunByConfig?.get(config.id)?.run;
-        const alreadyStarted = started?.has(config.id) ?? false;
-        const locked = readOnly || alreadyStarted;
-        const finished = completed?.has(config.id);
-        const modified = changes?.changed.has(config.id);
-        const differs = changes?.different.has(config.id);
-        const activeProgress = !finished && currentProgress?.configId === config.id ? currentProgress : undefined;
-        return <details key={config.id} className={"game-benchmark-item" + (lastRun || finished ? " has-run" : "") +
-          (activeProgress ? " is-running" : "") + (differs ? " has-round-difference" : modified ? " has-config-draft" : "")} open={expanded.has(config.id)}
-        onToggle={event => toggleConfig(config.id, event.currentTarget.open)}>
-        <summary>
-          <span className="game-benchmark-item-badge">Q{index + 1}</span>
-          <span className="game-benchmark-item-main">
-            {activeProgress && <span className="game-benchmark-item-live-dot" aria-hidden="true" />}
-            <strong>{config.label || "配置 " + (index + 1)}</strong>
-          {started && <span className="game-benchmark-show-executed">{finished ? "已执行" : activeProgress ? "运行中" : alreadyStarted ? "已开始" : "未开始"}</span>}
-           {differs && <span className="game-benchmark-difference-label">跨轮差异</span>}
-           {modified && <span className="game-benchmark-draft-label">未保存</span>}
-          <span className="game-benchmark-item-model">{mosaicStep && config.mosaic ? mosaicStep === "mosaicScreen"
-            ? (config.mosaic.detector === "grid" ? "方格规则" : "分类＋定位") + " · 并发 " + (config.mosaic.concurrency ?? 2)
-            : mosaicStep === "mosaicRefine" ? (config.mosaic.refineModel || "").split("/").at(-1)
-            : config.mosaic.model === "turbo" ? "Qwen Image 2.1 Turbo" : "Qwen Image Edit 2511"
-            : config.models.text.id ? config.models.text.id.split("/").at(-1) + " · 并发 " + config.models.text.lanes : requiresModel ? "未选模型" : localLabel}</span>
-          </span>
-          {activeProgress ? <span className="game-benchmark-item-score is-live">
-            正在跑 · {activeProgress.sampleCurrent ?? activeProgress.current}/{activeProgress.sampleTotal ?? activeProgress.total} · 用时 {gameDuration(activeProgress.configElapsedMs ?? activeProgress.elapsedMs)}
-            {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}
-          </span> : lastRun && <span className="game-benchmark-item-score">上次 {gameDuration(lastRun.performance.elapsedMs)} · {lastRun.translated}/{lastRun.selected}</span>}
-        </summary>
-        <fieldset key={locked ? "read" : "edit"} disabled={locked} className="game-benchmark-item-fields">
-        <div className="game-benchmark-toolbar">
+  const index = configs.findIndex(config => expanded.has(config.id));
+  const config = configs[index];
+  const list = useRef<HTMLUListElement>(null);
+  useLayoutEffect(() => {
+    const scroller = list.current;
+    const selected = scroller?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (!scroller || !selected) return;
+    const row = selected.getBoundingClientRect();
+    const bounds = scroller.getBoundingClientRect();
+    if (row.top < bounds.top) scroller.scrollTop -= bounds.top - row.top;
+    else if (row.bottom > bounds.bottom) scroller.scrollTop += row.bottom - bounds.bottom;
+  }, [config?.id, index]);
+  const lastRun = config && latestRunByConfig?.get(config.id)?.run;
+  const alreadyStarted = !!config && (started?.has(config.id) ?? false);
+  const locked = readOnly || alreadyStarted;
+  const finished = config && completed?.has(config.id);
+  const modified = config && changes?.changed.has(config.id);
+  const differs = config && changes?.different.has(config.id);
+  const activeProgress = config && !finished && currentProgress?.configId === config.id ? currentProgress : undefined;
+  return <div className="game-benchmark-config-layout">
+    <ul ref={list} className="game-benchmark-config-list" aria-label="测试配置列表">
+      {configs.map((item, itemIndex) => {
+        const name = item.label || "配置 " + (itemIndex + 1);
+        return <li key={item.id}><button type="button" aria-pressed={item.id === config?.id}
+          title={name} onClick={() => toggleConfig(item.id, item.id !== config?.id)}>
+          <span className="game-benchmark-item-badge">Q{itemIndex + 1}</span>
+          <span className="game-benchmark-config-name">{name}</span>
+        </button></li>;
+      })}
+    </ul>
+    {config ? <div className="game-benchmark-editor">
+        <fieldset key={config.id + (locked ? ":read" : ":edit")} disabled={locked} className="game-benchmark-item-fields">
+        <div className="game-benchmark-editor-head">
           <label><input type="checkbox" aria-label={"启用第 " + (index + 1) + " 项配置"} checked={config.enabled !== false} disabled={fixedSlots}
             onChange={event => { const enabled = event.target.checked; update(config.id, previous => ({ ...previous, enabled })); }} />启用</label>
-          <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label} onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
-          <button type="button" className="unity-btn" disabled={fixedSlots || index === 0 || started?.has(configs[index - 1].id)} onClick={() => move(index, index - 1)}>上移</button>
-          <button type="button" className="unity-btn" disabled={fixedSlots || index === configs.length - 1 || started?.has(configs[index + 1].id)} onClick={() => move(index, index + 1)}>下移</button>
-          <button type="button" className="unity-btn" disabled={fixedSlots} onClick={() => setConfigs(previous => previous.filter(item => item.id !== config.id))}>移除</button>
+          <label className="game-benchmark-editor-name">名称
+            <input aria-label={"第 " + (index + 1) + " 项名称"} value={config.label}
+              onChange={event => update(config.id, previous => ({ ...previous, label: event.target.value }))} />
+          </label>
+          <div className="game-benchmark-editor-order">
+            <button type="button" className="unity-btn" disabled={fixedSlots || index === 0 || started?.has(configs[index - 1].id)} onClick={() => move(index, index - 1)}>上移</button>
+            <button type="button" className="unity-btn" disabled={fixedSlots || index === configs.length - 1 || started?.has(configs[index + 1].id)} onClick={() => move(index, index + 1)}>下移</button>
+            <button type="button" className="unity-btn" disabled={fixedSlots} onClick={() => {
+              setConfigs(previous => previous.filter(item => item.id !== config.id));
+              toggleConfig(config.id, false);
+            }}>移除</button>
+          </div>
         </div>
         {mosaicStep && config.mosaic && <div className="game-benchmark-toolbar">
           {mosaicStep === "mosaicScreen" && <>
@@ -874,8 +890,18 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
           {config.models.dialogue.id && config.models.dialogue.id !== config.models.text.id && samplePreview?.[config.id].dialogue === 0 &&
             <strong> · 此样本测不到专用对白模型</strong>}
         </p>}
-        </details>;
-      });
+        <footer className="game-benchmark-editor-foot">
+          {started && <span>{finished ? "已执行" : activeProgress ? "运行中" : alreadyStarted ? "已开始" : "未开始"}</span>}
+          {differs && <span className="game-benchmark-difference-label">跨轮差异</span>}
+          {modified && <span className="game-benchmark-draft-label">未保存</span>}
+          {activeProgress ? <span>样本 {activeProgress.sampleCurrent ?? activeProgress.current}/{activeProgress.sampleTotal ?? activeProgress.total}
+            {" · 用时 " + gameDuration(activeProgress.configElapsedMs ?? activeProgress.elapsedMs)}
+            {activeProgress.failed > 0 && " · 失败 " + activeProgress.failed}</span>
+            : <span>上次 {lastRun ? gameDuration(lastRun.performance.elapsedMs) + " · " + lastRun.translated + "/" + lastRun.selected : "—"}</span>}
+          {!locked && <span>{started ? "改完点保存，本轮未开始的配置生效" : "改完点保存，下次打开沿用配置"}</span>}
+        </footer>
+      </div> : <p className="game-benchmark-editor-empty hint">从左侧选一条配置</p>}
+  </div>;
 }
 
 function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfigs, models, saving, canSave, onSave, onExit }: {
@@ -914,15 +940,13 @@ function BenchmarkTaskView({ job, number, parameters, configs, changes, setConfi
       {editing && !started.size && !parameters.fixedSlots && <button type="button" className="unity-btn" disabled={saving || !template} onClick={() => {
         const config = { ...structuredClone(template), id: crypto.randomUUID(), label: "配置 " + (configs.length + 1), enabled: true };
         setConfigs(previous => [...previous, config]);
-        setExpanded(previous => new Set([...previous, config.id]));
+        setExpanded(new Set([config.id]));
       }}>添加配置</button>}
     </div>
     <BenchmarkConfigCards step={job.step} configs={configs} setConfigs={setConfigs} readOnly={!editing || saving}
       started={started} completed={completed} changes={changes} fixedSlots={parameters.fixedSlots} expanded={expanded} toggleConfig={(id, open) => setExpanded(previous => {
         if (previous.has(id) === open) return previous;
-        const next = new Set(previous);
-        if (open) next.add(id); else next.delete(id);
-        return next;
+        return open ? new Set([id]) : new Set();
       })} models={models} currentProgress={running && job.progress?.round === job.round ? job.progress : undefined}
       refineFilter={refineFilter} guardFilter={guardFilter} />
   </BenchmarkSection>;
@@ -986,6 +1010,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const [selectionCount, setSelectionCount] = useState(selectedCount);
   const [adding, setAdding] = useState(false);
   const planFile = useRef<HTMLInputElement>(null);
+  const headerTools = useContext(BenchmarkHeader);
+  const moreId = useId();
+  const morePanel = useRef<HTMLDivElement>(null);
   async function importTaskPlan(file: File) {
     if (!mosaicSetup || adding) return;
     setAdding(true);
@@ -1065,9 +1092,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     setConfigs(previous => previous.map(config => config.mosaic ? { ...config, mosaic: { ...config.mosaic, ...patch } } : config));
   const toggleConfig = (id: string, open: boolean) => setExpanded(previous => {
     if (previous.has(id) === open) return previous;
-    const next = new Set(previous);
-    if (open) next.add(id); else next.delete(id);
-    return next;
+    return open ? new Set([id]) : new Set();
   });
   const runScope = scope + (mosaicStep ? ":benchmark:mosaic" : imageStep ? ":benchmark:images" : ":benchmark:text");
   const inspect = async () => {
@@ -1133,59 +1158,66 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     : mosaicStep ? "使用去码工作台的原图和蒙版，结果独立归档。"
     : imageStep ? "当前步骤有 " + (imageCounts?.[imageStep] ?? 0) + " 张可测试图片。测试结果独立归档。"
     : "已勾选 " + selectionCount + " 条文本。测试结果独立归档。";
-  return <section className={"game-benchmark-game" + (running ? " is-running" : "")}>
-    <div className="game-benchmark-page-header">
-      <RunRecordTabs mode={recordMode} onChange={onRecordModeChange} />
-    </div>
-    <div className="game-benchmark-scroll"><div className="game-text-benchmark">
-      {recordMode === "test" && !taskView && <div className="game-benchmark-runbar">
-        <div className="game-benchmark-scope" role="region" aria-label="测试范围" aria-description={scopeDescription}>
-        {targetControls}
-        <div className="game-benchmark-toolbar game-benchmark-sample-tools">
-        {(imageStep || mosaicStep) ? <><label data-tooltip={scopeDescription}>样本范围<select value={sampleSetMode ? "annotated" : mosaicStep === "mosaicRefine" ? "checked" : sampleSettings?.selection || "checked"}
-          onChange={event => {
-            const value = event.target.value;
-            setUseSampleSet(value === "annotated");
-            if (value === "annotated" && !sampleSetPath) setBrowseSampleSet(true);
-            else if (value === "checked" || value === "all") changeSample({ selection: value });
-          }}>
-          <option value="checked">{mosaicStep ? "去码页已勾选" : "当前项目已勾选"}</option>
-          {mosaicStep && mosaicStep !== "mosaicRefine" && <option value="all">当前项目全部可用图片</option>}
-          {isTauri() && <option value="annotated">已标注样本集</option>}
-        </select></label>
-        {isTauri() && <button type="button" className="unity-btn" onClick={() => setBrowseSampleSet(true)}>查看测试集</button>}
-        {sampleSetMode && sampleSetPath && <span className="hint" title={sampleSetPath}>
-          {sampleSetPath.replaceAll("\\\\", "/").split("/").slice(-2,-1)[0] || sampleSetPath}
-        </span>}
-        </> : <span className="game-benchmark-scope-static" data-tooltip={scopeDescription}>样本范围 <b>已勾选文本</b></span>}
-        <label>样本上限<input type="number" min={0} step={1} value={sampleLimit || ""} placeholder="不限"
+  const testDraftVisible = recordMode === "test" && !taskView;
+  const toolbar = <>
+    {(testDraftVisible || recordMode === "formal") && <div className="game-benchmark-scope"
+      role="group" aria-label={recordMode === "formal" ? "正式运行范围" : "测试范围"}
+      aria-description={testDraftVisible ? scopeDescription : undefined}>
+      {targetControls}
+      {testDraftVisible && <div className="game-benchmark-toolbar game-benchmark-sample-tools">
+        {(imageStep || mosaicStep) ? <label data-tooltip={sampleSetMode && sampleSetPath ? sampleSetPath : scopeDescription}>
+          范围<select value={sampleSetMode ? "annotated" : mosaicStep === "mosaicRefine" ? "checked" : sampleSettings?.selection || "checked"}
+            onChange={event => {
+              const value = event.target.value;
+              setUseSampleSet(value === "annotated");
+              if (value === "annotated" && !sampleSetPath) setBrowseSampleSet(true);
+              else if (value === "checked" || value === "all") changeSample({ selection: value });
+            }}>
+            <option value="checked">{mosaicStep ? "去码页已勾选" : "当前项目已勾选"}</option>
+            {mosaicStep && mosaicStep !== "mosaicRefine" && <option value="all">当前项目全部可用图片</option>}
+            {isTauri() && <option value="annotated">已标注样本集</option>}
+          </select>
+        </label> : <span className="game-benchmark-scope-static" data-tooltip={scopeDescription}>范围 <b>已勾选文本</b></span>}
+        <label>上限<input type="number" min={0} step={1} value={sampleLimit || ""} placeholder="不限"
           title="留空时测试范围内的全部样本" onChange={event => setSampleLimit(Math.max(0, Math.trunc(Number(event.target.value))))} /></label>
-        {step === "translate" && <button type="button" className="unity-btn game-benchmark-inspect" disabled={checking || !enabledConfigs.length} onClick={() => void inspect()}>检查样本</button>}
-        </div>
-        {browseSampleSet && <ImageSampleSetBrowser path={sampleSetPath} onChoose={chooseSampleSet} onClose={() => setBrowseSampleSet(false)} />}
-        </div>
-        <div className="game-benchmark-task-actions">
-        <button type="button" className={running ? "unity-btn" : "settings-panel-save"}
-          disabled={adding || snapshot.stopping || (!running && !!queueStartIssue)}
-          title={running ? undefined : queueStartIssue}
-          onClick={() => controlQueueAction(running ? "benchmark-pause-queue" : "benchmark-start-queue")}>
-          {running ? "暂停测试队列" : "启动队列"}
-        </button>
-        {mosaicSetup && <>
-          <button type="button" className="unity-btn" disabled={adding}
-            title="读取 JSON 配置单，按文件顺序加入测试队列" onClick={() => planFile.current?.click()}>导入配置单</button>
-          <input ref={planFile} type="file" accept=".json,application/json" hidden onChange={event => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = "";
-            if (file) void importTaskPlan(file);
-          }} />
-        </>}
-        <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue}
-          onClick={() => void start(true)}>立即开始任务</button>
-        <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
-        <span role="status">{adding && "正在准备样本…"}</span>
-        </div>
       </div>}
+    </div>}
+    {testDraftVisible && <>
+      <button type="button" className="unity-btn game-benchmark-more-trigger" popoverTarget={moreId}
+        aria-controls={moreId} aria-haspopup="dialog" onClick={event => positionWindowPopover(event.currentTarget, morePanel.current)}>更多</button>
+      <div id={moreId} ref={morePanel} className="window-action-popover game-benchmark-more" role="dialog"
+        aria-label="更多测试操作" popover="auto">
+        {isTauri() && (imageStep || mosaicStep) && <button type="button" className="unity-btn"
+          onClick={() => { morePanel.current?.hidePopover(); setBrowseSampleSet(true); }}>查看测试集</button>}
+        {step === "translate" && <button type="button" className="unity-btn" disabled={checking || !enabledConfigs.length}
+          onClick={() => { morePanel.current?.hidePopover(); void inspect(); }}>检查样本</button>}
+        {mosaicSetup && <button type="button" className="unity-btn" disabled={adding}
+          title="读取 JSON 配置单，按文件顺序加入测试队列" onClick={() => { morePanel.current?.hidePopover(); planFile.current?.click(); }}>导入配置单</button>}
+        <button type="button" className="unity-btn" disabled={adding || snapshot.stopping || (!running && !!queueStartIssue)}
+          title={running ? undefined : queueStartIssue} onClick={() => {
+            morePanel.current?.hidePopover();
+            controlQueueAction(running ? "benchmark-pause-queue" : "benchmark-start-queue");
+          }}>{running ? "暂停测试队列" : "启动队列"}</button>
+      </div>
+    </>}
+    {(testDraftVisible || recordMode === "formal") && <span className="game-benchmark-header-divider" aria-hidden="true" />}
+    <RunRecordTabs mode={recordMode} onChange={onRecordModeChange} />
+    {testDraftVisible && <div className="game-benchmark-task-actions">
+      <button type="button" className="unity-btn is-primary" disabled={!!issue || adding} title={issue}
+        onClick={() => void start(true)}>立即开始</button>
+      <button type="button" className="unity-btn" disabled={!!issue || adding} title={issue} onClick={() => void start(false)}>加入队列</button>
+    </div>}
+  </>;
+  return <section className={"game-benchmark-game" + (running ? " is-running" : "")}>
+    {headerTools && createPortal(toolbar, headerTools)}
+    {browseSampleSet && <ImageSampleSetBrowser path={sampleSetPath} onChoose={chooseSampleSet} onClose={() => setBrowseSampleSet(false)} />}
+    {mosaicSetup && <input ref={planFile} type="file" accept=".json,application/json" hidden onChange={event => {
+      const file = event.currentTarget.files?.[0];
+      event.currentTarget.value = "";
+      if (file) void importTaskPlan(file);
+    }} />}
+    <div className="game-benchmark-scroll"><div className="game-text-benchmark">
+      {adding && <p className="hint" role="status">正在准备样本…</p>}
       {recordMode === "test" ? <>
       <div className="game-benchmark-columns">
       {taskView || <BenchmarkSection title="测试配置" className="game-benchmark-config" action={
@@ -1340,7 +1372,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </BenchmarkSection>
       </div>
       </> : <>
-        <div className="game-benchmark-formal-target">{targetControls}</div>
         <FormalRunRecords scope={formalScope} step={formalStep} />
       </>}
     </div></div>
