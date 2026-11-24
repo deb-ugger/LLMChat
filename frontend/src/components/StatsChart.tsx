@@ -1493,7 +1493,7 @@ function ChartCanvas({ buildOption, onSeriesClick }: {
         const label = legend.formatter?.(name) || name;
         const selected = !hidden?.has(name);
         return <button type="button" key={name} aria-pressed={selected}
-          data-tooltip={label === name ? undefined : name.split("|").at(-1)}
+          data-tooltip={(label === name ? name : name.split("|").at(-1)) || label}
           onMouseEnter={() => { if (selected) chartRef.current?.dispatchAction({ type: "highlight", seriesName: name }); }}
           onMouseLeave={() => chartRef.current?.dispatchAction({ type: "downplay", seriesName: name })}
           onClick={() => {
