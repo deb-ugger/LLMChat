@@ -51,7 +51,8 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
   const [panning, setPanning] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const body = useRef<HTMLDivElement>(null);
-  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const scrollAnchor = useRef({ x: .5, y: .5 });
+  const pan = useRef<{ pointer: number; x: number; y: number; left: number; top: number } | null>(null);
   const showResult = index > 0 && views.length > 1;
   const view = showResult ? views[Math.min(index, views.length - 1)] : views[0];
   const { width, height } = view;
@@ -67,6 +68,15 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
     const element = body.current;
     if (element) setZoom(unityImageFit(width, height, element.clientWidth, element.clientHeight));
   }, [width, height]);
+
+  useLayoutEffect(() => { scrollAnchor.current = { x: .5, y: .5 }; }, [title, width, height, index]);
+
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (!element) return;
+    element.scrollLeft = (element.scrollWidth - element.clientWidth) * scrollAnchor.current.x;
+    element.scrollTop = (element.scrollHeight - element.clientHeight) * scrollAnchor.current.y;
+  }, [title, width, height, zoom, index]);
 
   useEffect(() => {
     const element = body.current;
@@ -94,7 +104,11 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [onClose, onPrevious, onNext, selectView, showResult]);
 
-  const endPan = () => { pan.current = null; setPanning(false); };
+  const endPan = (pointer: number) => {
+    if (pan.current?.pointer !== pointer) return;
+    pan.current = null;
+    setPanning(false);
+  };
   return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={"查看" + view.label}
     aria-modal="true" aria-keyshortcuts="Escape ArrowLeft ArrowRight ArrowUp ArrowDown"
     onPointerDown={event => event.stopPropagation()} onClick={event => {
@@ -118,28 +132,41 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
           <button type="button" className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button>
         </div>
       </div>
-      <div ref={body} className={"unity-original-viewer-body" + (panning ? " is-panning" : "")} onPointerDown={event => {
-        if (event.button !== 0 || !(event.target as Element).closest("img")) return;
+      <div ref={body} className={"unity-original-viewer-body" + (panning ? " is-panning" : "")} onScroll={event => {
+        const element = event.currentTarget;
+        scrollAnchor.current = {
+          x: element.scrollLeft / Math.max(1, element.scrollWidth - element.clientWidth),
+          y: element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight),
+        };
+      }} onPointerDown={event => {
+        if (event.button !== 0 || !event.isPrimary || pan.current ||
+            (event.target as Element).closest("button, input, textarea, select, a")) return;
         event.preventDefault();
         event.stopPropagation();
         const element = event.currentTarget;
-        pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+        pan.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY,
+          left: element.scrollLeft, top: element.scrollTop };
         setPanning(true);
         element.setPointerCapture(event.pointerId);
       }} onPointerMove={event => {
         const start = pan.current;
-        if (!start) return;
+        if (start?.pointer !== event.pointerId) return;
         event.preventDefault();
         event.stopPropagation();
-        event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
-        event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
-      }} onPointerUp={endPan} onPointerCancel={endPan} onLostPointerCapture={endPan} onContextMenu={event => {
+        const element = event.currentTarget;
+        const scale = element.currentCSSZoom;
+        element.scrollLeft = start.left - (event.clientX - start.x) / scale;
+        element.scrollTop = start.top - (event.clientY - start.y) / scale;
+      }} onPointerUp={event => endPan(event.pointerId)} onPointerCancel={event => endPan(event.pointerId)}
+        onLostPointerCapture={event => endPan(event.pointerId)} onContextMenu={event => {
         event.preventDefault();
         event.stopPropagation();
         if (onDetails && (event.target as Element).closest("img"))
           setMenu(getFixedMenuPoint(event.clientX, event.clientY, 170, 70));
       }}>
-        {"src" in view ? <BitmapPreview view={view} title={title} zoom={zoom} /> : view.render(zoom)}
+        <div className="unity-original-viewer-track">
+          {"src" in view ? <BitmapPreview view={view} title={title} zoom={zoom} /> : view.render(zoom)}
+        </div>
       </div>
     </section>
     {menu && onDetails && <div className="unity-gallery-menu" role="menu" aria-label="图片操作" style={{ left: menu.x, top: menu.y }}>

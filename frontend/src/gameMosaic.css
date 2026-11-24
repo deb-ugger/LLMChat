@@ -410,6 +410,8 @@ input.game-mosaic-threshold[type="number"] {
   display: grid;
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
+  cursor: grab;
+  touch-action: none;
   --mosaic-image-inset: calc(var(--mosaic-tool-size) + 2 * (var(--mosaic-tool-padding) + var(--mosaic-tool-offset) + 1px));
 }
 .game-mosaic-original-viewport .game-mosaic-stage {
@@ -417,8 +419,9 @@ input.game-mosaic-threshold[type="number"] {
     calc(100cqw - 2 * max(var(--mosaic-image-gutter), var(--mosaic-image-inset))),
     calc(max(0px, 100cqh - 2 * var(--mosaic-image-gutter)) * var(--mosaic-image-aspect)));
 }
-.game-mosaic-stage.is-pannable { cursor: grab; touch-action: none; }
-.game-mosaic-stage.is-pannable:active { cursor: grabbing; }
+.game-mosaic-image-area.is-pan-ready :is(svg, rect, line) { cursor: grab; }
+.game-mosaic-image-area.is-panning,
+.game-mosaic-image-area.is-panning :is(img, svg, rect, line) { cursor: grabbing; }
 @container mosaic-original (width < 400px) {
   .game-mosaic-image-area { --mosaic-image-inset: 0px; }
 }

@@ -8,16 +8,19 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
   width: number; editing: boolean; onBackground: () => void; children: ReactNode;
 }) {
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const [panReady, setPanReady] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const spaceHeld = useRef(false);
   const surface = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
-  const pan = useRef<{ pointer: number; x: number; y: number } | null>(null);
+  const pan = useRef<{ pointer: number; clientX: number; clientY: number; x: number; y: number; clearOnClick: boolean } | null>(null);
 
   const containPan = useCallback((zoom: number, x: number, y: number) => {
-    const area = surface.current;
     const image = stage.current;
-    if (!area || !image) return { zoom, x: 0, y: 0 };
-    const maxX = Math.max(0, (image.offsetWidth * zoom - area.clientWidth) / 2);
-    const maxY = Math.max(0, (image.offsetHeight * zoom - area.clientHeight) / 2);
+    if (!image) return { zoom, x: 0, y: 0 };
+    // Allow every image edge to reach the center of the editing area.
+    const maxX = image.offsetWidth * zoom / 2;
+    const maxY = image.offsetHeight * zoom / 2;
     return { zoom, x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
   }, []);
 
@@ -29,7 +32,7 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
       event.preventDefault();
       setView(current => {
         const next = Math.max(1, Math.min(8, current.zoom * Math.exp(-event.deltaY * .002)));
-        return next === current.zoom ? current : containPan(next, current.x, current.y);
+        return next === current.zoom ? current : containPan(next, current.x * next / current.zoom, current.y * next / current.zoom);
       });
     };
     const observer = new ResizeObserver(() => {
@@ -40,24 +43,76 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
     return () => { observer.disconnect(); area.removeEventListener("wheel", onWheel); };
   }, [containPan]);
 
-  return <div ref={surface} className="game-mosaic-image-area" style={{ "--mosaic-original-width": width + "px" } as CSSProperties}>
-    <div ref={stage} className={"unity-image-stage game-mosaic-stage" + (!editing && view.zoom > 1 ? " is-pannable" : "")}
-      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom, "--mosaic-preview-zoom": view.zoom } as CSSProperties}
-      onPointerDown={event => {
-        if (editing || event.button !== 0 || !event.isPrimary || (event.target as Element).closest("svg")) return;
-        onBackground();
-        if (view.zoom <= 1) return;
-        const scale = event.currentTarget.currentCSSZoom;
-        pan.current = { pointer: event.pointerId, x: event.clientX / scale - view.x, y: event.clientY / scale - view.y };
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }}
-      onPointerMove={event => {
-        const start = pan.current;
-        if (start?.pointer !== event.pointerId) return;
-        const scale = event.currentTarget.currentCSSZoom;
-        setView(containPan(view.zoom, event.clientX / scale - start.x, event.clientY / scale - start.y));
-      }}
-      onLostPointerCapture={event => { if (pan.current?.pointer === event.pointerId) pan.current = null; }}>
+  useEffect(() => {
+    const onSpaceDown = (event: KeyboardEvent) => {
+      const area = surface.current;
+      if (event.code !== "Space" || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || !area?.matches(":hover")) return;
+      if (event.target instanceof Element && (event.target.closest("input, textarea, select, [contenteditable]") ||
+          (event.target.closest("button, a, [role='button']") && !area.closest("figure")?.contains(event.target)))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      spaceHeld.current = true;
+      setPanReady(true);
+    };
+    const endSpace = () => {
+      spaceHeld.current = false;
+      setPanReady(false);
+    };
+    const onSpaceUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || !spaceHeld.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      endSpace();
+    };
+    window.addEventListener("keydown", onSpaceDown, true);
+    window.addEventListener("keyup", onSpaceUp, true);
+    window.addEventListener("blur", endSpace);
+    return () => {
+      window.removeEventListener("keydown", onSpaceDown, true);
+      window.removeEventListener("keyup", onSpaceUp, true);
+      window.removeEventListener("blur", endSpace);
+    };
+  }, []);
+
+  const endPan = (pointer: number) => {
+    if (pan.current?.pointer !== pointer) return;
+    pan.current = null;
+    setPanning(false);
+  };
+
+  return <div ref={surface} className={"game-mosaic-image-area" + (panning ? " is-panning" : panReady ? " is-pan-ready" : "")}
+    style={{ "--mosaic-original-width": width + "px" } as CSSProperties}
+    onPointerDownCapture={event => {
+      if (!event.isPrimary || pan.current) return;
+      const target = event.target as Element;
+      const moveOnly = event.button === 1 || (event.button === 0 && spaceHeld.current);
+      const background = !stage.current?.contains(target);
+      if (!moveOnly && (event.button !== 0 || (!background && (editing || target.closest("svg"))))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.closest("figure")?.focus({ preventScroll: true });
+      pan.current = { pointer: event.pointerId, clientX: event.clientX, clientY: event.clientY,
+        x: view.x, y: view.y, clearOnClick: !moveOnly && !editing };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPanning(true);
+    }}
+    onPointerMove={event => {
+      const start = pan.current;
+      if (start?.pointer !== event.pointerId) return;
+      const scale = event.currentTarget.currentCSSZoom;
+      setView(current => containPan(current.zoom, start.x + (event.clientX - start.clientX) / scale,
+        start.y + (event.clientY - start.clientY) / scale));
+    }}
+    onPointerUp={event => {
+      const start = pan.current;
+      if (start?.pointer !== event.pointerId) return;
+      endPan(event.pointerId);
+      if (start.clearOnClick && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 4) onBackground();
+    }}
+    onPointerCancel={event => endPan(event.pointerId)}
+    onLostPointerCapture={event => endPan(event.pointerId)}>
+    <div ref={stage} className="unity-image-stage game-mosaic-stage"
+      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom, "--mosaic-preview-zoom": view.zoom } as CSSProperties}>
       {children}
     </div>
   </div>;
@@ -248,7 +303,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
           </div>}
         </div>
         <GameImagePreviewFrame keyboardPane caption={<>
-          <span>原图</span>
+          <span data-tooltip="拖动图片可平移。编辑蒙版时，按住空格拖动或用鼠标中键拖动。">原图</span>
           {!!activeBoxes.length && <div className="game-mosaic-mask-tabs" role="group" aria-label="蒙版列表">
             {activeBoxes.map((box, index) => <button key={index} type="button"
               aria-label={"蒙版 " + (index + 1)} aria-pressed={selection.has(box)} disabled={!canSelectMask}
