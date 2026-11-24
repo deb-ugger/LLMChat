@@ -942,12 +942,13 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
         const name = item.label || "配置 " + (itemIndex + 1);
         const state = runStateOf(item.id);
         return <li key={item.id} data-run={state}><button type="button" aria-pressed={item.id === config?.id}
-          title={name + " · " + runStateText[state]} onClick={() => toggleConfig(item.id, item.id !== config?.id)}>
+          title={name + " · " + runStateText[state] + (item.enabled === false ? " · 未启用" : "")}
+          onClick={() => toggleConfig(item.id, item.id !== config?.id)}>
+          <span className={"game-benchmark-config-enabled" + (item.enabled === false ? " is-off" : "")}
+            aria-hidden="true" />
           <span className="game-benchmark-item-badge">Q{itemIndex + 1}</span>
           <span className="game-benchmark-config-name">{name}</span>
           <span className="game-benchmark-config-state">{runStateText[state]}</span>
-          <span className={"game-benchmark-config-enabled" + (item.enabled === false ? " is-off" : "")}
-            aria-hidden="true" title={item.enabled === false ? "未启用" : "已启用"} />
         </button></li>;
       })}
     </ul>
