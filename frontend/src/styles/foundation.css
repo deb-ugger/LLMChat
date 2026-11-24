@@ -55,7 +55,10 @@
   --nav-bg: #e7e2d4;
   --nav-fg: #4a463c;
   --nav-fg-strong: #1b1a16;
-  --nav-line: color-mix(in srgb, #1b1a16 14%, transparent);
+  --nav-line: color-mix(in srgb, var(--nav-fg-strong) 52%, transparent);
+  --nav-indicator: var(--signal);
+  --nav-badge-bg: #b5353a;
+  --nav-badge-fg: #fff;
   --nav-hover: color-mix(in srgb, #1b1a16 6%, transparent);
   --nav-active: color-mix(in srgb, #1b1a16 11%, transparent);
   --transition: 140ms ease;
@@ -110,7 +113,7 @@
   --nav-bg: #dfe5e2;
   --nav-fg: #42504a;
   --nav-fg-strong: #16201c;
-  --nav-line: color-mix(in srgb, #16201c 14%, transparent);
+  --nav-line: color-mix(in srgb, var(--nav-fg-strong) 52%, transparent);
   --nav-hover: color-mix(in srgb, #16201c 6%, transparent);
   --nav-active: color-mix(in srgb, #16201c 11%, transparent);
   --shadow-sm: 0 1px 0 rgb(24 32 29 / 6%);
@@ -139,7 +142,9 @@
   --nav-bg: #142e28;
   --nav-fg: #cfe3da;
   --nav-fg-strong: #ffffff;
-  --nav-line: #ffffff1f;
+  --nav-line: color-mix(in srgb, var(--nav-fg-strong) 40%, transparent);
+  --nav-indicator: color-mix(in srgb, var(--signal) 75%, var(--nav-fg-strong));
+  --nav-badge-bg: #cb4547;
   --nav-hover: #ffffff10;
   --nav-active: #ffffff0f;
   --shadow-sm: 0 1px 0 rgb(29 42 37 / 6%);
@@ -168,7 +173,7 @@
   --nav-bg: #0b0c09;
   --nav-fg: #a9a494;
   --nav-fg-strong: #f3efe2;
-  --nav-line: #ffffff1a;
+  --nav-line: color-mix(in srgb, var(--nav-fg-strong) 40%, transparent);
   --nav-hover: #ffffff0d;
   --nav-active: #ffffff12;
   --shadow-sm: 0 1px 0 rgb(0 0 0 / 40%);
@@ -798,11 +803,11 @@ select:not([hidden], [multiple], [size]):focus-visible {
 }
 
 .nav-item svg { flex: none; }
-.output-badge { position:absolute; top:2px; right:5px; box-sizing:border-box; min-width:17px; padding:0 var(--space-1); border-radius:var(--radius-lg); background:#b5353a; color:var(--bg-panel); font:600 var(--fs-caption)/17px system-ui,sans-serif; text-align:center; font-variant-numeric:tabular-nums; }
+.output-badge { position:absolute; top:2px; right:5px; box-sizing:border-box; min-width:17px; padding:0 var(--space-1); border-radius:var(--radius-lg); background:var(--nav-badge-bg); color:var(--nav-badge-fg); font:600 var(--fs-caption)/17px system-ui,sans-serif; text-align:center; font-variant-numeric:tabular-nums; }
 .nav-rail-toggle .output-badge { top:-9px; right:-6px; }
 .nav-item:hover { background: var(--nav-hover); color: var(--nav-fg-strong); }
 .nav-item.active { background: var(--nav-active); color: var(--nav-fg-strong); font-weight: 600; }
-.nav-item.active::before { content: ""; position: absolute; inset: 8px auto 8px 0; width: 2px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--signal); }
+.nav-item.active::before { content: ""; position: absolute; inset: 8px auto 8px 0; width: 2px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--nav-indicator); }
 .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .nav-rail.is-collapsed { flex-basis: 5px; }
 .nav-rail.is-collapsed > :not(.nav-rail-toggle) { display: none; }
@@ -818,25 +823,22 @@ select:not([hidden], [multiple], [size]):focus-visible {
   height: 40px;
   padding: 0;
   transform: translate(50%, -50%);
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border: 1px solid var(--nav-line);
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
-  color: var(--accent);
-  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.1);
-  opacity: 0.58;
+  background: var(--nav-bg);
+  color: var(--nav-fg-strong);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
-  backdrop-filter: blur(3px);
-  transition: opacity var(--transition), background var(--transition),
+  transition: background var(--transition),
     border-color var(--transition), box-shadow var(--transition),
     transform var(--transition);
 }
 
 .nav-rail-toggle:hover {
   z-index: 20;
-  border-color: var(--accent);
-  background: var(--bg-panel);
-  box-shadow: 0 3px 10px rgba(47, 111, 237, 0.2);
-  opacity: 1;
+  border-color: var(--nav-fg-strong);
+  background: color-mix(in srgb, var(--nav-fg-strong) 9%, var(--nav-bg));
+  box-shadow: var(--shadow-md);
 }
 
 .nav-rail-toggle:active {
@@ -844,9 +846,8 @@ select:not([hidden], [multiple], [size]):focus-visible {
 }
 
 .nav-rail-toggle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline: 2px solid var(--nav-fg-strong);
   outline-offset: 2px;
-  opacity: 1;
 }
 
 .nav-rail-toggle-icon {
