@@ -603,11 +603,13 @@
 .unity-image-error-row { display:block; width:100%; padding:5px 6px; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--danger); font:inherit; text-align:start; cursor:pointer; }
 .unity-image-error-row:is(:hover,[aria-current="true"]) { background:var(--danger-soft); }
 .unity-image-error-row > :is(strong, small) { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.unity-image-item { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-radius: var(--radius-md); }
-.unity-image-item + .unity-image-item { margin-block-start: 3px; border-block-start: 1px solid var(--border-strong, #c2bba8); }
-.unity-image-item.is-selected { background: var(--bg-hover, #e4dfd1); }
-.unity-image-item.is-added { background:color-mix(in srgb,var(--success,#2f6b46) 13%,var(--bg-panel,var(--bg-panel))); }
-.unity-image-item.is-added.is-selected { box-shadow:inset 0 0 0 1px var(--success,#2f6b46); }
+.unity-image-item { display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: var(--radius-sm); }
+.unity-image-item + .unity-image-item { margin-block-start: 1px; }
+.unity-image-item:hover { background: var(--bg-hover); }
+.unity-image-item.is-selected { background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel)); }
+.unity-image-item.is-selected > button > strong { font-weight: 600; }
+.unity-image-item.is-added { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.unity-image-item.is-added.is-selected { background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel)); box-shadow: none; }
 .unity-image-item > button { scroll-margin-block:38px 6px; }
 .unity-image-item > button { flex: 1; min-width: 0; text-align: left; padding: 3px 0; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
 .unity-image-item strong, .unity-image-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -619,6 +621,9 @@
 .unity-image-item[data-image-status="review"] { --image-status-color: var(--warning); }
 .unity-image-item[data-image-status="error"] { --image-status-color: var(--danger); }
 .unity-image-status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--image-status-color); }
+/* 正常完成的图片不再重复挂状态：点与徽标只在待处理/待复核/失败时出现 */
+.unity-image-item[data-image-status="done"] .unity-image-status-dot,
+.unity-image-item[data-image-status="done"] .unity-image-status-badge { display: none; }
 .unity-image-row-heading { display: flex; align-items: baseline; gap: 5px; }
 .unity-image-row-heading strong { flex: 1; min-width: 0; font-size: var(--fs-body); line-height: 1.35; }
 .unity-image-dimensions { flex: none; margin-inline-start: auto; white-space: nowrap; color: var(--text-muted); font: var(--fs-caption) var(--mono); }
