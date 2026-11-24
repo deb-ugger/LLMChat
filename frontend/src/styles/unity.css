@@ -2821,7 +2821,7 @@ body.ocr-image-resizing * {
 .game-benchmark-header-tools { display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-inline-size: 0; }
 .game-benchmark-header-tools[hidden] { display: none; }
 .game-benchmark-header-tools .game-benchmark-modes { margin-inline-start: 0; }
-.game-benchmark-header-tools > .unity-btn, .game-benchmark-task-actions > .unity-btn {
+.game-benchmark-task-actions > .unity-btn, .game-benchmark-task-manage > .unity-btn {
   box-sizing: border-box;
   min-block-size: 28px;
   block-size: 28px;
@@ -2940,10 +2940,21 @@ body.ocr-image-resizing * {
 .game-benchmark-scope > .game-benchmark-toolbar > label > input[type="number"] { inline-size: 46px; }
 .game-benchmark-scope > .game-benchmark-toolbar > label:focus-within { border-color: var(--accent); }
 .game-benchmark-scope-static > b { color: var(--text); font-weight: 500; }
-.game-benchmark-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.game-benchmark-task-head, .game-benchmark-task-actions, .game-benchmark-task-manage {
+  display: flex; align-items: center; gap: 10px;
+}
+.game-benchmark-task-head { flex-wrap: wrap; justify-content: space-between; }
+.game-benchmark-task-actions { min-inline-size: 0; }
+.game-benchmark-task-actions > h3 { margin: 0; font-size: var(--fs-section); white-space: nowrap; }
+.game-benchmark-task-actions > h3 small { color: var(--text-muted); font-size: var(--fs-caption); font-weight: 500; }
+.game-benchmark-task-manage { flex-wrap: wrap; margin-inline-start: auto; }
+@media (max-width: 420px) {
+  .game-benchmark-task-actions { gap: 5px; }
+  .game-benchmark-task-actions > .unity-btn { padding-inline: 6px; }
+}
 .game-benchmark-header-divider { flex: none; inline-size: 1px; block-size: 20px; background: var(--border-strong); }
 .game-benchmark-more {
-  --window-popover-width: 160px;
+  --window-popover-width: 185px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 6px;
@@ -2960,13 +2971,38 @@ body.ocr-image-resizing * {
   gap: 12px;
   align-items: start;
 }
-.game-benchmark-columns > .game-benchmark-section { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.game-benchmark-scroll:has(> .game-text-benchmark > .game-benchmark-columns) { container-type: size; }
+.game-benchmark-columns > .game-benchmark-section {
+  box-sizing: border-box;
+  min-inline-size: 0;
+  min-block-size: 0;
+  max-block-size: max(0px, calc(100cqh - 2 * var(--page-inset)));
+  grid-template-columns: minmax(0, 1fr);
+}
+.game-benchmark-columns > :is(.game-benchmark-config, .game-benchmark-show-section, .game-benchmark-records) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.game-benchmark-columns > .game-benchmark-queue { overflow: auto; }
+.game-benchmark-record-filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-inline-size: 0;
+}
+.game-benchmark-record-filters select {
+  box-sizing: border-box; min-inline-size: 0; max-inline-size: 11ch; block-size: 27px; padding: 0 3px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-panel); color: var(--text); font: inherit; font-size: var(--fs-caption);
+}
+.game-benchmark-record-filters label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.game-benchmark-record-filters label, .game-benchmark-record-filters output { font-size: var(--fs-caption); color: var(--text-muted); }
+.game-benchmark-record-filters output { margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.game-benchmark-history-results { min-block-size: 0; overflow: auto; }
+.game-benchmark-history-results:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .game-benchmark-config-layout {
   display: grid;
   grid-template-columns: 186px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  min-block-size: 270px;
-  max-block-size: max(270px, min(66dvh, 680px));
+  min-block-size: 0;
   min-inline-size: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -3014,15 +3050,32 @@ body.ocr-image-resizing * {
   background: transparent;
   box-shadow: none;
 }
-.game-benchmark-editor-head, .game-benchmark-editor-order { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.game-benchmark-editor-head,
+.game-benchmark-editor .game-benchmark-toolbar,
+.game-benchmark-editor .game-benchmark-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 6px;
+}
 .game-benchmark-editor-head { padding-block-end: 8px; border-bottom: 1px solid var(--border); }
-.game-benchmark-editor-head label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.game-benchmark-editor-name { flex: 1 1 110px; min-inline-size: 0; }
-.game-benchmark-editor-name input { flex: 1 1 auto; min-inline-size: 0; }
-.game-benchmark-editor-order { margin-inline-start: auto; }
+.game-benchmark-editor .game-benchmark-item-fields label,
+.game-benchmark-editor .game-mosaic-model-field {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 8px;
+  min-inline-size: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.game-benchmark-editor .game-mosaic-model-field > span { min-inline-size: 0; white-space: normal; overflow-wrap: anywhere; }
+.game-benchmark-editor .game-benchmark-item-fields :is(input:not([type="checkbox"]), select) {
+  inline-size: 100%; min-inline-size: 0; max-inline-size: 100%;
+}
+.game-benchmark-editor .game-benchmark-item-fields input[type="checkbox"] { margin: 0; justify-self: start; }
+.game-benchmark-editor-order { display: flex; flex: 1 0 100%; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
 .game-benchmark-editor-order > button { white-space: nowrap; }
-.game-benchmark-editor .game-benchmark-toolbar > label { min-inline-size: 0; }
-.game-benchmark-editor .game-benchmark-toolbar :is(input:not([type="checkbox"]), select) { min-inline-size: 0; max-inline-size: 100%; }
 .game-benchmark-editor-empty { place-self: center; padding: var(--space-3); text-align: center; }
 .game-benchmark-editor-foot {
   display: flex;
@@ -3039,8 +3092,6 @@ body.ocr-image-resizing * {
 @media (max-width: 600px) {
   .game-benchmark-config-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 130px) minmax(0, 1fr); }
   .game-benchmark-config-list { border-inline-end: 0; border-block-end: 1px solid var(--border); }
-  .game-benchmark-editor .game-benchmark-model { grid-template-columns: minmax(0, 1fr) 64px; }
-  .game-benchmark-editor .game-benchmark-model label:nth-child(3) { grid-column: 1 / -1; }
 }
 .game-benchmark-queue { border-color: #3a2d52; background: var(--bg-panel); }
 .game-benchmark-queue.is-active { border-color: #3a2d52; background: var(--bg-panel); }
