@@ -1,3 +1,5 @@
+import { allBenchmarkRecordStatuses, BenchmarkRecordStatusFilter, BenchmarkRecordStepFilter,
+  matchesBenchmarkRecordStatus, matchesBenchmarkRecordStep, type BenchmarkRecordStep } from "./BenchmarkRecordFilters";
 import { BuildSpeedTest } from "./BuildSpeedTest";
 import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
@@ -1119,10 +1121,9 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   };
 
   const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
-  const [recordStep, setRecordStep] = useState<Target | "all">("all");
-  const [recordStatus, setRecordStatus] = useState<"all" | "failed" | "complete" | "paused">("all");
+  const [recordStep, setRecordStep] = useState<BenchmarkRecordStep>();
+  const [recordStatus, setRecordStatus] = useState(allBenchmarkRecordStatuses);
   const [recordRange, setRecordRange] = useState<"1" | "7" | "30" | "all">("7");
-  const [onlyFailures, setOnlyFailures] = useState(false);
   const recordToday = new Date();
   const dayStart = new Date(recordToday.getFullYear(), recordToday.getMonth(), recordToday.getDate()).getTime();
   const filteredTasks = useMemo(() => {
@@ -1131,20 +1132,14 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
     if (recordRange !== "all") firstDay.setDate(firstDay.getDate() - (Number(recordRange) - 1));
     nextDay.setDate(nextDay.getDate() + 1);
     return tasks.filter(task => {
-      if (recordStep !== "all" && archivedBenchmarkStep(task.runs[0]?.performance.step) !== recordStep) return false;
+      if (!matchesBenchmarkRecordStep(recordStep, archivedBenchmarkStep(task.runs[0]?.performance.step))) return false;
       if (recordRange !== "all") {
         const time = Date.parse(task.firstTime);
         if (!(time >= firstDay.getTime() && time < nextDay.getTime())) return false;
       }
-      if ((onlyFailures || recordStatus === "failed") && !task.failed) return false;
-      if (recordStatus === "paused") return task.runs.some(run => run.status === "已暂停");
-      if (recordStatus === "complete") {
-        const total = task.planned ? task.rounds * task.configs : task.runs.length;
-        return !task.failed && !task.stopped && task.completed >= total;
-      }
-      return true;
+      return matchesBenchmarkRecordStatus(task, recordStatus);
     });
-  }, [tasks, recordStep, recordStatus, recordRange, onlyFailures, dayStart]);
+  }, [tasks, recordStep, recordStatus, recordRange, dayStart]);
   const taskDays = useMemo(() => {
     const days = new Map<string, { date: Date | null; records: typeof tasks }>();
     for (const task of [...filteredTasks].sort((left, right) => (Date.parse(right.firstTime) || 0) - (Date.parse(left.firstTime) || 0))) {
@@ -1286,20 +1281,12 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       <BenchmarkSection title="测试记录" className="game-benchmark-records game-benchmark-results" action={
         <button type="button" className="unity-btn" disabled={historyLoading} onClick={refreshHistory}>刷新</button>}>
         <div className="game-benchmark-record-filters" role="group" aria-label="测试记录筛选">
-          <select aria-label="步骤" value={recordStep} onChange={event => setRecordStep(event.target.value as Target | "all")}>
-            <option value="all">全部步骤</option>
-            {(["screen", "translate", ...Object.keys(imageBenchmarkSteps), ...Object.keys(mosaicBenchmarkSteps)] as Target[]).map(id =>
-              <option key={id} value={id}>{benchmarkTargetLabel(id)}</option>)}
-          </select>
-          <select aria-label="状态" value={recordStatus} onChange={event => setRecordStatus(event.target.value as typeof recordStatus)}>
-            <option value="all">全部状态</option><option value="failed">有失败</option>
-            <option value="complete">全部完成</option><option value="paused">已暂停</option>
-          </select>
+          <BenchmarkRecordStepFilter value={recordStep} onChange={setRecordStep} />
+          <BenchmarkRecordStatusFilter value={recordStatus} onChange={setRecordStatus} />
           <select aria-label="时间范围" value={recordRange} onChange={event => setRecordRange(event.target.value as typeof recordRange)}>
             <option value="1">今天</option><option value="7">近 7 天</option>
             <option value="30">近 30 天</option><option value="all">全部</option>
           </select>
-          <label><input type="checkbox" role="switch" checked={onlyFailures} onChange={event => setOnlyFailures(event.target.checked)} />只看有失败</label>
           <output aria-live="polite">{filteredTasks.length} 条</output>
         </div>
         <div className="game-benchmark-history-results" tabIndex={0} aria-label="测试记录列表" role="region">

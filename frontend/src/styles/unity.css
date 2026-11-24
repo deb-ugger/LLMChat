@@ -2992,14 +2992,47 @@ body.ocr-image-resizing * {
 .game-benchmark-record-filters {
   display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-inline-size: 0;
 }
-.game-benchmark-record-filters select {
-  box-sizing: border-box; min-inline-size: 0; max-inline-size: 11ch; block-size: 27px; padding: 0 3px;
+.game-benchmark-record-filters select, .game-benchmark-filter-trigger {
+  box-sizing: border-box; min-inline-size: 0; block-size: 27px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-panel); color: var(--text); font: inherit; font-size: var(--fs-caption);
 }
-.game-benchmark-record-filters label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.game-benchmark-record-filters label, .game-benchmark-record-filters output { font-size: var(--fs-caption); color: var(--text-muted); }
-.game-benchmark-record-filters output { margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.game-benchmark-record-filters select { max-inline-size: 11ch; }
+.game-benchmark-filter-trigger {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+}
+.game-benchmark-filter-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-benchmark-filter-trigger > svg { flex: none; color: var(--text-muted); }
+.game-benchmark-filter-trigger[aria-expanded="true"], .game-benchmark-filter-trigger:hover { background: var(--bg-hover); }
+.game-benchmark-record-filters output {
+  margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums;
+  font-size: var(--fs-caption); color: var(--text-muted);
+}
+.game-benchmark-filter-popup {
+  position: fixed; inset: auto; margin: 0; box-sizing: border-box;
+  max-inline-size: calc(100vw - 16px); overflow: auto; overscroll-behavior: contain;
+}
+.game-benchmark-filter-popup.game-benchmark-status-menu > label:last-child { border-bottom: 0; }
+.game-benchmark-step-menu {
+  inline-size: 310px;
+  padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--panel, var(--bg-panel)); color: var(--text); box-shadow: 0 5px 18px #0002;
+}
+.game-benchmark-step-menu:popover-open {
+  display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); align-items: start;
+}
+.game-benchmark-step-level { min-inline-size: 0; display: grid; gap: 2px; }
+.game-benchmark-step-level + .game-benchmark-step-level {
+  border-inline-start: 1px solid var(--border); padding-inline-start: 4px; margin-inline-start: 4px;
+}
+.game-benchmark-step-level button {
+  inline-size: 100%; min-block-size: 30px; display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 7px; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit;
+  font: inherit; font-size: var(--fs-caption); text-align: start; cursor: pointer;
+}
+.game-benchmark-step-level button:hover, .game-benchmark-step-level button[aria-expanded="true"],
+.game-benchmark-step-level button[aria-pressed="true"] { background: var(--bg-hover); }
+.game-benchmark-step-level button[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
 .game-benchmark-history-results { min-block-size: 0; overflow: auto; }
 .game-benchmark-history-results:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .game-benchmark-config-layout {
