@@ -244,7 +244,12 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       {stepCard("redraw", "重绘打码区域", <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
           data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" :
-            ["按图片组重绘当前列表中已勾选且已就绪的图片", "优先复用已生成的组内参考，否则先无参考重绘首图", redraw.skipped].filter(Boolean).join("\n"))}
+            [
+              "按图片组处理当前列表中已勾选且可重绘的图片。",
+              "每组从已勾选、确认有码的图片中找参考。优先用已采用的结果，其次用已生成的候选。",
+              "没有可用参考时，先无参考重绘本组第一张，再用这张结果重绘组内其余待处理图片。",
+              redraw.skipped,
+            ].filter(Boolean).join("\n"))}
           onClick={redraw.start}>
           {redraw.paused ? "继续重绘 · 剩余 " + redraw.remainingCount : "重绘列表已勾选 · " + redraw.targetCount} 张
         </button>
