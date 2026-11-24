@@ -89,7 +89,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const detectorInput = useRef<HTMLInputElement>(null);
   const refineSelection = "已勾选 " + refine.targetCount.toLocaleString() + " 张";
   const hasGroupAction = redraw.startGroup !== undefined && redraw.groupTargetCount !== undefined;
-  const redrawSelection = (hasGroupAction ? "当前列表可重绘 " : "本组已勾选 ") + redraw.targetCount.toLocaleString() + " 张";
   const redrawStartLabel = redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount
     : (hasGroupAction ? "重绘已勾选 · " : "重绘本组所选 · ") + redraw.targetCount;
   const redrawStartHint = redraw.paused ? "按上一次重绘的图片及配置继续"
@@ -278,8 +277,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           <div className="game-flow-chip-row">
             {model === "2511" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
               onChange={steps => changePreferences({ steps })} />}
-            <GameFlowParameterValue label="重绘范围" value={redraw.paused
-              ? "上次选择 · 剩余 " + redraw.remainingCount.toLocaleString() + " 张" : redrawSelection} />
           </div>
           {!redraw.paused && redraw.skipped && <p className="hint">{redraw.skipped}</p>}
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
