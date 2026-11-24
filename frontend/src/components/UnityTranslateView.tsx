@@ -174,12 +174,10 @@ export function UnityTranslateView({
   active = true,
   settings,
   onOpenGeneralSettings,
-  onRestoreWorkspace,
 }: {
   active?: boolean;
   settings: Settings;
   onOpenGeneralSettings?: () => void;
-  onRestoreWorkspace?: () => void;
 }) {
   const confirmation = useGameActionConfirm(text => pushOutput(text, "info"));
   const [mode, setMode] = useState<"runtime" | "offline">("offline");
@@ -220,11 +218,11 @@ export function UnityTranslateView({
     const dir = lastUnityGameDir();
     return dir ? rememberRecentUnityGame({ gameDir: dir }) : [];
   });
-  const openGameDetail = useCallback((gameDir: string, displayName?: string) => {
-    rememberGameWorkspace({gameDir,name:displayName,engine:"Unity"});
+  const openGameDetail = useCallback((gameDir: string, displayName?: string, mode: "offline" | "runtime" = "offline") => {
+    rememberGameWorkspace({gameDir,name:displayName,engine:"Unity"}, mode);
     setSelectedGameDir(gameDir);
     setViewMode("detail");
-    setMode("offline");
+    setMode(mode);
     setRecentGames(rememberRecentUnityGame({ gameDir, name: displayName }));
   }, []);
   const openEmbeddingGame = useCallback((game: EmbeddingGame) => {
@@ -1190,7 +1188,7 @@ export function UnityTranslateView({
     }
   };
 
-  const openRecentGame = async (entry: RecentUnityGame, restore = false) => {
+  const openRecentGame = async (entry: RecentUnityGame, mode: "offline" | "runtime" = "offline") => {
     stopDetection();
     setOtherGames([]); setScanState(null); detectGamesAccRef.current = []; setSearchQuery("");
     const ac = new AbortController(); detectAbortRef.current = ac;
@@ -1206,7 +1204,7 @@ export function UnityTranslateView({
         if (ac.signal.aborted || detectAbortRef.current !== ac) return;
         const game = (detected as EmbeddingGame[]).find(item => item.path.replace(/\\/g,"/").toLowerCase() === gameDir.replace(/\\/g,"/").toLowerCase());
         if (!game?.supported) throw new Error("当前游戏资源无法识别，请重新选择游戏目录");
-        setViewMode("list"); setOtherGames([game]); setScanState(emptyScanState(gameDir)); openEmbeddingGame(game); if (restore) onRestoreWorkspace?.(); return;
+        setViewMode("list"); setOtherGames([game]); setScanState(emptyScanState(gameDir)); openEmbeddingGame(game); return;
       }
       const res = await api.unityDetect(gameDir, { signal: ac.signal, directOnly: true });
       if (ac.signal.aborted || detectAbortRef.current !== ac) return;
@@ -1231,8 +1229,7 @@ export function UnityTranslateView({
         hasBepInEx: !!game.hasBepInEx,
         isIl2Cpp: !!game.isIl2Cpp,
       });
-      openGameDetail(game.gameDir, gameTitle(game));
-      if (restore) onRestoreWorkspace?.();
+      openGameDetail(game.gameDir, gameTitle(game), mode);
     } catch (e) {
       if (ac.signal.aborted || detectAbortRef.current !== ac) return;
       reportError(toFriendlyError(e, "打开最近游戏失败"));
@@ -1245,14 +1242,9 @@ export function UnityTranslateView({
     if (!isTauri()) return;
     const workspace = loadGameWorkspace(); if (workspace.view !== "detail") return;
     const epoch = interactionRef.current; let disposed = false;
-    void Promise.resolve().then(async () => {
+    void Promise.resolve().then(() => {
       if (disposed || epoch !== interactionRef.current) return;
-      const restoringGame = openRecentGame(workspace.game, true);
-      const restoreEpoch = interactionRef.current;
-      await restoringGame;
-      if (!disposed && restoreEpoch === interactionRef.current && workspace.game.engine === "Unity") {
-        setMode(workspace.mode); rememberGameWorkspace(workspace.game, workspace.mode);
-      }
+      return openRecentGame(workspace.game, workspace.mode);
     }).catch(error => { if (!disposed && epoch === interactionRef.current) reportError(toFriendlyError(error, "恢复上次游戏失败")); });
     return () => { disposed = true; detectAbortRef.current?.abort(); };
   }, []);

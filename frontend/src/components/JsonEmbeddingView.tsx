@@ -162,8 +162,8 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [controlsTarget,setControlsTarget]=useState<HTMLDivElement|null>(null),[resultsTarget,setResultsTarget]=useState<HTMLDivElement|null>(null);
   const [imageScanRequest,setImageScanRequest]=useState(0);
   const imageLeaveGuard=useRef<((change:()=>void)=>void)|null>(null);
-  const savedStage = useRef(loadGameStage(game.path, imageProject)).current;
-  const [textStep,setTextStep]=useState(Math.min(savedStage.step, 3));
+  const [savedStage] = useState(() => loadGameStage(game.path, imageProject, selfMosaic));
+  const [textStep,setTextStep]=useState(Math.min(savedStage?.step ?? 1, 3));
   const [scanPath,setScanPath]=useState("");
   const [textInfo,setTextInfo]=useState<GameTextInfo>({count:0,selected:0,sourcePath:"",done:0,changed:0,dirty:false,running:false,state:"idle",translationPath:""});
   const scanLoadError = textInfo.loadResult?.path === scanPath ? textInfo.loadResult.error : undefined;
@@ -174,14 +174,14 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const workflowWrites=useRef(Promise.resolve());
   const workflowRef=useRef(workflow);workflowRef.current=workflow;
   const textInfoChanged=useCallback((value:GameTextInfo)=>{const changedTarget=!!textTarget.current&&textTarget.current!==value.target;textTarget.current=value.target;if(value.dirty||value.running||changedTarget){setArtifacts(previous => previous.text ? { ...previous, text: undefined } : previous);if(workflowRef.current.textSkipped)void workflowUpdate.current({textSkipped:false});}setTextInfo(value);if(value.translationPath)setFile(value.translationPath);},[]);
-  const [part,setPart]=useState<"text"|"images"|"mosaic">(savedStage.step >= 3 ? "text" : savedStage.part);
+  const [part,setPart]=useState<"text"|"images"|"mosaic">(savedStage?.step === 2 ? savedStage.part : "text");
   const [mosaicBusy,setMosaicBusy]=useState(false);
   const [mosaicComplete,setMosaicComplete]=useState(false);
   const [packageMosaicIds, setPackageMosaicIds] = useState<string[]>([]);
   const updatePackageMosaicIds = useCallback((ids: string[]) => {
     setPackageMosaicIds(previous => previous.length === ids.length && previous.every((id, index) => id === ids[index]) ? previous : ids);
   }, []);
-  useEffect(() => { rememberGameStage(game.path,textStep,part==="mosaic"?"images":part); }, [game.path,textStep,part]);
+  useEffect(() => { rememberGameStage(game.path, textStep, part); }, [game.path, textStep, part]);
   const [imageWorkflow,setImageWorkflow]=useState<GameImageInfo>({state:"idle",stage:"filter",complete:false,count:null,folder:"",exists:null,loaded:false,selected:0,valid:0,dirty:false});
   const [textFailures, setTextFailures] = useState<BatchRow[]>([]);
   const [textRepairs, setTextRepairs] = useState<BatchRow[]>([]);
@@ -294,7 +294,12 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   useGameTestConfigurationSource(testConfigurations);
   useEffect(() => { let alive = true; void call<Status>("status").then(async value => {
-    if (alive && !touched.current && value.gamePath === game.path) { setFile(value.jsonPath || "");setStatus(value);if(imageProject && followAutomatic.current && value.action?.includes("images"))setPart("images"); }
+    if (alive && !touched.current && value.gamePath === game.path) {
+      setFile(value.jsonPath || ""); setStatus(value);
+      if (!savedStage && imageProject && followAutomatic.current && value.action?.includes("images")) {
+        setPart("images"); setTextStep(2);
+      }
+    }
     if(alive){await loadPatch(false);}
   }).catch(cause => { if (alive) setError(String(cause)); }); return () => { alive = false; }; }, []);
   useEffect(() => {

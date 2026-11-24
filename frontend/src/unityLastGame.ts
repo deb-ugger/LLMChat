@@ -144,13 +144,16 @@ export function loadGameWorkspace(): GameWorkspaceState {
   return gameDir ? { view: "detail", game: { gameDir, name: folderNameFromPath(gameDir), engine: "Unity", openedAt: 0 }, mode: "offline" } : { view: "list" };
 }
 const gameStageKey = (path: string) => `llmchat-game-stage:${path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}`;
-export function loadGameStage(path: string, supportsImages: boolean) {
+type GameStagePart = "text" | "images" | "mosaic";
+export function loadGameStage(path: string, supportsImages: boolean, supportsMosaic = supportsImages): { step: number; part: GameStagePart } | undefined {
   try {
     const value = JSON.parse(localStorage.getItem(gameStageKey(path)) || "null");
-    if (value && [1,2,3,4].includes(value.step)) return { step: value.step as number, part: supportsImages && [2,4].includes(value.step) && value.part === "images" ? "images" as const : "text" as const };
+    if (!value || ![1, 2, 3, 4].includes(value.step)) return;
+    const part = value.step === 2 && supportsMosaic && value.part === "mosaic" ? "mosaic"
+      : [2, 4].includes(value.step) && supportsImages && value.part === "images" ? "images" : "text";
+    return { step: value.step, part };
   } catch { /* New or invalid view state starts at scanning. */ }
-  return { step: 1, part: "text" as const };
 }
-export function rememberGameStage(path: string, step: number, part: "text" | "images") {
+export function rememberGameStage(path: string, step: number, part: GameStagePart) {
   try { localStorage.setItem(gameStageKey(path), JSON.stringify({step,part})); } catch { /* Storage can be unavailable. */ }
 }

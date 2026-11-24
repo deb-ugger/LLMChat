@@ -6,7 +6,7 @@ import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosai
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
-import { rememberRecentGameFailures } from "../unityLastGame";
+import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
 import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGroupChanges";
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
@@ -197,6 +197,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [mosaicStatus, setMosaicStatus] = useState<{ root: string; candidates: MosaicCandidateIndex; savedDrafts?: ReadonlySet<string>; error?: string }>();
   const setActiveStep = useCallback((step: number) => { setMosaicPage(false); setWorkflowStep(Math.min(step, 3)); }, []);
   const followProgress = useRef(true);
+  const restoredStageRoot = useRef("");
   const [fontPath, setFontPath] = useState("");
   const [search, setSearch] = useState("");
   const [reviewFilter, setReviewFilter] = useState<"all" | "unfinished" | "quality" | "target">("all");
@@ -305,6 +306,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     readLegacyTask: () => localStorage.getItem(checkpointKey),
     removeLegacyTask: () => localStorage.removeItem(checkpointKey),
     resetView: () => {
+      restoredStageRoot.current = "";
       setProject(null); setPatch(null); setDirty(false); textDraftOriginals.current.clear(); imageDraftOriginals.current.clear();pendingImageMasks.current.clear(); pendingEdits.current.clear(); setImportPreview(null); setSaveComplete(false); setPage(0); setSearch(""); setFileStatus(null); setRowJump(null);
       setReviewFilter("all"); setQualityIssueId(null); setImportMode("fill");
       setError(""); setActionError(""); setMessage(""); setFontPath(""); setLlmModel(recommendedGameModels().text || ""); setDialogueModel(""); setNameModel(""); setImageModel(""); setImageReviewModel(""); setJoinLines(true); setIncludeContext(false); setOnlySourceLanguage(true);
@@ -365,9 +367,22 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         else if (!value.finished) setMessage("已从游戏工作目录加载未完成任务，点击恢复可继续。");
         else if (p) setMessage("已自动加载上次保存的工程。");
       }
+      const stage = loadGameStage(root, true);
+      if (stage && (p || stage.step === 1)) {
+        setWorkflowStep(Math.min(stage.step, 3));
+        setImagePart(stage.step === 2 && stage.part === "images");
+        setMosaicPage(stage.part === "mosaic");
+        followProgress.current = false;
+      }
+      restoredStageRoot.current = root;
     },
     waitForTaskWrites: () => taskWrites.current,
   });
+  useEffect(() => {
+    if (root && active && !restoring && restoredStageRoot.current === root) {
+      rememberGameStage(root, activeStep, mosaicPage ? "mosaic" : imagePart ? "images" : "text");
+    }
+  }, [root, active, restoring, activeStep, imagePart, mosaicPage]);
   const formalUnfinished = !preparingRescan && !!checkpoint && !checkpoint.finished &&
     ["stopped", "error"].includes(checkpoint.progress.state);
   const formalProgress = localActivity?.value.state === "running" ? localActivity.value :

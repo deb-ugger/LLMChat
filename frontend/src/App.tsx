@@ -7,7 +7,7 @@ import { ApplicationHelpPage } from "./components/GameWorkflowHelp";
 import { openGameTextBenchmark } from "./components/GameTextBenchmarkDialog";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
-import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type Conversation,
@@ -53,11 +53,32 @@ const pageLabels = {
 } as const;
 type NavigationItem = keyof typeof pageLabels;
 type Page = Exclude<NavigationItem, "output" | "benchmark">;
+type ModulePage = Exclude<Page, "help">;
+type AppView = { page: Page; helpReturnPage?: ModulePage; outputExpanded: boolean; navRailHidden: boolean; chatSidebarOpen?: boolean };
+const appViewKey = "llmchat-main-view";
 const navigation: readonly Exclude<NavigationItem, "help">[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "stats", "benchmark", "settings"],
 ];
 const isNarrowChat = () => window.matchMedia("(max-width: 720px)").matches;
+
+function isModulePage(page: unknown): page is ModulePage {
+  return typeof page === "string" && page !== "help" && page !== "output" && page !== "benchmark" && Object.hasOwn(pageLabels, page);
+}
+
+function loadAppView(): AppView | undefined {
+  try {
+    const saved = JSON.parse(localStorage.getItem(appViewKey) || "null");
+    if (saved?.page !== "help" && !isModulePage(saved?.page)) return;
+    return {
+      page: saved.page,
+      helpReturnPage: isModulePage(saved.helpReturnPage) ? saved.helpReturnPage : undefined,
+      outputExpanded: saved.outputExpanded === true,
+      navRailHidden: saved.navRailHidden === true,
+      chatSidebarOpen: typeof saved.chatSidebarOpen === "boolean" ? saved.chatSidebarOpen : undefined,
+    };
+  } catch { /* Use defaults when the saved view is unavailable. */ }
+}
 
 function PagePanel({ feature, active, children }: { feature: Page; active: boolean; children: React.ReactNode }) {
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
@@ -67,13 +88,14 @@ function PagePanel({ feature, active, children }: { feature: Page; active: boole
 
 export default function App() {
   useEffect(attachBenchmarkRunner, []);
-  const [page, setPage] = useState<Page>("chat");
-  const helpReturnPage = useRef<Exclude<Page, "help">>("chat");
-  const [outputExpanded, setOutputExpanded] = useState(false);
+  const [savedView] = useState(loadAppView);
+  const [page, setPage] = useState<Page>(savedView?.page ?? "chat");
+  const helpReturnPage = useRef<ModulePage>(savedView?.helpReturnPage ?? "chat");
+  const [outputExpanded, setOutputExpanded] = useState(savedView?.outputExpanded ?? false);
   const startupInteracted = useRef(false);
 
-  const [navRailHidden, setNavRailHidden] = useState(false);
-  const [chatSidebarOpen, setChatSidebarOpen] = useState(() => !isNarrowChat());
+  const [navRailHidden, setNavRailHidden] = useState(savedView?.navRailHidden ?? false);
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(() => savedView?.chatSidebarOpen ?? !isNarrowChat());
   const [settingsInitialTab, setSettingsInitialTab] = useState<
     "unity" | "general" | "chat" | undefined
   >(undefined);
@@ -85,6 +107,12 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [search, setSearch] = useState("");
   const [sending, setSending] = useState(false);
+  useLayoutEffect(() => {
+    if (!backendReady) return;
+    const view: AppView = { page, helpReturnPage: page === "help" ? helpReturnPage.current : undefined,
+      outputExpanded, navRailHidden, chatSidebarOpen };
+    try { localStorage.setItem(appViewKey, JSON.stringify(view)); } catch { /* Keep the current view usable. */ }
+  }, [backendReady, page, outputExpanded, navRailHidden, chatSidebarOpen]);
   useEffect(() => { if (backendReady) void initializeAppOutput(); }, [backendReady]);
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const [ocrIncoming, setOcrIncoming] = useState<{
@@ -92,7 +120,7 @@ export default function App() {
     id: number;
   } | null>(null);
   useEffect(() => {
-    if (!backendReady || !isTauri()) return;
+    if (!backendReady || savedView || !isTauri()) return;
     const root = lastUnityGameDir(); if (!root) return;
     let cancelled = false;
     void import("./unityOffline").then(module => module.unityRun<{ unfinished: boolean }>("resume-info", { root }))
@@ -103,7 +131,7 @@ export default function App() {
         setBackendError(detail); writeOutput(["游戏翻译", "Unity", "工程恢复"], detail, "error");
       });
     return () => { cancelled = true; };
-  }, [backendReady]);
+  }, [backendReady, savedView]);
   const ocrIncomingSeq = useRef(0);
   useEffect(()=>{const text=()=>setPage("text"),image=()=>setPage("image");window.addEventListener("llmchat-open-game-text",text);window.addEventListener("llmchat-open-game-image",image);return()=>{window.removeEventListener("llmchat-open-game-text",text);window.removeEventListener("llmchat-open-game-image",image);};},[]);
 
@@ -165,7 +193,7 @@ export default function App() {
             }
           }
 
-          if (!conv || conv.messages.length > 0) {
+          if (!conv) {
             conv = await api.createConversation();
             list = await api.listConversations();
           }
@@ -533,7 +561,6 @@ export default function App() {
         <PagePanel feature="unity" active={page === "unity"}><UnityTranslateView
             active={page === "unity"}
             settings={settings}
-            onRestoreWorkspace={() => { if (!startupInteracted.current) setPage("unity"); }}
             onOpenGeneralSettings={() => {
               setSettingsInitialTab("general");
               setPage("settings");
