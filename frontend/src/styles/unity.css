@@ -3875,6 +3875,22 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-head > .game-flow-actions{margin-inline-start:auto}
 
 .game-flow-performance{container:game-flow-performance / inline-size}
+.game-flow-performance.is-step-card :is(.game-flow-performance-wide,.game-flow-performance-compact){
+  font-size:var(--fs-caption);line-height:1.25;font-variant-numeric:tabular-nums
+}
+.game-flow-performance.is-step-card .game-flow-performance-wide :is(th,td){padding-block:3px}
+.game-flow-performance.is-step-card .game-flow-performance-wide :is(thead th:not(:first-child),td){text-align:end}
+.game-flow-performance.is-step-card .game-flow-performance-compact > li{padding-block:3px}
+.game-flow-performance.is-step-card .game-flow-model-speed{margin-block-start:2px}
+.game-flow-timing-summary{
+  margin:4px 0 0;color:var(--text-muted);font-size:var(--fs-caption);line-height:1.25;
+  display:flex;flex-wrap:wrap;row-gap:2px
+}
+.game-flow-timing-summary > span{white-space:nowrap}
+.game-flow-timing-summary > span > span{white-space:pre}
+.game-flow-timing-summary b{
+  color:color-mix(in srgb,var(--text-muted) 72%,var(--text));font-weight:500;font-variant-numeric:tabular-nums
+}
 .game-flow-performance-compact{display:none;list-style:none;margin:0;padding:0}
 .game-flow-performance-compact > li{padding-block:6px;border-block-end:1px solid var(--border)}
 .game-flow-model-identity,.game-flow-model-speed{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
@@ -3886,6 +3902,9 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 @container game-flow-performance (max-width:420px){
   .game-flow-performance-wide{display:none}
   .game-flow-performance-compact{display:block}
+  .game-flow-performance.is-step-card .game-flow-performance-compact > li{padding-block:1px}
+  .game-flow-performance.is-step-card .game-flow-model-speed{margin-block-start:0}
+  .game-flow-timing-summary{margin-block-start:2px;row-gap:1px}
 }
 .game-flow-progress{margin:0 0 9px;padding:9px 10px;border:1px solid var(--border);border-radius:9px;
   background:var(--bg-panel)}
@@ -3932,6 +3951,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   margin-block-start:10px;padding:10px 10px 0;border-block-start:1px solid var(--border);
   container:game-flow-parameters / inline-size;
   --game-flow-label-width:120px;--game-flow-field-gap:8px;--game-flow-control-min:168px;
+  --game-flow-narrow-width:80px;--game-flow-mid-width:152px;
   --game-flow-disabled-text:color-mix(in srgb,var(--text-muted) 90%,var(--text))
 }
 .game-flow-parameter-fields{min-inline-size:0;margin:0;padding:0;border:0}
@@ -3946,7 +3966,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{opacity:1}
 .game-flow-editable .game-flow-parameter-fields:disabled input:is([type=checkbox],[type=radio]):disabled{opacity:.65}
 .game-flow-editable .game-flow-parameter-fields:disabled :is(input,textarea):disabled::placeholder{color:var(--game-flow-disabled-text);opacity:1}
-.game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));align-items:start;gap:8px 12px}
+.game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:8px 12px}
 .game-flow-editable-fields :is(.game-flow-field-wide,.game-translation-tabs,.unity-engine-pool){grid-column:1 / -1}
 .game-flow-editable-fields :is(.game-mosaic-step-settings,.game-flow-config-content,.unity-run-options){display:contents}
 .game-flow-param-section{display:grid;grid-column:1 / -1;grid-template-columns:subgrid;align-items:start;gap:inherit}
@@ -4020,7 +4040,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   grid-column:1 / -1;justify-self:end
 }
 .game-flow-editable-fields .game-model-column{
-  display:grid;grid-template-columns:minmax(var(--game-flow-label-width),max-content) minmax(0,1fr) 46px;
+  display:grid;grid-template-columns:minmax(var(--game-flow-label-width),max-content) minmax(0,1fr) var(--game-flow-narrow-width);
   align-items:center;gap:var(--game-flow-field-gap);min-inline-size:0
 }
 .game-flow-editable-fields :is(.game-model-head,.game-model-controls){display:contents}
@@ -4036,23 +4056,46 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields .game-flow-param-field.game-flow-param-stacked{
   grid-template-columns:minmax(0,1fr);text-align:start
 }
-.game-flow-editable-fields .game-flow-param-stacked.game-model-column{grid-template-columns:minmax(0,1fr) 46px}
+.game-flow-editable-fields .game-flow-param-stacked.game-model-column{grid-template-columns:minmax(0,1fr) var(--game-flow-narrow-width)}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-head > span{grid-column:1 / -1;text-align:start}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-filter{grid-column:1;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked .game-model-controls > .game-model-concurrency-control{grid-column:2;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked.unity-language-setting > select{grid-column:1;grid-row:2}
 .game-flow-editable-fields .game-flow-param-stacked.unity-language-setting .unity-inline-check{grid-column:1;grid-row:3}
-.game-flow-editable-fields .game-flow-param-field > :is(select,input,textarea,.searchable-select,.unity-description-select,.model-filter-select),
-.game-flow-editable-fields .game-flow-param-field .game-model-filter{
+.game-flow-editable .game-flow-editable-fields :is(
+  .game-flow-param-section[data-parameter-group="models"],
+  .game-flow-param-section[data-parameter-group="runtime"],
+  .game-model-prompt-row
+){display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 12px}
+.game-flow-editable-fields .game-flow-param-section:is([data-parameter-group="models"],[data-parameter-group="runtime"]){
+  > :not(.game-flow-param-field){flex:0 0 100%;min-inline-size:0}
+}
+.game-flow-editable-fields .game-flow-param-field{
+  flex:0 0 min(100%,var(--game-flow-field-width));max-inline-size:100%
+}
+.game-flow-editable-fields .game-flow-param-field[data-param-width="wide"]{flex-grow:1}
+.game-flow-editable-fields .game-flow-param-field[data-param-width="wide"] > :is(select,input,textarea,output,.searchable-select,.unity-description-select,.model-filter-select),
+.game-flow-editable-fields .game-flow-param-field[data-param-width="wide"] .game-model-filter{
   min-inline-size:min(var(--game-flow-control-min),100%)
+}
+.game-flow-editable-fields .game-flow-param-field:is([data-param-width="narrow"],[data-param-width="mid"])
+  > :is(select,input,textarea,output,.searchable-select,.unity-description-select){
+  inline-size:min(var(--game-flow-field-control-width),100%);justify-self:start
+}
+.game-flow-editable .game-flow-editable-fields .game-flow-param-field :is(select,input[type=number],.unity-description-trigger){
+  padding-inline:5px
 }
 .game-flow-editable-fields .game-flow-param-field :is(.searchable-select-input,.searchable-select-caption-title,.unity-description-trigger > span){
   text-overflow:clip
 }
 .game-flow-editable-fields .game-flow-param-field .searchable-select-caption-title{flex-shrink:0;max-inline-size:100%}
-/* Two 260px tracks plus the column gap. */
-@container game-flow-parameters (width < 532px){
+@container game-flow-parameters (width < 520px){
   .game-flow-editable-fields{grid-template-columns:minmax(0,1fr)}
+  .game-flow-editable .game-flow-editable-fields :is(
+    .game-flow-param-section[data-parameter-group="models"],
+    .game-flow-param-section[data-parameter-group="runtime"],
+    .game-model-prompt-row
+  ){display:grid;grid-template-columns:minmax(0,1fr)}
 }
 
 /* ---------- 帮助页（左目录 + 一步一卡） ---------- */
@@ -4172,21 +4215,6 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-fields .game-translation-page:empty { display: none; }
 .game-flow-editable-fields .game-flow-param-section:first-child { padding-block-start: 0; border-block-start: 0; }
 .game-flow-editable-fields .unity-inline-check { margin-block-start: 2px; }
-/* 模型 + 并发：并发固定 60px，不再挤成一条缝 */
-.game-flow-editable-fields .game-model-column { grid-template-columns: minmax(var(--game-flow-label-width), max-content) minmax(0, 1fr) 60px; }
-.game-flow-editable-fields .game-model-controls > .game-model-concurrency-control { inline-size: 60px; min-inline-size: 60px; padding-inline: 6px; }
-.game-flow-editable-fields .game-flow-param-stacked.game-model-column { grid-template-columns: minmax(0, 1fr) 60px; }
-/* 数值项：标签固定列宽，输入 88px */
-.game-flow-editable-fields :is(.game-translation-page, .game-flow-param-section, .unity-translation-settings)
-  > label:has(> input[type=number]) { grid-template-columns: minmax(var(--game-flow-label-width), max-content) 88px; }
-.game-flow-editable-fields :is(.game-translation-page, .game-flow-param-section) > label > input[type=number] { inline-size: 88px; min-inline-size: 88px; }
-/* 性能块与参数区之间留白，表格数字对齐 */
-.game-flow-editable-fields .game-flow-performance { margin-block-end: 14px; }
-.game-flow-editable-fields .game-flow-performance-wide :is(th, td) { font-variant-numeric: tabular-nums; }
-.game-flow-editable-fields .game-flow-performance-wide table { table-layout: fixed; }
-.game-flow-editable-fields .game-flow-performance-wide th:first-child { inline-size: 44%; }
-.game-flow-editable-fields .game-flow-performance-wide td { text-align: end; }
-.game-flow-editable-fields .game-flow-performance-wide thead th:not(:first-child) { text-align: end; }
 /* 底部动作区：一条发丝线收口 */
 .game-flow-editable-fields [data-parameter-group="actions"] {
   margin-block-start: 6px;

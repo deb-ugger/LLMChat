@@ -67,13 +67,21 @@ export function useGameFlowExpansion() {
   };
 }
 
-type ParameterControl = HTMLInputElement | HTMLSelectElement | HTMLButtonElement;
+type ParameterControl = HTMLInputElement | HTMLSelectElement | HTMLButtonElement | HTMLOutputElement;
+type ParameterWidth = "narrow" | "mid" | "wide";
 const parameterControls = [
   "input:not([type=checkbox], [type=radio], [type=file], [type=hidden])",
   "select:not([hidden], .game-model-concurrency-control)",
-  ".unity-description-trigger",
+  ".unity-description-trigger", ".game-flow-range-field > output",
 ].join(", ");
-const parameterField = ".game-mosaic-model-field, .game-model-column, .unity-language-setting, label";
+const parameterField = ".game-mosaic-model-field, .game-model-column, .game-flow-range-field, .unity-language-setting, label";
+
+function parameterWidthClass(control: ParameterControl, field: HTMLElement): ParameterWidth {
+  if (control instanceof HTMLInputElement) return control.type === "number" ? "narrow" : "wide";
+  if (control instanceof HTMLSelectElement && control.options.length &&
+    [...control.options].every(option => /^\d+$/.test(option.value))) return "narrow";
+  return field.closest('[data-parameter-group="models"]') ? "wide" : "mid";
+}
 
 function measureParameterText(text: string, style: CSSStyleDeclaration, measure: CanvasRenderingContext2D) {
   measure.font = [style.fontStyle, style.fontWeight, style.fontSize, style.fontFamily].join(" ");
@@ -84,7 +92,7 @@ function parameterValueWidth(control: ParameterControl, measure: CanvasRendering
   const caption = control.parentElement?.querySelector<HTMLElement>(":scope > .searchable-select-caption");
   const text = control instanceof HTMLSelectElement ? control.selectedOptions[0]?.label
     : control instanceof HTMLInputElement ? control.value || control.placeholder
-    : control.firstElementChild?.textContent;
+    : control instanceof HTMLOutputElement ? control.textContent : control.firstElementChild?.textContent;
   if (!text) return 0;
   const style = getComputedStyle(control);
   const textStyle = caption ? getComputedStyle(caption) : style;
@@ -121,33 +129,47 @@ function useParameterFieldWidths(configured: boolean) {
       const columns = style.gridTemplateColumns.split(" ").map(parseFloat);
       const columnWidth = columns.length === 2 ? Math.min(...columns) : Infinity;
       const fullWidth = root.clientWidth;
-      const minimum = parseFloat(style.getPropertyValue("--game-flow-control-min"));
+      const preferred = {
+        narrow: parseFloat(style.getPropertyValue("--game-flow-narrow-width")),
+        mid: parseFloat(style.getPropertyValue("--game-flow-mid-width")),
+        wide: parseFloat(style.getPropertyValue("--game-flow-control-min")),
+      };
       const minLabel = parseFloat(style.getPropertyValue("--game-flow-label-width"));
       const gap = parseFloat(style.getPropertyValue("--game-flow-field-gap"));
-      const widths = new Map<HTMLElement, { wide: boolean; stacked: boolean }>();
+      const visibleFields = new Set<HTMLElement>();
+      const widths = new Map<HTMLElement, { tier: ParameterWidth; control: number; required: number }>();
       for (const control of root.querySelectorAll<ParameterControl>(parameterControls)) {
         if (!control.offsetWidth || control.closest("[popover]")) continue;
         const field = control.closest<HTMLElement>(parameterField);
         if (!field || !root.contains(field) || getComputedStyle(field).display !== "grid") continue;
+        visibleFields.add(field);
+        if (control.getAttribute("aria-expanded") === "true" && field.dataset.paramWidth) continue;
+
         const region = control.closest<HTMLElement>(".model-filter-select") ?? control;
         const concurrency = field.querySelector<HTMLElement>(".game-model-concurrency-control");
         const tools = Math.max(0, region.offsetWidth - control.offsetWidth) + (concurrency ? concurrency.offsetWidth + gap : 0);
-        const required = Math.max(minLabel, parameterLabelWidth(field, measure)) + gap
-          + Math.max(minimum, parameterValueWidth(control, measure) + tools);
-        const open = control.getAttribute("aria-expanded") === "true";
-        const previous = widths.get(field);
-        widths.set(field, {
-          wide: !!previous?.wide || (open ? field.classList.contains("game-flow-param-wide") : required > columnWidth),
-          stacked: !!previous?.stacked || (open ? field.classList.contains("game-flow-param-stacked") : required > fullWidth),
-        });
+        const label = Math.ceil(Math.max(minLabel, parameterLabelWidth(field, measure)));
+        const measured = parameterValueWidth(control, measure);
+        const preferredTier = parameterWidthClass(control, field);
+        const tier = preferredTier === "narrow" && measured > 88 || preferredTier === "mid" && measured > 160
+          ? "wide" : preferredTier;
+        const controlWidth = Math.max(preferred[tier], measured) + tools;
+        widths.set(field, { tier, control: controlWidth, required: label + gap + controlWidth });
       }
       for (const field of root.querySelectorAll<HTMLElement>(".game-flow-param-field")) {
-        if (!widths.has(field)) field.classList.remove("game-flow-param-field", "game-flow-param-wide", "game-flow-param-stacked");
+        if (visibleFields.has(field)) continue;
+        field.classList.remove("game-flow-param-field", "game-flow-param-wide", "game-flow-param-stacked");
+        delete field.dataset.paramWidth;
+        field.style.removeProperty("--game-flow-field-control-width");
+        field.style.removeProperty("--game-flow-field-width");
       }
       for (const [field, width] of widths) {
         field.classList.add("game-flow-param-field");
-        field.classList.toggle("game-flow-param-wide", width.wide);
-        field.classList.toggle("game-flow-param-stacked", width.stacked);
+        field.classList.toggle("game-flow-param-wide", width.required > columnWidth);
+        field.classList.toggle("game-flow-param-stacked", width.required > fullWidth);
+        field.dataset.paramWidth = width.tier;
+        field.style.setProperty("--game-flow-field-control-width", width.control + "px");
+        field.style.setProperty("--game-flow-field-width", width.required + "px");
       }
     };
     const schedule = () => {

@@ -170,9 +170,10 @@ function MetricsValues({ values }: { values: readonly { label: string; value: Re
   )}</div>;
 }
 
-export function GameFlowPerformance({ measured = emptyPerformance, models = [] }: {
+export function GameFlowPerformance({ measured = emptyPerformance, models = [], queue = false }: {
   measured?: StepPerformance;
   models?: ConfiguredModel[];
+  queue?: boolean;
 }) {
   const rateColumns = [
     { key: "generationRate", label: "纯生成" },
@@ -196,11 +197,13 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
   const timingColors = { queueMs: "var(--accent)", processingMs: "var(--signal)", saveMs: "var(--success)", busyMs: "var(--warning)" } as const;
   const segments = (Object.keys(timingColors) as (keyof typeof timingColors)[]).flatMap(key => {
     const metric = timings.find(timing => timing.key === key);
-    return metric ? [{ metric, ms: input[key] ?? 0, color: timingColors[key] }] : [];
+    const ms = input[key] ?? 0;
+    return metric && (queue || Number.isFinite(ms) && ms > 0) ? [{ metric, ms, color: timingColors[key] }] : [];
   });
-  const duration = segments.reduce((total, segment) => total + segment.ms, 0);
+  const duration = queue ? segments.reduce((total, segment) => total + segment.ms, 0) : 0;
   if (!rows.length && !segments.length) return null;
-  return <section className="game-step-metrics-group is-performance game-flow-performance" aria-label="性能">
+  return <section className={"game-step-metrics-group is-performance game-flow-performance" +
+    (queue ? "" : " is-step-card")} aria-label="性能">
     <h4 className="game-step-metrics-label">{rows.length ? "模型性能" : "性能"}</h4>
     {rows.length > 0 && <>
       <div className="game-benchmark-compare-table game-flow-performance-wide">
@@ -233,11 +236,16 @@ export function GameFlowPerformance({ measured = emptyPerformance, models = [] }
       {segments.filter(segment => segment.ms > 0).map(({ metric, ms, color }) =>
         <i key={metric.key} style={{ inlineSize: 100 * ms / duration + "%", background: color, borderRadius: 0 }} />)}
     </div>}
-    {segments.length > 0 && <small className="game-flow-model-rates" aria-label="分项用时">
+    {segments.length > 0 && (queue ? <small className="game-flow-model-rates" aria-label="分项用时">
       {segments.map(({ metric, color }) => <span key={metric.key} style={{ color }} data-tooltip={metricDetails[metric.key]}>
         {metric.label} <b className="game-flow-metric">{metric.value}</b>
       </span>)}
-    </small>}
+    </small> : <p className="game-flow-timing-summary" aria-label="分项用时">
+      {segments.map(({ metric }, index) => <span key={metric.key} data-tooltip={metricDetails[metric.key]}>
+        {index > 0 && <span aria-hidden="true"> · </span>}
+        {metric.label} <b>{metric.value}</b>
+      </span>)}
+    </p>)}
   </section>;
 }
 

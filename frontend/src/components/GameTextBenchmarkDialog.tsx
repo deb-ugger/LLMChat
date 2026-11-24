@@ -368,7 +368,7 @@ function BenchmarkQueueDetails({ progress, position, unit }: { progress: NonNull
           { label: "队列位置", value: position },
         ]} />
       </section>
-      <GameFlowPerformance measured={measured} />
+      <GameFlowPerformance measured={measured} queue />
       {requestRows.some(row => row.value !== undefined) && <section>
         <h4>本次请求</h4>
         <BenchmarkDetailRows rows={requestRows} />
