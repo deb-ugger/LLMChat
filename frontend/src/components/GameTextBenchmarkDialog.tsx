@@ -375,7 +375,7 @@ function BenchmarkQueueDetails({ progress, position, unit }: { progress: NonNull
   </details>;
 }
 
-function BenchmarkRunMeasurements({ result }: { result: BenchmarkResult }) {
+function BenchmarkRunMeasurements({ result, formal }: { result: BenchmarkResult; formal: boolean }) {
   const { performance, unobservedModels } = result;
   const summaryRows: BenchmarkDetailRow[] = [];
   const otherSummary: string[] = [];
@@ -398,7 +398,7 @@ function BenchmarkRunMeasurements({ result }: { result: BenchmarkResult }) {
         { label: "模型", value: model.model },
         { label: "并发", value: model.concurrency },
         { label: "请求", value: model.requests + " 次" },
-        { label: "Token", value: model.requests ? model.usage?.completionTokens ?? model.tokens : undefined },
+        { label: "Token", value: formal && model.requests ? model.usage?.completionTokens ?? model.tokens : undefined },
         { label: "纯生成", value: model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) + "\u00a0tok/s" : undefined },
         { label: "请求平均", value: model.requestMs > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) + "\u00a0tok/s" : undefined },
         { label: "服务总计", value: benchmarkSeconds(timing?.totalMs) },
@@ -1015,17 +1015,18 @@ function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, 
   const tasks = useMemo(() => groupBenchmarkTasks(formal ? history : benchmarkHistoryForRecords(history, snapshot.jobs)), [formal, history, snapshot.jobs]);
   const [referenceRevision, setReferenceRevision] = useState(0);
   useEffect(() => {
+    if (!formal) return;
     const refresh = (event: StorageEvent) => {
       if (event.key?.startsWith("llmchat-run-reference:") || event.key === null) setReferenceRevision(value => value + 1);
     };
     window.addEventListener("storage", refresh);
     return () => window.removeEventListener("storage", refresh);
-  }, []);
+  }, [formal]);
 
-  const customReference = useMemo(() => new Map(tasks.map(task => [task.id,
-    localStorage.getItem(runReferenceKey(task.id, formal)) || undefined])), [tasks, formal, referenceRevision]);
+  const customReference = useMemo(() => new Map((formal ? tasks : []).map(task => [task.id,
+    localStorage.getItem(runReferenceKey(task.id, true)) || undefined])), [tasks, formal, referenceRevision]);
   function setReference(id: string, path?: string) {
-    const key = runReferenceKey(id, formal);
+    const key = runReferenceKey(id, true);
     if (path) localStorage.setItem(key, path);
     else localStorage.removeItem(key);
     setReferenceRevision(value => value + 1);
@@ -1114,7 +1115,8 @@ function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, 
        mosaicTask && config?.mosaic?.selection === "all" ? "工程全部可用图片" :
        sampleUnit === "条" ? "工程已勾选文本" : "工程已勾选图片";
      const sampleLimit = typeof metadata?.sampleLimit === "number" ? metadata.sampleLimit : undefined;
-     const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) : "未选择";
+     const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) :
+       formal ? "未选择" : sampleScope;
      const referenceDetails = [referencePath, referencePath !== inputSet ? sampleScope : undefined,
        sampleLimit === undefined ? undefined : sampleLimit > 0 ? "样本上限 " + sampleLimit + " " + sampleUnit : "样本不限"]
        .filter(Boolean).join("\n");
@@ -1124,9 +1126,9 @@ function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, 
      const stoppedLabel = task.runs.some(run => run.status === "已中止") ? "已中止" : "已暂停";
      const status = task.failed ? `含 ${task.failed} 项失败` : incomplete
        ? task.stopped ? stoppedLabel : "未完成" : "全部完成";
-     const canCompareDataset = (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") &&
-       task.runs.some(run => run.performance.formalRun?.imageDetails || run.performance.benchmark?.imageDetails);
-     const canCompare = task.runs.length > 1 || canCompareDataset;
+     const scoringStep = taskStep === "mosaicScreen" || taskStep === "mosaicRefine";
+     const canCompareDataset = scoringStep && task.runs.some(run => run.performance.formalRun?.imageDetails);
+     const canCompare = task.runs.length > 1 || (formal ? canCompareDataset : scoringStep && typeof reference === "string");
      const openComparison = () => {
        void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
          scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit, formal })
@@ -1157,13 +1159,14 @@ function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, 
      <dl className="game-benchmark-record-context">
        <div><dt>步骤</dt><dd title={taskLabel}>{stepName}</dd></div>
        <div><dt>工程</dt><dd title={projectPath}>{projectPath ? filename(projectPath) : "未记录"}</dd></div>
-       {mosaicTask && <div><dt>对照集</dt><dd className="game-benchmark-record-reference">
-         <span title={referenceDetails || referenceName}>{referenceName}</span>
-         {canCompareDataset && isTauri() && <button type="button" className="unity-btn" onClick={() =>
-           void pickRunReference(referencePath).then(path => { if (path) setReference(task.id, path); })
-             .catch(error => showAppNotice(String(error), "error"))}>{referencePath ? "更换" : "选择"}</button>}
-         {selectedReference && <button type="button" className="unity-btn" onClick={() => setReference(task.id)}>恢复默认</button>}
-       </dd></div>}
+       {!formal ? <div><dt>对照集</dt><dd title={referenceDetails || referenceName}>{referenceName}</dd></div> :
+         mosaicTask && <div><dt>对照集</dt><dd className="game-benchmark-record-reference">
+           <span title={referenceDetails || referenceName}>{referenceName}</span>
+           {canCompareDataset && isTauri() && <button type="button" className="unity-btn" onClick={() =>
+             void pickRunReference(referencePath).then(path => { if (path) setReference(task.id, path); })
+               .catch(error => showAppNotice(String(error), "error"))}>{referencePath ? "更换" : "选择"}</button>}
+           {selectedReference && <button type="button" className="unity-btn" onClick={() => setReference(task.id)}>恢复默认</button>}
+         </dd></div>}
      </dl>
      {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>{formal ? "正式结果对照" : "测试结果对照"}（{task.runs.length} 项）</button>}
       {taskStep && isMosaicStep(taskStep) && task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
@@ -1208,7 +1211,7 @@ function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, 
          </summary>
          <BenchmarkDetailRows rows={parameters} fixedLabels />
          {result.detail && <p>{result.detail}</p>}
-         <BenchmarkRunMeasurements result={result} />
+         <BenchmarkRunMeasurements result={result} formal={formal} />
          <RunPerformanceDetails run={result.performance} source={formal ? "formal" : "benchmark"} />
          {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
          {(result.performance.formalRun?.imageDetails || result.performance.benchmark?.imageDetails === true) && result.performance.taskId &&
