@@ -3773,8 +3773,8 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-collapsed-summary{justify-content:flex-end;overflow:hidden;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
 .game-flow-collapsed-summary b{color:var(--text);font-variant-numeric:tabular-nums}
 .game-flow-parameter-list{display:grid;gap:4px;margin:6px 0 0;font-size:var(--fs-caption)}
-.game-flow-parameter-list > div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:baseline;gap:8px}
-.game-flow-parameter-list dt{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.game-flow-parameter-list > div{display:grid;grid-template-columns:116px minmax(0,1fr);align-items:baseline;gap:10px}
+.game-flow-parameter-list dt{color:var(--text-muted);white-space:nowrap}
 .game-flow-parameter-list dd{margin:0;overflow-wrap:anywhere}
 .game-flow-model-rates > .game-flow-refine-summary{inline-size:100%;min-inline-size:0;text-align:start;white-space:normal;overflow-wrap:anywhere}
 .game-flow-state-line{display:flex;align-items:flex-start;gap:8px;margin-block-start:10px;padding-block-start:8px;
