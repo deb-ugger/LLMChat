@@ -395,19 +395,23 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           {infoRows.map(({ label, value }, index) => <div key={label + index}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>}
         {activeProgress && <div className="game-flow-progress">
-          {(activeProgress.sample || hasCounts || activeProgress.count) && <div className="game-flow-progress-main">
+          <div className="game-flow-progress-row">
+            {percent === undefined ? <GameProgressBar label={title + "进度"} /> :
+              <>
+                <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
+                  aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: percent + "%" }} /></div>
+                <span className="game-flow-progress-pct" aria-hidden="true">{percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</span>
+              </>}
+            {(hasCounts || activeProgress.count) && <span className="game-flow-progress-count">
+              {hasCounts
+                ? <>{progressCurrent.toLocaleString()} <small>/ {progressTotal.toLocaleString()}</small></>
+                : activeProgress.count}
+            </span>}
+          </div>
+          {(activeProgress.sample || progressPosition || remaining) && <div className="game-flow-progress-meta">
+            {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
             {activeProgress.sample && <span className="game-flow-sample" data-tooltip={activeProgress.sample}>{activeProgress.sample}</span>}
-            {hasCounts
-              ? <span className="game-flow-progress-count">{progressCurrent.toLocaleString()} <small>/ {progressTotal.toLocaleString()}</small></span>
-              : activeProgress.count && <span className="game-flow-progress-count">{activeProgress.count}</span>}
-          </div>}
-          {percent === undefined ? <GameProgressBar label={title + "进度"} /> :
-            <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
-              aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ inlineSize: percent + "%" }} /></div>}
-          {(progressPosition || percent != null || remaining) && <div className="game-flow-progress-meta">
-            {progressPosition && <span>{progressPosition}</span>}
-            {percent != null && <span>已完成 <b>{percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b></span>}
-            {remaining && <span>预计剩余 <b>{remaining}</b></span>}
+            {remaining && <span className="game-flow-progress-remaining">预计剩余 <b>{remaining}</b></span>}
           </div>}
         </div>}
         {activeProgress?.details}
