@@ -209,9 +209,11 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                     onContextMenu={event => openGroupMenu(event, row.group)}>
                     <span className="game-mosaic-image-heading">
                       <strong><SearchHighlight text={image.name} query={needle} /></strong>
-                      <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
                     </span>
-                    <small>{detail}</small>
+                    <small className="game-mosaic-image-meta">
+                      <span>{detail}</span>
+                      <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
+                    </small>
                     {edited.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
                   </button>
                 </li>;

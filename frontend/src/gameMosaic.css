@@ -234,8 +234,23 @@ input.game-mosaic-threshold[type="number"] {
   gap: var(--space-1);
   min-inline-size: 0;
 }
+.game-mosaic-image-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+.game-mosaic-image-meta > span:first-child {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-mosaic-image-meta > .game-mosaic-image-badge {
+  margin-inline-start: auto;
+}
 .game-mosaic-workbench .game-mosaic-image-heading > strong {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;

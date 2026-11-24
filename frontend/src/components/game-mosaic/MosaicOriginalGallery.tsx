@@ -236,9 +236,11 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
             <MosaicOriginalThumbnail image={image} read={read} />
             <span className="game-mosaic-image-heading">
               <strong><SearchHighlight text={image.name} query={query} /></strong>
-              <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
             </span>
-            <small>{image.width} × {image.height}</small>
+            <small className="game-mosaic-image-meta">
+              <span>{image.width} × {image.height}</span>
+              <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
+            </small>
             {state !== "confirmed" && <small className="game-mosaic-original-status">{label}</small>}
             {change.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
           </button>
