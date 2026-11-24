@@ -98,8 +98,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const active = state === "running" || benchmarkActive;
   const locked = active || parametersLocked;
   const configured = expanded && (!locked || active) && !!configuration;
-  const actualParameters = benchmarkActive ? (benchmark.phase === "prepare" ? undefined : benchmark.parameters) : runningParameters;
-  const showActualParameters = active && (benchmarkActive || !!(runningParameters || configuration || onConfigure));
+  const readOnlyParameters = !active && !configuration ? benchmark?.parameters ?? runningParameters : undefined;
+  const showReadOnlyParameters = !!readOnlyParameters?.length;
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
     benchmark.configIndex != null && benchmark.configCount != null
     ? `第 ${benchmark.round}/${benchmark.rounds} 轮 · 配置 ${benchmark.configIndex}/${benchmark.configCount}` : undefined;
@@ -124,16 +124,9 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   } : state === "running" ? progress ?? {} : undefined;
   const percent = activeProgress?.percent == null ? undefined : Math.min(100, Math.max(0, activeProgress.percent));
   const summaryProgress = activeProgress ?? progress;
-  const summaryValue = summaryProgress?.percent ?? (summaryProgress?.current != null &&
-    summaryProgress.total != null && summaryProgress.total > 0 ? 100 * summaryProgress.current / summaryProgress.total : undefined);
-  const summaryPercent = !benchmark && state === "done" ? 100 : summaryValue != null && Number.isFinite(summaryValue)
-    ? Math.round(Math.min(100, Math.max(0, summaryValue))) : state === "pending" || state === "waiting" ? 0 : undefined;
   const elapsedLabel = benchmark ? gameDuration(configElapsed ?? benchmark.elapsedMs) : elapsed;
   const completed = summaryProgress?.completed ?? (benchmark ? undefined : foldedSummary?.completed) ?? summaryProgress?.current;
   const unit = progress?.unit ?? "项";
-  const foldedCount = completed != null
-    ? completed.toLocaleString() + " " + unit
-    : state === "done" && elapsedLabel != null ? "已完成" : undefined;
   const cardStateLine = statusLine || benchmark?.detail;
   const progressConfig = activeProgress?.configuration;
   const successRate = activeProgress?.successRate;
@@ -148,7 +141,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
     : foldedSummary?.concurrency;
   const failed = benchmark ? benchmark.performance?.failures : foldedSummary?.failed;
   const total = summaryProgress?.total;
-  const summaryCount = completed != null ? completed.toLocaleString() + (total != null && total !== completed
+  const summaryCount = completed != null ? completed.toLocaleString() + (total != null
     ? " / " + total.toLocaleString() : "") + " " + unit : undefined;
   const modelsText = modelNames.join(" → ");
   const summaryRows = [
@@ -172,10 +165,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           onClick={onConfigure}>{title}</button> : <strong className="game-flow-title">{title}</strong>}
         {expanded && position && <span className="game-flow-position">{position}</span>}
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
-        {expanded && elapsedLabel != null && <span className="game-flow-elapsed">已用 {elapsedLabel}</span>}
-        {!expanded && <span className="game-flow-folded-result">{foldedCount != null || elapsedLabel != null ? <>
-          {foldedCount && <b>{foldedCount}</b>}{foldedCount && elapsedLabel != null && " · "}{elapsedLabel}
-        </> : summaryPercent === undefined ? "进度 —" : summaryPercent + "%"}</span>}
+        {elapsedLabel != null && <span className="game-flow-elapsed">{(expanded || active) && "已用 "}{elapsedLabel}</span>}
         {actions && <div className="game-flow-actions">{actions}</div>}
       </header>
       {!expanded && summaryRows.length > 0 && <div className="game-flow-collapsed-summary">
@@ -205,19 +195,20 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {details}
         {performance}
         {body}
-        {(showActualParameters || !locked && (onConfigure || configuration)) && <section id={settingsId}
-          className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!showActualParameters && !configured}>
-          <h5 className="game-flow-editable-title">运行参数<span className="game-flow-tag">{active ? "运行中，不可改" : "可改"}</span>
-            {saveConfiguration && <button type="button" disabled={locked || saveConfiguration.disabled}
+        {(configured || showReadOnlyParameters || !locked && onConfigure) && <section id={settingsId}
+          className="game-flow-editable" role="region" aria-label={title + "运行参数"} hidden={!configured && !showReadOnlyParameters}>
+          <h5 className="game-flow-editable-title">运行参数
+            {configured && <span className="game-flow-tag">{active ? "运行中，不可改" : "可改"}</span>}
+            {configured && saveConfiguration && <button type="button" disabled={locked || saveConfiguration.disabled}
               onClick={saveConfiguration.run}>{saveConfiguration.saving ? "保存中…" : "保存"}</button>}
           </h5>
           {configured && <fieldset className="game-flow-parameter-fields" disabled={locked}>
             <div className="game-flow-editable-fields">{configuration}</div>
           </fieldset>}
-          {showActualParameters && (actualParameters?.length ? <dl className="game-flow-parameter-list" aria-label="本次实际运行参数">
-            {actualParameters.map(({ label, value, scope }, index) =>
+          {showReadOnlyParameters && <dl className="game-flow-parameter-list" aria-label="本次实际运行参数">
+            {readOnlyParameters.map(({ label, value, scope }, index) =>
               <div key={scope + ":" + label + ":" + index}><dt title={label}>{label}</dt><dd>{value}</dd></div>)}
-          </dl> : !configured && <p className="hint">{benchmarkActive && benchmark.phase === "prepare" ? "正在准备本配置参数…" : "暂无本次运行参数"}</p>)}
+          </dl>}
         </section>}
         {cardStateLine && <div className="game-flow-state-line" role="status" data-active={active || undefined}>
           <span aria-hidden="true" /><span>{cardStateLine}</span>

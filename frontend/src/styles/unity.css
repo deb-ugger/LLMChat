@@ -3919,11 +3919,11 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-progress-meta b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
 .game-flow-head.is-folded{flex-wrap:nowrap;gap:4px 6px}
 .game-flow-head.is-folded > .game-flow-title{min-inline-size:2em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.game-flow-head.is-folded > .game-flow-actions{min-inline-size:0;flex-wrap:nowrap;margin-inline-start:0}
+.game-flow-head.is-folded > .game-flow-actions{min-inline-size:0;flex-wrap:nowrap}
+.game-flow-head.is-folded > .game-flow-elapsed + .game-flow-actions{margin-inline-start:0}
 .game-flow-head.is-folded > .game-flow-actions > button{min-inline-size:0;padding-inline:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.game-flow-folded-result{margin-inline-start:auto;min-inline-size:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:var(--fs-caption);color:var(--text-muted);font-variant-numeric:tabular-nums}
-.game-flow-folded-result b{color:var(--text)}
+.game-flow-head.is-folded > .game-flow-elapsed{margin-inline-start:auto;min-inline-size:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
 .game-flow-collapsed-summary{display:flex;align-items:baseline;overflow:hidden;white-space:nowrap;font-size:var(--fs-caption);color:var(--text-muted)}
 .game-flow-collapsed-summary > span{display:flex;gap:2px;min-inline-size:0}
 .game-flow-collapsed-summary > span > span:first-child:not(.game-flow-folded-value){flex:none;white-space:pre}
@@ -3954,8 +3954,20 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-editable-title button{margin-inline-start:auto;font-size:9.5px;letter-spacing:0;padding:2px 9px;
   border-radius:5px;border:0;font-weight:600;cursor:pointer;background:var(--text);color:var(--bg)}
 .game-flow-editable-title button:disabled{opacity:.45;cursor:not-allowed}
+.game-flow-editable:has(> .game-flow-parameter-fields:disabled) .game-flow-editable-title > button:disabled{
+  opacity:1;background:var(--bg-muted);color:var(--text);box-shadow:inset 0 0 0 1px var(--border-strong)
+}
 .game-flow-parameter-fields{min-inline-size:0;margin:0;padding:0;border:0}
-.game-flow-parameter-fields:disabled :is(input,select,textarea,button):disabled{opacity:.45;cursor:not-allowed}
+.game-flow-editable .game-flow-parameter-fields:disabled :is(input,select,textarea,button):disabled{
+  opacity:1;cursor:not-allowed;filter:none
+}
+.game-flow-editable .game-flow-parameter-fields:disabled :is(input:not([type=checkbox],[type=radio]),select,textarea,.unity-btn):disabled{
+  background:var(--bg-muted);border-color:var(--border-strong)
+}
+.game-flow-editable .game-flow-parameter-fields:disabled :is(input:not(:has(+ .searchable-select-caption)),select,textarea,button):disabled,
+.game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{color:var(--text)}
+.game-flow-editable .game-flow-parameter-fields:disabled .searchable-select-input:disabled + .searchable-select-caption{opacity:1}
+.game-flow-editable .game-flow-parameter-fields:disabled :is(input,textarea):disabled::placeholder{color:var(--text-muted);opacity:1}
 .game-flow-editable-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}
 .game-flow-editable-fields > .game-flow-field-wide{grid-column:1 / -1}
 @container (max-width:492px){.game-flow-editable-fields{grid-template-columns:minmax(0,1fr)}}

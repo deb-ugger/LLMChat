@@ -455,15 +455,6 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     (optionsChanged(step) || !!concurrencyDrafts[step]?.length || !!Object.keys(filterDrafts[step] || {}).length);
   const formalStep = activity?.state === "running" ? activity.step : undefined;
   const configurationLocked = testing || formalStep !== undefined;
-  const [formalSnapshot, setFormalSnapshot] = useState<{
-    scope: string; step: string; parameters?: readonly BenchmarkParameter[];
-  }>();
-  if (formalStep && (formalSnapshot?.scope !== performanceScope || formalSnapshot?.step !== formalStep)) {
-    setFormalSnapshot({ scope: performanceScope, step: formalStep,
-      parameters: steps.find(step => step.id === formalStep)?.runningParameters ?? runningParameters });
-  } else if (!formalStep && formalSnapshot) {
-    setFormalSnapshot(undefined);
-  }
   const withConfiguration = async (action?: () => void, stepId?: string, announce = false) => {
     if (pendingSave.current && !await pendingSave.current) return false;
     const draftSteps = (stepId ? [stepId] : steps.map(step => step.id)).filter(changed);
@@ -590,7 +581,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
             concurrency: Math.max(0, ...(modelRows.length ? modelRows : configuredModels).map(model => model.concurrency)) }}
           statusLine={liveActivity?.statusLine}
           parametersLocked={configurationLocked}
-          runningParameters={formalSnapshot?.step === step.id ? formalSnapshot.parameters : undefined}
+          runningParameters={step.runningParameters ?? (matchesActivity ? runningParameters : undefined)}
           details={!testMetrics && (liveActivity?.details ?? (!Object.keys(measured.models).length && !configuredModels.length && step.summary &&
             <small className="game-flow-model-rates">{step.summary}</small>))}
           performance={(expanded || state === "running" || formalPaused || testMetrics) &&
