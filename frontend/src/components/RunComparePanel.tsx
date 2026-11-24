@@ -2,10 +2,16 @@ import * as echarts from "echarts/core";
 import { BarChart, ScatterChart } from "echarts/charts";
 import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { downloadMosaicTaskReport, readMosaicComparisonRuns, scoreMosaicComparisonRuns, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
 import { groupBenchmarkTasks, readGameBenchmarkHistory, readGameFormalHistory, type BenchmarkConfig } from "../gameTextBenchmark";
 import { gameDuration } from "../gameModelPerformance";
+const MOSAIC_SPEED_CONDITIONS = "整轮成功完成、逐图结果完整且计时有效时显示。";
+const mosaicSpeedHint = (row: { seconds: number; validRuns: number; samples: number; score: { speed: number | null; speedUnavailableReason?: string } }) =>
+  row.score.speed !== null
+    ? `整轮用时 ÷ 有效结果数 × 100\n本轮 ${row.seconds.toFixed(1)} 秒 ÷ ${row.validRuns} 张 × 100`
+    : `${row.score.speedUnavailableReason ?? "用时无效"}（有效 ${row.validRuns} / ${row.samples} 张）\n${MOSAIC_SPEED_CONDITIONS}`;
+
 import { bestMosaicRuns, compareMosaicScores, mosaicScoreTitle } from "../benchmark/mosaicScore";
 import { pickRunReference, runReferenceKey, type GameBenchmarkReviewSetup } from "../gameAuxWindows";
 import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../benchmark/formalRunHistory";
@@ -52,21 +58,6 @@ function useChart(hostRef: RefObject<HTMLDivElement | null>, option: Record<stri
   }, [hostRef, option, colors]);
 }
 
-const mosaicSpeedConditions = "整轮成功完成、逐图结果完整且计时有效时显示。";
-
-function mosaicSpeedTooltip(row: MosaicTaskReport["totals"][number], anomalies: string, anomalyDetails: string) {
-  if (row.score.speed !== null) {
-    return `整轮用时 ÷ 有效结果数 × 100\n本轮 ${row.seconds.toFixed(1)} 秒 ÷ ${row.validRuns} 张 × 100`;
-  }
-  const timing = row.score.details.find(detail => detail.key === "timing")?.current;
-  return [
-    mosaicSpeedConditions,
-    `本轮 ${row.validRuns} / ${row.samples} 张有有效结果`,
-    anomalies,
-    timing,
-    anomalyDetails || (!anomalies && !timing ? row.score.speedUnavailableReason : ""),
-  ].filter(Boolean).join("\n");
-}
 
 function tooltipStyle(colors: ChartColors) {
   return {
@@ -321,10 +312,6 @@ const RunComparePanel = memo(function RunComparePanel({
   const sortBy = (key: typeof sort.key) => setSort(previous => ({
     key, descending: previous.key === key ? !previous.descending : key !== "seconds",
   }));
-  const sortState = (key: typeof sort.key) => sort.key === key ? (sort.descending ? "descending" : "ascending") : "none";
-  const sortMark = (key: typeof sort.key) => sort.key === key ? (sort.descending ? "↓" : "↑") : "↕";
-  const qualityCols = screening ? 9 : 6;
-  const totalCols = 2 + qualityCols + (screening ? 0 : 4) + 2;
 
   return <main className="benchmark-report" aria-labelledby={titleId}>
     <header className="benchmark-report-head">
@@ -350,90 +337,113 @@ const RunComparePanel = memo(function RunComparePanel({
     {report && <section className="benchmark-report-table-section" aria-label="数据集对照总结">
       <p>{report.title}，定位框按 IoU ≥ 0.5 最大一对一匹配</p>
       <p id={titleId + "-f1"}>{screening ? "初筛按有码保留和无码剔除评分。" : "复筛按图级判定、框级匹配、复核与速度评分。交付覆盖采用固定人工框分母。"} 排名先比较漏选，再比较漏框。F1 为明确图级判定的参考值。</p>
-      <div className="benchmark-report-table" tabIndex={0} role="region" aria-label="运行结果表" aria-describedby={titleId + "-f1"}>
-        <table>
-          <colgroup span={1} /><colgroup span={qualityCols} />{!screening && <colgroup span={4} />}<colgroup span={2} /><colgroup span={1} />
-          <thead>
-            <tr>
-              <th rowSpan={2} scope="col" className="benchmark-report-config">配置</th>
-              <th colSpan={qualityCols} scope="colgroup" className="benchmark-report-group is-quality">质量</th>
-              {!screening && <th colSpan={4} scope="colgroup" className="benchmark-report-group is-coverage benchmark-report-group-start">覆盖</th>}
-              <th colSpan={2} scope="colgroup" className="benchmark-report-group is-efficiency benchmark-report-group-start">效率</th>
-              <th rowSpan={2} scope="col" className="benchmark-report-ranking benchmark-report-group-start">资格</th>
-            </tr>
-            <tr>
-              <th scope="col" aria-sort={sortState("score")}><button type="button" title="按漏选、漏框、分数的顺序排名" onClick={() => sortBy("score")}>{screening ? "候选保留分" : "综合分"} <span aria-hidden="true">{sortMark("score")}</span></button></th>
-              <th scope="col" aria-sort={sortState("f1")}><button type="button" onClick={() => sortBy("f1")}>图级 F1 <span aria-hidden="true">{sortMark("f1")}</span></button></th>
-              {screening ? <><th scope="col">直接筛掉的有码</th><th scope="col">保留给下游的有码</th><th scope="col">移交的无码</th></>
-                : <><th scope="col">漏图</th><th scope="col">误报</th></>}
-              <th scope="col">待复核</th><th scope="col">未确认判有码</th>
-              <th scope="col" className={screening ? undefined : "benchmark-report-group-start"}>匹配框/可评框</th>
-              {!screening && <th scope="col">交付覆盖</th>}<th scope="col">多余框</th>
-              {!screening && <th scope="col" className="benchmark-report-ratio">判定率</th>}
-              <th scope="col" className="benchmark-report-group-start"
-                data-tooltip={"整轮用时 ÷ 有效结果数 × 100\n" + mosaicSpeedConditions}>每百张秒数</th>
-              <th scope="col" aria-sort={sortState("seconds")}><button type="button" onClick={() => sortBy("seconds")}>用时 <span aria-hidden="true">{sortMark("seconds")}</span></button></th>
-            </tr>
-          </thead>
-          <tbody>{rows.map(row => {
-            const config = runConfigs.get(row.runId)?.mosaic;
-            const concurrency = screening ? config?.concurrency : config?.refineConcurrency;
-            const hasConcurrency = concurrency !== undefined && Number.isInteger(concurrency) && concurrency > 0;
-            const label = hasConcurrency ? row.label.replace(/\s*[\u00b7，,]\s*并发\s+\d+\s*$/u, "") : row.label;
-            const isBest = winners.has(row.runId);
-            const expanded = expandedRunId === row.runId;
-            const reasonId = titleId + "-why-" + row.runId;
-            const anomalies = [
-              row.score.details.find(detail => detail.key === "status")?.current,
-              row.pending > 0 ? `待筛选 ${row.pending} 张` : "",
-              row.missing > 0 ? `缺行 ${row.missing} 张` : "",
-              row.invalid > 0 ? `异常 ${row.invalid} 条` : "",
-            ].filter(Boolean).join("，");
-            const anomalyDetails = [...row.issues, ...Object.entries(row.reasons).map(([reason, count]) => `${reason} × ${count}`)]
-              .join("，").replaceAll("·", "，");
-            return <Fragment key={row.runId}><tr data-best={isBest || undefined}
-              data-selected={row.runId === activeRunId || undefined} onClick={() => setSelectedRunId(row.runId)}>
-            <td className="benchmark-report-config">
+      <div className="benchmark-report-sort" role="group" aria-label="排序方式">
+        <span>排序</span>
+        <span className="benchmark-report-sr" aria-live="polite" aria-atomic="true">
+          {sort.key === "score"
+            ? `组内按${screening ? "初筛排名" : "综合排名"}${sort.descending ? "正序" : "倒序"}列出`
+            : `组内按${sort.key === "f1" ? "图级 F1" : "用时"}${sort.descending ? "降序" : "升序"}列出`}
+        </span>
+        {([["score", screening ? "候选保留分" : "综合分"], ["f1", "图级 F1"], ["seconds", "用时"]] as const).map(([key, text]) =>
+          <button key={key} type="button" aria-pressed={sort.key === key} onClick={() => sortBy(key)}>
+            {text}<span aria-hidden="true">{sort.key === key ? (sort.descending ? " ↓" : " ↑") : ""}</span>
+          </button>)}
+      </div>
+      <div className="benchmark-report-cards" role="region" aria-label="运行结果卡片" tabIndex={0}
+        aria-describedby={titleId + "-f1"}>
+        {rows.map(row => {
+          const config = runConfigs.get(row.runId)?.mosaic;
+          const concurrency = screening ? config?.concurrency : config?.refineConcurrency;
+          const hasConcurrency = concurrency !== undefined && Number.isInteger(concurrency) && concurrency > 0;
+          const label = hasConcurrency ? row.label.replace(/\s*[\u00b7，,]\s*并发\s+\d+\s*$/u, "") : row.label;
+          const isBest = winners.has(row.runId);
+          const expanded = expandedRunId === row.runId;
+          const reasonId = titleId + "-why-" + row.runId;
+          const statusNote = row.score.details.find(detail => detail.key === "status")?.current;
+          const anomalies = [
+            statusNote && statusNote !== "完成" ? statusNote : "",
+            row.pending > 0 ? `待筛选 ${row.pending} 张` : "",
+            row.missing > 0 ? `缺行 ${row.missing} 张` : "",
+            row.invalid > 0 ? `异常 ${row.invalid} 条` : "",
+          ].filter(Boolean).join("，");
+          const anomalyDetails = [...row.issues, ...Object.entries(row.reasons).map(([reason, count]) => `${reason} × ${count}`)]
+            .join("，").replaceAll("·", "，");
+          const figures = screening ? [
+            ["直接筛掉的有码", String(row.fn)],
+            ["保留给下游的有码", String(row.evaluatedPositive - row.fn)],
+            ["移交的无码", String(row.fp + row.reviewNegative)],
+            ["待复核", String(row.review)],
+            ["未确认判有码", String(row.unlabelledPositive)],
+            ["多余框", String(row.extraBoxes)],
+            ["每百张秒数", row.score.speed?.toFixed(1) ?? "—", mosaicSpeedHint(row)],
+            ["待筛选 / 缺行 / 异常", `${row.pending} / ${row.missing} / ${row.invalid}`],
+          ] : [
+            ["漏图", String(row.fn)],
+            ["误报", String(row.fp)],
+            ["待复核", String(row.review)],
+            ["未确认判有码", String(row.unlabelledPositive)],
+            ["交付覆盖 · 固定人工框分母", `${percent(row.score.delivery)}${row.expectedBoxes ? ` · ${row.foundBoxes}/${row.expectedBoxes} 框` : ""}`],
+            ["多余框", String(row.extraBoxes)],
+            ["判定率 · 有码 / 无码 / 框", `${percent(row.score.positiveCoverage)} · ${percent(row.score.negativeCoverage)} · ${percent(row.score.boxCoverage)}`],
+            ["每百张秒数", row.score.speed?.toFixed(1) ?? "—", mosaicSpeedHint(row)],
+            ["待筛选 / 缺行 / 异常", `${row.pending} / ${row.missing} / ${row.invalid}`],
+          ];
+          return <article key={row.runId} className="benchmark-report-card" data-best={isBest || undefined}
+            data-selected={row.runId === activeRunId || undefined} onClick={() => setSelectedRunId(row.runId)}>
+            <header>
               <button type="button" className="benchmark-report-select" aria-pressed={row.runId === activeRunId} title={label}>{label}</button>
-              <small>第 {row.round} 轮{hasConcurrency ? `，并发 ${concurrency}` : ""}
-                {groups.size > 1 ? `，第 ${row.groupNumber} 组` : ""}</small>
-              {(anomalies || anomalyDetails) && <small className="benchmark-report-anomaly" data-tooltip={anomalyDetails || undefined}
-                tabIndex={anomalyDetails ? 0 : undefined}>{anomalies || "运行异常"}</small>}
-            </td>
-            <td className="benchmark-report-score"><b>{row.score.displayScore?.toFixed(1) ?? "—"}</b>
-              <i>{row.score.provisional && "暂定 "}{row.score.effectiveWeight}/100</i><details className="benchmark-report-score-details">
-              <summary>分项</summary><ul>{row.score.items.map(item => <li key={item.label}>
-                {item.label} {item.ratio === null ? item.missing : `${Number(item.numerator.toFixed(2))}/${Number(item.denominator.toFixed(2))}，得 ${(item.ratio * item.weight).toFixed(2)}/${item.weight} 分`}
-              </li>)}</ul>
-            </details></td>
-            <td>{percent(row.f1)}</td><td>{row.fn}</td>
-            {screening ? <><td>{row.evaluatedPositive - row.fn}</td><td>{row.fp + row.reviewNegative}</td></> : <td>{row.fp}</td>}
-            <td>{row.review}</td><td>{row.unlabelledPositive}</td>
-            <td className={screening ? undefined : "benchmark-report-group-start"}>{row.foundBoxes} / {row.evaluatedBoxes}</td>
-            {!screening && <td title={row.expectedBoxes ? `${row.foundBoxes}/${row.expectedBoxes} 框` : undefined}>{percent(row.score.delivery)}</td>}
-            <td>{row.extraBoxes}</td>
-            {!screening && <td className="benchmark-report-ratio"><span>有码 {percent(row.score.positiveCoverage)}</span>
-              {row.score.negativeCoverage !== null && <span>无码 {percent(row.score.negativeCoverage)}</span>}
-              <span>框 {percent(row.score.boxCoverage)}</span>
-            </td>}
-            <td className="benchmark-report-group-start" data-tooltip={mosaicSpeedTooltip(row, anomalies, anomalyDetails)}
-              tabIndex={row.score.speed === null ? 0 : undefined}>
-              {row.score.speed?.toFixed(1) ?? "—"}
-            </td><td>{gameDuration(row.elapsedMs)}</td>
-            <td className="benchmark-report-ranking benchmark-report-group-start">
-              {row.score.eligible ? <span className={`benchmark-report-badge${isBest ? " is-best" : ""}`}>{isBest ? "最佳" : "合格"}</span> :
-                <button type="button" className="benchmark-report-badge" aria-expanded={expanded} aria-controls={expanded ? reasonId : undefined}
-                  aria-label={`${label}的资格，不参与`} onClick={() => setExpandedRunId(expanded ? undefined : row.runId)}>不参与</button>}
-            </td>
-          </tr>{expanded && <tr className="benchmark-report-why" id={reasonId}><td colSpan={totalCols}>
-            <p>不参与排名，{row.score.details.length} 项未达标</p>
-            <ul>{row.score.details.map(detail => <li key={detail.key}>
-              <b>{detail.label}</b><span>当前 {detail.current}</span>
-              <span>要求 {detail.required}</span><span>补 {detail.action}</span>
-            </li>)}</ul>
-          </td></tr>}</Fragment>;
-          })}</tbody>
-        </table>
+              <small>第 {row.round} 轮{hasConcurrency ? ` · 并发 ${concurrency}` : ""}{groups.size > 1 ? ` · 第 ${row.groupNumber} 组` : ""}</small>
+              {anomalies && <small className="benchmark-report-anomaly" data-tooltip={anomalyDetails || undefined}
+                tabIndex={anomalyDetails ? 0 : undefined}>{anomalies}</small>}
+              <span className="benchmark-report-card-grow" />
+              {row.score.eligible
+                ? <span className={`benchmark-report-badge${isBest ? " is-best" : ""}`}>{isBest ? "最佳 · 合格" : "合格"}</span>
+                : <button type="button" className="benchmark-report-badge is-out" aria-expanded={expanded}
+                  aria-controls={expanded ? reasonId : undefined} aria-label={`${label}的资格，不参与`}
+                  onClick={event => { event.stopPropagation(); setExpandedRunId(expanded ? undefined : row.runId); }}>不参与</button>}
+              <button type="button" className="benchmark-report-expand" aria-expanded={expanded}
+                aria-controls={expanded ? reasonId : undefined} aria-label={`${expanded ? "收起" : "展开"}${label}的细项`}
+                onClick={event => { event.stopPropagation(); setExpandedRunId(expanded ? undefined : row.runId); }}>
+                {expanded ? "收起" : "展开"}
+              </button>
+            </header>
+            <dl className="benchmark-report-figs">
+              <div>
+                <dt>{screening ? "候选保留分" : "综合分"} · 权重 {row.score.effectiveWeight}/100</dt>
+                <dd>{row.score.displayScore?.toFixed(1) ?? "—"}{row.score.provisional && <em>暂定</em>}</dd>
+              </div>
+              <div><dt>图级 F1</dt><dd>{percent(row.f1)}</dd></div>
+              <div><dt>匹配框 / 可评框</dt><dd>{row.foundBoxes} <small>/ {row.evaluatedBoxes}</small></dd></div>
+              <div><dt>用时</dt><dd>{gameDuration(row.elapsedMs)}</dd></div>
+            </dl>
+            {expanded && <div className="benchmark-report-detail" id={reasonId} onClick={event => event.stopPropagation()}>
+              <div>
+                <h4>本次结果细项</h4>
+                <dl>{figures.map(([name, value, hint]) => <div key={name} data-tooltip={hint} tabIndex={hint ? 0 : undefined}>
+                  <dt>{name}</dt><dd>{value}</dd>
+                </div>)}</dl>
+              </div>
+              <div>
+                <h4>评分构成 · 有效权重 {row.score.effectiveWeight} / 100</h4>
+                {row.score.items.map(item => {
+                  const width = item.ratio === null ? 0 : Math.max(0, Math.min(1, item.ratio)) * 100;
+                  return <div key={item.label} className="benchmark-report-bar">
+                    <span>{item.label}</span>
+                    <i><b style={{ width: `${width}%` }} data-low={item.ratio !== null && item.ratio < 0.35 || undefined} /></i>
+                    <em>{item.ratio === null ? item.missing : `${(item.ratio * item.weight).toFixed(2)} / ${item.weight}`}</em>
+                  </div>;
+                })}
+                {!row.score.eligible && <p className="benchmark-report-reason">
+                  未参与排名，{row.score.details.length} 项未达标：
+                  {row.score.details.map(detail => ` ${detail.label}（当前 ${detail.current}，要求 ${detail.required}，补 ${detail.action}）`).join("；")}
+                </p>}
+                {(anomalies || anomalyDetails) && <p className="benchmark-report-reason is-anomaly">
+                  异常：{anomalies || "运行异常"}{anomalyDetails ? ` · ${anomalyDetails}` : ""}
+                </p>}
+              </div>
+            </div>}
+          </article>;
+        })}
       </div>
     </section>}
     <div className="benchmark-report-charts">
