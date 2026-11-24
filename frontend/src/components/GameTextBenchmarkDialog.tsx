@@ -974,8 +974,10 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
             <label>筛选方式<select value={config.mosaic.detector} onChange={event => changeMosaic(config.id, { detector: event.target.value as MosaicSettings["detector"] })}>
               <option value="anime">分类＋定位</option><option value="grid">方格规则</option>
             </select></label>
-            {config.mosaic.detector !== "grid" && <MosaicScreeningFields value={config.mosaic.screening} disabled={locked}
-              onChange={screening => changeMosaic(config.id, { screening })} />}
+            {config.mosaic.detector !== "grid" && <div className="game-benchmark-screening-fields">
+              <MosaicScreeningFields value={config.mosaic.screening} disabled={locked}
+                onChange={screening => changeMosaic(config.id, { screening })} />
+            </div>}
             <label>视觉补检<select value={config.mosaic.screenVisionModel || ""}
               onChange={event => changeMosaic(config.id, { screenVisionModel: event.target.value || undefined })}>
               <option value="">关闭</option>{[...new Set([config.mosaic.screenVisionModel, ...models])].filter((model): model is string => !!model).map(model =>
