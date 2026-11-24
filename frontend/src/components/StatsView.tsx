@@ -506,11 +506,8 @@ function saveStatsFilters(state: StatsFiltersState) {
 function formatTokenCount(n: number): string {
   if (n < 0) return "未知";
   if (!Number.isFinite(n) || n <= 0) return "0";
-  if (n >= 10_000) {
-    const wan = n / 10_000;
-    return `${wan >= 100 ? wan.toFixed(0) : wan.toFixed(1).replace(/\.0$/, "")}万`;
-  }
-  return n.toLocaleString("en-US");
+  // 完整千分位：Token 数用于对账，不砍成「万」丢掉精度。
+  return Math.round(n).toLocaleString("en-US");
 }
 
 function eventChannelLabel(ev: UsageEvent): string {
@@ -1026,12 +1023,12 @@ export function StatsView({ active = true }: { active?: boolean }) {
         </div>
         <div className="stats-kpi">
           <span className="stats-kpi-label">Token 合计</span>
-          <MetricValue value={totals.tokens} compact />
+          <MetricValue value={totals.tokens} />
           <div className="stats-kpi-parts">
-            <MetricPart label="输入" value={totals.input} compact />
-            <MetricPart label="输出" value={totals.output} compact />
-            <MetricPart label="缓存读" value={totals.cacheRead} compact />
-            <MetricPart label="缓存写" value={totals.cacheWrite} compact />
+            <MetricPart label="输入" value={totals.input} />
+            <MetricPart label="输出" value={totals.output} />
+            <MetricPart label="缓存读" value={totals.cacheRead} />
+            <MetricPart label="缓存写" value={totals.cacheWrite} />
           </div>
         </div>
         <div className="stats-kpi">

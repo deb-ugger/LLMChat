@@ -494,7 +494,7 @@
 }
 
 .stats-kpi-part-label {
-  font-size: var(--fs-caption);
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
@@ -502,7 +502,7 @@
 }
 
 .stats-kpi-part-value {
-  font-size: var(--fs-caption);
+  font-size: 13.5px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -765,7 +765,7 @@
   min-width: 920px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: var(--fs-body);
+  font-size: 15px;
 }
 
 /* 列宽按语义给，不再用 nth-child —— 常量列会被条件收起，序号会错位。 */
@@ -807,7 +807,7 @@
   background: var(--bg-panel);
   color: var(--text-muted);
   font-weight: 600;
-  font-size: var(--fs-caption);
+  font-size: 13px;
   z-index: 1;
 }
 
@@ -821,7 +821,7 @@
 .stats-mono {
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: var(--fs-caption);
+  font-size: 13.5px;
   white-space: nowrap;
 }
 
