@@ -336,8 +336,10 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const elapsedLabel = benchmark ? gameDuration(configElapsed ?? benchmark.elapsedMs) : elapsed;
   const completed = summaryProgress?.completed ?? (benchmark ? undefined : foldedSummary?.completed) ?? summaryProgress?.current;
   const unit = progress?.unit ?? "项";
+  const progressSample = activeProgress ? activeProgress.sample ?? statusLine : undefined;
   const cardStateLine = active ? statusLine || (benchmarkActive ? benchmark.detail : undefined)
     : state === "done" ? resultLine : undefined;
+  const stateLineInProgress = activeProgress != null && progressSample != null && cardStateLine === progressSample;
   const progressConfig = activeProgress?.configuration;
   const progressPosition = position ?? (progressConfig && "配置 " + progressConfig.current + "/" + progressConfig.total);
   const remainingMs = activeProgress?.remainingMs;
@@ -408,9 +410,9 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
                 : activeProgress.count}
             </span>}
           </div>
-          {(activeProgress.sample || progressPosition || remaining) && <div className="game-flow-progress-meta">
+          {(progressSample || progressPosition || remaining) && <div className="game-flow-progress-meta">
             {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
-            {activeProgress.sample && <span className="game-flow-sample" data-tooltip={activeProgress.sample}>{activeProgress.sample}</span>}
+            {progressSample && <span className="game-flow-sample" data-tooltip={progressSample}>{progressSample}</span>}
             {remaining && <span className="game-flow-progress-remaining">预计剩余 <b>{remaining}</b></span>}
           </div>}
         </div>}
@@ -434,7 +436,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
             </div>
           </fieldset>}
         </section>}
-        {cardStateLine && <div className="game-flow-state-line" role="status" data-active={active || undefined}>
+        {cardStateLine && !stateLineInProgress && <div className="game-flow-state-line" role="status" data-active={active || undefined}>
           <span aria-hidden="true" /><span>{cardStateLine}</span>
         </div>}
       </div>
