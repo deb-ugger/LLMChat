@@ -19,10 +19,44 @@ const HISTORY_LIMIT: usize = 30;
 const REDRAW_WORKER: &str = include_str!("style_redraw.py");
 const REDRAW_BOOTSTRAP: &str = "import sys; source = sys.stdin.buffer.read(int(sys.stdin.buffer.readline())); exec(compile(source, '<style-redraw>', 'exec'))";
 
+fn valid_mosaic_prompt_id(id: &str) -> bool {
+    id.len() == 36 && id.bytes().enumerate().all(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' }
+        else { byte.is_ascii_hexdigit() }
+    })
+}
+
+fn mosaic_cancel_marker(id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("llmchat-mosaic-cancel-{id}"))
+}
+
 #[tauri::command]
 pub async fn run_style_redraw(directory: String, image: String, steps: u32,
                               regions: serde_json::Value, mode: String, profile: serde_json::Value, progress: Channel<String>) -> Result<serde_json::Value, String> {
-    run_worker(directory, json!({ "image": image, "steps": steps, "regions": regions, "mode": mode, "profile": profile }), progress).await
+    let marker = profile["promptId"].as_str().filter(|id| mode == "mosaic" && valid_mosaic_prompt_id(id))
+        .map(mosaic_cancel_marker);
+    let result = run_worker(directory, json!({ "image": image, "steps": steps, "regions": regions, "mode": mode,
+        "profile": profile, "cancelPath": marker.as_deref() }), progress).await;
+    if let Some(marker) = marker { let _ = fs::remove_file(marker); }
+    result
+}
+
+#[tauri::command]
+pub async fn cancel_mosaic_redraw(prompt_id: String, comfy_job_id: String) -> Result<(), String> {
+    if !valid_mosaic_prompt_id(&prompt_id) || !valid_mosaic_prompt_id(&comfy_job_id) {
+        return Err("重绘任务编号无效".into());
+    }
+    // Keep a marker across upload and submission. The worker checks it on both sides of POST.
+    fs::write(mosaic_cancel_marker(&prompt_id), b"").map_err(|e| format!("无法通知重绘进程取消：{e}"))?;
+    for id in [&comfy_job_id, &prompt_id] {
+        let route = format!("/api/jobs/{id}/cancel");
+        match comfy_http()?.post(format!("{COMFY_URL}{route}")).send().await {
+            Ok(response) => { comfy_json(response, &route).await?; }
+            Err(error) if error.is_connect() => break,
+            Err(error) => return Err(format!("无法请求 ComfyUI 取消任务：{error}")),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

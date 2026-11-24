@@ -869,6 +869,7 @@ pub fn run() {
             clipboard::clipboard_read_image_png,
             write_file_bytes,
             style_redraw::run_style_redraw,
+            style_redraw::cancel_mosaic_redraw,
             style_redraw::find_redraw_directories,
             style_redraw::inspect_redraw_directory,
             style_redraw::prepare_redraw_ui,

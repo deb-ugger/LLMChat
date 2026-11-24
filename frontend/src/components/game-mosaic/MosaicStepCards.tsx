@@ -67,6 +67,8 @@ type Props = {
     remainingCount: number;
     paused: boolean;
     canClear: boolean;
+    cancelling: boolean;
+    cancel: () => Promise<void>;
     batchReason?: string;
     groupReason?: string;
     referenceFlow?: { detail: string; label?: string; reason?: string; run?: () => void };
@@ -94,6 +96,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     order.find(id => stage[id].status?.state !== "done" && stage[id].status?.state !== "skipped" &&
       (id !== "refine" || preferences.refine !== false && refine.pendingCount > 0)) ??
     "redraw";
+  const cancelRedraw = <button type="button" className="unity-btn" disabled={redraw.cancelling}
+    data-tooltip="取消当前重绘，保留已生成的候选。中断采样的图片下次从第 1 步开始。"
+    onClick={() => void redraw.cancel()}>{redraw.cancelling ? "正在取消…" : "取消任务"}</button>;
   const stepCard = (id: MosaicStep, title: string, actions: ReactNode, settings: ReactNode) => {
     const status = stage[id].status;
     const state = status?.state || "pending";
@@ -156,8 +161,12 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         {refineSummary && <span className="game-flow-refine-summary">{refineSummary}</span>}
         {id !== "refine" && failed > 0 && <span>失败 {failed} 张</span>}
       </small>}
-      actions={running ? <button type="button" className="unity-btn game-flow-start" disabled={aborting} onClick={() => onStop(id)}>
-        {aborting ? "正在中止" : "中止"}</button> : actions}
+      actions={running ? <>
+        <button type="button" className="unity-btn game-flow-start" disabled={aborting}
+          data-tooltip={id === "redraw" ? "等待当前候选生成后暂停。若采样被取消或中断，这张图下次从第 1 步开始。" : undefined}
+          onClick={() => onStop(id)}>{aborting ? "正在中止" : "中止"}</button>
+        {id === "redraw" && aborting && cancelRedraw}
+      </> : actions}
       configuration={expanded && settings} /></li>;
   };
   const screenRuntime = <>
@@ -251,6 +260,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
           本组 · {redraw.groupTargetCount}
         </button>}
+        {redraw.paused && cancelRedraw}
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>

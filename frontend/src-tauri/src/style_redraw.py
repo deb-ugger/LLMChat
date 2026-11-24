@@ -40,7 +40,19 @@ async def request(session, method, route, **kwargs):
         return await response.json()
 
 
-async def ready(session, root):
+def mosaic_cancelled(cancel_path):
+    return cancel_path and Path(cancel_path).exists()
+
+
+async def check_mosaic_cancel(session, cancel_path, prompt_id=None):
+    if mosaic_cancelled(cancel_path):
+        if prompt_id:
+            await request(session, "POST", f"/api/jobs/{prompt_id}/cancel")
+        raise RuntimeError("重绘任务已取消")
+
+
+async def ready(session, root, cancel_path=None):
+    await check_mosaic_cancel(session, cancel_path)
     try:
         stats = await request(session, "GET", "/system_stats")
     except aiohttp.ClientConnectorError:
@@ -56,6 +68,7 @@ async def ready(session, root):
                                      creationflags=subprocess.CREATE_NO_WINDOW)
         for _ in range(180):
             await asyncio.sleep(1)
+            await check_mosaic_cancel(session, cancel_path)
             if child.poll() is not None:
                 raise RuntimeError(f"ComfyUI 启动失败，日志：{log_path}")
             try:
@@ -257,12 +270,13 @@ async def graph_history_image(session, record, output_id, workflow_times, allow_
     return raw
 
 
-async def recover_image_graph(session, prompt_id, output_id, label, workflow_times):
+async def recover_image_graph(session, prompt_id, output_id, label, workflow_times, cancel_path=None):
     if not prompt_id:
         return None, None
     deadline = time.monotonic() + 3600
     waiting = False
     while time.monotonic() < deadline:
+        await check_mosaic_cancel(session, cancel_path, prompt_id)
         record = await read_graph_history(session, prompt_id)
         if record and record.get("status", {}).get("status_str") == "success":
             return await graph_history_image(session, record, output_id, workflow_times, allow_missing=True), record
@@ -281,7 +295,7 @@ async def recover_image_graph(session, prompt_id, output_id, label, workflow_tim
 
 
 async def run_image_graph(session, graph, output_id, label, workflow_times, prompt_ids=None,
-                          resume_id=None, old_history=None):
+                          resume_id=None, old_history=None, cancel_path=None):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
@@ -291,8 +305,10 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
         payload = {"client_id": client, "prompt": graph}
         if resume_id:
             payload["prompt_id"] = resume_id
+        await check_mosaic_cancel(session, cancel_path)
         job = await request(session, "POST", "/prompt", json=payload)
         pid = job["prompt_id"]
+        await check_mosaic_cancel(session, cancel_path, pid)
         if prompt_ids is not None:
             prompt_ids.append(pid)
         emit("status", f"{label} · 已提交，等待 ComfyUI")
@@ -302,6 +318,7 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
                 packet = await ws.receive(timeout=4)
             except asyncio.TimeoutError:
                 packet = None
+            await check_mosaic_cancel(session, cancel_path, pid)
             if packet is not None:
                 if packet.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
                     raise RuntimeError("ComfyUI 进度连接已关闭")
@@ -530,12 +547,13 @@ async def repair_mosaic(original, data, steps, workflow_times):
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])
-        argv = await ready(session, root)
+        cancel_path = data.get("cancelPath")
+        argv = await ready(session, root, cancel_path)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
             # The expanded crop cannot reuse a ComfyUI output from the original-mask workflow.
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:llmchat:mosaic:expanded:" + prompt_id)) if prompt_id else None
-            raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times)
+            raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
             if raw is None:
                 source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
                 noise_mask = Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB")
@@ -548,7 +566,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
                     graph["15"] = {"class_type": "SaveImage", "inputs": {
                         "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
                 raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids,
-                                            resume_id=resume_id, old_history=old_history)
+                                            resume_id=resume_id, old_history=old_history, cancel_path=cancel_path)
     with Image.open(io.BytesIO(raw)) as output:
         restored = output.convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
     restored = match_mosaic_colors(crop, restored, generation, samples)

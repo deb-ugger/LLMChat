@@ -11,7 +11,7 @@ import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffe
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishFormalGameStep, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type FormalRunSummary, type StepPerformance } from "../gameModelPerformance";
-import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, openMosaicComfyWorkflowEvent, prepareMosaicComfyWorkflow, type MosaicModel } from "../gameMosaic";
+import { cancelMosaicRedraw, mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, openMosaicComfyWorkflowEvent, prepareMosaicComfyWorkflow, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
@@ -255,6 +255,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const [progressStep, setProgressStep] = useState<MosaicStep>();
   const [stepRuns, setStepRuns] = useState<Partial<Record<MosaicStep, StepRun>>>({});
   const pendingRedraw = useRef<RedrawPlan | null>(null);
+  const redrawTask = useRef<Promise<void> | undefined>(undefined);
+  const redrawCancelRequested = useRef(false);
+  const [redrawCancelling, setRedrawCancelling] = useState(false);
+  const redrawPromptKey = "llmchat-mosaic-active-prompt:" + gamePath;
   const lastReview = useRef<MosaicReviewSession | null>(null);
   const [refineRetries, setRefineRetries] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [, refreshElapsed] = useState(0);
@@ -453,7 +457,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const existingRedraw = useMemo(() => existingMosaicRedrawReferences(usable, rows, candidates, model),
     [usable, rows, candidates, model]);
   const draftReference = members.find(image => resultFor(draftRows, image).reference && resultFor(draftRows, image).saved);
-  const actionsDisabled = !!busy || disabled;
+  const actionsDisabled = !!busy || disabled || redrawCancelling;
   const masks = useMosaicMasks({ gamePath, active, activeResult, members, usable, rows: draftRows, candidates: draftCandidates,
     getRows: () => applyMosaicDrafts(latestRows.current, mosaicDraftsOf(gamePath)), blocked: () => !!task.current || disabled,
     actionsDisabled, commit: commitMaskEdits });
@@ -582,7 +586,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const redrawWithConfirmation = async (input: Parameters<typeof redrawMosaic>[0]) => {
     const clone = (rect: typeof input.boxes[number]): typeof input.boxes[number] => [...rect];
     const evidence = { boxes: input.boxes.map(clone), keep: input.keep.map(clone), model: input.model };
+    if (input.promptId) localStorage.setItem(redrawPromptKey, input.promptId);
     const blob = await redrawMosaic({ ...input, ...evidence });
+    if (input.promptId && localStorage.getItem(redrawPromptKey) === input.promptId)
+      localStorage.removeItem(redrawPromptKey);
     renderedMosaics.current.set(blob, evidence);
     return blob;
   };
@@ -934,10 +941,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const references = new Map(plan.targets.flatMap(({ style }) =>
       style.reference ? [[style.reference.id, style.reference.name] as const] : []));
     const groupCount = new Set(plan.targets.map(({ style }) => style.group)).size;
-    void run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
+    const running = run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
       read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress: text => setProgress(text, "redraw"), setError,
       setPending: storePendingRedraw,
       onCandidate: async (image, version) => {
+        if (redrawCancelRequested.current) throw new Error("重绘任务已取消");
         const current = candidateRows.current[image.id];
         const versions = current?.revision === image.sourceHash ? current.versions : [];
         const candidate = { revision: image.sourceHash, versions: [...versions.filter(item => item.id !== version.id), version] };
@@ -954,6 +962,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         : references.size ? [{ scope: "config" as const, label: "画风参考",
           value: groupCount === 1 ? references.values().next().value! : "按组使用 " + references.size + " 张参考图" }] : []),
     ], resume });
+    if (running) {
+      redrawTask.current = running;
+      void running.finally(() => { if (redrawTask.current === running) redrawTask.current = undefined; }).catch(console.error);
+    }
   }
   function canRedrawImage(row: Result) {
     return preferences.refine === false || !!row.saved || !!row.manualBoxes || isReviewed(row);
@@ -1197,6 +1209,34 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     showAppNotice("已清理复筛");
   }
 
+  async function cancelRedrawPrompt() {
+    const promptId = localStorage.getItem(redrawPromptKey);
+    if (!promptId) return;
+    await cancelMosaicRedraw(promptId);
+    if (localStorage.getItem(redrawPromptKey) === promptId) localStorage.removeItem(redrawPromptKey);
+  }
+
+  async function cancelRedrawTask() {
+    if (redrawCancelRequested.current || (!pausedRedraw && !redrawTask.current) ||
+      (task.current && (!redrawTask.current || !task.current.signal.aborted))) return;
+    redrawCancelRequested.current = true;
+    setRedrawCancelling(true);
+    setProgress("正在取消重绘任务…", "redraw");
+    try {
+      await cancelRedrawPrompt();
+      await redrawTask.current;
+      await storePendingRedraw(null);
+      clearStepProgress("redraw");
+      showAppNotice("已取消当前重绘任务");
+    } catch (error) {
+      showAppNotice("无法取消当前重绘任务：" + String(error), "error");
+    } finally {
+      redrawCancelRequested.current = false;
+      setRedrawCancelling(false);
+      setProgress("");
+    }
+  }
+
   async function clearRedraw() {
     if (waitForDraftSave()) return;
     if (actionsDisabled || !canClearRedraw) return;
@@ -1207,6 +1247,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const next = Object.fromEntries(Object.entries(rows).map(([id, row]) =>
       [id, row.redrawError ? { ...row, redrawError: undefined } : row]));
     try {
+      await cancelRedrawPrompt();
       await enqueueArchiveWrite(() => clearMosaicRedrawArchive(gamePath));
       replaceRows(next);
     } catch (error) { reportArchiveError(error); return; }
@@ -1371,6 +1412,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       }} redraw={{
         status: stepRuns.redraw, targetCount: listRedraw.length, groupTargetCount: redrawGroup.length,
         remainingCount: redrawRemaining, paused: !!pausedRedraw, skipped: redrawSkipped, canClear: canClearRedraw,
+        cancelling: redrawCancelling, cancel: cancelRedrawTask,
         batchReason, groupReason: groupRedrawReason, referenceFlow,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model], "automatic"),
         startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
